@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://netie.ai/dms/contracts/space.json",
+  "title": "Space",
+  "type": "object",
+  "required": ["id", "name", "sources"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "state": { "enum": ["active", "archived"] },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref", "scope"],
+        "properties": {
+          "kind": { "type": "string" },
+          "ref": { "type": "string" },
+          "scope": { "enum": ["personal", "team", "company"] },
+          "meta": { "type": "object" }
+        }
+      }
+    }
+  }
+}

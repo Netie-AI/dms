@@ -1,0 +1,1 @@
+"""Postgres control-plane adapter."""

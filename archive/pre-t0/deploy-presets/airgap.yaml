@@ -1,0 +1,12 @@
+preset: airgap
+replicas:
+  api: 1
+  web: 1
+postgres:
+  embedded: true
+openvaultUrl: http://127.0.0.1:5000
+cortexUrl: http://127.0.0.1:8010
+features:
+  externalLlm: false
+jobBackend: none
+notes: No cloud LLM. OpenVault local or wording features degraded.

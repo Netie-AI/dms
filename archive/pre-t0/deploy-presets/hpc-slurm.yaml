@@ -1,0 +1,10 @@
+preset: hpc-slurm
+replicas:
+  api: 2
+  web: 2
+jobBackend: slurm
+slurm:
+  partition: dms
+  account: dms
+  bronzeWriter: same-contract
+notes: HTTP stays on K8s/Compose. Slurm only for batch ingest/pipeline jobs.

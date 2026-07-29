@@ -1,0 +1,28 @@
+replicaCount:
+  api: 1
+  web: 1
+
+image:
+  api: dms-api:0.1.0
+  web: dms-web:0.1.0
+  pullPolicy: IfNotPresent
+
+service:
+  apiPort: 8080
+  webPort: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  host: dms.local
+
+env:
+  CORTEX_URL: http://cortex:8010
+  OPENVAULT_URL: http://openvault:5000
+  CORTEX_PROXY: "1"
+  DATABASE_URL: postgresql://dms:dms@postgres:5432/dms
+
+postgres:
+  enabled: true
+
+resources: {}

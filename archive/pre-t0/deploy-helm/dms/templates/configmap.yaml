@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-preset
+data:
+  PRESET: {{ .Values.preset | default "local-appliance" | quote }}
+  JOB_BACKEND: {{ .Values.jobBackend | default "none" | quote }}

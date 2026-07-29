@@ -1,0 +1,13 @@
+# local-appliance preset
+preset: local-appliance
+replicas:
+  api: 1
+  web: 1
+postgres:
+  embedded: true
+lake:
+  path: ./data/lakehouse
+jobBackend: none
+cortexUrl: http://127.0.0.1:8010
+openvaultUrl: http://127.0.0.1:5000
+notes: Single-node Compose. No Kubernetes required.

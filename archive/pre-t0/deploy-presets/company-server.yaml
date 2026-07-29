@@ -1,0 +1,17 @@
+preset: company-server
+replicas:
+  api: 2
+  web: 2
+postgres:
+  embedded: false
+  externalDsn: postgresql://dms:CHANGE_ME@postgres:5432/dms
+lake:
+  storageClass: standard
+  size: 500Gi
+jobBackend: k8s
+ingress:
+  enabled: true
+  host: dms.company.local
+cortexUrl: http://cortex.internal:8010
+openvaultUrl: http://openvault.internal:5000
+notes: Shared company install behind Ingress. Users login to org URL.

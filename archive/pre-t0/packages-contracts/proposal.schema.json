@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://netie.ai/dms/contracts/proposal.json",
+  "title": "AmendProposal",
+  "type": "object",
+  "required": ["id", "version", "diff", "status"],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "version": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["draft", "pending_confirm", "applied", "rejected", "superseded"] },
+    "diff": { "type": "object" },
+    "confirm_token": { "type": "string" },
+    "space_id": { "type": ["string", "null"] }
+  }
+}
