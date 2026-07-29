@@ -48,3 +48,7 @@ class CortexClient:
 
     def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
         raise NotImplementedError(_STUB_MSG)
+
+    def verify_ledger(self) -> dict[str, Any]:
+        """Call Cortex chain verification; report first break in the response."""
+        raise NotImplementedError(_STUB_MSG)

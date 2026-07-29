@@ -7,7 +7,7 @@ name = "dms-core"
 version = "0.1.0"
 description = "DMS shared ports and domain types (no policy logic)"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.6"]
+dependencies = ["pydantic>=2.6", "psycopg[binary]>=3.1"]
 
 [tool.setuptools.packages.find]
 where = ["."]

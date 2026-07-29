@@ -9,6 +9,9 @@ description = "DMS ledger append via Cortex HTTP — no local hash chain"
 requires-python = ">=3.11"
 dependencies = ["dms-core", "dms-cortex-client"]
 
+[project.scripts]
+dms-verify-ledger = "dms_ledger.verify_cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dms_ledger*"]
