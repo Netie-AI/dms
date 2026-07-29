@@ -1,0 +1,45 @@
+# Integration pin point: Cortex engine image tag + DMS API/UI.
+# Engine upgrade = change cortex image tag. Contract major stays 1.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dms
+      POSTGRES_PASSWORD: dms
+      POSTGRES_DB: dms
+    ports:
+      - "5432:5432"
+    volumes:
+      - dms_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dms -d dms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Optional local Cortex — prefer host engine or GHCR pin for appliances.
+  # cortex:
+  #   image: ${CORTEX_ENGINE_IMAGE:-ghcr.io/netie/cortex:2.5.0-core}
+  #   ports:
+  #     - "8010:8010"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://dms:dms@postgres:5432/dms
+      CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
+      OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
+      CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
+    ports:
+      - "8090:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  dms_pg:

@@ -1,0 +1,15 @@
+{
+  "version": "0.1.0",
+  "cortex_engine": "2.5.0",
+  "contract": "1.0.0",
+  "artifacts": [
+    {
+      "name": "dms-0.1.0-windows-x64.exe",
+      "sha256": "PENDING_T0_NO_BYTES",
+      "urls": [
+        "https://github.com/netie/netie-platform/releases/download/dms-0.1.0/dms-0.1.0-windows-x64.exe"
+      ]
+    }
+  ],
+  "notes": "T0 skeleton manifest — bytes publish on first real tag; git is source of truth for what a release is."
+}

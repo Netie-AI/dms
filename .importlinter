@@ -1,0 +1,40 @@
+[importlinter]
+root_packages =
+    dms_api
+    dms_core
+    cortex_client
+    dms_executor
+    dms_ledger
+include_external_packages = True
+
+[importlinter:contract:1]
+name = api may not import executor directly (only via core)
+type = forbidden
+source_modules =
+    dms_api
+forbidden_modules =
+    dms_executor
+ignore_imports =
+
+[importlinter:contract:2]
+name = core may not import api
+type = layers
+layers =
+    dms_api
+    dms_ledger
+    dms_executor
+    cortex_client
+    dms_core
+
+[importlinter:contract:3]
+name = nothing may import CortexOS
+type = forbidden
+source_modules =
+    dms_api
+    dms_core
+    cortex_client
+    dms_executor
+    dms_ledger
+forbidden_modules =
+    CortexOS
+    cortexos

@@ -1,0 +1,40 @@
+# .cursorrules — DMS
+
+You are working in **D:\DMS** (Netie DMS), the consumer app.
+
+## Boundaries (non-negotiable)
+
+- DMS never `import CortexOS`. Use `packages/cortex_client` over HTTP only.
+- Pin cortex-contract major **1**. Engine version floats via compose image tag.
+- One ledger via Cortex append API — no local hash chain in DMS.
+- One Postgres, schemas `cortex` + `dms`, no cross-schema FKs.
+- Excel = source only; no outbound write via openpyxl/xlsxwriter/`to_excel`.
+- `duckdb.execute` only in `packages/executor`.
+- Mutation FastAPI routes must call `dms_core.compliance_gate`.
+- Only five ports: catalog, object_store, model_provider, serving_engine, secrets.
+- No new abstraction/dep/config without a stated swap scenario.
+
+## Layout
+
+```
+apps/api          FastAPI
+apps/ui           product chrome
+packages/core     ports + compliance_gate
+packages/cortex_client   generated from contract/openapi-1.0.0.json
+packages/executor duckdb / serving (only place for duckdb.execute)
+packages/ledger   append facade → Cortex HTTP
+contract/         OpenAPI wire format (cortex-contract 1.x)
+deploy/compose    integration pin point
+tests/invariants  protected AST boundary checks
+```
+
+## Versions
+
+Keep three independent lines: cortex-contract / cortex-engine / dms.
+Never renumber engine back to 1.2.x. Never maintain two product trunks.
+
+## Before coding
+
+Read `CLAUDE.md`, `AGENTS.md`, `docs/PRODUCT_ROLES.md`.
+Do not weaken `tests/invariants/**` or `.importlinter` without
+`INVARIANT-CHANGE: <reason>` in the commit body.

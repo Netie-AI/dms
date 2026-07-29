@@ -1,0 +1,11 @@
+{
+  "name": "dms-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DMS UI skeleton (T0) — product chrome lives here; Cortex is HTTP-only",
+  "scripts": {
+    "dev": "echo T0 skeleton — UI framework lands in a later slice",
+    "build": "echo T0 skeleton — no build yet",
+    "lint": "echo T0 skeleton — no lint yet"
+  }
+}

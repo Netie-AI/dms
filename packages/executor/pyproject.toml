@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dms-executor"
+version = "0.1.0"
+description = "DMS query execution port (DuckDB / lake serving live here only)"
+requires-python = ">=3.11"
+dependencies = ["dms-core"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dms_executor*"]

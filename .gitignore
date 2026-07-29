@@ -1,0 +1,22 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+node_modules/
+.next/
+data/
+*.duckdb
+.DS_Store
+dist/
+build/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+deploy/compose/.env
+*.egg-info/
+.eggs/
+# Pre-T0 bytes kept on disk; not part of T0 skeleton commit
+archive/pre-t0/
