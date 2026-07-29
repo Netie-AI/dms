@@ -1,6 +1,5 @@
-"""DMS shared core — ports, compliance gate, types. No FastAPI, no CortexOS."""
+"""DMS shared core — ports and domain types. No FastAPI, no CortexOS, no policy."""
 
-from dms_core.compliance import compliance_gate
 from dms_core.ports import (
     CatalogPort,
     ModelProviderPort,
@@ -10,7 +9,6 @@ from dms_core.ports import (
 )
 
 __all__ = [
-    "compliance_gate",
     "CatalogPort",
     "ObjectStorePort",
     "ModelProviderPort",

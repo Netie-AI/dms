@@ -50,10 +50,44 @@ jobs:
             echo "No protected paths touched"
           fi
 
+  contract-pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject hand-authored OpenAPI without Cortex sha256 pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          SPEC="contract/openapi-1.0.0.json"
+          HASH="contract/openapi-1.0.0.json.sha256"
+          if [ -f "$SPEC" ]; then
+            if [ ! -f "$HASH" ]; then
+              echo "::error::$SPEC exists without sibling $HASH — export from Cortex R1, do not hand-author"
+              exit 1
+            fi
+            # .sha256 must verify the spec bytes (Cortex release pin)
+            if command -v sha256sum >/dev/null; then
+              ACTUAL=$(sha256sum "$SPEC" | awk '{print $1}')
+            else
+              ACTUAL=$(shasum -a 256 "$SPEC" | awk '{print $1}')
+            fi
+            EXPECTED=$(awk '{print $1}' "$HASH")
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error::$HASH does not match $SPEC (actual=$ACTUAL expected=$EXPECTED)"
+              exit 1
+            fi
+            echo "Pinned OpenAPI ok: $ACTUAL"
+          else
+            echo "No vendored OpenAPI (stub client mode) — ok"
+          fi
+
   lint-type-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [protected-paths]
+    needs: [protected-paths, contract-pin]
     env:
       PYTHONUTF8: "1"
     steps:

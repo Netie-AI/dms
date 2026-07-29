@@ -1,4 +1,8 @@
-"""Pydantic models mirroring cortex-contract 1.0.0 OpenAPI schemas."""
+"""Pydantic shapes reserved for cortex-contract 1.x.
+
+Do not hand-extend these to invent a shadow wire format. Regenerate from
+Cortex ``contract/openapi-1.0.0.json`` via ``just sync-contract`` after R1.
+"""
 
 from __future__ import annotations
 

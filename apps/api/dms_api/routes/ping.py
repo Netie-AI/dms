@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dms_core import compliance_gate
+from cortex_client import compliance_gate
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 

@@ -242,12 +242,42 @@ def test_no_cortexos_imports(scans: dict[str, _BoundaryVisitor]) -> None:
     )
 
 
-def test_openapi_contract_present() -> None:
+def test_no_shadow_openapi_without_sha256() -> None:
+    """Hand-authored OpenAPI is forbidden; only a Cortex-pinned export may land."""
     path = ROOT / "contract" / "openapi-1.0.0.json"
-    assert path.is_file()
-    text = path.read_text(encoding="utf-8")
-    assert '"version": "1.0.0"' in text
-    assert "/v1/ledger/append" in text
+    sha = ROOT / "contract" / "openapi-1.0.0.json.sha256"
+    if path.is_file():
+        assert sha.is_file(), (
+            "contract/openapi-1.0.0.json exists without sibling .sha256 — "
+            "export from Cortex R1 via just sync-contract, do not hand-author"
+        )
+
+
+_GATE_NAME_RE = re.compile(
+    r"(^|_)(gate|policy|authorize|check_compliance)(_|$)",
+    re.IGNORECASE,
+)
+
+
+def test_no_local_gate_policy_functions() -> None:
+    """One gate, in Cortex — DMS may only define call-throughs under cortex_client."""
+    allowed_root = ROOT / "packages" / "cortex_client"
+    offenders: list[str] = []
+    for path in _iter_py_files():
+        try:
+            path.relative_to(allowed_root)
+            continue
+        except ValueError:
+            pass
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if _GATE_NAME_RE.search(node.name):
+                    offenders.append(f"{_rel(path)}:{node.lineno} def {node.name}")
+    assert not offenders, (
+        "gate/policy/authorize/check_compliance defs only allowed in "
+        "packages/cortex_client:\n" + "\n".join(offenders)
+    )
 
 
 def test_agent_contract_docs_present() -> None:

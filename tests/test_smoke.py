@@ -1,5 +1,6 @@
 """Smoke: app factory imports without CortexOS."""
 
+import pytest
 from dms_api.app import create_app
 from fastapi.testclient import TestClient
 
@@ -18,8 +19,8 @@ def test_health_route():
     assert body["product"] == "dms"
 
 
-def test_skeleton_ping_uses_gate():
-    client = TestClient(create_app())
-    r = client.post("/v1/skeleton/ping", json={"message": "hi"})
-    assert r.status_code == 200
-    assert r.json()["echo"] == "hi"
+def test_skeleton_ping_calls_gate_stub():
+    """Gate is a Cortex call-through; stub raises until sync-contract."""
+    client = TestClient(create_app(), raise_server_exceptions=True)
+    with pytest.raises(NotImplementedError, match="sync-contract"):
+        client.post("/v1/skeleton/ping", json={"message": "hi"})
