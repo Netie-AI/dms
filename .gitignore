@@ -18,3 +18,4 @@ htmlcov/
 deploy/compose/.env
 *.egg-info/
 .eggs/
+contract/openapi-1.1.0.gen.json

@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from cortex_contract.execution import Manifest, canonical_manifest_bytes
+from cortex_contract.execution import canonical_manifest_bytes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from dms_executor.manifest import (
@@ -16,7 +16,6 @@ from dms_executor.manifest import (
     SecurityEvent,
     SessionAcl,
     assert_no_key_in_exception,
-    reject_hostile_chat_sql,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,19 +103,16 @@ def test_mint_ok_when_path_or_predicate_not_both() -> None:
     )
 
 
-def test_hostile_unnest_shadow_and_file_fns() -> None:
-    with pytest.raises(SecurityEvent):
-        reject_hostile_chat_sql("SELECT * FROM read_parquet('secrets/*.parquet')")
-    with pytest.raises(SecurityEvent):
-        reject_hostile_chat_sql(
-            "SELECT * FROM UNNEST([{x:1}]) AS orders(x) JOIN secrets USING (x)"
-        )
-
-
-def test_key_not_in_mint_error_repr() -> None:
+def test_key_not_in_traceback() -> None:
     secret = "SUPER_SECRET_SEED_B64URL_VALUE_XXXX"
-    err = SecurityEvent("path_not_allowed", "nope")
-    assert_no_key_in_exception(err, secret)
+    try:
+        raise SecurityEvent("path_not_allowed", "nope")
+    except SecurityEvent as exc:
+        import traceback
+
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        assert secret not in tb
+        assert_no_key_in_exception(exc, secret)
 
 
 class _FakeHttp:

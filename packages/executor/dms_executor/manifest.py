@@ -45,7 +45,7 @@ class SecurityEvent(ManifestMintError):
 @dataclass
 class IntermediateKey:
     kid: str
-    private_key: Ed25519PrivateKey
+    private_key: Ed25519PrivateKey = field(repr=False)
     not_after: datetime
     # raw seed kept only to detect accidental leakage in tests — not logged
     _seed_b64: str = field(repr=False, default="")
@@ -242,6 +242,7 @@ def should_rement(code: str) -> bool:
 _HOSTILE_PATTERNS = (
     re.compile(r"\bread_parquet\s*\(", re.I),
     re.compile(r"\bread_csv\s*\(", re.I),
+    re.compile(r"\bread_json(?:_auto)?\s*\(", re.I),
     re.compile(r"\bparquet_scan\s*\(", re.I),
     re.compile(r"\bATTACH\b", re.I),
 )
