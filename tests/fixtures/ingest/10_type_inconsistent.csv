@@ -1,0 +1,5 @@
+sku,qty,region
+A,1,North
+B,two,South
+C,3,East
+D,,West

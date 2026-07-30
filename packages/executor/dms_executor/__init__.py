@@ -25,10 +25,13 @@ from dms_executor.acl import (
 )
 from dms_executor.demo_ask import answer_demo_question
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import IngestReceipt, ingest_csv_bytes, list_bronze_tables, write_bronze_rows
 from dms_executor.contract_infer import infer_contract
 from dms_executor.pipeline_loader import load_pipeline_by_name, load_pipeline_yaml, validate_pipeline_dict
 from dms_executor.promote import run_promote, sign_gold_metric
+from dms_executor.triage import classify_bytes, classify_grid
+
 from dms_executor.manifest import (
     ManifestMinter,
     SessionAcl,
@@ -304,6 +307,9 @@ __all__ = [
     "SessionContext",
     "SourceGrant",
     "answer_demo_question",
+    "classify_bytes",
+    "classify_grid",
+    "ingest_batch",
     "ingest_csv_bytes",
     "infer_contract",
     "intersect_space_grants",

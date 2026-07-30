@@ -1,0 +1,5 @@
+sku,qty,region
+A,1,North
+B,2,South
+C,3,East
+Notes: figures exclude returns processed after month-end close — do not use for board pack

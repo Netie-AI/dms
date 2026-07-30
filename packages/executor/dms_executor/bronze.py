@@ -45,6 +45,8 @@ def ingest_csv_bytes(
     ref_id = str(uuid.uuid4())
     files_seen = 1
     lower = filename.lower()
+    if data.startswith(b"\xef\xbb\xbf"):
+        data = data[3:]
 
     if not data.strip():
         return IngestReceipt(
@@ -84,7 +86,11 @@ def ingest_csv_bytes(
     # Prefer medallion schema bronze.<name>; also keep bronze_<name> alias path via schema
     table_qual = f"bronze.{safe}"
     tmp = db.parent / f"_ingest_{ingest_id}.csv"
-    tmp.write_bytes(data)
+    # Normalize newlines so DuckDB dialect sniff succeeds on small files
+    text = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.endswith("\n"):
+        text += "\n"
+    tmp.write_text(text, encoding="utf-8")
     con = duckdb.connect(str(db))
     try:
         ensure_lake_schemas(con)
@@ -98,7 +104,14 @@ def ingest_csv_bytes(
               src.*,
               [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
               '{ingest_id}'::VARCHAR AS _ingest_id
-            FROM read_csv_auto('{tmp.as_posix()}', header=true) AS src
+            FROM read_csv(
+              '{tmp.as_posix()}',
+              header := true,
+              auto_detect := true,
+              delim := ',',
+              quote := '\"',
+              sample_size := -1
+            ) AS src
             """
         )
         n = int(con.execute(f'SELECT COUNT(*) FROM bronze."{safe}"').fetchone()[0])

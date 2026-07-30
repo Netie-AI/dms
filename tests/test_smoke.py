@@ -1,5 +1,7 @@
 """Smoke + health — ask defaults to live with demo fallback."""
 
+from pathlib import Path
+
 from dms_api.app import create_app
 from dms_api.settings import get_settings
 from fastapi.testclient import TestClient
@@ -97,6 +99,7 @@ def test_chat_ask_unknown_space():
 
 def test_studio_ingest_csv(monkeypatch):
     monkeypatch.setenv("DMS_ASK_MODE", "demo")
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(Path("data/_smoke_ingest.duckdb").resolve()))
     get_settings.cache_clear()
     client = TestClient(create_app())
     r = client.post(
@@ -105,9 +108,12 @@ def test_studio_ingest_csv(monkeypatch):
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["ingested"] == 2
-    assert body["quarantined"] == 0
+    # Receipt counts files (honest multi-file semantics), not rows
+    assert body["files_seen"] == 1
+    assert body["ingested"] == 1
+    assert body["need_attention"] == 0
     assert body["table"]
+    assert "TABULAR_CLEAN" in (body.get("per_class") or {})
 
 
 def test_studio_quarantine_xlsx():
@@ -118,8 +124,9 @@ def test_studio_quarantine_xlsx():
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["quarantined"] == 1
     assert body["ingested"] == 0
+    assert body["need_attention"] >= 1 or body["quarantined"] >= 1
+    assert body["reasons"]
 
 
 def test_skeleton_ping_calls_gate_fail_closed():
