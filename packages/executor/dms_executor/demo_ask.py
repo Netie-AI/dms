@@ -76,6 +76,52 @@ def _top_n(question: str, default: int = 5) -> int:
     return default
 
 
+def _excluded_skus(question: str) -> list[str]:
+    found = re.findall(
+        r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|without|except)\s+"
+        r"(?:the\s+)?([A-Za-z][\w-]*)",
+        question,
+        flags=re.I,
+    )
+    out: list[str] = []
+    for token in found:
+        t = token.strip().upper()
+        if t in {"THE", "A", "AN", "SKU", "AND", "OR", "FROM", "BY"}:
+            continue
+        if t not in out:
+            out.append(t)
+    return out
+
+
+def _rank_window(question: str) -> tuple[int, int] | None:
+    q = question.lower()
+    m = (
+        re.search(
+            r"\b(?:number|numbers|nos?|ranks?|positions?)\s*"
+            r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b",
+            q,
+        )
+        or re.search(
+            r"\b(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b"
+            r".*\b(?:sku|skus|rank|revenue|sales)\b",
+            q,
+        )
+        or re.search(
+            r"\b(?:sku|skus|rank|revenue|sales)\b.*\b"
+            r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b",
+            q,
+        )
+    )
+    if not m:
+        return None
+    start, end = int(m.group(1)), int(m.group(2))
+    if start > end:
+        start, end = end, start
+    if start < 1 or end > 1000:
+        return None
+    return start, end
+
+
 def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[str, Any]:
     """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN."""
     q = question.lower().strip()
@@ -86,10 +132,24 @@ def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[
     ):
         return _scale_revenue(factor, space_id=space_id)
 
-    if re.search(r"\b(revenue|sales|sold)\b", q) and re.search(
-        r"\b(top|best|highest|most)\b", q
-    ):
-        return _top_skus(_top_n(q), space_id=space_id)
+    window = _rank_window(question)
+    wants_rank = bool(
+        (re.search(r"\b(top|best|highest|most)\b", q) and re.search(r"\b(sell|sold|revenue|sales)\b", q))
+        or (window and re.search(r"\b(sku|skus|revenue|sales|sell)\b", q))
+    )
+    if wants_rank:
+        n = _top_n(q)
+        offset = 0
+        if window:
+            start, end = window
+            offset = start - 1
+            n = end - start + 1
+        return _top_skus(
+            n,
+            offset=offset,
+            exclude=_excluded_skus(question),
+            space_id=space_id,
+        )
 
     if "capacity" in q or "utilisation" in q or "utilization" in q:
         return _capacity(space_id=space_id)
@@ -189,24 +249,41 @@ def _scale_revenue(factor: float, *, space_id: str | None) -> dict[str, Any]:
     }
 
 
-def _top_skus(n: int, *, space_id: str | None) -> dict[str, Any]:
+def _top_skus(
+    n: int,
+    *,
+    offset: int = 0,
+    exclude: list[str] | None = None,
+    space_id: str | None,
+) -> dict[str, Any]:
+    exclude = [s.upper() for s in (exclude or []) if s]
+    where_extra = ""
+    if exclude:
+        quoted = ", ".join("'" + s.replace("'", "''") + "'" for s in exclude)
+        where_extra = f" AND UPPER(sku) NOT IN ({quoted})"
     sql = f"""
         SELECT sku,
                SUM(quantity_kg * unit_cost_myr)::DOUBLE AS revenue_myr
         FROM transactions
-        WHERE txn_type = 'outbound'
+        WHERE txn_type = 'outbound'{where_extra}
         GROUP BY sku
         ORDER BY revenue_myr DESC, sku ASC
-        LIMIT {int(n)}
+        LIMIT {int(n)} OFFSET {int(max(0, offset))}
     """
     rows = execute_sql(sql)
     if not rows:
         return _abstain(space_id=space_id)
     top = rows[0]
+    rank_start = int(max(0, offset)) + 1
     text = (
-        f"Top {len(rows)} SKUs by outbound revenue — "
-        f"#{1} {top['sku']} at {_money(float(top['revenue_myr']))}."
+        f"SKUs by outbound revenue ranks {rank_start}–{rank_start + len(rows) - 1} — "
+        f"#{rank_start} {top['sku']} at {_money(float(top['revenue_myr']))}."
     )
+    assumptions = ["outbound only", "demo warehouse"]
+    if exclude:
+        assumptions.append("excluded: " + ", ".join(exclude))
+    if offset:
+        assumptions.append(f"rank window offset={offset}")
     return {
         "answer_id": "ans_demo_top_sku",
         "text": text,
@@ -220,7 +297,7 @@ def _top_skus(n: int, *, space_id: str | None) -> dict[str, Any]:
         ],
         "badge": "L2_VALIDATED",
         "sql_used": " ".join(sql.split()),
-        "assumptions": ["outbound only", "demo warehouse"],
+        "assumptions": assumptions,
         "as_of": _as_of(),
         "space_id": space_id,
         "ask_mode": "demo",
@@ -232,7 +309,7 @@ def _top_skus(n: int, *, space_id: str | None) -> dict[str, Any]:
             "kind": "hbar",
             "x": "sku",
             "y": "revenue_myr",
-            "title": f"Top {len(rows)} SKUs by revenue",
+            "title": f"SKU revenue ranks {rank_start}–{rank_start + len(rows) - 1}",
         },
         "suggestions": SUGGESTIONS,
     }
