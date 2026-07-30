@@ -243,14 +243,17 @@ def test_no_cortexos_imports(scans: dict[str, _BoundaryVisitor]) -> None:
 
 
 def test_no_shadow_openapi_without_sha256() -> None:
-    """Hand-authored OpenAPI is forbidden; only a Cortex-pinned export may land."""
-    path = ROOT / "contract" / "openapi-1.0.0.json"
-    sha = ROOT / "contract" / "openapi-1.0.0.json.sha256"
-    if path.is_file():
-        assert sha.is_file(), (
-            "contract/openapi-1.0.0.json exists without sibling .sha256 — "
-            "export from Cortex R1 via just sync-contract, do not hand-author"
-        )
+    """Vendored OpenAPI must carry a sibling .sha256 matching Cortex pin."""
+    for name in ("openapi-1.1.0.json", "openapi-1.0.0.json"):
+        path = ROOT / "contract" / name
+        sha = ROOT / "contract" / f"{name}.sha256"
+        if path.is_file():
+            assert sha.is_file(), f"{name} exists without sibling .sha256"
+            import hashlib
+
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            expected = sha.read_text(encoding="utf-8").split()[0]
+            assert actual == expected, f"{name} sha256 drift"
 
 
 _GATE_NAME_RE = re.compile(

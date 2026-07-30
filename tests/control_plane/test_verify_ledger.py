@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-import pytest
-from cortex_client import CortexClient
+from unittest.mock import MagicMock, patch
+
+from cortex_client.models import LedgerVerifyResponse
 from dms_ledger.verify_cli import main
 
 
-def test_verify_ledger_cli_reports_stub() -> None:
-    code = main(["--base-url", "http://127.0.0.1:9"])
-    assert code == 2
+def test_verify_ledger_cli_ok() -> None:
+    mock = MagicMock()
+    mock.verify_ledger.return_value = LedgerVerifyResponse(ok=True, checked=3)
+    with patch("dms_ledger.verify_cli.CortexClient", return_value=mock):
+        assert main(["--base-url", "http://127.0.0.1:9"]) == 0
 
 
-def test_client_verify_ledger_stub() -> None:
-    client = CortexClient("http://127.0.0.1:9")
-    with pytest.raises(NotImplementedError, match="sync-contract"):
-        client.verify_ledger()
+def test_verify_ledger_cli_break() -> None:
+    mock = MagicMock()
+    mock.verify_ledger.return_value = LedgerVerifyResponse(
+        ok=False, first_break="entry-2"
+    )
+    with patch("dms_ledger.verify_cli.CortexClient", return_value=mock):
+        assert main(["--base-url", "http://127.0.0.1:9"]) == 1

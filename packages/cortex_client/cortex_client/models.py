@@ -1,7 +1,7 @@
-"""Pydantic shapes reserved for cortex-contract 1.x.
+"""Pydantic request/response shapes for cortex-contract 1.1.0 wire calls.
 
-Do not hand-extend these to invent a shadow wire format. Regenerate from
-Cortex ``contract/openapi-1.0.0.json`` via ``just sync-contract`` after R1.
+Manifest / SubmitRequest / QueryResult live in ``cortex_contract`` — import those
+from the pinned package, do not duplicate.
 """
 
 from __future__ import annotations
@@ -11,22 +11,19 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class HealthResponse(BaseModel):
-    status: str
-    contract: str
-    engine: str
-
-
-class AnswerRequest(BaseModel):
+class AskRequest(BaseModel):
     question: str
     space_id: str | None = None
     tenant_id: str | None = None
+    session_id: str | None = None
 
 
-class AnswerResponse(BaseModel):
+class AskResponse(BaseModel):
     answer: str | None = None
     abstained: bool = False
     receipt_id: str | None = None
+    badge: str | None = None
+    values: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class LedgerAppendRequest(BaseModel):
@@ -38,3 +35,19 @@ class LedgerAppendRequest(BaseModel):
 class LedgerAppendResponse(BaseModel):
     entry_id: str
     hash: str
+
+
+class LedgerVerifyResponse(BaseModel):
+    ok: bool = False
+    first_break: str | None = None
+    checked: int | None = None
+
+
+class ToolRegistryResponse(BaseModel):
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# Deprecated aliases kept for packages/ledger until call sites migrate
+AnswerRequest = AskRequest
+AnswerResponse = AskResponse
+HealthResponse = AskResponse  # unused; prefer Cortex /health outside contract

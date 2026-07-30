@@ -23,18 +23,14 @@ def main(argv: list[str] | None = None) -> int:
     client = CortexClient(args.base_url)
     try:
         result = client.verify_ledger()
-    except NotImplementedError as exc:
-        print(f"verify-ledger unavailable until sync-contract: {exc}", file=sys.stderr)
-        return 2
     except Exception as exc:  # noqa: BLE001 — CLI surface
         print(f"verify-ledger failed: {exc}", file=sys.stderr)
         return 1
 
-    if result.get("ok"):
+    if result.ok:
         print("ledger ok")
         return 0
-    first_break = result.get("first_break")
-    print(f"ledger break at: {first_break}", file=sys.stderr)
+    print(f"ledger break at: {result.first_break}", file=sys.stderr)
     return 1
 
 

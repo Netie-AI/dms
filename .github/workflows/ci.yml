@@ -61,27 +61,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SPEC="contract/openapi-1.0.0.json"
-          HASH="contract/openapi-1.0.0.json.sha256"
-          if [ -f "$SPEC" ]; then
-            if [ ! -f "$HASH" ]; then
-              echo "::error::$SPEC exists without sibling $HASH — export from Cortex R1, do not hand-author"
-              exit 1
-            fi
-            # .sha256 must verify the spec bytes (Cortex release pin)
-            if command -v sha256sum >/dev/null; then
+          found=0
+          for SPEC in contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
+            HASH="${SPEC}.sha256"
+            if [ -f "$SPEC" ]; then
+              found=1
+              if [ ! -f "$HASH" ]; then
+                echo "::error::$SPEC exists without sibling $HASH"
+                exit 1
+              fi
               ACTUAL=$(sha256sum "$SPEC" | awk '{print $1}')
-            else
-              ACTUAL=$(shasum -a 256 "$SPEC" | awk '{print $1}')
+              EXPECTED=$(awk '{print $1}' "$HASH")
+              if [ "$ACTUAL" != "$EXPECTED" ]; then
+                echo "::error::$HASH does not match $SPEC"
+                exit 1
+              fi
+              echo "Pinned OpenAPI ok: $SPEC $ACTUAL"
             fi
-            EXPECTED=$(awk '{print $1}' "$HASH")
-            if [ "$ACTUAL" != "$EXPECTED" ]; then
-              echo "::error::$HASH does not match $SPEC (actual=$ACTUAL expected=$EXPECTED)"
-              exit 1
-            fi
-            echo "Pinned OpenAPI ok: $ACTUAL"
-          else
-            echo "No vendored OpenAPI (stub client mode) — ok"
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::No vendored OpenAPI — run scripts/sync_contract.py"
+            exit 1
+          fi
+          VEC=contract/testvectors/manifest_canonical.jsonl
+          if [ ! -f "$VEC" ]; then
+            echo "::error::missing $VEC"
+            exit 1
           fi
 
   lint-type-test:
@@ -94,6 +99,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -103,9 +118,10 @@ jobs:
       - name: Install packages
         run: |
           python -m pip install --upgrade pip wheel
+          pip install -e "./_cortex/packages/cortex_contract"
           pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger"
           pip install -e ".[dev]"
-          pip install fastapi uvicorn httpx pydantic-settings
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
 
       - name: Ruff
         run: ruff check apps packages tests

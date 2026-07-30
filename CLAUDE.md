@@ -13,24 +13,25 @@ Read this before any edit. Violations fail CI via `.importlinter` and `tests/inv
 | **OpenVault** | Keys, leave-machine gate, FreeRoute |
 | **netie-platform** (public) | Docs, changelog, customer issues, Releases — support surface |
 
-DMS treats Cortex as an **HTTP service with typed payloads**, never a Python import.
+DMS treats Cortex as an **HTTP service with typed payloads**, never a Python import of the engine.
 
 ## Hard rules
 
-1. **DMS never imports CortexOS.** HTTP client only (`packages/cortex_client`), pinned to **cortex-contract major 1**.
-2. **One ledger** — DMS appends through Cortex (`/v1/ledger/append`). Never maintain a local hash chain.
-3. **One Postgres, two schemas** (`cortex`, `dms`). No cross-schema foreign keys.
-4. **Excel is source-only.** Outbound is generated export. No `to_excel` / openpyxl save / xlsxwriter.
-5. **Exactly five ports** are abstracted (see `packages/core/dms_core/ports.py`): catalog, object store, model provider, serving engine, secrets. No new dependency, abstraction, or config key without a stated swap scenario.
-6. **duckdb.execute** only inside `packages/executor`.
-7. Every FastAPI **mutation** route must call `compliance_gate` before side effects.
-8. `api` may not import `executor` directly — only via `core`. `core` may not import `api`. Nothing may import `CortexOS`.
+1. **DMS never imports CortexOS** (the engine). HTTP via `packages/cortex_client` only.
+2. **DMS pins `cortex-contract==1.1.0` as a pip dependency** and imports `canonical_manifest_bytes()` from it. Reimplementing canonicalisation is forbidden — a one-byte drift breaks every signature. `cortex-contract` has zero CortexOS imports by its own lint rule.
+3. **One ledger** — DMS appends through Cortex (`/v1/contract/ledger/append`). Never maintain a local hash chain. `ledger_ref` stores pointers only.
+4. **One Postgres, two schemas** (`cortex`, `dms`). No cross-schema foreign keys.
+5. **Excel is source-only.** Outbound is generated export. No `to_excel` / openpyxl save / xlsxwriter.
+6. **Exactly five ports** are abstracted (see `packages/core/dms_core/ports.py`): catalog, object store, model provider, serving engine, secrets. No new dependency, abstraction, or config key without a stated swap scenario.
+7. **duckdb.execute** only inside `packages/executor`.
+8. Every FastAPI **mutation** route must call `compliance_gate` before side effects (call-through to Cortex F5 — no local policy).
+9. `api` may not import `executor` directly — only via `core`. `core` may not import `api`. Nothing may import `CortexOS`.
 
 ## Version lines (independent — do not renumber backward)
 
 | Line | Scheme | Moves |
 |------|--------|-------|
-| cortex-contract | 1.0.0 | rarely — wire format |
+| cortex-contract | 1.1.0 | wire format — pin via pip + vendored OpenAPI |
 | cortex-engine | 2.5.0 → 3.0.0 | per gate; pin via compose image tag |
 | dms | 0.1.0 → 1.0.0 | at first paying install |
 

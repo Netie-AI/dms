@@ -1,0 +1,4266 @@
+{
+  "components": {
+    "schemas": {
+      "A2AMessageRequest": {
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "from_did": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Did"
+          },
+          "to": {
+            "title": "To",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "required": [
+          "to",
+          "body"
+        ],
+        "title": "A2AMessageRequest",
+        "type": "object"
+      },
+      "AcknowledgeRequest": {
+        "properties": {
+          "actor": {
+            "default": "steward",
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "title": "AcknowledgeRequest",
+        "type": "object"
+      },
+      "ActionRequest": {
+        "properties": {
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "title": "ActionRequest",
+        "type": "object"
+      },
+      "AddEntryRequest": {
+        "properties": {
+          "approved_by": {
+            "default": "demo_steward",
+            "title": "Approved By",
+            "type": "string"
+          },
+          "proposed": {
+            "additionalProperties": true,
+            "title": "Proposed",
+            "type": "object"
+          }
+        },
+        "required": [
+          "proposed"
+        ],
+        "title": "AddEntryRequest",
+        "type": "object"
+      },
+      "AnalyseEntryRequest": {
+        "properties": {
+          "raw_text": {
+            "title": "Raw Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "raw_text"
+        ],
+        "title": "AnalyseEntryRequest",
+        "type": "object"
+      },
+      "AnalyzeRequest": {
+        "properties": {
+          "period": {
+            "default": "last_7_days",
+            "title": "Period",
+            "type": "string"
+          }
+        },
+        "title": "AnalyzeRequest",
+        "type": "object"
+      },
+      "Answer": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          },
+          "sql_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql Used"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "audit_id",
+          "route",
+          "provenance"
+        ],
+        "title": "Answer",
+        "type": "object"
+      },
+      "AppendMessageRequest": {
+        "properties": {
+          "actor": {
+            "default": "demo_operator",
+            "title": "Actor",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "direction": {
+            "default": "inbound",
+            "description": "inbound | outbound",
+            "title": "Direction",
+            "type": "string"
+          },
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang"
+          },
+          "sender": {
+            "title": "Sender",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sender",
+          "body"
+        ],
+        "title": "AppendMessageRequest",
+        "type": "object"
+      },
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "demo",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "AssembleRequest": {
+        "properties": {
+          "examples": {
+            "default": "",
+            "title": "Examples",
+            "type": "string"
+          },
+          "instructions": {
+            "default": "",
+            "title": "Instructions",
+            "type": "string"
+          },
+          "memory": {
+            "default": "",
+            "title": "Memory",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "retrieval": {
+            "default": "",
+            "title": "Retrieval",
+            "type": "string"
+          },
+          "state": {
+            "default": "",
+            "title": "State",
+            "type": "string"
+          },
+          "token_budget": {
+            "default": 4096,
+            "maximum": 128000.0,
+            "minimum": 256.0,
+            "title": "Token Budget",
+            "type": "integer"
+          },
+          "tools": {
+            "default": "",
+            "title": "Tools",
+            "type": "string"
+          }
+        },
+        "title": "AssembleRequest",
+        "type": "object"
+      },
+      "AuditAppendRequest": {
+        "properties": {
+          "actor": {
+            "default": "airgpt",
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "event_type"
+        ],
+        "title": "AuditAppendRequest",
+        "type": "object"
+      },
+      "AutoRouteBody": {
+        "properties": {
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "min_runs": {
+            "default": 3,
+            "title": "Min Runs",
+            "type": "integer"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "predicates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Predicates",
+            "type": "array"
+          },
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "scale": {
+            "default": true,
+            "title": "Scale",
+            "type": "boolean"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sim_threshold": {
+            "default": 0.8,
+            "title": "Sim Threshold",
+            "type": "number"
+          }
+        },
+        "title": "AutoRouteBody",
+        "type": "object"
+      },
+      "Badge": {
+        "enum": [
+          "certified",
+          "governed_metric",
+          "query_skill",
+          "session",
+          "abstain",
+          "blocked"
+        ],
+        "title": "Badge",
+        "type": "string"
+      },
+      "BakeoffIn": {
+        "properties": {
+          "hardware": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "write_report": {
+            "default": true,
+            "title": "Write Report",
+            "type": "boolean"
+          }
+        },
+        "title": "BakeoffIn",
+        "type": "object"
+      },
+      "BrainRunRequest": {
+        "properties": {
+          "actor": {
+            "default": "user",
+            "title": "Actor",
+            "type": "string"
+          },
+          "intent": {
+            "title": "Intent",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Params",
+            "type": "object"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "title": "BrainRunRequest",
+        "type": "object"
+      },
+      "CallActionRequest": {
+        "properties": {
+          "action_id": {
+            "title": "Action Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          }
+        },
+        "required": [
+          "action_id"
+        ],
+        "title": "CallActionRequest",
+        "type": "object"
+      },
+      "CancelBody": {
+        "properties": {
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task_id": {
+            "default": "",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "title": "CancelBody",
+        "type": "object"
+      },
+      "CaptureConfigRequest": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "CaptureConfigRequest",
+        "type": "object"
+      },
+      "ChainVerification": {
+        "properties": {
+          "broken_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Broken At"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ChainVerification",
+        "type": "object"
+      },
+      "ChartRequest": {
+        "properties": {
+          "data": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Data",
+            "type": "object"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ChartRequest",
+        "type": "object"
+      },
+      "ChooseTaskRequest": {
+        "properties": {
+          "accepted": {
+            "default": true,
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "actor": {
+            "default": "user",
+            "title": "Actor",
+            "type": "string"
+          },
+          "filled_template": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Filled Template",
+            "type": "object"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "ChooseTaskRequest",
+        "type": "object"
+      },
+      "ClassifyRequest": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ClassifyRequest",
+        "type": "object"
+      },
+      "CompactRequest": {
+        "properties": {
+          "keep_tail": {
+            "default": 4,
+            "maximum": 40.0,
+            "minimum": 1.0,
+            "title": "Keep Tail",
+            "type": "integer"
+          },
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "token_budget": {
+            "default": 1200,
+            "maximum": 32000.0,
+            "minimum": 64.0,
+            "title": "Token Budget",
+            "type": "integer"
+          }
+        },
+        "title": "CompactRequest",
+        "type": "object"
+      },
+      "CompleteEventRequest": {
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "trigger_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Text"
+          }
+        },
+        "required": [
+          "event_id",
+          "outcome"
+        ],
+        "title": "CompleteEventRequest",
+        "type": "object"
+      },
+      "ConfirmDimsRequest": {
+        "properties": {
+          "actor": {
+            "default": "demo_operator",
+            "title": "Actor",
+            "type": "string"
+          },
+          "gate_approved": {
+            "default": false,
+            "title": "Gate Approved",
+            "type": "boolean"
+          },
+          "h": {
+            "title": "H",
+            "type": "number"
+          },
+          "l": {
+            "title": "L",
+            "type": "number"
+          },
+          "tenant_id": {
+            "default": "default",
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "unit": {
+            "default": "m",
+            "title": "Unit",
+            "type": "string"
+          },
+          "w": {
+            "title": "W",
+            "type": "number"
+          }
+        },
+        "required": [
+          "l",
+          "w",
+          "h"
+        ],
+        "title": "ConfirmDimsRequest",
+        "type": "object"
+      },
+      "ContractAnswer": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/Provenance"
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Count"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "sql_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sql Used"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "audit_id",
+          "route",
+          "provenance"
+        ],
+        "title": "Answer",
+        "type": "object"
+      },
+      "ContractAskRequest": {
+        "properties": {
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "demo",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "ContractBadge": {
+        "enum": [
+          "certified",
+          "governed_metric",
+          "query_skill",
+          "session",
+          "abstain",
+          "blocked"
+        ],
+        "title": "Badge",
+        "type": "string"
+      },
+      "ContractChainVerification": {
+        "properties": {
+          "broken_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broken At"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ChainVerification",
+        "type": "object"
+      },
+      "ContractDiff": {
+        "properties": {
+          "after": {
+            "default": null,
+            "title": "After"
+          },
+          "before": {
+            "default": null,
+            "title": "Before"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "title": "Diff",
+        "type": "object"
+      },
+      "ContractGateResult": {
+        "properties": {
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "violations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Violations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "passed"
+        ],
+        "title": "GateResult",
+        "type": "object"
+      },
+      "ContractLedgerEntry": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_hash": {
+            "title": "Entry Hash",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "prev_hash": {
+            "title": "Prev Hash",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "actor",
+          "event_type",
+          "payload",
+          "prev_hash",
+          "entry_hash",
+          "created_at"
+        ],
+        "title": "LedgerEntry",
+        "type": "object"
+      },
+      "ContractManifest": {
+        "description": "A signed grant of what one session may read.\n\nDMS mints and signs; Cortex enforces; OpenVault roots the key. Every field\nadded in 1.1.0 is optional on the wire so a 1.0.0 producer still validates \u2014\nthe requirement that a manifest carry an issuer, an issue time and a pool is\nenforced by the verifier (``CortexOS.execution.manifest``), which rejects\nwhat it cannot check. A permissive type with a strict gate keeps DMS pinned\nto contract major 1 while the engine refuses anything unverifiable.",
+        "properties": {
+          "allowed_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Paths",
+            "type": "array"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issued At"
+          },
+          "issuer_key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issuer Key Id"
+          },
+          "org_id": {
+            "title": "Org Id",
+            "type": "string"
+          },
+          "pool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pool Id"
+          },
+          "row_predicate_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Predicate Sql"
+          },
+          "row_predicates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Table name -> SQL boolean expression, injected per referenced table.",
+            "title": "Row Predicates",
+            "type": "object"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "org_id",
+          "expires_at",
+          "signature"
+        ],
+        "title": "Manifest",
+        "type": "object"
+      },
+      "ContractPoolSpec": {
+        "properties": {
+          "class_name": {
+            "default": "default",
+            "title": "Class Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_concurrency": {
+            "default": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PoolSpec",
+        "type": "object"
+      },
+      "ContractProposal": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "latest": {
+            "$ref": "#/components/schemas/ProposalVersion"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "latest"
+        ],
+        "title": "Proposal",
+        "type": "object"
+      },
+      "ContractProposalVersion": {
+        "properties": {
+          "diff": {
+            "$ref": "#/components/schemas/Diff"
+          },
+          "gate": {
+            "$ref": "#/components/schemas/GateResult"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "version",
+          "diff",
+          "gate"
+        ],
+        "title": "ProposalVersion",
+        "type": "object"
+      },
+      "ContractProvenance": {
+        "properties": {
+          "assumptions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assumptions"
+          },
+          "badge": {
+            "$ref": "#/components/schemas/Badge"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "metric_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metric Id"
+          },
+          "query_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query Source"
+          }
+        },
+        "required": [
+          "layer",
+          "badge"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
+      "ContractQueryResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "output": {
+            "default": null,
+            "title": "Output"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "QueryResult",
+        "type": "object"
+      },
+      "ContractSubmitRequest": {
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/Manifest"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/PoolSpec"
+          }
+        },
+        "required": [
+          "pool",
+          "plan",
+          "body",
+          "manifest"
+        ],
+        "title": "SubmitRequest",
+        "type": "object"
+      },
+      "ContractToolCall": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool",
+          "actor"
+        ],
+        "title": "ToolCall",
+        "type": "object"
+      },
+      "ContractToolClass": {
+        "enum": [
+          "read",
+          "propose",
+          "apply"
+        ],
+        "title": "ToolClass",
+        "type": "string"
+      },
+      "ContractToolResult": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "tool": {
+            "title": "Tool",
+            "type": "string"
+          },
+          "verdict": {
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "tool",
+          "verdict"
+        ],
+        "title": "ToolResult",
+        "type": "object"
+      },
+      "ContractToolSpec": {
+        "properties": {
+          "class_name": {
+            "$ref": "#/components/schemas/ToolClass"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class_name",
+          "description"
+        ],
+        "title": "ToolSpec",
+        "type": "object"
+      },
+      "CreateAgentRequest": {
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "approver_role": {
+            "default": "steward",
+            "title": "Approver Role",
+            "type": "string"
+          },
+          "context_question": {
+            "default": "",
+            "title": "Context Question",
+            "type": "string"
+          },
+          "detector_cfg": {
+            "additionalProperties": true,
+            "title": "Detector Cfg",
+            "type": "object"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "role_label": {
+            "default": "analyst",
+            "title": "Role Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "detector_cfg"
+        ],
+        "title": "CreateAgentRequest",
+        "type": "object"
+      },
+      "CreateLocationRequest": {
+        "properties": {
+          "capacity_volume": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capacity Volume"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "kind": {
+            "description": "zone | rack | bin",
+            "title": "Kind",
+            "type": "string"
+          },
+          "parent_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Code"
+          },
+          "tenant_id": {
+            "default": "default",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "code"
+        ],
+        "title": "CreateLocationRequest",
+        "type": "object"
+      },
+      "CreateStreamRequest": {
+        "properties": {
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "schema_hint": {
+            "default": "",
+            "title": "Schema Hint",
+            "type": "string"
+          },
+          "stream_id": {
+            "title": "Stream Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stream_id"
+        ],
+        "title": "CreateStreamRequest",
+        "type": "object"
+      },
+      "CreateThreadRequest": {
+        "properties": {
+          "actor": {
+            "default": "demo_operator",
+            "title": "Actor",
+            "type": "string"
+          },
+          "customer_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Customer Label"
+          },
+          "external_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Ref"
+          },
+          "tenant_id": {
+            "default": "default",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "title": "CreateThreadRequest",
+        "type": "object"
+      },
+      "DMSQueryRequest": {
+        "properties": {
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "demo",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "DMSQueryRequest",
+        "type": "object"
+      },
+      "DMSQueryResponse": {
+        "properties": {
+          "alerts_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alerts Summary"
+          },
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "assumptions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assumptions"
+          },
+          "audit": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "badge": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Badge"
+          },
+          "chart_spec": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chart Spec"
+          },
+          "layer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layer"
+          },
+          "metric_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Id"
+          },
+          "query_plan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Plan"
+          },
+          "query_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Source"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Count"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows"
+          },
+          "source_table": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Table"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources"
+          },
+          "sql_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql Used"
+          },
+          "suggestions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggestions"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Count"
+          },
+          "truncated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Truncated"
+          },
+          "violations_blocked": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Violations Blocked",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "audit_id"
+        ],
+        "title": "DMSQueryResponse",
+        "type": "object"
+      },
+      "DraftBody": {
+        "properties": {
+          "goal": {
+            "minLength": 1,
+            "title": "Goal",
+            "type": "string"
+          }
+        },
+        "required": [
+          "goal"
+        ],
+        "title": "DraftBody",
+        "type": "object"
+      },
+      "EmailRequest": {
+        "properties": {
+          "actor": {
+            "default": "user",
+            "title": "Actor",
+            "type": "string"
+          },
+          "context": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Context",
+            "type": "object"
+          },
+          "request": {
+            "title": "Request",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "EmailRequest",
+        "type": "object"
+      },
+      "EngineConfigIn": {
+        "properties": {
+          "agents_runtime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agents Runtime"
+          },
+          "architecture_preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Preset"
+          },
+          "backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend"
+          },
+          "hardware": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "optimizers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Optimizers"
+          },
+          "primary_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Provider"
+          },
+          "provider_order": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Order"
+          },
+          "research": {
+            "default": false,
+            "title": "Research",
+            "type": "boolean"
+          }
+        },
+        "title": "EngineConfigIn",
+        "type": "object"
+      },
+      "EngineRunIn": {
+        "properties": {
+          "action_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Id"
+          },
+          "architecture_preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Architecture Preset"
+          },
+          "dag": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dag"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "title": "EngineRunIn",
+        "type": "object"
+      },
+      "EstimateDimsRequest": {
+        "properties": {
+          "depth_map": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "base64 depth map for lidar path",
+            "title": "Depth Map"
+          },
+          "depth_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth Source"
+          },
+          "photo": {
+            "description": "base64-encoded image",
+            "title": "Photo",
+            "type": "string"
+          }
+        },
+        "required": [
+          "photo"
+        ],
+        "title": "EstimateDimsRequest",
+        "type": "object"
+      },
+      "EventsRequest": {
+        "properties": {
+          "event": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event"
+          },
+          "events": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events"
+          }
+        },
+        "title": "EventsRequest",
+        "type": "object"
+      },
+      "ExportRequest": {
+        "properties": {
+          "limit": {
+            "default": 5000,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "table": {
+            "default": "dms_inventory",
+            "title": "Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ExportRequest",
+        "type": "object"
+      },
+      "FindIn": {
+        "properties": {
+          "evolve": {
+            "default": false,
+            "title": "Evolve",
+            "type": "boolean"
+          },
+          "goal": {
+            "description": "What you need to accomplish",
+            "minLength": 1,
+            "title": "Goal",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 8,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goal"
+        ],
+        "title": "FindIn",
+        "type": "object"
+      },
+      "FireBody": {
+        "description": "External trigger payload \u2014 always wrapped as untrusted data before model use.",
+        "properties": {
+          "external_text": {
+            "minLength": 1,
+            "title": "External Text",
+            "type": "string"
+          },
+          "source": {
+            "default": "api_fire",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "external_text"
+        ],
+        "title": "FireBody",
+        "type": "object"
+      },
+      "GateCheckRequest": {
+        "properties": {
+          "actor": {
+            "default": "user",
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "filled_template": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Filled Template",
+            "type": "object"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "task_id"
+        ],
+        "title": "GateCheckRequest",
+        "type": "object"
+      },
+      "GoalBody": {
+        "properties": {
+          "audit_required": {
+            "default": true,
+            "title": "Audit Required",
+            "type": "boolean"
+          },
+          "hard_constraints": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Hard Constraints",
+            "type": "array"
+          },
+          "measurable_criteria": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Measurable Criteria",
+            "type": "array"
+          },
+          "org_id": {
+            "default": "",
+            "title": "Org Id",
+            "type": "string"
+          },
+          "soft_preferences": {
+            "additionalProperties": true,
+            "title": "Soft Preferences",
+            "type": "object"
+          },
+          "statement": {
+            "default": "",
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "title": "GoalBody",
+        "type": "object"
+      },
+      "GoalPatchBody": {
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
+          },
+          "audit_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Required"
+          },
+          "hard_constraints": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hard Constraints"
+          },
+          "measurable_criteria": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measurable Criteria"
+          },
+          "soft_preferences": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soft Preferences"
+          },
+          "statement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Statement"
+          }
+        },
+        "title": "GoalPatchBody",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HardwareBody": {
+        "properties": {
+          "hardware": {
+            "additionalProperties": true,
+            "title": "Hardware",
+            "type": "object"
+          }
+        },
+        "title": "HardwareBody",
+        "type": "object"
+      },
+      "HardwareIn": {
+        "properties": {
+          "allow_docker_gpu": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Docker Gpu"
+          },
+          "disk_free_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Free Gb"
+          },
+          "nvidia": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Nvidia",
+            "type": "object"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "ram_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ram Gb"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "vram_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vram Gb"
+          }
+        },
+        "title": "HardwareIn",
+        "type": "object"
+      },
+      "ImportBody": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "zip_base64": {
+            "minLength": 4,
+            "title": "Zip Base64",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zip_base64"
+        ],
+        "title": "ImportBody",
+        "type": "object"
+      },
+      "ImportFolderBody": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "path": {
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "ImportFolderBody",
+        "type": "object"
+      },
+      "IntakeRequest": {
+        "properties": {
+          "actor": {
+            "default": "demo_operator",
+            "title": "Actor",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "location_code": {
+            "title": "Location Code",
+            "type": "string"
+          },
+          "photo": {
+            "description": "base64-encoded image",
+            "title": "Photo",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "tenant_id": {
+            "default": "default",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "label",
+          "location_code",
+          "photo"
+        ],
+        "title": "IntakeRequest",
+        "type": "object"
+      },
+      "JustWorksIn": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "title": "Apply",
+            "type": "boolean"
+          },
+          "hardware": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prefer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefer"
+          },
+          "research": {
+            "default": false,
+            "title": "Research",
+            "type": "boolean"
+          }
+        },
+        "title": "JustWorksIn",
+        "type": "object"
+      },
+      "LakeQueryRequest": {
+        "properties": {
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "LakeQueryRequest",
+        "type": "object"
+      },
+      "LedgerAppendRequest": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "actor",
+          "event_type"
+        ],
+        "title": "LedgerAppendRequest",
+        "type": "object"
+      },
+      "LedgerEntry": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_hash": {
+            "title": "Entry Hash",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "prev_hash": {
+            "title": "Prev Hash",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "actor",
+          "event_type",
+          "payload",
+          "prev_hash",
+          "entry_hash",
+          "created_at"
+        ],
+        "title": "LedgerEntry",
+        "type": "object"
+      },
+      "LedgerVerifyRequest": {
+        "properties": {
+          "start_seq": {
+            "default": 0,
+            "title": "Start Seq",
+            "type": "integer"
+          }
+        },
+        "title": "LedgerVerifyRequest",
+        "type": "object"
+      },
+      "Manifest": {
+        "description": "A signed grant of what one session may read.\n\nDMS mints and signs; Cortex enforces; OpenVault roots the key. Every field\nadded in 1.1.0 is optional on the wire so a 1.0.0 producer still validates \u2014\nthe requirement that a manifest carry an issuer, an issue time and a pool is\nenforced by the verifier (``CortexOS.execution.manifest``), which rejects\nwhat it cannot check. A permissive type with a strict gate keeps DMS pinned\nto contract major 1 while the engine refuses anything unverifiable.",
+        "properties": {
+          "allowed_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Paths",
+            "type": "array"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "issuer_key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuer Key Id"
+          },
+          "org_id": {
+            "title": "Org Id",
+            "type": "string"
+          },
+          "pool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Id"
+          },
+          "row_predicate_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Predicate Sql"
+          },
+          "row_predicates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Table name -> SQL boolean expression, injected per referenced table.",
+            "title": "Row Predicates",
+            "type": "object"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "org_id",
+          "expires_at",
+          "signature"
+        ],
+        "title": "Manifest",
+        "type": "object"
+      },
+      "McpCallIn": {
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Arguments",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "McpCallIn",
+        "type": "object"
+      },
+      "NoteAppendRequest": {
+        "properties": {
+          "heading": {
+            "default": "Note",
+            "title": "Heading",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "workspace_root": {
+            "title": "Workspace Root",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_root",
+          "note"
+        ],
+        "title": "NoteAppendRequest",
+        "type": "object"
+      },
+      "OsrBody": {
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "wrapped": {
+            "default": false,
+            "title": "Wrapped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "OsrBody",
+        "type": "object"
+      },
+      "OutcomeBody": {
+        "properties": {
+          "outcome": {
+            "minLength": 1,
+            "title": "Outcome",
+            "type": "string"
+          },
+          "proposal_id": {
+            "minLength": 1,
+            "title": "Proposal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "outcome"
+        ],
+        "title": "OutcomeBody",
+        "type": "object"
+      },
+      "PatternRecommendIn": {
+        "properties": {
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "signals": {
+            "additionalProperties": true,
+            "title": "Signals",
+            "type": "object"
+          },
+          "tool_count": {
+            "default": 0,
+            "title": "Tool Count",
+            "type": "integer"
+          }
+        },
+        "title": "PatternRecommendIn",
+        "type": "object"
+      },
+      "PauseBody": {
+        "properties": {
+          "reason": {
+            "default": "user",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "PauseBody",
+        "type": "object"
+      },
+      "PonytailRequest": {
+        "properties": {
+          "force_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force Tier"
+          },
+          "intent_hint": {
+            "default": "",
+            "title": "Intent Hint",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "user_id": {
+            "default": "anon",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "PonytailRequest",
+        "type": "object"
+      },
+      "PoolSpec": {
+        "properties": {
+          "class_name": {
+            "default": "default",
+            "title": "Class Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_concurrency": {
+            "default": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PoolSpec",
+        "type": "object"
+      },
+      "ProposeEditRequest": {
+        "properties": {
+          "approved_by": {
+            "default": "demo_steward",
+            "title": "Approved By",
+            "type": "string"
+          },
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "title": "ProposeEditRequest",
+        "type": "object"
+      },
+      "ProposeRequest": {
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ],
+        "title": "ProposeRequest",
+        "type": "object"
+      },
+      "Provenance": {
+        "properties": {
+          "assumptions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assumptions"
+          },
+          "badge": {
+            "$ref": "#/components/schemas/Badge"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "metric_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metric Id"
+          },
+          "query_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Source"
+          }
+        },
+        "required": [
+          "layer",
+          "badge"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
+      "QueryIn": {
+        "properties": {
+          "collection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection"
+          },
+          "k": {
+            "default": 5,
+            "title": "K",
+            "type": "integer"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "vector": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Vector",
+            "type": "array"
+          }
+        },
+        "required": [
+          "vector"
+        ],
+        "title": "QueryIn",
+        "type": "object"
+      },
+      "QueryObjectsRequest": {
+        "properties": {
+          "filters": {
+            "additionalProperties": true,
+            "title": "Filters",
+            "type": "object"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "object_type"
+        ],
+        "title": "QueryObjectsRequest",
+        "type": "object"
+      },
+      "QueryResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "output": {
+            "title": "Output"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "QueryResult",
+        "type": "object"
+      },
+      "RecognizeBody": {
+        "properties": {
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "RecognizeBody",
+        "type": "object"
+      },
+      "RegisterRequest": {
+        "properties": {
+          "device_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Device Id",
+            "type": "string"
+          },
+          "product": {
+            "default": "netie-clicks",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Product",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_id"
+        ],
+        "title": "RegisterRequest",
+        "type": "object"
+      },
+      "RejectBody": {
+        "properties": {
+          "reason": {
+            "default": "rejected",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "RejectBody",
+        "type": "object"
+      },
+      "RejectRequest": {
+        "properties": {
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "RejectRequest",
+        "type": "object"
+      },
+      "ReportRequest": {
+        "properties": {
+          "period": {
+            "default": "last_7_days",
+            "title": "Period",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ReportRequest",
+        "type": "object"
+      },
+      "RoutineBody": {
+        "description": "Everything except the goal is optional \u2014 one sentence is a valid request.",
+        "properties": {
+          "daily_cost_cap_myr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Cost Cap Myr"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Seconds"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "title": "Vars",
+            "type": "object"
+          }
+        },
+        "title": "RoutineBody",
+        "type": "object"
+      },
+      "RoutinePatchBody": {
+        "properties": {
+          "daily_cost_cap_myr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Cost Cap Myr"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Seconds"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "vars": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vars"
+          }
+        },
+        "title": "RoutinePatchBody",
+        "type": "object"
+      },
+      "RunBody": {
+        "properties": {
+          "actor": {
+            "default": "",
+            "title": "Actor",
+            "type": "string"
+          },
+          "breadth": {
+            "default": 3,
+            "title": "Breadth",
+            "type": "integer"
+          },
+          "cost_ceiling_myr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Ceiling Myr"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "origin": {
+            "default": "api",
+            "title": "Origin",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "target": {
+            "default": "",
+            "title": "Target",
+            "type": "string"
+          },
+          "template_id": {
+            "default": "",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "topic": {
+            "default": "",
+            "title": "Topic",
+            "type": "string"
+          },
+          "variables": {
+            "additionalProperties": true,
+            "title": "Variables",
+            "type": "object"
+          },
+          "workflow_id": {
+            "default": "",
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "title": "RunBody",
+        "type": "object"
+      },
+      "RunDAGRequest": {
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "dag": {
+            "additionalProperties": true,
+            "description": "DAG envelope (parsed directly)",
+            "title": "Dag",
+            "type": "object"
+          },
+          "run_id": {
+            "default": "integration_run",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "workflow_cost_ceiling_myr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Cost Ceiling Myr"
+          }
+        },
+        "required": [
+          "dag"
+        ],
+        "title": "RunDAGRequest",
+        "type": "object"
+      },
+      "ScanBody": {
+        "properties": {
+          "source": {
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "source_id": {
+            "default": "",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "title": "ScanBody",
+        "type": "object"
+      },
+      "ScanMoveRequest": {
+        "properties": {
+          "actor": {
+            "default": "demo_operator",
+            "title": "Actor",
+            "type": "string"
+          },
+          "item_qr_or_id": {
+            "title": "Item Qr Or Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "default": "default",
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "to_location_qr": {
+            "title": "To Location Qr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_qr_or_id",
+          "to_location_qr"
+        ],
+        "title": "ScanMoveRequest",
+        "type": "object"
+      },
+      "SearchHit": {
+        "properties": {
+          "dense_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dense Score"
+          },
+          "fused_score": {
+            "title": "Fused Score",
+            "type": "number"
+          },
+          "listing_id": {
+            "title": "Listing Id",
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          },
+          "rerank_score": {
+            "title": "Rerank Score",
+            "type": "number"
+          },
+          "sparse_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sparse Score"
+          }
+        },
+        "required": [
+          "listing_id",
+          "fused_score",
+          "rerank_score"
+        ],
+        "title": "SearchHit",
+        "type": "object"
+      },
+      "SearchRequest": {
+        "properties": {
+          "query": {
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "SearchResponse": {
+        "properties": {
+          "cold_start": {
+            "title": "Cold Start",
+            "type": "boolean"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "results",
+          "cold_start"
+        ],
+        "title": "SearchResponse",
+        "type": "object"
+      },
+      "SecureRequest": {
+        "properties": {
+          "block_scam": {
+            "default": true,
+            "title": "Block Scam",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SecureRequest",
+        "type": "object"
+      },
+      "SeekBody": {
+        "properties": {
+          "goal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal Id"
+          },
+          "limit": {
+            "default": 8,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "trigger": {
+            "default": "manual",
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "title": "SeekBody",
+        "type": "object"
+      },
+      "SubmitRequest": {
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/Manifest"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/PoolSpec"
+          }
+        },
+        "required": [
+          "pool",
+          "plan",
+          "body",
+          "manifest"
+        ],
+        "title": "SubmitRequest",
+        "type": "object"
+      },
+      "TaskChoiceRequest": {
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "actor": {
+            "default": "user",
+            "title": "Actor",
+            "type": "string"
+          },
+          "filled_template": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filled Template"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "task_id",
+          "accepted"
+        ],
+        "title": "TaskChoiceRequest",
+        "type": "object"
+      },
+      "TaskOutcomeRequest": {
+        "properties": {
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "outcome"
+        ],
+        "title": "TaskOutcomeRequest",
+        "type": "object"
+      },
+      "TaskSuggestRequest": {
+        "properties": {
+          "trigger_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Text"
+          },
+          "use_llm": {
+            "default": false,
+            "title": "Use Llm",
+            "type": "boolean"
+          }
+        },
+        "title": "TaskSuggestRequest",
+        "type": "object"
+      },
+      "TelemetryRequest": {
+        "properties": {
+          "device_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Device Id",
+            "type": "string"
+          },
+          "envelope": {
+            "additionalProperties": true,
+            "title": "Envelope",
+            "type": "object"
+          },
+          "flush_reason": {
+            "default": "unspecified",
+            "maxLength": 128,
+            "title": "Flush Reason",
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "lineage_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Lineage Id",
+            "type": "string"
+          },
+          "user_verified": {
+            "title": "User Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "device_id",
+          "lineage_id",
+          "kind",
+          "envelope",
+          "user_verified"
+        ],
+        "title": "TelemetryRequest",
+        "type": "object"
+      },
+      "ToolClass": {
+        "enum": [
+          "read",
+          "propose",
+          "apply"
+        ],
+        "title": "ToolClass",
+        "type": "string"
+      },
+      "ToolInjectIn": {
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolInjectIn",
+        "type": "object"
+      },
+      "ToolRegistryResponse": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ToolSpec"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "ToolRegistryResponse",
+        "type": "object"
+      },
+      "ToolSearchIn": {
+        "properties": {
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 8,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "title": "ToolSearchIn",
+        "type": "object"
+      },
+      "ToolSpec": {
+        "properties": {
+          "class_name": {
+            "$ref": "#/components/schemas/ToolClass"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class_name",
+          "description"
+        ],
+        "title": "ToolSpec",
+        "type": "object"
+      },
+      "UploadRequest": {
+        "properties": {
+          "content_b64": {
+            "title": "Content B64",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "content_b64"
+        ],
+        "title": "UploadRequest",
+        "type": "object"
+      },
+      "UpsertIn": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/UpsertRecordIn"
+            },
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "UpsertIn",
+        "type": "object"
+      },
+      "UpsertRecordIn": {
+        "properties": {
+          "collection": {
+            "default": "default",
+            "title": "Collection",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Meta",
+            "type": "object"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "scope": {
+            "default": "personal",
+            "title": "Scope",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "tier": {
+            "default": "warm",
+            "title": "Tier",
+            "type": "string"
+          },
+          "vector": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "UpsertRecordIn",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WhatsAppRequest": {
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Context",
+            "type": "object"
+          },
+          "request": {
+            "title": "Request",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "title": "WhatsAppRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Allowlisted DMS\u2194engine contract surface (operationIds: ask, ledger.append, ledger.verify, submit, tool.registry). cortex_contract 1.1.0. Engine semver is independent (see CortexOS.__version__ / docs/RELEASING.md).",
+    "title": "Cortex Engine Contract API",
+    "version": "1.1.0",
+    "x-cortex-contract-routes": [
+      "ask",
+      "ledger.append",
+      "ledger.verify",
+      "submit",
+      "tool.registry"
+    ],
+    "x-cortex-contract-version": "1.1.0",
+    "x-cortex-ports": [
+      8000,
+      8010
+    ]
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/contract/ask": {
+      "post": {
+        "description": "Answer a governed question (DMS ask plane).",
+        "operationId": "ask",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Answer"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ask",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/ledger/append": {
+      "post": {
+        "operationId": "ledger.append",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedgerAppendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ledger Append",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/ledger/verify": {
+      "post": {
+        "operationId": "ledger.verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedgerVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChainVerification"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ledger Verify",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/submit": {
+      "post": {
+        "description": "Submit a plan under a signed session manifest.",
+        "operationId": "submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Submit",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/tools": {
+      "get": {
+        "description": "List tools DMS may invoke through the contract runtime.",
+        "operationId": "tool.registry",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolRegistryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Contract Tool Registry",
+        "tags": [
+          "contract"
+        ]
+      }
+    }
+  }
+}

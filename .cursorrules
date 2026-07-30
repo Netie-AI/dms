@@ -4,13 +4,14 @@ You are working in **D:\DMS** (Netie DMS), the consumer app.
 
 ## Boundaries (non-negotiable)
 
-- DMS never `import CortexOS`. Use `packages/cortex_client` over HTTP only.
+- DMS never `import CortexOS`. HTTP via `packages/cortex_client` only.
+- Pin `cortex-contract==1.1.0` as a pip dependency; import `canonical_manifest_bytes` from it — never reimplement.
 - Pin cortex-contract major **1**. Engine version floats via compose image tag.
 - One ledger via Cortex append API — no local hash chain in DMS.
 - One Postgres, schemas `cortex` + `dms`, no cross-schema FKs.
 - Excel = source only; no outbound write via openpyxl/xlsxwriter/`to_excel`.
-- `duckdb.execute` only in `packages/executor`.
-- Mutation FastAPI routes must call `dms_core.compliance_gate`.
+- `duckdb.execute` only in `packages/executor` (also: manifest mint + submit).
+- Mutation FastAPI routes must call `compliance_gate` (cortex_client call-through).
 - Only five ports: catalog, object_store, model_provider, serving_engine, secrets.
 - No new abstraction/dep/config without a stated swap scenario.
 
@@ -18,12 +19,12 @@ You are working in **D:\DMS** (Netie DMS), the consumer app.
 
 ```
 apps/api          FastAPI
-apps/ui           product chrome
-packages/core     ports + compliance_gate
-packages/cortex_client   generated from contract/openapi-1.0.0.json
-packages/executor duckdb / serving (only place for duckdb.execute)
-packages/ledger   append facade → Cortex HTTP
-contract/         OpenAPI wire format (cortex-contract 1.x)
+apps/ui           Vite SPA product chrome
+packages/core     ports (no policy)
+packages/cortex_client   HTTP client from contract/openapi-1.1.0.json
+packages/executor duckdb / manifest mint / submit (only duckdb.execute)
+packages/ledger   ledger_ref + verify CLI → Cortex HTTP
+contract/         VENDORED from Cortex (never hand-edit)
 deploy/compose    integration pin point
 tests/invariants  protected AST boundary checks
 ```

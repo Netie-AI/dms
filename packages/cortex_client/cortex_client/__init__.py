@@ -1,9 +1,7 @@
-"""HTTP-only Cortex client.
+"""HTTP-only Cortex client (cortex-contract major 1).
 
-Import paths are stable. Method bodies raise until regenerated from Cortex's
-published ``contract/openapi-1.0.0.json`` via ``just sync-contract`` (R1).
-DMS must never ``import CortexOS`` — only this package over HTTP.
-Pinned to cortex-contract major 1.
+DMS may import ``cortex_contract`` (models + canonical_manifest_bytes) but must
+never ``import CortexOS``. Gate is call-through only — F5 lives in Cortex.
 """
 
 from __future__ import annotations
@@ -13,20 +11,26 @@ from cortex_client.gate import ComplianceDecision, compliance_gate
 from cortex_client.models import (
     AnswerRequest,
     AnswerResponse,
-    HealthResponse,
+    AskRequest,
+    AskResponse,
     LedgerAppendRequest,
     LedgerAppendResponse,
+    LedgerVerifyResponse,
+    ToolRegistryResponse,
 )
 
 __all__ = [
     "CortexClient",
     "ComplianceDecision",
     "compliance_gate",
+    "AskRequest",
+    "AskResponse",
     "AnswerRequest",
     "AnswerResponse",
-    "HealthResponse",
     "LedgerAppendRequest",
     "LedgerAppendResponse",
+    "LedgerVerifyResponse",
+    "ToolRegistryResponse",
 ]
 
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"

@@ -1,19 +1,13 @@
 """Compliance / F5 gate — call-through only.
 
-DMS holds no policy logic. F5 lives in Cortex. This module is a pure HTTP
-call-through to the Cortex gate endpoint once ``just sync-contract`` has
-regenerated the client from the published OpenAPI spec.
+DMS holds no policy logic. F5 lives in Cortex. This module POSTs to the Cortex
+gate/ask path via ``CortexClient`` once wired; until then it fails closed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-
-_STUB_MSG = (
-    "generated from Cortex contract/openapi-1.0.0.json — "
-    "run just sync-contract once Cortex R1 publishes it"
-)
 
 
 @dataclass(frozen=True)
@@ -29,7 +23,16 @@ def compliance_gate(
     actor: str | None = None,
     resource: str | None = None,
     metadata: dict[str, Any] | None = None,
+    client: Any | None = None,
 ) -> ComplianceDecision:
     """Call through to Cortex F5. DMS must not evaluate allow/deny locally."""
-    _ = (action, actor, resource, metadata)
-    raise NotImplementedError(_STUB_MSG)
+    _ = (actor, resource, metadata)
+    if client is None:
+        # Fail closed until API injects a live CortexClient (T4 amend path).
+        return ComplianceDecision(
+            allowed=False,
+            reason="gate_unavailable",
+            action=action,
+        )
+    # Future: client-specific F5 endpoint. Keep signature stable.
+    return ComplianceDecision(allowed=False, reason="gate_unavailable", action=action)
