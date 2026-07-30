@@ -228,6 +228,12 @@ def classify_submit_error(exc: BaseException) -> SubmitError:
         "sql_not_analyzable",
         "pool_queue_timeout",
         "statement_timeout",
+        "pool_mismatch",
+        "pool_required",
+        "pool_saturated",
+        "session_unbound",
+        "session_expired",
+        "sql_required",
     ):
         if known in text:
             return SubmitError(code=known, detail=text)

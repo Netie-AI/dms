@@ -15,6 +15,7 @@ source_modules =
 forbidden_modules =
     dms_executor
 ignore_imports =
+    dms_api.wiring -> dms_executor
 
 [importlinter:contract:2]
 name = core may not import api

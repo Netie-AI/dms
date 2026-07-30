@@ -1,7 +1,9 @@
-"""Smoke: app factory imports without CortexOS."""
+"""Smoke + health — ask defaults to live with demo fallback."""
 
 from dms_api.app import create_app
+from dms_api.settings import get_settings
 from fastapi.testclient import TestClient
+import pytest
 
 
 def test_create_app():
@@ -10,17 +12,125 @@ def test_create_app():
 
 
 def test_health_route():
+    get_settings.cache_clear()
     client = TestClient(create_app())
     r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
     assert body["product"] == "dms"
+    assert body["contract"] == "1.1.0"
+    assert body["ask_mode"] in ("live", "demo")
+
+
+def test_list_spaces():
+    client = TestClient(create_app())
+    r = client.get("/v1/spaces")
+    assert r.status_code == 200
+    spaces = r.json()
+    assert len(spaces) >= 2
+
+
+def test_chat_ask_demo_never_certified(monkeypatch):
+    monkeypatch.setenv("DMS_ASK_MODE", "demo")
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "What was total revenue?",
+            "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["badge"] == "L2_VALIDATED"
+    assert body["ask_mode"] == "demo"
+    assert body["values"]
+
+
+def test_chat_ask_divide_by_5(monkeypatch):
+    monkeypatch.setenv("DMS_ASK_MODE", "demo")
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "Divide the revenue by 5",
+            "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["badge"] == "L2_VALIDATED"
+    ids = {v["id"] for v in body["values"]}
+    assert "v_rev" in ids and "v_scaled" in ids
+    total = next(v["value"] for v in body["values"] if v["id"] == "v_rev")
+    scaled = next(v["value"] for v in body["values"] if v["id"] == "v_scaled")
+    assert scaled == pytest.approx(total / 5)
+
+
+def test_chat_ask_abstain(monkeypatch):
+    monkeypatch.setenv("DMS_ASK_MODE", "demo")
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "What is the meaning of life?",
+            "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["badge"] == "ABSTAIN"
+
+
+def test_chat_ask_unknown_space():
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/chat/ask",
+        json={"question": "hi", "space_id": "sp_missing"},
+    )
+    assert r.status_code == 404
+
+
+def test_studio_ingest_csv(monkeypatch):
+    monkeypatch.setenv("DMS_ASK_MODE", "demo")
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/studio/ingest",
+        files={"file": ("sales.csv", b"sku,qty\nA,1\nB,2\n", "text/csv")},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ingested"] == 2
+    assert body["quarantined"] == 0
+    assert body["table"]
+
+
+def test_studio_quarantine_xlsx():
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/studio/ingest",
+        files={"file": ("book.xlsx", b"PK\x03\x04fake", "application/vnd.ms-excel")},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["quarantined"] == 1
+    assert body["ingested"] == 0
 
 
 def test_skeleton_ping_calls_gate_fail_closed():
-    """Gate is Cortex call-through; without a client it fails closed (403)."""
     client = TestClient(create_app())
     r = client.post("/v1/skeleton/ping", json={"message": "hi"})
     assert r.status_code == 403
     assert r.json()["detail"] == "gate_unavailable"
+
+
+def test_library_and_audit_without_db():
+    client = TestClient(create_app())
+    assert client.get("/v1/library/sources").status_code == 200
+    assert client.get("/v1/audit/ledger").status_code == 200
+    assert client.get("/v1/amend/proposals").status_code == 200

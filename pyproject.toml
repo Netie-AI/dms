@@ -25,6 +25,10 @@ dependencies = [
   "sqlalchemy>=2.0",
   "alembic>=1.13",
   "cryptography>=42",
+  "duckdb>=1.0",
+  "python-multipart>=0.0.9",
+  "PyYAML>=6.0",
+  "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

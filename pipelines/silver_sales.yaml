@@ -1,0 +1,14 @@
+# Example bronze→silver promote — lineage propagate keeps _src / _ingest_id.
+target: silver.sales
+sources: [bronze.sales_raw]
+lineage: propagate
+contract:
+  columns:
+    invoice_date: {type: date, required: true}
+    amount: {type: decimal(18,2), required: true, min: 0}
+    region: {type: text, required: true}
+    invoice_no: {type: text, required: true}
+    line_no: {type: integer, required: true}
+  dedup_key: [invoice_no, line_no]
+  expectations:
+    - amount_not_null_rate: ">= 0.99"

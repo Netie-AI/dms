@@ -6,11 +6,15 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from cortex_client import CortexClient
+from cortex_client.models import AskRequest, AskResponse
 from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ports import ServingEnginePort
+from dms_core.ask import AskServiceError, AskServicePort
 
 from dms_executor.acl import (
     SessionContext,
@@ -19,6 +23,12 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
+from dms_executor.demo_ask import answer_demo_question
+from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.bronze import IngestReceipt, ingest_csv_bytes, list_bronze_tables, write_bronze_rows
+from dms_executor.contract_infer import infer_contract
+from dms_executor.pipeline_loader import load_pipeline_by_name, load_pipeline_yaml, validate_pipeline_dict
+from dms_executor.promote import run_promote, sign_gold_metric
 from dms_executor.manifest import (
     ManifestMinter,
     SessionAcl,
@@ -39,25 +49,130 @@ class Executor:
         *,
         cortex: CortexClient | None = None,
         minter: ManifestMinter | None = None,
+        warehouse_path: Path | str | None = None,
         fetch_key_on_start: bool = False,
     ) -> None:
         self._cortex = cortex
         self._minter = minter or ManifestMinter()
+        self._warehouse = Path(warehouse_path) if warehouse_path else None
+        self._bound_sessions: set[str] = set()
         if fetch_key_on_start:
             self.startup()
 
     def startup(self) -> None:
         """Fetch OpenVault intermediate signing key into memory only."""
-        self._minter.fetch_intermediate()
-        logger.info("executor startup: intermediate signing key loaded (kid only logged)")
+        ensure_demo_warehouse(self._warehouse)
+        try:
+            self._minter.fetch_intermediate()
+            logger.info("executor startup: intermediate signing key loaded (kid only logged)")
+        except Exception as exc:  # noqa: BLE001 — demo can run without OV
+            logger.warning("executor startup: OpenVault key fetch skipped: %s", exc)
 
-    def execute(self, sql: str) -> Any:
-        raise NotImplementedError("local duckdb.execute wiring lands with serving pool")
+    def close(self) -> None:
+        self._minter.close()
+        self._bound_sessions.clear()
+
+    def execute(self, sql: str) -> list[dict[str, Any]]:
+        reject_hostile_chat_sql(sql)
+        ensure_demo_warehouse(self._warehouse)
+        return execute_sql(sql, path=self._warehouse)
+
+    def demo_ask(self, question: str, *, space_id: str | None = None) -> dict[str, Any]:
+        ensure_demo_warehouse(self._warehouse)
+        return answer_demo_question(question, space_id=space_id)
 
     def mint_manifest(self, session: SessionContext | SessionAcl) -> Any:
         if isinstance(session, SessionAcl):
             return self._minter.mint_manifest(session)
         return mint_manifest_for_session(self._minter, session)
+
+    def demo_acl(self, *, session_id: str | None = None, space_id: str | None = None) -> SessionAcl:
+        return SessionAcl(
+            session_id=session_id or f"ses_{uuid4().hex[:16]}",
+            org_id="tenant_demo",
+            space_id=space_id,
+            row_predicates={t: "TRUE" for t in DEMO_TABLES},
+            allowed_paths=[],
+            pool_id="default",
+            ttl_seconds=900,
+        )
+
+    def bind_session(self, session: SessionContext | SessionAcl) -> Any:
+        """Mint + submit plan.kind=session_bind (C4-min)."""
+        if self._cortex is None:
+            raise RuntimeError("CortexClient required for bind_session")
+        acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
+        manifest = self._minter.mint_manifest(acl)
+        req = SubmitRequest(
+            pool=PoolSpec(id=acl.pool_id),
+            plan={"kind": "session_bind"},
+            body={},
+            manifest=manifest,
+        )
+        try:
+            result = self._cortex.submit(req)
+        except Exception as exc:  # noqa: BLE001
+            err = classify_submit_error(exc)
+            if should_rement(err.code):
+                self._minter.invalidate(acl.session_id)
+                manifest = self._minter.mint_manifest(acl)
+                req = SubmitRequest(
+                    pool=PoolSpec(id=acl.pool_id),
+                    plan={"kind": "session_bind"},
+                    body={},
+                    manifest=manifest,
+                )
+                try:
+                    result = self._cortex.submit(req)
+                except Exception as exc2:  # noqa: BLE001
+                    err2 = classify_submit_error(exc2)
+                    raise AskServiceError(err2.code, err2.detail) from exc2
+            else:
+                raise AskServiceError(err.code, err.detail) from exc
+        ok = getattr(result, "ok", None)
+        status = getattr(result, "status", None)
+        if ok is False or (status is not None and status not in ("bound", "ok")):
+            code = status or "session_bind_failed"
+            raise AskServiceError(str(code), f"status={status!r}")
+        self._bound_sessions.add(acl.session_id)
+        return result
+
+    def live_ask(
+        self,
+        question: str,
+        *,
+        space_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Mint → session_bind (once per session) → contract ask."""
+        if self._cortex is None:
+            raise RuntimeError("CortexClient required for live_ask")
+        acl = self.demo_acl(session_id=session_id, space_id=space_id)
+        if acl.session_id not in self._bound_sessions:
+            self.bind_session(acl)
+        try:
+            resp = self._cortex.ask(
+                AskRequest(
+                    question=question,
+                    session_id=acl.session_id,
+                    space_id=space_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            err = classify_submit_error(exc)
+            if err.code in {"session_unbound", "session_expired"}:
+                self._bound_sessions.discard(acl.session_id)
+                self.bind_session(acl)
+                resp = self._cortex.ask(
+                    AskRequest(
+                        question=question,
+                        session_id=acl.session_id,
+                        space_id=space_id,
+                    )
+                )
+            else:
+                raise AskServiceError(err.code, err.detail) from exc
+        return map_ask_response_to_envelope(resp, space_id=space_id, session_id=acl.session_id)
 
     def submit_sql(
         self,
@@ -94,17 +209,112 @@ class Executor:
             raise SubmitError(err.code, err.detail) from exc
 
 
+_BADGE_MAP = {
+    "certified": "L0_CERTIFIED",
+    "governed_metric": "L1_GOVERNED_METRIC",
+    "query_skill": "L2_VALIDATED",
+    "session": "L2_VALIDATED",
+    "abstain": "ABSTAIN",
+    "blocked": "ABSTAIN",
+}
+
+
+def map_ask_response_to_envelope(
+    resp: AskResponse,
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Map contract Answer-shaped AskResponse into UI envelope."""
+    badge_raw = (resp.badge or "abstain").lower()
+    badge = _BADGE_MAP.get(badge_raw, "L2_VALIDATED")
+    if resp.abstained:
+        badge = "ABSTAIN"
+    text = resp.answer or ("Abstained." if resp.abstained else "")
+    values = list(resp.values or [])
+    # Promote a numeric first value if Cortex only returned prose
+    if not values and resp.rows:
+        first = resp.rows[0]
+        for key, val in first.items():
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                values = [{"id": "v0", "value": float(val), "label": key}]
+                break
+    chart = None
+    rows = list(resp.rows or [])
+    if rows:
+        keys = list(rows[0].keys())
+        num_key = next(
+            (
+                k
+                for k in keys
+                if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
+            ),
+            None,
+        )
+        cat_key = next((k for k in keys if k != num_key and isinstance(rows[0].get(k), str)), None)
+        if num_key and cat_key:
+            chart = {
+                "kind": "hbar",
+                "x": cat_key,
+                "y": num_key,
+                "title": "Result",
+            }
+    assumptions: list[str] = []
+    if resp.assumptions:
+        if isinstance(resp.assumptions, str):
+            assumptions = [resp.assumptions]
+        else:
+            assumptions = list(resp.assumptions)
+    assumptions.append("live Cortex ask")
+    return {
+        "answer_id": resp.receipt_id or f"ans_live_{session_id or 'x'}",
+        "text": text,
+        "values": values,
+        "badge": badge,
+        "sql_used": resp.sql_used,
+        "assumptions": assumptions,
+        "as_of": datetime_now(),
+        "space_id": space_id,
+        "ask_mode": "live",
+        "session_id": session_id,
+        "contributing_sources": resp.contributing_sources or [],
+        "rows": rows,
+        "chart": chart,
+        "suggestions": list(resp.suggestions or []),
+        "audit_id": resp.receipt_id,
+        "route": resp.route,
+    }
+
+
+def datetime_now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def get_serving_engine() -> ServingEnginePort:
     return Executor()
 
 
 __all__ = [
     "Executor",
+    "IngestReceipt",
     "ManifestMinter",
     "SessionAcl",
     "SessionContext",
     "SourceGrant",
+    "answer_demo_question",
+    "ingest_csv_bytes",
+    "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "list_bronze_tables",
+    "load_pipeline_by_name",
+    "load_pipeline_yaml",
+    "map_ask_response_to_envelope",
     "resolve_session_acl",
+    "run_promote",
+    "sign_gold_metric",
+    "validate_pipeline_dict",
+    "write_bronze_rows",
 ]

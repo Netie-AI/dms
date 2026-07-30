@@ -1,3 +1,19 @@
+# T6 — Caddy is the only publicly bound appliance port.
 :8080 {
-	reverse_proxy api:8080
+	encode gzip
+	root * /srv
+	try_files {path} /index.html
+	file_server
+
+	handle_path /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle /health {
+		reverse_proxy api:8080
+	}
+
+	handle /v1/* {
+		reverse_proxy api:8080
+	}
 }
