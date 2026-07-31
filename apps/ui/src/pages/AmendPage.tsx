@@ -51,7 +51,27 @@ export function AmendPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ idempotency_token: p.idempotency_token }),
     });
-    setMsg(res.ok ? `Confirmed ${p.id.slice(0, 8)}…` : await res.text());
+    if (!res.ok) {
+      setMsg(await res.text());
+      reload();
+      return;
+    }
+    // The response says whether anything was actually mutated. Confirm records
+    // the proposal version and writes a ledger receipt; it does not yet change
+    // warehouse data. Reporting a bare "Confirmed" over an unchanged warehouse
+    // is the difference the customer cannot see for themselves.
+    const body = (await res.json()) as {
+      ledger_entry_id?: string | null;
+      mutation?: { executed?: boolean; detail?: string };
+    };
+    const receipt = body.ledger_entry_id
+      ? `receipt ${body.ledger_entry_id.slice(0, 8)}…`
+      : "no receipt";
+    setMsg(
+      body.mutation?.executed === false
+        ? `Recorded ${p.id.slice(0, 8)}… (${receipt}) — proposal accepted, no warehouse data changed yet.`
+        : `Applied ${p.id.slice(0, 8)}… (${receipt})`,
+    );
     reload();
   };
 
@@ -64,7 +84,10 @@ export function AmendPage() {
         Amend
       </h1>
       <p className="mt-3 max-w-xl text-[var(--color-ink-muted)]">
-        Plain-language first. Confirm calls compliance_gate then applies under advisory lock.
+        Plain-language first. Confirm passes compliance_gate, takes an advisory lock, records the
+        proposal version once, and writes a ledger receipt — the receipt is part of the write, so a
+        confirm that cannot be recorded is refused rather than applied silently. It does not change
+        warehouse data yet.
       </p>
       <div className="mt-6 flex max-w-xl gap-2">
         <input

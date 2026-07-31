@@ -22,6 +22,28 @@ from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/amend", tags=["amend"])
 
+#: What confirming a proposal actually does today.
+#:
+#: ``confirm_proposal_version`` moves ``dms.proposal_versions.status`` from
+#: ``pending_confirm`` to ``applied`` under an advisory lock, and that is the
+#: whole of it — no ``call_action``, no warehouse write, nothing outside that
+#: one row changes. "applied" is true of the *proposal version* and false of
+#: the data, and a page that says "Confirmed" over an unchanged warehouse is
+#: the difference the customer cannot see.
+#:
+#: A real apply needs an action endpoint on the contract surface (a contract
+#: minor plus a regenerated client), an ``amend.apply`` action type and a
+#: ``tool_runner`` branch. Until that lands, the response says plainly that
+#: nothing was mutated rather than letting "applied" imply it.
+MUTATION_DISCLOSURE = {
+    "executed": False,
+    "detail": (
+        "Proposal version recorded as applied in the control plane. No warehouse "
+        "data was changed: confirm does not yet invoke call_action, so nothing "
+        "outside dms.proposal_versions has been mutated."
+    ),
+}
+
 
 class ProposeBody(BaseModel):
     space_id: str | None = None
@@ -150,29 +172,40 @@ def confirm(
                 idempotency_token=body.idempotency_token,
             )
             result["proposal_id"] = str(result.get("proposal_id", proposal_id))
-            # ledger_ref pointer placeholder until Cortex append succeeds
-            if cortex is not None:
-                try:
-                    from cortex_client.models import LedgerAppendRequest
 
-                    appended = cortex.ledger_append(
-                        LedgerAppendRequest(
-                            event_type="amend.confirm",
-                            payload={"proposal_id": proposal_id, "result": str(result)},
-                            actor=settings.dms_actor_user_id,
-                        )
+            # The receipt is part of the write, not something attempted after it.
+            # This used to be a bare except that set ledger_entry_id=None and
+            # committed anyway, so a confirm whose append failed still answered
+            # 200 with status "applied" and left an accepted proposal version
+            # that nothing in the ledger points at — a governed write with no
+            # record that it happened, in exactly the outage where that matters.
+            #
+            # Appending inside the transaction, before the commit, makes the
+            # rollback do the work: no receipt, no apply.
+            if cortex is None:
+                raise HTTPException(status_code=503, detail="ledger_unavailable")
+            try:
+                from cortex_client.models import LedgerAppendRequest
+
+                appended = cortex.ledger_append(
+                    LedgerAppendRequest(
+                        event_type="amend.confirm",
+                        payload={"proposal_id": proposal_id, "result": str(result)},
+                        actor=settings.dms_actor_user_id,
                     )
-                    conn.execute(
-                        """
-                        INSERT INTO dms.ledger_ref (tenant_id, cortex_entry_id)
-                        VALUES (%s, %s)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        (uuid.UUID(settings.dms_tenant_id), appended.entry_id),
-                    )
-                    result["ledger_entry_id"] = appended.entry_id
-                except Exception:  # noqa: BLE001
-                    result["ledger_entry_id"] = None
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=503, detail="ledger_append_failed") from exc
+
+            conn.execute(
+                """
+                INSERT INTO dms.ledger_ref (tenant_id, cortex_entry_id)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                (uuid.UUID(settings.dms_tenant_id), appended.entry_id),
+            )
+            result["ledger_entry_id"] = appended.entry_id
             conn.commit()
             return {
                 "id": str(result["id"]),
@@ -180,6 +213,7 @@ def confirm(
                 "version_num": result["version_num"],
                 "status": result["status"],
                 "ledger_entry_id": result.get("ledger_entry_id"),
+                "mutation": MUTATION_DISCLOSURE,
             }
     except StaleTokenError as exc:
         raise HTTPException(status_code=409, detail="stale_token") from exc
