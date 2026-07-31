@@ -19,3 +19,8 @@ deploy/compose/.env
 *.egg-info/
 .eggs/
 contract/openapi-1.1.0.gen.json
+
+vendor/
+
+# Cloned benchmark corpora (CRAG, open_ragbench) - fetched, never vendored
+tests/repos/
