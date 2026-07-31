@@ -59,18 +59,42 @@ def _ensure_values(
     *,
     abstained: bool,
 ) -> list[dict[str, Any]]:
+    """Promote numeric cells so E4 never sees orphan decimals in prose.
+
+    Listings (top-N, spend-by-country, low-stock) print many numbers in ``text``.
+    A single ``v0`` from the first row is insufficient — harvest numerics from
+    every row (capped) and merge with any caller-supplied values.
+    """
     if abstained:
         return []
-    out = [dict(v) for v in (values or []) if isinstance(v, dict)]
+    out: list[dict[str, Any]] = [dict(v) for v in (values or []) if isinstance(v, dict)]
+    seen: set[float] = set()
+    for v in out:
+        raw = v.get("value")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            seen.add(float(raw))
+
+    rows = list(rows or [])
+    idx = len(out)
+    for row in rows[:50]:
+        for key, val in row.items():
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                continue
+            fv = float(val)
+            if any(abs(fv - s) < 1e-9 for s in seen):
+                continue
+            out.append({"id": f"v{idx}", "value": fv, "label": str(key)})
+            seen.add(fv)
+            idx += 1
+            if idx >= 80:
+                break
+        if idx >= 80:
+            break
+
     if out:
         return out
-    rows = list(rows or [])
     if not rows:
         return [{"id": "v_count", "value": 0.0, "label": "row_count"}]
-    first = rows[0]
-    for key, val in first.items():
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            return [{"id": "v0", "value": float(val), "label": str(key)}]
     return [{"id": "v_count", "value": float(len(rows)), "label": "row_count"}]
 
 

@@ -11,8 +11,16 @@ from dms_core.pipelines import GoldMetricDef
 from dms_ledger import append_event
 
 
-def build_ask_service(cortex: CortexClient | None) -> AskServicePort:
-    exe = dms_executor.Executor(cortex=cortex)
+def build_ask_service(
+    cortex: CortexClient | None,
+    *,
+    openvault_url: str | None = None,
+) -> AskServicePort:
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    ov_url = openvault_url or settings.openvault_url
+    exe = dms_executor.Executor(cortex=cortex, openvault_url=ov_url)
     exe.startup()
     return exe
 
@@ -23,6 +31,43 @@ def bronze_ingest(*, filename: str, data: bytes) -> dms_executor.IngestReceipt:
 
 def bronze_list():
     return dms_executor.list_bronze_tables()
+
+
+def warehouse_tables():
+    from dms_executor.warehouse_browse import list_warehouse_tables
+
+    return list_warehouse_tables()
+
+
+def warehouse_preview(table: str, *, limit: int = 100, offset: int = 0):
+    from dms_executor.warehouse_browse import preview_warehouse_table
+
+    return preview_warehouse_table(table, limit=limit, offset=offset)
+
+
+def bronze_preview(table: str, *, limit: int = 100, offset: int = 0):
+    from dms_executor.warehouse_browse import preview_bronze_table
+
+    return preview_bronze_table(table, limit=limit, offset=offset)
+
+
+def library_tree(
+    *,
+    sources: list[dict[str, Any]],
+    bronze: list[dict[str, Any]],
+    warehouse: list[dict[str, Any]],
+    space_id: str | None = None,
+    space_name: str | None = None,
+) -> dict[str, Any]:
+    from dms_executor.library_tree import build_library_tree
+
+    return build_library_tree(
+        sources=sources,
+        bronze_tables=bronze,
+        warehouse_tables=warehouse,
+        space_id=space_id,
+        space_name=space_name,
+    )
 
 
 def batch_ingest(files: list[tuple[str, bytes]]) -> dict[str, Any]:

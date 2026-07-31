@@ -185,6 +185,11 @@ def _rank_window(question: str) -> tuple[int, int] | None:
 def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[str, Any]:
     """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN."""
     q = question.lower().strip()
+
+    # Mirror Cortex live path: predictive asks must never invent a historical total.
+    if re.search(r"\b(forecast|predict|projection|what if|hypothetical|next quarter)\b", q):
+        return _abstain(space_id=space_id)
+
     factor = _scale_factor(q)
 
     if factor is not None and factor != 0 and (

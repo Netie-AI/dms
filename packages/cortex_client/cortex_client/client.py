@@ -15,12 +15,16 @@ from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
     ask as ask_api,
+    drillthrough as drillthrough_api,
     ledger_append as ledger_append_api,
     ledger_verify as ledger_verify_api,
     submit as submit_api,
     tool_registry as tool_registry_api,
 )
 from cortex_client.generated.models.ask_request import AskRequest as GenAskRequest
+from cortex_client.generated.models.drillthrough_request import (
+    DrillthroughRequest as GenDrillthroughRequest,
+)
 from cortex_client.generated.models.ledger_append_request import (
     LedgerAppendRequest as GenLedgerAppendRequest,
 )
@@ -33,6 +37,8 @@ from cortex_client.generated.models.submit_request_plan import SubmitRequestPlan
 from cortex_client.models import (
     AskRequest,
     AskResponse,
+    DrillthroughRequest,
+    DrillthroughResponse,
     LedgerAppendRequest,
     LedgerAppendResponse,
     LedgerVerifyResponse,
@@ -127,3 +133,12 @@ class CortexClient:
             raise RuntimeError("tool_registry: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {"tools": []}
         return ToolRegistryResponse.model_validate(data)
+
+    def drillthrough(self, req: DrillthroughRequest) -> DrillthroughResponse:
+        body = GenDrillthroughRequest.from_dict(req.model_dump(mode="json"))
+        parsed = drillthrough_api.sync(client=self._client, body=body)
+        if parsed is None:
+            raise RuntimeError("drillthrough: empty response")
+        if hasattr(parsed, "to_dict"):
+            return DrillthroughResponse.model_validate(parsed.to_dict())
+        raise RuntimeError(f"drillthrough failed: {parsed!r}")

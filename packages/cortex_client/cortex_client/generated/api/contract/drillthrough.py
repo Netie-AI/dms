@@ -8,16 +8,16 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.drillthrough_request import DrillthroughRequest
+from ...models.drillthrough_response import DrillthroughResponse
 from ...models.http_validation_error import HTTPValidationError
-from ...models.query_result import QueryResult
-from ...models.submit_request import SubmitRequest
 from typing import cast
 
 
 
 def _get_kwargs(
     *,
-    body: SubmitRequest,
+    body: DrillthroughRequest,
 
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
@@ -29,7 +29,7 @@ def _get_kwargs(
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/v1/contract/submit",
+        "url": "/v1/contract/drillthrough",
     }
 
     _kwargs["json"] = body.to_dict()
@@ -41,9 +41,9 @@ def _get_kwargs(
 
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> HTTPValidationError | QueryResult | None:
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> DrillthroughResponse | HTTPValidationError | None:
     if response.status_code == 200:
-        response_200 = QueryResult.from_dict(response.json())
+        response_200 = DrillthroughResponse.from_dict(response.json())
 
 
 
@@ -62,7 +62,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
         return None
 
 
-def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[HTTPValidationError | QueryResult]:
+def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[DrillthroughResponse | HTTPValidationError]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -74,22 +74,22 @@ def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SubmitRequest,
+    body: DrillthroughRequest,
 
-) -> Response[HTTPValidationError | QueryResult]:
-    """ Contract Submit
+) -> Response[DrillthroughResponse | HTTPValidationError]:
+    """ Contract Drillthrough
 
-     Submit a plan under a signed session manifest (C4).
+     Re-derive contributing rows under the same session manifest (T7).
 
     Args:
-        body (SubmitRequest):
+        body (DrillthroughRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HTTPValidationError | QueryResult]
+        Response[DrillthroughResponse | HTTPValidationError]
      """
 
 
@@ -107,22 +107,22 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: SubmitRequest,
+    body: DrillthroughRequest,
 
-) -> HTTPValidationError | QueryResult | None:
-    """ Contract Submit
+) -> DrillthroughResponse | HTTPValidationError | None:
+    """ Contract Drillthrough
 
-     Submit a plan under a signed session manifest (C4).
+     Re-derive contributing rows under the same session manifest (T7).
 
     Args:
-        body (SubmitRequest):
+        body (DrillthroughRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HTTPValidationError | QueryResult
+        DrillthroughResponse | HTTPValidationError
      """
 
 
@@ -135,22 +135,22 @@ body=body,
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SubmitRequest,
+    body: DrillthroughRequest,
 
-) -> Response[HTTPValidationError | QueryResult]:
-    """ Contract Submit
+) -> Response[DrillthroughResponse | HTTPValidationError]:
+    """ Contract Drillthrough
 
-     Submit a plan under a signed session manifest (C4).
+     Re-derive contributing rows under the same session manifest (T7).
 
     Args:
-        body (SubmitRequest):
+        body (DrillthroughRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[HTTPValidationError | QueryResult]
+        Response[DrillthroughResponse | HTTPValidationError]
      """
 
 
@@ -168,22 +168,22 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: SubmitRequest,
+    body: DrillthroughRequest,
 
-) -> HTTPValidationError | QueryResult | None:
-    """ Contract Submit
+) -> DrillthroughResponse | HTTPValidationError | None:
+    """ Contract Drillthrough
 
-     Submit a plan under a signed session manifest (C4).
+     Re-derive contributing rows under the same session manifest (T7).
 
     Args:
-        body (SubmitRequest):
+        body (DrillthroughRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        HTTPValidationError | QueryResult
+        DrillthroughResponse | HTTPValidationError
      """
 
 

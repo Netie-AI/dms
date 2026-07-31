@@ -1,7 +1,7 @@
 """Vendor Cortex contract artifacts and regenerate ``cortex_client.generated``.
 
 Copies from CORTEX_ROOT:
-  - contract/openapi-1.1.0.json + .sha256
+  - contract/openapi-1.2.0.json + .sha256
   - contract/testvectors/manifest_canonical.jsonl
 
 Then prunes a generation surface and runs openapi-python-client into
@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC_NAME = "openapi-1.1.0.json"
+SPEC_NAME = "openapi-1.2.0.json"
 
 
 def _sha256(path: Path) -> str:
@@ -56,7 +56,7 @@ def sync_artifacts(cortex_root: Path) -> None:
 def regenerate_client() -> None:
     prune = ROOT / "scripts" / "prune_contract_openapi.py"
     subprocess.check_call([sys.executable, str(prune)], cwd=str(ROOT))
-    gen_spec = ROOT / "contract" / "openapi-1.1.0.gen.json"
+    gen_spec = ROOT / "contract" / "openapi-1.2.0.gen.json"
     tmp = ROOT / "_gen_cortex_client"
     if tmp.exists():
         shutil.rmtree(tmp)

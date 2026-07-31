@@ -1,0 +1,1002 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cortex Contract API",
+    "version": "1.2.0",
+    "description": "Pruned generation surface \u2014 five contract operationIds only."
+  },
+  "paths": {
+    "/v1/contract/ask": {
+      "post": {
+        "description": "Answer a governed question (DMS ask plane). Requires a prior submit bind.",
+        "operationId": "ask",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractAskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractAnswer"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ask",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/drillthrough": {
+      "post": {
+        "description": "Re-derive contributing rows under the same session manifest (T7).",
+        "operationId": "drillthrough",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractDrillthroughRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractDrillthroughResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Drillthrough",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/ledger/append": {
+      "post": {
+        "operationId": "ledger.append",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedgerAppendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractLedgerEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ledger Append",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/ledger/verify": {
+      "post": {
+        "operationId": "ledger.verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedgerVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractChainVerification"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ledger Verify",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/submit": {
+      "post": {
+        "description": "Submit a plan under a signed session manifest (C4).",
+        "operationId": "submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractQueryResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Submit",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/tools": {
+      "get": {
+        "description": "List tools DMS may invoke through the contract runtime.",
+        "operationId": "tool.registry",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolRegistryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Contract Tool Registry",
+        "tags": [
+          "contract"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ContractLedgerEntry": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_hash": {
+            "title": "Entry Hash",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "prev_hash": {
+            "title": "Prev Hash",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "actor",
+          "event_type",
+          "payload",
+          "prev_hash",
+          "entry_hash",
+          "created_at"
+        ],
+        "title": "LedgerEntry",
+        "type": "object"
+      },
+      "ContractDrillthroughResponse": {
+        "properties": {
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "approximate": {
+            "default": false,
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sql_used": {
+            "title": "Sql Used",
+            "type": "string"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Count"
+          }
+        },
+        "required": [
+          "answer_id",
+          "session_id",
+          "sql_used",
+          "row_count"
+        ],
+        "title": "DrillthroughResponse",
+        "type": "object"
+      },
+      "ContractManifest": {
+        "description": "A signed grant of what one session may read.\n\nDMS mints and signs; Cortex enforces; OpenVault roots the key. Every field\nadded in 1.1.0 is optional on the wire so a 1.0.0 producer still validates \u2014\nthe requirement that a manifest carry an issuer, an issue time and a pool is\nenforced by the verifier (``CortexOS.execution.manifest``), which rejects\nwhat it cannot check. A permissive type with a strict gate keeps DMS pinned\nto contract major 1 while the engine refuses anything unverifiable.",
+        "properties": {
+          "allowed_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Paths",
+            "type": "array"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issued At"
+          },
+          "issuer_key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issuer Key Id"
+          },
+          "org_id": {
+            "title": "Org Id",
+            "type": "string"
+          },
+          "pool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pool Id"
+          },
+          "row_predicate_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Predicate Sql"
+          },
+          "row_predicates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Table name -> SQL boolean expression, injected per referenced table.",
+            "title": "Row Predicates",
+            "type": "object"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "org_id",
+          "expires_at",
+          "signature"
+        ],
+        "title": "Manifest",
+        "type": "object"
+      },
+      "LedgerAppendRequest": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "actor",
+          "event_type"
+        ],
+        "title": "LedgerAppendRequest",
+        "type": "object"
+      },
+      "ContractToolSpec": {
+        "properties": {
+          "class_name": {
+            "$ref": "#/components/schemas/ContractToolClass"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class_name",
+          "description"
+        ],
+        "title": "ToolSpec",
+        "type": "object"
+      },
+      "LedgerVerifyRequest": {
+        "properties": {
+          "start_seq": {
+            "default": 0,
+            "title": "Start Seq",
+            "type": "integer"
+          }
+        },
+        "title": "LedgerVerifyRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "ContractChainVerification": {
+        "properties": {
+          "broken_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broken At"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ChainVerification",
+        "type": "object"
+      },
+      "ContractAnswer": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "answer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Answer Id"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "contributing_sources": {
+            "items": {
+              "$ref": "#/components/schemas/ContractContributingSource"
+            },
+            "title": "Contributing Sources",
+            "type": "array"
+          },
+          "drillthrough_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Drillthrough Token"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ContractProvenance"
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Count"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "sql_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sql Used"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "audit_id",
+          "route",
+          "provenance"
+        ],
+        "title": "Answer",
+        "type": "object"
+      },
+      "ContractPoolSpec": {
+        "properties": {
+          "class_name": {
+            "default": "default",
+            "title": "Class Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_concurrency": {
+            "default": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PoolSpec",
+        "type": "object"
+      },
+      "ContractQueryResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "output": {
+            "default": null,
+            "title": "Output"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "QueryResult",
+        "type": "object"
+      },
+      "ContractSubmitRequest": {
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/ContractManifest"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/ContractPoolSpec"
+          }
+        },
+        "required": [
+          "pool",
+          "plan",
+          "body",
+          "manifest"
+        ],
+        "title": "SubmitRequest",
+        "type": "object"
+      },
+      "ContractProvenance": {
+        "properties": {
+          "assumptions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assumptions"
+          },
+          "badge": {
+            "$ref": "#/components/schemas/ContractBadge"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "metric_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metric Id"
+          },
+          "query_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query Source"
+          }
+        },
+        "required": [
+          "layer",
+          "badge"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
+      "ContractContributingSource": {
+        "description": "One source card for the Sources panel (architecture \u00a74.7 / \u00a74.8).",
+        "properties": {
+          "container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Container"
+          },
+          "contribution": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Contribution"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "member": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member"
+          },
+          "ref_id": {
+            "title": "Ref Id",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Count"
+          }
+        },
+        "required": [
+          "ref_id"
+        ],
+        "title": "ContributingSource",
+        "type": "object"
+      },
+      "ContractDrillthroughRequest": {
+        "properties": {
+          "token": {
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "DrillthroughRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ContractAskRequest": {
+        "properties": {
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "session_id": {
+            "default": "demo",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "ContractToolClass": {
+        "enum": [
+          "read",
+          "propose",
+          "apply"
+        ],
+        "title": "ToolClass",
+        "type": "string"
+      },
+      "ContractBadge": {
+        "enum": [
+          "certified",
+          "governed_metric",
+          "query_skill",
+          "session",
+          "abstain",
+          "blocked"
+        ],
+        "title": "Badge",
+        "type": "string"
+      },
+      "ToolRegistryResponse": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ContractToolSpec"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "ToolRegistryResponse",
+        "type": "object"
+      }
+    }
+  }
+}

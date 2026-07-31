@@ -79,7 +79,7 @@ def sync_detailed(
 ) -> Response[Answer | HTTPValidationError]:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):
@@ -112,7 +112,7 @@ def sync(
 ) -> Answer | HTTPValidationError | None:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):
@@ -140,7 +140,7 @@ async def asyncio_detailed(
 ) -> Response[Answer | HTTPValidationError]:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):
@@ -173,7 +173,7 @@ async def asyncio(
 ) -> Answer | HTTPValidationError | None:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):

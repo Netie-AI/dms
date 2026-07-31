@@ -71,7 +71,52 @@ def test_divide_revenue_by_5(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -
     assert env["chart"]["kind"] == "bar"
 
 
-def test_abstain_on_nonsense(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exclude_multiple_skus_and_bare_beta(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+
+    env = answer_demo_question(
+        "excluding SKU-ALPHA and SKU-BETA, top 5 selling SKUs by revenue"
+    )
+    assert env["badge"] == "L2_VALIDATED"
+    skus = [r["sku"].upper() for r in env["rows"]]
+    assert "SKU-ALPHA" not in skus
+    assert "SKU-BETA" not in skus
+    assert "excluded:" in " ".join(env.get("assumptions") or []).lower() or any(
+        "excluded" in a.lower() for a in (env.get("assumptions") or [])
+    )
+    text = env["text"].upper()
+    assert "SKU-ALPHA" not in text
+    assert "SKU-BETA" not in text
+
+    bare = answer_demo_question("ignoring BETA top 5 selling SKUs by revenue")
+    assert bare["badge"] == "L2_VALIDATED"
+    bare_skus = [r["sku"].upper() for r in bare["rows"]]
+    assert "SKU-BETA" not in bare_skus
+    assert any("SKU-BETA" in a.upper() for a in (bare.get("assumptions") or []))
+
+
+def test_removing_sku_and_bare_top_n(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+
+    env = answer_demo_question("removing the SKU-BETA what is the top 5 revnue")
+    assert env["badge"] == "L2_VALIDATED"
+    skus = [r["sku"].upper() for r in env["rows"]]
+    assert "SKU-BETA" not in skus
+    assert "SKU-BETA" not in env["text"].upper()
+
+    top10 = answer_demo_question("what about top 10")
+    assert top10["badge"] == "L2_VALIDATED"
+    assert len(top10["rows"]) <= 10
+    assert len(top10["rows"]) >= 1
+
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
     from dms_executor import demo_warehouse as dw
 
@@ -81,3 +126,24 @@ def test_abstain_on_nonsense(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -
     assert env["badge"] == "ABSTAIN"
     assert env["values"] == []
     assert env["suggestions"]
+
+
+def test_forecast_never_answers_with_historical_total(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same class as Cortex live-path forecast abstain — demo must not invent."""
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+    for q in (
+        "what will next quarter revenue be",
+        "forecast Q3 demand for our top SKU",
+        "predict next month sales",
+    ):
+        env = answer_demo_question(q)
+        assert env["badge"] == "ABSTAIN", q
+        assert env["abstained"] is True
+        assert env["values"] == []
+        assert env.get("sql_used") in (None, "")

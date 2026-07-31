@@ -259,13 +259,31 @@ def map_ask_response_to_envelope(
         badge = "ABSTAIN"
     text = resp.answer or ("Abstained." if abstained else "")
     values = list(resp.values or [])
-    # Promote a numeric first value if Cortex only returned prose
-    if not values and resp.rows:
-        first = resp.rows[0]
-        for key, val in first.items():
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                values = [{"id": "v0", "value": float(val), "label": key}]
+    # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
+    # present in values[]; a single first-cell v0 is not enough for listings).
+    if resp.rows:
+        seen = {
+            float(v["value"])
+            for v in values
+            if isinstance(v, dict) and isinstance(v.get("value"), (int, float))
+        }
+        idx = len(values)
+        for row in list(resp.rows)[:50]:
+            for key, val in row.items():
+                if not isinstance(val, (int, float)) or isinstance(val, bool):
+                    continue
+                fv = float(val)
+                if any(abs(fv - s) < 1e-9 for s in seen):
+                    continue
+                values.append({"id": f"v{idx}", "value": fv, "label": key})
+                seen.add(fv)
+                idx += 1
+                if idx >= 80:
+                    break
+            if idx >= 80:
                 break
+    if not values and resp.rows:
+        values = [{"id": "v_count", "value": float(len(resp.rows)), "label": "row_count"}]
     chart = None
     rows = list(resp.rows or [])
     if rows and not abstained:

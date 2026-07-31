@@ -148,6 +148,14 @@ def chat_drillthrough(
     cortex: CortexDep,
 ) -> dict[str, Any]:
     """T7 — show contributing rows for a live answer token (contract 1.2)."""
+    decision = compliance_gate(
+        action="chat.drillthrough",
+        metadata={"task_id": "chat.drillthrough", "token_prefix": body.token[:12]},
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+
     if cortex is None:
         raise HTTPException(
             status_code=503,

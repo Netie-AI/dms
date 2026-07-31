@@ -79,7 +79,7 @@ def prune(src: dict) -> dict:
         "openapi": src.get("openapi", "3.1.0"),
         "info": {
             "title": "Cortex Contract API",
-            "version": src.get("info", {}).get("version", "1.1.0"),
+            "version": src.get("info", {}).get("version", "1.2.0"),
             "description": "Pruned generation surface — five contract operationIds only.",
         },
         "paths": paths2,
@@ -88,8 +88,8 @@ def prune(src: dict) -> dict:
 
 
 def main() -> int:
-    src_path = ROOT / "contract" / "openapi-1.1.0.json"
-    dest = ROOT / "contract" / "openapi-1.1.0.gen.json"
+    src_path = ROOT / "contract" / "openapi-1.2.0.json"
+    dest = ROOT / "contract" / "openapi-1.2.0.gen.json"
     src = json.loads(src_path.read_text(encoding="utf-8"))
     out = prune(src)
     dest.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")

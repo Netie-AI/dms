@@ -13,6 +13,7 @@ from typing import cast
 
 if TYPE_CHECKING:
   from ..models.answer_rows_type_0_item import AnswerRowsType0Item
+  from ..models.contributing_source import ContributingSource
   from ..models.provenance import Provenance
 
 
@@ -31,6 +32,10 @@ class Answer:
             audit_id (str):
             provenance (Provenance):
             route (str):
+            answer_id (None | str | Unset):
+            assumptions (list[str] | Unset):
+            contributing_sources (list[ContributingSource] | Unset):
+            drillthrough_token (None | str | Unset):
             row_count (int | None | Unset):
             rows (list[AnswerRowsType0Item] | None | Unset):
             sql_used (None | str | Unset):
@@ -41,6 +46,10 @@ class Answer:
     audit_id: str
     provenance: Provenance
     route: str
+    answer_id: None | str | Unset = UNSET
+    assumptions: list[str] | Unset = UNSET
+    contributing_sources: list[ContributingSource] | Unset = UNSET
+    drillthrough_token: None | str | Unset = UNSET
     row_count: int | None | Unset = UNSET
     rows: list[AnswerRowsType0Item] | None | Unset = UNSET
     sql_used: None | str | Unset = UNSET
@@ -53,6 +62,7 @@ class Answer:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.answer_rows_type_0_item import AnswerRowsType0Item
+        from ..models.contributing_source import ContributingSource
         from ..models.provenance import Provenance
         answer = self.answer
 
@@ -61,6 +71,33 @@ class Answer:
         provenance = self.provenance.to_dict()
 
         route = self.route
+
+        answer_id: None | str | Unset
+        if isinstance(self.answer_id, Unset):
+            answer_id = UNSET
+        else:
+            answer_id = self.answer_id
+
+        assumptions: list[str] | Unset = UNSET
+        if not isinstance(self.assumptions, Unset):
+            assumptions = self.assumptions
+
+
+
+        contributing_sources: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.contributing_sources, Unset):
+            contributing_sources = []
+            for contributing_sources_item_data in self.contributing_sources:
+                contributing_sources_item = contributing_sources_item_data.to_dict()
+                contributing_sources.append(contributing_sources_item)
+
+
+
+        drillthrough_token: None | str | Unset
+        if isinstance(self.drillthrough_token, Unset):
+            drillthrough_token = UNSET
+        else:
+            drillthrough_token = self.drillthrough_token
 
         row_count: int | None | Unset
         if isinstance(self.row_count, Unset):
@@ -102,6 +139,14 @@ class Answer:
             "provenance": provenance,
             "route": route,
         })
+        if answer_id is not UNSET:
+            field_dict["answer_id"] = answer_id
+        if assumptions is not UNSET:
+            field_dict["assumptions"] = assumptions
+        if contributing_sources is not UNSET:
+            field_dict["contributing_sources"] = contributing_sources
+        if drillthrough_token is not UNSET:
+            field_dict["drillthrough_token"] = drillthrough_token
         if row_count is not UNSET:
             field_dict["row_count"] = row_count
         if rows is not UNSET:
@@ -118,6 +163,7 @@ class Answer:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.answer_rows_type_0_item import AnswerRowsType0Item
+        from ..models.contributing_source import ContributingSource
         from ..models.provenance import Provenance
         d = dict(src_dict)
         answer = d.pop("answer")
@@ -130,6 +176,41 @@ class Answer:
 
 
         route = d.pop("route")
+
+        def _parse_answer_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        answer_id = _parse_answer_id(d.pop("answer_id", UNSET))
+
+
+        assumptions = cast(list[str], d.pop("assumptions", UNSET))
+
+
+        _contributing_sources = d.pop("contributing_sources", UNSET)
+        contributing_sources: list[ContributingSource] | Unset = UNSET
+        if _contributing_sources is not UNSET:
+            contributing_sources = []
+            for contributing_sources_item_data in _contributing_sources:
+                contributing_sources_item = ContributingSource.from_dict(contributing_sources_item_data)
+
+
+
+                contributing_sources.append(contributing_sources_item)
+
+
+        def _parse_drillthrough_token(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        drillthrough_token = _parse_drillthrough_token(d.pop("drillthrough_token", UNSET))
+
 
         def _parse_row_count(data: object) -> int | None | Unset:
             if data is None:
@@ -184,6 +265,10 @@ class Answer:
             audit_id=audit_id,
             provenance=provenance,
             route=route,
+            answer_id=answer_id,
+            assumptions=assumptions,
+            contributing_sources=contributing_sources,
+            drillthrough_token=drillthrough_token,
             row_count=row_count,
             rows=rows,
             sql_used=sql_used,
