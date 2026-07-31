@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep
+from dms_api.gatekeeping import enforce
 from dms_api.wiring import batch_ingest, bronze_list
 
 router = APIRouter(prefix="/v1/studio", tags=["studio"])
@@ -39,11 +40,7 @@ async def ingest_file(
         metadata={"task_id": "studio.ingest", "filename": file.filename},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
 
     raw = await file.read()
     name = file.filename or "upload.csv"
@@ -84,11 +81,7 @@ async def ingest_batch_files(
         },
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
 
     payloads: list[tuple[str, bytes]] = []
     for f in files:

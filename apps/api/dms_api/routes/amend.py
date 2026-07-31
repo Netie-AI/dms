@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
+from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/amend", tags=["amend"])
 
@@ -88,11 +89,7 @@ def propose(
         metadata={"task_id": "amend.propose", "summary": body.summary},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
 
     diff = dict(body.diff)
     if body.summary:
@@ -142,11 +139,7 @@ def confirm(
         metadata={"task_id": "amend.confirm", "proposal_id": proposal_id},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
 
     try:
         with _conn(settings) as conn:

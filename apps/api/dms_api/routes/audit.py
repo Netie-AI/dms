@@ -11,6 +11,7 @@ from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter, HTTPException
 
 from dms_api.deps import CortexDep, SettingsDep
+from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/audit", tags=["audit"])
 
@@ -49,11 +50,7 @@ def verify_ledger(settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
         metadata={"task_id": "audit.verify"},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
     if cortex is None:
         raise HTTPException(status_code=503, detail="cortex_unavailable")
     result = cortex.verify_ledger()
