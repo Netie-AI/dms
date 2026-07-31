@@ -40,6 +40,40 @@ class AskBody(BaseModel):
     session_id: str | None = None
 
 
+class DrillthroughBody(BaseModel):
+    token: str = Field(min_length=1)
+
+
+def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
+    """E6 — demo_fallback_used must set an unmissable banner flag."""
+    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+
+    env = build_answer_envelope(
+        answer_id=str(env.get("answer_id") or "ans_fallback"),
+        text=str(env.get("text") or ""),
+        badge=str(env.get("badge") or "ABSTAIN"),
+        abstained=bool(env.get("abstained")),
+        values=list(env.get("values") or []),
+        sql_used=env.get("sql_used"),
+        assumptions=list(env.get("assumptions") or []) + [note],
+        as_of=env.get("as_of"),
+        contributing_sources=list(env.get("contributing_sources") or []),
+        drillthrough_token=env.get("drillthrough_token"),
+        audit_id=env.get("audit_id"),
+        ask_mode="demo",
+        demo_fallback_used=True,
+        demo_fallback_banner=True,
+        space_id=env.get("space_id"),
+        session_id=env.get("session_id"),
+        rows=list(env.get("rows") or []),
+        chart=env.get("chart"),
+        suggestions=list(env.get("suggestions") or []),
+        route=env.get("route"),
+    )
+    assert_envelope_valid(env)
+    return env
+
+
 @router.post("/ask")
 def chat_ask(
     body: AskBody,
@@ -71,9 +105,7 @@ def chat_ask(
     if cortex is None:
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            env["ask_mode"] = "demo"
-            env.setdefault("assumptions", []).append("fallback — Cortex client missing")
-            return env
+            return _stamp_demo_fallback(env, "fallback — Cortex client missing")
         raise HTTPException(
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
@@ -90,9 +122,7 @@ def chat_ask(
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            env["ask_mode"] = "demo"
-            env.setdefault("assumptions", []).append(f"fallback after live error: {exc.code}")
-            return env
+            return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
         status = 409 if exc.code in {"session_unbound", "session_expired"} else 403
         if exc.code == "pool_saturated":
             status = 429
@@ -104,10 +134,33 @@ def chat_ask(
         if settings.dms_demo_fallback:
             logger.warning("live ask failed: %s; demo fallback", exc)
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            env["ask_mode"] = "demo"
-            env.setdefault("assumptions", []).append("fallback — live ask failed")
-            return env
+            return _stamp_demo_fallback(env, "fallback — live ask failed")
         raise HTTPException(
             status_code=503,
             detail={"code": "live_ask_failed", "message": str(exc)[:400]},
+        ) from exc
+
+
+@router.post("/drillthrough")
+def chat_drillthrough(
+    body: DrillthroughBody,
+    settings: SettingsDep,
+    cortex: CortexDep,
+) -> dict[str, Any]:
+    """T7 — show contributing rows for a live answer token (contract 1.2)."""
+    if cortex is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
+        )
+    try:
+        from cortex_client.models import DrillthroughRequest
+
+        resp = cortex.drillthrough(DrillthroughRequest(token=body.token))
+        return resp.model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("drillthrough failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "drillthrough_failed", "message": str(exc)[:400]},
         ) from exc

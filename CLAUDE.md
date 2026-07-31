@@ -18,7 +18,7 @@ DMS treats Cortex as an **HTTP service with typed payloads**, never a Python imp
 ## Hard rules
 
 1. **DMS never imports CortexOS** (the engine). HTTP via `packages/cortex_client` only.
-2. **DMS pins `cortex-contract==1.1.0` as a pip dependency** and imports `canonical_manifest_bytes()` from it. Reimplementing canonicalisation is forbidden — a one-byte drift breaks every signature. `cortex-contract` has zero CortexOS imports by its own lint rule.
+2. **DMS pins `cortex-contract>=1.2.0,<2`** (install a real wheel — never editable into the Cortex tree) and imports `canonical_manifest_bytes()` from it. Reimplementing canonicalisation is forbidden — a one-byte drift breaks every signature. `cortex-contract` has zero CortexOS imports by its own lint rule.
 3. **One ledger** — DMS appends through Cortex (`/v1/contract/ledger/append`). Never maintain a local hash chain. `ledger_ref` stores pointers only.
 4. **One Postgres, two schemas** (`cortex`, `dms`). No cross-schema foreign keys.
 5. **Excel is source-only.** Outbound is generated export. No `to_excel` / openpyxl save / xlsxwriter.
@@ -26,12 +26,16 @@ DMS treats Cortex as an **HTTP service with typed payloads**, never a Python imp
 7. **duckdb.execute** only inside `packages/executor`.
 8. Every FastAPI **mutation** route must call `compliance_gate` before side effects (call-through to Cortex F5 — no local policy).
 9. `api` may not import `executor` directly — only via `core`. `core` may not import `api`. Nothing may import `CortexOS`.
+10. **Assert the user-visible output.** Every test for answer-path behaviour must assert on the **rendered answer text** and the **returned rows**, not only on generated SQL. SQL assertions are permitted only *in addition*. A gate that asserts an intermediate artifact will certify a broken feature as working.
+10a. **Customer envelope (Phase 0).** Every answer-path property — `badge`, `abstained`, `values`, `sources`, `drillthrough_token`, `audit_id` — must be asserted on the DMS envelope from `POST /v1/chat/ask` via `assert_envelope_valid` (E1–E8). Cortex-side checks are necessary and insufficient. A green badge on abstention prose is a P0.
+11. **`DMS_DEMO_FALLBACK=1` is a lying affordance** unless the UI shows a permanent, unmissable banner. Prefer `DMS_DEMO_FALLBACK=0` for any customer-facing or demo-ready run. Silent fallback that still returns 200 with demo numbers is forbidden for ship gates.
+12. **Value normalization** — filter values must match the column's actual encoding (`BETA` vs `SKU-BETA`, `KL` vs `Kuala Lumpur`, case/whitespace). A filter that parses, validates, executes, and matches nothing is the most dangerous single failure: plausible number + green badge.
 
 ## Version lines (independent — do not renumber backward)
 
 | Line | Scheme | Moves |
 |------|--------|-------|
-| cortex-contract | 1.1.0 | wire format — pin via pip + vendored OpenAPI |
+| cortex-contract | 1.2.0 | wire format — pin via pip + vendored OpenAPI |
 | cortex-engine | 2.5.0 → 3.0.0 | per gate; pin via compose image tag |
 | dms | 0.1.0 → 1.0.0 | at first paying install |
 

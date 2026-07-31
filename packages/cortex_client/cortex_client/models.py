@@ -1,4 +1,4 @@
-"""Pydantic request/response shapes for cortex-contract 1.1.0 wire calls.
+"""Pydantic request/response shapes for cortex-contract 1.2.0 wire calls.
 
 Manifest / SubmitRequest / QueryResult live in ``cortex_contract`` — import those
 from the pinned package, do not duplicate.
@@ -35,6 +35,7 @@ class AskResponse(BaseModel):
     route: str | None = None
     contributing_sources: list[dict[str, Any]] = Field(default_factory=list)
     audit_id: str | None = None
+    drillthrough_token: str | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]
@@ -64,8 +65,14 @@ class AskResponse(BaseModel):
                     flat.append({k: v for k, v in r.items() if k != "additional_properties"})
             data["rows"] = flat
         route = data.get("route")
-        if route in ("abstain", "blocked") or (
-            isinstance(data.get("badge"), str) and data["badge"].lower() in ("abstain", "blocked")
+        badge_l = (
+            data.get("badge").lower()
+            if isinstance(data.get("badge"), str)
+            else ""
+        )
+        if route in ("abstain", "blocked", "needs_clarification") or badge_l in (
+            "abstain",
+            "blocked",
         ):
             data["abstained"] = True
         return super().model_validate(data, **kwargs)
@@ -90,6 +97,19 @@ class LedgerVerifyResponse(BaseModel):
 
 class ToolRegistryResponse(BaseModel):
     tools: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DrillthroughRequest(BaseModel):
+    token: str
+
+
+class DrillthroughResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    sql_used: str | None = None
+    source_table: str | None = None
+    answer_id: str | None = None
 
 
 # Deprecated aliases kept for packages/ledger until call sites migrate

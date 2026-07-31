@@ -14,6 +14,7 @@ from dms_executor.demo_warehouse import (
     execute_sql,
     total_outbound_revenue,
 )
+from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 
 SUGGESTIONS = [
     "What was total revenue?",
@@ -48,6 +49,16 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _pack(**kwargs: Any) -> dict[str, Any]:
+    """Demo envelopes — only via build_answer_envelope (Phase 0 single constructor)."""
+    kwargs.setdefault("ask_mode", "demo")
+    kwargs.setdefault("as_of", _as_of())
+    kwargs.setdefault("suggestions", SUGGESTIONS)
+    env = build_answer_envelope(**kwargs)
+    assert_envelope_valid(env)
+    return env
+
+
 def _money(n: float) -> str:
     return f"RM {n:,.2f}"
 
@@ -76,21 +87,70 @@ def _top_n(question: str, default: int = 5) -> int:
     return default
 
 
+_EXCLUSION_STOP = re.compile(
+    r"\b(?:what|show|list|give|find|get|top|bottom|best|worst|highest|lowest|"
+    r"ranked?|numbers?|ranks?|selling|sold)\b",
+    re.I,
+)
+_EXCLUSION_SKIP = frozenset(
+    {"THE", "A", "AN", "SKU", "AND", "OR", "FROM", "BY", "OF", "ALL", "ANY"}
+)
+
+
 def _excluded_skus(question: str) -> list[str]:
-    found = re.findall(
-        r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|without|except)\s+"
-        r"(?:the\s+)?([A-Za-z][\w-]*)",
+    """Parse all named SKUs in an exclusion clause (comma / and / or lists)."""
+    out: list[str] = []
+    for m in re.finditer(
+        r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|remov(?:e|ing)|drop(?:ping)?|without|except)\s+(?:the\s+)?(.+)",
         question,
         flags=re.I,
-    )
-    out: list[str] = []
-    for token in found:
-        t = token.strip().upper()
-        if t in {"THE", "A", "AN", "SKU", "AND", "OR", "FROM", "BY"}:
-            continue
-        if t not in out:
-            out.append(t)
+    ):
+        clause = m.group(1)
+        stop = _EXCLUSION_STOP.search(clause)
+        if stop:
+            clause = clause[: stop.start()]
+        for token in re.split(r"\s*(?:,|/|\band\b|\bor\b)\s*", clause, flags=re.I):
+            t = token.strip().strip("'\"")
+            tm = re.match(r"^([A-Za-z0-9][\w-]*)$", t)
+            if not tm:
+                continue
+            t = tm.group(1).upper()
+            if t in _EXCLUSION_SKIP or len(t) < 2:
+                continue
+            if t not in out:
+                out.append(t)
     return out
+
+
+def _resolve_exclude_skus(tokens: list[str]) -> list[str]:
+    """Map bare tokens like BETA → SKU-BETA against live distinct SKUs."""
+    if not tokens:
+        return []
+    rows = execute_sql("SELECT DISTINCT sku FROM transactions WHERE sku IS NOT NULL")
+    known = [str(r["sku"]) for r in rows if r.get("sku") is not None]
+    by_lower = {k.lower(): k for k in known}
+
+    def norm(s: str) -> str:
+        return re.sub(r"[\s_\-]+", "", s.lower())
+
+    by_norm = {norm(k): k for k in known}
+    resolved: list[str] = []
+    for token in tokens:
+        lower = token.lower()
+        if lower in by_lower:
+            val = by_lower[lower]
+        elif norm(token) in by_norm:
+            val = by_norm[norm(token)]
+        else:
+            contained = [k for k in known if lower in k.lower() or k.lower() in lower]
+            if len(contained) != 1:
+                # Honest: do not claim an exclusion that cannot resolve.
+                continue
+            val = contained[0]
+        up = val.upper()
+        if up not in resolved:
+            resolved.append(up)
+    return resolved
 
 
 def _rank_window(question: str) -> tuple[int, int] | None:
@@ -133,9 +193,13 @@ def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[
         return _scale_revenue(factor, space_id=space_id)
 
     window = _rank_window(question)
+    # Bare "top 10" / "what about top 10" counts as sales rank (demo has no anaphora).
+    # Accept common typos: revnue, revanue.
+    sales_kw = re.search(r"\b(sell|sold|revenue|sales|sku|skus|revnue|revanue)\b", q)
     wants_rank = bool(
-        (re.search(r"\b(top|best|highest|most)\b", q) and re.search(r"\b(sell|sold|revenue|sales)\b", q))
-        or (window and re.search(r"\b(sku|skus|revenue|sales|sell)\b", q))
+        (re.search(r"\b(top|best|highest|most)\b", q) and sales_kw)
+        or re.search(r"\btop\s+\d+\b", q)
+        or (window and sales_kw)
     )
     if wants_rank:
         n = _top_n(q)
@@ -147,7 +211,7 @@ def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[
         return _top_skus(
             n,
             offset=offset,
-            exclude=_excluded_skus(question),
+            exclude=_resolve_exclude_skus(_excluded_skus(question)),
             space_id=space_id,
         )
 
@@ -174,32 +238,29 @@ def _total_revenue(*, space_id: str | None) -> dict[str, Any]:
         "FROM transactions WHERE txn_type = 'outbound'"
     )
     total = total_outbound_revenue()
-    return {
-        "answer_id": "ans_demo_revenue",
-        "text": f"Total outbound revenue was {_money(total)}.",
-        "values": [
+    return _pack(
+        answer_id="ans_demo_revenue",
+        text=f"Total outbound revenue was {_money(total)}.",
+        values=[
             {"id": "v_rev", "value": round(total, 2), "unit": "MYR", "label": "Total revenue"}
         ],
-        "badge": "L2_VALIDATED",
-        "sql_used": sql,
-        "assumptions": [
+        badge="L2_VALIDATED",
+        sql_used=sql,
+        assumptions=[
             "outbound transactions only",
             "revenue = quantity_kg × unit_cost_myr",
             "demo warehouse — not a live Cortex answer",
         ],
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": _SOURCES,
-        "rows": [{"metric": "total_revenue", "revenue_myr": round(total, 2)}],
-        "chart": {
+        space_id=space_id,
+        contributing_sources=_SOURCES,
+        rows=[{"metric": "total_revenue", "revenue_myr": round(total, 2)}],
+        chart={
             "kind": "bar",
             "x": "metric",
             "y": "revenue_myr",
             "title": "Total outbound revenue",
         },
-        "suggestions": SUGGESTIONS,
-    }
+    )
 
 
 def _scale_revenue(factor: float, *, space_id: str | None) -> dict[str, Any]:
@@ -209,13 +270,13 @@ def _scale_revenue(factor: float, *, space_id: str | None) -> dict[str, Any]:
         "SELECT COALESCE(SUM(quantity_kg * unit_cost_myr), 0)::DOUBLE AS revenue_myr "
         "FROM transactions WHERE txn_type = 'outbound'"
     )
-    return {
-        "answer_id": "ans_demo_scale",
-        "text": (
+    return _pack(
+        answer_id="ans_demo_scale",
+        text=(
             f"Total outbound revenue was {_money(total)}. "
             f"Divided by {factor:g} that is {_money(scaled)}."
         ),
-        "values": [
+        values=[
             {"id": "v_rev", "value": round(total, 2), "unit": "MYR", "label": "Total revenue"},
             {
                 "id": "v_scaled",
@@ -224,29 +285,26 @@ def _scale_revenue(factor: float, *, space_id: str | None) -> dict[str, Any]:
                 "label": f"Revenue ÷ {factor:g}",
             },
         ],
-        "badge": "L2_VALIDATED",
-        "sql_used": sql,
-        "assumptions": [
+        badge="L2_VALIDATED",
+        sql_used=sql,
+        assumptions=[
             "outbound transactions only",
             f"scale factor = {factor:g} applied in DMS demo router (L2)",
             "demo warehouse — not a certified Cortex metric",
         ],
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": _SOURCES,
-        "rows": [
+        space_id=space_id,
+        contributing_sources=_SOURCES,
+        rows=[
             {"label": "Total", "revenue_myr": round(total, 2)},
             {"label": f"÷ {factor:g}", "revenue_myr": round(scaled, 2)},
         ],
-        "chart": {
+        chart={
             "kind": "bar",
             "x": "label",
             "y": "revenue_myr",
             "title": f"Revenue vs ÷ {factor:g}",
         },
-        "suggestions": SUGGESTIONS,
-    }
+    )
 
 
 def _top_skus(
@@ -284,10 +342,10 @@ def _top_skus(
         assumptions.append("excluded: " + ", ".join(exclude))
     if offset:
         assumptions.append(f"rank window offset={offset}")
-    return {
-        "answer_id": "ans_demo_top_sku",
-        "text": text,
-        "values": [
+    return _pack(
+        answer_id="ans_demo_top_sku",
+        text=text,
+        values=[
             {
                 "id": "v_top",
                 "value": round(float(top["revenue_myr"]), 2),
@@ -295,24 +353,21 @@ def _top_skus(
                 "label": f"{top['sku']} revenue",
             }
         ],
-        "badge": "L2_VALIDATED",
-        "sql_used": " ".join(sql.split()),
-        "assumptions": assumptions,
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": _SOURCES,
-        "rows": [
+        badge="L2_VALIDATED",
+        sql_used=" ".join(sql.split()),
+        assumptions=assumptions,
+        space_id=space_id,
+        contributing_sources=_SOURCES,
+        rows=[
             {"sku": r["sku"], "revenue_myr": round(float(r["revenue_myr"]), 2)} for r in rows
         ],
-        "chart": {
+        chart={
             "kind": "hbar",
             "x": "sku",
             "y": "revenue_myr",
             "title": f"SKU revenue ranks {rank_start}–{rank_start + len(rows) - 1}",
         },
-        "suggestions": SUGGESTIONS,
-    }
+    )
 
 
 def _capacity(*, space_id: str | None) -> dict[str, Any]:
@@ -324,13 +379,13 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
     """
     rows = execute_sql(sql)
     peak = rows[0] if rows else {"location": "?", "util_pct": 0.0}
-    return {
-        "answer_id": "ans_demo_capacity",
-        "text": (
+    return _pack(
+        answer_id="ans_demo_capacity",
+        text=(
             f"Warehouse capacity utilisation peaks at {peak['location']} "
             f"({float(peak['util_pct']):.1f}%)."
         ),
-        "values": [
+        values=[
             {
                 "id": "v_util",
                 "value": float(peak["util_pct"]),
@@ -338,13 +393,11 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
                 "label": f"{peak['location']} utilisation",
             }
         ],
-        "badge": "L2_VALIDATED",
-        "sql_used": " ".join(sql.split()),
-        "assumptions": ["demo warehouse locations table"],
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": [
+        badge="L2_VALIDATED",
+        sql_used=" ".join(sql.split()),
+        assumptions=["demo warehouse locations table"],
+        space_id=space_id,
+        contributing_sources=[
             {
                 "ref_id": "ref_loc",
                 "container": "locations",
@@ -354,17 +407,16 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
                 "origin_uri": "duckdb://dms_demo/locations",
             }
         ],
-        "rows": [
+        rows=[
             {"location": r["location"], "util_pct": float(r["util_pct"])} for r in rows
         ],
-        "chart": {
+        chart={
             "kind": "hbar",
             "x": "location",
             "y": "util_pct",
             "title": "Capacity utilisation %",
         },
-        "suggestions": SUGGESTIONS,
-    }
+    )
 
 
 def _below_reorder(*, space_id: str | None) -> dict[str, Any]:
@@ -376,33 +428,28 @@ def _below_reorder(*, space_id: str | None) -> dict[str, Any]:
     """
     rows = execute_sql(sql)
     if not rows:
-        return {
-            "answer_id": "ans_demo_reorder_ok",
-            "text": "No SKUs are below reorder level in the demo warehouse.",
-            "values": [],
-            "badge": "L2_VALIDATED",
-            "sql_used": " ".join(sql.split()),
-            "assumptions": ["demo inventory"],
-            "as_of": _as_of(),
-            "space_id": space_id,
-            "ask_mode": "demo",
-            "contributing_sources": _SOURCES,
-            "rows": [],
-            "suggestions": SUGGESTIONS,
-        }
+        return _pack(
+            answer_id="ans_demo_reorder_ok",
+            text="No SKUs are below reorder level in the demo warehouse.",
+            values=[],
+            badge="L2_VALIDATED",
+            sql_used=" ".join(sql.split()),
+            assumptions=["demo inventory"],
+            space_id=space_id,
+            contributing_sources=_SOURCES,
+            rows=[],
+        )
     names = ", ".join(r["sku"] for r in rows)
-    return {
-        "answer_id": "ans_demo_reorder",
-        "text": f"SKUs below reorder level: {names}.",
-        "values": [],
-        "badge": "L2_VALIDATED",
-        "sql_used": " ".join(sql.split()),
-        "assumptions": ["demo inventory"],
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": _SOURCES,
-        "rows": [
+    return _pack(
+        answer_id="ans_demo_reorder",
+        text=f"SKUs below reorder level: {names}.",
+        values=[],
+        badge="L2_VALIDATED",
+        sql_used=" ".join(sql.split()),
+        assumptions=["demo inventory"],
+        space_id=space_id,
+        contributing_sources=_SOURCES,
+        rows=[
             {
                 "sku": r["sku"],
                 "location_id": r["location_id"],
@@ -411,8 +458,7 @@ def _below_reorder(*, space_id: str | None) -> dict[str, Any]:
             }
             for r in rows
         ],
-        "suggestions": SUGGESTIONS,
-    }
+    )
 
 
 def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
@@ -425,41 +471,36 @@ def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
     """
     rows = execute_sql(sql)
     if not rows:
-        return {
-            "answer_id": "ans_demo_alerts_none",
-            "text": "No active alerts in the demo warehouse network.",
-            "values": [],
-            "badge": "L2_VALIDATED",
-            "sql_used": " ".join(sql.split()),
-            "assumptions": ["demo alerts"],
-            "as_of": _as_of(),
-            "space_id": space_id,
-            "ask_mode": "demo",
-            "contributing_sources": [],
-            "rows": [],
-            "suggestions": SUGGESTIONS,
-        }
+        return _pack(
+            answer_id="ans_demo_alerts_none",
+            text="No active alerts in the demo warehouse network.",
+            values=[],
+            badge="L2_VALIDATED",
+            sql_used=" ".join(sql.split()),
+            assumptions=["demo alerts"],
+            space_id=space_id,
+            contributing_sources=[],
+            rows=[],
+        )
     high = sum(1 for r in rows if r["severity"] == "high")
-    return {
-        "answer_id": "ans_demo_alerts",
-        "text": (
+    return _pack(
+        answer_id="ans_demo_alerts",
+        text=(
             f"{len(rows)} active alerts across the network "
             f"({high} high severity)."
         ),
-        "values": [
+        values=[
             {
                 "id": "v_alerts",
                 "value": float(len(rows)),
                 "label": "Active alerts",
             }
         ],
-        "badge": "L2_VALIDATED",
-        "sql_used": " ".join(sql.split()),
-        "assumptions": ["unresolved alerts only", "demo warehouse"],
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": [
+        badge="L2_VALIDATED",
+        sql_used=" ".join(sql.split()),
+        assumptions=["unresolved alerts only", "demo warehouse"],
+        space_id=space_id,
+        contributing_sources=[
             {
                 "ref_id": "ref_alerts",
                 "container": "alerts",
@@ -469,7 +510,7 @@ def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
                 "origin_uri": "duckdb://dms_demo/alerts",
             }
         ],
-        "rows": [
+        rows=[
             {
                 "alert_id": r["alert_id"],
                 "severity": r["severity"],
@@ -478,27 +519,24 @@ def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
             }
             for r in rows
         ],
-        "suggestions": SUGGESTIONS,
-    }
+    )
 
 
 def _abstain(*, space_id: str | None) -> dict[str, Any]:
-    return {
-        "answer_id": "ans_demo_abstain",
-        "text": (
+    return _pack(
+        answer_id="ans_demo_abstain",
+        text=(
             "I cannot answer that from the demo warehouse without inventing a number. "
             "Try one of the suggested questions."
         ),
-        "values": [],
-        "badge": "ABSTAIN",
-        "assumptions": ["demo router abstained — 0 confidently wrong"],
-        "as_of": _as_of(),
-        "space_id": space_id,
-        "ask_mode": "demo",
-        "contributing_sources": [],
-        "rows": [],
-        "suggestions": SUGGESTIONS,
-    }
+        values=[],
+        badge="ABSTAIN",
+        abstained=True,
+        assumptions=["demo router abstained — 0 confidently wrong"],
+        space_id=space_id,
+        contributing_sources=[],
+        rows=[],
+    )
 
 
 def demo_session_acl(*, session_id: str, space_id: str | None = None) -> dict[str, Any]:

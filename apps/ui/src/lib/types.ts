@@ -24,17 +24,34 @@ export type ContributingSource = {
   origin_uri?: string;
 };
 
+export type ChartSpec = {
+  kind: "bar" | "hbar";
+  x: string;
+  y: string;
+  title?: string;
+};
+
 export type AnswerEnvelope = {
   answer_id: string;
   text: string;
   values: AnswerValue[];
   badge: BadgeKind;
+  /** Phase 0 — must lockstep with badge===ABSTAIN */
+  abstained?: boolean;
   sql_used?: string;
   assumptions: string[];
   as_of: string;
   contributing_sources: ContributingSource[];
   drillthrough_token?: string;
   audit_id?: string;
+  ask_mode?: "demo" | "live";
+  demo_fallback_used?: boolean;
+  /** E6 — required when demo_fallback_used is true */
+  demo_fallback_banner?: boolean;
+  space_id?: string | null;
+  rows?: Record<string, unknown>[];
+  chart?: ChartSpec;
+  suggestions?: string[];
 };
 
 export type SpaceSummary = {

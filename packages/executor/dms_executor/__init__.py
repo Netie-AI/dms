@@ -40,6 +40,7 @@ from dms_executor.manifest import (
     reject_hostile_chat_sql,
     should_rement,
 )
+from dms_executor.openvault_discovery import local_start_command, probe_openvault
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,12 @@ class Executor:
         cortex: CortexClient | None = None,
         minter: ManifestMinter | None = None,
         warehouse_path: Path | str | None = None,
+        openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
     ) -> None:
         self._cortex = cortex
-        self._minter = minter or ManifestMinter()
+        self._minter = minter or ManifestMinter(openvault_url=openvault_url)
+        self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
         self._bound_sessions: set[str] = set()
         if fetch_key_on_start:
@@ -65,11 +68,27 @@ class Executor:
     def startup(self) -> None:
         """Fetch OpenVault intermediate signing key into memory only."""
         ensure_demo_warehouse(self._warehouse)
-        try:
-            self._minter.fetch_intermediate()
-            logger.info("executor startup: intermediate signing key loaded (kid only logged)")
-        except Exception as exc:  # noqa: BLE001 — demo can run without OV
-            logger.warning("executor startup: OpenVault key fetch skipped: %s", exc)
+        resolved, start_cmd = probe_openvault(preferred_url=self._preferred_openvault_url)
+        if resolved:
+            self._minter.openvault_url = resolved
+            try:
+                self._minter.fetch_intermediate()
+                logger.info(
+                    "executor startup: OpenVault %s — intermediate signing key loaded",
+                    resolved,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 — demo can run without OV
+                logger.warning(
+                    "executor startup: OpenVault reachable at %s but key fetch failed: %s",
+                    resolved,
+                    exc,
+                )
+                return
+        logger.warning(
+            "OpenVault offline — demo continues without signed manifests; start via: %s",
+            start_cmd or local_start_command(),
+        )
 
     def close(self) -> None:
         self._minter.close()
@@ -214,9 +233,11 @@ class Executor:
 
 _BADGE_MAP = {
     "certified": "L0_CERTIFIED",
+    "certified_metric": "L0_CERTIFIED",
     "governed_metric": "L1_GOVERNED_METRIC",
     "query_skill": "L2_VALIDATED",
     "session": "L2_VALIDATED",
+    "generated": "L2_VALIDATED",
     "abstain": "ABSTAIN",
     "blocked": "ABSTAIN",
 }
@@ -229,11 +250,14 @@ def map_ask_response_to_envelope(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
+    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+
     badge_raw = (resp.badge or "abstain").lower()
     badge = _BADGE_MAP.get(badge_raw, "L2_VALIDATED")
-    if resp.abstained:
+    abstained = bool(resp.abstained) or badge == "ABSTAIN"
+    if abstained:
         badge = "ABSTAIN"
-    text = resp.answer or ("Abstained." if resp.abstained else "")
+    text = resp.answer or ("Abstained." if abstained else "")
     values = list(resp.values or [])
     # Promote a numeric first value if Cortex only returned prose
     if not values and resp.rows:
@@ -244,7 +268,7 @@ def map_ask_response_to_envelope(
                 break
     chart = None
     rows = list(resp.rows or [])
-    if rows:
+    if rows and not abstained:
         keys = list(rows[0].keys())
         num_key = next(
             (
@@ -269,24 +293,33 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
-    return {
-        "answer_id": resp.receipt_id or f"ans_live_{session_id or 'x'}",
-        "text": text,
-        "values": values,
-        "badge": badge,
-        "sql_used": resp.sql_used,
-        "assumptions": assumptions,
-        "as_of": datetime_now(),
-        "space_id": space_id,
-        "ask_mode": "live",
-        "session_id": session_id,
-        "contributing_sources": resp.contributing_sources or [],
-        "rows": rows,
-        "chart": chart,
-        "suggestions": list(resp.suggestions or []),
-        "audit_id": resp.receipt_id,
-        "route": resp.route,
-    }
+    sources = list(resp.contributing_sources or [])
+    token = resp.drillthrough_token
+    if sources and not token:
+        # E7: never claim sources without a drillthrough token.
+        sources = []
+    env = build_answer_envelope(
+        answer_id=resp.receipt_id or f"ans_live_{session_id or 'x'}",
+        text=text,
+        values=values,
+        badge=badge,
+        abstained=abstained,
+        sql_used=None if abstained else resp.sql_used,
+        assumptions=assumptions,
+        as_of=datetime_now(),
+        space_id=space_id,
+        ask_mode="live",
+        session_id=session_id,
+        contributing_sources=sources,
+        rows=[] if abstained else rows,
+        chart=None if abstained else chart,
+        suggestions=list(resp.suggestions or []),
+        audit_id=resp.receipt_id or resp.audit_id,
+        route=resp.route,
+        drillthrough_token=None if abstained else token,
+    )
+    assert_envelope_valid(env)
+    return env
 
 
 def datetime_now() -> str:
