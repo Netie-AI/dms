@@ -9,8 +9,11 @@ services:
       POSTGRES_USER: dms
       POSTGRES_PASSWORD: dms
       POSTGRES_DB: dms
-    ports:
-      - "5432:5432"
+    # Architecture §1: Caddy is the only public port — do not publish 5432 on the host.
+    # Local psql: docker compose exec postgres psql -U dms -d dms
+    # Need host bind for GUI clients? temporarily: ports: ["5432:5432"]
+    expose:
+      - "5432"
     volumes:
       - dms_pg:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +31,7 @@ services:
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
-      DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-1}
+      DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1,http://localhost
     # Not published on host when Caddy is used — internal only
     expose:
@@ -60,7 +63,7 @@ services:
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
-      DMS_DEMO_FALLBACK: "1"
+      DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
     ports:
       - "8090:8080"

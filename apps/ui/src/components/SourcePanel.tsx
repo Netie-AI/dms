@@ -18,7 +18,7 @@ export function SourcePanel() {
     focusedSourceId,
     setFocusedSourceId,
     selectedValueId,
-    fixtureAnswer,
+    latestAnswer: answer,
   } = useApp();
 
   if (!sourcePanelOpen) {
@@ -65,11 +65,11 @@ export function SourcePanel() {
         </button>
       </div>
 
-      {selectedValueId && fixtureAnswer && (
+      {selectedValueId && answer && (
         <p className="border-b border-[var(--color-line)] bg-[var(--color-accent-soft)] px-3 py-2 text-xs text-[var(--color-accent)]">
           Tracing{" "}
           <strong>
-            {fixtureAnswer.values.find((v) => v.id === selectedValueId)?.label}
+            {answer.values.find((v) => v.id === selectedValueId)?.label}
           </strong>
         </p>
       )}
@@ -88,6 +88,8 @@ export function SourcePanel() {
                   ? ((src.contribution / totalContribution) * 100).toFixed(1)
                   : "0";
               const open = focusedSourceId === src.ref_id;
+              const preview =
+                answer?.ask_mode === "demo" ? sheetForSource(src) : null;
               return (
                 <li key={src.ref_id}>
                   <button
@@ -98,7 +100,7 @@ export function SourcePanel() {
                     className={`w-full border px-3 py-2.5 text-left transition ${
                       open
                         ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]/40"
-                        : "border-[var(--color-line)] bg-white/50 hover:border-[var(--color-ink-muted)]"
+                        : "border-[var(--color-line)] bg-[var(--color-surface)]/50 hover:border-[var(--color-ink-muted)]"
                     }`}
                   >
                     <p className="text-sm font-medium text-[var(--color-ink)]">
@@ -117,7 +119,13 @@ export function SourcePanel() {
                           {src.origin_uri}
                         </p>
                       )}
-                      <PreviewGrid sheet={sheetForSource(src)} />
+                      {preview ? (
+                        <PreviewGrid sheet={preview} />
+                      ) : (
+                        <p className="border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-4 text-xs text-[var(--color-ink-muted)]">
+                          Cell preview unavailable for this source.
+                        </p>
+                      )}
                       <div className="flex flex-wrap gap-2 text-xs">
                         <span className="border border-[var(--color-line)] px-2 py-1">
                           Open original

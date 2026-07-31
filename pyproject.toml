@@ -15,7 +15,7 @@ dependencies = [
   "dms-cortex-client",
   "dms-executor",
   "dms-ledger",
-  "cortex-contract==1.1.0",
+  "cortex-contract>=1.2.0,<2",
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
   "httpx>=0.27",

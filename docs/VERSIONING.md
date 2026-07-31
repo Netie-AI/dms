@@ -4,7 +4,7 @@ Three **independent** version lines. Do not renumber Cortex engine back to 1.x.
 
 | Line | Scheme | Moves when |
 |------|--------|------------|
-| **cortex-contract** | 1.0.0 | Wire format breaks — rarely |
+| **cortex-contract** | 1.2.0 | Wire format — pin via pip + vendored OpenAPI |
 | **cortex-engine** | 2.5.0 → 3.0.0 | Per engine gate; pin via compose/GHCR tag |
 | **dms** | 0.1.0 → 1.0.0 | First paying install |
 

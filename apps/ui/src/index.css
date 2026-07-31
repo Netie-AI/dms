@@ -8,15 +8,48 @@
   --color-paper: #f3f0ea;
   --color-paper-2: #e8e4db;
   --color-panel: #faf8f4;
+  --color-surface: #ffffff;
   --color-line: #d4cfc4;
   --color-accent: #0d6b5c;
   --color-accent-soft: #d8efe9;
+  --color-on-accent: #ffffff;
   --color-warn: #9a6b1a;
   --color-warn-soft: #f5ebd4;
   --color-danger: #9b2c2c;
   --color-badge-ok: #1f6b45;
   --color-badge-warn: #8a5a10;
   --color-badge-mute: #5a6578;
+}
+
+:root {
+  color-scheme: light;
+  --app-background:
+    radial-gradient(1200px 600px at 10% -10%, #e4efe9 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #ebe4d6 0%, transparent 50%),
+    var(--color-paper);
+}
+
+:root[data-theme="graphite"] {
+  color-scheme: dark;
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-display: Inter, ui-sans-serif, system-ui, sans-serif;
+  --color-ink: #e5e5e5;
+  --color-ink-muted: #888888;
+  --color-paper: #050505;
+  --color-paper-2: #0a0a0a;
+  --color-panel: #111111;
+  --color-surface: #0d0d0d;
+  --color-line: #333333;
+  --color-accent: #00ff87;
+  --color-accent-soft: #123d2a;
+  --color-on-accent: #050505;
+  --color-warn: #ffaa00;
+  --color-warn-soft: #382b0d;
+  --color-danger: #ff4444;
+  --color-badge-ok: #00ff87;
+  --color-badge-warn: #ffaa00;
+  --color-badge-mute: #888888;
+  --app-background: var(--color-paper);
 }
 
 * {
@@ -33,14 +66,12 @@ body {
   margin: 0;
   font-family: var(--font-sans);
   color: var(--color-ink);
-  background:
-    radial-gradient(1200px 600px at 10% -10%, #e4efe9 0%, transparent 55%),
-    radial-gradient(900px 500px at 100% 0%, #ebe4d6 0%, transparent 50%),
-    var(--color-paper);
+  background: var(--app-background);
   -webkit-font-smoothing: antialiased;
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }

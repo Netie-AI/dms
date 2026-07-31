@@ -62,7 +62,8 @@ jobs:
         run: |
           set -euo pipefail
           found=0
-          for SPEC in contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
+          # Prefer current pin; keep older specs checked when present.
+          for SPEC in contract/openapi-1.2.0.json contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
             HASH="${SPEC}.sha256"
             if [ -f "$SPEC" ]; then
               found=1
@@ -81,6 +82,10 @@ jobs:
           done
           if [ "$found" -eq 0 ]; then
             echo "::error::No vendored OpenAPI — run scripts/sync_contract.py"
+            exit 1
+          fi
+          if [ ! -f contract/openapi-1.2.0.json ]; then
+            echo "::error::Missing current pin contract/openapi-1.2.0.json — run scripts/sync_contract.py"
             exit 1
           fi
           VEC=contract/testvectors/manifest_canonical.jsonl
@@ -117,8 +122,9 @@ jobs:
 
       - name: Install packages
         run: |
-          python -m pip install --upgrade pip wheel
-          pip install -e "./_cortex/packages/cortex_contract"
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
           pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger"
           pip install -e ".[dev]"
           pip install fastapi uvicorn httpx pydantic-settings cryptography

@@ -76,3 +76,12 @@ If acceptance is verifiable from a terminal → Claude Code. If you need to look
 ## T0 scope
 
 Skeleton + agent contract + boundary invariants. **No business logic** until a later slice.
+
+---
+
+## Knowledge base
+
+Global invariants and workflows live in `D:\Netie-KB`, not in this repo.
+Before non-trivial work: `python D:\Netie-KB\scripts\kb.py search "<keywords>"`.
+After: file a finding (`kb.py new finding`). Do not duplicate global rules here —
+this file holds only repo-specific laws (HTTP-only Cortex, envelope, import boundaries).
