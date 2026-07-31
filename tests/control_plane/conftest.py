@@ -15,20 +15,56 @@ from alembic import command
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://dms:dms@127.0.0.1:5432/dms")
 
 
-def _can_connect() -> bool:
+def _connect_error() -> str | None:
+    """None when Postgres answers; otherwise the reason it did not."""
     try:
         with psycopg.connect(DATABASE_URL, connect_timeout=2) as conn:
             conn.execute("SELECT 1")
-        return True
-    except Exception:
-        return False
+        return None
+    except Exception as exc:
+        return str(exc).strip().splitlines()[0][:200] if str(exc).strip() else type(exc).__name__
 
 
-pytestmark = pytest.mark.skipif(not _can_connect(), reason="Postgres not available")
+_CONNECT_ERROR = _connect_error()
+
+# R-0002: a skipped test is a failing test. These are the *only* proof that
+# tenant isolation actually isolates — RLS, proposal single-apply, ledger
+# pointers — and they used to disappear from the run whenever Postgres was
+# absent, which on a fresh machine is always. The suite then reported green
+# while never executing the thing it exists to check.
+#
+# Default is now a hard failure naming the cause. Genuinely have no Postgres?
+# Say so out loud with DMS_SKIP_CONTROL_PLANE_TESTS=1, so the skip is a decision
+# somebody made rather than a silence nobody noticed.
+_SKIP_OPT_OUT = os.environ.get("DMS_SKIP_CONTROL_PLANE_TESTS", "").lower() in {"1", "true", "yes"}
+
+pytestmark = pytest.mark.usefixtures("_require_postgres")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _require_postgres() -> None:
+    """Session-scoped so it settles before ``migrated_db`` tries to connect.
+
+    As a function-scoped fixture it ran *after* the session-scoped setup, so an
+    unreachable Postgres produced ten fixture errors and a two-minute wait on
+    connect retries instead of one clear answer.
+    """
+    if _CONNECT_ERROR is None:
+        return
+    if _SKIP_OPT_OUT:
+        pytest.skip(f"DMS_SKIP_CONTROL_PLANE_TESTS set; Postgres unreachable ({_CONNECT_ERROR})")
+    raise AssertionError(
+        f"Control-plane tests need Postgres at {DATABASE_URL} but it is unreachable: "
+        f"{_CONNECT_ERROR}\n"
+        "Start it with:\n"
+        "  docker compose -f deploy/compose/docker-compose.yml "
+        "-f deploy/compose/docker-compose.hostdb.yml up -d postgres\n"
+        "Or set DMS_SKIP_CONTROL_PLANE_TESTS=1 to skip deliberately."
+    )
 
 
 @pytest.fixture(scope="session")
-def migrated_db() -> Iterator[str]:
+def migrated_db(_require_postgres: None) -> Iterator[str]:
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     cfg = Config(os.path.join(root, "alembic.ini"))
     os.environ["DATABASE_URL"] = DATABASE_URL
