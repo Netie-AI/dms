@@ -24,3 +24,7 @@ vendor/
 
 # Cloned benchmark corpora (CRAG, open_ragbench) - fetched, never vendored
 tests/repos/
+logs/
+*.err.log
+*.out.log
+.claude/worktrees/
