@@ -36,34 +36,84 @@ def _qtable(qual: str) -> str:
     return f"{_qi(schema)}.{_qi(table)}"
 
 
-def _type_check_sql(col: str, typ: str) -> str:
-    """Return SQL boolean expr that is true when value matches contract type."""
-    c = _qi(col)
+_DECIMAL_RE = re.compile(r"^decimal\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)$", re.I)
+
+
+def _sql_type(typ: str) -> str:
+    """The one SQL type both the contract check and the write use.
+
+    These were two separate mappings that disagreed, and a value could satisfy
+    the check and still be destroyed by the write — landing in silver as NULL
+    while the receipt counted it under ``passed`` and reported
+    ``quarantined: 0``. Measured against DuckDB:
+
+    =========================  ==========  =======================
+    contract / input           old check   old value in silver
+    =========================  ==========  =======================
+    integer  3000000000        BIGINT ok   NULL   (cast INTEGER)
+    integer  2147483648        BIGINT ok   NULL   (cast INTEGER)
+    decimal  1e17-ish          DOUBLE ok   NULL   (cast DECIMAL(18,2))
+    timestamp ...+08:00        DATE   ok   offset dropped
+    =========================  ==========  =======================
+
+    A row that fails its contract belongs in quarantine where somebody can see
+    it. Silently nulling a column of a row reported as passed is the one
+    outcome the promotion must never produce, because every number computed
+    above it is then wrong with no trace (R-0011).
+
+    Declared precision is honoured too: ``decimal(30,6)`` was being written as
+    ``DECIMAL(18,2)`` regardless, quietly truncating four decimal places for
+    anyone whose contract asked for them.
+    """
     t = typ.lower().strip()
-    if t.startswith("decimal") or t in {"numeric", "number", "float", "double"}:
-        return f"TRY_CAST({c} AS DOUBLE) IS NOT NULL OR {c} IS NULL"
-    if t in {"integer", "int", "bigint"}:
-        return f"TRY_CAST({c} AS BIGINT) IS NOT NULL OR {c} IS NULL"
-    if t in {"date", "timestamp", "timestamptz"}:
-        return f"TRY_CAST({c} AS DATE) IS NOT NULL OR {c} IS NULL"
+    m = _DECIMAL_RE.match(t)
+    if m:
+        return f"DECIMAL({m.group(1)},{m.group(2)})"
+    if t in {"decimal", "numeric", "number"}:
+        return "DECIMAL(18,2)"
+    if t in {"float", "double"}:
+        return "DOUBLE"
+    if t in {"integer", "int"}:
+        return "INTEGER"
+    if t == "bigint":
+        return "BIGINT"
+    if t == "date":
+        return "DATE"
+    if t == "timestamptz":
+        # Keeps the offset. TIMESTAMP silently reinterpreted +08:00 as local,
+        # making a KL timestamp and a UTC one indistinguishable after promotion.
+        return "TIMESTAMPTZ"
+    if t == "timestamp":
+        return "TIMESTAMP"
     if t in {"text", "varchar", "string"}:
+        return "VARCHAR"
+    raise PipelineLoadError(
+        f"contract declares type {typ!r}, which the promoter cannot enforce. "
+        "Parameterised types must be quoted in YAML — {type: decimal(18,2)} is a flow "
+        "mapping, so the comma splits it and the type arrives as 'decimal(18'. "
+        'Write {type: "decimal(18,2)"}. '
+        "Supported: text/varchar/string, integer, bigint, decimal(p,s), numeric, "
+        "float/double, date, timestamp, timestamptz."
+    )
+
+
+def _type_check_sql(col: str, typ: str) -> str:
+    """True when the value survives the exact cast the write will perform."""
+    target = _sql_type(typ)
+    if not target or target == "VARCHAR":
         return "TRUE"
-    # unknown types: accept
-    return "TRUE"
+    c = _qi(col)
+    return f"TRY_CAST({c} AS {target}) IS NOT NULL OR {c} IS NULL"
 
 
 def _cast_sql(col: str, typ: str) -> str:
+    target = _sql_type(typ)
     c = _qi(col)
-    t = typ.lower().strip()
-    if t.startswith("decimal") or t in {"numeric", "number", "float", "double"}:
-        return f"TRY_CAST({c} AS DECIMAL(18,2))"
-    if t in {"integer", "int", "bigint"}:
-        return f"TRY_CAST({c} AS INTEGER)"
-    if t in {"date"}:
-        return f"TRY_CAST({c} AS DATE)"
-    if t in {"timestamp", "timestamptz"}:
-        return f"TRY_CAST({c} AS TIMESTAMP)"
-    return f"CAST({c} AS VARCHAR)"
+    if not target:
+        return c
+    if target == "VARCHAR":
+        return f"CAST({c} AS VARCHAR)"
+    return f"TRY_CAST({c} AS {target})"
 
 
 def _fail_reason_sql(col: str, typ: str, *, required: bool, min_v: float | None) -> str:

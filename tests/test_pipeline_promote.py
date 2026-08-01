@@ -49,7 +49,7 @@ lineage: propagate
 contract:
   columns:
     invoice_date: {type: date, required: true}
-    amount: {type: decimal(18,2), required: true, min: 0}
+    amount: {type: "decimal(18,2)", required: true, min: 0}
     region: {type: text, required: true}
     invoice_no: {type: text, required: true}
     line_no: {type: integer, required: true}
@@ -122,7 +122,7 @@ join_on: [invoice_no, line_no]
 contract:
   columns:
     invoice_date: {type: date, required: true}
-    amount: {type: decimal(18,2), required: true, min: 0}
+    amount: {type: "decimal(18,2)", required: true, min: 0}
     region: {type: text, required: true}
     invoice_no: {type: text, required: true}
     line_no: {type: integer, required: true}
@@ -150,7 +150,7 @@ target: silver.sales
 sources: [bronze.sales_raw]
 contract:
   columns:
-    amount: {type: decimal(18,2)}
+    amount: {type: "decimal(18,2)"}
 """
     with pytest.raises(PipelineLoadError, match="lineage"):
         load_pipeline_yaml(bad)
