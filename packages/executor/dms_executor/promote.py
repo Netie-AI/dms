@@ -208,11 +208,23 @@ def _build_source_relation(con: duckdb.DuckDBPyConnection, pipe: PipelineDef) ->
         select_parts.append(f"b.{_qi(c)} AS {_qi(c)}")
     for k in pipe.join_on:
         select_parts.append(f"a.{_qi(k)} AS {_qi(k)}")
-    select_parts.append("list_concat(a._src, b._src) AS _src")
+    # An unmatched left row has no b._src to concatenate; keep its own lineage.
+    select_parts.append("COALESCE(list_concat(a._src, b._src), a._src) AS _src")
     select_parts.append("a._ingest_id AS _ingest_id")
+    # LEFT, not INNER. An INNER JOIN removed unmatched rows *upstream* of the
+    # staging table, so both the passed and quarantined counters were computed
+    # over the survivors and the loss was invisible: 1000 rows joined against
+    # 997 reported passed=997, quarantined=0, counts_by_reason={} — three rows
+    # gone with no reason code, contradicting this module's own promise that
+    # rows failing the contract land in quarantine and are never dropped.
+    #
+    # Unmatched rows now reach the scorer, which quarantines them under
+    # `join_unmatched` where somebody can read them back with their lineage.
+    first_key = _qi(pipe.join_on[0])
+    select_parts.append(f"(b.{first_key} IS NOT NULL) AS _join_matched")
     return (
         f"(SELECT {', '.join(select_parts)} FROM {qa} a "
-        f"INNER JOIN {qb} b ON {on_sql})"
+        f"LEFT JOIN {qb} b ON {on_sql})"
     )
 
 
@@ -282,9 +294,16 @@ def _run_silver(
     q_table = pipe.quarantine_table
     q_qual = _qtable(q_table)
 
+    # Rows that set out, counted on the driving source before any join can
+    # change the cardinality. Without this the receipt could report passed and
+    # quarantined and still not answer "did everything arrive".
+    driving = pipe.sources[0]
+    source_rows = int(con.execute(f"SELECT COUNT(*) FROM {_qtable(driving)}").fetchone()[0])
+
     # Staging of source rows with synthetic row id for this run
     con.execute("DROP TABLE IF EXISTS _promote_stage")
     con.execute(f"CREATE TEMP TABLE _promote_stage AS SELECT * FROM {src_rel}")
+    staged_rows = int(con.execute("SELECT COUNT(*) FROM _promote_stage").fetchone()[0])
 
     biz_cols = list(contract.columns.keys())
     # Validate columns exist
@@ -341,6 +360,14 @@ def _run_silver(
                     r_sql = f"COALESCE({r_sql}, {allowed})"
         reason_exprs.append(r_sql)
         fail_col_exprs.append(f"WHEN ({r_sql}) IS NOT NULL THEN '{col}'")
+
+    # A row the join could not match is a failure with its own reason, checked
+    # before the column contract — its b-side columns are NULL for a structural
+    # reason, and reporting that as `required_null` would name the wrong cause.
+    if "_join_matched" in stage_cols:
+        join_reason = "CASE WHEN NOT _join_matched THEN 'join_unmatched' ELSE NULL END"
+        reason_exprs.insert(0, join_reason)
+        fail_col_exprs.insert(0, f"WHEN ({join_reason}) IS NOT NULL THEN '_join'")
 
     coalesce_reasons = "COALESCE(" + ", ".join(reason_exprs) + ")"
     fail_col_case = "CASE " + " ".join(fail_col_exprs) + " ELSE NULL END"
@@ -452,12 +479,22 @@ def _run_silver(
     counts = {str(r): int(c) for r, c in reason_rows}
     counts.update(expectation_notes)
 
+    # Positive means the join consumed rows; negative means it produced extra
+    # ones by fanning out on a duplicated key, which silently multiplies every
+    # amount downstream. Either way the receipt reports reconciled=false rather
+    # than a clean-looking pass.
+    unmatched = source_rows - staged_rows
+    if unmatched:
+        counts["join_cardinality_change"] = abs(unmatched)
+
     return PromoteReceipt(
         run_id=run_id,
         target=pipe.target,
         sources=list(pipe.sources),
+        source_rows=source_rows,
         passed=passed,
         quarantined=quarantined,
+        unmatched=unmatched,
         counts_by_reason=counts,
         dedup_key=list(contract.dedup_key),
         lineage=pipe.lineage,
