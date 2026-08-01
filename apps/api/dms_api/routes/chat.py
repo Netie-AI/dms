@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from cortex_client import compliance_gate
@@ -16,6 +17,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
 
 _SOFT_GATE = frozenset({"gate_unavailable", "gate_task_unknown"})
+
+#: Cortex names the offending table in the refusal; lift it so the message can
+#: tell the customer which file to add rather than which manifest complained.
+_MANIFEST_TABLE_RE = re.compile(r"table '([^']+)' is not named by this manifest")
+
+
+def _missing_table(detail: str | None) -> str | None:
+    m = _MANIFEST_TABLE_RE.search(detail or "")
+    return m.group(1) if m else None
+
 _POLICY_CODES = frozenset(
     {
         "pool_mismatch",
@@ -38,6 +49,11 @@ class AskBody(BaseModel):
     question: str = Field(min_length=1)
     space_id: str | None = None
     session_id: str | None = None
+    #: Warehouse tables the user ticked in Studio. Narrows the session manifest,
+    #: so the grounding is enforced by Cortex rather than hinted to the model.
+    #: Capped because a "scope" listing everything is not a scope, and the list
+    #: reaches manifest minting.
+    grounded_tables: list[str] | None = Field(default=None, max_length=32)
 
 
 class DrillthroughBody(BaseModel):
@@ -116,8 +132,30 @@ def chat_ask(
             body.question,
             space_id=body.space_id,
             session_id=body.session_id,
+            tables=body.grounded_tables,
         )
     except AskServiceError as exc:
+        # A grounded question that needs a table the user did not tick is not a
+        # failure — it is the scope working. Saying so beats handing back
+        # "path_not_allowed: table 'alerts' is not named by this manifest",
+        # which reads as a bug rather than as the answer to what was asked.
+        if exc.code == "path_not_allowed" and body.grounded_tables:
+            missing = _missing_table(exc.detail)
+            chosen = ", ".join(body.grounded_tables)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "outside_grounded_scope",
+                    "message": (
+                        f"That needs {missing or 'a table'}, which is not in the "
+                        f"{len(body.grounded_tables)} file(s) you grounded this question in "
+                        f"({chosen}). Widen the selection or clear it to use the whole Space."
+                    ),
+                    "grounded_tables": list(body.grounded_tables),
+                    "required_table": missing,
+                },
+            ) from exc
+
         # Never mask policy refusals with demo numbers (0 confidently wrong).
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
 import { ScopeChip } from "@/components/ScopeChip";
 import { useApp } from "@/context/AppContext";
@@ -21,13 +22,31 @@ export function ChatPage() {
     askQueueDepth,
     composerPaused,
     composerPauseReason,
+    groundedTables,
+    groundedLabels,
+    setGrounded,
   } = useApp();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, askError, asking, askQueueDepth]);
+
+  // Studio hands the selection over through router state. Consume it once and
+  // clear it, so a later back-navigation does not silently re-apply a scope the
+  // user has since cleared.
+  useEffect(() => {
+    const s = location.state as
+      | { groundedTables?: string[]; groundedLabels?: string[] }
+      | null;
+    if (s?.groundedTables?.length) {
+      setGrounded(s.groundedTables, s.groundedLabels ?? []);
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location, navigate, setGrounded]);
 
   const submit = (q: string) => {
     const trimmed = q.trim();
@@ -40,6 +59,27 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {groundedTables.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5 px-6 py-2 text-xs">
+          <span className="font-medium text-[var(--color-ink)]">
+            Grounded in {groundedTables.length}{" "}
+            {groundedTables.length === 1 ? "file" : "files"}
+          </span>
+          <span className="text-[var(--color-ink-muted)]">
+            {(groundedLabels.length ? groundedLabels : groundedTables).join(", ")}
+          </span>
+          <span className="text-[var(--color-ink-muted)]">
+            — anything outside this is refused, not just ignored.
+          </span>
+          <button
+            type="button"
+            onClick={() => setGrounded([], [])}
+            className="ml-auto text-[var(--color-accent)] hover:underline"
+          >
+            Use the whole Space
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto px-6 py-6">
         {empty ? (
           <div className="mx-auto max-w-2xl">

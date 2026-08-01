@@ -108,12 +108,39 @@ class Executor:
             return self._minter.mint_manifest(session)
         return mint_manifest_for_session(self._minter, session)
 
-    def demo_acl(self, *, session_id: str | None = None, space_id: str | None = None) -> SessionAcl:
+    def demo_acl(
+        self,
+        *,
+        session_id: str | None = None,
+        space_id: str | None = None,
+        tables: list[str] | None = None,
+    ) -> SessionAcl:
+        """Session ACL for this turn, optionally narrowed to chosen tables.
+
+        ``row_predicates`` keys *are* the readable set — the manifest is what
+        Cortex enforces — so grounding a question in specific files is not a
+        hint passed alongside the question, it is a smaller manifest. A question
+        grounded in ``transactions`` cannot read ``suppliers`` because the
+        engine will refuse the SQL, not because the prompt asked it nicely.
+
+        Unknown names are dropped rather than trusted: the caller sends whatever
+        the user ticked, and a table that is not in the demo set has no
+        predicate to grant. An empty or fully-unknown selection falls back to
+        the full set, so "ground in nothing" means "no narrowing" rather than
+        an ACL that can read nothing at all (R-0005).
+        """
+        scoped = [t for t in (tables or []) if t in DEMO_TABLES]
+        readable = scoped or list(DEMO_TABLES)
+        # A different scope is a different manifest, so it must be a different
+        # bound session — reusing the id would serve the question under whatever
+        # manifest happened to be bound first.
+        base = session_id or f"ses_{uuid4().hex[:16]}"
+        sid = f"{base}::scope:{'+'.join(sorted(scoped))}" if scoped else base
         return SessionAcl(
-            session_id=session_id or f"ses_{uuid4().hex[:16]}",
+            session_id=sid,
             org_id="tenant_demo",
             space_id=space_id,
-            row_predicates={t: "TRUE" for t in DEMO_TABLES},
+            row_predicates={t: "TRUE" for t in readable},
             allowed_paths=[],
             pool_id="default",
             ttl_seconds=900,
@@ -165,11 +192,17 @@ class Executor:
         *,
         space_id: str | None = None,
         session_id: str | None = None,
+        tables: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Mint → session_bind (once per session) → contract ask."""
+        """Mint → session_bind (once per session) → contract ask.
+
+        ``tables`` narrows the manifest to the files the user grounded the
+        question in, so the scope is enforced by the engine rather than
+        suggested to the model.
+        """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
-        acl = self.demo_acl(session_id=session_id, space_id=space_id)
+        acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
         try:

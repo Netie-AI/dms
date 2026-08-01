@@ -57,6 +57,10 @@ type AppState = {
   composerPauseReason: string | null;
   activity: ActivityState;
   setActivity: (a: ActivityState) => void;
+  /** Tables the next question is grounded in. Empty means the whole Space. */
+  groundedTables: string[];
+  groundedLabels: string[];
+  setGrounded: (tables: string[], labels?: string[]) => void;
   ask: (question: string) => Promise<void>;
   clearThread: () => void;
   focusedSourceId: string | null;
@@ -100,6 +104,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [sessionId, setSessionId] = useState(newSessionId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [askError, setAskError] = useState<string | null>(null);
+  const [groundedTables, setGroundedTables] = useState<string[]>([]);
+  const [groundedLabels, setGroundedLabels] = useState<string[]>([]);
   const [asking, setAsking] = useState(false);
   const [askQueueDepth, setAskQueueDepth] = useState(0);
   const [composerPaused, setComposerPaused] = useState(false);
@@ -110,9 +116,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [navCollapsed, setNavCollapsed] = useState(false);
   const queueRef = useRef<string[]>([]);
   const drainingRef = useRef(false);
+  const setGrounded = useCallback((tables: string[], labels: string[] = []) => {
+    setGroundedTables(tables);
+    setGroundedLabels(labels.length ? labels : tables);
+  }, []);
+
+  const groundedTablesRef = useRef(groundedTables);
   const activeSpaceIdRef = useRef(activeSpaceId);
   const sessionIdRef = useRef(sessionId);
   activeSpaceIdRef.current = activeSpaceId;
+  groundedTablesRef.current = groundedTables;
   sessionIdRef.current = sessionId;
 
   useEffect(() => {
@@ -214,6 +227,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         question: trimmed,
         space_id: activeSpaceIdRef.current,
         session_id: sessionIdRef.current,
+        grounded_tables: groundedTablesRef.current,
       });
       setMessages((prev) => [
         ...prev,
@@ -291,6 +305,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     spaces,
     spacesFromApi,
     activeSpaceId,
+    groundedTables,
+    groundedLabels,
+    setGrounded,
     activeSpace,
     role,
     setRole,

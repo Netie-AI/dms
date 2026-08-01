@@ -76,6 +76,9 @@ export type AskPayload = {
   question: string;
   space_id?: string | null;
   session_id?: string | null;
+  /** Tables the user grounded the question in. Narrows the session manifest,
+   *  so the scope is enforced by the engine, not suggested to the model. */
+  grounded_tables?: string[] | null;
 };
 
 export async function postAsk(
@@ -89,6 +92,9 @@ export async function postAsk(
       question: payload.question,
       space_id: payload.space_id ?? undefined,
       session_id: payload.session_id ?? undefined,
+      grounded_tables: payload.grounded_tables?.length
+        ? payload.grounded_tables
+        : undefined,
     }),
     signal,
   });

@@ -17,6 +17,10 @@ class AskServicePort(Protocol):
         *,
         space_id: str | None = None,
         session_id: str | None = None,
+        #: Narrow the session manifest to these warehouse tables, so a question
+        #: grounded in chosen files is enforced by the engine rather than
+        #: suggested to the model. Empty/None means the whole Space.
+        tables: list[str] | None = None,
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
