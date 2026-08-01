@@ -175,6 +175,77 @@ export function fetchLibrarySources(signal?: AbortSignal): Promise<LibrarySource
   return getJson<LibrarySource[]>("/v1/library/sources", signal);
 }
 
+/* ── Repository tree + previews ─────────────────────────────────────────────
+ * These endpoints already existed and served real data; nothing in Studio ever
+ * called them, which is why the page could only offer an Ingest button and the
+ * files a user had just uploaded were nowhere to be seen.
+ */
+
+export type TreeNode = {
+  id: string;
+  label: string;
+  kind: "folder" | "leaf";
+  children?: TreeNode[] | null;
+  /** "source" | "bronze" | "warehouse" — derived from the id prefix. */
+  meta?: Record<string, unknown> | null;
+};
+
+export type LibraryTree = {
+  space_id: string | null;
+  space_name: string | null;
+  nodes: TreeNode[];
+};
+
+export type TablePreview = {
+  table?: string;
+  columns: string[];
+  rows: Record<string, unknown>[];
+  row_count?: number;
+  total_count?: number | null;
+  truncated?: boolean;
+};
+
+export function fetchLibraryTree(
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<LibraryTree> {
+  const qs = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : "";
+  return getJson<LibraryTree>(`/v1/library/tree${qs}`, signal);
+}
+
+export function fetchBronzePreview(
+  table: string,
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<TablePreview> {
+  return getJson<TablePreview>(
+    `/v1/library/bronze/${encodeURIComponent(table)}/preview?limit=${limit}`,
+    signal,
+  );
+}
+
+export function fetchWarehousePreview(
+  table: string,
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<TablePreview> {
+  return getJson<TablePreview>(
+    `/v1/library/warehouse/${encodeURIComponent(table)}/preview?limit=${limit}`,
+    signal,
+  );
+}
+
+/** Which preview endpoint a tree node id maps to, or null when it has none. */
+export function previewForNode(
+  id: string,
+): { kind: "bronze" | "warehouse"; table: string } | null {
+  if (id.startsWith("bronze:")) return { kind: "bronze", table: id.slice("bronze:".length) };
+  if (id.startsWith("warehouse:")) {
+    return { kind: "warehouse", table: id.slice("warehouse:".length) };
+  }
+  return null;
+}
+
 export async function createSpace(
   name: string,
 ): Promise<{ space: SpaceSummary; persisted: boolean; hint?: string }> {
