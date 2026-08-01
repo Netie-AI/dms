@@ -33,6 +33,71 @@ def _safe_table_stem(filename: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40]
 
 
+#: Which source file each bronze table was built from. Bronze tables carry
+#: ``_ingest_id`` per row but nothing recorded the *file*, so a second upload
+#: could take over an existing table's name with no way to tell afterwards that
+#: it had ever belonged to something else.
+_REGISTRY = "bronze._ingest_registry"
+
+
+def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_REGISTRY} (
+          table_name VARCHAR PRIMARY KEY,
+          filename   VARCHAR,
+          sha256     VARCHAR,
+          ingest_id  VARCHAR,
+          created_at TIMESTAMPTZ
+        )
+        """
+    )
+
+
+def _claim_table_name(
+    con: duckdb.DuckDBPyConnection, *, stem: str, filename: str, digest: str
+) -> tuple[str, str | None]:
+    """Return (table_name, collision_note) for this file.
+
+    ``_safe_table_stem`` keys on ``Path(filename).stem``, so ``2023/sales.csv``
+    and ``2024/sales.csv`` both resolve to ``sales`` — and ingest then ran an
+    unconditional ``DROP TABLE``. Uploading a folder destroyed one file with the
+    other while the receipt reported both as ingested, and the shipped folder
+    picker makes that a single click.
+
+    Re-uploading the *same* file keeps overwriting its own table, which is what
+    a person means by re-ingesting. A *different* file gets its own name,
+    disambiguated by a digest of the full path, and the collision is reported
+    rather than resolved in silence.
+    """
+    _ensure_registry(con)
+    row = con.execute(
+        f"SELECT filename FROM {_REGISTRY} WHERE table_name = ?", [stem]
+    ).fetchone()
+    if row is None or row[0] == filename:
+        return stem, None
+    suffix = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:8]
+    return (
+        f"{stem[:31]}_{suffix}",
+        f"name {stem!r} already holds {row[0]!r}; stored separately",
+    )
+
+
+def _record_ingest(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    table_name: str,
+    filename: str,
+    digest: str,
+    ingest_id: str,
+) -> None:
+    con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
+    con.execute(
+        f"INSERT INTO {_REGISTRY} VALUES (?, ?, ?, ?, now())",
+        [table_name, filename, digest, ingest_id],
+    )
+
+
 def ingest_csv_bytes(
     *,
     filename: str,
@@ -82,7 +147,9 @@ def ingest_csv_bytes(
         )
 
     db = ensure_demo_warehouse(path or warehouse_path())
+    digest = _sha256(data)
     safe = table_name or _safe_table_stem(filename)
+    collision_note: str | None = None
     # Prefer medallion schema bronze.<name>; also keep bronze_<name> alias path via schema
     table_qual = f"bronze.{safe}"
     tmp = db.parent / f"_ingest_{ingest_id}.csv"
@@ -94,12 +161,22 @@ def ingest_csv_bytes(
     con = duckdb.connect(str(db))
     try:
         ensure_lake_schemas(con)
-        con.execute(f'DROP TABLE IF EXISTS bronze."{safe}"')
+        if table_name is None:
+            safe, collision_note = _claim_table_name(
+                con, stem=safe, filename=filename, digest=digest
+            )
+            table_qual = f"bronze.{safe}"
+        # Build beside the existing table, then swap. The DROP used to run
+        # before the CREATE, so a file that failed to parse left the previous
+        # table already destroyed while the receipt reported quarantined=1 —
+        # the ingest looked rejected and had in fact deleted something.
+        staging = f"_ing_{ingest_id.replace('-', '')[:16]}"
+        con.execute(f'DROP TABLE IF EXISTS bronze."{staging}"')
         # Provenance: _src is STRUCT(ref_id, row)[] — joins concatenate arrays
         # DuckDB: 'row' is reserved in struct_pack(:=); use struct literal instead.
         con.execute(
             f"""
-            CREATE TABLE bronze."{safe}" AS
+            CREATE TABLE bronze."{staging}" AS
             SELECT
               src.*,
               [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
@@ -114,8 +191,18 @@ def ingest_csv_bytes(
             ) AS src
             """
         )
-        n = int(con.execute(f'SELECT COUNT(*) FROM bronze."{safe}"').fetchone()[0])
+        n = int(con.execute(f'SELECT COUNT(*) FROM bronze."{staging}"').fetchone()[0])
+        # Parse succeeded — only now is it safe to replace the previous table.
+        con.execute(f'DROP TABLE IF EXISTS bronze."{safe}"')
+        con.execute(f'ALTER TABLE bronze."{staging}" RENAME TO "{safe}"')
+        _record_ingest(
+            con, table_name=safe, filename=filename, digest=digest, ingest_id=ingest_id
+        )
     except Exception as exc:  # noqa: BLE001
+        try:
+            con.execute(f'DROP TABLE IF EXISTS bronze."{staging}"')
+        except Exception:  # noqa: BLE001
+            pass
         return IngestReceipt(
             files_seen=files_seen,
             ingested=0,
@@ -128,12 +215,11 @@ def ingest_csv_bytes(
         con.close()
         tmp.unlink(missing_ok=True)
 
-    _ = _sha256(data)
     return IngestReceipt(
         files_seen=files_seen,
         ingested=n,
         quarantined=0,
-        reasons=[],
+        reasons=([{"file": filename, "reason": collision_note}] if collision_note else []),
         ingest_id=ingest_id,
         source_ref_id=ref_id,
         table=table_qual,
