@@ -159,6 +159,64 @@ def test_the_two_spaces_are_not_handed_the_same_session(minter: ManifestMinter) 
     assert fin.session_id != ops.session_id
 
 
+def test_the_engine_refusal_reaches_the_customer_as_an_envelope(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dms#2 acceptance, at the layer the customer receives it (R-0001).
+
+    When Cortex refuses the SQL because the manifest does not name the table,
+    the customer must get ``abstained: true`` with a reason - not the raw
+    "path_not_allowed / Unexpected status code: 403", which reads as a crash
+    where an answer goes. This is the half of the demo that must look
+    deliberate, so it is asserted over HTTP rather than on the exception.
+    """
+    from dms_api import settings as settings_mod
+    from dms_api.app import create_app
+    from dms_core.ask import AskServiceError
+    from fastapi.testclient import TestClient
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    settings_mod.get_settings.cache_clear()
+
+    class RefusingCortex(ManifestEnforcingCortex):
+        def ask(self, req: Any) -> AskResponse:
+            raise AskServiceError(
+                "path_not_allowed", "table 'suppliers' is not named by this manifest"
+            )
+
+    cortex = RefusingCortex()
+    app = create_app()
+    app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+    app.state.cortex = cortex
+    client = TestClient(app)
+
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "What is our total spend by supplier country?",
+            "space_id": WAREHOUSE_OPS,
+            "session_id": "ses_refused",
+        },
+    )
+
+    assert r.status_code == 200, "a refusal is an answer, not an error page"
+    env = r.json()
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert not env["rows"]
+    # Names the table and says what to do next (R-0005).
+    assert "suppliers" in env["text"]
+    assert "Warehouse Ops" in env["text"]
+    assert env["demo_fallback_used"] is False, "a refusal must never be papered over"
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.delenv("DMS_ASK_MODE", raising=False)
+    monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
+    settings_mod.get_settings.cache_clear()
+
+
 def test_switching_space_mid_chat_does_not_reuse_the_first_binding(
     minter: ManifestMinter,
 ) -> None:

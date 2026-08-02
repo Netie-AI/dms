@@ -47,10 +47,15 @@ Write-Host "DMS open-all - repo $RepoRoot" -ForegroundColor Cyan
 Write-Host "OPENVAULT_HOME=$($env:OPENVAULT_HOME)"
 
 # --- Postgres (compose) ---
-Write-Host "Compose postgres..."
+# The base compose file deliberately leaves postgres on `expose: 5432` so the
+# appliance keeps Caddy as its only public port. This script runs the API on the
+# host, so it must name the hostdb overlay too - without it the container is
+# healthy and unreachable, the API silently falls back to the in-process Space
+# store, and Spaces stop persisting across a restart.
+Write-Host "Compose postgres (with host binding)..."
 Push-Location $ComposeDir
 try {
-  docker compose up -d postgres 2>$null | Out-Null
+  docker compose -f docker-compose.yml -f docker-compose.hostdb.yml up -d postgres 2>$null | Out-Null
   docker compose up -d api 2>$null | Out-Null
 } catch {
   Write-Host "Docker compose skipped/failed: $_" -ForegroundColor Yellow

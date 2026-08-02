@@ -60,6 +60,40 @@ class DrillthroughBody(BaseModel):
     token: str = Field(min_length=1)
 
 
+def _space_refusal_envelope(
+    *,
+    space_id: str,
+    space_name: str | None,
+    missing_table: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Render a Space-boundary refusal as an answer, not as an error.
+
+    dms#2 acceptance: a question needing a table this Space has no grant for
+    returns ``abstained: true`` with a reason on the envelope. A green badge
+    over a refusal is a P0, and so is a raw engine error where an answer goes.
+    """
+    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+
+    where = f"in {space_name}" if space_name else "in this Space"
+    subject = f"{missing_table} data" if missing_table else "data"
+    env = build_answer_envelope(
+        answer_id=f"ans_refused_{space_id[:8]}",
+        text=(
+            f"I can't answer that {where}. It needs {subject}, which this Space "
+            f"has no access to. Ask in a Space that holds it, or request the grant."
+        ),
+        badge="ABSTAIN",
+        abstained=True,
+        assumptions=["refused by the Space boundary"],
+        ask_mode="live",
+        space_id=space_id,
+        session_id=session_id,
+    )
+    assert_envelope_valid(env)
+    return env
+
+
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     """E6 — demo_fallback_used must set an unmissable banner flag."""
     from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -169,6 +203,20 @@ def chat_ask(
                     "required_table": missing,
                 },
             ) from exc
+
+        # The Space boundary refusing is the control working, and dms#2 requires
+        # it to arrive as an envelope with abstained: true and a reason - not as
+        # a raw "path_not_allowed / Unexpected status code: 403", which reads as
+        # a crash. This is the half of the demo that must look deliberate.
+        if exc.code == "path_not_allowed" and body.space_id:
+            space = store.get(body.space_id)
+            missing = _missing_table(exc.detail)
+            return _space_refusal_envelope(
+                space_id=body.space_id,
+                space_name=getattr(space, "name", None),
+                missing_table=missing,
+                session_id=body.session_id,
+            )
 
         # Never mask policy refusals with demo numbers (0 confidently wrong).
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
