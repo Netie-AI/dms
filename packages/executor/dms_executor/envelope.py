@@ -120,6 +120,7 @@ def build_answer_envelope(
     suggestions: list[str] | None = None,
     route: str | None = None,
     demo_fallback_banner: bool | None = None,
+    grounded_tables: list[str] | None = None,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -175,6 +176,11 @@ def build_answer_envelope(
         "chart": chart,
         "suggestions": list(suggestions or []),
         "route": route,
+        # What the manifest actually granted this turn. The UI used to count its
+        # own selection list, which said "Grounded in 1 file" over a manifest
+        # holding all six demo tables (dms#5). The count a viewer reads has to
+        # come from the manifest, not from the request that asked for it.
+        "grounded_tables": list(grounded_tables or []),
     }
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)

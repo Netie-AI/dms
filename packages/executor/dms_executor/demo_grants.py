@@ -16,10 +16,15 @@ so nothing below may grow a rule keyed on a specific table name.
 
 from __future__ import annotations
 
+import logging
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from dms_executor.acl import SourceGrant
+
+logger = logging.getLogger(__name__)
 
 #: Namespace for deriving a stable source id per table name. The demo has no
 #: source registry, so ids are derived rather than stored.
@@ -67,17 +72,43 @@ def space_name(space_id: str) -> str | None:
     return entry[0] if entry else None
 
 
+def ingested_bronze_tables(path: Path | None = None) -> tuple[str, ...]:
+    """Uploaded tables, from the ingest registry.
+
+    An uploaded bronze table has no ``data_sources`` row and so is not grantable
+    by the seeded path at all — which is why grounding a question on your own
+    upload used to fall back to the whole demo warehouse. The ingest registry
+    already records every table ingest created, so it is the source of truth for
+    "exists, was never seeded".
+    """
+    from dms_executor.bronze import list_bronze_tables
+
+    try:
+        return tuple(t["table"] for t in list_bronze_tables(path=path))
+    except Exception as exc:  # noqa: BLE001
+        # A warehouse that cannot be read must not silently mean "no uploads are
+        # grantable" — that would present as your own file being refused.
+        logger.warning("could not list bronze tables for grants: %s", exc)
+        return ()
+
+
 @dataclass(frozen=True)
 class DemoSessionStore:
-    """``SessionStore`` over the DR-0002 seed.
+    """``SessionStore`` over the DR-0002 seed, plus whatever has been uploaded.
 
-    ``extra_grants`` carries sources that exist but were never seeded — an
-    uploaded bronze table is grantable to the Space that uploaded it, and is not
-    in the demo seed. Without it, grounding a question in your own upload would
-    refuse (R-0005).
+    **Known limitation.** Ingest does not record which Space an upload belongs
+    to, so an uploaded table is grantable from any Space in the demo tenant. The
+    grounding selection still narrows it to exactly what was ticked, which is
+    what dms#5 required; making the upload itself Space-scoped needs ingest to
+    carry a space_id. Parked with that unlock condition rather than left silent.
     """
 
     extra_grants: tuple[str, ...] = ()
+    #: Read at call time, not construction time — uploads land after startup.
+    uploads: Callable[[], tuple[str, ...]] = field(default=ingested_bronze_tables)
+
+    def _uploaded(self) -> tuple[str, ...]:
+        return tuple(self.uploads())
 
     def _tables_for(self, space_id: str) -> tuple[str, ...]:
         entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space_id))
@@ -89,11 +120,12 @@ class DemoSessionStore:
         return canonical_space_id(space_id) in DEMO_SPACE_GRANTS
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
-        tables = (*self._tables_for(space_id), *self.extra_grants)
+        tables = (*self._tables_for(space_id), *self.extra_grants, *self._uploaded())
         return [source_id_for(t) for t in tables]
 
     def list_user_source_grants(self, tenant_id: str, user_id: str) -> list[SourceGrant]:
         seeded = {t for _, tables in DEMO_SPACE_GRANTS.values() for t in tables}
+        every = seeded | set(self.extra_grants) | set(self._uploaded())
         return [
             SourceGrant(
                 source_id=source_id_for(t),
@@ -101,7 +133,7 @@ class DemoSessionStore:
                 table_name=t,
                 row_predicate="TRUE",
             )
-            for t in sorted(seeded | set(self.extra_grants))
+            for t in sorted(every)
         ]
 
     def default_pool_id(self, tenant_id: str) -> str:

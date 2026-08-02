@@ -13,7 +13,7 @@ from uuid import uuid4
 from cortex_client import CortexClient
 from cortex_client.models import AskRequest, AskResponse
 from cortex_contract.execution import PoolSpec, SubmitRequest
-from dms_core.ask import AskServiceError
+from dms_core.ask import AskServiceError, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
 from dms_executor.acl import (
@@ -32,7 +32,7 @@ from dms_executor.bronze import (
 )
 from dms_executor.contract_infer import infer_contract
 from dms_executor.demo_ask import answer_demo_question
-from dms_executor.demo_grants import DemoSessionStore
+from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
 from dms_executor.manifest import (
     ManifestMinter,
@@ -59,6 +59,8 @@ DEMO_TENANT_ID = "tenant_demo"
 DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
+
+
 class Executor:
     """Serving engine + manifest-aware submit path."""
 
@@ -80,7 +82,12 @@ class Executor:
         # The Space boundary reads its facts from here. Defaults to the DR-0002
         # seed so the boundary holds without Postgres; swap for a Postgres-backed
         # store when P-DMS-2 lands, without touching the serving path.
-        self._session_store = session_store or DemoSessionStore()
+        self._session_store = session_store or DemoSessionStore(
+            # Bound to this Executor's warehouse, not the process-wide default,
+            # so an Executor pointed at another warehouse grants that one's
+            # uploads rather than the demo warehouse's.
+            uploads=lambda: ingested_bronze_tables(self._warehouse)
+        )
         if fetch_key_on_start:
             self.startup()
 
@@ -137,7 +144,17 @@ class Executor:
         decorative.
         """
         if space_id is None:
-            return list(DEMO_TABLES)
+            # The demo set plus anything uploaded. An upload has no data_sources
+            # row, so it is grantable only through the store — without this,
+            # grounding on your own file outside a Space had nothing to grant.
+            uploaded = {
+                g.table_name
+                for g in self._session_store.list_user_source_grants(
+                    DEMO_TENANT_ID, DEMO_USER_ID
+                )
+                if g.table_name and g.table_name not in DEMO_TABLES
+            }
+            return sorted({*DEMO_TABLES, *uploaded})
         ctx = intersect_space_grants(
             self._session_store,
             tenant_id=DEMO_TENANT_ID,
@@ -165,11 +182,15 @@ class Executor:
         grounded in ``transactions`` cannot read ``suppliers`` because the
         engine will refuse the SQL, not because the prompt asked it nicely.
 
-        Unknown names are dropped rather than trusted: the caller sends whatever
-        the user ticked, and a table that is not in the demo set has no
-        predicate to grant. An empty or fully-unknown selection falls back to
-        the full set, so "ground in nothing" means "no narrowing" rather than
-        an ACL that can read nothing at all (R-0005).
+        A selected table that cannot be granted is **refused, not dropped**.
+        Dropping it silently emptied the selection, and an empty selection fell
+        back to the full set — so ticking one uploaded file, which is never in
+        the demo set, granted the entire demo warehouse while the UI read
+        "Grounded in 1 file". Widening silently is the defect; refusing loudly
+        is acceptable (R-0005), provided the refusal names what to do next.
+
+        No selection at all still means no narrowing. "Ground in nothing" is not
+        the same request as "ground in something I cannot have".
 
         With a ``space_id`` the grantable set is the Space's grants, not the
         whole warehouse (DR-0002). Without one the caller is outside any Space
@@ -177,8 +198,15 @@ class Executor:
         being skipped.
         """
         grantable = self.grantable_tables(space_id=space_id)
-        scoped = [t for t in (tables or []) if t in grantable]
-        readable = scoped or grantable
+        selection = [t for t in (tables or []) if t]
+        ungrantable = [t for t in selection if t not in grantable]
+        if ungrantable:
+            raise GroundingRefused(ungrantable=ungrantable, grantable=grantable)
+        # An upload is grantable on request but is not part of the default
+        # readable set: asking with nothing ticked must not quietly widen the
+        # manifest to every file anyone has ever uploaded.
+        default_readable = [t for t in grantable if t in DEMO_TABLES]
+        readable = selection or default_readable
         # A different manifest must be a different bound session — reusing the id
         # would serve the question under whatever manifest happened to be bound
         # first. That guard covered the grounding scope but not the Space, so
@@ -188,8 +216,8 @@ class Executor:
         parts = []
         if space_id:
             parts.append(f"space:{space_id}")
-        if scoped:
-            parts.append(f"scope:{'+'.join(sorted(scoped))}")
+        if selection:
+            parts.append(f"scope:{'+'.join(sorted(selection))}")
         sid = f"{base}::{'::'.join(parts)}" if parts else base
         return SessionAcl(
             session_id=sid,
@@ -282,7 +310,14 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
-        return map_ask_response_to_envelope(resp, space_id=space_id, session_id=acl.session_id)
+        return map_ask_response_to_envelope(
+            resp,
+            space_id=space_id,
+            session_id=acl.session_id,
+            # The manifest that was actually minted, so the count the viewer
+            # reads comes from the grant and not from the request.
+            grounded_tables=sorted(acl.row_predicates),
+        )
 
     def submit_sql(
         self,
@@ -336,6 +371,7 @@ def map_ask_response_to_envelope(
     *,
     space_id: str | None = None,
     session_id: str | None = None,
+    grounded_tables: list[str] | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -423,6 +459,7 @@ def map_ask_response_to_envelope(
         audit_id=resp.receipt_id or resp.audit_id,
         route=resp.route,
         drillthrough_token=None if abstained else token,
+        grounded_tables=grounded_tables,
     )
     assert_envelope_valid(env)
     return env

@@ -296,11 +296,16 @@ def list_bronze_tables(*, path: Path | None = None) -> list[dict[str, Any]]:
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db), read_only=True)
     try:
+        # Internal bookkeeping tables are named with a leading underscore and
+        # must not reach the file picker — _ingest_registry used to exist only
+        # after a CSV ingest, and now that it is created up front it would
+        # otherwise appear as a tickable "file" in Studio.
         rows = con.execute(
             """
             SELECT table_schema, table_name FROM information_schema.tables
-            WHERE (table_schema = 'bronze')
-               OR (table_schema = 'main' AND table_name LIKE 'bronze_%')
+            WHERE ((table_schema = 'bronze')
+                OR (table_schema = 'main' AND table_name LIKE 'bronze_%'))
+              AND table_name NOT LIKE '\\_%' ESCAPE '\\'
             ORDER BY table_schema, table_name
             """
         ).fetchall()

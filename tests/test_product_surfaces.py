@@ -190,7 +190,7 @@ def test_duplicate_space_name_is_a_conflict(client, gate_allows):
 
 def test_space_sources_scope_to_that_space(client):
     spaces = client.get("/v1/spaces").json()
-    q3 = next(s for s in spaces if s["name"] == "Q3 Audit")
+    q3 = next(s for s in spaces if s["name"] == "Finance")
     body = client.get(f"/v1/spaces/{q3['id']}/sources").json()
     assert body["count"] == len(body["sources"])
     assert all(s["space_id"] == q3["id"] for s in body["sources"])

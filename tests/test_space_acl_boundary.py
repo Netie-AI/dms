@@ -3,14 +3,14 @@
 SPACES.md invariant 1 requires enforcement, not hiding. ``Executor.live_ask``
 used to mint its manifest from ``demo_acl()``, which allowlisted every demo
 table with predicate ``TRUE`` regardless of ``space_id`` — so the manifest
-minted for "Q3 Audit", for "Margin sandbox", and for no Space at all were
+minted for "Finance", for "Warehouse Ops", and for no Space at all were
 byte-identical apart from the ``space_id`` label. Any user passing any Space id
 that merely existed read the whole warehouse, and the envelope stamped a green
 badge over it.
 
-Confirmed live before the fix: "Margin sandbox" carries only ``inventory`` and
-``locations`` sources, and a ``transactions`` question asked inside it returned
-full revenue with badge ``L0_CERTIFIED``.
+Confirmed live before the fix: "Warehouse Ops" (then named "Margin sandbox")
+carried only ``inventory`` and ``locations`` sources, and a ``transactions``
+question asked inside it returned full revenue with badge ``L0_CERTIFIED``.
 
 ``intersect_space_grants``/``resolve_session_acl`` always implemented the
 intersection correctly and were green in CI — they simply had no production
@@ -98,10 +98,10 @@ def test_two_spaces_do_not_mint_the_same_acl() -> None:
 
 
 def test_a_space_cannot_read_a_table_it_has_no_source_for() -> None:
-    """Margin sandbox holds inventory + locations. It must not reach transactions.
+    """Warehouse Ops holds locations, inventory and shipments. Not transactions.
 
-    Confirmed live before this test existed: asking for revenue inside Margin
-    sandbox returned the full ranking, badge L0_CERTIFIED.
+    Confirmed live before this test existed: asking for revenue inside that
+    Space returned the full ranking, badge L0_CERTIFIED.
     """
     acl = Executor(cortex=None).demo_acl(session_id="ses", space_id=MARGIN)
 

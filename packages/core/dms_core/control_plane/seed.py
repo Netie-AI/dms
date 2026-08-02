@@ -49,7 +49,7 @@ def seed_demo_tenant(conninfo: str) -> None:
             """,
             (TENANT_ID, USER_ID, role[0]),
         )
-        for sid, name in ((SPACE_Q3, "Q3 Audit"), (SPACE_MARGIN, "Margin sandbox")):
+        for sid, name in ((SPACE_Q3, "Finance"), (SPACE_MARGIN, "Warehouse Ops")):
             conn.execute(
                 """
                 INSERT INTO dms.spaces (id, tenant_id, name, created_by)
@@ -64,7 +64,7 @@ def seed_demo_tenant(conninfo: str) -> None:
                 """,
                 (sid, TENANT_ID, USER_ID),
             )
-        # Synthetic sources attached to Q3 Audit
+        # Synthetic sources attached to Finance
         for kind, ref in (
             ("xlsx", "Q3_sales_final_v2.xlsx"),
             ("xlsx", "KL_branch_sales.xlsx"),

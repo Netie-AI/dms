@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from cortex_client import compliance_gate
-from dms_core.ask import AskServiceError
+from dms_core.ask import AskServiceError, GroundingRefused
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -134,6 +134,20 @@ def chat_ask(
             session_id=body.session_id,
             tables=body.grounded_tables,
         )
+    except GroundingRefused as exc:
+        # Refusing is the fix, not the failure: this used to widen the manifest
+        # to the whole demo warehouse while the UI read "Grounded in 1 file".
+        # Demo fallback must not catch this either — answering from demo numbers
+        # after refusing the requested scope is the same lie in a new costume.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "ungrantable_tables": list(exc.ungrantable),
+                "grantable_tables": list(exc.grantable),
+            },
+        ) from exc
     except AskServiceError as exc:
         # A grounded question that needs a table the user did not tick is not a
         # failure — it is the scope working. Saying so beats handing back

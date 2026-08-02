@@ -23,18 +23,18 @@ def list_sources(settings: SettingsDep) -> list[dict[str, Any]]:
             {
                 "id": "src_q3_sales",
                 "kind": "xlsx",
-                "ref": "Q3 Audit/workbooks/sales_q3.xlsx",
+                "ref": "Finance/workbooks/sales_q3.xlsx",
                 "scope": "team",
                 "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "space_name": "Q3 Audit",
+                "space_name": "Finance",
             },
             {
                 "id": "src_q3_inv",
                 "kind": "csv",
-                "ref": "Q3 Audit/csv/inventory_snapshot.csv",
+                "ref": "Finance/csv/inventory_snapshot.csv",
                 "scope": "team",
                 "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "space_name": "Q3 Audit",
+                "space_name": "Finance",
             },
             {
                 "id": "src_company_gl",

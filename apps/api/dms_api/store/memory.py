@@ -13,7 +13,7 @@ from dms_core.control_plane.spaces import SpaceRecord
 class DemoSpaceStore:
     _spaces: list[SpaceRecord] = field(default_factory=list)
     #: Old ids that still resolve on `get` but must not appear in the catalog —
-    #: the Spaces page lists this store, and two "Q3 Audit" rows read as a bug.
+    #: the Spaces page lists this store, and two "Finance" rows read as a bug.
     _aliases: list[SpaceRecord] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock)
 
@@ -23,21 +23,21 @@ class DemoSpaceStore:
             _spaces=[
                 SpaceRecord(
                     id="cccccccc-cccc-cccc-cccc-cccccccccccc",
-                    name="Q3 Audit",
+                    name="Finance",
                     source_count=3,
                     member_count=1,
                 ),
                 SpaceRecord(
                     id="dddddddd-dddd-dddd-dddd-dddddddddddd",
-                    name="Margin sandbox",
+                    name="Warehouse Ops",
                     source_count=2,
                     member_count=1,
                 ),
             ],
             _aliases=[
                 # Compat ids used by older smoke / live-ask tests: still askable.
-                SpaceRecord(id="sp_q3_audit", name="Q3 Audit", source_count=3, member_count=1),
-                SpaceRecord(id="sp_margin", name="Margin sandbox", source_count=2, member_count=1),
+                SpaceRecord(id="sp_q3_audit", name="Finance", source_count=4, member_count=1),
+                SpaceRecord(id="sp_margin", name="Warehouse Ops", source_count=3, member_count=1),
             ],
         )
 
