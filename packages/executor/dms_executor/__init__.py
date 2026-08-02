@@ -36,11 +36,6 @@ from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.library_tree import build_library_tree
-from dms_executor.warehouse_browse import (
-    list_warehouse_tables,
-    preview_bronze_table,
-    preview_warehouse_table,
-)
 from dms_executor.manifest import (
     ManifestMinter,
     SessionAcl,
@@ -57,6 +52,11 @@ from dms_executor.pipeline_loader import (
 )
 from dms_executor.promote import run_promote, sign_gold_metric
 from dms_executor.triage import classify_bytes, classify_grid
+from dms_executor.warehouse_browse import (
+    list_warehouse_tables,
+    preview_bronze_table,
+    preview_warehouse_table,
+)
 
 logger = logging.getLogger(__name__)
 
