@@ -6,10 +6,9 @@
 
 ## Rule
 
-Architecture sequence T3 → T7-at-ingest → T4 → T5/T6 → T8 → **T12 → T13**.  
-Demo-ready = `DMS_ASK_MODE=live` + `DMS_DEMO_FALLBACK=0` (both are the defaults).
-
-Desktop: `scripts\windows\Start-DMS.bat` (ASCII-only; PowerShell 5.1 breaks on em-dash).
+Sequence T3 → T7-at-ingest → T4 → T5/T6 → T8 → **T12 → T13**. Demo-ready =
+`DMS_ASK_MODE=live` + `DMS_DEMO_FALLBACK=0` (both defaults). Launcher scripts are
+ASCII-only; PowerShell 5.1 breaks on em-dash.
 
 ## Demo is green (verified live 2026-08-02)
 
@@ -18,8 +17,7 @@ Desktop: `scripts\windows\Start-DMS.bat` (ASCII-only; PowerShell 5.1 breaks on e
 | Check | Result |
 |-------|--------|
 | xlsx into a fresh warehouse | receipt names the table and the true row count |
-| grounding on one upload | manifest holds exactly that table; UI count matches |
-| ungrantable selection | refused by name, never widened |
+| grounding on one upload | manifest holds exactly it; UI count matches; ungrantable refused |
 | "total stock value by category" | answers in **both** Spaces, `L0_CERTIFIED` |
 | "total spend by supplier country" | answers in **Finance**, abstains in **Warehouse Ops** |
 | demo fallback | off everywhere; no answer is a fallback |
@@ -43,10 +41,9 @@ python D:\DMS\scripts\verify_demo_live.py
 | ID | What |
 |----|------|
 | **#4** P0-DEMO-01 | receipt no longer denies rows that landed; swap+record is one transaction |
-| **#2** ACL-01 | Space boundary holds on the serving path per DR-0002; second leak found and fixed (bound session id ignored Space) |
+| **#2** ACL-01 | boundary holds on the serving path per DR-0002; second leak fixed (bound session id ignored Space); Spaces renamed |
 | **#5** P0-DEMO-03 | manifest minted from the selection; refuses rather than widens |
-| Demo Spaces | renamed to DR-0002 `Finance` / `Warehouse Ops` |
-| Postgres | host-reachable — `Start-DMSStack` names the hostdb overlay; 18 control-plane tests run instead of erroring |
+| Postgres | host-reachable via the hostdb overlay; 18 control-plane tests run instead of erroring |
 
 Corpus: **188 passed**, 0 xfail. Ruff clean on `apps packages tests`.
 
@@ -60,6 +57,4 @@ Corpus: **188 passed**, 0 xfail. Ruff clean on `apps packages tests`.
 | C7-full / C7-prod | schema retrieval + FreeRoute SQL gen |
 | C10 | claim_n 47 → 310 via `verify_gold --review` |
 
-## Design
-
-Paper / navy / teal / Figtree+Fraunces.
+Design: paper / navy / teal / Figtree+Fraunces.
