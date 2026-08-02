@@ -135,6 +135,26 @@ Governed SQL + provenance + abstain + amend — not Instant RAG clone.
 Generate configurable mock Parquet/DuckDB; measure ask latency. Do **not** commit multi-TB binaries.  
 **Condition:** after interactive Studio lane (P-DMS-12); script `scripts/gen_mock_warehouse.py` TBD.
 
+## P-DMS-26 - an uploaded table is grantable from any Space
+
+Ingest records no `space_id`, so a bronze table created by an upload is
+grantable from every Space in the demo tenant. Grounding still narrows a
+question to exactly what was ticked (dms#5), so the manifest never widens - but
+the upload itself is not Space-scoped the way the six seeded tables are.
+**Condition:** ingest carries a `space_id` end to end (Studio upload -> route ->
+`ingest_batch` -> registry), at which point `DemoSessionStore` grants it to the
+owning Space only.
+
+## P-DMS-27 - mypy and import-linter debt that CI never surfaced
+
+CI-02 kept Ruff, Mypy, import-linter and the test suite from ever running. With
+the checkout step reached, mypy reports 19 errors (mostly `fetchone()` returning
+`tuple | None` and being indexed) and import-linter reports one broken contract:
+`dms_api.routes.chat -> dms_executor.envelope` and `dms_api.wiring ->
+dms_executor.{library_tree,warehouse_browse}`. Both pre-date this pass and are
+unrelated to the demo path.
+**Condition:** CI-02 credential resolved, so the gates run and stay green.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

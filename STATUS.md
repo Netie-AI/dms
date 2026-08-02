@@ -1,68 +1,58 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-07-31  
+**Last updated:** 2026-08-02  
 **North star:** [DMS_TECHNICAL_ARCHITECTURE.md](DMS_TECHNICAL_ARCHITECTURE.md) §15  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Rule
 
 Architecture sequence T3 → T7-at-ingest → T4 → T5/T6 → T8 → **T12 → T13**.  
-`demo_ask` = offline only (`DMS_ASK_MODE=demo`). **`DMS_DEMO_FALLBACK` defaults off**; if on, UI shows a permanent banner. Demo-ready = `DMS_ASK_MODE=live` + `DMS_DEMO_FALLBACK=0`.
+Demo-ready = `DMS_ASK_MODE=live` + `DMS_DEMO_FALLBACK=0` (both are the defaults).
 
-Desktop: `scripts\windows\Start-DMS.bat` (ASCII-only; PowerShell 5.1 breaks on em-dash/ellipsis).
+Desktop: `scripts\windows\Start-DMS.bat` (ASCII-only; PowerShell 5.1 breaks on em-dash).
 
-## Contract bridge
+## Demo is green (verified live 2026-08-02)
+
+`python scripts/verify_demo_live.py` → **18/18** against DMS + Cortex + OpenVault.
 
 | Check | Result |
 |-------|--------|
-| Vendored OpenAPI | `openapi-1.2.0.json` sha256 matches Cortex |
-| pyproject pin | `cortex-contract>=1.2.0,<2` + **real wheel** install |
-| Wheel | `D:\Cortex\scripts\windows\Build-CortexContractWheel.ps1` → `cortex_contract-1.2.0-py3-none-any.whl` |
-| CI | builds wheel from sparse checkout (no editable) |
-| Secrets | `D:\NetieSecrets\Cortex.env.local` |
+| xlsx into a fresh warehouse | receipt names the table and the true row count |
+| grounding on one upload | manifest holds exactly that table; UI count matches |
+| ungrantable selection | refused by name, never widened |
+| "total stock value by category" | answers in **both** Spaces, `L0_CERTIFIED` |
+| "total spend by supplier country" | answers in **Finance**, abstains in **Warehouse Ops** |
+| demo fallback | off everywhere; no answer is a fallback |
 
-## This session (2026-07-31)
-
-| Item | Status |
-|------|--------|
-| Start-DMSStack.ps1 parse error | **Fixed** — ASCII-only (em-dash was the `}` parser failure) |
-| **C7-min** | **Shipped** — `sql_validate_gate.py` + submit EXPLAIN + L2 stub; tests green |
-| **C10** | **Harness + 11 cats** — `bench/adversarial.py` + gated CI; paraphrases grown; value_normalization golden |
-| **P-DMS-24** | **Closed** — DuckLake orphan snapshots; recipe `docs/POWERBI_DUCKLAKE.md` |
-| **P-DMS-25** | **Closed locally** — wheel build + release.yml asset + DMS pin/CI/README |
-
-## Progress
-
-| ID | Status |
-|----|--------|
-| T0–T8, T12/T13 | done / done+ |
-| C3/C4-min | done |
-| **C7-min** | **done** (EXPLAIN gate; L2 model still abstains — correct) |
-| **C8** | **done on Cortex** (2026-07-31) — `data/engine/query_run.db`; DMS Runs UI still needs Postgres |
-| **C7-full / C7-prod** | open — schema retrieval + FreeRoute SQL gen + product hardening |
-| **C10** | **in progress** — adversarial harness live; claim_n 47 → 310 via `verify_gold --review` |
-| T14 | next after C7-prod / claim floor |
-
-## Near-term (aligned with Cortex `DMS_ANCHORED_SEQUENCE.md`)
-
-```
-YOU     push when ready (explicit paths)
-        │
-        ├─► C7-prod   schema gate + envelope asserts
-        ├─► claim_n   verify_gold --review toward 310
-        ├─► Postgres  host-reachable → Amend → Spaces persist
-        └─► Engine H-depth queued AFTER DMS floor (ontology/Act/Distill)
-```
-
-Hardware: **T1** default. Demo gates G1–G13 in prior STATUS section still apply.
-
-## Try
+**Before the demo, restart the stack.** A Cortex left running overnight returns
+500 on submit; every certified question fails until it is restarted.
 
 ```powershell
-D:\DMS\scripts\windows\Start-DMS.bat
-# or:
-powershell -NoProfile -ExecutionPolicy Bypass -File D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -StartUi -OpenBrowser
+D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -StartUi -OpenBrowser
+python D:\DMS\scripts\verify_demo_live.py
 ```
+
+## Closed this session
+
+| ID | What |
+|----|------|
+| **#4** P0-DEMO-01 | receipt no longer denies rows that landed; swap+record is one transaction |
+| **#2** ACL-01 | Space boundary holds on the serving path per DR-0002; second leak found and fixed (bound session id ignored Space) |
+| **#5** P0-DEMO-03 | manifest minted from the selection; refuses rather than widens |
+| Demo Spaces | renamed to DR-0002 `Finance` / `Warehouse Ops` |
+| Postgres | host-reachable — `Start-DMSStack` names the hostdb overlay; 18 control-plane tests run instead of erroring |
+
+Corpus: **188 passed**, 0 xfail. Ruff clean on `apps packages tests`.
+
+## Open
+
+| ID | Blocker |
+|----|---------|
+| **#3** CI-02 | `CORTEX_CONTRACT_TOKEN` is set but still 404s — the PAT cannot see `Netie-AI/Cortex`. Check it is a **fine-grained token with `Netie-AI` as resource owner**, `Contents: read`, `Netie-AI/Cortex` explicitly selected, org approval granted, not expired. |
+| P-DMS-26 | an uploaded table is grantable from any Space (ingest carries no `space_id`) |
+| P-DMS-27 | 19 mypy errors + 1 broken import-linter contract, both pre-existing and hidden by CI-02 |
+| C7-full / C7-prod | schema retrieval + FreeRoute SQL gen |
+| C10 | claim_n 47 → 310 via `verify_gold --review` |
 
 ## Design
 
