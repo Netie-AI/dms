@@ -68,8 +68,14 @@ with httpx.Client() as c:
     check("cortex reachable", h["dependencies"]["cortex"]["ok"] is True)
 
     print("\n== spaces carry the DR-0002 names ==")
-    spaces = c.get(f"{API}/v1/spaces", timeout=30).json()["spaces"]
-    names = {s["name"] for s in spaces}
+    spaces_payload = c.get(f"{API}/v1/spaces", timeout=30).json()
+    if isinstance(spaces_payload, list):
+        spaces = spaces_payload
+    elif isinstance(spaces_payload, dict):
+        spaces = spaces_payload.get("spaces") or []
+    else:
+        spaces = []
+    names = {s["name"] for s in spaces if isinstance(s, dict) and "name" in s}
     check("Finance and Warehouse Ops exist", {"Finance", "Warehouse Ops"} <= names, str(names))
 
     print("\n== P0-DEMO-01: xlsx ingest reports the truth ==")

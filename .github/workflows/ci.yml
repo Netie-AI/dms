@@ -148,6 +148,11 @@ jobs:
           lint-imports
 
       - name: Invariant + unit tests
+        env:
+          # Control-plane suite hard-fails without Postgres (R-0002). This job has
+          # no compose service yet; skip is an explicit decision, not a silent green.
+          # Add a postgres service job before flipping this off.
+          DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
           python -m pytest tests/ -q --tb=short
