@@ -9,7 +9,7 @@ import duckdb
 from dms_core.pipelines import ContractProposal
 
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
-from dms_executor.duckdb_scalar import fetchone_row, scalar_int
+from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.pipeline_loader import PipelineLoadError
 
 
