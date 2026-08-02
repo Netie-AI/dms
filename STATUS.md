@@ -27,6 +27,12 @@ Desktop: `scripts\windows\Start-DMS.bat` (ASCII-only; PowerShell 5.1 breaks on e
 **Before the demo, restart the stack.** A Cortex left running overnight returns
 500 on submit; every certified question fails until it is restarted.
 
+Spaces run on the **in-process store** (health reports `backend=memory`), which
+holds exactly the two DR-0002 Spaces. Do not point `DATABASE_URL` at the compose
+Postgres for the demo: `tests/control_plane` does `DROP SCHEMA dms CASCADE`, so
+that database holds test residue (`space-a-0f42cf14`, `Duplicate 14feb6`) and
+the Spaces list would show it.
+
 ```powershell
 D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -StartUi -OpenBrowser
 python D:\DMS\scripts\verify_demo_live.py
