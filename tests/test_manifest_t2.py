@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from cortex_contract.execution import canonical_manifest_bytes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
 from dms_executor.manifest import (
     ManifestMinter,
     SecurityEvent,

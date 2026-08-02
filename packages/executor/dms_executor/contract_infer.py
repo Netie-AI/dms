@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-
 from dms_core.pipelines import ContractProposal
+
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
 from dms_executor.pipeline_loader import PipelineLoadError
 
@@ -44,7 +44,8 @@ def infer_contract(
             """,
             [schema, table],
         ).fetchall()
-        biz = [(c, t) for c, t in cols if c not in ("_src", "_ingest_id", "_src_row", "_src_ref_id")]
+        _provenance = ("_src", "_ingest_id", "_src_row", "_src_ref_id")
+        biz = [(c, t) for c, t in cols if c not in _provenance]
         n = int(con.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"').fetchone()[0])
         null_rates: dict[str, float] = {}
         columns: dict[str, dict[str, Any]] = {}

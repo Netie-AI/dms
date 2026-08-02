@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, BinaryIO, TextIO, TYPE_CHECKING, Generator
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
-
-from ..types import UNSET, Unset
-
-from typing import cast
 
 if TYPE_CHECKING:
   from ..models.manifest import Manifest
@@ -52,10 +48,6 @@ class SubmitRequest:
 
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.manifest import Manifest
-        from ..models.pool_spec import PoolSpec
-        from ..models.submit_request_body import SubmitRequestBody
-        from ..models.submit_request_plan import SubmitRequestPlan
         body = self.body.to_dict()
 
         manifest = self.manifest.to_dict()

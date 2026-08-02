@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class Badge(str, Enum):
     ABSTAIN = "abstain"
     BLOCKED = "blocked"

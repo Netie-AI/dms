@@ -15,10 +15,20 @@ from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
     ask as ask_api,
+)
+from cortex_client.generated.api.contract import (
     drillthrough as drillthrough_api,
+)
+from cortex_client.generated.api.contract import (
     ledger_append as ledger_append_api,
+)
+from cortex_client.generated.api.contract import (
     ledger_verify as ledger_verify_api,
+)
+from cortex_client.generated.api.contract import (
     submit as submit_api,
+)
+from cortex_client.generated.api.contract import (
     tool_registry as tool_registry_api,
 )
 from cortex_client.generated.models.ask_request import AskRequest as GenAskRequest

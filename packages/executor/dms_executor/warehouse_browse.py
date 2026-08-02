@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from dms_executor.bronze import list_bronze_tables
-from dms_executor.demo_warehouse import DEMO_TABLES, connect_readonly, ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    connect_readonly,
+    ensure_demo_warehouse,
+    warehouse_path,
+)
 
 _ALLOWED = frozenset(DEMO_TABLES)
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

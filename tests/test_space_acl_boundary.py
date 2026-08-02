@@ -26,7 +26,11 @@ from __future__ import annotations
 
 import pytest
 from dms_executor import Executor
-from dms_executor.acl import SessionContext, SourceGrant, intersect_space_grants, resolve_session_acl
+from dms_executor.acl import (
+    SourceGrant,
+    intersect_space_grants,
+    resolve_session_acl,
+)
 
 Q3_AUDIT = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 MARGIN = "dddddddd-dddd-dddd-dddd-dddddddddddd"

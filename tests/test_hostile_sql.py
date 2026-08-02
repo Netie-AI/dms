@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 
 
@@ -46,5 +45,6 @@ def test_benign_select_passes_dms_gate() -> None:
 
 def test_benign_aggregate_passes() -> None:
     reject_hostile_chat_sql(
-        "SELECT sku, SUM(revenue_myr) AS rev FROM transactions GROUP BY sku ORDER BY rev DESC LIMIT 5"
+        "SELECT sku, SUM(revenue_myr) AS rev FROM transactions "
+        "GROUP BY sku ORDER BY rev DESC LIMIT 5"
     )

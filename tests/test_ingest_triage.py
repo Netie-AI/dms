@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from dms_core.triage import SheetClass
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.triage import classify_bytes, classify_grid, parse_csv_grid

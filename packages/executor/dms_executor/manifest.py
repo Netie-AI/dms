@@ -10,11 +10,8 @@ import hashlib
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import uuid4
 
 import httpx
 from cortex_contract.execution import Manifest, canonical_manifest_bytes
@@ -149,7 +146,8 @@ class ManifestMinter:
             r = self._http.post(f"{cortex_url}/v1/contract/jwks/refresh", timeout=3.0)
             if r.status_code >= 400:
                 logger.warning(
-                    "Cortex JWKS refresh returned %s — restart Cortex or POST /v1/contract/jwks/refresh",
+                    "Cortex JWKS refresh returned %s — restart Cortex or POST "
+                    "/v1/contract/jwks/refresh",
                     r.status_code,
                 )
             else:

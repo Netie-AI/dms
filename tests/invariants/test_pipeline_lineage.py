@@ -9,8 +9,11 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from dms_executor.pipeline_loader import PipelineLoadError, load_pipeline_file, validate_pipeline_dict
+from dms_executor.pipeline_loader import (
+    PipelineLoadError,
+    load_pipeline_file,
+    validate_pipeline_dict,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 PIPELINES = ROOT / "pipelines"

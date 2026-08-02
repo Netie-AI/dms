@@ -130,7 +130,10 @@ def ingest_csv_bytes(
             reasons=[
                 {
                     "file": filename,
-                    "reason": "xlsx_pending_triage — use batch ingest triage (Excel is source-only; no outbound write)",
+                    "reason": (
+                        "xlsx_pending_triage — use batch ingest triage "
+                        "(Excel is source-only; no outbound write)"
+                    ),
                 }
             ],
             ingest_id=ingest_id,

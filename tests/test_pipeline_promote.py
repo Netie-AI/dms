@@ -6,14 +6,14 @@ from pathlib import Path
 
 import duckdb
 import pytest
-import yaml
-
 from dms_core.pipelines import GoldMetricDef
 from dms_executor.bronze import write_bronze_rows
 from dms_executor.contract_infer import infer_contract
 from dms_executor.demo_warehouse import ensure_demo_warehouse
-from dms_executor.lake_schema import ensure_lake_schemas
-from dms_executor.pipeline_loader import PipelineLoadError, load_pipeline_yaml, validate_pipeline_dict
+from dms_executor.pipeline_loader import (
+    PipelineLoadError,
+    load_pipeline_yaml,
+)
 from dms_executor.promote import run_promote, sign_gold_metric
 
 

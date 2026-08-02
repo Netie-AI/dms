@@ -139,7 +139,9 @@ def test_live_ask_rebinds_on_session_expired(minter: ManifestMinter) -> None:
     assert len(fake.asks) == 2
 
 
-def test_chat_live_mode_pool_mismatch_http(minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chat_live_mode_pool_mismatch_http(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fake = FakeCortex(
         submits=[],
         asks=[],

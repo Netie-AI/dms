@@ -8,8 +8,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
 from cortex_client.models import AskResponse
 from dms_executor import map_ask_response_to_envelope
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope

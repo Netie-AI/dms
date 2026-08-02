@@ -718,6 +718,55 @@
         "title": "CompleteEventRequest",
         "type": "object"
       },
+      "ComputerUseRequest": {
+        "description": "Pointer NETIE_CU_PLANNER=1 body \u2014 see docs/CONTRACTS.md / Beat Realtime pack.",
+        "properties": {
+          "device_id": {
+            "default": "",
+            "title": "Device Id",
+            "type": "string"
+          },
+          "hot_context": {
+            "default": "",
+            "title": "Hot Context",
+            "type": "string"
+          },
+          "instruction": {
+            "default": "",
+            "title": "Instruction",
+            "type": "string"
+          },
+          "policy": {
+            "additionalProperties": true,
+            "title": "Policy",
+            "type": "object"
+          },
+          "prior": {
+            "additionalProperties": true,
+            "title": "Prior",
+            "type": "object"
+          },
+          "screen": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screen"
+          },
+          "skills": {
+            "items": {},
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "title": "ComputerUseRequest",
+        "type": "object"
+      },
       "ConfirmDimsRequest": {
         "properties": {
           "actor": {
@@ -2419,6 +2468,11 @@
       },
       "ExportRequest": {
         "properties": {
+          "format": {
+            "default": "csv",
+            "title": "Format",
+            "type": "string"
+          },
           "limit": {
             "default": 5000,
             "title": "Limit",
@@ -2429,7 +2483,7 @@
             "type": "string"
           },
           "table": {
-            "default": "dms_inventory",
+            "default": "inventory",
             "title": "Table",
             "type": "string"
           }

@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
+import pytest
 from dms_api.app import create_app
 from dms_api.settings import get_settings
 from fastapi.testclient import TestClient
-import pytest
 
 
 def test_create_app():
@@ -112,9 +112,8 @@ def _gate_allows(monkeypatch) -> None:
     ``test_skeleton_ping_calls_gate_fail_closed`` and by the spaces regression
     guard in tests/test_product_surfaces.py.
     """
-    from cortex_client.gate import ComplianceDecision
-
     import dms_api.routes.studio as studio_routes
+    from cortex_client.gate import ComplianceDecision
 
     monkeypatch.setattr(
         studio_routes,

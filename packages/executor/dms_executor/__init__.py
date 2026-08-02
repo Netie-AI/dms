@@ -13,8 +13,8 @@ from uuid import uuid4
 from cortex_client import CortexClient
 from cortex_client.models import AskRequest, AskResponse
 from cortex_contract.execution import PoolSpec, SubmitRequest
+from dms_core.ask import AskServiceError
 from dms_core.ports import ServingEnginePort
-from dms_core.ask import AskServiceError, AskServicePort
 
 from dms_executor.acl import (
     SessionContext,
@@ -23,15 +23,16 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
+from dms_executor.batch_ingest import ingest_batch
+from dms_executor.bronze import (
+    IngestReceipt,
+    ingest_csv_bytes,
+    list_bronze_tables,
+    write_bronze_rows,
+)
+from dms_executor.contract_infer import infer_contract
 from dms_executor.demo_ask import answer_demo_question
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
-from dms_executor.batch_ingest import ingest_batch
-from dms_executor.bronze import IngestReceipt, ingest_csv_bytes, list_bronze_tables, write_bronze_rows
-from dms_executor.contract_infer import infer_contract
-from dms_executor.pipeline_loader import load_pipeline_by_name, load_pipeline_yaml, validate_pipeline_dict
-from dms_executor.promote import run_promote, sign_gold_metric
-from dms_executor.triage import classify_bytes, classify_grid
-
 from dms_executor.manifest import (
     ManifestMinter,
     SessionAcl,
@@ -41,6 +42,13 @@ from dms_executor.manifest import (
     should_rement,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
+from dms_executor.pipeline_loader import (
+    load_pipeline_by_name,
+    load_pipeline_yaml,
+    validate_pipeline_dict,
+)
+from dms_executor.promote import run_promote, sign_gold_metric
+from dms_executor.triage import classify_bytes, classify_grid
 
 logger = logging.getLogger(__name__)
 

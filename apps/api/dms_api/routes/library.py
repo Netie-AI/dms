@@ -87,7 +87,8 @@ def data_map(
     ]
     if not settings.database_url:
         notes.append(
-            "Postgres sources empty — set DATABASE_URL (compose postgres) for control-plane sources."
+            "Postgres sources empty — set DATABASE_URL (compose postgres) "
+            "for control-plane sources."
         )
     return {
         "sources": sources,

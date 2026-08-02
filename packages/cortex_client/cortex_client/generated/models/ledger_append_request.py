@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, BinaryIO, TextIO, TYPE_CHECKING, Generator
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
-
-from ..types import UNSET, Unset
-from typing import cast
 
 if TYPE_CHECKING:
   from ..models.ledger_append_request_payload import LedgerAppendRequestPayload
@@ -41,7 +38,6 @@ class LedgerAppendRequest:
 
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.ledger_append_request_payload import LedgerAppendRequestPayload
         actor = self.actor
 
         event_type = self.event_type

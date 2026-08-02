@@ -1,0 +1,13 @@
+# Contract artifacts are hash-verified. Git must not touch their bytes.
+#
+# Without this, core.autocrlf=true on Windows stores LF in the blob while the
+# working tree holds CRLF. scripts/sync_contract.py then writes a sidecar
+# recording the CRLF hash, Linux CI checks the file out as LF, and the
+# contract-pin job fails with "does not match" on every run - a gate that
+# cannot pass on any platform but the one that generated it.
+#
+# -text disables all end-of-line conversion, so the bytes are identical in the
+# blob, on Windows, and on the CI runner.
+contract/*.json -text
+contract/*.sha256 -text
+contract/testvectors/* -text

@@ -5,7 +5,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 from dms_executor.acl import (
-    SessionContext,
     SourceGrant,
     intersect_space_grants,
     resolve_session_acl,

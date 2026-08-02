@@ -239,108 +239,6 @@
   },
   "components": {
     "schemas": {
-      "ContractLedgerEntry": {
-        "properties": {
-          "actor": {
-            "title": "Actor",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "string"
-          },
-          "entry_hash": {
-            "title": "Entry Hash",
-            "type": "string"
-          },
-          "event_type": {
-            "title": "Event Type",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "payload": {
-            "additionalProperties": true,
-            "title": "Payload",
-            "type": "object"
-          },
-          "prev_hash": {
-            "title": "Prev Hash",
-            "type": "string"
-          },
-          "seq": {
-            "title": "Seq",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "seq",
-          "actor",
-          "event_type",
-          "payload",
-          "prev_hash",
-          "entry_hash",
-          "created_at"
-        ],
-        "title": "LedgerEntry",
-        "type": "object"
-      },
-      "ContractDrillthroughResponse": {
-        "properties": {
-          "answer_id": {
-            "title": "Answer Id",
-            "type": "string"
-          },
-          "approximate": {
-            "default": false,
-            "title": "Approximate",
-            "type": "boolean"
-          },
-          "row_count": {
-            "title": "Row Count",
-            "type": "integer"
-          },
-          "rows": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Rows",
-            "type": "array"
-          },
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "sql_used": {
-            "title": "Sql Used",
-            "type": "string"
-          },
-          "total_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Total Count"
-          }
-        },
-        "required": [
-          "answer_id",
-          "session_id",
-          "sql_used",
-          "row_count"
-        ],
-        "title": "DrillthroughResponse",
-        "type": "object"
-      },
       "ContractManifest": {
         "description": "A signed grant of what one session may read.\n\nDMS mints and signs; Cortex enforces; OpenVault roots the key. Every field\nadded in 1.1.0 is optional on the wire so a 1.0.0 producer still validates \u2014\nthe requirement that a manifest carry an issuer, an issue time and a pool is\nenforced by the verifier (``CortexOS.execution.manifest``), which rejects\nwhat it cannot check. A permissive type with a strict gate keeps DMS pinned\nto contract major 1 while the engine refuses anything unverifiable.",
         "properties": {
@@ -445,60 +343,55 @@
         "title": "Manifest",
         "type": "object"
       },
-      "LedgerAppendRequest": {
+      "ContractSubmitRequest": {
         "properties": {
-          "actor": {
-            "title": "Actor",
-            "type": "string"
-          },
-          "event_type": {
-            "title": "Event Type",
-            "type": "string"
-          },
-          "payload": {
+          "body": {
             "additionalProperties": true,
-            "title": "Payload",
+            "title": "Body",
             "type": "object"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/ContractManifest"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/ContractPoolSpec"
           }
         },
         "required": [
-          "actor",
-          "event_type"
+          "pool",
+          "plan",
+          "body",
+          "manifest"
         ],
-        "title": "LedgerAppendRequest",
+        "title": "SubmitRequest",
         "type": "object"
       },
-      "ContractToolSpec": {
+      "ContractPoolSpec": {
         "properties": {
           "class_name": {
-            "$ref": "#/components/schemas/ContractToolClass"
-          },
-          "description": {
-            "title": "Description",
+            "default": "default",
+            "title": "Class Name",
             "type": "string"
           },
           "id": {
             "title": "Id",
             "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "class_name",
-          "description"
-        ],
-        "title": "ToolSpec",
-        "type": "object"
-      },
-      "LedgerVerifyRequest": {
-        "properties": {
-          "start_seq": {
-            "default": 0,
-            "title": "Start Seq",
+          },
+          "max_concurrency": {
+            "default": 1,
+            "title": "Max Concurrency",
             "type": "integer"
           }
         },
-        "title": "LedgerVerifyRequest",
+        "required": [
+          "id"
+        ],
+        "title": "PoolSpec",
         "type": "object"
       },
       "ValidationError": {
@@ -541,6 +434,61 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "ToolRegistryResponse": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ContractToolSpec"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "ToolRegistryResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ContractDrillthroughRequest": {
+        "properties": {
+          "token": {
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "DrillthroughRequest",
+        "type": "object"
+      },
+      "ContractBadge": {
+        "enum": [
+          "certified",
+          "governed_metric",
+          "query_skill",
+          "session",
+          "abstain",
+          "blocked"
+        ],
+        "title": "Badge",
+        "type": "string"
+      },
       "ContractChainVerification": {
         "properties": {
           "broken_at": {
@@ -564,6 +512,346 @@
           "ok"
         ],
         "title": "ChainVerification",
+        "type": "object"
+      },
+      "ContractDrillthroughResponse": {
+        "properties": {
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "approximate": {
+            "default": false,
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sql_used": {
+            "title": "Sql Used",
+            "type": "string"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Count"
+          }
+        },
+        "required": [
+          "answer_id",
+          "session_id",
+          "sql_used",
+          "row_count"
+        ],
+        "title": "DrillthroughResponse",
+        "type": "object"
+      },
+      "ContractProvenance": {
+        "properties": {
+          "assumptions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assumptions"
+          },
+          "badge": {
+            "$ref": "#/components/schemas/ContractBadge"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "metric_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metric Id"
+          },
+          "query_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query Source"
+          }
+        },
+        "required": [
+          "layer",
+          "badge"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
+      "ContractQueryResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "output": {
+            "default": null,
+            "title": "Output"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "QueryResult",
+        "type": "object"
+      },
+      "LedgerVerifyRequest": {
+        "properties": {
+          "start_seq": {
+            "default": 0,
+            "title": "Start Seq",
+            "type": "integer"
+          }
+        },
+        "title": "LedgerVerifyRequest",
+        "type": "object"
+      },
+      "ContractToolSpec": {
+        "properties": {
+          "class_name": {
+            "$ref": "#/components/schemas/ContractToolClass"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class_name",
+          "description"
+        ],
+        "title": "ToolSpec",
+        "type": "object"
+      },
+      "ContractContributingSource": {
+        "description": "One source card for the Sources panel (architecture \u00a74.7 / \u00a74.8).",
+        "properties": {
+          "container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Container"
+          },
+          "contribution": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Contribution"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "member": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member"
+          },
+          "ref_id": {
+            "title": "Ref Id",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Count"
+          }
+        },
+        "required": [
+          "ref_id"
+        ],
+        "title": "ContributingSource",
+        "type": "object"
+      },
+      "LedgerAppendRequest": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "actor",
+          "event_type"
+        ],
+        "title": "LedgerAppendRequest",
+        "type": "object"
+      },
+      "ContractToolClass": {
+        "enum": [
+          "read",
+          "propose",
+          "apply"
+        ],
+        "title": "ToolClass",
+        "type": "string"
+      },
+      "ContractLedgerEntry": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_hash": {
+            "title": "Entry Hash",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "prev_hash": {
+            "title": "Prev Hash",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "actor",
+          "event_type",
+          "payload",
+          "prev_hash",
+          "entry_hash",
+          "created_at"
+        ],
+        "title": "LedgerEntry",
         "type": "object"
       },
       "ContractAnswer": {
@@ -678,257 +966,6 @@
         "title": "Answer",
         "type": "object"
       },
-      "ContractPoolSpec": {
-        "properties": {
-          "class_name": {
-            "default": "default",
-            "title": "Class Name",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "max_concurrency": {
-            "default": 1,
-            "title": "Max Concurrency",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "title": "PoolSpec",
-        "type": "object"
-      },
-      "ContractQueryResult": {
-        "properties": {
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "output": {
-            "default": null,
-            "title": "Output"
-          },
-          "run_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Run Id"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "ok",
-          "status"
-        ],
-        "title": "QueryResult",
-        "type": "object"
-      },
-      "ContractSubmitRequest": {
-        "properties": {
-          "body": {
-            "additionalProperties": true,
-            "title": "Body",
-            "type": "object"
-          },
-          "manifest": {
-            "$ref": "#/components/schemas/ContractManifest"
-          },
-          "plan": {
-            "additionalProperties": true,
-            "title": "Plan",
-            "type": "object"
-          },
-          "pool": {
-            "$ref": "#/components/schemas/ContractPoolSpec"
-          }
-        },
-        "required": [
-          "pool",
-          "plan",
-          "body",
-          "manifest"
-        ],
-        "title": "SubmitRequest",
-        "type": "object"
-      },
-      "ContractProvenance": {
-        "properties": {
-          "assumptions": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Assumptions"
-          },
-          "badge": {
-            "$ref": "#/components/schemas/ContractBadge"
-          },
-          "layer": {
-            "title": "Layer",
-            "type": "string"
-          },
-          "metric_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Metric Id"
-          },
-          "query_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Query Source"
-          }
-        },
-        "required": [
-          "layer",
-          "badge"
-        ],
-        "title": "Provenance",
-        "type": "object"
-      },
-      "ContractContributingSource": {
-        "description": "One source card for the Sources panel (architecture \u00a74.7 / \u00a74.8).",
-        "properties": {
-          "container": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Container"
-          },
-          "contribution": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Contribution"
-          },
-          "kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Kind"
-          },
-          "member": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Member"
-          },
-          "ref_id": {
-            "title": "Ref Id",
-            "type": "string"
-          },
-          "row_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Row Count"
-          }
-        },
-        "required": [
-          "ref_id"
-        ],
-        "title": "ContributingSource",
-        "type": "object"
-      },
-      "ContractDrillthroughRequest": {
-        "properties": {
-          "token": {
-            "minLength": 1,
-            "title": "Token",
-            "type": "string"
-          }
-        },
-        "required": [
-          "token"
-        ],
-        "title": "DrillthroughRequest",
-        "type": "object"
-      },
-      "HTTPValidationError": {
-        "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "title": "Detail",
-            "type": "array"
-          }
-        },
-        "title": "HTTPValidationError",
-        "type": "object"
-      },
       "ContractAskRequest": {
         "properties": {
           "question": {
@@ -958,43 +995,6 @@
           "question"
         ],
         "title": "AskRequest",
-        "type": "object"
-      },
-      "ContractToolClass": {
-        "enum": [
-          "read",
-          "propose",
-          "apply"
-        ],
-        "title": "ToolClass",
-        "type": "string"
-      },
-      "ContractBadge": {
-        "enum": [
-          "certified",
-          "governed_metric",
-          "query_skill",
-          "session",
-          "abstain",
-          "blocked"
-        ],
-        "title": "Badge",
-        "type": "string"
-      },
-      "ToolRegistryResponse": {
-        "properties": {
-          "tools": {
-            "items": {
-              "$ref": "#/components/schemas/ContractToolSpec"
-            },
-            "title": "Tools",
-            "type": "array"
-          }
-        },
-        "required": [
-          "tools"
-        ],
-        "title": "ToolRegistryResponse",
         "type": "object"
       }
     }

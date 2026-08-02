@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class SheetClass(str, Enum):
+class SheetClass(StrEnum):
     TABULAR_CLEAN = "TABULAR_CLEAN"
     TABULAR_DIRTY = "TABULAR_DIRTY"
     MULTI_TABLE = "MULTI_TABLE"

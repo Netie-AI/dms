@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from dms_executor.demo_ask import answer_demo_question
 from dms_executor.demo_warehouse import ensure_demo_warehouse, total_outbound_revenue
 
@@ -71,7 +70,9 @@ def test_divide_revenue_by_5(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -
     assert env["chart"]["kind"] == "bar"
 
 
-def test_exclude_multiple_skus_and_bare_beta(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exclude_multiple_skus_and_bare_beta(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
     from dms_executor import demo_warehouse as dw
 

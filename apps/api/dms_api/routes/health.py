@@ -12,6 +12,11 @@ from dms_api.deps import SettingsDep, StoreBindingDep
 
 router = APIRouter()
 
+#: Fallback shown when OpenVault is offline and no root hint is available.
+#: Kept as a module constant because a backslash inside f-string braces requires
+#: Python 3.12 (PEP 701) and this package targets 3.11.
+_OPENVAULT_DEFAULT_ROOT = "D:\\\\OpenVault"
+
 
 def _probe(url: str, path: str = "/health", timeout: float = 1.2) -> dict[str, Any]:
     base = url.rstrip("/")
@@ -86,7 +91,8 @@ def _probe_openvault_trust(base_url: str, timeout: float = 1.5) -> dict[str, Any
                 }
             if r.status_code >= 500:
                 return {"ok": False, "jwks_ok": False, "status_code": r.status_code, "url": url}
-            body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            _is_json = r.headers.get("content-type", "").startswith("application/json")
+            body = r.json() if _is_json else {}
             keys = body.get("keys") if isinstance(body, dict) else None
             count = len(keys) if isinstance(keys, list) else 0
             return {
@@ -218,8 +224,12 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
                     if ov.get("ok")
                     else (
                         f"OpenVault offline at {settings.openvault_url}. "
-                        f"From {ov_root or 'D:\\\\OpenVault'} run "
-                        f"scripts\\\\windows\\\\Start-OpenVaultDemo.ps1 "
+                        # _OPENVAULT_DEFAULT_ROOT is a module constant, not an inline
+                        # literal: a backslash inside f-string braces is PEP 701, which
+                        # landed in 3.12. This package targets 3.11, where it is a
+                        # SyntaxError - so the whole route module failed to import on CI.
+                        f"From {ov_root or _OPENVAULT_DEFAULT_ROOT} run "
+                        "scripts\\\\windows\\\\Start-OpenVaultDemo.ps1 "
                         f"(API {host}:5000, UI :3010). "
                         "Demo continues without signed manifests."
                     )

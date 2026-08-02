@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-
 from dms_core.pipelines import GoldMetricDef, PipelineDef, PromoteReceipt
+
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
 from dms_executor.lake_schema import ensure_lake_schemas
 from dms_executor.pipeline_loader import PipelineLoadError
@@ -261,7 +261,11 @@ def _run_gold(
         )
     if not gold_metric.ledger_entry_id:
         raise PipelineLoadError("gold metric must have ledger_entry_id from Cortex append")
-    src_sql = _build_source_relation(con, pipe)
+    # Called for its validation, not its return value: it raises PipelineLoadError if
+    # any declared source table is missing. The gold path then materialises from the
+    # signed metric SQL rather than the source relation, so the returned SQL is unused -
+    # but dropping the call would let a gold promote succeed against absent sources.
+    _build_source_relation(con, pipe)
     target = _qtable(pipe.target)
     # Materialize metric result as gold table (aggregate — document lineage)
     con.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM ({gold_metric.sql})")
@@ -465,7 +469,11 @@ def _run_silver(
         )
     con.execute(f"INSERT INTO {q_qual} {q_select}")
 
-    passed = int(con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {pass_where}").fetchone()[0])
+    passed = int(
+        con.execute(
+            f"SELECT COUNT(*) FROM _promote_scored WHERE {pass_where}"
+        ).fetchone()[0]
+    )
     quarantined = int(
         con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {fail_where}").fetchone()[0]
     )
@@ -523,7 +531,9 @@ def sign_gold_metric(
         payload=payload,
         actor=actor or metric.steward_id,
     )
-    entry_id = getattr(resp, "entry_id", None) or (resp.get("entry_id") if isinstance(resp, dict) else None)
+    entry_id = getattr(resp, "entry_id", None) or (
+        resp.get("entry_id") if isinstance(resp, dict) else None
+    )
     sig = getattr(resp, "entry_hash", None) or entry_id or f"sig_{uuid.uuid4().hex[:16]}"
     return GoldMetricDef(
         metric_id=metric.metric_id,

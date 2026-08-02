@@ -216,7 +216,9 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
     # E2
     if abstained:
         assert values == [] or values is None, "E2: abstain must have empty values[]"
-        assert sources == [] or sources is None, "E2: abstain must have empty contributing_sources[]"
+        assert sources == [] or sources is None, (
+            "E2: abstain must have empty contributing_sources[]"
+        )
         assert token in (None, ""), "E2: abstain must have null drillthrough_token"
 
     # E3
