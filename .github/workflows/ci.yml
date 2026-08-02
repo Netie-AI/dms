@@ -112,7 +112,14 @@ jobs:
           sparse-checkout: |
             packages/cortex_contract
           sparse-checkout-cone-mode: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # secrets.GITHUB_TOKEN is scoped to the repo the workflow runs in, so
+          # it cannot read the private Netie-AI/Cortex and the API answers 404
+          # rather than 403. Everything downstream - ruff, mypy, import-linter,
+          # the test suite - sat behind this step and had never run.
+          # This is CI-02 option A. Option C (install the published wheel and
+          # delete this step) is the long-term answer, and must not land before
+          # Netie-AI/Cortex#5 or a packaging bug presents as a crypto bug.
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
