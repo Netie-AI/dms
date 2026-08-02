@@ -33,6 +33,9 @@ def _load(name: str) -> bytes:
         ("12_title_and_trailing.csv", SheetClass.TABULAR_DIRTY),
         ("13_nearly_empty.csv", SheetClass.UNSTRUCTURED),
         ("14_malay_dirty_numbers.csv", SheetClass.TABULAR_DIRTY),
+        # The first non-CSV fixture. Fixtures 01-14 are all CSV, which is why
+        # P0-DEMO-01 (xlsx into a fresh warehouse) stayed invisible.
+        ("15_q3_sales_export.xlsx", SheetClass.TABULAR_CLEAN),
     ],
 )
 def test_fixture_classifies(name: str, expected: SheetClass):

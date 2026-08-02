@@ -164,6 +164,12 @@ def ingest_csv_bytes(
     con = duckdb.connect(str(db))
     try:
         ensure_lake_schemas(con)
+        # The registry has to exist before *any* path that renames a table into
+        # place. It used to be created only by _claim_table_name, which the xlsx
+        # path never reaches because batch ingest always passes table_name — so
+        # _record_ingest raised after the rename below and the receipt denied
+        # rows that had already landed.
+        _ensure_registry(con)
         if table_name is None:
             safe, collision_note = _claim_table_name(
                 con, stem=safe, filename=filename, digest=digest
@@ -194,13 +200,25 @@ def ingest_csv_bytes(
             ) AS src
             """
         )
-        n = int(con.execute(f'SELECT COUNT(*) FROM bronze."{staging}"').fetchone()[0])
         # Parse succeeded — only now is it safe to replace the previous table.
-        con.execute(f'DROP TABLE IF EXISTS bronze."{safe}"')
-        con.execute(f'ALTER TABLE bronze."{staging}" RENAME TO "{safe}"')
-        _record_ingest(
-            con, table_name=safe, filename=filename, digest=digest, ingest_id=ingest_id
-        )
+        # Swap and record as one transaction. Ensuring the registry exists fixes
+        # the reported symptom, but the class is that a step *after* an
+        # irreversible rename could still fail, leaving the warehouse in a state
+        # the receipt contradicts. Inside a transaction the rename is no longer
+        # irreversible, so no later failure can produce a lying receipt.
+        con.execute("BEGIN TRANSACTION")
+        try:
+            con.execute(f'DROP TABLE IF EXISTS bronze."{safe}"')
+            con.execute(f'ALTER TABLE bronze."{staging}" RENAME TO "{safe}"')
+            _record_ingest(
+                con, table_name=safe, filename=filename, digest=digest, ingest_id=ingest_id
+            )
+        except Exception:  # noqa: BLE001
+            con.execute("ROLLBACK")
+            raise
+        con.execute("COMMIT")
+        # Count what the customer receives (R-0001), not what the parse produced.
+        n = int(con.execute(f'SELECT COUNT(*) FROM bronze."{safe}"').fetchone()[0])
     except Exception as exc:  # noqa: BLE001
         try:
             con.execute(f'DROP TABLE IF EXISTS bronze."{staging}"')
