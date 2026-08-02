@@ -50,6 +50,7 @@ def ingest_batch(
     files: list[tuple[str, bytes]],
     *,
     path: Path | None = None,
+    space_id: str | None = None,
 ) -> TriageReceipt:
     """Classify every file/sheet; ingest clean/dirty tabular; blob unstructured.
 
@@ -108,6 +109,7 @@ def ingest_batch(
                         data=csv_bytes,
                         path=db_path,
                         table_name="".join(c if c.isalnum() else "_" for c in stem)[:40],
+                        space_id=space_id,
                     )
                 else:
                     # CSV: if dirty with title row, re-slice from header_row
@@ -118,12 +120,14 @@ def ingest_batch(
                             filename=filename,
                             data=csv_bytes,
                             path=db_path,
+                            space_id=space_id,
                         )
                     else:
                         receipt = ingest_csv_bytes(
                             filename=filename,
                             data=data,
                             path=db_path,
+                            space_id=space_id,
                         )
                 if receipt.quarantined and not receipt.table:
                     tr.ingested = False

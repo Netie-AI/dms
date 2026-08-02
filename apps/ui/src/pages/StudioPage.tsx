@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { useApp } from "@/context/AppContext";
 import {
-  fetchBronzePreview,
   fetchLibraryTree,
-  fetchWarehousePreview,
+  fetchTablePreview,
+  PREVIEW_PAGE_SIZE,
   previewForNode,
   type LibraryTree,
   type TablePreview,
@@ -58,6 +59,11 @@ export function StudioPage() {
   const [preview, setPreview] = useState<TablePreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [previewOffset, setPreviewOffset] = useState(0);
+  const [previewTarget, setPreviewTarget] = useState<{
+    kind: "bronze" | "warehouse";
+    table: string;
+  } | null>(null);
   // Files the next question should be grounded in. Empty means the whole Space.
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -77,30 +83,32 @@ export function StudioPage() {
     void loadTree();
   }, [loadTree]);
 
-  const openPreview = useCallback(async (node: TreeNode) => {
+  const openPreview = useCallback((node: TreeNode) => {
     const target = previewForNode(node.id);
     setActiveId(node.id);
     setPreview(null);
     setPreviewErr(null);
+    setPreviewOffset(0);
     if (!target) {
-      // Sources have no preview yet: the original bytes are not retained for
-      // tabular uploads, so saying so beats rendering an empty grid.
+      setPreviewTarget(null);
       setPreviewErr("No stored copy of this file yet — preview its bronze table instead.");
       return;
     }
-    setPreviewBusy(true);
-    try {
-      setPreview(
-        target.kind === "bronze"
-          ? await fetchBronzePreview(target.table)
-          : await fetchWarehousePreview(target.table),
-      );
-    } catch (e) {
-      setPreviewErr(e instanceof Error ? e.message : "preview failed");
-    } finally {
-      setPreviewBusy(false);
-    }
+    setPreviewTarget(target);
   }, []);
+
+  useEffect(() => {
+    if (!previewTarget) return;
+    setPreviewBusy(true);
+    setPreviewErr(null);
+    void fetchTablePreview(previewTarget, PREVIEW_PAGE_SIZE, previewOffset)
+      .then(setPreview)
+      .catch((e) => {
+        setPreview(null);
+        setPreviewErr(e instanceof Error ? e.message : "preview failed");
+      })
+      .finally(() => setPreviewBusy(false));
+  }, [previewTarget, previewOffset]);
 
   const onFiles = async (list: FileList | null) => {
     if (!list?.length) return;
@@ -114,6 +122,9 @@ export function StudioPage() {
       const fd = new FormData();
       const files = Array.from(list);
       setActivity({ label: "Classifying sheets…", progress: 45 });
+      if (activeSpaceId) {
+        fd.append("space_id", activeSpaceId);
+      }
       if (files.length === 1) {
         fd.append("file", files[0]);
         const res = await fetch("/api/v1/studio/ingest", { method: "POST", body: fd });
@@ -202,7 +213,7 @@ export function StudioPage() {
                     else next.add(node.id);
                     return next;
                   })
-                : void openPreview(node)
+                : openPreview(node)
             }
             className={`flex-1 truncate text-left hover:text-[var(--color-accent)] ${
               isFolder
@@ -362,40 +373,14 @@ export function StudioPage() {
             <p className="px-4 py-6 text-sm text-[var(--color-warn)]">{previewErr}</p>
           )}
           {preview && preview.rows.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs">
-                <thead>
-                  <tr className="border-b border-[var(--color-line)] text-[10px] uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
-                    {preview.columns.map((c) => (
-                      <th key={c} className="whitespace-nowrap px-3 py-2 font-semibold">
-                        {c}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {preview.rows.map((r, i) => (
-                    <tr
-                      key={i}
-                      className="border-b border-[var(--color-line)]/60 text-[var(--color-ink)]"
-                    >
-                      {preview.columns.map((c) => (
-                        <td key={c} className="whitespace-nowrap px-3 py-1.5">
-                          {r[c] === null || r[c] === undefined ? (
-                            <span className="text-[var(--color-ink-muted)]">—</span>
-                          ) : (
-                            String(r[c])
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="px-4 py-2 text-[11px] text-[var(--color-ink-muted)]">
-                Showing {preview.rows.length} row{preview.rows.length === 1 ? "" : "s"}
-                {preview.total_count != null ? ` of ${preview.total_count}` : ""}.
-              </p>
+            <div className="px-2 py-2">
+              <AnswerRowsTable
+                rows={preview.rows}
+                totalRows={preview.row_count ?? preview.rows.length}
+                pageOffset={preview.offset ?? previewOffset}
+                pageSize={preview.limit ?? PREVIEW_PAGE_SIZE}
+                onPageChange={setPreviewOffset}
+              />
             </div>
           )}
           {preview && preview.rows.length === 0 && (

@@ -72,7 +72,11 @@ def space_name(space_id: str) -> str | None:
     return entry[0] if entry else None
 
 
-def ingested_bronze_tables(path: Path | None = None) -> tuple[str, ...]:
+def ingested_bronze_tables(
+    path: Path | None = None,
+    *,
+    space_id: str | None = None,
+) -> tuple[str, ...]:
     """Uploaded tables, from the ingest registry.
 
     An uploaded bronze table has no ``data_sources`` row and so is not grantable
@@ -84,6 +88,8 @@ def ingested_bronze_tables(path: Path | None = None) -> tuple[str, ...]:
     from dms_executor.bronze import list_bronze_tables
 
     try:
+        if space_id:
+            return tuple(t["table"] for t in list_bronze_tables(path=path, space_id=space_id))
         return tuple(t["table"] for t in list_bronze_tables(path=path))
     except Exception as exc:  # noqa: BLE001
         # A warehouse that cannot be read must not silently mean "no uploads are
@@ -94,14 +100,7 @@ def ingested_bronze_tables(path: Path | None = None) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class DemoSessionStore:
-    """``SessionStore`` over the DR-0002 seed, plus whatever has been uploaded.
-
-    **Known limitation.** Ingest does not record which Space an upload belongs
-    to, so an uploaded table is grantable from any Space in the demo tenant. The
-    grounding selection still narrows it to exactly what was ticked, which is
-    what dms#5 required; making the upload itself Space-scoped needs ingest to
-    carry a space_id. Parked with that unlock condition rather than left silent.
-    """
+    """``SessionStore`` over the DR-0002 seed, plus whatever has been uploaded."""
 
     extra_grants: tuple[str, ...] = ()
     #: Read at call time, not construction time — uploads land after startup.
@@ -120,7 +119,9 @@ class DemoSessionStore:
         return canonical_space_id(space_id) in DEMO_SPACE_GRANTS
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
-        tables = (*self._tables_for(space_id), *self.extra_grants, *self._uploaded())
+        sid = canonical_space_id(space_id)
+        space_uploads = ingested_bronze_tables(space_id=sid)
+        tables = (*self._tables_for(sid), *self.extra_grants, *space_uploads)
         return [source_id_for(t) for t in tables]
 
     def list_user_source_grants(self, tenant_id: str, user_id: str) -> list[SourceGrant]:

@@ -47,14 +47,19 @@ with httpx.Client() as c:
     check("cortex reachable", h["dependencies"]["cortex"]["ok"] is True)
 
     print("\n== spaces carry the DR-0002 names ==")
-    spaces = c.get(f"{API}/v1/spaces", timeout=30).json()
+    spaces = c.get(f"{API}/v1/spaces", timeout=30).json()["spaces"]
     names = {s["name"] for s in spaces}
     check("Finance and Warehouse Ops exist", {"Finance", "Warehouse Ops"} <= names, str(names))
 
     print("\n== P0-DEMO-01: xlsx ingest reports the truth ==")
     files = [("files", (XLSX.name, XLSX.read_bytes(),
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))]
-    r = c.post(f"{API}/v1/studio/ingest-batch", files=files, timeout=180.0)
+    r = c.post(
+        f"{API}/v1/studio/ingest-batch",
+        files=files,
+        data={"space_id": FINANCE},
+        timeout=180.0,
+    )
     receipt = r.json()
     check("ingest returned 200", r.status_code == 200, f"status={r.status_code}")
     entry = (receipt.get("files") or [{}])[0]
@@ -63,6 +68,43 @@ with httpx.Client() as c:
           f"ingested={receipt.get('ingested')} reason={entry.get('reason')}")
     check("receipt names the created table", bool(table), f"table={table}")
 
+    if table:
+        fin_bronze = c.get(f"{API}/v1/studio/bronze?space_id={FINANCE}", timeout=30).json()
+        ops_bronze = c.get(f"{API}/v1/studio/bronze?space_id={WAREHOUSE_OPS}", timeout=30).json()
+        fin_names = {row.get("table") for row in fin_bronze}
+        ops_names = {row.get("table") for row in ops_bronze}
+        check("upload visible in Finance Studio bronze", table in fin_names, str(fin_names))
+        check("upload hidden from Warehouse Ops bronze", table not in ops_names, str(ops_names))
+
+        st_fin, env_fin = ask(
+            c,
+            "How many units were sold?",
+            grounded_tables=[table],
+            space_id=FINANCE,
+            session_id="ses_fin_upload",
+        )
+        st_ops, env_ops = ask(
+            c,
+            "How many units were sold?",
+            grounded_tables=[table],
+            space_id=WAREHOUSE_OPS,
+            session_id="ses_ops_upload",
+        )
+        ops_detail = env_ops.get("detail", {}) if isinstance(env_ops.get("detail"), dict) else {}
+        check(
+            "upload groundable in Finance",
+            st_fin == 200 and env_fin.get("abstained") is False,
+            f"status={st_fin} badge={env_fin.get('badge')}",
+        )
+        check(
+            "upload refused in Warehouse Ops",
+            st_ops == 403 and ops_detail.get("code") == "grounding_not_grantable",
+            f"status={st_ops} code={ops_detail.get('code')}",
+        )
+
+    print("\n== offline fixtures hidden in live demo ==")
+    src_refs = {s.get("ref") for s in c.get(f"{API}/v1/library/sources", timeout=30).json()}
+    check("company gl_export hidden from sources", "Company/finance/gl_export.csv" not in src_refs, str(src_refs))
 
     print("\n== P0-DEMO-03: grounding mints exactly the selection ==")
     if table:

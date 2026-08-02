@@ -202,6 +202,7 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
         "contract": settings.cortex_contract_version,
         "ask_mode": settings.dms_ask_mode,
         "demo_fallback": settings.dms_demo_fallback,
+        "backend": binding.backend,
         # The control plane is "configured" when it is actually serving, not when
         # a URL is present. A DATABASE_URL pointing at a Postgres that is down
         # used to report true here while every Postgres-backed page fell back to

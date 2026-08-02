@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { useApp } from "@/context/AppContext";
+import {
+  PREVIEW_PAGE_SIZE,
+  previewForNode,
+  type TablePreview,
+  type TreeNode as ApiTreeNode,
+} from "@/lib/api";
 
 type TreeMeta = {
   kind?: string;
@@ -12,34 +18,28 @@ type TreeMeta = {
   space_name?: string | null;
 };
 
-type TreeNode = {
-  id: string;
-  kind: "folder" | "leaf";
-  label: string;
+type TreeNode = ApiTreeNode & {
   node_type?: "source" | "bronze" | "warehouse";
-  meta?: TreeMeta;
-  children?: TreeNode[];
+  meta?: TreeMeta | Record<string, unknown> | null;
 };
 
 type LibraryTree = {
   space_id?: string | null;
   space_name?: string | null;
-  nodes: TreeNode[];
+  nodes: ApiTreeNode[];
 };
 
-type Preview = {
-  table: string;
-  columns: string[];
-  rows: Record<string, unknown>[];
-  row_count: number;
-  note?: string;
-  kind?: string;
-};
+type Preview = TablePreview & { table: string; row_count: number };
+
+function metaField(meta: TreeMeta | Record<string, unknown> | null | undefined, key: string): string {
+  const v = meta?.[key as keyof typeof meta];
+  return v == null || v === "" ? "—" : String(v);
+}
 
 type ActiveRef =
   | { kind: "warehouse"; table: string }
   | { kind: "bronze"; table: string }
-  | { kind: "source"; id: string; label: string; meta?: TreeMeta }
+  | { kind: "source"; id: string; label: string; meta?: TreeMeta | Record<string, unknown> | null }
   | null;
 
 function TreeRows({
@@ -62,10 +62,14 @@ function TreeRows({
       {nodes.map((n) => {
         const isFolder = n.kind === "folder";
         const open = expanded.has(n.id);
+        const target = previewForNode(n.id);
         const selected =
-          (active?.kind === "warehouse" && n.node_type === "warehouse" && active.table === n.meta?.table) ||
-          (active?.kind === "bronze" && n.node_type === "bronze" && active.table === n.meta?.table) ||
-          (active?.kind === "source" && n.node_type === "source" && active.id === n.id);
+          (target &&
+            active &&
+            active.kind !== "source" &&
+            target.kind === active.kind &&
+            target.table === active.table) ||
+          (active?.kind === "source" && n.id === active.id);
         const pad = 8 + depth * 12;
         return (
           <li key={n.id} role="treeitem" aria-expanded={isFolder ? open : undefined}>
@@ -123,6 +127,7 @@ export function LibraryPage() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [previewOffset, setPreviewOffset] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(["folder:sources", "folder:bronze", "folder:warehouse"]),
   );
@@ -141,9 +146,10 @@ export function LibraryPage() {
         setTree(body);
         const firstWh = body.nodes
           .find((n) => n.id === "folder:warehouse")
-          ?.children?.find((c) => c.node_type === "warehouse");
-        if (firstWh?.meta?.table) {
-          setActive({ kind: "warehouse", table: firstWh.meta.table });
+          ?.children?.find((c) => previewForNode(c.id));
+        if (firstWh) {
+          const target = previewForNode(firstWh.id);
+          if (target) setActive({ kind: target.kind, table: target.table });
         }
       })
       .catch((e) => setErr(String(e)))
@@ -162,8 +168,8 @@ export function LibraryPage() {
     setPreviewBusy(true);
     const path =
       active.kind === "warehouse"
-        ? `/api/v1/library/warehouse/${encodeURIComponent(active.table)}/preview?limit=100`
-        : `/api/v1/library/bronze/${encodeURIComponent(active.table)}/preview?limit=100`;
+        ? `/api/v1/library/warehouse/${encodeURIComponent(active.table)}/preview?limit=${PREVIEW_PAGE_SIZE}&offset=${previewOffset}`
+        : `/api/v1/library/bronze/${encodeURIComponent(active.table)}/preview?limit=${PREVIEW_PAGE_SIZE}&offset=${previewOffset}`;
     void fetch(path)
       .then(async (r) => {
         if (!r.ok) throw new Error(await r.text());
@@ -175,24 +181,24 @@ export function LibraryPage() {
         setPreviewErr(String(e));
       })
       .finally(() => setPreviewBusy(false));
-  }, [active]);
+  }, [active, previewOffset]);
 
   const filteredNodes = useMemo(() => {
     if (!tree) return [];
     const q = filter.trim().toLowerCase();
     if (!q) return tree.nodes;
 
-    const filterNode = (n: TreeNode): TreeNode | null => {
+    const filterNode = (n: ApiTreeNode): ApiTreeNode | null => {
       if (n.kind === "leaf") {
         return n.label.toLowerCase().includes(q) ? n : null;
       }
-      const kids = (n.children || []).map(filterNode).filter(Boolean) as TreeNode[];
+      const kids = (n.children || []).map(filterNode).filter(Boolean) as ApiTreeNode[];
       if (kids.length || n.label.toLowerCase().includes(q)) {
         return { ...n, children: kids };
       }
       return null;
     };
-    return tree.nodes.map(filterNode).filter(Boolean) as TreeNode[];
+    return tree.nodes.map(filterNode).filter(Boolean) as ApiTreeNode[];
   }, [tree, filter]);
 
   const toggle = (id: string) => {
@@ -205,11 +211,11 @@ export function LibraryPage() {
   };
 
   const onSelect = (n: TreeNode) => {
-    if (n.node_type === "warehouse" && n.meta?.table) {
-      setActive({ kind: "warehouse", table: n.meta.table });
-    } else if (n.node_type === "bronze" && n.meta?.table) {
-      setActive({ kind: "bronze", table: n.meta.table });
-    } else if (n.node_type === "source") {
+    const target = previewForNode(n.id);
+    if (target) {
+      setPreviewOffset(0);
+      setActive({ kind: target.kind, table: target.table });
+    } else if (n.node_type === "source" || n.id.startsWith("source:")) {
       setActive({ kind: "source", id: n.id, label: n.label, meta: n.meta });
       setPreview(null);
     }
@@ -291,15 +297,15 @@ export function LibraryPage() {
               <dl className="mt-4 space-y-1 text-xs text-[var(--color-ink-muted)]">
                 <div>
                   <dt className="inline font-semibold text-[var(--color-ink)]">kind </dt>
-                  <dd className="inline">{active.meta?.kind ?? "—"}</dd>
+                  <dd className="inline">{metaField(active.meta, "kind")}</dd>
                 </div>
                 <div>
                   <dt className="inline font-semibold text-[var(--color-ink)]">scope </dt>
-                  <dd className="inline">{active.meta?.scope ?? "—"}</dd>
+                  <dd className="inline">{metaField(active.meta, "scope")}</dd>
                 </div>
                 <div>
                   <dt className="inline font-semibold text-[var(--color-ink)]">ref </dt>
-                  <dd className="inline break-all font-mono">{active.meta?.ref ?? "—"}</dd>
+                  <dd className="inline break-all font-mono">{metaField(active.meta, "ref")}</dd>
                 </div>
               </dl>
               <Link
@@ -326,7 +332,13 @@ export function LibraryPage() {
               {preview.note && (
                 <p className="mb-3 text-xs text-[var(--color-ink-muted)]">{preview.note}</p>
               )}
-              <AnswerRowsTable rows={preview.rows} maxRows={100} />
+              <AnswerRowsTable
+                rows={preview.rows}
+                totalRows={preview.row_count}
+                pageOffset={preview.offset ?? previewOffset}
+                pageSize={preview.limit ?? PREVIEW_PAGE_SIZE}
+                onPageChange={setPreviewOffset}
+              />
             </>
           )}
         </main>

@@ -52,9 +52,68 @@ def test_library_preview_route(warehouse: Path, monkeypatch: pytest.MonkeyPatch)
     body = r.json()
     assert body["table"] == "transactions"
     assert len(body["rows"]) <= 3
+    assert body["row_count"] > len(body["rows"])
 
     bad = client.get("/v1/library/warehouse/nope/preview")
     assert bad.status_code == 404
+
+
+def test_every_tree_leaf_previews(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PREVIEW-01: no bronze/warehouse leaf from the tree may 404."""
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_api.app import create_app
+    from dms_executor.bronze import ingest_csv_bytes
+    from dms_executor.warehouse_browse import list_bronze_tables, list_warehouse_tables
+
+    ingest_csv_bytes(filename="tree_leaf.csv", data=b"sku,qty\nA,1\nB,2\n", path=warehouse)
+
+    client = TestClient(create_app())
+    tree = client.get("/v1/library/tree").json()
+
+    def walk(nodes: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        for n in nodes:
+            if n.get("kind") == "leaf" and n.get("id", "").startswith(("bronze:", "warehouse:")):
+                out.append(n)
+            out.extend(walk(n.get("children") or []))
+        return out
+
+    for leaf in walk(tree["nodes"]):
+        node_id = leaf["id"]
+        kind, table = node_id.split(":", 1)
+        path = (
+            f"/v1/library/warehouse/{table}/preview?limit=200"
+            if kind == "warehouse"
+            else f"/v1/library/bronze/{table}/preview?limit=200"
+        )
+        r = client.get(path)
+        assert r.status_code == 200, f"{node_id} -> {r.status_code} {r.text}"
+        body = r.json()
+        assert "rows" in body and "columns" in body
+        assert body["row_count"] >= len(body["rows"])
+
+    for row in list_bronze_tables(path=warehouse):
+        r = client.get(f"/v1/library/bronze/{row['table']}/preview?limit=200")
+        assert r.status_code == 200
+        assert r.json()["row_count"] == row["row_count"]
+
+    for row in list_warehouse_tables(path=warehouse):
+        r = client.get(f"/v1/library/warehouse/{row['table']}/preview?limit=200")
+        assert r.status_code == 200
+        assert r.json()["row_count"] == row["row_count"]
+
+
+def test_preview_pagination_total_is_table_size(warehouse: Path) -> None:
+    from dms_executor.warehouse_browse import preview_warehouse_table
+
+    prev = preview_warehouse_table("transactions", limit=5, offset=0, path=warehouse)
+    assert len(prev["rows"]) == 5
+    assert prev["row_count"] == 15
+    assert prev["row_count"] != len(prev["rows"])
+
+    page2 = preview_warehouse_table("transactions", limit=5, offset=5, path=warehouse)
+    assert len(page2["rows"]) == 5
+    assert page2["row_count"] == 15
 
 
 def test_data_map_notes_missing_database(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:

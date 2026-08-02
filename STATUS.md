@@ -1,6 +1,6 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-08-02  
+**Last updated:** 2026-08-03  
 **North star:** [DMS_TECHNICAL_ARCHITECTURE.md](DMS_TECHNICAL_ARCHITECTURE.md) §15  
 **Remote:** https://github.com/Netie-AI/dms
 
@@ -10,51 +10,41 @@ Sequence T3 → T7-at-ingest → T4 → T5/T6 → T8 → **T12 → T13**. Demo-r
 `DMS_ASK_MODE=live` + `DMS_DEMO_FALLBACK=0` (both defaults). Launcher scripts are
 ASCII-only; PowerShell 5.1 breaks on em-dash.
 
-## Demo is green (verified live 2026-08-02)
+## Now
 
-`python scripts/verify_demo_live.py` → **18/18** against DMS + Cortex + OpenVault.
+Shipped on `feat/grounding-promote-spaces-boundary`: Studio ingest carries
+`space_id`; bronze list + grants are Space-scoped (#10/#12); live demo hides
+offline Company fixtures (#11); PREVIEW-01/02/03 UI (#13-#15). Still open:
+DEMO-PATH-01 (#16) follow-up half; EPIC-011 (Cortex#19-#22); #7 CI.
 
-| Check | Result |
-|-------|--------|
-| xlsx into a fresh warehouse | receipt names the table and the true row count |
-| grounding on one upload | manifest holds exactly it; UI count matches; ungrantable refused |
-| "total stock value by category" | answers in **both** Spaces, `L0_CERTIFIED` |
-| "total spend by supplier country" | answers in **Finance**, abstains in **Warehouse Ops** |
-| demo fallback | off everywhere; no answer is a fallback |
+## Demo is green (verified live 2026-08-02; re-run after restart)
 
-**Before the demo, restart the stack.** A Cortex left running overnight returns
-500 on submit; every certified question fails until it is restarted.
+`python scripts/verify_demo_live.py` was **18/18** before this sweep; script now
+also asserts Space-scoped ingest list + grant boundary + hidden fixtures
+(**24 checks** when stack is up).
 
-Spaces run on the **in-process store** (health reports `backend=memory`), which
-holds exactly the two DR-0002 Spaces. Do not point `DATABASE_URL` at the compose
-Postgres for the demo: `tests/control_plane` does `DROP SCHEMA dms CASCADE`, so
-that database holds test residue (`space-a-0f42cf14`, `Duplicate 14feb6`) and
-the Spaces list would show it.
+**Before the demo, restart the stack.** Cortex left running overnight returns 500
+on submit.
+
+Spaces run on the **in-process store** (`backend=memory`). Do not point
+`DATABASE_URL` at compose Postgres for demo (test residue).
 
 ```powershell
 D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -StartUi -OpenBrowser
 python D:\DMS\scripts\verify_demo_live.py
 ```
 
-## Closed this session
-
-| ID | What |
-|----|------|
-| **#4** P0-DEMO-01 | receipt no longer denies rows that landed; swap+record is one transaction |
-| **#2** ACL-01 | boundary holds on the serving path per DR-0002; second leak fixed (bound session id ignored Space); Spaces renamed |
-| **#5** P0-DEMO-03 | manifest minted from the selection; refuses rather than widens |
-| Postgres | host-reachable via the hostdb overlay; 18 control-plane tests run instead of erroring |
-
-Corpus: **188 passed**, 0 xfail. Ruff clean on `apps packages tests`.
+Stranger path (manual, <10 min): pick Finance Space -> Studio + upload xlsx ->
+tick file -> Ask -> Library preview rows. Follow-up (`average of them`) blocked
+on Cortex#19.
 
 ## Open
 
 | ID | Blocker |
 |----|---------|
-| **#3** CI-02 | `CORTEX_CONTRACT_TOKEN` is set but still 404s — the PAT cannot see `Netie-AI/Cortex`. Check it is a **fine-grained token with `Netie-AI` as resource owner**, `Contents: read`, `Netie-AI/Cortex` explicitly selected, org approval granted, not expired. |
-| P-DMS-26 | an uploaded table is grantable from any Space (ingest carries no `space_id`) |
-| P-DMS-27 | 19 mypy errors + 1 broken import-linter contract, both pre-existing and hidden by CI-02 |
-| C7-full / C7-prod | schema retrieval + FreeRoute SQL gen |
-| C10 | claim_n 47 → 310 via `verify_gold --review` |
+| **#16** | DEMO-PATH-01 verifier follow-up asserts (Cortex#19) |
+| **#8** | EPIC-008 completeness until #16 + stranger path green |
+| **Cortex#19-#22** | Multi-turn follow-ups |
+| **#7** | CI mypy / contract token |
 
 Design: paper / navy / teal / Figtree+Fraunces.

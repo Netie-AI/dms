@@ -26,6 +26,14 @@ export type HealthBody = {
   ask_mode?: "demo" | "live";
   demo_fallback?: boolean;
   database_configured?: boolean;
+  backend?: string;
+  database?: {
+    backend?: string;
+    persistent?: boolean;
+    configured?: boolean;
+    url_set?: boolean;
+    hint?: string | null;
+  };
   dependencies?: {
     cortex?: {
       ok?: boolean;
@@ -66,10 +74,17 @@ export async function fetchHealth(signal?: AbortSignal): Promise<HealthBody | nu
   }
 }
 
-export async function fetchSpaces(signal?: AbortSignal): Promise<SpaceSummary[]> {
+export type SpacesListBody = {
+  spaces: SpaceSummary[];
+  persisted: boolean;
+  storage?: { backend?: string; persistent?: boolean; configured?: boolean };
+  hint?: string | null;
+};
+
+export async function fetchSpaces(signal?: AbortSignal): Promise<SpacesListBody> {
   const res = await fetch("/api/v1/spaces", { signal });
   if (!res.ok) throw new Error(`spaces ${res.status}`);
-  return (await res.json()) as SpaceSummary[];
+  return (await res.json()) as SpacesListBody;
 }
 
 export type AskPayload = {
@@ -202,13 +217,18 @@ export type LibraryTree = {
   nodes: TreeNode[];
 };
 
+export const PREVIEW_PAGE_SIZE = 200;
+
 export type TablePreview = {
   table?: string;
   columns: string[];
   rows: Record<string, unknown>[];
   row_count?: number;
-  total_count?: number | null;
+  limit?: number;
+  offset?: number;
   truncated?: boolean;
+  note?: string;
+  kind?: string;
 };
 
 export function fetchLibraryTree(
@@ -221,22 +241,32 @@ export function fetchLibraryTree(
 
 export function fetchBronzePreview(
   table: string,
-  limit = 50,
+  limit = PREVIEW_PAGE_SIZE,
+  offset = 0,
   signal?: AbortSignal,
 ): Promise<TablePreview> {
+  const qs = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
   return getJson<TablePreview>(
-    `/v1/library/bronze/${encodeURIComponent(table)}/preview?limit=${limit}`,
+    `/v1/library/bronze/${encodeURIComponent(table)}/preview?${qs}`,
     signal,
   );
 }
 
 export function fetchWarehousePreview(
   table: string,
-  limit = 50,
+  limit = PREVIEW_PAGE_SIZE,
+  offset = 0,
   signal?: AbortSignal,
 ): Promise<TablePreview> {
+  const qs = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
   return getJson<TablePreview>(
-    `/v1/library/warehouse/${encodeURIComponent(table)}/preview?limit=${limit}`,
+    `/v1/library/warehouse/${encodeURIComponent(table)}/preview?${qs}`,
     signal,
   );
 }
@@ -245,11 +275,24 @@ export function fetchWarehousePreview(
 export function previewForNode(
   id: string,
 ): { kind: "bronze" | "warehouse"; table: string } | null {
-  if (id.startsWith("bronze:")) return { kind: "bronze", table: id.slice("bronze:".length) };
+  if (id.startsWith("bronze:")) {
+    return { kind: "bronze", table: id.slice("bronze:".length) };
+  }
   if (id.startsWith("warehouse:")) {
     return { kind: "warehouse", table: id.slice("warehouse:".length) };
   }
   return null;
+}
+
+export async function fetchTablePreview(
+  target: { kind: "bronze" | "warehouse"; table: string },
+  limit = PREVIEW_PAGE_SIZE,
+  offset = 0,
+  signal?: AbortSignal,
+): Promise<TablePreview> {
+  return target.kind === "bronze"
+    ? fetchBronzePreview(target.table, limit, offset, signal)
+    : fetchWarehousePreview(target.table, limit, offset, signal);
 }
 
 export async function createSpace(

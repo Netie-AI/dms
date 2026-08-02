@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, ComponentPropsWithoutRef } from "react";
 
 /**
  * The chrome every non-chat surface shares: a phase tag, a title, a one-line
@@ -164,17 +164,18 @@ export function DependencyNotice({
   title,
   hint,
   tone = "warn",
+  ...rest
 }: {
   title: string;
   hint?: string;
   tone?: "warn" | "danger";
-}) {
+} & ComponentPropsWithoutRef<"div">) {
   const cls =
     tone === "danger"
       ? "border-[var(--color-danger)]/40 bg-[var(--color-surface)] text-[var(--color-danger)]"
       : "border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] text-[var(--color-warn)]";
   return (
-    <div className={`mt-4 border px-3 py-2.5 text-xs ${cls}`}>
+    <div className={`mt-4 border px-3 py-2.5 text-xs ${cls}`} {...rest}>
       <p className="font-semibold">{title}</p>
       {hint ? <p className="mt-1 opacity-90">{hint}</p> : null}
     </div>

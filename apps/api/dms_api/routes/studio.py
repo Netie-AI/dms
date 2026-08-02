@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep
@@ -33,6 +33,7 @@ class ReceiptOut(BaseModel):
 async def ingest_file(
     cortex: CortexDep,
     file: UploadFile = File(...),
+    space_id: str | None = Form(None),
 ) -> ReceiptOut:
     """Single-file ingest (compat). Prefer /ingest-batch for multi-file triage."""
     decision = compliance_gate(
@@ -44,7 +45,7 @@ async def ingest_file(
 
     raw = await file.read()
     name = file.filename or "upload.csv"
-    receipt = batch_ingest([(name, raw)])
+    receipt = batch_ingest([(name, raw)], space_id=space_id)
     attention = receipt.get("need_attention", 0)
     return ReceiptOut(
         files_seen=receipt["files_seen"],
@@ -72,6 +73,7 @@ async def ingest_file(
 async def ingest_batch_files(
     cortex: CortexDep,
     files: list[UploadFile] = File(...),
+    space_id: str | None = Form(None),
 ) -> ReceiptOut:
     decision = compliance_gate(
         action="studio.ingest",
@@ -86,7 +88,7 @@ async def ingest_batch_files(
     payloads: list[tuple[str, bytes]] = []
     for f in files:
         payloads.append((f.filename or "upload.csv", await f.read()))
-    receipt = batch_ingest(payloads)
+    receipt = batch_ingest(payloads, space_id=space_id)
     attention = receipt.get("need_attention", 0)
     return ReceiptOut(
         files_seen=receipt["files_seen"],
@@ -106,6 +108,9 @@ async def ingest_batch_files(
 
 
 @router.get("/bronze")
-def list_bronze(cortex: CortexDep) -> list[dict[str, Any]]:
+def list_bronze(
+    cortex: CortexDep,
+    space_id: str | None = Query(None),
+) -> list[dict[str, Any]]:
     _ = cortex
-    return bronze_list()
+    return bronze_list(space_id=space_id)

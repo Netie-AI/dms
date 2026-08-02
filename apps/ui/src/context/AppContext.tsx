@@ -34,6 +34,8 @@ type AppState = {
   askMode: "demo" | "live" | null;
   demoFallbackEnabled: boolean | null;
   databaseConfigured: boolean | null;
+  spacesPersisted: boolean | null;
+  spacesStorageHint: string | null;
   cortexContractOk: boolean | null;
   cortexTrustOk: boolean | null;
   cortexTrustHint: string | null;
@@ -93,6 +95,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [askMode, setAskMode] = useState<"demo" | "live" | null>(null);
   const [demoFallbackEnabled, setDemoFallbackEnabled] = useState<boolean | null>(null);
   const [databaseConfigured, setDatabaseConfigured] = useState<boolean | null>(null);
+  const [spacesPersisted, setSpacesPersisted] = useState<boolean | null>(null);
+  const [spacesStorageHint, setSpacesStorageHint] = useState<string | null>(null);
   const [cortexContractOk, setCortexContractOk] = useState<boolean | null>(null);
   const [cortexTrustOk, setCortexTrustOk] = useState<boolean | null>(null);
   const [cortexTrustHint, setCortexTrustHint] = useState<string | null>(null);
@@ -140,6 +144,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (typeof body?.database_configured === "boolean") {
           setDatabaseConfigured(body.database_configured);
         }
+        const persistent = body?.database?.persistent;
+        if (typeof persistent === "boolean") {
+          setSpacesPersisted(persistent);
+        } else if (body?.backend === "memory") {
+          setSpacesPersisted(false);
+        }
+        setSpacesStorageHint(body?.database?.hint ?? null);
         const c = body?.dependencies?.cortex;
         const ov = body?.dependencies?.openvault;
         if (c) {
@@ -166,10 +177,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const ctrl = new AbortController();
     void fetchSpaces(ctrl.signal)
-      .then((list) => {
+      .then((body) => {
+        const list = body.spaces;
         if (!list.length) return;
         setSpaces(list);
         setSpacesFromApi(true);
+        if (body.persisted === false) {
+          setSpacesPersisted(false);
+        }
+        if (body.hint) setSpacesStorageHint(body.hint);
         setActiveSpaceId((prev) => {
           if (prev && list.some((s) => s.id === prev)) return prev;
           return list[0]?.id ?? null;
@@ -299,6 +315,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     askMode,
     demoFallbackEnabled,
     databaseConfigured,
+    spacesPersisted,
+    spacesStorageHint,
     cortexContractOk,
     cortexTrustOk,
     cortexTrustHint,

@@ -15,11 +15,16 @@ from dms_api.wiring import bronze_list, bronze_preview, warehouse_preview, wareh
 router = APIRouter(prefix="/v1/library", tags=["library"])
 
 
+def _hide_offline_fixtures(settings: SettingsDep) -> bool:
+    """Live memory demo: hide offline Company fixtures from the stranger path."""
+    return settings.dms_ask_mode == "live" and not settings.database_url
+
+
 @router.get("/sources")
 def list_sources(settings: SettingsDep) -> list[dict[str, Any]]:
     if not settings.database_url:
         # Offline fixture tree so Library is usable without Postgres.
-        return [
+        sources = [
             {
                 "id": "src_q3_sales",
                 "kind": "xlsx",
@@ -45,6 +50,9 @@ def list_sources(settings: SettingsDep) -> list[dict[str, Any]]:
                 "space_name": None,
             },
         ]
+        if _hide_offline_fixtures(settings):
+            sources = [s for s in sources if s.get("space_id")]
+        return sources
     with psycopg.connect(settings.database_url) as conn:
         set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
         rows = conn.execute(
@@ -76,7 +84,7 @@ def data_map(
     settings: SettingsDep,
     space_id: str | None = Query(None),
 ) -> dict[str, Any]:
-    bronze = bronze_list()
+    bronze = bronze_list(space_id=space_id)
     sources = list_sources(settings)
     if space_id:
         sources = [s for s in sources if s.get("space_id") == space_id]
@@ -117,7 +125,7 @@ def library_tree_route(
                 break
     return build_tree(
         sources=sources,
-        bronze=bronze_list(),
+        bronze=bronze_list(space_id=space_id),
         warehouse=warehouse_tables(),
         space_id=space_id,
         space_name=space_name,

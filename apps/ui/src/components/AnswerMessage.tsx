@@ -5,6 +5,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { useApp } from "@/context/AppContext";
 import { COPILOT_PROMPTS, copyText } from "@/lib/copilotPrompts";
+import { formatCellValue } from "@/lib/formatCellValue";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
@@ -135,7 +136,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     if (!rows.length) return;
     const cols = Object.keys(rows[0]);
     const escape = (v: unknown) => {
-      const s = v == null ? "" : String(v);
+      const s = formatCellValue(v);
       if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
       return s;
     };

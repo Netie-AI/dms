@@ -167,7 +167,7 @@ def test_create_space_is_marked_unpersisted_without_postgres(client, gate_allows
     assert body["persisted"] is False
     assert "DATABASE_URL" in body["hint"]
     assert body["storage"]["backend"] == "memory"
-    assert any(s["name"] == "Pilot cutover" for s in client.get("/v1/spaces").json())
+    assert any(s["name"] == "Pilot cutover" for s in client.get("/v1/spaces").json()["spaces"])
 
 
 def test_create_space_refuses_when_the_gate_cannot_decide(client):
@@ -180,7 +180,7 @@ def test_create_space_refuses_when_the_gate_cannot_decide(client):
     res = client.post("/v1/spaces", json={"name": "Ungated write"})
     assert res.status_code == 403
     assert res.json()["detail"] == "gate_unavailable"
-    assert all(s["name"] != "Ungated write" for s in client.get("/v1/spaces").json())
+    assert all(s["name"] != "Ungated write" for s in client.get("/v1/spaces").json()["spaces"])
 
 
 def test_duplicate_space_name_is_a_conflict(client, gate_allows):
@@ -188,8 +188,15 @@ def test_duplicate_space_name_is_a_conflict(client, gate_allows):
     assert client.post("/v1/spaces", json={"name": "duplicate check"}).status_code == 409
 
 
+def test_list_spaces_memory_honesty(client):
+    body = client.get("/v1/spaces").json()
+    assert body["persisted"] is False
+    assert body["storage"]["backend"] == "memory"
+    assert "DATABASE_URL" in (body.get("hint") or "")
+
+
 def test_space_sources_scope_to_that_space(client):
-    spaces = client.get("/v1/spaces").json()
+    spaces = client.get("/v1/spaces").json()["spaces"]
     q3 = next(s for s in spaces if s["name"] == "Finance")
     body = client.get(f"/v1/spaces/{q3['id']}/sources").json()
     assert body["count"] == len(body["sources"])

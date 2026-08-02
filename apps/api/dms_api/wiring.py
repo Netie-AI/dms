@@ -25,12 +25,12 @@ def build_ask_service(
     return exe
 
 
-def bronze_ingest(*, filename: str, data: bytes) -> dms_executor.IngestReceipt:
-    return dms_executor.ingest_csv_bytes(filename=filename, data=data)
+def bronze_ingest(*, filename: str, data: bytes, space_id: str | None = None) -> dms_executor.IngestReceipt:
+    return dms_executor.ingest_csv_bytes(filename=filename, data=data, space_id=space_id)
 
 
-def bronze_list():
-    return dms_executor.list_bronze_tables()
+def bronze_list(*, space_id: str | None = None):
+    return dms_executor.list_bronze_tables(space_id=space_id)
 
 
 def warehouse_tables():
@@ -70,8 +70,8 @@ def library_tree(
     )
 
 
-def batch_ingest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
-    return dms_executor.ingest_batch(files).to_dict()
+def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
+    return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
 
 def pipeline_run(

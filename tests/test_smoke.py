@@ -24,6 +24,7 @@ def test_health_route():
     assert body["contract"] == "1.2.0"
     assert body["ask_mode"] in ("live", "demo")
     assert body["demo_fallback"] is False or body["demo_fallback"] is True
+    assert body["backend"] == "memory"
     assert "contract_routes" in body["dependencies"]["cortex"]
     assert "jwks_refresh" in body["dependencies"]["cortex"]
     assert "database_configured" in body
@@ -34,8 +35,11 @@ def test_list_spaces():
     client = TestClient(create_app())
     r = client.get("/v1/spaces")
     assert r.status_code == 200
-    spaces = r.json()
+    body = r.json()
+    spaces = body["spaces"]
     assert len(spaces) >= 2
+    assert body["persisted"] is False
+    assert body["storage"]["backend"] == "memory"
 
 
 def test_chat_ask_demo_never_certified(monkeypatch):

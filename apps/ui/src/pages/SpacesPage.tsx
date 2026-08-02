@@ -21,7 +21,15 @@ import type { LibrarySource } from "@/lib/types";
  * chip reports, so there is one notion of scope in the product, not two.
  */
 export function SpacesPage() {
-  const { spaces, activeSpaceId, setActiveSpaceId, spacesFromApi, databaseConfigured } = useApp();
+  const {
+    spaces,
+    activeSpaceId,
+    setActiveSpaceId,
+    spacesFromApi,
+    databaseConfigured,
+    spacesPersisted,
+    spacesStorageHint,
+  } = useApp();
   const navigate = useNavigate();
   const sources = useAsync<LibrarySource[]>((signal) => fetchLibrarySources(signal));
   const [name, setName] = useState("");
@@ -80,7 +88,18 @@ export function SpacesPage() {
           hint="The DMS API did not return a Space list, so the switcher is running on built-in examples."
         />
       )}
-      {databaseConfigured === false && (
+      {spacesPersisted === false && (
+        <DependencyNotice
+          tone="danger"
+          title="Spaces are not persisted — they die on restart"
+          hint={
+            spacesStorageHint ??
+            "This catalog is in-memory only. Nothing you create here survives an API restart. Set DATABASE_URL and apply migrations only when you need durable Spaces."
+          }
+          data-testid="spaces-memory-banner"
+        />
+      )}
+      {databaseConfigured === false && spacesPersisted !== false && (
         <DependencyNotice
           title="No Postgres control plane"
           hint="Spaces created here live in the API process and disappear on restart. Set DATABASE_URL and apply migrations for durable Spaces, members, and ACL grants."
@@ -93,7 +112,9 @@ export function SpacesPage() {
           label="Scoped sources"
           value={sources.data ? (sources.data.length - companyScoped.length) : "—"}
         />
-        <StatTile label="Company-wide sources" value={sources.data ? companyScoped.length : "—"} />
+        {!spacesFromApi && (
+          <StatTile label="Company-wide sources" value={sources.data ? companyScoped.length : "—"} />
+        )}
         <StatTile
           label="Active scope"
           value={spaces.find((s) => s.id === activeSpaceId)?.name ?? "Company"}
@@ -204,6 +225,7 @@ export function SpacesPage() {
         </AsyncBoundary>
       </Section>
 
+      {!spacesFromApi && (
       <Section
         title="Company scope"
         count={companyScoped.length}
@@ -223,6 +245,7 @@ export function SpacesPage() {
           )}
         </ul>
       </Section>
+      )}
     </Page>
   );
 }

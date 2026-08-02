@@ -31,16 +31,22 @@ class SpaceCreate(BaseModel):
 
 
 @router.get("")
-def list_spaces(store: SpaceStoreDep) -> list[SpaceOut]:
-    return [
+def list_spaces(store: SpaceStoreDep, binding: StoreBindingDep) -> dict[str, Any]:
+    spaces = [
         SpaceOut(
             id=s.id,
             name=s.name,
             source_count=s.source_count,
             member_count=s.member_count,
-        )
+        ).model_dump()
         for s in store.list_spaces()
     ]
+    return {
+        "spaces": spaces,
+        "persisted": binding.persistent,
+        "storage": binding.as_dict(),
+        "hint": binding.hint,
+    }
 
 
 @router.post("", status_code=201)

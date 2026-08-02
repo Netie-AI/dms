@@ -53,6 +53,17 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    cols = {
+        r[0]
+        for r in con.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'
+            """
+        ).fetchall()
+    }
+    if "space_id" not in cols:
+        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN space_id VARCHAR")
 
 
 def _claim_table_name(
@@ -91,11 +102,12 @@ def _record_ingest(
     filename: str,
     digest: str,
     ingest_id: str,
+    space_id: str | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
     con.execute(
-        f"INSERT INTO {_REGISTRY} VALUES (?, ?, ?, ?, now())",
-        [table_name, filename, digest, ingest_id],
+        f"INSERT INTO {_REGISTRY} VALUES (?, ?, ?, ?, now(), ?)",
+        [table_name, filename, digest, ingest_id, space_id],
     )
 
 
@@ -105,6 +117,7 @@ def ingest_csv_bytes(
     data: bytes,
     path: Path | None = None,
     table_name: str | None = None,
+    space_id: str | None = None,
 ) -> IngestReceipt:
     """Write CSV into bronze.<table> with _src array provenance."""
     ingest_id = str(uuid.uuid4())
@@ -212,7 +225,12 @@ def ingest_csv_bytes(
             con.execute(f'DROP TABLE IF EXISTS bronze."{safe}"')
             con.execute(f'ALTER TABLE bronze."{staging}" RENAME TO "{safe}"')
             _record_ingest(
-                con, table_name=safe, filename=filename, digest=digest, ingest_id=ingest_id
+                con,
+                table_name=safe,
+                filename=filename,
+                digest=digest,
+                ingest_id=ingest_id,
+                space_id=space_id,
             )
         except Exception:  # noqa: BLE001
             con.execute("ROLLBACK")
@@ -293,7 +311,13 @@ def write_bronze_rows(
         con.close()
 
 
-def list_bronze_tables(*, path: Path | None = None) -> list[dict[str, Any]]:
+def list_bronze_tables(
+    *,
+    path: Path | None = None,
+    space_id: str | None = None,
+) -> list[dict[str, Any]]:
+    from dms_executor.demo_grants import canonical_space_id
+
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db), read_only=True)
     try:
@@ -301,22 +325,44 @@ def list_bronze_tables(*, path: Path | None = None) -> list[dict[str, Any]]:
         # must not reach the file picker — _ingest_registry used to exist only
         # after a CSV ingest, and now that it is created up front it would
         # otherwise appear as a tickable "file" in Studio.
-        rows = con.execute(
-            """
-            SELECT table_schema, table_name FROM information_schema.tables
-            WHERE ((table_schema = 'bronze')
-                OR (table_schema = 'main' AND table_name LIKE 'bronze_%'))
-              AND table_name NOT LIKE '\\_%' ESCAPE '\\'
-            ORDER BY table_schema, table_name
-            """
-        ).fetchall()
+        canon_space = canonical_space_id(space_id) if space_id else None
+        if canon_space:
+            rows = con.execute(
+                f"""
+                SELECT t.table_schema, t.table_name, r.space_id
+                  FROM information_schema.tables t
+                  INNER JOIN {_REGISTRY} r ON r.table_name = t.table_name
+                 WHERE ((t.table_schema = 'bronze')
+                     OR (t.table_schema = 'main' AND t.table_name LIKE 'bronze_%'))
+                   AND t.table_name NOT LIKE '\\_%' ESCAPE '\\'
+                   AND r.space_id = ?
+                 ORDER BY t.table_schema, t.table_name
+                """,
+                [canon_space],
+            ).fetchall()
+        else:
+            rows = [
+                (*row, None)
+                for row in con.execute(
+                    """
+                    SELECT table_schema, table_name FROM information_schema.tables
+                    WHERE ((table_schema = 'bronze')
+                        OR (table_schema = 'main' AND table_name LIKE 'bronze_%'))
+                      AND table_name NOT LIKE '\\_%' ESCAPE '\\'
+                    ORDER BY table_schema, table_name
+                    """
+                ).fetchall()
+            ]
         out = []
-        for schema, name in rows:
+        for schema, name, row_space in rows:
             cnt = scalar_int(
                 con.execute(f'SELECT COUNT(*) FROM "{schema}"."{name}"').fetchone()
             )
             label = f"{schema}.{name}" if schema != "main" else name
-            out.append({"table": label, "row_count": cnt})
+            entry: dict[str, Any] = {"table": label, "row_count": cnt}
+            if row_space:
+                entry["space_id"] = row_space
+            out.append(entry)
         return out
     finally:
         con.close()
