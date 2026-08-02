@@ -24,7 +24,7 @@ def _hide_offline_fixtures(settings: SettingsDep) -> bool:
 def list_sources(settings: SettingsDep) -> list[dict[str, Any]]:
     if not settings.database_url:
         # Offline fixture tree so Library is usable without Postgres.
-        sources = [
+        sources: list[dict[str, Any]] = [
             {
                 "id": "src_q3_sales",
                 "kind": "xlsx",

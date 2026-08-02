@@ -39,6 +39,27 @@ def ask(client: httpx.Client, question: str, **kw) -> tuple[int, dict]:
         return r.status_code, {"_raw": r.text[:400]}
 
 
+def has_numeric_value(env: dict) -> bool:
+    for v in env.get("values") or []:
+        val = v.get("value")
+        if isinstance(val, (int, float)):
+            return True
+    return False
+
+
+def envelope_compute_or_abstain(status: int, env: dict) -> bool:
+    """200 + numeric answer, or honest abstain (R-0001). Silent wrong answer is not OK."""
+    if status != 200:
+        return False
+    abstained = env.get("abstained")
+    badge = env.get("badge")
+    if abstained is False:
+        return has_numeric_value(env)
+    if abstained is True:
+        return badge == "ABSTAIN"
+    return False
+
+
 with httpx.Client() as c:
     print("\n== health ==")
     h = c.get(f"{API}/health", timeout=30).json()
@@ -152,6 +173,53 @@ with httpx.Client() as c:
         check(f"{label} answer is not demo fallback",
               e.get("demo_fallback_used") in (False, None),
               f"demo_fallback_used={e.get('demo_fallback_used')} ask_mode={e.get('ask_mode')}")
+
+    print("\n== DEMO-PATH follow-up (Cortex#19) ==")
+    scalar_sessions: list[tuple[str, dict]] = []
+    for sid, st, e in (("ses_fin", st_f, env_f), ("ses_fin2", st_a, env_a)):
+        if st == 200 and e.get("abstained") is False and len(e.get("values") or []) == 1:
+            if has_numeric_value(e):
+                scalar_sessions.append((sid, e))
+
+    st_m, env_m = ask(c, WHERE_SKU, space_id=FINANCE, session_id="ses_follow")
+    multi_ok = st_m == 200 and env_m.get("abstained") is False and has_numeric_value(env_m)
+    check(
+        "multi-row Finance question answers (ses_follow)",
+        multi_ok,
+        f"status={st_m} badge={env_m.get('badge')} abstained={env_m.get('abstained')} "
+        f"values={len(env_m.get('values') or [])}",
+    )
+
+    if multi_ok:
+        st_avg, env_avg = ask(
+            c, "average of them", space_id=FINANCE, session_id="ses_follow",
+        )
+        check(
+            "follow-up 'average of them' compute-or-abstain",
+            envelope_compute_or_abstain(st_avg, env_avg),
+            f"status={st_avg} badge={env_avg.get('badge')} abstained={env_avg.get('abstained')} "
+            f"values={env_avg.get('values')}",
+        )
+        if env_avg.get("abstained") is False:
+            check(
+                "follow-up not a green badge lie",
+                env_avg.get("badge") != "ABSTAIN",
+                f"badge={env_avg.get('badge')}",
+            )
+    else:
+        check("follow-up 'average of them' skipped", True, "prior multi-row did not answer")
+
+    if scalar_sessions:
+        sid, prior = scalar_sessions[0]
+        st_add, env_add = ask(c, "add 2000", space_id=FINANCE, session_id=sid)
+        check(
+            f"scalar follow-up 'add 2000' on {sid}",
+            envelope_compute_or_abstain(st_add, env_add),
+            f"status={st_add} badge={env_add.get('badge')} abstained={env_add.get('abstained')} "
+            f"values={env_add.get('values')}",
+        )
+    else:
+        print("  [SKIP] scalar 'add 2000' follow-up (no scalar prior session)")
 
 failed = [r for r in results if not r[1]]
 print("\n" + "=" * 60)
