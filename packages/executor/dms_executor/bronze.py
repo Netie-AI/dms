@@ -11,6 +11,7 @@ from typing import Any
 import duckdb
 
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 
 
@@ -218,7 +219,7 @@ def ingest_csv_bytes(
             raise
         con.execute("COMMIT")
         # Count what the customer receives (R-0001), not what the parse produced.
-        n = int(con.execute(f'SELECT COUNT(*) FROM bronze."{safe}"').fetchone()[0])
+        n = scalar_int(con.execute(f'SELECT COUNT(*) FROM bronze."{safe}"').fetchone())
     except Exception as exc:  # noqa: BLE001
         try:
             con.execute(f'DROP TABLE IF EXISTS bronze."{staging}"')
@@ -311,8 +312,8 @@ def list_bronze_tables(*, path: Path | None = None) -> list[dict[str, Any]]:
         ).fetchall()
         out = []
         for schema, name in rows:
-            cnt = int(
-                con.execute(f'SELECT COUNT(*) FROM "{schema}"."{name}"').fetchone()[0]
+            cnt = scalar_int(
+                con.execute(f'SELECT COUNT(*) FROM "{schema}"."{name}"').fetchone()
             )
             label = f"{schema}.{name}" if schema != "main" else name
             out.append({"table": label, "row_count": cnt})

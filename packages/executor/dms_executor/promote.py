@@ -16,6 +16,7 @@ import duckdb
 from dms_core.pipelines import GoldMetricDef, PipelineDef, PromoteReceipt
 
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.duckdb_scalar import fetchone_row, scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 from dms_executor.pipeline_loader import PipelineLoadError
 
@@ -269,7 +270,7 @@ def _run_gold(
     target = _qtable(pipe.target)
     # Materialize metric result as gold table (aggregate — document lineage)
     con.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM ({gold_metric.sql})")
-    n = int(con.execute(f"SELECT COUNT(*) FROM {target}").fetchone()[0])
+    n = scalar_int(con.execute(f"SELECT COUNT(*) FROM {target}").fetchone())
     return PromoteReceipt(
         run_id=run_id,
         target=pipe.target,
@@ -302,12 +303,12 @@ def _run_silver(
     # change the cardinality. Without this the receipt could report passed and
     # quarantined and still not answer "did everything arrive".
     driving = pipe.sources[0]
-    source_rows = int(con.execute(f"SELECT COUNT(*) FROM {_qtable(driving)}").fetchone()[0])
+    source_rows = scalar_int(con.execute(f"SELECT COUNT(*) FROM {_qtable(driving)}").fetchone())
 
     # Staging of source rows with synthetic row id for this run
     con.execute("DROP TABLE IF EXISTS _promote_stage")
     con.execute(f"CREATE TEMP TABLE _promote_stage AS SELECT * FROM {src_rel}")
-    staged_rows = int(con.execute("SELECT COUNT(*) FROM _promote_stage").fetchone()[0])
+    staged_rows = scalar_int(con.execute("SELECT COUNT(*) FROM _promote_stage").fetchone())
 
     biz_cols = list(contract.columns.keys())
     # Validate columns exist
@@ -396,14 +397,16 @@ def _run_silver(
                 col = key[: -len("_not_null_rate")]
                 threshold = float(rule.split(">=")[1].strip())
                 if col in stage_cols:
-                    row = con.execute(
-                        f"""
+                    row = fetchone_row(
+                        con.execute(
+                            f"""
                         SELECT
                           COUNT(*)::DOUBLE AS n,
                           COUNT({_qi(col)})::DOUBLE AS nn
                         FROM _promote_stage
                         """
-                    ).fetchone()
+                        ).fetchone()
+                    )
                     n, nn = float(row[0]), float(row[1])
                     rate = (nn / n) if n else 1.0
                     if rate < threshold:
@@ -469,13 +472,13 @@ def _run_silver(
         )
     con.execute(f"INSERT INTO {q_qual} {q_select}")
 
-    passed = int(
+    passed = scalar_int(
         con.execute(
             f"SELECT COUNT(*) FROM _promote_scored WHERE {pass_where}"
-        ).fetchone()[0]
+        ).fetchone()
     )
-    quarantined = int(
-        con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {fail_where}").fetchone()[0]
+    quarantined = scalar_int(
+        con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {fail_where}").fetchone()
     )
     reason_rows = con.execute(
         f"""

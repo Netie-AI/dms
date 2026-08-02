@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from dms_executor.bronze import list_bronze_tables
+from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     connect_readonly,
@@ -25,7 +26,7 @@ def list_warehouse_tables(*, path: Path | None = None) -> list[dict[str, Any]]:
     try:
         for table in DEMO_TABLES:
             try:
-                n = int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                n = scalar_int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone())
             except Exception:  # noqa: BLE001
                 n = 0
             out.append({"table": table, "row_count": n, "kind": "demo_warehouse"})
@@ -49,7 +50,7 @@ def preview_warehouse_table(
     ensure_demo_warehouse(path)
     con = connect_readonly(path)
     try:
-        total = int(con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0])
+        total = scalar_int(con.execute(f"SELECT COUNT(*) FROM {name}").fetchone())
         rel = con.execute(f"SELECT * FROM {name} LIMIT {lim} OFFSET {off}")
         cols = [d[0] for d in rel.description]
         rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
@@ -79,6 +80,29 @@ def _parse_bronze_ref(table: str) -> tuple[str, str]:
     return schema, name
 
 
+def _resolve_bronze_label(table: str, known: set[str]) -> str:
+    """Map any tree / UI label to the canonical name from list_bronze_tables."""
+    label = (table or "").strip()
+    if label in known:
+        return label
+    candidates: list[str] = [label]
+    if label.startswith("bronze:"):
+        candidates.append(label.removeprefix("bronze:"))
+    if label.startswith("bronze."):
+        candidates.append(label.removeprefix("bronze."))
+    candidates.append(f"bronze.{label}")
+    if "." in label:
+        candidates.append(label.split(".", 1)[-1])
+    seen: set[str] = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        if cand in known:
+            return cand
+    raise ValueError(f"Unknown or disallowed bronze table: {table!r}")
+
+
 def preview_bronze_table(
     table: str,
     *,
@@ -88,15 +112,7 @@ def preview_bronze_table(
 ) -> dict[str, Any]:
     """Read-only bronze preview — allowlist from list_bronze_tables only."""
     known = {t["table"] for t in list_bronze_tables(path=path)}
-    label = (table or "").strip()
-    if label not in known:
-        candidates = [label, f"bronze.{label}"]
-        if "." in label:
-            candidates.append(label.split(".", 1)[-1])
-        match = next((c for c in candidates if c in known), None)
-        if match is None:
-            raise ValueError(f"Unknown or disallowed bronze table: {table!r}")
-        label = match
+    label = _resolve_bronze_label(table, known)
     schema, name = _parse_bronze_ref(label)
     lim = max(1, min(int(limit), 500))
     off = max(0, min(int(offset), 100_000))
@@ -106,7 +122,7 @@ def preview_bronze_table(
     con = duckdb.connect(str(db), read_only=True)
     try:
         qual = f'"{schema}"."{name}"'
-        total = int(con.execute(f"SELECT COUNT(*) FROM {qual}").fetchone()[0])
+        total = scalar_int(con.execute(f"SELECT COUNT(*) FROM {qual}").fetchone())
         rel = con.execute(f"SELECT * FROM {qual} LIMIT {lim} OFFSET {off}")
         cols = [d[0] for d in rel.description]
         rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]

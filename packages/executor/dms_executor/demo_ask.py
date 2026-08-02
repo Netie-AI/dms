@@ -384,16 +384,18 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
     """
     rows = execute_sql(sql)
     peak = rows[0] if rows else {"location": "?", "util_pct": 0.0}
+    raw_util = peak.get("util_pct", 0.0)
+    util_pct = float(raw_util) if isinstance(raw_util, (int, float, str)) else 0.0
     return _pack(
         answer_id="ans_demo_capacity",
         text=(
             f"Warehouse capacity utilisation peaks at {peak['location']} "
-            f"({float(peak['util_pct']):.1f}%)."
+            f"({util_pct:.1f}%)."
         ),
         values=[
             {
                 "id": "v_util",
-                "value": float(peak["util_pct"]),
+                "value": util_pct,
                 "unit": "%",
                 "label": f"{peak['location']} utilisation",
             }

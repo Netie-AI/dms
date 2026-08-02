@@ -65,11 +65,8 @@ class AskResponse(BaseModel):
                     flat.append({k: v for k, v in r.items() if k != "additional_properties"})
             data["rows"] = flat
         route = data.get("route")
-        badge_l = (
-            data.get("badge").lower()
-            if isinstance(data.get("badge"), str)
-            else ""
-        )
+        badge = data.get("badge")
+        badge_l = badge.lower() if isinstance(badge, str) else ""
         if route in ("abstain", "blocked", "needs_clarification") or badge_l in (
             "abstain",
             "blocked",
