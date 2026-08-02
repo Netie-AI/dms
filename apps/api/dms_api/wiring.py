@@ -25,7 +25,12 @@ def build_ask_service(
     return exe
 
 
-def bronze_ingest(*, filename: str, data: bytes, space_id: str | None = None) -> dms_executor.IngestReceipt:
+def bronze_ingest(
+    *,
+    filename: str,
+    data: bytes,
+    space_id: str | None = None,
+) -> dms_executor.IngestReceipt:
     return dms_executor.ingest_csv_bytes(filename=filename, data=data, space_id=space_id)
 
 
@@ -34,21 +39,15 @@ def bronze_list(*, space_id: str | None = None):
 
 
 def warehouse_tables():
-    from dms_executor.warehouse_browse import list_warehouse_tables
-
-    return list_warehouse_tables()
+    return dms_executor.list_warehouse_tables()
 
 
 def warehouse_preview(table: str, *, limit: int = 100, offset: int = 0):
-    from dms_executor.warehouse_browse import preview_warehouse_table
-
-    return preview_warehouse_table(table, limit=limit, offset=offset)
+    return dms_executor.preview_warehouse_table(table, limit=limit, offset=offset)
 
 
 def bronze_preview(table: str, *, limit: int = 100, offset: int = 0):
-    from dms_executor.warehouse_browse import preview_bronze_table
-
-    return preview_bronze_table(table, limit=limit, offset=offset)
+    return dms_executor.preview_bronze_table(table, limit=limit, offset=offset)
 
 
 def library_tree(
@@ -59,15 +58,20 @@ def library_tree(
     space_id: str | None = None,
     space_name: str | None = None,
 ) -> dict[str, Any]:
-    from dms_executor.library_tree import build_library_tree
-
-    return build_library_tree(
+    return dms_executor.build_library_tree(
         sources=sources,
         bronze_tables=bronze,
         warehouse_tables=warehouse,
         space_id=space_id,
         space_name=space_name,
     )
+
+
+def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
+    """Composition-root wrapper so routes never import dms_executor.envelope."""
+    env = dms_executor.build_answer_envelope(**kwargs)
+    dms_executor.assert_envelope_valid(env)
+    return env
 
 
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:

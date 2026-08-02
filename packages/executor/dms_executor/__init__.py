@@ -34,6 +34,13 @@ from dms_executor.contract_infer import infer_contract
 from dms_executor.demo_ask import answer_demo_question
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.library_tree import build_library_tree
+from dms_executor.warehouse_browse import (
+    list_warehouse_tables,
+    preview_bronze_table,
+    preview_warehouse_table,
+)
 from dms_executor.manifest import (
     ManifestMinter,
     SessionAcl,
@@ -483,6 +490,9 @@ __all__ = [
     "SessionContext",
     "SourceGrant",
     "answer_demo_question",
+    "assert_envelope_valid",
+    "build_answer_envelope",
+    "build_library_tree",
     "classify_bytes",
     "classify_grid",
     "ingest_batch",
@@ -491,9 +501,12 @@ __all__ = [
     "intersect_space_grants",
     "get_serving_engine",
     "list_bronze_tables",
+    "list_warehouse_tables",
     "load_pipeline_by_name",
     "load_pipeline_yaml",
     "map_ask_response_to_envelope",
+    "preview_bronze_table",
+    "preview_warehouse_table",
     "resolve_session_acl",
     "run_promote",
     "sign_gold_metric",

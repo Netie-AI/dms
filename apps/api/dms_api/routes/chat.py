@@ -73,11 +73,11 @@ def _space_refusal_envelope(
     returns ``abstained: true`` with a reason on the envelope. A green badge
     over a refusal is a P0, and so is a raw engine error where an answer goes.
     """
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_api.wiring import build_validated_envelope
 
     where = f"in {space_name}" if space_name else "in this Space"
     subject = f"{missing_table} data" if missing_table else "data"
-    env = build_answer_envelope(
+    return build_validated_envelope(
         answer_id=f"ans_refused_{space_id[:8]}",
         text=(
             f"I can't answer that {where}. It needs {subject}, which this Space "
@@ -90,15 +90,13 @@ def _space_refusal_envelope(
         space_id=space_id,
         session_id=session_id,
     )
-    assert_envelope_valid(env)
-    return env
 
 
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     """E6 — demo_fallback_used must set an unmissable banner flag."""
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_api.wiring import build_validated_envelope
 
-    env = build_answer_envelope(
+    return build_validated_envelope(
         answer_id=str(env.get("answer_id") or "ans_fallback"),
         text=str(env.get("text") or ""),
         badge=str(env.get("badge") or "ABSTAIN"),
@@ -120,8 +118,6 @@ def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
         suggestions=list(env.get("suggestions") or []),
         route=env.get("route"),
     )
-    assert_envelope_valid(env)
-    return env
 
 
 @router.post("/ask")
