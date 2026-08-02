@@ -1,30 +1,31 @@
 """The Space boundary must hold in the data plane, not just the UI.
 
-SPACES.md invariant 1 requires enforcement, not hiding. Today ``Executor.live_ask``
-mints its manifest from ``demo_acl()``, which allowlists every demo table with
-predicate ``TRUE`` regardless of ``space_id`` — so the manifest minted for
-"Q3 Audit", for "Margin sandbox", and for no Space at all are byte-identical
-apart from the ``space_id`` label. Any user passing any Space id that merely
-exists reads the whole warehouse, and the envelope stamps a green badge over it.
+SPACES.md invariant 1 requires enforcement, not hiding. ``Executor.live_ask``
+used to mint its manifest from ``demo_acl()``, which allowlisted every demo
+table with predicate ``TRUE`` regardless of ``space_id`` — so the manifest
+minted for "Q3 Audit", for "Margin sandbox", and for no Space at all were
+byte-identical apart from the ``space_id`` label. Any user passing any Space id
+that merely existed read the whole warehouse, and the envelope stamped a green
+badge over it.
 
-Confirmed live: "Margin sandbox" carries only ``inventory`` and ``locations``
-sources, and a ``transactions`` question asked inside it returned full revenue
-with badge ``L0_CERTIFIED``.
+Confirmed live before the fix: "Margin sandbox" carries only ``inventory`` and
+``locations`` sources, and a ``transactions`` question asked inside it returned
+full revenue with badge ``L0_CERTIFIED``.
 
-``intersect_space_grants`` / ``resolve_session_acl`` (packages/executor/
-dms_executor/acl.py) already implement the intersection correctly and are green
-in CI — they simply have no production caller. That is the failure mode CLAUDE.md
-§8 warns about: a gate asserting an intermediate artifact certifies a feature
-that does not exist on the serving path.
+``intersect_space_grants``/``resolve_session_acl`` always implemented the
+intersection correctly and were green in CI — they simply had no production
+caller. That is the failure mode CLAUDE.md §8 warns about: a gate asserting an
+intermediate artifact certifies a feature that does not exist on the serving
+path.
 
-The boundary tests below are ``xfail(strict=True)``. They are not aspirational
-notes — strict means the suite FAILS if they start passing, so whoever wires the
-store cannot land it without deleting the marker and acknowledging the change.
+They are now called from ``Executor.grantable_tables`` against the DR-0002 seed
+in ``dms_executor.demo_grants``. The three tests below carried
+``xfail(strict=True)`` markers, which XPASSed once the boundary held; the
+markers are deleted and the assertions are unchanged.
 """
 
 from __future__ import annotations
 
-import pytest
 from dms_executor import Executor
 from dms_executor.acl import (
     SourceGrant,
@@ -84,15 +85,6 @@ def test_a_non_member_gets_nothing() -> None:
 # ------------------------------------------------------- the serving path
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "P0 cross-space leak: Executor.live_ask mints from demo_acl(), which ignores "
-        "space_id. Needs a SessionStore injected through dms_api.wiring (the only "
-        "module permitted to import dms_executor) so live_ask calls "
-        "intersect_space_grants instead. Delete this marker when it is wired."
-    ),
-)
 def test_two_spaces_do_not_mint_the_same_acl() -> None:
     """The whole point of a Space: it changes what a question may read."""
     ex = Executor(cortex=None)
@@ -105,10 +97,6 @@ def test_two_spaces_do_not_mint_the_same_acl() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Same root cause: demo_acl allowlists every demo table with TRUE.",
-)
 def test_a_space_cannot_read_a_table_it_has_no_source_for() -> None:
     """Margin sandbox holds inventory + locations. It must not reach transactions.
 
@@ -120,10 +108,6 @@ def test_a_space_cannot_read_a_table_it_has_no_source_for() -> None:
     assert "transactions" not in acl.row_predicates
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Same root cause: demo_acl does not consult membership at all.",
-)
 def test_an_unknown_space_mints_no_access() -> None:
     """A Space id that is not yours must not widen into full warehouse access."""
     acl = Executor(cortex=None).demo_acl(session_id="ses", space_id="sp_not_a_real_space")

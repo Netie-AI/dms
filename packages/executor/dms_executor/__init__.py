@@ -32,6 +32,7 @@ from dms_executor.bronze import (
 )
 from dms_executor.contract_infer import infer_contract
 from dms_executor.demo_ask import answer_demo_question
+from dms_executor.demo_grants import DemoSessionStore
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
 from dms_executor.manifest import (
     ManifestMinter,
@@ -52,6 +53,11 @@ from dms_executor.triage import classify_bytes, classify_grid
 
 logger = logging.getLogger(__name__)
 
+#: The demo tenant and its single steward. Real multi-tenancy arrives with the
+#: Postgres control plane (P-DMS-2); until then every session is this user.
+DEMO_TENANT_ID = "tenant_demo"
+DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
 
 class Executor:
     """Serving engine + manifest-aware submit path."""
@@ -64,12 +70,17 @@ class Executor:
         warehouse_path: Path | str | None = None,
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
+        session_store: Any | None = None,
     ) -> None:
         self._cortex = cortex
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
         self._bound_sessions: set[str] = set()
+        # The Space boundary reads its facts from here. Defaults to the DR-0002
+        # seed so the boundary holds without Postgres; swap for a Postgres-backed
+        # store when P-DMS-2 lands, without touching the serving path.
+        self._session_store = session_store or DemoSessionStore()
         if fetch_key_on_start:
             self.startup()
 
@@ -116,6 +127,29 @@ class Executor:
             return self._minter.mint_manifest(session)
         return mint_manifest_for_session(self._minter, session)
 
+    def grantable_tables(self, *, space_id: str | None) -> list[str]:
+        """Tables this Space may read at all, before any grounding selection.
+
+        ``None`` means no Space was chosen, which is the personal context: the
+        demo set stands. A Space id that exists grants what DR-0002 gave it. A
+        Space id that does not exist grants nothing - an unknown Space must not
+        widen into full warehouse access, which is what made the label
+        decorative.
+        """
+        if space_id is None:
+            return list(DEMO_TABLES)
+        ctx = intersect_space_grants(
+            self._session_store,
+            tenant_id=DEMO_TENANT_ID,
+            user_id=DEMO_USER_ID,
+            space_id=space_id,
+            # Only the grant set is read back here; the real session id is
+            # assigned by demo_acl, which knows the grounding scope too.
+            session_id="_grantable_probe",
+            pool_id="default",
+        )
+        return sorted(resolve_session_acl(ctx).row_predicates)
+
     def demo_acl(
         self,
         *,
@@ -136,14 +170,27 @@ class Executor:
         predicate to grant. An empty or fully-unknown selection falls back to
         the full set, so "ground in nothing" means "no narrowing" rather than
         an ACL that can read nothing at all (R-0005).
+
+        With a ``space_id`` the grantable set is the Space's grants, not the
+        whole warehouse (DR-0002). Without one the caller is outside any Space
+        and the demo set stands - that is the personal context, not a boundary
+        being skipped.
         """
-        scoped = [t for t in (tables or []) if t in DEMO_TABLES]
-        readable = scoped or list(DEMO_TABLES)
-        # A different scope is a different manifest, so it must be a different
-        # bound session — reusing the id would serve the question under whatever
-        # manifest happened to be bound first.
+        grantable = self.grantable_tables(space_id=space_id)
+        scoped = [t for t in (tables or []) if t in grantable]
+        readable = scoped or grantable
+        # A different manifest must be a different bound session — reusing the id
+        # would serve the question under whatever manifest happened to be bound
+        # first. That guard covered the grounding scope but not the Space, so
+        # switching Space inside one chat was served under the Space bound
+        # first: the boundary held at mint time and leaked at bind time.
         base = session_id or f"ses_{uuid4().hex[:16]}"
-        sid = f"{base}::scope:{'+'.join(sorted(scoped))}" if scoped else base
+        parts = []
+        if space_id:
+            parts.append(f"space:{space_id}")
+        if scoped:
+            parts.append(f"scope:{'+'.join(sorted(scoped))}")
+        sid = f"{base}::{'::'.join(parts)}" if parts else base
         return SessionAcl(
             session_id=sid,
             org_id="tenant_demo",
