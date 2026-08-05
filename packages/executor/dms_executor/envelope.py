@@ -3,7 +3,7 @@
 Every path that builds an ask envelope — live Cortex map or demo router —
 must call ``build_answer_envelope``. AST invariants fail the build otherwise.
 
-E1–E8 live in ``assert_envelope_valid``.
+E1–E9 live in ``assert_envelope_valid``.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ _BADGE_MAP = {
     "certified": "L0_CERTIFIED",
     "certified_metric": "L0_CERTIFIED",
     "governed_metric": "L1_GOVERNED_METRIC",
+    "catalog": "L1_GOVERNED_METRIC",  # META-01 semantic browse — not FreeRoute SQL
     "query_skill": "L2_VALIDATED",
     "session": "L2_VALIDATED",
     "generated": "L2_VALIDATED",
@@ -39,9 +40,123 @@ _NUMBER_IN_TEXT = re.compile(
     r"(?<![A-Za-z0-9_])(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+\.\d+|-?\d+)(?![A-Za-z0-9_])"
 )
 
+_EXT_KIND = {
+    ".pdf": "pdf",
+    ".csv": "csv",
+    ".txt": "csv",
+    ".xlsx": "xlsx",
+    ".xlsm": "xlsx",
+    ".parquet": "parquet",
+}
+
+_DOC_ROUTE_KINDS = frozenset({"doc_rag", "document", "rag", "document_retrieval"})
+
+
+_SQL_COMMENT = re.compile(r"--[^\n]*")
+
 
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _executed_query(sql: str | None) -> bool:
+    """True when ``sql_used`` holds a statement, not a placeholder comment.
+
+    ``map_ask_response_to_envelope`` stamps ``-- document retrieval (no SQL)``
+    when a path returns no query, so E3 stays satisfied. That stub is precisely
+    the signal that nothing was executed.
+    """
+    if not sql:
+        return False
+    return bool(_SQL_COMMENT.sub("", str(sql)).strip())
+
+
+def _money_like(text: str) -> list[float]:
+    """Decimal / thousand-separated literals — the ones a reader treats as figures.
+
+    Same filter E4 uses: bare integers are ranks, years and SKU tails.
+    """
+    out: list[float] = []
+    for m in _NUMBER_IN_TEXT.finditer(text or ""):
+        raw = m.group(1)
+        if "," not in raw and "." not in raw:
+            continue
+        try:
+            out.append(float(raw.replace(",", "")))
+        except ValueError:
+            continue
+    return out
+
+
+def _close(a: float, b: float) -> bool:
+    return abs(a - b) < 0.011 or abs(a - b) / max(abs(b), 1e-9) < 1e-4
+
+
+def _cited_figures(
+    text: str,
+    sources: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Promote figures the cited snippets actually contain into ``values[]``.
+
+    An extracted number is a real value of the answer and it carries a source,
+    so it belongs in ``values[]``. Doing this keeps E4 satisfied without
+    weakening it — otherwise quoting "the penalty is 5,000.00" from a contract
+    is refused, and a control that refuses legitimate work is a failure.
+    """
+    cited: list[float] = []
+    for s in sources:
+        cited.extend(_money_like(str(s.get("snippet") or "")))
+    if not cited:
+        return []
+
+    have = [
+        float(v["value"])
+        for v in existing
+        if isinstance(v, dict)
+        and isinstance(v.get("value"), (int, float))
+        and not isinstance(v.get("value"), bool)
+    ]
+    out: list[dict[str, Any]] = []
+    idx = len(existing)
+    for n in _money_like(text):
+        if any(_close(n, h) for h in have):
+            continue
+        if not any(_close(n, c) for c in cited):
+            continue
+        out.append({"id": f"v{idx}", "value": n, "label": "quoted"})
+        have.append(n)
+        idx += 1
+    return out
+
+
+def unbacked_numbers(
+    text: str,
+    values: list[dict[str, Any]] | None,
+    sources: list[dict[str, Any]] | None,
+) -> list[float]:
+    """Figures a no-query path renders that no cited snippet actually contains.
+
+    A retrieval path may *quote* a number it can point at. It may not *compute*
+    one: a sum, mean or top-N total appears verbatim in no snippet, which is how
+    a model-authored total is told apart from an extracted literal.
+    """
+    cited: list[float] = []
+    for s in sources or []:
+        cited.extend(_money_like(str(s.get("snippet") or "")))
+
+    candidates = list(_money_like(text))
+    for v in values or []:
+        if not isinstance(v, dict):
+            continue
+        raw = v.get("value")
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        if str(v.get("label")) == "row_count":
+            continue  # cardinality of what was retrieved, not a claim about the data
+        candidates.append(float(raw))
+
+    return [n for n in candidates if not any(_close(n, c) for c in cited)]
 
 
 def normalize_badge(raw: str | None, *, abstained: bool) -> str:
@@ -138,6 +253,30 @@ def build_answer_envelope(
     rows_out = [dict(r) for r in (rows or []) if isinstance(r, dict)]
     values_out = _ensure_values(values, rows_out, abstained=abstained)
 
+    # E9 — a path that executed no query has no authority to render a figure it
+    # cannot point at. Demote rather than certify: a green badge over a prose
+    # total is what put a wrong number in front of a client (F26).
+    if not abstained and not _executed_query(sql_used):
+        values_out = values_out + _cited_figures(text or "", sources, values_out)
+        if unbacked_numbers(text or "", values_out, sources):
+            named = ", ".join(
+                dict.fromkeys(
+                    str(s.get("container")) for s in sources if s.get("container")
+                )
+            )
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = (
+                f"Found relevant text in {named}, but could not certify a figure from it."
+                if named
+                else "Could not certify a figure from the retrieved text."
+            ) + (
+                " No executed query backs these numbers, and they do not appear in the"
+                " cited text. Ask this as a data question over a granted table to get a"
+                " certified number."
+            )
+            assumptions_list.append("L3 retrieval path: uncited figures withheld (E9)")
+
     if abstained:
         values_out = []
         sources = []
@@ -187,6 +326,83 @@ def build_answer_envelope(
     return env
 
 
+def _infer_source_kind(name: str, raw_kind: str | None) -> str:
+    if raw_kind:
+        key = str(raw_kind).lower()
+        if key in ("sql", "xlsx", "csv", "parquet", "pdf", "api"):
+            return key
+        if key in ("document", "doc", "unstructured"):
+            return "pdf"
+    lower = name.lower()
+    for ext, kind in _EXT_KIND.items():
+        if lower.endswith(ext):
+            return kind
+    return "sql"
+
+
+def normalize_contributing_sources(
+    raw: list[Any] | None,
+    *,
+    space_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Map Cortex doc-RAG / SQL provenance into DMS Source panel cards (RAG-04)."""
+    items = list(raw or [])
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(items):
+        if isinstance(item, str):
+            name = item.strip()
+            if not name:
+                continue
+            base = name.rsplit("/", 1)[-1] if "/" in name else name
+            out.append(
+                {
+                    "ref_id": f"doc_{i}",
+                    "container": base,
+                    "kind": _infer_source_kind(name, None),
+                    "row_count": 1,
+                    "contribution": 1.0 / max(len(items), 1),
+                    "origin_uri": name,
+                    **({"space_id": space_id} if space_id else {}),
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        d = dict(item)
+        ref_id = str(d.get("ref_id") or d.get("source_id") or d.get("id") or f"src_{i}")
+        container = str(
+            d.get("container") or d.get("filename") or d.get("name") or d.get("ref") or ref_id
+        )
+        kind = _infer_source_kind(container, d.get("kind"))
+        contrib = d.get("contribution")
+        if contrib is None:
+            pct = d.get("contribution_pct")
+            contrib = float(pct) / 100.0 if pct is not None else 1.0 / max(len(items), 1)
+        row_count = d.get("row_count")
+        if row_count is None:
+            row_count = d.get("chunk_count") or 1
+        src: dict[str, Any] = {
+            "ref_id": ref_id,
+            "container": container,
+            "kind": kind,
+            "row_count": int(row_count),
+            "contribution": float(contrib),
+        }
+        if d.get("member"):
+            src["member"] = str(d["member"])
+        if d.get("origin_uri"):
+            src["origin_uri"] = str(d["origin_uri"])
+        snippet = d.get("snippet") or d.get("content")
+        if snippet:
+            src["snippet"] = str(snippet)[:500]
+        if d.get("chunk_index") is not None:
+            src["chunk_index"] = int(d["chunk_index"])
+        if space_id:
+            src["space_id"] = space_id
+        out.append(src)
+    return out
+
+
 def _parse_numbers(text: str) -> list[float]:
     found: list[float] = []
     for m in _NUMBER_IN_TEXT.finditer(text or ""):
@@ -199,7 +415,7 @@ def _parse_numbers(text: str) -> list[float]:
 
 
 def assert_envelope_valid(envelope: dict[str, Any]) -> None:
-    """E1–E8 property assertions. Raises AssertionError on violation."""
+    """E1–E9 property assertions. Raises AssertionError on violation."""
     badge = envelope.get("badge")
     abstained = bool(envelope.get("abstained"))
     values = envelope.get("values") or []
@@ -266,6 +482,15 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
         if envelope.get("ask_mode") == "live" and not str(token).startswith("demo_"):
             assert len(str(token)) >= 8, "E7: drillthrough_token looks too short to verify"
 
+    # E9 — no executed query means no authority to state a figure. A retrieval
+    # path may quote a number a snippet contains; it may never compute one.
+    if not abstained and not _executed_query(sql_used):
+        unbacked = unbacked_numbers(text, values, sources)
+        assert not unbacked, (
+            f"E9: answer with no executed query renders uncited figures {unbacked} — "
+            "a retrieval path may quote a number, never compute one"
+        )
+
     # E8
     assert isinstance(as_of, str) and as_of.strip(), "E8: as_of required"
     try:
@@ -286,4 +511,6 @@ __all__ = [
     "assert_envelope_valid",
     "build_answer_envelope",
     "normalize_badge",
+    "normalize_contributing_sources",
+    "unbacked_numbers",
 ]

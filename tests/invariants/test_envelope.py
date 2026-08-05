@@ -1,13 +1,17 @@
-"""Phase 0 — customer envelope invariants E1–E8 + single-constructor AST gate.
+"""Phase 0 — customer envelope invariants E1–E9 + single-constructor AST gate.
 
 INVARIANT-CHANGE: Phase 0 envelope mapping — abstain must not stamp L2_VALIDATED.
+INVARIANT-CHANGE: E9 (F26) — a path that executed no query may quote a figure a
+cited snippet contains, but may never render one it computed.
 """
 
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from cortex_client.models import AskResponse
 from dms_executor import map_ask_response_to_envelope
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -91,6 +95,113 @@ def test_e6_demo_fallback_requires_banner():
     )
     assert env.get("demo_fallback_banner") is True
     assert_envelope_valid(env)
+
+
+def _doc_rag_response(answer: str, snippet: str, **extra):
+    """The AirGPT failure shape: retrieval route, no query, prose figures."""
+    return AskResponse.model_validate(
+        {
+            "answer": answer,
+            "audit_id": "aud_f26",
+            "route": "doc_rag",
+            "provenance": {"badge": "query_skill", "layer": "L2"},
+            "drillthrough_token": "dt_f26_token",
+            "contributing_sources": [
+                {
+                    "ref_id": "src_wide_fill",
+                    "filename": "aa64458a_p50_03_inventory_messy.xlsx",
+                    "contribution_pct": 100,
+                    "content": snippet,
+                    "chunk_index": 0,
+                }
+            ],
+            **extra,
+        }
+    )
+
+
+def test_e9_computed_totals_from_prose_never_certify():
+    """F26 regression, with the figures actually shown to the client.
+
+    AirGPT reported Home 383,803.56 / Sports 242,755.97 / Misc 228,548.84 citing
+    Wide_Fill. Measured truth for that sheet is 2,223,118.16 / 2,358,800.10 /
+    2,691,552.10 — wrong magnitudes and wrong ranking. No contiguous row window
+    of any sheet in any of the eight workbooks sums to the reported values: the
+    model added up a retrieved sample. Nothing here executed a query, so nothing
+    here may state a total.
+    """
+    resp = _doc_rag_response(
+        "Top 3 category sales are Home 383,803.56 MYR, Sports 242,755.97 MYR "
+        "and Misc 228,548.84 MYR.",
+        snippet="Wide_Fill rows for SKU-00260, SKU-00159 and SKU-00185.",
+        rows=[{"excerpt": "Wide_Fill sheet rows"}],
+    )
+    env = map_ask_response_to_envelope(resp, space_id="sp_demo", session_id="ses_f26")
+
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    for fabricated in ("383,803.56", "242,755.97", "228,548.84"):
+        assert fabricated not in env["text"], (
+            f"E9: refusal still renders the uncertified figure {fabricated}"
+        )
+    assert_envelope_valid(env)
+
+
+def test_e9_allows_a_figure_the_cited_snippet_actually_contains():
+    """R-0005 — a control that refuses legitimate work is a failure.
+
+    Quoting a number a document states is extractive and traceable. Only the
+    computed number is barred.
+    """
+    resp = _doc_rag_response(
+        "The contract sets the late-delivery penalty at 5,000.00 MYR.",
+        snippet="Clause 7.2: a penalty of 5,000.00 MYR applies per late delivery.",
+        rows=[{"excerpt": "Clause 7.2"}],
+    )
+    env = map_ask_response_to_envelope(resp, space_id="sp_legal", session_id="ses_ok")
+
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert "5,000.00" in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_e9_leaves_executed_sql_answers_alone():
+    """An executed query is exactly the authority E9 asks for."""
+    env = build_answer_envelope(
+        answer_id="a_sql",
+        text="Home revenue is 1,199,018.49 MYR.",
+        badge="L2_VALIDATED",
+        values=[{"id": "v0", "value": 1199018.49, "label": "sales_value_myr"}],
+        sql_used="SELECT category, SUM(sales_value_myr) FROM sales GROUP BY category",
+        ask_mode="demo",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert_envelope_valid(env)
+
+
+def test_e9_gate_can_fail():
+    """R-0007 — prove the assertion fires before trusting it green.
+
+    Hand-built envelope, bypassing the constructor's demotion, so the validator
+    is the only thing standing between a prose total and a green badge.
+    """
+    env = {
+        "answer_id": "a_bypass",
+        "text": "Home total is 383,803.56.",
+        "values": [{"id": "v0", "value": 383803.56, "label": "sales_value_myr"}],
+        "badge": "L2_VALIDATED",
+        "abstained": False,
+        "sql_used": "-- document retrieval (no SQL)",
+        "assumptions": [],
+        "as_of": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "contributing_sources": [],
+        "drillthrough_token": None,
+        "audit_id": "a_bypass",
+    }
+    with pytest.raises(AssertionError, match="E9"):
+        assert_envelope_valid(env)
 
 
 def test_envelope_dict_literals_only_in_constructor():
