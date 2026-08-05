@@ -249,7 +249,12 @@ def build_answer_envelope(
     else:
         assumptions_list = [str(a) for a in (assumptions or []) if a is not None]
 
-    sources = [dict(s) for s in (contributing_sources or []) if isinstance(s, dict)]
+    # Normalize before E9 so Cortex ``content`` becomes ``snippet`` — otherwise
+    # every doc path looks uncited and the quote-allowed control fails.
+    sources = normalize_contributing_sources(
+        contributing_sources,
+        space_id=space_id,
+    )
     rows_out = [dict(r) for r in (rows or []) if isinstance(r, dict)]
     values_out = _ensure_values(values, rows_out, abstained=abstained)
 
@@ -291,9 +296,11 @@ def build_answer_envelope(
         demo_fallback_banner = True
 
     # Non-abstain always keeps sql_used when provided; E3 requires it.
+    # Doc-RAG has no statement — keep the comment stub so E3 is satisfied while
+    # ``_executed_query`` still returns False (E9 authority stays honest).
     sql_out = sql_used
-    if abstained:
-        sql_out = sql_used  # optional on abstain; leave caller value
+    if not abstained and not _executed_query(sql_out):
+        sql_out = "-- document retrieval (no SQL)"
 
     env: dict[str, Any] = {
         "answer_id": answer_id,
