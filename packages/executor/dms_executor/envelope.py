@@ -261,6 +261,76 @@ def _should_demote_ambiguous_ranking(
     return competing
 
 
+#: Phrases that ask, unambiguously, for more than one row back. Deliberately a
+#: short closed list: this is not intent inference, it is reading an explicit
+#: cardinality request. "top 3" cannot mean one number; "for each category"
+#: cannot mean one number.
+_TOP_N_ASK = re.compile(r"\b(?:top|bottom|first|last|highest|lowest)\s+(\d+)\b", re.I)
+_PER_GROUP_ASK = re.compile(
+    r"\b(?:for\s+each|per|each)\s+[a-z_]+"
+    r"|\bbreakdown\b"
+    r"|\bgroup(?:ed)?\s+by\b"
+    r"|\brank\s+[a-z_]+",
+    re.I,
+)
+_GROUP_BY = re.compile(r"\bgroup\s+by\b", re.I)
+
+
+def _requests_multiple_rows(question: str | None) -> bool:
+    q = question or ""
+    m = _TOP_N_ASK.search(q)
+    if m:
+        try:
+            if int(m.group(1)) > 1:
+                return True
+        except ValueError:
+            pass
+    return bool(_PER_GROUP_ASK.search(q))
+
+
+def _should_demote_shape_mismatch(
+    *,
+    question: str | None,
+    sql: str | None,
+    rows: list[dict[str, Any]],
+) -> bool:
+    """True when a grouped/ranked ask was answered with one ungrouped scalar.
+
+    The FF-01 shape. A question asking "total sales for **each category**, top
+    3" was answered with a single row - total outbound revenue - carrying
+    L1_GOVERNED_METRIC. The figure was real and the SQL was real; what was wrong
+    is that they answer a *different question*. The grouping and the limit were
+    dropped, and the badge claimed governed authority while doing it.
+
+    That is not the F26 shape (invented numbers) and not the F32 shape (right
+    shape, wrong scope). It is a correct answer to a substituted question, which
+    a reader cannot detect from the envelope: real figure, real SQL, green badge.
+
+    Kept to a cardinality contract rather than intent inference, because an
+    intent cascade is forbidden here (E9-01) and would also be the wrong tool:
+    all three of these must hold before anything demotes.
+
+      1. the ask explicitly requests more than one row
+      2. the executed SQL carries no GROUP BY
+      3. exactly one row came back
+
+    Condition 2 is what keeps this honest. A grouped query that legitimately
+    finds a single group still has its GROUP BY, so it is untouched - and a
+    plain scalar ask never trips condition 1, so "what was our total revenue?"
+    keeps answering as a governed metric (R-0005).
+    """
+    if not _requests_multiple_rows(question):
+        return False
+    if len(rows) != 1:
+        return False
+    if not sql:
+        return False
+    stripped = _SQL_COMMENT.sub("", str(sql))
+    if not stripped.strip():
+        return False
+    return not _GROUP_BY.search(stripped)
+
+
 def _executed_query(sql: str | None) -> bool:
     """True when ``sql_used`` holds a statement, not a placeholder comment.
 
@@ -562,6 +632,26 @@ def build_answer_envelope(
             assumptions_list.append(
                 "ambiguous multi-sheet ranking: scope conflict (E9-02/F32)"
             )
+
+    # E10 (FF-01) — a grouped or ranked ask must not be settled with one
+    # ungrouped scalar. Runs after the scope demote because scope is the more
+    # specific complaint: if the ask was ambiguous about *which* data, saying so
+    # is more useful than saying the shape was wrong.
+    if not abstained and _should_demote_shape_mismatch(
+        question=question, sql=sql_used, rows=rows_out
+    ):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "You asked for a breakdown, and the query I matched returns a single "
+            "total instead - it has no grouping, so it cannot answer per-group or "
+            "top-N. Rather than show you one number as though it were the "
+            "breakdown, I'm stopping here. Name the grouping column, or ask for "
+            "the overall total if that is what you want."
+        )
+        assumptions_list.append(
+            "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
+        )
 
     if abstained:
         values_out = []

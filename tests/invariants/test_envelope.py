@@ -431,3 +431,126 @@ def test_envelope_dict_literals_only_in_constructor():
                 if "answer_id" in keys and "badge" in keys:
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not offenders, "envelope dict literals outside envelope.py: " + ", ".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# E10 / FF-01 — a grouped or ranked ask is not settled by an ungrouped scalar.
+# ---------------------------------------------------------------------------
+
+
+def test_e10_grouped_ask_answered_by_scalar_demotes():
+    """The FF-01 shape, caught live by scripts/verify_freeform_demo.py.
+
+    Asked for total sales *per category*, top 3. Answered with one row - total
+    outbound revenue - under L1_GOVERNED_METRIC. The figure was real, the SQL
+    was real, and together they answered a different question. A reader cannot
+    detect that from the envelope, which is what makes it worse than an obvious
+    error: real number, real query, green badge.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_ff01",
+        text="Result: revenue_myr = 80375993.99",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 80375993.99, "label": "revenue_myr"}],
+        sql_used=(
+            "SELECT ROUND(COALESCE(SUM(quantity_kg * unit_cost_myr), 0), 2) AS revenue_myr "
+            "FROM transactions WHERE txn_type = 'OUT' LIMIT 1000"
+        ),
+        rows=[{"revenue_myr": 80375993.99}],
+        question=(
+            "What is the total sales value in MYR for each inventory category, "
+            "counting only outbound transactions? Give me the top 3."
+        ),
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"a per-category top-3 ask settled with one ungrouped total certified as "
+        f"{env['badge']!r}"
+    )
+    assert env["abstained"] is True
+    assert not env["values"], "an abstention must not ship the substituted figure"
+    assert "breakdown" in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_e10_plain_scalar_ask_still_certifies():
+    """R-0005 — the guard must narrow matching, not disable the metric.
+
+    'What was our total revenue?' asks for exactly one number, so nothing about
+    a single ungrouped row is a mismatch. This is the case that would break if
+    E10 were implemented as "scalar answers are suspicious".
+    """
+    env = build_answer_envelope(
+        answer_id="ans_scalar_ok",
+        text="Result: revenue_myr = 80375993.99",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 80375993.99, "label": "revenue_myr"}],
+        sql_used=(
+            "SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS revenue_myr "
+            "FROM transactions WHERE txn_type = 'OUT'"
+        ),
+        rows=[{"revenue_myr": 80375993.99}],
+        question="What was our total revenue?",
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 80375993.99
+    assert_envelope_valid(env)
+
+
+def test_e10_grouped_query_returning_one_group_still_certifies():
+    """A real GROUP BY that happens to find one group is not a shape mismatch.
+
+    This is the case that separates a cardinality contract from a heuristic: the
+    query did the grouping it was asked to do, and the data had one group. The
+    GROUP BY is the evidence, so E10 must read the SQL and not merely count rows.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_one_group",
+        text="CHEMICALS: 130,523,362.43",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": 130523362.43, "label": "sales_value_myr"}],
+        sql_used=(
+            "SELECT i.category, SUM(t.quantity_kg * t.unit_cost_myr) AS sales_value_myr "
+            "FROM transactions t JOIN inventory i ON t.sku = i.sku "
+            "WHERE i.is_hazardous GROUP BY i.category ORDER BY sales_value_myr DESC"
+        ),
+        rows=[{"category": "CHEMICALS", "sales_value_myr": 130523362.43}],
+        question="sales for each hazardous category",
+    )
+
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert_envelope_valid(env)
+
+
+def test_e10_grouped_ask_with_a_real_breakdown_certifies():
+    """The happy path the demo needs: asked for three, given three."""
+    env = build_answer_envelope(
+        answer_id="ans_real_breakdown",
+        text="ELECTRONICS 133,931,869.04; FOOD_DRY 130,689,827.09; CHEMICALS 130,523,362.43",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[],
+        sql_used=(
+            "SELECT i.category, SUM(t.quantity_kg * t.unit_cost_myr) AS sales_value_myr "
+            "FROM transactions t JOIN inventory i ON t.sku = i.sku "
+            "WHERE t.txn_type = 'OUT' GROUP BY i.category "
+            "ORDER BY sales_value_myr DESC LIMIT 3"
+        ),
+        rows=[
+            {"category": "ELECTRONICS", "sales_value_myr": 133931869.04},
+            {"category": "FOOD_DRY", "sales_value_myr": 130689827.09},
+            {"category": "CHEMICALS", "sales_value_myr": 130523362.43},
+        ],
+        question="total sales for each inventory category, top 3",
+    )
+
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert len(env["rows"]) == 3
+    assert_envelope_valid(env)
