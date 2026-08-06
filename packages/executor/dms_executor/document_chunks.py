@@ -14,8 +14,9 @@ def extract_text(filename: str, data: bytes) -> str:
     """Pull readable text from UNSTRUCTURED workbook/doc bytes."""
     lower = filename.lower()
     if lower.endswith((".xlsx", ".xlsm")):
-        from openpyxl import load_workbook
         from io import BytesIO
+
+        from openpyxl import load_workbook
 
         wb = load_workbook(BytesIO(data), read_only=True, data_only=True)
         parts: list[str] = []

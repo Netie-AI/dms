@@ -55,8 +55,9 @@ def search_document_chunks(
     source_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """RAG-02 — ranked chunk search. Space filter is applied in SQL, not after."""
-    from dms_api.settings import get_settings
     from dms_core.control_plane.document_chunks import search_chunks
+
+    from dms_api.settings import get_settings
 
     settings = get_settings()
     if not settings.database_url:
@@ -73,8 +74,9 @@ def search_document_chunks(
 
 def list_document_chunks(*, space_id: str) -> list[dict[str, Any]]:
     """RAG-01 — steward list of one Space's chunks. Never crosses ``space_id``."""
-    from dms_api.settings import get_settings
     from dms_core.control_plane.document_chunks import list_chunks
+
+    from dms_api.settings import get_settings
 
     settings = get_settings()
     if not settings.database_url:

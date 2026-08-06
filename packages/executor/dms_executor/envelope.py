@@ -222,7 +222,8 @@ def _scope_uniquely_named(
         return True
     # Explicit sheet + one named workbook among the hits.
     if named:
-        narrowed = [h for h in hits if h in named or _workbook_stem(h) in {_workbook_stem(n) for n in named}]
+        named_stems = {_workbook_stem(n) for n in named}
+        narrowed = [h for h in hits if h in named or _workbook_stem(h) in named_stems]
         if len(narrowed) == 1:
             return True
         if len({_workbook_stem(h) for h in narrowed}) == 1 and len(narrowed) >= 1:
