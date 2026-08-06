@@ -31,10 +31,14 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 from dms_executor.contract_infer import infer_contract
-from dms_executor.demo_ask import answer_demo_question
+from dms_executor.demo_ask import answer_demo_question, normalize_ask_question
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
-from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.envelope import (
+    assert_envelope_valid,
+    build_answer_envelope,
+    normalize_contributing_sources,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -51,6 +55,7 @@ from dms_executor.pipeline_loader import (
     validate_pipeline_dict,
 )
 from dms_executor.promote import run_promote, sign_gold_metric
+from dms_executor.reveal import allowlisted_roots, is_filesystem_uri, reveal_path
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.warehouse_browse import (
     list_warehouse_tables,
@@ -292,6 +297,7 @@ class Executor:
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
+        question = normalize_ask_question(question)
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
@@ -324,6 +330,7 @@ class Executor:
             # The manifest that was actually minted, so the count the viewer
             # reads comes from the grant and not from the request.
             grounded_tables=sorted(acl.row_predicates),
+            question=question,
         )
 
     def submit_sql(
@@ -365,6 +372,7 @@ _BADGE_MAP = {
     "certified": "L0_CERTIFIED",
     "certified_metric": "L0_CERTIFIED",
     "governed_metric": "L1_GOVERNED_METRIC",
+    "catalog": "L1_GOVERNED_METRIC",  # META-01 semantic browse — not FreeRoute SQL
     "query_skill": "L2_VALIDATED",
     "session": "L2_VALIDATED",
     "generated": "L2_VALIDATED",
@@ -373,18 +381,71 @@ _BADGE_MAP = {
 }
 
 
+def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Map Cortex chart_spec (type/x_label/y_label) to DMS SimpleChart shape."""
+    if not isinstance(spec, dict):
+        return None
+    ctype = str(spec.get("type") or "").lower()
+    title = str(spec.get("title") or "Result")
+    if ctype == "bignum":
+        return {
+            "kind": "bignum",
+            "value": spec.get("value"),
+            "label": str(spec.get("label") or ""),
+            "title": title,
+        }
+    x = spec.get("x_label")
+    y = spec.get("y_label")
+    if ctype in ("bar", "line", "hbar") and x and y:
+        kind = "line" if ctype == "line" else ("hbar" if ctype == "hbar" else "bar")
+        return {"kind": kind, "x": str(x), "y": str(y), "title": title}
+    return None
+
+
+def _chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Fallback when Cortex omits chart_spec: category + measure → hbar."""
+    if not rows:
+        return None
+    keys = list(rows[0].keys())
+    num_key = next(
+        (
+            k
+            for k in keys
+            if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
+        ),
+        None,
+    )
+    cat_key = next((k for k in keys if k != num_key and isinstance(rows[0].get(k), str)), None)
+    if num_key and cat_key:
+        return {"kind": "hbar", "x": cat_key, "y": num_key, "title": "Result"}
+    return None
+
+
 def map_ask_response_to_envelope(
     resp: AskResponse,
     *,
     space_id: str | None = None,
     session_id: str | None = None,
     grounded_tables: list[str] | None = None,
+    question: str | None = None,
+    competing_scopes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_executor.envelope import (
+        _DOC_ROUTE_KINDS,
+        assert_envelope_valid,
+        build_answer_envelope,
+        normalize_contributing_sources,
+    )
 
-    badge_raw = (resp.badge or "abstain").lower()
-    badge = _BADGE_MAP.get(badge_raw, "L2_VALIDATED")
+    badge_raw = resp.badge
+    route_l = (resp.route or "").lower()
+    if not badge_raw:
+        if resp.abstained or route_l in ("abstain", "blocked", "needs_clarification"):
+            badge_raw = "abstain"
+        else:
+            badge_raw = "l2_validated"
+    badge = _BADGE_MAP.get(str(badge_raw).lower(), "L2_VALIDATED")
     abstained = bool(resp.abstained) or badge == "ABSTAIN"
     if abstained:
         badge = "ABSTAIN"
@@ -415,26 +476,10 @@ def map_ask_response_to_envelope(
                 break
     if not values and resp.rows:
         values = [{"id": "v_count", "value": float(len(resp.rows)), "label": "row_count"}]
-    chart = None
     rows = list(resp.rows or [])
+    chart = None
     if rows and not abstained:
-        keys = list(rows[0].keys())
-        num_key = next(
-            (
-                k
-                for k in keys
-                if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
-            ),
-            None,
-        )
-        cat_key = next((k for k in keys if k != num_key and isinstance(rows[0].get(k), str)), None)
-        if num_key and cat_key:
-            chart = {
-                "kind": "hbar",
-                "x": cat_key,
-                "y": num_key,
-                "title": "Result",
-            }
+        chart = _chart_from_cortex_spec(resp.chart_spec) or _chart_from_rows(rows)
     assumptions: list[str] = []
     if resp.assumptions:
         if isinstance(resp.assumptions, str):
@@ -442,18 +487,27 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
-    sources = list(resp.contributing_sources or [])
+    sources = normalize_contributing_sources(
+        resp.contributing_sources, space_id=space_id
+    )
     token = resp.drillthrough_token
     if sources and not token:
         # E7: never claim sources without a drillthrough token.
         sources = []
+    route = (resp.route or "").lower()
+    sql_out = resp.sql_used
+    if not abstained and not (sql_out and str(sql_out).strip()):
+        if route in _DOC_ROUTE_KINDS or any(s.get("kind") != "sql" for s in sources):
+            sql_out = "-- document retrieval (no SQL)"
+        else:
+            sql_out = "-- live ask (SQL not returned)"
     env = build_answer_envelope(
         answer_id=resp.receipt_id or f"ans_live_{session_id or 'x'}",
         text=text,
         values=values,
         badge=badge,
         abstained=abstained,
-        sql_used=None if abstained else resp.sql_used,
+        sql_used=None if abstained else sql_out,
         assumptions=assumptions,
         as_of=datetime_now(),
         space_id=space_id,
@@ -467,6 +521,8 @@ def map_ask_response_to_envelope(
         route=resp.route,
         drillthrough_token=None if abstained else token,
         grounded_tables=grounded_tables,
+        question=question,
+        competing_scopes=competing_scopes,
     )
     assert_envelope_valid(env)
     return env
@@ -492,6 +548,7 @@ __all__ = [
     "answer_demo_question",
     "assert_envelope_valid",
     "build_answer_envelope",
+    "normalize_contributing_sources",
     "build_library_tree",
     "classify_bytes",
     "classify_grid",
@@ -507,6 +564,9 @@ __all__ = [
     "map_ask_response_to_envelope",
     "preview_bronze_table",
     "preview_warehouse_table",
+    "allowlisted_roots",
+    "is_filesystem_uri",
+    "reveal_path",
     "resolve_session_acl",
     "run_promote",
     "sign_gold_metric",

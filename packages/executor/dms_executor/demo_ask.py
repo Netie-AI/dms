@@ -93,12 +93,53 @@ _EXCLUSION_STOP = re.compile(
     re.I,
 )
 _EXCLUSION_SKIP = frozenset(
-    {"THE", "A", "AN", "SKU", "AND", "OR", "FROM", "BY", "OF", "ALL", "ANY"}
+    {
+        "THE",
+        "A",
+        "AN",
+        "SKU",
+        "AND",
+        "OR",
+        "FROM",
+        "BY",
+        "OF",
+        "ALL",
+        "ANY",
+        "EXCLUDING",
+        "EXCLUDE",
+        "EXCLUDED",
+        "EXCLUSION",
+    }
 )
+_WITHOUT_EXCLUSION_DECLINE = re.compile(
+    r"\bwithout\s+exclud(?:e|ing|ed|sion)\b",
+    re.I,
+)
+_NO_EXCLUSION_CHIP = re.compile(
+    r"^(?:No\s*[—-]\s*)?(?:Show\s+)?(?:top\s+(\d+)\b|.*?\btop\s+(\d+)\b).*"
+    r"\bwithout\s+exclud",
+    re.I,
+)
+
+
+def normalize_ask_question(question: str) -> str:
+    """Map decline chips ('…without excluding') to a plain rank question."""
+    q = question.strip()
+    m = _NO_EXCLUSION_CHIP.search(q)
+    if m:
+        n = m.group(1) or m.group(2) or "5"
+        return f"Top {n} selling SKUs by revenue"
+    if _WITHOUT_EXCLUSION_DECLINE.search(q):
+        cleaned = _WITHOUT_EXCLUSION_DECLINE.sub("", q)
+        cleaned = " ".join(cleaned.split()).strip(" ,;")
+        if cleaned:
+            return cleaned
+    return q
 
 
 def _excluded_skus(question: str) -> list[str]:
     """Parse all named SKUs in an exclusion clause (comma / and / or lists)."""
+    question = _WITHOUT_EXCLUSION_DECLINE.sub("", question)
     out: list[str] = []
     for m in re.finditer(
         r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|remov(?:e|ing)|drop(?:ping)?|without|except)\s+(?:the\s+)?(.+)",

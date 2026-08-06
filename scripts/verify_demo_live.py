@@ -1,8 +1,20 @@
 """End-to-end demo verification against the LIVE stack (DMS + Cortex + OpenVault).
 
+Stranger path (<10 min, DMS_DEMO_FALLBACK=0):
+  1. Start stack: ``scripts/windows/Start-DMSStack.ps1 -StartSiblings -StartUi``
+  2. Studio -> Finance Space -> upload ``15_q3_sales_export.xlsx``
+  3. Confirm receipt shows ingested=1 and the table appears in Studio bronze
+  4. Ask grounded on that file (scope chip / grounded_tables length 1)
+  5. Library -> bronze preview (readable rows)
+  6. Multi-turn: ask a multi-row question, then ``average of them``; or a scalar
+     question, then ``add 2000`` -- compute-or-abstain, never silent demo numbers
+
+Run: ``python scripts/verify_demo_live.py`` (stack must be live on :8090).
+
 Asserts the customer-visible artifact at the layer the customer receives it
-(R-0001): the HTTP envelope from POST /v1/chat/ask and the ingest receipt from
-POST /v1/studio/ingest-batch. Nothing here inspects DMS internals.
+(R-0001): HTTP envelopes from POST /v1/chat/ask, ingest receipt from
+POST /v1/studio/ingest-batch, and preview rows from GET /v1/library/bronze/.../preview.
+Nothing here inspects DMS internals.
 """
 
 from __future__ import annotations
@@ -20,6 +32,8 @@ XLSX = Path("D:/DMS/tests/fixtures/ingest/15_q3_sales_export.xlsx")
 
 REVENUE = "What is our total spend by supplier country?"   # needs suppliers (Finance only)
 WHERE_SKU = "What is total stock value by category?"        # needs inventory (company-wide)
+GROUNDED_Q = "What is total units_sold in {table_short}?"  # Cortex routes to upload when named
+SCALAR_Q = "What is our total spend?"                     # single numeric for add-2000 follow-up
 
 results: list[tuple[str, bool, str]] = []
 
@@ -60,6 +74,13 @@ def envelope_compute_or_abstain(status: int, env: dict) -> bool:
     return False
 
 
+def envelope_grounded_scope(status: int, env: dict, table: str) -> bool:
+    """Grounded ask: 200, manifest matches selection, compute-or-abstain."""
+    if status != 200 or env.get("grounded_tables") != [table]:
+        return False
+    return envelope_compute_or_abstain(status, env)
+
+
 with httpx.Client() as c:
     print("\n== health ==")
     h = c.get(f"{API}/health", timeout=30).json()
@@ -78,7 +99,7 @@ with httpx.Client() as c:
     names = {s["name"] for s in spaces if isinstance(s, dict) and "name" in s}
     check("Finance and Warehouse Ops exist", {"Finance", "Warehouse Ops"} <= names, str(names))
 
-    print("\n== P0-DEMO-01: xlsx ingest reports the truth ==")
+    print("\n== DEMO-PATH: fresh upload receipt truth ==")
     files = [("files", (XLSX.name, XLSX.read_bytes(),
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))]
     r = c.post(
@@ -103,16 +124,29 @@ with httpx.Client() as c:
         check("upload visible in Finance Studio bronze", table in fin_names, str(fin_names))
         check("upload hidden from Warehouse Ops bronze", table not in ops_names, str(ops_names))
 
+        pr = c.get(f"{API}/v1/library/bronze/{table}/preview?limit=200", timeout=30)
+        prev = pr.json() if pr.status_code == 200 else {}
+        check("upload preview returns 200", pr.status_code == 200, f"status={pr.status_code}")
+        rows = prev.get("rows") or []
+        check(
+            "upload preview has readable rows",
+            "columns" in prev and len(rows) > 0,
+            f"columns={len(prev.get('columns') or [])} rows={len(rows)}",
+        )
+
+        table_short = table.split(".", 1)[-1]
+        grounded_q = GROUNDED_Q.format(table_short=table_short)
+
         st_fin, env_fin = ask(
             c,
-            "How many units were sold?",
+            grounded_q,
             grounded_tables=[table],
             space_id=FINANCE,
             session_id="ses_fin_upload",
         )
         st_ops, env_ops = ask(
             c,
-            "How many units were sold?",
+            grounded_q,
             grounded_tables=[table],
             space_id=WAREHOUSE_OPS,
             session_id="ses_ops_upload",
@@ -120,8 +154,8 @@ with httpx.Client() as c:
         ops_detail = env_ops.get("detail", {}) if isinstance(env_ops.get("detail"), dict) else {}
         check(
             "upload groundable in Finance",
-            st_fin == 200 and env_fin.get("abstained") is False,
-            f"status={st_fin} badge={env_fin.get('badge')}",
+            envelope_grounded_scope(st_fin, env_fin, table),
+            f"status={st_fin} badge={env_fin.get('badge')} grounded={env_fin.get('grounded_tables')}",
         )
         check(
             "upload refused in Warehouse Ops",
@@ -133,14 +167,23 @@ with httpx.Client() as c:
     src_refs = {s.get("ref") for s in c.get(f"{API}/v1/library/sources", timeout=30).json()}
     check("company gl_export hidden from sources", "Company/finance/gl_export.csv" not in src_refs, str(src_refs))
 
-    print("\n== P0-DEMO-03: grounding mints exactly the selection ==")
+    print("\n== DEMO-PATH: grounded ask, scope chip = grounded_tables length 1 ==")
     if table:
-        st, env = ask(c, "How many units were sold?", grounded_tables=[table],
-                      session_id="ses_demo_ground")
+        table_short = table.split(".", 1)[-1]
+        grounded_q = GROUNDED_Q.format(table_short=table_short)
+        st, env = ask(
+            c, grounded_q, grounded_tables=[table], space_id=FINANCE,
+            session_id="ses_demo_ground",
+        )
         if st == 200:
             g = env.get("grounded_tables")
             check("manifest holds exactly the ticked file", g == [table], f"grounded_tables={g}")
             check("UI count equals manifest length", len(g or []) == 1, f"count={len(g or [])}")
+            check(
+                "grounded ask compute-or-abstain",
+                envelope_grounded_scope(st, env, table),
+                f"badge={env.get('badge')} abstained={env.get('abstained')}",
+            )
         else:
             check("grounded ask returned 200", False, f"status={st} body={json.dumps(env)[:300]}")
 
@@ -180,15 +223,14 @@ with httpx.Client() as c:
               e.get("demo_fallback_used") in (False, None),
               f"demo_fallback_used={e.get('demo_fallback_used')} ask_mode={e.get('ask_mode')}")
 
-    print("\n== DEMO-PATH follow-up (Cortex#19) ==")
-    scalar_sessions: list[tuple[str, dict]] = []
-    for sid, st, e in (("ses_fin", st_f, env_f), ("ses_fin2", st_a, env_a)):
-        if st == 200 and e.get("abstained") is False and len(e.get("values") or []) == 1:
-            if has_numeric_value(e):
-                scalar_sessions.append((sid, e))
-
+    print("\n== DEMO-PATH: multi-turn follow-up compute-or-abstain ==")
     st_m, env_m = ask(c, WHERE_SKU, space_id=FINANCE, session_id="ses_follow")
-    multi_ok = st_m == 200 and env_m.get("abstained") is False and has_numeric_value(env_m)
+    multi_ok = (
+        st_m == 200
+        and env_m.get("abstained") is False
+        and len(env_m.get("values") or []) > 1
+        and has_numeric_value(env_m)
+    )
     check(
         "multi-row Finance question answers (ses_follow)",
         multi_ok,
@@ -213,19 +255,31 @@ with httpx.Client() as c:
                 f"badge={env_avg.get('badge')}",
             )
     else:
-        check("follow-up 'average of them' skipped", True, "prior multi-row did not answer")
+        check("follow-up 'average of them'", False, "prior multi-row question did not answer")
 
-    if scalar_sessions:
-        sid, prior = scalar_sessions[0]
-        st_add, env_add = ask(c, "add 2000", space_id=FINANCE, session_id=sid)
+    st_s, env_s = ask(c, SCALAR_Q, space_id=FINANCE, session_id="ses_scalar")
+    scalar_ok = (
+        st_s == 200
+        and env_s.get("abstained") is False
+        and len(env_s.get("values") or []) == 1
+        and has_numeric_value(env_s)
+    )
+    check(
+        "scalar Finance question answers (ses_scalar)",
+        scalar_ok,
+        f"status={st_s} badge={env_s.get('badge')} abstained={env_s.get('abstained')} "
+        f"values={env_s.get('values')}",
+    )
+    if scalar_ok:
+        st_add, env_add = ask(c, "add 2000", space_id=FINANCE, session_id="ses_scalar")
         check(
-            f"scalar follow-up 'add 2000' on {sid}",
+            "follow-up 'add 2000' compute-or-abstain",
             envelope_compute_or_abstain(st_add, env_add),
             f"status={st_add} badge={env_add.get('badge')} abstained={env_add.get('abstained')} "
             f"values={env_add.get('values')}",
         )
     else:
-        print("  [SKIP] scalar 'add 2000' follow-up (no scalar prior session)")
+        check("follow-up 'add 2000'", False, "prior scalar question did not answer")
 
 failed = [r for r in results if not r[1]]
 print("\n" + "=" * 60)

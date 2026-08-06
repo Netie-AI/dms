@@ -101,14 +101,14 @@ export function StudioPage() {
     if (!previewTarget) return;
     setPreviewBusy(true);
     setPreviewErr(null);
-    void fetchTablePreview(previewTarget, PREVIEW_PAGE_SIZE, previewOffset)
+    void fetchTablePreview(previewTarget, PREVIEW_PAGE_SIZE, previewOffset, activeSpaceId)
       .then(setPreview)
       .catch((e) => {
         setPreview(null);
         setPreviewErr(e instanceof Error ? e.message : "preview failed");
       })
       .finally(() => setPreviewBusy(false));
-  }, [previewTarget, previewOffset]);
+  }, [previewTarget, previewOffset, activeSpaceId]);
 
   const onFiles = async (list: FileList | null) => {
     if (!list?.length) return;

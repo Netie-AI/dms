@@ -71,8 +71,13 @@ def test_receipt_names_actionable_reasons():
     for f in receipt.files:
         if f.classification == SheetClass.UNSTRUCTURED:
             assert f.table is None
-            assert f.blob_key or f.document_index == "pending" or not f.ingested
+            assert f.blob_key or f.document_index in {"pending", "indexed"} or not f.ingested
             assert f.ingested is False
+            # Without space_id / DATABASE_URL the index stays pending (honest).
+            if f.document_index == "indexed":
+                assert f.chunk_count and f.chunk_count > 0
+            else:
+                assert f.document_index == "pending"
     # Summary is honest
     d = receipt.to_dict()
     assert "need attention" in d["summary"]

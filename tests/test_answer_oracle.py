@@ -15,7 +15,14 @@ from openpyxl import Workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from score_answers import grouped_totals, judge, oracle_top_n  # noqa: E402
+from score_answers import (  # noqa: E402
+    QUESTION_PACK,
+    grouped_totals,
+    judge,
+    oracle_eq_filter,
+    oracle_top_n,
+    resolve_oracle,
+)
 
 # Electronics 1500.75 > Home 1200.10 > Sports 300.00 > Misc 100.05
 EXPECTED_TOP3 = [("Electronics", 1500.75), ("Home", 1200.10), ("Sports", 300.00)]
@@ -129,3 +136,65 @@ def test_judge_rejects_a_confident_badge_with_no_executed_rows() -> None:
     outcome, detail = judge(_env(None), EXPECTED_TOP3)
     assert outcome == "WRONG"
     assert "no executed rows" in detail
+
+
+def test_hostile_pack_declares_fail_modes_and_scopes() -> None:
+    """SCORE-01 — every case must name scope + how it fails green today."""
+    required = {
+        "synonym_product_family_top3",
+        "wrong_sheet_named_sales_trap",
+        "inventory03_cat_top3",  # cross-file merge twin
+        "rag_sum_invite_no_sql",
+        "empty_filter_beta_vs_sku_beta",
+        "empty_filter_kl_vs_kuala_lumpur",
+        "malay_paraphrase_top3",
+    }
+    ids = {c["id"] for c in QUESTION_PACK}
+    missing = required - ids
+    assert not missing, f"hostile classes missing from pack: {sorted(missing)}"
+    for case in QUESTION_PACK:
+        assert case.get("workbook") and case.get("sheet") and case.get("measure")
+        assert case.get("fail_mode_today"), f"{case['id']} missing fail_mode_today"
+        assert case.get("question")
+
+
+def test_eq_filter_oracle_uses_stored_encoding(tmp_path: Path) -> None:
+    """Hard rule 12 — oracle keys are SKU-BETA / Kuala Lumpur, not BETA / KL."""
+    from openpyxl import Workbook
+
+    path = tmp_path / "encoding.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sales"
+    ws.append(["sku", "city", "sales_value_myr"])
+    ws.append(["SKU-BETA", "Kuala Lumpur", 1500.75])
+    ws.append(["SKU-ALPHA", "Kuala Lumpur", 200.00])
+    wb.save(path)
+
+    assert oracle_eq_filter(path, "Sales", "sku", "SKU-BETA", "sales_value_myr") == [
+        ("SKU-BETA", 1500.75)
+    ]
+    assert oracle_eq_filter(path, "Sales", "city", "Kuala Lumpur", "sales_value_myr") == [
+        ("Kuala Lumpur", 1700.75)
+    ]
+
+
+def test_resolve_oracle_on_shipped_hostile_fixtures() -> None:
+    docs = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "hostile_score"
+    if not docs.is_dir():
+        return
+    for case in QUESTION_PACK:
+        path = docs / str(case["workbook"])
+        assert path.is_file(), f"missing fixture {path}"
+        expected = resolve_oracle(case, path)
+        assert expected, f"{case['id']} oracle empty"
+        assert all(isinstance(v, float) for _, v in expected)
+
+
+def test_judge_marks_empty_filter_zero_as_wrong() -> None:
+    """Confident zero for literal BETA vs oracle SKU-BETA is the P0 shape."""
+    expected = [("SKU-BETA", 1500.75)]
+    planted = [{"sku": "BETA", "sales_value_myr": 0.0}]
+    outcome, detail = judge(_env(planted), expected)
+    assert outcome == "WRONG"
+    assert "rank order" in detail or "BETA" in detail or "SKU-BETA" in detail

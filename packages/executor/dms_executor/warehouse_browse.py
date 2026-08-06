@@ -19,12 +19,29 @@ _ALLOWED = frozenset(DEMO_TABLES)
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def list_warehouse_tables(*, path: Path | None = None) -> list[dict[str, Any]]:
+def list_warehouse_tables(
+    *,
+    path: Path | None = None,
+    space_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List demo warehouse tables. When ``space_id`` is set, only that Space's grants."""
     ensure_demo_warehouse(path)
+    allowed = _ALLOWED
+    if space_id:
+        from dms_executor.demo_grants import COMPANY_SCOPED, DEMO_SPACE_GRANTS, canonical_space_id
+
+        entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space_id))
+        if entry:
+            allowed = frozenset(entry[1])
+        else:
+            # Unknown Space: company-scoped reference tables only (no other Space's facts).
+            allowed = frozenset(COMPANY_SCOPED)
     con = connect_readonly(path)
     out: list[dict[str, Any]] = []
     try:
         for table in DEMO_TABLES:
+            if table not in allowed:
+                continue
             try:
                 n = scalar_int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone())
             except Exception:  # noqa: BLE001
@@ -75,7 +92,7 @@ def _parse_bronze_ref(table: str) -> tuple[str, str]:
         schema, name = "main", raw
     else:
         schema, name = "bronze", raw
-    if not _IDENT.match(schema) or not _IDENT.match(name):
+    if not _IDENT.match(schema) or not re.fullmatch(r"[A-Za-z0-9_]+", name):
         raise ValueError(f"Unknown or disallowed bronze table: {table!r}")
     return schema, name
 

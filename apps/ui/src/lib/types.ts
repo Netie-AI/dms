@@ -22,13 +22,20 @@ export type ContributingSource = {
   row_count: number;
   contribution: number;
   origin_uri?: string;
+  /** Doc-RAG chunk excerpt — not SQL row drillthrough */
+  snippet?: string;
+  chunk_index?: number;
+  space_id?: string;
 };
 
 export type ChartSpec = {
-  kind: "bar" | "hbar";
-  x: string;
-  y: string;
+  kind: "bar" | "hbar" | "line" | "bignum";
+  x?: string;
+  y?: string;
   title?: string;
+  /** bignum only — scalar already present in rows */
+  value?: number | string;
+  label?: string;
 };
 
 export type AnswerEnvelope = {

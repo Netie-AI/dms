@@ -319,13 +319,20 @@ def list_bronze_tables(
     from dms_executor.demo_grants import canonical_space_id
 
     db = ensure_demo_warehouse(path or warehouse_path())
+    canon_space = canonical_space_id(space_id) if space_id else None
+    if canon_space:
+        init = duckdb.connect(str(db))
+        try:
+            ensure_lake_schemas(init)
+            _ensure_registry(init)
+        finally:
+            init.close()
     con = duckdb.connect(str(db), read_only=True)
     try:
         # Internal bookkeeping tables are named with a leading underscore and
         # must not reach the file picker — _ingest_registry used to exist only
         # after a CSV ingest, and now that it is created up front it would
         # otherwise appear as a tickable "file" in Studio.
-        canon_space = canonical_space_id(space_id) if space_id else None
         if canon_space:
             rows = con.execute(
                 f"""

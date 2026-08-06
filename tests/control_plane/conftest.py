@@ -128,3 +128,30 @@ def two_tenants(conn: psycopg.Connection) -> dict[str, uuid.UUID]:
 
     conn.commit()
     return {"alpha": t_a, "beta": t_b, "user": user_id, "steward_role": steward_id}
+
+
+@pytest.fixture
+def two_spaces(conn: psycopg.Connection, two_tenants: dict) -> dict[str, str]:
+    """Pair of Spaces in tenant alpha for RAG boundary tests."""
+    from dms_core.control_plane.session import set_tenant_context
+
+    tenant_id = two_tenants["alpha"]
+    user_id = two_tenants["user"]
+    set_tenant_context(conn, tenant_id, role="admin")
+    space_a = uuid.uuid4()
+    space_b = uuid.uuid4()
+    suffix = uuid.uuid4().hex[:6]
+    for sid, name in ((space_a, f"rag-a-{suffix}"), (space_b, f"rag-b-{suffix}")):
+        conn.execute(
+            """
+            INSERT INTO dms.spaces (id, tenant_id, name, created_by)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (sid, tenant_id, name, user_id),
+        )
+    conn.commit()
+    return {
+        "tenant_id": str(tenant_id),
+        "space_a": str(space_a),
+        "space_b": str(space_b),
+    }

@@ -129,6 +129,27 @@ def test_removing_sku_and_bare_top_n(warehouse: Path, monkeypatch: pytest.Monkey
     assert env["suggestions"]
 
 
+def test_without_excluding_is_not_sku_filter(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Decline chip text must not treat EXCLUDING as a SKU (exclusion_unresolved loop)."""
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+    from dms_executor.demo_ask import normalize_ask_question
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+
+    for q in (
+        "Show top 5 sales without excluding",
+        "No — show top 5 sales without excluding",
+    ):
+        env = answer_demo_question(q)
+        assert env["badge"] == "L2_VALIDATED", q
+        assert len(env["rows"]) == 5, q
+        assert normalize_ask_question(q).lower().startswith("top ")
+
+
 def test_forecast_never_answers_with_historical_total(
     warehouse: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

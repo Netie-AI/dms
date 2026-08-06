@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { fetchHealth, fetchSpaces, postAsk } from "@/lib/api";
+import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
@@ -37,12 +37,16 @@ type AppState = {
   spacesPersisted: boolean | null;
   spacesStorageHint: string | null;
   cortexContractOk: boolean | null;
+  /** contract_routes only — distinct from cortex.ok (JWKS refresh can fail while routes exist). */
+  cortexContractRoutesOk: boolean | null;
   cortexTrustOk: boolean | null;
   cortexTrustHint: string | null;
   spaces: SpaceSummary[];
   spacesFromApi: boolean;
   activeSpaceId: string | null;
   activeSpace: SpaceSummary | null;
+  /** Live count from /v1/library/sources or /v1/spaces/{id}/sources (SPACE-UI). */
+  scopedSourceCount: number | null;
   role: AppRole;
   setRole: (r: AppRole) => void;
   setActiveSpaceId: (id: string | null) => void;
@@ -98,10 +102,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [spacesPersisted, setSpacesPersisted] = useState<boolean | null>(null);
   const [spacesStorageHint, setSpacesStorageHint] = useState<string | null>(null);
   const [cortexContractOk, setCortexContractOk] = useState<boolean | null>(null);
+  const [cortexContractRoutesOk, setCortexContractRoutesOk] = useState<boolean | null>(null);
   const [cortexTrustOk, setCortexTrustOk] = useState<boolean | null>(null);
   const [cortexTrustHint, setCortexTrustHint] = useState<string | null>(null);
   const [spaces, setSpaces] = useState<SpaceSummary[]>(FIXTURE_SPACES);
   const [spacesFromApi, setSpacesFromApi] = useState(false);
+  const [scopedSourceCount, setScopedSourceCount] = useState<number | null>(null);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(FIXTURE_SPACES[0].id);
   const [role, setRole] = useState<AppRole>("steward");
   const [selectedValueId, setSelectedValueId] = useState<string | null>(null);
@@ -154,7 +160,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const c = body?.dependencies?.cortex;
         const ov = body?.dependencies?.openvault;
         if (c) {
-          setCortexContractOk(c.contract_routes !== false && c.ok !== false);
+          setCortexContractRoutesOk(c.contract_routes !== false);
+          setCortexContractOk(c.ok !== false);
           const refreshOk = c.jwks_refresh?.ok !== false;
           const trustHint =
             c.error ||
@@ -201,6 +208,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => spaces.find((s) => s.id === activeSpaceId) ?? null,
     [spaces, activeSpaceId],
   );
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    if (!activeSpaceId) {
+      setScopedSourceCount(null);
+      return () => ctrl.abort();
+    }
+    void fetchLibrarySources(activeSpaceId, ctrl.signal)
+      .then((rows) => setScopedSourceCount(rows.length))
+      .catch(() => setScopedSourceCount(activeSpace?.source_count ?? null));
+    return () => ctrl.abort();
+  }, [activeSpaceId, activeSpace?.source_count]);
 
   const latestAnswer = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -318,6 +337,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     spacesPersisted,
     spacesStorageHint,
     cortexContractOk,
+    cortexContractRoutesOk,
     cortexTrustOk,
     cortexTrustHint,
     spaces,
@@ -327,6 +347,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     groundedLabels,
     setGrounded,
     activeSpace,
+    scopedSourceCount,
     role,
     setRole,
     setActiveSpaceId,

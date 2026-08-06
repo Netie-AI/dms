@@ -113,10 +113,46 @@ def oracle_top_n(path: Path, sheet: str, dim: str, measure: str, n: int) -> list
     return ranked[:n]
 
 
+def oracle_eq_filter(
+    path: Path, sheet: str, filter_col: str, filter_value: str, measure: str
+) -> list[tuple[str, float]]:
+    """Exact-match filter total. Encoding mismatch is the defect under test."""
+    totals = grouped_totals(path, sheet, filter_col, measure)
+    if filter_value not in totals:
+        raise KeyError(
+            f"{path.name}::{sheet} has no {filter_col}={filter_value!r}; "
+            f"keys={sorted(totals)}"
+        )
+    return [(filter_value, totals[filter_value])]
+
+
+def resolve_oracle(case: dict[str, Any], path: Path) -> list[tuple[str, float]]:
+    kind = str(case.get("oracle") or "top_n")
+    if kind == "eq_filter":
+        return oracle_eq_filter(
+            path,
+            str(case["sheet"]),
+            str(case["filter_col"]),
+            str(case["filter_value"]),
+            str(case["measure"]),
+        )
+    return oracle_top_n(
+        path,
+        str(case["sheet"]),
+        str(case["dim"]),
+        str(case["measure"]),
+        int(case["top_n"]),
+    )
+
+
 # --------------------------------------------------------------------------
 # Question pack. Scope is declared, because a question with no declared scope
 # has no single right answer - Wide_Fill totals run ~2x the Sales totals in the
 # same workbook, so "which sheet" moves the answer by 100 pct.
+#
+# fail_mode_today documents how a weak stack fails green TODAY. Pack staying
+# red on live score is intended until value-norm / trusted assets land (F31).
+# Default docs dir for local break tests: tests/fixtures/hostile_score/
 # --------------------------------------------------------------------------
 QUESTION_PACK: list[dict[str, Any]] = [
     {
@@ -126,6 +162,7 @@ QUESTION_PACK: list[dict[str, Any]] = [
         "dim": "category",
         "measure": "sales_value_myr",
         "top_n": 3,
+        "fail_mode_today": "cross-file merge trap twin - silent union with inventory03",
         "question": (
             "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, what are the top 3 "
             "categories by sales_value_myr?"
@@ -140,6 +177,7 @@ QUESTION_PACK: list[dict[str, Any]] = [
         "dim": "category",
         "measure": "sales_value_myr",
         "top_n": 3,
+        "fail_mode_today": "cross-file merge trap - one ranking for two workbooks",
         "question": (
             "In aa64458a_p50_03_inventory_messy.xlsx sheet Sales, what are the top 3 "
             "categories by sales_value_myr?"
@@ -154,9 +192,107 @@ QUESTION_PACK: list[dict[str, Any]] = [
         "dim": "category",
         "measure": "sales_value_myr",
         "top_n": 3,
+        "fail_mode_today": "wrong-sheet scope - answers Sales while Wide_Fill is named",
         "question": (
             "In aa64458a_p50_03_inventory_messy.xlsx sheet Wide_Fill, what are the top 3 "
             "categories by sales_value_myr?"
+        ),
+    },
+    {
+        "id": "synonym_product_family_top3",
+        "workbook": "cf98e431_p50_01_sales_messy.xlsx",
+        "sheet": "Sales",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": (
+            "synonym/acronym - 'product family' / 'cat' not wired to category; "
+            "abstain or wrong filter (not regex-fixed)"
+        ),
+        "question": (
+            "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, top 3 product families "
+            "by MYR sales (cat / product line synonym for category)?"
+        ),
+    },
+    {
+        "id": "wrong_sheet_named_sales_trap",
+        "workbook": "aa64458a_p50_03_inventory_messy.xlsx",
+        "sheet": "Sales",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": (
+            "wrong-sheet scope - question says Sales but mentions Wide_Fill numbers "
+            "context; confident answer from Wide_Fill ranking"
+        ),
+        "question": (
+            "Using aa64458a_p50_03_inventory_messy.xlsx, on the Sales sheet only "
+            "(ignore Wide_Fill), what are the top 3 categories by sales_value_myr?"
+        ),
+    },
+    {
+        "id": "rag_sum_invite_no_sql",
+        "workbook": "aa64458a_p50_03_inventory_messy.xlsx",
+        "sheet": "Wide_Fill",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": (
+            "RAG-sum trap - F26 class: invent partial totals from retrieved prose; "
+            "correct E9 behaviour is abstain (coverage cost), never confident WRONG"
+        ),
+        "question": (
+            "From the documents about aa64458a_p50_03_inventory_messy.xlsx Wide_Fill, "
+            "summarize the top 3 category sales totals without running warehouse SQL."
+        ),
+    },
+    {
+        "id": "empty_filter_beta_vs_sku_beta",
+        "workbook": "encoding_value_norm.xlsx",
+        "sheet": "Sales",
+        "oracle": "eq_filter",
+        "filter_col": "sku",
+        "filter_value": "SKU-BETA",
+        "measure": "sales_value_myr",
+        "fail_mode_today": (
+            "empty-filter green - literal filter BETA matches nothing; truth is "
+            "SKU-BETA (hard rule 12); zero/empty under confident badge is P0"
+        ),
+        "question": (
+            "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr "
+            "for sku BETA?"
+        ),
+    },
+    {
+        "id": "empty_filter_kl_vs_kuala_lumpur",
+        "workbook": "encoding_value_norm.xlsx",
+        "sheet": "Sales",
+        "oracle": "eq_filter",
+        "filter_col": "city",
+        "filter_value": "Kuala Lumpur",
+        "measure": "sales_value_myr",
+        "fail_mode_today": (
+            "empty-filter green - city 'KL' vs stored 'Kuala Lumpur'; "
+            "confident empty is false precision"
+        ),
+        "question": (
+            "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city KL?"
+        ),
+    },
+    {
+        "id": "malay_paraphrase_top3",
+        "workbook": "cf98e431_p50_01_sales_messy.xlsx",
+        "sheet": "Sales",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": (
+            "multilingual/Malay paraphrase - miss route or invent helpful totals; "
+            "must abstain or match Sales oracle, never fabricate"
+        ),
+        "question": (
+            "Dalam fail cf98e431_p50_01_sales_messy.xlsx helaian Sales, apakah 3 "
+            "kategori teratas mengikut sales_value_myr?"
         ),
     },
 ]
@@ -232,10 +368,47 @@ def ask_live(question: str, space_id: str, timeout: float) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--docs", required=True, type=Path, help="directory holding the workbooks")
-    ap.add_argument("--space", help="Space id to ask against; omit with --oracle-only")
-    ap.add_argument("--oracle-only", action="store_true", help="print the oracle and stop")
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Metrics\n"
+            "  precision-on-answered  share of confident answers matching oracle "
+            "(magnitude + rank). Target 100.00 pct.\n"
+            "  coverage               share answered rather than abstained. "
+            "Never buys a WRONG.\n"
+            "\n"
+            "Exit codes\n"
+            "  0  PASS — 0 confidently wrong (abstains allowed)\n"
+            "  1  FAIL — at least one confident WRONG, or ask/stack error\n"
+            "\n"
+            "Examples\n"
+            "  python scripts/score_answers.py "
+            "--docs tests/fixtures/hostile_score --oracle-only\n"
+            "  set DMS_URL=http://127.0.0.1:8090\n"
+            "  python scripts/score_answers.py "
+            "--docs tests/fixtures/hostile_score --space <space_id>\n"
+            "\n"
+            "Oracle is openpyxl recomputed each run (never a hand gold file, "
+            "never DuckDB). Hostile pack may stay red until value-norm / "
+            "EPIC-019 — that is intended.\n"
+        ),
+    )
+    ap.add_argument(
+        "--docs",
+        required=True,
+        type=Path,
+        help="directory holding the workbooks (e.g. tests/fixtures/hostile_score)",
+    )
+    ap.add_argument(
+        "--space",
+        help="Space id to ask against via POST /v1/chat/ask; omit with --oracle-only",
+    )
+    ap.add_argument(
+        "--oracle-only",
+        action="store_true",
+        help="print the recomputed openpyxl oracle + fail_mode_today and stop",
+    )
     ap.add_argument("--timeout", type=float, default=180.0)
     args = ap.parse_args(argv)
 
@@ -248,31 +421,28 @@ def main(argv: list[str] | None = None) -> int:
         if not path.is_file():
             print(f"FAIL missing workbook: {path}")
             return 1
-        cases.append(
-            (
-                case,
-                oracle_top_n(
-                    path,
-                    str(case["sheet"]),
-                    str(case["dim"]),
-                    str(case["measure"]),
-                    int(case["top_n"]),
-                ),
-            )
-        )
+        cases.append((case, resolve_oracle(case, path)))
 
     print("=== ORACLE (recomputed this run, openpyxl, one file + one sheet each) ===")
     for case, expected in cases:
         scope = f"{case['workbook']}::{case['sheet']}"
         body = "  ".join(f"{k}={v:,.2f}" for k, v in expected)
-        print(f"  {case['id']:<32} {scope}")
-        print(f"  {'':<32} {body}")
+        fail = str(case.get("fail_mode_today") or "")
+        print(f"  {case['id']:<36} {scope}")
+        print(f"  {'':<36} {body}")
+        if fail:
+            print(f"  {'':<36} fail_mode_today: {fail}")
 
-    # The adversarial point of the pack: these must not agree.
-    distinct = {tuple(k for k, _ in exp) + tuple(round(v, 2) for _, v in exp) for _, exp in cases}
-    print(f"\n  distinct oracle answers across {len(cases)} scopes: {len(distinct)}")
-    if len(distinct) < len(cases):
-        print("  WARN two scopes share an answer - the pack cannot detect a silent merge")
+    # Merge trap: these two scopes MUST disagree. Shared paraphrases of the same
+    # scope (synonym / Malay) intentionally share an oracle and are not a WARN.
+    by_id = {case["id"]: exp for case, exp in cases}
+    a, b = by_id.get("sales01_cat_top3"), by_id.get("inventory03_cat_top3")
+    if a is not None and b is not None:
+        fa = tuple(k for k, _ in a) + tuple(round(v, 2) for _, v in a)
+        fb = tuple(k for k, _ in b) + tuple(round(v, 2) for _, v in b)
+        print(f"\n  merge-trap oracles distinct: {fa != fb}")
+        if fa == fb:
+            print("  WARN sales01 and inventory03 share an answer - merge trap is blind")
 
     if args.oracle_only:
         return 0

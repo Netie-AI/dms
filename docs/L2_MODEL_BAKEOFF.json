@@ -1,0 +1,82 @@
+{
+  "winner": "auto",
+  "probe": [
+    {
+      "model": "auto",
+      "http": 200,
+      "ok": true,
+      "ms": 8101.9,
+      "upstream": "mistral-small-latest",
+      "err": null
+    },
+    {
+      "model": "mistral-small-latest",
+      "http": 400,
+      "ok": false,
+      "ms": 2783.0,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    },
+    {
+      "model": "ministral-8b-latest",
+      "http": 400,
+      "ok": false,
+      "ms": 5523.5,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    },
+    {
+      "model": "gemini-flash-latest",
+      "http": 400,
+      "ok": false,
+      "ms": 3884.4,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    },
+    {
+      "model": "gemini-2.5-flash",
+      "http": 400,
+      "ok": false,
+      "ms": 3095.3,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    },
+    {
+      "model": "google/gemini-2.5-flash",
+      "http": 400,
+      "ok": false,
+      "ms": 1965.4,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    },
+    {
+      "model": "llama-3.3-70b-versatile",
+      "http": 400,
+      "ok": false,
+      "ms": 7255.2,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    },
+    {
+      "model": "openai/gpt-oss-20b",
+      "http": 400,
+      "ok": false,
+      "ms": 5810.0,
+      "upstream": null,
+      "err": "{\"error\":{\"message\":\"request rejected by upstream (non-retryable)\",\"type\":\"openvault_non_retryable\",\"reason\":\"non_retryable\",\"details\":[\"Netie Cortex (seeded): "
+    }
+  ],
+  "l2": [
+    {
+      "model": "auto",
+      "badge": "L2_VALIDATED",
+      "layer": "generated",
+      "abstain": false,
+      "ms": 11305.2,
+      "sql": "SELECT carrier, ROUND(100.0 * SUM(CASE WHEN status = 'DELIVERED' AND expected_arrival <= actual_arrival THEN 1 ELSE 0 EN",
+      "answer": "Found 6 row(s).\n  \u00b7 carrier=DHL MY, on_time_percentage=38.99, total_shipments=1390\n  \u00b7 carrier=Pos Laju, on_time_percentage=38.84, total_shipments=1241\n  \u00b7 carr",
+      "assumptions": "L2 FreeRoute SQL over reduced schema tables=['suppliers', 'inventory', 'shipments', 'transactions']; attempts=1; explain=ran"
+    }
+  ],
+  "question": "rank carriers by on-time percentage for hazmat only"
+}

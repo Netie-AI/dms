@@ -1,6 +1,6 @@
 # FreeRoute bake-off
 
-**When:** 2026-07-30T15:58:19Z
+**When:** 2026-08-02T18:21:29Z
 **OpenVault:** `http://127.0.0.1:5000`
 
 ## Notes
@@ -14,25 +14,32 @@
 ## Precheck-all
 
 - ok: `True`
-- vault key records listed: **6**
-- precheck result rows: **6**
+- vault key records listed: **13**
+- precheck result rows: **13**
 
 | provider / label | status | latency_ms | error |
 |---|---|---|---|
+| ? | ok | 13.071000023046508 |  |
+| ? | ok | 363.45380000420846 |  |
+| ? | ok | 407.2895999997854 |  |
+| ? | ok | 305.34299998544157 |  |
+| ? | ok | 334.2065000033472 |  |
+| ? | ok | 397.8400999912992 |  |
+| ? | ok | 801.1857999954373 |  |
+| ? | ok | 430.45250000432134 |  |
+| ? | ok | 436.3906000216957 |  |
+| ? | ok | 388.8611000147648 |  |
+| ? | ok | 581.8428000202402 |  |
 | ? | error |  | All connection attempts failed |
 | ? | error |  | All connection attempts failed |
-| ? | error |  | All connection attempts failed |
-| ? | ok | 293.4481999982381 |  |
-| ? | ok | 403.4073999937391 |  |
-| ? | auth_fail | 256.4325999992434 | HTTP 401 |
 
 ## FreeRoute chat probe
 
 - prompt: `In one sentence: what is 2+2? Reply with only the number.`
-- status: `400`
-- latency_ms: `6273.3`
-- preview: ``
-- error: `{"error":{"message":"request rejected by upstream (non-retryable)","type":"openvault_non_retryable","reason":"non_retryable","details":["Netie Cortex (seeded): All connection attempts failed","LiteLLM Proxy (seeded): All connection attempts failed","OPENROUTER_API_KEY: HTTP 402 (quota_exhausted)","G`
+- status: `200`
+- latency_ms: `823.5`
+- preview: `4`
+- error: `None`
 - note: Sequential FreeRoute fallback — not a parallel OmniRoute Electron bake-off.
 
 ## Escalation

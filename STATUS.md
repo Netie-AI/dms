@@ -1,50 +1,54 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-08-03  
-**North star:** [DMS_TECHNICAL_ARCHITECTURE.md](DMS_TECHNICAL_ARCHITECTURE.md) §15  
+**Last updated:** 2026-08-05 afternoon  
 **Remote:** https://github.com/Netie-AI/dms
 
-## Rule
-
-Sequence T3 → T7-at-ingest → T4 → T5/T6 → T8 → **T12 → T13**. Demo-ready =
-`DMS_ASK_MODE=live` + `DMS_DEMO_FALLBACK=0` (both defaults). Launcher scripts are
-ASCII-only; PowerShell 5.1 breaks on em-dash.
-
-## Now
-
-Shipped on `feat/grounding-promote-spaces-boundary`: Studio ingest carries
-`space_id`; bronze list + grants are Space-scoped (#10/#12); live demo hides
-offline Company fixtures (#11); PREVIEW-01/02/03 UI (#13-#15). Still open:
-DEMO-PATH-01 (#16) follow-up half; EPIC-011 (Cortex#19-#22); #7 CI.
-
-## Demo is green (verified live 2026-08-02; re-run after restart)
-
-`python scripts/verify_demo_live.py` was **18/18** before this sweep; script now
-also asserts Space-scoped ingest list + grant boundary + hidden fixtures
-(**24 checks** when stack is up).
-
-**Before the demo, restart the stack.** Cortex left running overnight returns 500
-on submit.
-
-Spaces run on the **in-process store** (`backend=memory`). Do not point
-`DATABASE_URL` at compose Postgres for demo (test residue).
+## Direct interact
 
 ```powershell
-D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -StartUi -OpenBrowser
+D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -OpenBrowser
 python D:\DMS\scripts\verify_demo_live.py
+python D:\DMS\scripts\verify_l2_vs_l1.py
+# Hostile break-test (oracle no stack; live expects RED on synonym/empty-filter/Malay/RAG-sum)
+python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
+pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants\test_envelope.py -q
+# Playground (tweak prompts in playground/my_questions.yaml)
+python D:\DMS\scripts\gen_playground_data.py
+python D:\DMS\scripts\playground_ask.py --list
+# python D:\DMS\scripts\playground_ask.py --space <id>   # after upload playground/data/
 ```
 
-Stranger path (manual, <10 min): pick Finance Space -> Studio + upload xlsx ->
-tick file -> Ask -> Library preview rows. Follow-up (`average of them`) blocked
-on Cortex#19.
+Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md`  
+AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
-## Open
+## Shipped / verified
 
-| ID | Blocker |
-|----|---------|
-| **#16** | DEMO-PATH-01 verifier follow-up asserts (Cortex#19) |
-| **#8** | EPIC-008 completeness until #16 + stranger path green |
-| **Cortex#19-#22** | Multi-turn follow-ups |
-| **#7** | CI mypy / contract token |
+| ID | Result |
+|----|--------|
+| RAG-04 (#23 CLOSED) | envelope + SourcePanel/scope chip |
+| RAG-05 (#22 CLOSED) | ask adversarial green (8 CP + 1 unit) |
+| REVEAL-01 (#26 CLOSED) | `/v1/library/reveal` + SourcePanel Open original |
+| Dense embed | lexical+char-trigram in `search_chunks` |
+| SPACE-UI (#25) | ScopeChip live count; SpacesPage sources |
+| E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
+| E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
+| Playground | `playground/` + `playground_ask.py` — edit `my_questions.yaml`; L4/L5 labels only (P-DMS-33) |
 
-Design: paper / navy / teal / Figtree+Fraunces.
+## Open next
+
+| ID | Work |
+|----|------|
+| **RUN NOW** | SCORE-03 #42 (F32 pack case + optional blank-row) |
+| Next | VQ-01 #39 → VQ-02 #40 (categoty / trusted Sales totals) |
+| Epics | #33 EPIC-017 **N**; #35 EPIC-018 **N**; #38 EPIC-019 **N** (F32) |
+| L4/L5 | Aspiration only (P-DMS-33) — **NEEDS-YOU** confirm meanings or decline badges |
+| After | EPIC-019 after 017/018; not EPIC-023 first |
+| F31 | Chooser = Cortex P21; ask = linear verify + hard-rule-12 empty demote |
+| #27 DUAL-EVAL-01 | optional Top-5/edge vs AirGPT (no merge) |
+| #28 ENV-E4 | **post-demo** - reorder/low-stock E4; parent #8 |
+| Cortex#34 | EPIC-015 PARTIAL; RAG-01..03 open |
+| EPIC-016 #29 | Demo-2 Excel Copilot; **build later** |
+
+## Agent models
+
+PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.

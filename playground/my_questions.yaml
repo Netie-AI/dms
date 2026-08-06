@@ -1,0 +1,100 @@
+# Playground question bank — EDIT FREELY, then re-run playground_ask.py
+#
+# ladder_today: what the product may honestly return today (L0..L3 / abstain)
+# aspiration:   Genie-class target you are probing (L4/L5 = multi-step / curated
+#               automation — NOT product badges yet; see playground/README.md)
+#
+# Tweak `prompt` only at first. Keep `id` stable so diffs are readable.
+
+questions:
+  - id: L0_certified_top5
+    ladder_today: L0
+    aspiration: L0
+    prompt: "Top 5 selling SKUs by revenue"
+    note: "Should hit certified pack if demo warehouse + Cortex L0 wired."
+
+  - id: L0_synonym_best5
+    ladder_today: L0
+    aspiration: L0
+    prompt: "best 5 selling SKUs by revenue"
+    note: "VQ-01 curated synonym on cq_sales_top5_value — restart Cortex after pull."
+
+  - id: L1_capacity
+    ladder_today: L1
+    aspiration: L1
+    prompt: "Show warehouse capacity utilisation"
+    note: "Governed metric / certified capacity path."
+
+  - id: L2_top3_category_scoped
+    ladder_today: L2
+    aspiration: L2
+    prompt: >
+      In pg_sales.xlsx sheet Sales, what are the top 3 categories by
+      sales_value_myr?
+    note: "Needs playground xlsx ingested into the Space. FreeRoute SQL."
+
+  - id: L2_synonym_product_family
+    ladder_today: L2
+    aspiration: L4
+    prompt: >
+      In pg_sales.xlsx sheet Sales, top 3 product families by MYR sales
+      (cat / product line synonym for category)?
+    note: "Synonym pressure — abstain or wrong until trusted asset / value-norm."
+
+  - id: L2_empty_filter_beta
+    ladder_today: abstain
+    aspiration: L4
+    prompt: "In pg_sales.xlsx sheet Sales, total sales_value_myr for sku BETA?"
+    note: "Hard rule 12 — truth is SKU-BETA. Empty green is a fail; abstain OK."
+
+  - id: L2_empty_filter_kl
+    ladder_today: abstain
+    aspiration: L4
+    prompt: "In pg_sales.xlsx sheet Sales, total sales_value_myr for city KL?"
+    note: "KL vs Kuala Lumpur encoding."
+
+  - id: L2_wrong_sheet
+    ladder_today: L2
+    aspiration: L4
+    prompt: >
+      Using pg_sales.xlsx, on the Sales sheet only (ignore Wide_Fill), what are
+      the top 3 categories by sales_value_myr?
+    note: "Wrong-sheet trap — Wide_Fill ranking differs."
+
+  - id: L2_malay_top3
+    ladder_today: L2
+    aspiration: L4
+    prompt: >
+      Dalam fail pg_sales.xlsx helaian Sales, apakah 3 kategori teratas
+      mengikut sales_value_myr?
+    note: "Malay paraphrase — tweak wording freely."
+
+  - id: L3_policy_quote
+    ladder_today: L3
+    aspiration: L3
+    prompt: "What is the late-delivery penalty in the returns policy?"
+    note: "Must quote 5,000.00 from pg_returns_policy.md — not invent aggregates."
+
+  - id: L3_rag_sum_trap
+    ladder_today: abstain
+    aspiration: L3
+    prompt: >
+      From the documents, summarize the top 3 category sales totals without
+      running warehouse SQL.
+    note: "F26 class — E9 must abstain, never confident invented totals."
+
+  - id: L4_multi_step
+    ladder_today: abstain
+    aspiration: L4
+    prompt: >
+      For Kuala Lumpur only: top 2 categories by sales, then list delayed
+      shipments for those SKUs, and cite the late-delivery penalty.
+    note: "Genie-class multi-hop. Today: linear loop may abstain or partial — not L4 badge."
+
+  - id: L5_steward_automation
+    ladder_today: abstain
+    aspiration: L5
+    prompt: >
+      Register this as a trusted metric: 'KL Electronics share of sales' and
+      answer it with the verified SQL definition.
+    note: "Needs EPIC-019/021 + Studio VQ-02. Expect abstain / clarify today."

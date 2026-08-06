@@ -28,3 +28,12 @@ logs/
 *.err.log
 *.out.log
 .claude/worktrees/
+
+# Local sample databases + scratch documents. Binaries never go in git (not LFS
+# either) - GitHub Releases for installers, GHCR for images.
+*.bak
+/*.pdf
+
+# Per-session scratch: `gh issue create --body-file` bodies. The ticket lives in
+# GitHub, never as a markdown file in the repo (Netie R-0013: no per-session files).
+/issue*_body.md

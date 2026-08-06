@@ -192,8 +192,25 @@ export function fetchAdminOverview(signal?: AbortSignal): Promise<AdminOverview>
   return getJson<AdminOverview>("/v1/admin/overview", signal);
 }
 
-export function fetchLibrarySources(signal?: AbortSignal): Promise<LibrarySource[]> {
-  return getJson<LibrarySource[]>("/v1/library/sources", signal);
+export function fetchLibrarySources(
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<LibrarySource[]> {
+  const qs = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : "";
+  return getJson<LibrarySource[]>(`/v1/library/sources${qs}`, signal);
+}
+
+export type SpaceSourcesBody = {
+  space_id: string;
+  sources: LibrarySource[];
+  count: number;
+};
+
+export function fetchSpaceSources(
+  spaceId: string,
+  signal?: AbortSignal,
+): Promise<SpaceSourcesBody> {
+  return getJson<SpaceSourcesBody>(`/v1/spaces/${encodeURIComponent(spaceId)}/sources`, signal);
 }
 
 /* ── Repository tree + previews ─────────────────────────────────────────────
@@ -243,12 +260,14 @@ export function fetchBronzePreview(
   table: string,
   limit = PREVIEW_PAGE_SIZE,
   offset = 0,
+  spaceId?: string | null,
   signal?: AbortSignal,
 ): Promise<TablePreview> {
   const qs = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
   });
+  if (spaceId) qs.set("space_id", spaceId);
   return getJson<TablePreview>(
     `/v1/library/bronze/${encodeURIComponent(table)}/preview?${qs}`,
     signal,
@@ -259,12 +278,14 @@ export function fetchWarehousePreview(
   table: string,
   limit = PREVIEW_PAGE_SIZE,
   offset = 0,
+  spaceId?: string | null,
   signal?: AbortSignal,
 ): Promise<TablePreview> {
   const qs = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
   });
+  if (spaceId) qs.set("space_id", spaceId);
   return getJson<TablePreview>(
     `/v1/library/warehouse/${encodeURIComponent(table)}/preview?${qs}`,
     signal,
@@ -288,11 +309,12 @@ export async function fetchTablePreview(
   target: { kind: "bronze" | "warehouse"; table: string },
   limit = PREVIEW_PAGE_SIZE,
   offset = 0,
+  spaceId?: string | null,
   signal?: AbortSignal,
 ): Promise<TablePreview> {
   return target.kind === "bronze"
-    ? fetchBronzePreview(target.table, limit, offset, signal)
-    : fetchWarehousePreview(target.table, limit, offset, signal);
+    ? fetchBronzePreview(target.table, limit, offset, spaceId, signal)
+    : fetchWarehousePreview(target.table, limit, offset, spaceId, signal);
 }
 
 export async function createSpace(
@@ -308,4 +330,29 @@ export async function createSpace(
     throw new Error(res.status === 409 ? "A Space with that name already exists." : detail);
   }
   return (await res.json()) as { space: SpaceSummary; persisted: boolean; hint?: string };
+}
+
+export type RevealResult = {
+  ok: boolean;
+  path?: string;
+  action?: string;
+  error?: string;
+};
+
+/** Open Explorer on an allowlisted filesystem origin_uri (REVEAL-01). */
+export async function postReveal(path: string, signal?: AbortSignal): Promise<RevealResult> {
+  const res = await fetch("/api/v1/library/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+    signal,
+  });
+  if (res.status === 403) {
+    return { ok: false, error: "path_not_allowlisted" };
+  }
+  if (!res.ok) {
+    const detail = await res.text();
+    return { ok: false, error: detail.slice(0, 200) || `reveal ${res.status}` };
+  }
+  return (await res.json()) as RevealResult;
 }

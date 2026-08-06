@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { useApp } from "@/context/AppContext";
 import {
+  fetchBronzePreview,
+  fetchWarehousePreview,
   PREVIEW_PAGE_SIZE,
   previewForNode,
   type TablePreview,
@@ -166,22 +168,18 @@ export function LibraryPage() {
     }
     setPreviewErr(null);
     setPreviewBusy(true);
-    const path =
+    const load =
       active.kind === "warehouse"
-        ? `/api/v1/library/warehouse/${encodeURIComponent(active.table)}/preview?limit=${PREVIEW_PAGE_SIZE}&offset=${previewOffset}`
-        : `/api/v1/library/bronze/${encodeURIComponent(active.table)}/preview?limit=${PREVIEW_PAGE_SIZE}&offset=${previewOffset}`;
-    void fetch(path)
-      .then(async (r) => {
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      })
+        ? fetchWarehousePreview(active.table, PREVIEW_PAGE_SIZE, previewOffset, activeSpaceId)
+        : fetchBronzePreview(active.table, PREVIEW_PAGE_SIZE, previewOffset, activeSpaceId);
+    void load
       .then(setPreview)
       .catch((e) => {
         setPreview(null);
         setPreviewErr(String(e));
       })
       .finally(() => setPreviewBusy(false));
-  }, [active, previewOffset]);
+  }, [active, previewOffset, activeSpaceId]);
 
   const filteredNodes = useMemo(() => {
     if (!tree) return [];

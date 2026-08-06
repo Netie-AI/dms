@@ -11,7 +11,10 @@ param(
   [switch]$StartSiblings,
   [switch]$StartUi,
   [switch]$OpenBrowser,
-  [switch]$NoLocalApiFallback
+  [switch]$NoLocalApiFallback,
+  # Basic L2 FreeRoute on Cortex (EPIC-012). Off by default; pass -EnableL2 for freeform SQL.
+  [switch]$EnableL2,
+  [string]$L2Model = ""
 )
 
 if (-not $ComposeDir) {
@@ -38,6 +41,16 @@ $env:OPENVAULT_HOME = if ($env:OPENVAULT_HOME) { $env:OPENVAULT_HOME } else { "D
 $env:OPENVAULT_URL = $OpenVaultUrl
 $env:CORTEX_URL = $CortexUrl
 $env:DMS_ASK_MODE = if ($env:DMS_ASK_MODE) { $env:DMS_ASK_MODE } else { "live" }
+if ($EnableL2) {
+  $env:DMS_L2_ENABLED = "1"
+  # Bakeoff winner (docs/L2_MODEL_BAKEOFF.md): only ``auto`` clears FreeRoute;
+  # named ids 404/400. Pin auto unless caller overrides -L2Model.
+  if (-not $L2Model) { $L2Model = "auto" }
+  $env:DMS_L2_MODEL = $L2Model
+  Write-Host "L2 FreeRoute enabled on Cortex (DMS_L2_ENABLED=1, DMS_L2_MODEL=$L2Model)" -ForegroundColor Cyan
+} elseif (-not $env:DMS_L2_ENABLED) {
+  $env:DMS_L2_ENABLED = "0"
+}
 # Demo-ready default = no silent fallback. Opt in with DMS_DEMO_FALLBACK=1 for local bring-up.
 # Force-clear accidental shell leftovers that leave the UI stuck in DEMO ASK MODE.
 if (-not $env:DMS_DEMO_FALLBACK) { $env:DMS_DEMO_FALLBACK = "0" }
@@ -89,10 +102,12 @@ if ($StartSiblings) {
           ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
         Start-Sleep -Seconds 1
       } catch { }
+      $l2Flag = if ($env:DMS_L2_ENABLED) { $env:DMS_L2_ENABLED } else { "0" }
+      $l2ModelEnv = if ($env:DMS_L2_MODEL) { "`$env:DMS_L2_MODEL='$($env:DMS_L2_MODEL)'; " } else { "" }
       Start-Process powershell.exe -ArgumentList @(
         "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
-        "`$env:PACK='dms'; `$env:OPENVAULT_HOME='$($env:OPENVAULT_HOME)'; `$env:OPENVAULT_URL='$OpenVaultUrl'; Set-Location 'D:\Cortex'; python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010"
+        "`$env:PACK='dms'; `$env:OPENVAULT_HOME='$($env:OPENVAULT_HOME)'; `$env:OPENVAULT_URL='$OpenVaultUrl'; `$env:DMS_L2_ENABLED='$l2Flag'; ${l2ModelEnv}Set-Location 'D:\Cortex'; python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010"
       ) -WindowStyle Minimized
     } else {
       Write-Host "Cortex start script missing: $cxScript" -ForegroundColor Yellow

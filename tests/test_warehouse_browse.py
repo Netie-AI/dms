@@ -103,6 +103,22 @@ def test_every_tree_leaf_previews(warehouse: Path, monkeypatch: pytest.MonkeyPat
         assert r.json()["row_count"] == row["row_count"]
 
 
+def test_preview_allows_digit_leading_bronze_names(warehouse: Path) -> None:
+    """Uploaded xlsx tables inherit the filename stem (often digit-leading)."""
+    from dms_executor.bronze import ingest_csv_bytes
+    from dms_executor.warehouse_browse import preview_bronze_table
+
+    ingest_csv_bytes(
+        filename="15_digit_lead.csv",
+        data=b"sku,qty\nA,1\n",
+        path=warehouse,
+        table_name="15_digit_lead",
+    )
+    prev = preview_bronze_table("bronze.15_digit_lead", limit=200, path=warehouse)
+    assert prev["row_count"] == 1
+    assert prev["rows"][0]["sku"] == "A"
+
+
 def test_preview_pagination_total_is_table_size(warehouse: Path) -> None:
     from dms_executor.warehouse_browse import preview_warehouse_table
 

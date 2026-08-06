@@ -54,9 +54,210 @@ _DOC_ROUTE_KINDS = frozenset({"doc_rag", "document", "rag", "document_retrieval"
 
 _SQL_COMMENT = re.compile(r"--[^\n]*")
 
+# Sheet-class scopes that disagree on category totals in the hostile pack
+# (Sales vs Wide_Fill ~2x). Used only for F32 demote — not intent/typo fix.
+_SHEET_CLASS = re.compile(
+    r"(?P<stem>.+?)[_/](?P<sheet>sales|wide_fill|widefill)(?:\.[a-z0-9]+)?$",
+    re.I,
+)
+_EXPLICIT_SHEET = re.compile(
+    r"\bsheets?\s*[:=]?\s*(sales|wide_?fill)\b"
+    r"|\bon\s+the\s+(sales|wide_?fill)\s+sheet\b"
+    r"|\b(sales|wide_?fill)\s+sheet\b",
+    re.I,
+)
+
 
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _norm_sheet_token(raw: str) -> str:
+    t = raw.lower().replace("-", "_")
+    return "wide_fill" if t in {"widefill", "wide_fill"} else t
+
+
+def _bare_label(label: str) -> str:
+    name = str(label or "").strip().replace("\\", "/")
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    if name.lower().startswith("bronze."):
+        name = name.split(".", 1)[-1]
+    return name
+
+
+def _sheet_class_of(label: str) -> str | None:
+    bare = _bare_label(label)
+    m = _SHEET_CLASS.search(bare.replace("-", "_"))
+    if m:
+        return _norm_sheet_token(m.group("sheet"))
+    low = bare.lower().replace("-", "_")
+    if low in {"sales", "wide_fill", "widefill"}:
+        return _norm_sheet_token(low)
+    if "wide_fill" in low or "widefill" in low:
+        return "wide_fill"
+    # Trailing _Sales / :: Sales member — avoid matching demo "transactions".
+    if re.search(r"(^|[_:\s])sales($|\.)", low):
+        return "sales"
+    return None
+
+
+def _workbook_stem(label: str) -> str:
+    bare = _bare_label(label)
+    m = _SHEET_CLASS.search(bare.replace("-", "_"))
+    if m:
+        return m.group("stem").lower()
+    # Strip common extensions only.
+    for ext in (".xlsx", ".xlsm", ".csv", ".parquet"):
+        if bare.lower().endswith(ext):
+            return bare[: -len(ext)].lower()
+    return bare.lower()
+
+
+def competing_category_scopes(
+    labels: list[str] | None,
+) -> list[str]:
+    """Labels that form alternate category-total scopes (Sales vs Wide_Fill class).
+
+    Same workbook with both sheet classes, or two+ distinct sales-class
+    workbooks/files. Empty when there is nothing to disagree about.
+    """
+    items = [str(x) for x in (labels or []) if x]
+    if len(items) < 2:
+        return []
+    classed: list[tuple[str, str, str]] = []
+    for lab in items:
+        sheet = _sheet_class_of(lab)
+        if not sheet:
+            continue
+        classed.append((lab, _workbook_stem(lab), sheet))
+    if len(classed) < 2:
+        return []
+    # Same stem, different sheet class → classic Sales vs Wide_Fill trap.
+    by_stem: dict[str, set[str]] = {}
+    for _, stem, sheet in classed:
+        by_stem.setdefault(stem, set()).add(sheet)
+    conflict_stems = {s for s, sheets in by_stem.items() if len(sheets) >= 2}
+    out: list[str] = []
+    if conflict_stems:
+        for lab, stem, _ in classed:
+            if stem in conflict_stems:
+                out.append(lab)
+        return list(dict.fromkeys(out))
+    # Cross-file: two+ sales-class scopes (or two+ wide_fill) from different stems.
+    stems = {stem for _, stem, _ in classed}
+    if len(stems) >= 2:
+        return list(dict.fromkeys(lab for lab, _, _ in classed))
+    return []
+
+
+def _ranking_totals_present(
+    text: str,
+    values: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> bool:
+    """True when the answer renders multiple money-like ranking totals.
+
+    Bare small integers (ranks, qtys) do not count — only decimals / large
+    magnitudes that a reader treats as category sales totals.
+    """
+    figures = list(_money_like(text or ""))
+    for v in values:
+        raw = v.get("value")
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        if str(v.get("label")) == "row_count":
+            continue
+        fv = float(raw)
+        if abs(fv) >= 100.0:
+            figures.append(fv)
+    for row in rows[:20]:
+        for val in row.values():
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                continue
+            fv = float(val)
+            if abs(fv) >= 100.0:
+                figures.append(fv)
+    return len({round(f, 2) for f in figures}) >= 2
+
+
+def _scope_uniquely_named(
+    question: str | None,
+    competing: list[str],
+    *,
+    grounded_tables: list[str] | None,
+) -> bool:
+    """Ask uniquely pins one workbook+sheet, or the manifest is a single table."""
+    if grounded_tables is not None and len(grounded_tables) == 1:
+        return True
+    if not competing or not (question or "").strip():
+        return False
+    q = question or ""
+    q_low = q.lower()
+    # Full label / file basename (not the bare word "sales").
+    named: list[str] = []
+    for lab in competing:
+        bare = _bare_label(lab)
+        if len(bare) >= 8 and bare.lower() in q_low:
+            named.append(lab)
+            continue
+        stem = _workbook_stem(lab)
+        if len(stem) >= 8 and stem in q_low:
+            # File named — still need sheet class if competitors share the stem.
+            named.append(lab)
+    named = list(dict.fromkeys(named))
+    if len(named) == 1:
+        return True
+    if len(named) > 1:
+        stems = {_workbook_stem(n) for n in named}
+        sheets = {_sheet_class_of(n) for n in named}
+        if len(stems) == 1 and len(sheets) == 1:
+            return True
+    m = _EXPLICIT_SHEET.search(q)
+    if not m:
+        return False
+    sheet = _norm_sheet_token(next(g for g in m.groups() if g))
+    hits = [lab for lab in competing if _sheet_class_of(lab) == sheet]
+    if len(hits) == 1:
+        return True
+    # Explicit sheet + one named workbook among the hits.
+    if named:
+        narrowed = [h for h in hits if h in named or _workbook_stem(h) in {_workbook_stem(n) for n in named}]
+        if len(narrowed) == 1:
+            return True
+        if len({_workbook_stem(h) for h in narrowed}) == 1 and len(narrowed) >= 1:
+            # Same workbook, one sheet class after explicit sheet phrase.
+            return len({_sheet_class_of(h) for h in narrowed}) == 1
+    return False
+
+
+def _should_demote_ambiguous_ranking(
+    *,
+    question: str | None,
+    grounded_tables: list[str] | None,
+    competing_scopes: list[str] | None,
+    source_labels: list[str],
+    text: str,
+    values: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> list[str]:
+    """Return competing labels when F32 demote applies; else empty.
+
+    Prefer an explicit ``competing_scopes`` plant (tests); otherwise derive from
+    grounded tables + cited containers. Does not fix typos / intent regex.
+    """
+    if competing_scopes is not None:
+        competing = list(dict.fromkeys(str(x) for x in competing_scopes if x))
+    else:
+        labels = list(grounded_tables or []) + list(source_labels)
+        competing = competing_category_scopes(labels)
+    if len(competing) < 2:
+        return []
+    if not _ranking_totals_present(text, values, rows):
+        return []
+    if _scope_uniquely_named(question, competing, grounded_tables=grounded_tables):
+        return []
+    return competing
 
 
 def _executed_query(sql: str | None) -> bool:
@@ -236,6 +437,8 @@ def build_answer_envelope(
     route: str | None = None,
     demo_fallback_banner: bool | None = None,
     grounded_tables: list[str] | None = None,
+    question: str | None = None,
+    competing_scopes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -281,6 +484,53 @@ def build_answer_envelope(
                 " certified number."
             )
             assumptions_list.append("L3 retrieval path: uncited figures withheld (E9)")
+
+    # Hard rule 12 safety net — executed SQL that matches nothing must not
+    # ship a confident green badge (BETA vs SKU-BETA / KL vs Kuala Lumpur).
+    # COUNT(*) returning one zero-row is fine; a bare empty result set is not.
+    if not abstained and _executed_query(sql_used) and not rows_out:
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "No matching rows for that filter. Stored encodings may differ "
+            "(e.g. BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value "
+            "from the data, or ask without that filter."
+        )
+        assumptions_list.append(
+            "empty result after executed SQL: withheld (hard rule 12)"
+        )
+
+    # E9-02 / F32 — ranking totals over non-unique Sales vs Wide_Fill (or
+    # multi-file sales) scopes must not stay confident green. SQL-on-one-sheet
+    # is not enough when the ask did not pin workbook+sheet.
+    if not abstained:
+        source_labels: list[str] = []
+        for s in sources:
+            if s.get("container"):
+                source_labels.append(str(s["container"]))
+            if s.get("member"):
+                source_labels.append(f"{s.get('container') or ''}_{s['member']}")
+        conflict = _should_demote_ambiguous_ranking(
+            question=question,
+            grounded_tables=grounded_tables,
+            competing_scopes=competing_scopes,
+            source_labels=source_labels,
+            text=text or "",
+            values=values_out,
+            rows=rows_out,
+        )
+        if conflict:
+            named = ", ".join(dict.fromkeys(_bare_label(c) for c in conflict))
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = (
+                f"Scope conflict: category totals disagree across {named}. "
+                "Name the workbook and sheet (or ground this ask in one file) "
+                "before a certified ranking."
+            )
+            assumptions_list.append(
+                "ambiguous multi-sheet ranking: scope conflict (E9-02/F32)"
+            )
 
     if abstained:
         values_out = []
@@ -517,6 +767,7 @@ __all__ = [
     "ALLOWED_BADGES",
     "assert_envelope_valid",
     "build_answer_envelope",
+    "competing_category_scopes",
     "normalize_badge",
     "normalize_contributing_sources",
     "unbacked_numbers",

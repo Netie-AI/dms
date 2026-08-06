@@ -38,8 +38,52 @@ def bronze_list(*, space_id: str | None = None):
     return dms_executor.list_bronze_tables(space_id=space_id)
 
 
-def warehouse_tables():
-    return dms_executor.list_warehouse_tables()
+def warehouse_tables(*, space_id: str | None = None):
+    return dms_executor.list_warehouse_tables(space_id=space_id)
+
+
+def reveal_origin_uri(path: str) -> dict[str, Any]:
+    """REVEAL-01 — Explorer reveal for an allowlisted filesystem origin_uri."""
+    return dms_executor.reveal_path(path)
+
+
+def search_document_chunks(
+    *,
+    space_id: str,
+    q: str,
+    limit: int = 8,
+    source_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """RAG-02 — ranked chunk search. Space filter is applied in SQL, not after."""
+    from dms_api.settings import get_settings
+    from dms_core.control_plane.document_chunks import search_chunks
+
+    settings = get_settings()
+    if not settings.database_url:
+        return []
+    return search_chunks(
+        settings.database_url,
+        tenant_id=settings.dms_tenant_id,
+        space_id=space_id,
+        q=q,
+        top_k=limit,
+        source_ids=source_ids,
+    )
+
+
+def list_document_chunks(*, space_id: str) -> list[dict[str, Any]]:
+    """RAG-01 — steward list of one Space's chunks. Never crosses ``space_id``."""
+    from dms_api.settings import get_settings
+    from dms_core.control_plane.document_chunks import list_chunks
+
+    settings = get_settings()
+    if not settings.database_url:
+        return []
+    return list_chunks(
+        settings.database_url,
+        tenant_id=settings.dms_tenant_id,
+        space_id=space_id,
+    )
 
 
 def warehouse_preview(table: str, *, limit: int = 100, offset: int = 0):

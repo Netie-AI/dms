@@ -17,6 +17,7 @@ export function ChatPage() {
     suggestions,
     sessionId,
     cortexContractOk,
+    cortexContractRoutesOk,
     cortexTrustOk,
     cortexTrustHint,
     askQueueDepth,
@@ -97,14 +98,28 @@ export function ChatPage() {
                 {spacesFromApi ? " Spaces loaded from DMS API." : " Using offline Space fixtures."}
               </p>
             )}
-            {askMode === "live" && cortexContractOk === false && (
+            {askMode === "live" && cortexContractRoutesOk === false && (
               <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
                 Cortex is up but contract routes are missing (submit would 404). Restart Cortex from
                 the current tree:{" "}
                 <code className="font-mono">D:\Cortex\scripts\start_cortex_engine.ps1 -Port 8010 -Force</code>
               </p>
             )}
-            {askMode === "live" && cortexContractOk !== false && cortexTrustOk === false && (
+            {askMode === "live" &&
+              cortexContractRoutesOk !== false &&
+              cortexContractOk === false &&
+              cortexTrustOk === false && (
+              <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
+                Cortex or OpenVault trust is degraded (JWKS refresh). Ask may fail until siblings
+                restart.{" "}
+                {cortexTrustHint ??
+                  "Pin OPENVAULT_HOME=D:\\OpenVault\\.openvault, then restart Cortex + DMS API."}
+              </p>
+            )}
+            {askMode === "live" &&
+              cortexContractRoutesOk !== false &&
+              cortexContractOk !== false &&
+              cortexTrustOk === false && (
               <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
                 Live trust gap — OpenVault JWKS / Cortex refresh.{" "}
                 {cortexTrustHint ??

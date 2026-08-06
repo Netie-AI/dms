@@ -8,9 +8,9 @@ from cortex_client import compliance_gate
 from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from dms_api.deps import CortexDep
+from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
-from dms_api.wiring import batch_ingest, bronze_list
+from dms_api.wiring import batch_ingest, bronze_list, list_document_chunks
 
 router = APIRouter(prefix="/v1/studio", tags=["studio"])
 
@@ -114,3 +114,15 @@ def list_bronze(
 ) -> list[dict[str, Any]]:
     _ = cortex
     return bronze_list(space_id=space_id)
+
+
+@router.get("/chunks")
+def list_chunks(
+    cortex: CortexDep,
+    settings: SettingsDep,
+    space_id: str = Query(..., description="Space that owns the document chunks"),
+) -> list[dict[str, Any]]:
+    """Steward list of space-scoped document chunks (RAG-01)."""
+    _ = cortex
+    _ = settings
+    return list_document_chunks(space_id=space_id)

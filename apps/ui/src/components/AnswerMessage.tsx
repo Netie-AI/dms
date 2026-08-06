@@ -6,10 +6,23 @@ import { SimpleChart } from "@/components/SimpleChart";
 import { useApp } from "@/context/AppContext";
 import { COPILOT_PROMPTS, copyText } from "@/lib/copilotPrompts";
 import { formatCellValue } from "@/lib/formatCellValue";
+import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
 const EXCLUSION_NO_RE = /^No — show\b|without excluding/i;
+
+/** Decline chips must not re-send "without excluding" — Cortex parses EXCLUDING as a SKU. */
+function resolveExclusionNoChip(q: string): string {
+  const m = q.match(
+    /^(?:No\s*[—-]\s*)?(?:Show\s+)?(?:top\s+(\d+)\b|.*?\btop\s+(\d+)\b).*without\s+exclud/i,
+  );
+  if (m) {
+    const n = m[1] || m[2] || "5";
+    return `Top ${n} selling SKUs by revenue`;
+  }
+  return q.replace(/\bwithout\s+exclud(?:e|ing|ed|sion)\b/gi, "").replace(/\s+/g, " ").trim();
+}
 
 /**
  * Usability rule 4 — four clicks to bedrock, progressive disclosure. The badge is
@@ -46,12 +59,13 @@ const LAYER_COPY: Record<BadgeKind, { headline: string; detail: string }> = {
 
 /** Tokenize answer text so each values[].id becomes a button — no regex over prose. */
 function renderWithValues(
-  envelope: AnswerEnvelope,
+  text: string,
+  values: AnswerEnvelope["values"],
   onValue: (id: string) => void,
 ): ReactNode[] {
   const parts: ReactNode[] = [];
-  let remaining = envelope.text;
-  const sorted = [...envelope.values].sort(
+  let remaining = text;
+  const sorted = [...values].sort(
     (a, b) => String(b.value).length - String(a.value).length,
   );
 
@@ -86,7 +100,7 @@ function renderWithValues(
     remaining = remaining.slice(idx + hit.length);
   }
   if (remaining) parts.push(remaining);
-  return parts.length ? parts : [envelope.text];
+  return parts.length ? parts : [text];
 }
 
 export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
@@ -101,7 +115,42 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
   const confirmFired = useRef(false);
   const rows = envelope.rows ?? [];
+  const { prose, insights } = splitInsights(envelope.text);
 
+  function isSummaryExport(rowsToCheck: Record<string, unknown>[]): boolean {
+    if (rowsToCheck.length !== 1) return false;
+    const keys = Object.keys(rowsToCheck[0]);
+    if (keys.length !== 1) return false;
+    const key = keys[0].toLowerCase();
+    return /count|total|sum|avg|average|min|max|revenue|value|metric/.test(key);
+  }
+
+  function rowsToCsv(rowsToExport: Record<string, unknown>[]): string {
+    const cols = Object.keys(rowsToExport[0]);
+    const escape = (v: unknown) => {
+      const s = formatCellValue(v);
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const lines = [
+      cols.join(","),
+      ...rowsToExport.map((row) => cols.map((c) => escape(row[c])).join(",")),
+    ];
+    return lines.join("\n");
+  }
+
+  async function fetchDrillRows(): Promise<Record<string, unknown>[] | null> {
+    const token = envelope.drillthrough_token;
+    if (!token) return null;
+    const res = await fetch("/api/v1/chat/drillthrough", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { rows?: Record<string, unknown>[] };
+    return body.rows?.length ? body.rows : null;
+  }
   const chipSuggestions =
     envelope.suggestions?.length ? envelope.suggestions : suggestions;
   const yesChip = chipSuggestions.find((q) => EXCLUSION_YES_RE.test(q));
@@ -122,7 +171,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           window.clearInterval(tick);
           if (!confirmFired.current) {
             confirmFired.current = true;
-            void ask(noChip);
+            void ask(resolveExclusionNoChip(noChip));
           }
           return 0;
         }
@@ -132,19 +181,18 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     return () => window.clearInterval(tick);
   }, [ask, envelope.answer_id, isExclusionConfirm, noChip]);
 
-  function downloadRowsCsv() {
-    if (!rows.length) return;
-    const cols = Object.keys(rows[0]);
-    const escape = (v: unknown) => {
-      const s = formatCellValue(v);
-      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-      return s;
-    };
-    const lines = [
-      cols.join(","),
-      ...rows.map((row) => cols.map((c) => escape(row[c])).join(",")),
-    ];
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  async function downloadRowsCsv() {
+    let exportRows = drillRows ?? rows;
+    if (!exportRows.length) return;
+    if (
+      envelope.drillthrough_token &&
+      !drillRows &&
+      isSummaryExport(exportRows)
+    ) {
+      const detail = await fetchDrillRows();
+      if (detail) exportRows = detail;
+    }
+    const blob = new Blob([rowsToCsv(exportRows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -207,7 +255,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         {rows.length > 0 && (
           <button
             type="button"
-            onClick={downloadRowsCsv}
+            onClick={() => void downloadRowsCsv()}
             className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
           >
             Download CSV
@@ -274,8 +322,20 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </div>
       )}
       <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
-        {renderWithValues(envelope, selectValue)}
+        {renderWithValues(prose, envelope.values, selectValue)}
       </p>
+      {insights.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+            Insights
+          </p>
+          <ul className="mt-1 list-inside list-disc text-sm text-[var(--color-ink)]">
+            {insights.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Usability rule 12 — abstain is never a dead end. */}
       {envelope.badge === "ABSTAIN" && (
@@ -294,7 +354,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
                     onClick={() => {
                       confirmFired.current = true;
                       setConfirmLeft(null);
-                      void ask(q);
+                      void ask(isNo ? resolveExclusionNoChip(q) : q);
                     }}
                     className={
                       isYes

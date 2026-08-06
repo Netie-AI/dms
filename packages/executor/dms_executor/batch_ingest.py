@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from dms_core.triage import FileTriageResult, SheetClass, TriageReceipt
 
 from dms_executor.bronze import ingest_csv_bytes
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.document_chunks import index_unstructured_upload
 from dms_executor.triage import classify_bytes, parse_csv_grid
 
 
@@ -51,10 +53,14 @@ def ingest_batch(
     *,
     path: Path | None = None,
     space_id: str | None = None,
+    database_url: str | None = None,
+    tenant_id: str | None = None,
 ) -> TriageReceipt:
     """Classify every file/sheet; ingest clean/dirty tabular; blob unstructured.
 
     Never hard-fails the whole batch — each file gets a named reason.
+    UNSTRUCTURED with ``space_id`` + Postgres writes space-scoped chunks (RAG-01);
+    without either, ``document_index`` stays ``pending`` — never a silent table.
     """
     ingest_id = str(uuid.uuid4())
     db_path = ensure_demo_warehouse(path or warehouse_path())
@@ -63,6 +69,10 @@ def ingest_batch(
     per_class: dict[str, int] = {}
     ingested_count = 0
     need_attention = 0
+    conninfo = database_url if database_url is not None else os.environ.get("DATABASE_URL")
+    tid = tenant_id or os.environ.get(
+        "DMS_TENANT_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    )
 
     for filename, data in files:
         triages = classify_bytes(filename=filename, data=data)
@@ -72,9 +82,30 @@ def ingest_batch(
                 key = hashlib.sha256(data).hexdigest()
                 blob_key = _blob_put(key, data, root=blob_root)
                 tr.blob_key = blob_key
-                tr.document_index = "pending"
                 tr.ingested = False
-                need_attention += 1
+                tr.document_index = "pending"
+                if space_id and conninfo:
+                    try:
+                        indexed = index_unstructured_upload(
+                            filename=filename,
+                            data=data,
+                            space_id=space_id,
+                            blob_key=blob_key,
+                            database_url=conninfo,
+                            tenant_id=tid,
+                        )
+                        tr.document_index = indexed["document_index"]
+                        tr.chunk_count = int(indexed["chunk_count"])
+                        tr.source_id = str(indexed["source_id"])
+                    except Exception as exc:  # noqa: BLE001
+                        tr.reason = f"{tr.reason}+chunk_index_failed:{exc}"[:180]
+                        need_attention += 1
+                else:
+                    if not space_id:
+                        tr.reason = f"{tr.reason}+awaiting_space_id"
+                    elif not conninfo:
+                        tr.reason = f"{tr.reason}+awaiting_database_url"
+                    need_attention += 1
                 results.append(tr)
                 continue
 

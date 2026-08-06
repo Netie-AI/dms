@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AsyncBoundary,
@@ -10,8 +10,7 @@ import {
   StatTile,
 } from "@/components/PageShell";
 import { useApp } from "@/context/AppContext";
-import { createSpace, fetchLibrarySources } from "@/lib/api";
-import { useAsync } from "@/lib/useAsync";
+import { createSpace, fetchSpaceSources } from "@/lib/api";
 import type { LibrarySource } from "@/lib/types";
 
 /**
@@ -31,18 +30,30 @@ export function SpacesPage() {
     spacesStorageHint,
   } = useApp();
   const navigate = useNavigate();
-  const sources = useAsync<LibrarySource[]>((signal) => fetchLibrarySources(signal));
+  const [spaceSources, setSpaceSources] = useState<Record<string, LibrarySource[]>>({});
+  const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [sourcesErr, setSourcesErr] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
-  const byId = new Map<string, LibrarySource[]>();
-  for (const src of sources.data ?? []) {
-    if (!src.space_id) continue;
-    byId.set(src.space_id, [...(byId.get(src.space_id) ?? []), src]);
-  }
-  const companyScoped = (sources.data ?? []).filter((s) => !s.space_id);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setSourcesLoading(true);
+    setSourcesErr(null);
+    void Promise.all(
+      spaces.map((space) =>
+        fetchSpaceSources(space.id, ctrl.signal).then((body) => [space.id, body.sources] as const),
+      ),
+    )
+      .then((pairs) => setSpaceSources(Object.fromEntries(pairs)))
+      .catch((err) => setSourcesErr(err instanceof Error ? err.message : String(err)))
+      .finally(() => setSourcesLoading(false));
+    return () => ctrl.abort();
+  }, [spaces]);
+
+  const companyScoped: LibrarySource[] = [];
 
   async function submit() {
     const trimmed = name.trim();
@@ -110,10 +121,14 @@ export function SpacesPage() {
         <StatTile label="Spaces" value={spaces.length} />
         <StatTile
           label="Scoped sources"
-          value={sources.data ? (sources.data.length - companyScoped.length) : "—"}
+          value={
+            sourcesLoading
+              ? "—"
+              : Object.values(spaceSources).reduce((n, rows) => n + rows.length, 0)
+          }
         />
         {!spacesFromApi && (
-          <StatTile label="Company-wide sources" value={sources.data ? companyScoped.length : "—"} />
+          <StatTile label="Company-wide sources" value={companyScoped.length} />
         )}
         <StatTile
           label="Active scope"
@@ -147,15 +162,15 @@ export function SpacesPage() {
 
       <Section title="Spaces" count={spaces.length}>
         <AsyncBoundary
-          loading={sources.loading}
-          error={sources.error}
-          onRetry={sources.reload}
+          loading={sourcesLoading}
+          error={sourcesErr}
+          onRetry={() => window.location.reload()}
           empty={spaces.length === 0}
           emptyMessage="No Spaces yet — create one above, then attach sources in Studio."
         >
           <ul className="flex flex-col gap-2">
             {spaces.map((space) => {
-              const attached = byId.get(space.id) ?? [];
+              const attached = spaceSources[space.id] ?? [];
               const active = space.id === activeSpaceId;
               return (
                 <li
@@ -225,7 +240,7 @@ export function SpacesPage() {
         </AsyncBoundary>
       </Section>
 
-      {!spacesFromApi && (
+      {!spacesFromApi && !activeSpaceId && (
       <Section
         title="Company scope"
         count={companyScoped.length}
