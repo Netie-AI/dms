@@ -211,3 +211,60 @@ def test_live_envelope_forwards_drillthrough_token():
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert_envelope_valid(env)
+
+
+def test_unknown_engine_badge_abstains_instead_of_certifying():
+    """An engine badge this build does not know must never arrive as confidence.
+
+    The default used to be ``L2_VALIDATED``. That made "DMS is older than
+    Cortex" indistinguishable, on the customer envelope, from "this SQL was
+    generated and checked" — and E5 could not catch it, because the fallback is
+    itself a legal badge, so the envelope was internally consistent and wrong.
+
+    ``needs_clarification`` is a live engine constant, and the engine is under
+    active development, so new badge strings are expected, not hypothetical.
+    """
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Revenue was 80,375,993.99.",
+            "audit_id": "aud_unknown_badge",
+            "route": "generated",
+            "provenance": {"badge": "some_future_confidence_tier", "layer": "L2"},
+            "sql_used": "SELECT SUM(x) FROM t",
+            "rows": [{"revenue_myr": 80375993.99}],
+        }
+    )
+    env = map_ask_response_to_envelope(resp, space_id="sp_x", session_id="ses_u")
+
+    assert env["badge"] == "ABSTAIN", (
+        f"unknown badge certified as {env['badge']!r} — a badge DMS cannot "
+        "vouch for must not reach the customer as confidence"
+    )
+    assert env["abstained"] is True
+    # The abstention has to say why, or on stage it reads as the product failing.
+    assert "some_future_confidence_tier" in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_known_engine_badges_still_certify():
+    """R-0005 — hardening must not refuse work that was always legitimate."""
+    for engine_badge, expected in (
+        ("certified", "L0_CERTIFIED"),
+        ("governed_metric", "L1_GOVERNED_METRIC"),
+        ("generated", "L2_VALIDATED"),
+        ("l2_anomalous", "L2_ANOMALOUS"),
+    ):
+        resp = AskResponse.model_validate(
+            {
+                "answer": "Revenue was 100.",
+                "audit_id": f"aud_{engine_badge}",
+                "route": engine_badge,
+                "provenance": {"badge": engine_badge},
+                "sql_used": "SELECT 1",
+                "rows": [{"revenue_myr": 100.0}],
+            }
+        )
+        env = map_ask_response_to_envelope(resp, space_id="sp_x", session_id="ses_k")
+        assert env["badge"] == expected, f"{engine_badge} should map to {expected}"
+        assert env["abstained"] is False
+        assert_envelope_valid(env)
