@@ -277,7 +277,16 @@ class Executor:
         status = getattr(result, "status", None)
         if ok is False or (status is not None and status not in ("bound", "ok")):
             code = status or "session_bind_failed"
-            raise AskServiceError(str(code), f"status={status!r}")
+            # Carry the engine's own message. This used to raise
+            # f"status={status!r}" and drop ``result.error`` on the floor, so a
+            # submit that failed because it *timed out* arrived indistinguishable
+            # from one refused on policy - which is how #43 stayed misdiagnosed:
+            # the diagnosis was in the field being discarded.
+            reason = getattr(result, "error", None)
+            detail = f"status={status!r}"
+            if reason:
+                detail = f"{detail} error={reason}"
+            raise AskServiceError(str(code), detail)
         self._bound_sessions.add(acl.session_id)
         return result
 

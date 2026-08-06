@@ -183,3 +183,93 @@ def test_chat_live_mode_pool_mismatch_http(
     settings_mod.get_settings.cache_clear()
     monkeypatch.delenv("DMS_ASK_MODE", raising=False)
     settings_mod.get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# #43 — a slow engine is not a forbidden one.
+#
+# The status used to be `409 if code in {session_unbound, session_expired}
+# else 403`, so 403 was the default and every unclassified engine failure was
+# reported as a permission refusal. A cold engine's first submit times out,
+# classifies as `submit_failed`, and therefore told the user their own upload
+# was forbidden. That is the demo's first question, on a cold laptop.
+# ---------------------------------------------------------------------------
+
+
+def _live_client(minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, fake: FakeCortex):
+    from dms_api import settings as settings_mod
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    settings_mod.get_settings.cache_clear()
+    app = create_app()
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    app.state.ask_service = exe
+    app.state.cortex = fake
+    return TestClient(app)
+
+
+def _ask(client) -> Any:
+    return client.post(
+        "/v1/chat/ask",
+        json={"question": "Top 5", "space_id": "sp_q3_audit", "session_id": "ses_t"},
+    )
+
+
+def test_a_submit_timeout_is_not_reported_as_forbidden(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The #43 shape: cold engine, first submit times out.
+
+    403 and 504 demand opposite responses from a user. One is permanent and
+    about who they are; the other clears on retry. Reporting the second as the
+    first is a degradation wearing a policy decision's clothes.
+    """
+    fake = FakeCortex(
+        submits=[],
+        asks=[],
+        submit_result=QueryResult(ok=False, status="submit_failed", error="timed out"),
+    )
+    r = _ask(_live_client(minter, monkeypatch, fake))
+
+    assert r.status_code != 403, (
+        "a timeout was reported as Forbidden - the user is told they lack "
+        "permission when the engine was merely slow"
+    )
+    assert r.status_code == 504
+    assert r.json()["detail"].get("retryable") is not False
+
+
+def test_an_unclassified_engine_failure_is_upstream_not_forbidden(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """403 must be earned by a code that means refusal, not fallen back to."""
+    fake = FakeCortex(
+        submits=[],
+        asks=[],
+        submit_result=QueryResult(ok=False, status="submit_failed", error="kaboom"),
+    )
+    r = _ask(_live_client(minter, monkeypatch, fake))
+
+    assert r.status_code == 502, (
+        f"unclassified engine failure returned {r.status_code}; an upstream "
+        "fault is not a statement about the caller's rights"
+    )
+
+
+def test_a_real_policy_refusal_still_returns_403(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0005 — narrowing 403 must not stop the boundary from refusing."""
+    fake = FakeCortex(
+        submits=[],
+        asks=[],
+        submit_result=QueryResult(
+            ok=False, status="statement_not_allowed", error="statement_not_allowed"
+        ),
+    )
+    r = _ask(_live_client(minter, monkeypatch, fake))
+
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "statement_not_allowed"
