@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -79,8 +80,20 @@ def test_library_reveal_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
+    # ``path`` is the file that was asked for, on every platform. Only ``opened``
+    # is allowed to differ: Explorer can select a file, xdg-open can only show
+    # the folder that holds it. Asserting the file here previously passed on
+    # Windows and failed on Linux CI, which made the check a platform accident
+    # rather than a contract.
     assert body["path"] == str(target.resolve())
-    assert opened, "Explorer should have been invoked"
+    assert body["opened"] in {str(target.resolve()), str(target.resolve().parent)}
+    if os.name == "nt":
+        assert body["action"] == "explorer_select"
+        assert body["opened"] == str(target.resolve())
+    else:
+        assert body["action"] == "xdg_or_open"
+        assert body["opened"] == str(target.resolve().parent)
+    assert opened, "the file manager should have been invoked"
 
     bad = client.post("/v1/library/reveal", json={"path": str(Path.cwd() / "nope.xlsx")})
     assert bad.status_code == 403

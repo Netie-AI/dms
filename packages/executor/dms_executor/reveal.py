@@ -86,10 +86,16 @@ def reveal_path(path: str, *, open_explorer: bool = True) -> dict[str, Any]:
         try:
             # shell=True + quoted /select, — list argv form often opens wrong folders
             subprocess.Popen(f'explorer /select,"{target}"', shell=True)
-            return {"ok": True, "path": target, "action": "explorer_select"}
+            return {"ok": True, "path": target, "opened": target, "action": "explorer_select"}
         except OSError as exc:
             return {"ok": False, "error": str(exc)[:200], "path": target}
 
+    # xdg-open and `open` have no "select this file" equivalent, so the best
+    # they can do is surface the containing folder. That is a fine fallback, but
+    # it must not change what ``path`` means: every other branch returns the
+    # target that was asked for, and a caller reading ``path`` to label the UI
+    # would otherwise show the folder on Linux and the file on Windows. What the
+    # OS actually surfaced goes in ``opened``.
     folder = str(resolved if resolved.is_dir() else resolved.parent)
     try:
         import sys
@@ -98,6 +104,6 @@ def reveal_path(path: str, *, open_explorer: bool = True) -> dict[str, Any]:
             subprocess.Popen(["open", folder])
         else:
             subprocess.Popen(["xdg-open", folder])
-        return {"ok": True, "path": folder, "action": "xdg_or_open"}
+        return {"ok": True, "path": target, "opened": folder, "action": "xdg_or_open"}
     except OSError as exc:
-        return {"ok": False, "error": str(exc)[:200], "path": folder}
+        return {"ok": False, "error": str(exc)[:200], "path": target, "opened": folder}

@@ -334,7 +334,10 @@ export async function createSpace(
 
 export type RevealResult = {
   ok: boolean;
+  /** The file that was asked for — the same on every platform. */
   path?: string;
+  /** What the OS actually surfaced: the file on Windows, its folder elsewhere. */
+  opened?: string;
   action?: string;
   error?: string;
 };
