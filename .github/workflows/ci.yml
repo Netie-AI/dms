@@ -35,20 +35,61 @@ jobs:
               exit 0
             fi
           fi
+          # CI-03 (#44): this gate twice reported the trailer missing while its
+          # own log had just printed it - once on 2026-08-02 (396 occurrences in
+          # the echoed commit bodies) and once on 2026-08-06 (7). Both passed on
+          # an unchanged re-run. The old form was:
+          #
+          #   MSGS=$(git log --format=%B "$BASE..$HEAD")
+          #   echo "$MSGS"
+          #   if ! echo "$MSGS" | grep -q 'INVARIANT-CHANGE:'; then
+          #
+          # I could not identify why that pipeline fails. A SIGPIPE/pipefail
+          # race was the obvious candidate - grep -q exits on first match while
+          # echo is still writing - but 300 local trials at the same payload
+          # size never reproduced it, so that explanation is unproven and is not
+          # being claimed here.
+          #
+          # Rather than patch a mechanism nobody has demonstrated, the fragile
+          # construct is gone: git does the matching itself, so there is no
+          # pipeline, no echo of a large variable, and nothing to race. That
+          # removes the whole class whatever the cause was.
+          #
+          # A nondeterministic gate is worse than a missing one - green stops
+          # being evidence (R-0007), and a control that refuses correct work
+          # trains people to re-run it until it agrees (R-0005).
+          PROTECTED_RE='^(tests/invariants/|\.importlinter$)'
           CHANGED=$(git diff --name-only "$BASE" "$HEAD" || true)
-          echo "Changed files:"
-          echo "$CHANGED"
-          if echo "$CHANGED" | grep -E '^(tests/invariants/|\.importlinter$)' >/dev/null; then
-            echo "Protected path touched — checking commit bodies for INVARIANT-CHANGE:"
-            MSGS=$(git log --format=%B "$BASE..$HEAD")
-            echo "$MSGS"
-            if ! echo "$MSGS" | grep -q 'INVARIANT-CHANGE:'; then
-              echo "::error::Protected path changed without INVARIANT-CHANGE: <reason> in commit body"
-              exit 1
-            fi
-          else
+          TOUCHED=$(printf '%s\n' "$CHANGED" | grep -E "$PROTECTED_RE" || true)
+
+          if [ -z "$TOUCHED" ]; then
             echo "No protected paths touched"
+            exit 0
           fi
+
+          echo "Protected paths touched:"
+          printf '  %s\n' $TOUCHED
+          echo
+          echo "Commits in $BASE..$HEAD that touch them:"
+          git log --format='  %h %s' "$BASE..$HEAD" -- tests/invariants/ .importlinter
+
+          # git greps its own commit bodies. No shell pipeline in the decision.
+          WITH_TRAILER=$(git log --format=%h --grep='INVARIANT-CHANGE:' "$BASE..$HEAD")
+          echo
+          echo "Commits carrying an INVARIANT-CHANGE: trailer:"
+          if [ -n "$WITH_TRAILER" ]; then
+            git log --format='  %h %s' --grep='INVARIANT-CHANGE:' "$BASE..$HEAD"
+          else
+            echo "  (none)"
+          fi
+
+          if [ -z "$WITH_TRAILER" ]; then
+            echo "::error::Protected path changed without INVARIANT-CHANGE: <reason> in commit body"
+            echo "::error::Add the trailer to the commit that touches tests/invariants/ or .importlinter"
+            exit 1
+          fi
+          echo
+          echo "OK - protected-path change is declared"
 
   contract-pin:
     runs-on: ubuntu-latest
