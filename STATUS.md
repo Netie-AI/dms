@@ -33,13 +33,15 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
 | E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
 | Playground | `playground/` + `playground_ask.py` — edit `my_questions.yaml`; L4/L5 labels only (P-DMS-33) |
+| SCORE-03 (#42) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
+| Demo | `verify_demo_live.py` **31/31** live (2026-08-06) — but see #43 |
 
 ## Open next
 
 | ID | Work |
 |----|------|
-| **RUN NOW** | SCORE-03 #42 (F32 pack case + optional blank-row) |
-| Next | VQ-01 #39 → VQ-02 #40 (categoty / trusted Sales totals) |
+| **RUN NOW** | VQ-01 #39 → VQ-02 #40 (categoty / trusted Sales totals) |
+| #43 DEMO-COLD-01 | **first** run after cold start refuses fresh upload (403); warm runs pass — needs PRD routing |
 | Epics | #33 EPIC-017 **N**; #35 EPIC-018 **N**; #38 EPIC-019 **N** (F32) |
 | L4/L5 | Aspiration only (P-DMS-33) — **NEEDS-YOU** confirm meanings or decline badges |
 | After | EPIC-019 after 017/018; not EPIC-023 first |

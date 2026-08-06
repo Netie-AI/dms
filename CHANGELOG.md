@@ -2,6 +2,35 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-06 - working-tree recovery, SCORE-03, demo 31/31
+
+- **Composition root recovered.** `apps/api/dms_api/wiring.py` had been
+  truncated to zero bytes. It is the only module allowed to import
+  `dms_executor` (`.importlinter`), so every route reaching the executor died at
+  import and seven test modules failed to collect. Restored and extended with
+  `reveal_origin_uri`, `search_document_chunks`, `list_document_chunks`;
+  `warehouse_tables` now takes `space_id`. Chunk search resolves the Space
+  filter in SQL, not by post-filtering rows.
+- **RAG-01/02/04/05 + REVEAL-01 landed** with the `0003_document_chunks`
+  migration, the L2 bakeoff record, the demo runbook, and the playground bank.
+- **SCORE-03 (#42).** `f32_ambiguous_categoty_top3` — no sheet named, "categoty"
+  left misspelled; fixture carries Sales truth (Electronics 1,545,366.40 / Home
+  1,199,018.49 / Misc 380,948.33) against the Wide_Fill ranking the live stack
+  returned under green (Home 383,803.56 / Sports 242,755.97 / Misc 228,548.84) —
+  wrong rank *and* wrong magnitude. Plus `blank_hanging_rows_top3`: messy sheet
+  must equal `Sales_Clean`. Both traps self-check inside `score_answers` and
+  exit 1 rather than report green having tested nothing. Falsified per R-0007.
+- **Two silent skips removed (R-0002).** `test_resolve_oracle_on_shipped_hostile_fixtures`
+  returned early when the fixture dir was absent; `test_playground_pack`
+  asserted ids and keys the bank never had, so it was testing nothing that
+  existed. Now asserts ladder coverage L0-L5 and unique ids.
+- **Demo verified live: 31/31** (`verify_demo_live.py`), twice consecutively.
+- **#43 DEMO-COLD-01 filed.** The *first* run against a cold stack refused the
+  freshly uploaded file as `grounding_not_grantable`; warm re-runs pass. Demo's
+  own happy path. Candidate mechanism is the warehouse-read swallow at
+  `demo_grants.py:90-98` turning an unreadable warehouse into a permission
+  decision — unconfirmed, and not fixed here (unrouted product change).
+
 ## 2026-08-05 - Wave 7 land + hard-rule-12 + EPIC-019 start
 
 - **E9-02 (#41 open — verify pending).** Ambiguous multi-sheet category ranking
