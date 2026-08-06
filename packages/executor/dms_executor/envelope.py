@@ -361,13 +361,43 @@ def unbacked_numbers(
     return [n for n in candidates if not any(_close(n, c) for c in cited)]
 
 
+def unmapped_badge(raw: str | None, *, abstained: bool) -> str | None:
+    """The engine badge DMS does not recognise, or None when it maps cleanly."""
+    if abstained:
+        return None
+    key = (raw or "abstain").strip()
+    if key in ALLOWED_BADGES or key.lower() in _BADGE_MAP:
+        return None
+    return key
+
+
 def normalize_badge(raw: str | None, *, abstained: bool) -> str:
+    """Map an engine badge onto the customer vocabulary. Unknown means abstain.
+
+    The default used to be ``L2_VALIDATED`` - a *confident* badge. So any badge
+    string the engine grew that DMS had not learned yet arrived on the customer
+    envelope reading "This SQL was generated, then checked." E5 cannot catch it,
+    because the fallback is itself a member of ALLOWED_BADGES; the envelope is
+    internally consistent and wrong.
+
+    That is not hypothetical. ``needs_clarification`` is a live engine constant
+    today, and the engine is under active development, so the vocabulary can
+    grow on the other side of an HTTP boundary at any time. Defaulting an
+    unknown to confidence means the failure mode of *DMS falling behind Cortex*
+    is a green badge over an answer nobody validated - the exact shape hard
+    rule 10a exists to prevent.
+
+    Unknown now means ABSTAIN. Losing coverage when the engine moves ahead is a
+    cost; stating a number under a badge we cannot vouch for is not recoverable.
+    Callers that want to tell the user *what* was unrecognised should ask
+    ``unmapped_badge`` before calling this.
+    """
     if abstained:
         return "ABSTAIN"
     key = (raw or "abstain").strip()
     if key in ALLOWED_BADGES:
         return key
-    return _BADGE_MAP.get(key.lower(), "L2_VALIDATED")
+    return _BADGE_MAP.get(key.lower(), "ABSTAIN")
 
 
 def _ensure_values(

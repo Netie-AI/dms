@@ -435,7 +435,9 @@ def map_ask_response_to_envelope(
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,
         build_answer_envelope,
+        normalize_badge,
         normalize_contributing_sources,
+        unmapped_badge,
     )
 
     badge_raw = resp.badge
@@ -445,11 +447,28 @@ def map_ask_response_to_envelope(
             badge_raw = "abstain"
         else:
             badge_raw = "l2_validated"
-    badge = _BADGE_MAP.get(str(badge_raw).lower(), "L2_VALIDATED")
+    # Unknown engine badge => ABSTAIN, not L2_VALIDATED. See normalize_badge():
+    # defaulting an unrecognised badge to a *confident* one means the failure
+    # mode of DMS lagging Cortex is a green badge over an unvalidated answer.
+    # Go through envelope.py rather than this module's own _BADGE_MAP copy.
+    # Two maps for one vocabulary is a drift waiting to happen, and the drift
+    # would be invisible: both sides would still produce a legal badge.
+    unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))
+    badge = normalize_badge(badge_raw, abstained=bool(resp.abstained))
     abstained = bool(resp.abstained) or badge == "ABSTAIN"
     if abstained:
         badge = "ABSTAIN"
     text = resp.answer or ("Abstained." if abstained else "")
+    if unknown_badge:
+        # Name it. An abstention whose reason is "the engine said something this
+        # build does not understand" is actionable; a bare "Abstained." is not,
+        # and would read on stage as the product simply failing.
+        text = (
+            f"I can't vouch for this answer: the engine returned a confidence "
+            f"level this build does not recognise ({unknown_badge!r}). "
+            f"Rather than show you a number under a badge I cannot stand behind, "
+            f"I'm abstaining. This usually means DMS is older than the engine."
+        )
     values = list(resp.values or [])
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
