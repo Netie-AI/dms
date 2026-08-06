@@ -1,15 +1,8 @@
 import type { BadgeKind } from "@/lib/types";
-
-const COPY: Record<BadgeKind, { label: string; tone: string }> = {
-  L0_CERTIFIED: { label: "certified", tone: "ok" },
-  L1_GOVERNED_METRIC: { label: "governed", tone: "ok" },
-  L2_VALIDATED: { label: "generated — check sources", tone: "warn" },
-  L2_ANOMALOUS: { label: "unusual result — verify", tone: "warn" },
-  ABSTAIN: { label: "abstain", tone: "mute" },
-};
+import { BADGE_COPY } from "@/lib/badgeCopy";
 
 export function Badge({ kind }: { kind: BadgeKind }) {
-  const { label, tone } = COPY[kind];
+  const { label, tone } = BADGE_COPY[kind];
   const color =
     tone === "ok"
       ? "text-[var(--color-badge-ok)] bg-[var(--color-accent-soft)]"
