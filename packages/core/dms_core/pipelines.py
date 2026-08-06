@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-
 LineageMode = Literal["propagate", "aggregate"]
 
 
@@ -59,6 +58,20 @@ class PipelineDef:
 
 @dataclass
 class PromoteReceipt:
+    """What one promotion run did, including what it could not account for.
+
+    ``source_rows`` and ``unmatched`` exist so row conservation is *sayable*.
+    Without an input count, ``passed + quarantined == source_rows`` was not
+    merely unasserted — it could not be written, by a test or by a customer. A
+    two-source run of 1000 rows against 997 returned ``passed=997,
+    quarantined=0`` and looked complete, because the three lost rows disappeared
+    upstream of both counters and nothing recorded how many had set out.
+
+    A warehouse has to answer one question above all others: did every row that
+    entered end up either in the target or in quarantine? These fields are what
+    make the answer checkable.
+    """
+
     run_id: str
     target: str
     sources: list[str]
@@ -69,14 +82,34 @@ class PromoteReceipt:
     lineage: str = "propagate"
     table: str | None = None
     quarantine_table: str | None = None
+    #: Rows read from the source relation(s) before any join or contract check.
+    source_rows: int | None = None
+    #: Rows lost to join cardinality — dropped by an INNER JOIN, or added by
+    #: fan-out on a duplicated key. Negative means the join produced more rows
+    #: than it consumed.
+    unmatched: int = 0
+
+    @property
+    def reconciled(self) -> bool:
+        """True when every input row is accounted for in the output.
+
+        ``None`` source_rows means the run predates the count and cannot be
+        reconciled — reported as unreconciled rather than assumed fine.
+        """
+        if self.source_rows is None:
+            return False
+        return self.unmatched == 0 and self.passed + self.quarantined == self.source_rows
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "target": self.target,
             "sources": list(self.sources),
+            "source_rows": self.source_rows,
             "passed": self.passed,
             "quarantined": self.quarantined,
+            "unmatched": self.unmatched,
+            "reconciled": self.reconciled,
             "counts_by_reason": dict(self.counts_by_reason),
             "dedup_key": list(self.dedup_key),
             "lineage": self.lineage,

@@ -20,23 +20,28 @@ banner) inform this rebuild; nav and stack follow
 ## Run
 
 ```powershell
+# API (repo root)
+cd D:\DMS
+python -m uvicorn dms_api.app:app --app-dir apps/api --reload --port 8090
+
+# UI
 cd D:\DMS\apps\ui
 npm install
 npm run dev
 ```
 
-Open http://127.0.0.1:3000 — Chat is the landing surface.
+Open http://127.0.0.1:3000 — Chat is the landing surface. With API up, Spaces load from
+`GET /v1/spaces` and Ask hits `POST /v1/chat/ask` (`DMS_ASK_MODE=demo` by default).
+Demo answers use **L2 “generated — check sources”** — never certified green.
 
-Optional: start DMS API on `:8090` so the top-bar health chip turns green.
+## U0 / demo-core acceptance (this slice)
 
-## U0 acceptance
-
-- Empty Chat shows **six** suggested questions (never blank).
-- Scope chip above the input always visible.
-- Asking a suggestion loads a **fixture answer envelope** (§4.7); the number is a button.
-- Clicking the number opens / focuses the **docked** Sources panel — no modal over the answer.
-- Top bar: hamburger, Space switcher, + New, search stub, role chip, user stub.
-- Stub routes for Library / Studio / Amend / Audit / Runs / Admin (no 404s).
+- Empty Chat shows **six** suggested questions aligned to the demo warehouse.
+- Asking hits DMS API; **Divide the revenue by 5** returns computed total÷5 + bar chart (L2).
+- Nonsense questions abstain with suggestions (never invent).
+- Clicking a number opens the docked Sources panel.
+- `DMS_ASK_MODE=live` uses mint→session_bind→ask when Cortex+OpenVault are up.
+- Track unfinished work in repo-root `STATUS.md` / `PARKING_LOT.md`.
 
 ## Phase pointer
 

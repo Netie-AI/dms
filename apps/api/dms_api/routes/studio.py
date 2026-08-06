@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from dms_api.deps import CortexDep
-from dms_api.wiring import batch_ingest, bronze_list
+from dms_api.deps import CortexDep, SettingsDep
+from dms_api.gatekeeping import enforce
+from dms_api.wiring import batch_ingest, bronze_list, list_document_chunks
 
 router = APIRouter(prefix="/v1/studio", tags=["studio"])
 
@@ -32,6 +33,7 @@ class ReceiptOut(BaseModel):
 async def ingest_file(
     cortex: CortexDep,
     file: UploadFile = File(...),
+    space_id: str | None = Form(None),
 ) -> ReceiptOut:
     """Single-file ingest (compat). Prefer /ingest-batch for multi-file triage."""
     decision = compliance_gate(
@@ -39,15 +41,11 @@ async def ingest_file(
         metadata={"task_id": "studio.ingest", "filename": file.filename},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
 
     raw = await file.read()
     name = file.filename or "upload.csv"
-    receipt = batch_ingest([(name, raw)])
+    receipt = batch_ingest([(name, raw)], space_id=space_id)
     attention = receipt.get("need_attention", 0)
     return ReceiptOut(
         files_seen=receipt["files_seen"],
@@ -75,6 +73,7 @@ async def ingest_file(
 async def ingest_batch_files(
     cortex: CortexDep,
     files: list[UploadFile] = File(...),
+    space_id: str | None = Form(None),
 ) -> ReceiptOut:
     decision = compliance_gate(
         action="studio.ingest",
@@ -84,16 +83,12 @@ async def ingest_batch_files(
         },
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
 
     payloads: list[tuple[str, bytes]] = []
     for f in files:
         payloads.append((f.filename or "upload.csv", await f.read()))
-    receipt = batch_ingest(payloads)
+    receipt = batch_ingest(payloads, space_id=space_id)
     attention = receipt.get("need_attention", 0)
     return ReceiptOut(
         files_seen=receipt["files_seen"],
@@ -113,6 +108,21 @@ async def ingest_batch_files(
 
 
 @router.get("/bronze")
-def list_bronze(cortex: CortexDep) -> list[dict[str, Any]]:
+def list_bronze(
+    cortex: CortexDep,
+    space_id: str | None = Query(None),
+) -> list[dict[str, Any]]:
     _ = cortex
-    return bronze_list()
+    return bronze_list(space_id=space_id)
+
+
+@router.get("/chunks")
+def list_chunks(
+    cortex: CortexDep,
+    settings: SettingsDep,
+    space_id: str = Query(..., description="Space that owns the document chunks"),
+) -> list[dict[str, Any]]:
+    """Steward list of space-scoped document chunks (RAG-01)."""
+    _ = cortex
+    _ = settings
+    return list_document_chunks(space_id=space_id)

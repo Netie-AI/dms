@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-
 from dms_core.pipelines import GoldMetricDef, PipelineDef, PromoteReceipt
+
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.duckdb_scalar import fetchone_row, scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 from dms_executor.pipeline_loader import PipelineLoadError
 
@@ -36,34 +37,84 @@ def _qtable(qual: str) -> str:
     return f"{_qi(schema)}.{_qi(table)}"
 
 
-def _type_check_sql(col: str, typ: str) -> str:
-    """Return SQL boolean expr that is true when value matches contract type."""
-    c = _qi(col)
+_DECIMAL_RE = re.compile(r"^decimal\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)$", re.I)
+
+
+def _sql_type(typ: str) -> str:
+    """The one SQL type both the contract check and the write use.
+
+    These were two separate mappings that disagreed, and a value could satisfy
+    the check and still be destroyed by the write — landing in silver as NULL
+    while the receipt counted it under ``passed`` and reported
+    ``quarantined: 0``. Measured against DuckDB:
+
+    =========================  ==========  =======================
+    contract / input           old check   old value in silver
+    =========================  ==========  =======================
+    integer  3000000000        BIGINT ok   NULL   (cast INTEGER)
+    integer  2147483648        BIGINT ok   NULL   (cast INTEGER)
+    decimal  1e17-ish          DOUBLE ok   NULL   (cast DECIMAL(18,2))
+    timestamp ...+08:00        DATE   ok   offset dropped
+    =========================  ==========  =======================
+
+    A row that fails its contract belongs in quarantine where somebody can see
+    it. Silently nulling a column of a row reported as passed is the one
+    outcome the promotion must never produce, because every number computed
+    above it is then wrong with no trace (R-0011).
+
+    Declared precision is honoured too: ``decimal(30,6)`` was being written as
+    ``DECIMAL(18,2)`` regardless, quietly truncating four decimal places for
+    anyone whose contract asked for them.
+    """
     t = typ.lower().strip()
-    if t.startswith("decimal") or t in {"numeric", "number", "float", "double"}:
-        return f"TRY_CAST({c} AS DOUBLE) IS NOT NULL OR {c} IS NULL"
-    if t in {"integer", "int", "bigint"}:
-        return f"TRY_CAST({c} AS BIGINT) IS NOT NULL OR {c} IS NULL"
-    if t in {"date", "timestamp", "timestamptz"}:
-        return f"TRY_CAST({c} AS DATE) IS NOT NULL OR {c} IS NULL"
+    m = _DECIMAL_RE.match(t)
+    if m:
+        return f"DECIMAL({m.group(1)},{m.group(2)})"
+    if t in {"decimal", "numeric", "number"}:
+        return "DECIMAL(18,2)"
+    if t in {"float", "double"}:
+        return "DOUBLE"
+    if t in {"integer", "int"}:
+        return "INTEGER"
+    if t == "bigint":
+        return "BIGINT"
+    if t == "date":
+        return "DATE"
+    if t == "timestamptz":
+        # Keeps the offset. TIMESTAMP silently reinterpreted +08:00 as local,
+        # making a KL timestamp and a UTC one indistinguishable after promotion.
+        return "TIMESTAMPTZ"
+    if t == "timestamp":
+        return "TIMESTAMP"
     if t in {"text", "varchar", "string"}:
+        return "VARCHAR"
+    raise PipelineLoadError(
+        f"contract declares type {typ!r}, which the promoter cannot enforce. "
+        "Parameterised types must be quoted in YAML — {type: decimal(18,2)} is a flow "
+        "mapping, so the comma splits it and the type arrives as 'decimal(18'. "
+        'Write {type: "decimal(18,2)"}. '
+        "Supported: text/varchar/string, integer, bigint, decimal(p,s), numeric, "
+        "float/double, date, timestamp, timestamptz."
+    )
+
+
+def _type_check_sql(col: str, typ: str) -> str:
+    """True when the value survives the exact cast the write will perform."""
+    target = _sql_type(typ)
+    if not target or target == "VARCHAR":
         return "TRUE"
-    # unknown types: accept
-    return "TRUE"
+    c = _qi(col)
+    return f"TRY_CAST({c} AS {target}) IS NOT NULL OR {c} IS NULL"
 
 
 def _cast_sql(col: str, typ: str) -> str:
+    target = _sql_type(typ)
     c = _qi(col)
-    t = typ.lower().strip()
-    if t.startswith("decimal") or t in {"numeric", "number", "float", "double"}:
-        return f"TRY_CAST({c} AS DECIMAL(18,2))"
-    if t in {"integer", "int", "bigint"}:
-        return f"TRY_CAST({c} AS INTEGER)"
-    if t in {"date"}:
-        return f"TRY_CAST({c} AS DATE)"
-    if t in {"timestamp", "timestamptz"}:
-        return f"TRY_CAST({c} AS TIMESTAMP)"
-    return f"CAST({c} AS VARCHAR)"
+    if not target:
+        return c
+    if target == "VARCHAR":
+        return f"CAST({c} AS VARCHAR)"
+    return f"TRY_CAST({c} AS {target})"
 
 
 def _fail_reason_sql(col: str, typ: str, *, required: bool, min_v: float | None) -> str:
@@ -158,11 +209,23 @@ def _build_source_relation(con: duckdb.DuckDBPyConnection, pipe: PipelineDef) ->
         select_parts.append(f"b.{_qi(c)} AS {_qi(c)}")
     for k in pipe.join_on:
         select_parts.append(f"a.{_qi(k)} AS {_qi(k)}")
-    select_parts.append("list_concat(a._src, b._src) AS _src")
+    # An unmatched left row has no b._src to concatenate; keep its own lineage.
+    select_parts.append("COALESCE(list_concat(a._src, b._src), a._src) AS _src")
     select_parts.append("a._ingest_id AS _ingest_id")
+    # LEFT, not INNER. An INNER JOIN removed unmatched rows *upstream* of the
+    # staging table, so both the passed and quarantined counters were computed
+    # over the survivors and the loss was invisible: 1000 rows joined against
+    # 997 reported passed=997, quarantined=0, counts_by_reason={} — three rows
+    # gone with no reason code, contradicting this module's own promise that
+    # rows failing the contract land in quarantine and are never dropped.
+    #
+    # Unmatched rows now reach the scorer, which quarantines them under
+    # `join_unmatched` where somebody can read them back with their lineage.
+    first_key = _qi(pipe.join_on[0])
+    select_parts.append(f"(b.{first_key} IS NOT NULL) AS _join_matched")
     return (
         f"(SELECT {', '.join(select_parts)} FROM {qa} a "
-        f"INNER JOIN {qb} b ON {on_sql})"
+        f"LEFT JOIN {qb} b ON {on_sql})"
     )
 
 
@@ -199,11 +262,15 @@ def _run_gold(
         )
     if not gold_metric.ledger_entry_id:
         raise PipelineLoadError("gold metric must have ledger_entry_id from Cortex append")
-    src_sql = _build_source_relation(con, pipe)
+    # Called for its validation, not its return value: it raises PipelineLoadError if
+    # any declared source table is missing. The gold path then materialises from the
+    # signed metric SQL rather than the source relation, so the returned SQL is unused -
+    # but dropping the call would let a gold promote succeed against absent sources.
+    _build_source_relation(con, pipe)
     target = _qtable(pipe.target)
     # Materialize metric result as gold table (aggregate — document lineage)
     con.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM ({gold_metric.sql})")
-    n = int(con.execute(f"SELECT COUNT(*) FROM {target}").fetchone()[0])
+    n = scalar_int(con.execute(f"SELECT COUNT(*) FROM {target}").fetchone())
     return PromoteReceipt(
         run_id=run_id,
         target=pipe.target,
@@ -232,9 +299,16 @@ def _run_silver(
     q_table = pipe.quarantine_table
     q_qual = _qtable(q_table)
 
+    # Rows that set out, counted on the driving source before any join can
+    # change the cardinality. Without this the receipt could report passed and
+    # quarantined and still not answer "did everything arrive".
+    driving = pipe.sources[0]
+    source_rows = scalar_int(con.execute(f"SELECT COUNT(*) FROM {_qtable(driving)}").fetchone())
+
     # Staging of source rows with synthetic row id for this run
     con.execute("DROP TABLE IF EXISTS _promote_stage")
     con.execute(f"CREATE TEMP TABLE _promote_stage AS SELECT * FROM {src_rel}")
+    staged_rows = scalar_int(con.execute("SELECT COUNT(*) FROM _promote_stage").fetchone())
 
     biz_cols = list(contract.columns.keys())
     # Validate columns exist
@@ -292,6 +366,14 @@ def _run_silver(
         reason_exprs.append(r_sql)
         fail_col_exprs.append(f"WHEN ({r_sql}) IS NOT NULL THEN '{col}'")
 
+    # A row the join could not match is a failure with its own reason, checked
+    # before the column contract — its b-side columns are NULL for a structural
+    # reason, and reporting that as `required_null` would name the wrong cause.
+    if "_join_matched" in stage_cols:
+        join_reason = "CASE WHEN NOT _join_matched THEN 'join_unmatched' ELSE NULL END"
+        reason_exprs.insert(0, join_reason)
+        fail_col_exprs.insert(0, f"WHEN ({join_reason}) IS NOT NULL THEN '_join'")
+
     coalesce_reasons = "COALESCE(" + ", ".join(reason_exprs) + ")"
     fail_col_case = "CASE " + " ".join(fail_col_exprs) + " ELSE NULL END"
 
@@ -315,14 +397,16 @@ def _run_silver(
                 col = key[: -len("_not_null_rate")]
                 threshold = float(rule.split(">=")[1].strip())
                 if col in stage_cols:
-                    row = con.execute(
-                        f"""
+                    row = fetchone_row(
+                        con.execute(
+                            f"""
                         SELECT
                           COUNT(*)::DOUBLE AS n,
                           COUNT({_qi(col)})::DOUBLE AS nn
                         FROM _promote_stage
                         """
-                    ).fetchone()
+                        ).fetchone()
+                    )
                     n, nn = float(row[0]), float(row[1])
                     rate = (nn / n) if n else 1.0
                     if rate < threshold:
@@ -388,9 +472,13 @@ def _run_silver(
         )
     con.execute(f"INSERT INTO {q_qual} {q_select}")
 
-    passed = int(con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {pass_where}").fetchone()[0])
-    quarantined = int(
-        con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {fail_where}").fetchone()[0]
+    passed = scalar_int(
+        con.execute(
+            f"SELECT COUNT(*) FROM _promote_scored WHERE {pass_where}"
+        ).fetchone()
+    )
+    quarantined = scalar_int(
+        con.execute(f"SELECT COUNT(*) FROM _promote_scored WHERE {fail_where}").fetchone()
     )
     reason_rows = con.execute(
         f"""
@@ -402,12 +490,22 @@ def _run_silver(
     counts = {str(r): int(c) for r, c in reason_rows}
     counts.update(expectation_notes)
 
+    # Positive means the join consumed rows; negative means it produced extra
+    # ones by fanning out on a duplicated key, which silently multiplies every
+    # amount downstream. Either way the receipt reports reconciled=false rather
+    # than a clean-looking pass.
+    unmatched = source_rows - staged_rows
+    if unmatched:
+        counts["join_cardinality_change"] = abs(unmatched)
+
     return PromoteReceipt(
         run_id=run_id,
         target=pipe.target,
         sources=list(pipe.sources),
+        source_rows=source_rows,
         passed=passed,
         quarantined=quarantined,
+        unmatched=unmatched,
         counts_by_reason=counts,
         dedup_key=list(contract.dedup_key),
         lineage=pipe.lineage,
@@ -436,7 +534,9 @@ def sign_gold_metric(
         payload=payload,
         actor=actor or metric.steward_id,
     )
-    entry_id = getattr(resp, "entry_id", None) or (resp.get("entry_id") if isinstance(resp, dict) else None)
+    entry_id = getattr(resp, "entry_id", None) or (
+        resp.get("entry_id") if isinstance(resp, dict) else None
+    )
     sig = getattr(resp, "entry_hash", None) or entry_id or f"sig_{uuid.uuid4().hex[:16]}"
     return GoldMetricDef(
         metric_id=metric.metric_id,

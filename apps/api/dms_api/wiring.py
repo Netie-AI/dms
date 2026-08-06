@@ -11,22 +11,117 @@ from dms_core.pipelines import GoldMetricDef
 from dms_ledger import append_event
 
 
-def build_ask_service(cortex: CortexClient | None) -> AskServicePort:
-    exe = dms_executor.Executor(cortex=cortex)
+def build_ask_service(
+    cortex: CortexClient | None,
+    *,
+    openvault_url: str | None = None,
+) -> AskServicePort:
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    ov_url = openvault_url or settings.openvault_url
+    exe = dms_executor.Executor(cortex=cortex, openvault_url=ov_url)
     exe.startup()
     return exe
 
 
-def bronze_ingest(*, filename: str, data: bytes) -> dms_executor.IngestReceipt:
-    return dms_executor.ingest_csv_bytes(filename=filename, data=data)
+def bronze_ingest(
+    *,
+    filename: str,
+    data: bytes,
+    space_id: str | None = None,
+) -> dms_executor.IngestReceipt:
+    return dms_executor.ingest_csv_bytes(filename=filename, data=data, space_id=space_id)
 
 
-def bronze_list():
-    return dms_executor.list_bronze_tables()
+def bronze_list(*, space_id: str | None = None):
+    return dms_executor.list_bronze_tables(space_id=space_id)
 
 
-def batch_ingest(files: list[tuple[str, bytes]]) -> dict[str, Any]:
-    return dms_executor.ingest_batch(files).to_dict()
+def warehouse_tables(*, space_id: str | None = None):
+    return dms_executor.list_warehouse_tables(space_id=space_id)
+
+
+def reveal_origin_uri(path: str) -> dict[str, Any]:
+    """REVEAL-01 — Explorer reveal for an allowlisted filesystem origin_uri."""
+    return dms_executor.reveal_path(path)
+
+
+def search_document_chunks(
+    *,
+    space_id: str,
+    q: str,
+    limit: int = 8,
+    source_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """RAG-02 — ranked chunk search. Space filter is applied in SQL, not after."""
+    from dms_core.control_plane.document_chunks import search_chunks
+
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    if not settings.database_url:
+        return []
+    return search_chunks(
+        settings.database_url,
+        tenant_id=settings.dms_tenant_id,
+        space_id=space_id,
+        q=q,
+        top_k=limit,
+        source_ids=source_ids,
+    )
+
+
+def list_document_chunks(*, space_id: str) -> list[dict[str, Any]]:
+    """RAG-01 — steward list of one Space's chunks. Never crosses ``space_id``."""
+    from dms_core.control_plane.document_chunks import list_chunks
+
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    if not settings.database_url:
+        return []
+    return list_chunks(
+        settings.database_url,
+        tenant_id=settings.dms_tenant_id,
+        space_id=space_id,
+    )
+
+
+def warehouse_preview(table: str, *, limit: int = 100, offset: int = 0):
+    return dms_executor.preview_warehouse_table(table, limit=limit, offset=offset)
+
+
+def bronze_preview(table: str, *, limit: int = 100, offset: int = 0):
+    return dms_executor.preview_bronze_table(table, limit=limit, offset=offset)
+
+
+def library_tree(
+    *,
+    sources: list[dict[str, Any]],
+    bronze: list[dict[str, Any]],
+    warehouse: list[dict[str, Any]],
+    space_id: str | None = None,
+    space_name: str | None = None,
+) -> dict[str, Any]:
+    return dms_executor.build_library_tree(
+        sources=sources,
+        bronze_tables=bronze,
+        warehouse_tables=warehouse,
+        space_id=space_id,
+        space_name=space_name,
+    )
+
+
+def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
+    """Composition-root wrapper so routes never import dms_executor.envelope."""
+    env = dms_executor.build_answer_envelope(**kwargs)
+    dms_executor.assert_envelope_valid(env)
+    return env
+
+
+def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
+    return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
 
 def pipeline_run(

@@ -1,11 +1,11 @@
-"""Smoke + health — ask defaults to live with demo fallback."""
+"""Smoke + health — ask defaults to live; demo fallback off unless opted in."""
 
 from pathlib import Path
 
+import pytest
 from dms_api.app import create_app
 from dms_api.settings import get_settings
 from fastapi.testclient import TestClient
-import pytest
 
 
 def test_create_app():
@@ -21,16 +21,25 @@ def test_health_route():
     body = r.json()
     assert body["status"] == "ok"
     assert body["product"] == "dms"
-    assert body["contract"] == "1.1.0"
+    assert body["contract"] == "1.2.0"
     assert body["ask_mode"] in ("live", "demo")
+    assert body["demo_fallback"] is False or body["demo_fallback"] is True
+    assert body["backend"] == "memory"
+    assert "contract_routes" in body["dependencies"]["cortex"]
+    assert "jwks_refresh" in body["dependencies"]["cortex"]
+    assert "database_configured" in body
+    assert "trust" in body["dependencies"]["openvault"]
 
 
 def test_list_spaces():
     client = TestClient(create_app())
     r = client.get("/v1/spaces")
     assert r.status_code == 200
-    spaces = r.json()
+    body = r.json()
+    spaces = body["spaces"]
     assert len(spaces) >= 2
+    assert body["persisted"] is False
+    assert body["storage"]["backend"] == "memory"
 
 
 def test_chat_ask_demo_never_certified(monkeypatch):
@@ -97,10 +106,33 @@ def test_chat_ask_unknown_space():
     assert r.status_code == 404
 
 
+def _gate_allows(monkeypatch) -> None:
+    """Grant the compliance decision these tests assume, rather than bypass it.
+
+    Ingest is a mutation and now fails closed when the gate cannot decide, which
+    is what happens here: there is no Cortex, so ``compliance_gate`` returns
+    ``gate_unavailable``. Supplying an allow keeps the test testing ingest; the
+    fail-closed behaviour itself is covered by
+    ``test_skeleton_ping_calls_gate_fail_closed`` and by the spaces regression
+    guard in tests/test_product_surfaces.py.
+    """
+    import dms_api.routes.studio as studio_routes
+    from cortex_client.gate import ComplianceDecision
+
+    monkeypatch.setattr(
+        studio_routes,
+        "compliance_gate",
+        lambda *, action, **_: ComplianceDecision(
+            allowed=True, reason="test_allow", action=action
+        ),
+    )
+
+
 def test_studio_ingest_csv(monkeypatch):
     monkeypatch.setenv("DMS_ASK_MODE", "demo")
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(Path("data/_smoke_ingest.duckdb").resolve()))
     get_settings.cache_clear()
+    _gate_allows(monkeypatch)
     client = TestClient(create_app())
     r = client.post(
         "/v1/studio/ingest",
@@ -116,7 +148,8 @@ def test_studio_ingest_csv(monkeypatch):
     assert "TABULAR_CLEAN" in (body.get("per_class") or {})
 
 
-def test_studio_quarantine_xlsx():
+def test_studio_quarantine_xlsx(monkeypatch):
+    _gate_allows(monkeypatch)
     client = TestClient(create_app())
     r = client.post(
         "/v1/studio/ingest",

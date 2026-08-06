@@ -1,4 +1,6 @@
 # T6 — Caddy is the only publicly bound appliance port.
+# Architecture §1–2: TLS / rate-limit / SSE flush land in hardening (pre-pay),
+# not in the day-1 skeleton. Keep flush_interval ready for chat SSE (U6 / §10.10).
 :8080 {
 	encode gzip
 	root * /srv
@@ -6,7 +8,9 @@
 	file_server
 
 	handle_path /api/* {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			flush_interval -1
+		}
 	}
 
 	handle /health {
@@ -14,6 +18,8 @@
 	}
 
 	handle /v1/* {
-		reverse_proxy api:8080
+		reverse_proxy api:8080 {
+			flush_interval -1
+		}
 	}
 }

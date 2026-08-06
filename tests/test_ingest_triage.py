@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from dms_core.triage import SheetClass
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.triage import classify_bytes, classify_grid, parse_csv_grid
@@ -34,6 +33,9 @@ def _load(name: str) -> bytes:
         ("12_title_and_trailing.csv", SheetClass.TABULAR_DIRTY),
         ("13_nearly_empty.csv", SheetClass.UNSTRUCTURED),
         ("14_malay_dirty_numbers.csv", SheetClass.TABULAR_DIRTY),
+        # The first non-CSV fixture. Fixtures 01-14 are all CSV, which is why
+        # P0-DEMO-01 (xlsx into a fresh warehouse) stayed invisible.
+        ("15_q3_sales_export.xlsx", SheetClass.TABULAR_CLEAN),
     ],
 )
 def test_fixture_classifies(name: str, expected: SheetClass):
@@ -69,8 +71,13 @@ def test_receipt_names_actionable_reasons():
     for f in receipt.files:
         if f.classification == SheetClass.UNSTRUCTURED:
             assert f.table is None
-            assert f.blob_key or f.document_index == "pending" or not f.ingested
+            assert f.blob_key or f.document_index in {"pending", "indexed"} or not f.ingested
             assert f.ingested is False
+            # Without space_id / DATABASE_URL the index stays pending (honest).
+            if f.document_index == "indexed":
+                assert f.chunk_count and f.chunk_count > 0
+            else:
+                assert f.document_index == "pending"
     # Summary is honest
     d = receipt.to_dict()
     assert "need attention" in d["summary"]

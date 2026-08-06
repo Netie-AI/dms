@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class ToolClass(str, Enum):
     APPLY = "apply"
     PROPOSE = "propose"

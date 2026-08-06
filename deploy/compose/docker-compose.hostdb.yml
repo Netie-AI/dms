@@ -1,0 +1,26 @@
+# Host-bind Postgres for development on the host, NOT part of the appliance.
+#
+# The base compose file keeps postgres on `expose: 5432` because Architecture §1
+# says Caddy is the only public port on the appliance. That is correct and this
+# file does not change it: the binding lives here, in a second file you have to
+# name explicitly, so it can never become the default by accident the way a
+# `docker-compose.override.yml` would.
+#
+# Bound to 127.0.0.1 on purpose. A bare "5432:5432" listens on every interface
+# and hands the control plane — tenants, memberships, acl_grants, proposals — to
+# anything on the LAN. Loopback keeps it reachable for a host-run uvicorn and
+# for psql, and reachable by nothing else.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.hostdb.yml up -d postgres
+#
+# Then DATABASE_URL=postgresql://dms:dms@127.0.0.1:5432/dms for a host-run API.
+# Deploying the appliance? Use docker-compose.yml alone.
+#
+# Warning: tests/control_plane/conftest.py does DROP SCHEMA dms CASCADE at
+# session scope. Never point DATABASE_URL at a database holding real data while
+# running the suite.
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"

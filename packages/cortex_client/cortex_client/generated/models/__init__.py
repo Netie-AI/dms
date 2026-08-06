@@ -5,6 +5,10 @@ from .answer_rows_type_0_item import AnswerRowsType0Item
 from .ask_request import AskRequest
 from .badge import Badge
 from .chain_verification import ChainVerification
+from .contributing_source import ContributingSource
+from .drillthrough_request import DrillthroughRequest
+from .drillthrough_response import DrillthroughResponse
+from .drillthrough_response_rows_item import DrillthroughResponseRowsItem
 from .http_validation_error import HTTPValidationError
 from .ledger_append_request import LedgerAppendRequest
 from .ledger_append_request_payload import LedgerAppendRequestPayload
@@ -31,6 +35,10 @@ __all__ = (
     "AskRequest",
     "Badge",
     "ChainVerification",
+    "ContributingSource",
+    "DrillthroughRequest",
+    "DrillthroughResponse",
+    "DrillthroughResponseRowsItem",
     "HTTPValidationError",
     "LedgerAppendRequest",
     "LedgerAppendRequestPayload",

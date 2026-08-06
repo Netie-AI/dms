@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class SheetClass(str, Enum):
+class SheetClass(StrEnum):
     TABULAR_CLEAN = "TABULAR_CLEAN"
     TABULAR_DIRTY = "TABULAR_DIRTY"
     MULTI_TABLE = "MULTI_TABLE"
@@ -45,6 +45,8 @@ class FileTriageResult:
     table: str | None = None
     blob_key: str | None = None
     document_index: str | None = None
+    chunk_count: int | None = None
+    source_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +64,8 @@ class FileTriageResult:
             "table": self.table,
             "blob_key": self.blob_key,
             "document_index": self.document_index,
+            "chunk_count": self.chunk_count,
+            "source_id": self.source_id,
         }
 
 

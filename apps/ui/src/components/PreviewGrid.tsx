@@ -51,7 +51,7 @@ export function PreviewGrid({ sheet }: Props) {
   const slice = rows.slice(windowStart, windowStart + visible + 8);
 
   return (
-    <div className="mt-2 border border-[var(--color-line)] bg-white">
+    <div className="mt-2 border border-[var(--color-line)] bg-[var(--color-surface)]">
       <div className="flex items-center justify-between border-b border-[var(--color-line)] px-2 py-1.5">
         <p className="truncate text-xs font-medium text-[var(--color-ink)]">
           {sheet.title}

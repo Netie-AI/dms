@@ -6,9 +6,10 @@ from typing import Any
 
 from cortex_client import compliance_gate
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from dms_api.deps import CortexDep
+from dms_api.gatekeeping import enforce
 from dms_api.wiring import (
     gold_sign_metric,
     pipeline_infer_contract,
@@ -42,11 +43,7 @@ def run_pipeline(body: RunBody, cortex: CortexDep) -> dict[str, Any]:
         metadata={"task_id": "pipeline.promote", "pipeline": body.pipeline},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
     try:
         receipt = pipeline_run(
             pipeline=body.pipeline,
@@ -68,11 +65,7 @@ def infer_contract(body: InferBody, cortex: CortexDep) -> dict[str, Any]:
         metadata={"task_id": "pipeline.infer_contract", "source": body.source},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
     try:
         return pipeline_infer_contract(source=body.source)
     except ValueError as exc:
@@ -86,11 +79,7 @@ def sign_gold(body: GoldSignBody, cortex: CortexDep) -> dict[str, Any]:
         metadata={"task_id": "pipeline.gold_sign", "metric_id": body.metric_id},
         client=cortex,
     )
-    if not decision.allowed and decision.reason not in {
-        "gate_unavailable",
-        "gate_task_unknown",
-    }:
-        raise HTTPException(status_code=403, detail=decision.reason)
+    enforce(decision)
     try:
         return gold_sign_metric(
             metric_id=body.metric_id,

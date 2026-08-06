@@ -5,7 +5,7 @@ You are working in **D:\DMS** (Netie DMS), the consumer app.
 ## Boundaries (non-negotiable)
 
 - DMS never `import CortexOS`. HTTP via `packages/cortex_client` only.
-- Pin `cortex-contract==1.1.0` as a pip dependency; import `canonical_manifest_bytes` from it — never reimplement.
+- Pin `cortex-contract>=1.2.0,<2` via a real wheel; import `canonical_manifest_bytes` from it — never reimplement.
 - Pin cortex-contract major **1**. Engine version floats via compose image tag.
 - One ledger via Cortex append API — no local hash chain in DMS.
 - One Postgres, schemas `cortex` + `dms`, no cross-schema FKs.
@@ -21,7 +21,7 @@ You are working in **D:\DMS** (Netie DMS), the consumer app.
 apps/api          FastAPI
 apps/ui           Vite SPA product chrome
 packages/core     ports (no policy)
-packages/cortex_client   HTTP client from contract/openapi-1.1.0.json
+packages/cortex_client   HTTP client from contract/openapi-1.2.0.json
 packages/executor duckdb / manifest mint / submit (only duckdb.execute)
 packages/ledger   ledger_ref + verify CLI → Cortex HTTP
 contract/         VENDORED from Cortex (never hand-edit)

@@ -36,6 +36,8 @@ class AskResponse(BaseModel):
     contributing_sources: list[dict[str, Any]] = Field(default_factory=list)
     audit_id: str | None = None
     drillthrough_token: str | None = None
+    #: Cortex INS-02 presentation — mapped to envelope.chart in live_ask.
+    chart_spec: dict[str, Any] | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]
@@ -65,11 +67,8 @@ class AskResponse(BaseModel):
                     flat.append({k: v for k, v in r.items() if k != "additional_properties"})
             data["rows"] = flat
         route = data.get("route")
-        badge_l = (
-            data.get("badge").lower()
-            if isinstance(data.get("badge"), str)
-            else ""
-        )
+        badge = data.get("badge")
+        badge_l = badge.lower() if isinstance(badge, str) else ""
         if route in ("abstain", "blocked", "needs_clarification") or badge_l in (
             "abstain",
             "blocked",

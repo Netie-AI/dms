@@ -10,8 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 def run_migrations(database_url: str) -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     root = Path(__file__).resolve().parents[3]  # repo root
     ini = root / "alembic.ini"

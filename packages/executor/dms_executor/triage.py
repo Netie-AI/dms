@@ -240,7 +240,9 @@ def shape_fingerprint(grid: list[list[Any]], header_idx: int | None) -> ShapeFin
 
 _FIXES = {
     "TABULAR_CLEAN": "Ready for bronze ingest as-is.",
-    "TABULAR_DIRTY": "Normalize types (strip thousands separators), drop trailing notes, then re-ingest.",
+    "TABULAR_DIRTY": (
+        "Normalize types (strip thousands separators), drop trailing notes, then re-ingest."
+    ),
     "MULTI_TABLE": "Split the sheet into one table per blank-band region before ingest.",
     "HEADERLESS": "Add a header row with column names, or map columns in Repair Desk.",
     "UNSTRUCTURED": "Routes to blob tier + document index — will not become a table.",

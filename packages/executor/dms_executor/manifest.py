@@ -10,11 +10,8 @@ import hashlib
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import uuid4
 
 import httpx
 from cortex_contract.execution import Manifest, canonical_manifest_bytes
@@ -126,14 +123,38 @@ class ManifestMinter:
         pad = "=" * (-len(seed_b64) % 4)
         seed = base64.urlsafe_b64decode(seed_b64 + pad)
         key = Ed25519PrivateKey.from_private_bytes(seed)
-        not_after = datetime.fromisoformat(body["not_after"].replace("Z", "+00:00"))
+        not_after_raw = body["not_after"]
+        if isinstance(not_after_raw, (int, float)):
+            not_after = datetime.fromtimestamp(not_after_raw, tz=UTC)
+        else:
+            not_after = datetime.fromisoformat(str(not_after_raw).replace("Z", "+00:00"))
         self._key = IntermediateKey(
             kid=body["kid"],
             private_key=key,
             not_after=not_after,
             _seed_b64=seed_b64,
         )
+        self._notify_cortex_jwks_refresh()
         return self._key
+
+    def _notify_cortex_jwks_refresh(self) -> None:
+        """Ask Cortex to cold-refresh JWKS so the new intermediate verifies."""
+        cortex_url = (
+            os.environ.get("CORTEX_URL") or os.environ.get("CORTEX_API_URL") or "http://127.0.0.1:8010"
+        ).rstrip("/")
+        try:
+            r = self._http.post(f"{cortex_url}/v1/contract/jwks/refresh", timeout=3.0)
+            if r.status_code >= 400:
+                logger.warning(
+                    "Cortex JWKS refresh returned %s — restart Cortex or POST "
+                    "/v1/contract/jwks/refresh",
+                    r.status_code,
+                )
+            else:
+                kids = (r.json() or {}).get("kids") or []
+                logger.info("Cortex JWKS refreshed (%d kids)", len(kids))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cortex JWKS refresh failed: %s", exc)
 
     def _ensure_key(self) -> IntermediateKey:
         now = datetime.now(UTC)
@@ -247,10 +268,20 @@ def should_rement(code: str) -> bool:
 
 _HOSTILE_PATTERNS = (
     re.compile(r"\bread_parquet\s*\(", re.I),
-    re.compile(r"\bread_csv\s*\(", re.I),
+    re.compile(r"\bread_csv(?:_auto)?\s*\(", re.I),
     re.compile(r"\bread_json(?:_auto)?\s*\(", re.I),
     re.compile(r"\bparquet_scan\s*\(", re.I),
     re.compile(r"\bATTACH\b", re.I),
+    re.compile(r"\bCOPY\b", re.I),
+    re.compile(r"\bINSTALL\b", re.I),
+    re.compile(r"\bLOAD\b", re.I),
+    re.compile(r"\bPRAGMA\b", re.I),
+    re.compile(r"\bCREATE\b", re.I),
+    re.compile(r"\bDROP\b", re.I),
+    re.compile(r"\bDELETE\b", re.I),
+    re.compile(r"\bUPDATE\b", re.I),
+    re.compile(r"\bINSERT\b", re.I),
+    re.compile(r"\bchr\s*\(", re.I),
 )
 
 
@@ -262,13 +293,33 @@ def reject_hostile_chat_sql(sql: str) -> None:
     """
     for pat in _HOSTILE_PATTERNS:
         if pat.search(sql):
+            code = (
+                "statement_not_allowed"
+                if pat.pattern
+                in {
+                    r"\bCOPY\b",
+                    r"\bINSTALL\b",
+                    r"\bLOAD\b",
+                    r"\bPRAGMA\b",
+                    r"\bCREATE\b",
+                    r"\bDROP\b",
+                    r"\bDELETE\b",
+                    r"\bUPDATE\b",
+                    r"\bINSERT\b",
+                }
+                else "path_not_allowed"
+            )
             logger.error("%s hostile_sql pattern=%s", _SECURITY, pat.pattern)
-            raise SecurityEvent("path_not_allowed", "hostile file/attach function")
+            raise SecurityEvent(code, "hostile statement or file/attach function")
     # UNNEST name-shadowing: UNNEST(...) AS orders(
     if re.search(r"\bUNNEST\s*\(.*\)\s+AS\s+\w+\s*\(", sql, re.I | re.S):
         logger.error("%s hostile_sql unnest_shadow", _SECURITY)
         raise SecurityEvent("sql_not_analyzable", "unnest name-shadowing")
-
+    # Only allow SELECT / WITH for chat SQL
+    head = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+    if head and head not in {"SELECT", "WITH", "("}:
+        logger.error("%s hostile_sql non_select head=%s", _SECURITY, head)
+        raise SecurityEvent("statement_not_allowed", f"non-select head {head}")
 
 def key_fingerprint(seed_b64: str) -> str:
     """Safe identifier for tests — never the key itself."""

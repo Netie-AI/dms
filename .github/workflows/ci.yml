@@ -62,7 +62,8 @@ jobs:
         run: |
           set -euo pipefail
           found=0
-          for SPEC in contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
+          # Prefer current pin; keep older specs checked when present.
+          for SPEC in contract/openapi-1.2.0.json contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
             HASH="${SPEC}.sha256"
             if [ -f "$SPEC" ]; then
               found=1
@@ -81,6 +82,10 @@ jobs:
           done
           if [ "$found" -eq 0 ]; then
             echo "::error::No vendored OpenAPI — run scripts/sync_contract.py"
+            exit 1
+          fi
+          if [ ! -f contract/openapi-1.2.0.json ]; then
+            echo "::error::Missing current pin contract/openapi-1.2.0.json — run scripts/sync_contract.py"
             exit 1
           fi
           VEC=contract/testvectors/manifest_canonical.jsonl
@@ -107,7 +112,14 @@ jobs:
           sparse-checkout: |
             packages/cortex_contract
           sparse-checkout-cone-mode: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # secrets.GITHUB_TOKEN is scoped to the repo the workflow runs in, so
+          # it cannot read the private Netie-AI/Cortex and the API answers 404
+          # rather than 403. Everything downstream - ruff, mypy, import-linter,
+          # the test suite - sat behind this step and had never run.
+          # This is CI-02 option A. Option C (install the published wheel and
+          # delete this step) is the long-term answer, and must not land before
+          # Netie-AI/Cortex#5 or a packaging bug presents as a crypto bug.
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -117,8 +129,9 @@ jobs:
 
       - name: Install packages
         run: |
-          python -m pip install --upgrade pip wheel
-          pip install -e "./_cortex/packages/cortex_contract"
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
           pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger"
           pip install -e ".[dev]"
           pip install fastapi uvicorn httpx pydantic-settings cryptography
@@ -135,6 +148,11 @@ jobs:
           lint-imports
 
       - name: Invariant + unit tests
+        env:
+          # Control-plane suite hard-fails without Postgres (R-0002). This job has
+          # no compose service yet; skip is an explicit decision, not a silent green.
+          # Add a postgres service job before flipping this off.
+          DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
           python -m pytest tests/ -q --tb=short

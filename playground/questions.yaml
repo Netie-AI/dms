@@ -1,0 +1,73 @@
+# Playground question bank — EDIT THIS FILE and re-run playground_ask.py
+#
+# expect_layer (product ladder today):
+#   L0  certified / verified SQL asset
+#   L1  governed metric
+#   L2  FreeRoute SQL (numbers from executed rows)
+#   L3  doc-RAG prose + citations only (NO aggregates)
+#   L4* steward automation / trusted-asset hit after curation (EPIC-019+) — aspirational label
+#   L5* multi-step verify / Genie-class agent loop (Cortex P21 research) — aspirational label
+# * L4/L5 are NOT badges yet. Today they must land as L0/L1/L2 or abstain.
+#
+# tweak: change `prompt` only; keep `id` stable so diffs are easy.
+
+questions:
+  - id: l0_top5_revenue
+    expect_layer: L0
+    note: "Should hit certified synonym if Cortex pack loaded (cq_sales_top5_value)"
+    prompt: "Top 5 selling SKUs by revenue"
+
+  - id: l0_synonym_tweak
+    expect_layer: L0
+    note: "Tweak wording — curated synonym path; should stay L0 if asset synonyms cover it"
+    prompt: "best 5 selling SKUs by revenue"
+
+  - id: l2_top3_category_sales
+    expect_layer: L2
+    note: "Scoped to Sales sheet — wrong sheet = fail. Numbers must come from SQL rows."
+    prompt: "In pg_sales.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?"
+
+  - id: l2_wrong_sheet_trap
+    expect_layer: L2
+    note: "Must NOT answer from Wide_Fill. If it does under green badge, that is a fail."
+    prompt: "In pg_sales.xlsx on the Sales sheet only (ignore Wide_Fill), top 3 categories by sales_value_myr?"
+
+  - id: l2_encoding_beta
+    expect_layer: L2
+    note: "Hard rule 12 — BETA vs SKU-BETA. Empty green is P0; abstain ok for now."
+    prompt: "In pg_sales.xlsx Sales, total sales_value_myr for sku BETA?"
+
+  - id: l2_encoding_kl
+    expect_layer: L2
+    note: "KL vs Kuala Lumpur encoding"
+    prompt: "In pg_sales.xlsx Sales, total sales_value_myr for city KL?"
+
+  - id: l2_malay_top3
+    expect_layer: L2
+    note: "Malay paraphrase — tweak freely; must not invent totals"
+    prompt: "Dalam pg_sales.xlsx helaian Sales, 3 kategori teratas ikut sales_value_myr?"
+
+  - id: l2_synonym_product_family
+    expect_layer: L2
+    note: "Synonym pressure without regex — product family ~= category"
+    prompt: "In pg_sales.xlsx Sales, top 3 product families by MYR sales?"
+
+  - id: l3_penalty_quote
+    expect_layer: L3
+    note: "Must quote 5,000.00 from policy note — not invent a warehouse sum"
+    prompt: "What is the late delivery penalty in the playground policy note?"
+
+  - id: l3_rag_sum_trap
+    expect_layer: L3
+    note: "F26 trap — if L3 invents category totals from docs, E9 must abstain"
+    prompt: "From the documents, summarize the top 3 category sales totals without running SQL."
+
+  - id: l4_trusted_asset_hope
+    expect_layer: L4
+    note: "Aspirational — after VQ-02 steward register, this should become L0/L1. Today: L2 or abstain."
+    prompt: "Show me our verified top electronics revenue by city for the playground Space."
+
+  - id: l5_multistep_hope
+    expect_layer: L5
+    note: "Aspirational Genie-class — delayed SKUs then revenue impact. Today: clarify/abstain or single L2, not invented DAG."
+    prompt: "Which delayed SKUs in pg_shipments matter most, and what is their Sales revenue in KL?"

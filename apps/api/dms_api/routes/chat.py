@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from cortex_client import compliance_gate
-from dms_core.ask import AskServiceError
+from dms_core.ask import AskServiceError, GroundingRefused
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
 
 _SOFT_GATE = frozenset({"gate_unavailable", "gate_task_unknown"})
+
+#: Cortex names the offending table in the refusal; lift it so the message can
+#: tell the customer which file to add rather than which manifest complained.
+_MANIFEST_TABLE_RE = re.compile(r"table '([^']+)' is not named by this manifest")
+
+
+def _missing_table(detail: str | None) -> str | None:
+    m = _MANIFEST_TABLE_RE.search(detail or "")
+    return m.group(1) if m else None
+
 _POLICY_CODES = frozenset(
     {
         "pool_mismatch",
@@ -38,17 +49,54 @@ class AskBody(BaseModel):
     question: str = Field(min_length=1)
     space_id: str | None = None
     session_id: str | None = None
+    #: Warehouse tables the user ticked in Studio. Narrows the session manifest,
+    #: so the grounding is enforced by Cortex rather than hinted to the model.
+    #: Capped because a "scope" listing everything is not a scope, and the list
+    #: reaches manifest minting.
+    grounded_tables: list[str] | None = Field(default=None, max_length=32)
 
 
 class DrillthroughBody(BaseModel):
     token: str = Field(min_length=1)
 
 
+def _space_refusal_envelope(
+    *,
+    space_id: str,
+    space_name: str | None,
+    missing_table: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Render a Space-boundary refusal as an answer, not as an error.
+
+    dms#2 acceptance: a question needing a table this Space has no grant for
+    returns ``abstained: true`` with a reason on the envelope. A green badge
+    over a refusal is a P0, and so is a raw engine error where an answer goes.
+    """
+    from dms_api.wiring import build_validated_envelope
+
+    where = f"in {space_name}" if space_name else "in this Space"
+    subject = f"{missing_table} data" if missing_table else "data"
+    return build_validated_envelope(
+        answer_id=f"ans_refused_{space_id[:8]}",
+        text=(
+            f"I can't answer that {where}. It needs {subject}, which this Space "
+            f"has no access to. Ask in a Space that holds it, or request the grant."
+        ),
+        badge="ABSTAIN",
+        abstained=True,
+        assumptions=["refused by the Space boundary"],
+        ask_mode="live",
+        space_id=space_id,
+        session_id=session_id,
+    )
+
+
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     """E6 — demo_fallback_used must set an unmissable banner flag."""
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_api.wiring import build_validated_envelope
 
-    env = build_answer_envelope(
+    return build_validated_envelope(
         answer_id=str(env.get("answer_id") or "ans_fallback"),
         text=str(env.get("text") or ""),
         badge=str(env.get("badge") or "ABSTAIN"),
@@ -70,8 +118,6 @@ def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
         suggestions=list(env.get("suggestions") or []),
         route=env.get("route"),
     )
-    assert_envelope_valid(env)
-    return env
 
 
 @router.post("/ask")
@@ -116,8 +162,58 @@ def chat_ask(
             body.question,
             space_id=body.space_id,
             session_id=body.session_id,
+            tables=body.grounded_tables,
         )
+    except GroundingRefused as exc:
+        # Refusing is the fix, not the failure: this used to widen the manifest
+        # to the whole demo warehouse while the UI read "Grounded in 1 file".
+        # Demo fallback must not catch this either — answering from demo numbers
+        # after refusing the requested scope is the same lie in a new costume.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "ungrantable_tables": list(exc.ungrantable),
+                "grantable_tables": list(exc.grantable),
+            },
+        ) from exc
     except AskServiceError as exc:
+        # A grounded question that needs a table the user did not tick is not a
+        # failure — it is the scope working. Saying so beats handing back
+        # "path_not_allowed: table 'alerts' is not named by this manifest",
+        # which reads as a bug rather than as the answer to what was asked.
+        if exc.code == "path_not_allowed" and body.grounded_tables:
+            missing = _missing_table(exc.detail)
+            chosen = ", ".join(body.grounded_tables)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "outside_grounded_scope",
+                    "message": (
+                        f"That needs {missing or 'a table'}, which is not in the "
+                        f"{len(body.grounded_tables)} file(s) you grounded this question in "
+                        f"({chosen}). Widen the selection or clear it to use the whole Space."
+                    ),
+                    "grounded_tables": list(body.grounded_tables),
+                    "required_table": missing,
+                },
+            ) from exc
+
+        # The Space boundary refusing is the control working, and dms#2 requires
+        # it to arrive as an envelope with abstained: true and a reason - not as
+        # a raw "path_not_allowed / Unexpected status code: 403", which reads as
+        # a crash. This is the half of the demo that must look deliberate.
+        if exc.code == "path_not_allowed" and body.space_id:
+            space = store.get(body.space_id)
+            missing = _missing_table(exc.detail)
+            return _space_refusal_envelope(
+                space_id=body.space_id,
+                space_name=getattr(space, "name", None),
+                missing_table=missing,
+                session_id=body.session_id,
+            )
+
         # Never mask policy refusals with demo numbers (0 confidently wrong).
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)
@@ -148,6 +244,14 @@ def chat_drillthrough(
     cortex: CortexDep,
 ) -> dict[str, Any]:
     """T7 — show contributing rows for a live answer token (contract 1.2)."""
+    decision = compliance_gate(
+        action="chat.drillthrough",
+        metadata={"task_id": "chat.drillthrough", "token_prefix": body.token[:12]},
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+
     if cortex is None:
         raise HTTPException(
             status_code=503,

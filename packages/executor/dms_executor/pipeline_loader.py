@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
 from dms_core.pipelines import ColumnContract, PipelineContract, PipelineDef
 
 REPO_PIPELINES = Path(__file__).resolve().parents[3] / "pipelines"
@@ -79,7 +78,11 @@ def validate_pipeline_dict(data: dict[str, Any], *, path: str | None = None) -> 
                 norm_exp.append({str(k): str(v) for k, v in item.items()})
             else:
                 raise PipelineLoadError("each expectation must be a mapping")
-        contract = PipelineContract(columns=cols, dedup_key=[str(x) for x in dedup], expectations=norm_exp)
+        contract = PipelineContract(
+            columns=cols,
+            dedup_key=[str(x) for x in dedup],
+            expectations=norm_exp,
+        )
 
     if target.startswith("silver.") and lineage == "propagate" and contract is None:
         # silver without contract is allowed for lineage-only joins, but rare

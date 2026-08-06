@@ -1,6 +1,6 @@
 import type { ContributingSource } from "@/lib/types";
 
-/** Fixture sheet for U0/U1 — contributing cells highlighted. */
+/** Demo-only fixture sheet — never use for live answer provenance. */
 export type PreviewCell = {
   row: number;
   col: string;
@@ -56,9 +56,6 @@ export const PREVIEW_SHEETS: Record<string, PreviewSheet> = {
   ref_erp_inv: buildSheet("ref_erp_inv", "erp.public.invoices", "D", [1, 4, 9, 14, 20, 28]),
 };
 
-export function sheetForSource(src: ContributingSource): PreviewSheet {
-  return (
-    PREVIEW_SHEETS[src.ref_id] ??
-    buildSheet(src.ref_id, src.container, "F", [2, 3, 4])
-  );
+export function sheetForSource(src: ContributingSource): PreviewSheet | null {
+  return PREVIEW_SHEETS[src.ref_id] ?? null;
 }

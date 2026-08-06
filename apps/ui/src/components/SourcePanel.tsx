@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { PreviewGrid } from "@/components/PreviewGrid";
 import { useApp } from "@/context/AppContext";
+import { postReveal } from "@/lib/api";
+import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
 
 function formatMoney(n: number) {
@@ -18,8 +21,9 @@ export function SourcePanel() {
     focusedSourceId,
     setFocusedSourceId,
     selectedValueId,
-    fixtureAnswer,
+    latestAnswer: answer,
   } = useApp();
+  const [revealNote, setRevealNote] = useState<string | null>(null);
 
   if (!sourcePanelOpen) {
     return (
@@ -41,6 +45,18 @@ export function SourcePanel() {
   const sorted = [...contributingSources].sort(
     (a, b) => b.contribution - a.contribution,
   );
+
+  async function onReveal(uri: string) {
+    setRevealNote(null);
+    try {
+      const result = await postReveal(uri);
+      if (!result.ok) {
+        setRevealNote(result.error || "Could not open path");
+      }
+    } catch (err) {
+      setRevealNote(err instanceof Error ? err.message : "Reveal failed");
+    }
+  }
 
   return (
     <aside className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)]">
@@ -65,12 +81,18 @@ export function SourcePanel() {
         </button>
       </div>
 
-      {selectedValueId && fixtureAnswer && (
+      {selectedValueId && answer && (
         <p className="border-b border-[var(--color-line)] bg-[var(--color-accent-soft)] px-3 py-2 text-xs text-[var(--color-accent)]">
           Tracing{" "}
           <strong>
-            {fixtureAnswer.values.find((v) => v.id === selectedValueId)?.label}
+            {answer.values.find((v) => v.id === selectedValueId)?.label}
           </strong>
+        </p>
+      )}
+
+      {revealNote && (
+        <p className="border-b border-[var(--color-line)] px-3 py-2 text-xs text-[var(--color-ink-muted)]">
+          {revealNote}
         </p>
       )}
 
@@ -88,6 +110,10 @@ export function SourcePanel() {
                   ? ((src.contribution / totalContribution) * 100).toFixed(1)
                   : "0";
               const open = focusedSourceId === src.ref_id;
+              const isDoc = src.kind !== "sql";
+              const preview =
+                answer?.ask_mode === "demo" && !isDoc ? sheetForSource(src) : null;
+              const canReveal = isFilesystemOriginUri(src.origin_uri);
               return (
                 <li key={src.ref_id}>
                   <button
@@ -98,7 +124,7 @@ export function SourcePanel() {
                     className={`w-full border px-3 py-2.5 text-left transition ${
                       open
                         ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]/40"
-                        : "border-[var(--color-line)] bg-white/50 hover:border-[var(--color-ink-muted)]"
+                        : "border-[var(--color-line)] bg-[var(--color-surface)]/50 hover:border-[var(--color-ink-muted)]"
                     }`}
                   >
                     <p className="text-sm font-medium text-[var(--color-ink)]">
@@ -106,7 +132,10 @@ export function SourcePanel() {
                       {src.member ? ` › ${src.member}` : ""}
                     </p>
                     <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
-                      {src.row_count.toLocaleString()} rows ·{" "}
+                      {isDoc
+                        ? `chunk${src.chunk_index != null ? ` #${src.chunk_index + 1}` : ""}`
+                        : `${src.row_count.toLocaleString()} rows`}
+                      {" · "}
                       {formatMoney(src.contribution)} · {pct}%
                     </p>
                   </button>
@@ -117,14 +146,48 @@ export function SourcePanel() {
                           {src.origin_uri}
                         </p>
                       )}
-                      <PreviewGrid sheet={sheetForSource(src)} />
+                      {preview ? (
+                        <PreviewGrid sheet={preview} />
+                      ) : src.snippet ? (
+                        <p className="border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-3 text-xs leading-relaxed text-[var(--color-ink)]">
+                          {src.snippet}
+                        </p>
+                      ) : (
+                        <p className="border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-4 text-xs text-[var(--color-ink-muted)]">
+                          {isDoc
+                            ? "Document excerpt unavailable for this source."
+                            : "Cell preview unavailable for this source."}
+                        </p>
+                      )}
                       <div className="flex flex-wrap gap-2 text-xs">
-                        <span className="border border-[var(--color-line)] px-2 py-1">
-                          Open original
-                        </span>
-                        <span className="border border-[var(--color-line)] px-2 py-1">
-                          Copy path
-                        </span>
+                        {canReveal ? (
+                          <button
+                            type="button"
+                            className="border border-[var(--color-line)] px-2 py-1 hover:border-[var(--color-ink-muted)]"
+                            onClick={() => void onReveal(src.origin_uri!)}
+                          >
+                            Open original
+                          </button>
+                        ) : (
+                          <span className="border border-[var(--color-line)] px-2 py-1 text-[var(--color-ink-muted)]">
+                            Open original
+                          </span>
+                        )}
+                        {src.origin_uri ? (
+                          <button
+                            type="button"
+                            className="border border-[var(--color-line)] px-2 py-1 hover:border-[var(--color-ink-muted)]"
+                            onClick={() => {
+                              void navigator.clipboard?.writeText(src.origin_uri!);
+                            }}
+                          >
+                            Copy path
+                          </button>
+                        ) : (
+                          <span className="border border-[var(--color-line)] px-2 py-1 text-[var(--color-ink-muted)]">
+                            Copy path
+                          </span>
+                        )}
                       </div>
                     </div>
                   )}

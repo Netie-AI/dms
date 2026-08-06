@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-
 from dms_core.pipelines import ContractProposal
+
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.pipeline_loader import PipelineLoadError
 
 
@@ -44,15 +45,16 @@ def infer_contract(
             """,
             [schema, table],
         ).fetchall()
-        biz = [(c, t) for c, t in cols if c not in ("_src", "_ingest_id", "_src_row", "_src_ref_id")]
-        n = int(con.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"').fetchone()[0])
+        _provenance = ("_src", "_ingest_id", "_src_row", "_src_ref_id")
+        biz = [(c, t) for c, t in cols if c not in _provenance]
+        n = scalar_int(con.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"').fetchone())
         null_rates: dict[str, float] = {}
         columns: dict[str, dict[str, Any]] = {}
         for col, dtype in biz:
-            nn = int(
+            nn = scalar_int(
                 con.execute(
                     f'SELECT COUNT("{col}") FROM "{schema}"."{table}"'
-                ).fetchone()[0]
+                ).fetchone()
             )
             rate = 1.0 - (nn / n) if n else 0.0
             null_rates[col] = round(rate, 4)
@@ -100,15 +102,15 @@ def _candidate_keys(
         return []
     singles: list[list[str]] = []
     for col in cols:
-        distinct = int(
+        distinct = scalar_int(
             con.execute(
                 f'SELECT COUNT(DISTINCT "{col}") FROM "{schema}"."{table}"'
-            ).fetchone()[0]
+            ).fetchone()
         )
-        nulls = int(
+        nulls = scalar_int(
             con.execute(
                 f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE "{col}" IS NULL'
-            ).fetchone()[0]
+            ).fetchone()
         )
         if distinct == n and nulls == 0:
             singles.append([col])
@@ -118,10 +120,10 @@ def _candidate_keys(
     pairs: list[list[str]] = []
     for i, a in enumerate(cols[:6]):
         for b in cols[i + 1 : 6]:
-            distinct = int(
+            distinct = scalar_int(
                 con.execute(
                     f'SELECT COUNT(DISTINCT ("{a}", "{b}")) FROM "{schema}"."{table}"'
-                ).fetchone()[0]
+                ).fetchone()
             )
             if distinct == n:
                 pairs.append([a, b])

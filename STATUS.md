@@ -1,53 +1,56 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-07-30  
-**North star:** [DMS_TECHNICAL_ARCHITECTURE.md](DMS_TECHNICAL_ARCHITECTURE.md) §15  
+**Last updated:** 2026-08-05 afternoon  
 **Remote:** https://github.com/Netie-AI/dms
 
-## Rule
-
-Architecture sequence T3 → T7-at-ingest → T4 → T5/T6 → T8 → **T12 → T13**.  
-`demo_ask` = offline/fallback only (`DMS_ASK_MODE=demo` or live fail + `DMS_DEMO_FALLBACK=1`).
-
-## Progress
-
-| ID | Status |
-|----|--------|
-| T0–T2 | done |
-| C3/C4-min | done (Cortex) |
-| T3 Postgres Spaces + seed + migrate-on-boot | done (memory fallback if no DB) |
-| Live ask default + smoke script | done |
-| T7 bronze `_src[]` + `_ingest_id` + Studio | done (upgraded to Appendix A array) |
-| T4 amend HTTP + F5 HTTP gate call-through | done (soft when gate catalog miss) |
-| T5 lite actor headers | done |
-| T6 Caddy-only compose | done |
-| T8 Library/Studio/Amend/Audit UI | done (Runs/Admin still stub; UI pages may be uncommitted locally) |
-| **T12 promote pipelines** | **done** — `a74ec80` |
-| **T13 ingest triage** | **done** — `ba744e6` |
-| T14 signed answer receipts + verify | next (plan only) |
-| T13b Repair Desk | after T13 fingerprints (plan only) |
-| T15 contribution rollup + export | after lineage + preferably T14 |
-| T9–T11 external/multi-pool/MinIO | demand-gated |
-| C6 | Cortex kickoff packet — after live smoke |
-
-## Commits this session
-
-- `a74ec80` `feat(pipelines): contract-gated bronze→silver promotion with quarantine.`
-- `ba744e6` `feat(ingest): sheet triage classifier and honest ingest receipts.`
-
-## Try
+## Direct interact
 
 ```powershell
-cd D:\DMS
-$env:DMS_ASK_MODE="live"; $env:DMS_DEMO_FALLBACK="1"
-python -m uvicorn dms_api.app:app --app-dir apps/api --reload --port 8090
-
-# Stress gates
-python -m pytest -q --tb=line
-python -c "from importlinter.cli import lint_imports; raise SystemExit(lint_imports())"
-python scripts/smoke_live_ask.py
+D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -OpenBrowser
+python D:\DMS\scripts\verify_demo_live.py
+python D:\DMS\scripts\verify_l2_vs_l1.py
+# Hostile break-test (oracle no stack; live expects RED on synonym/empty-filter/Malay/RAG-sum)
+python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
+pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants\test_envelope.py -q
+# Playground (tweak prompts in playground/my_questions.yaml)
+python D:\DMS\scripts\gen_playground_data.py
+python D:\DMS\scripts\playground_ask.py --list
+# python D:\DMS\scripts\playground_ask.py --space <id>   # after upload playground/data/
 ```
 
-## Design
+Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md`  
+AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
-Paper / navy / teal / Figtree+Fraunces.
+## Shipped / verified
+
+| ID | Result |
+|----|--------|
+| RAG-04 (#23 CLOSED) | envelope + SourcePanel/scope chip |
+| RAG-05 (#22 CLOSED) | ask adversarial green (8 CP + 1 unit) |
+| REVEAL-01 (#26 CLOSED) | `/v1/library/reveal` + SourcePanel Open original |
+| Dense embed | lexical+char-trigram in `search_chunks` |
+| SPACE-UI (#25) | ScopeChip live count; SpacesPage sources |
+| E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
+| E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
+| Playground | `playground/` + `playground_ask.py` — edit `my_questions.yaml`; L4/L5 labels only (P-DMS-33) |
+| SCORE-03 (#42) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
+| Demo | `verify_demo_live.py` **31/31** live (2026-08-06) — but see #43 |
+
+## Open next
+
+| ID | Work |
+|----|------|
+| **RUN NOW** | VQ-01 #39 → VQ-02 #40 (categoty / trusted Sales totals) |
+| #43 DEMO-COLD-01 | **first** run after cold start refuses fresh upload (403); warm runs pass — needs PRD routing |
+| Epics | #33 EPIC-017 **N**; #35 EPIC-018 **N**; #38 EPIC-019 **N** (F32) |
+| L4/L5 | Aspiration only (P-DMS-33) — **NEEDS-YOU** confirm meanings or decline badges |
+| After | EPIC-019 after 017/018; not EPIC-023 first |
+| F31 | Chooser = Cortex P21; ask = linear verify + hard-rule-12 empty demote |
+| #27 DUAL-EVAL-01 | optional Top-5/edge vs AirGPT (no merge) |
+| #28 ENV-E4 | **post-demo** - reorder/low-stock E4; parent #8 |
+| Cortex#34 | EPIC-015 PARTIAL; RAG-01..03 open |
+| EPIC-016 #29 | Demo-2 Excel Copilot; **build later** |
+
+## Agent models
+
+PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.

@@ -10,15 +10,37 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from dms_api.middleware_actor import DevActorMiddleware
 from dms_api.migrate import run_migrations
-from dms_api.routes import amend, audit, chat, health, library, ping, pipelines, spaces, studio
+from dms_api.routes import (
+    admin,
+    amend,
+    audit,
+    chat,
+    health,
+    library,
+    ontology,
+    ping,
+    pipelines,
+    runs,
+    spaces,
+    studio,
+    trust,
+)
 from dms_api.settings import get_settings
+from dms_api.store.binding import StoreBinding
 from dms_api.store.memory import DemoSpaceStore
 from dms_api.wiring import build_ask_service
 
 logger = logging.getLogger(__name__)
 
 
-def _build_space_store(settings):
+def _build_space_store(settings) -> tuple[object, StoreBinding]:
+    """Bind the Spaces catalog and report which backend actually answered.
+
+    The fallback stays — an unreachable Postgres should not stop the API from
+    serving reads — but it stops being invisible. The returned binding is what
+    ``/health`` and every ``persisted`` field read, so a degraded store can no
+    longer present itself as a durable one.
+    """
     if settings.database_url:
         try:
             from dms_core.control_plane.pg_spaces import PostgresSpaceStore
@@ -30,15 +52,19 @@ def _build_space_store(settings):
             )
             # Probe
             store.list_spaces()
-            return store
+            return store, StoreBinding.postgres()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Postgres spaces unavailable (%s); memory fallback", exc)
-    return DemoSpaceStore.seeded()
+            return DemoSpaceStore.seeded(), StoreBinding.memory(
+                configured=True, reason=str(exc)[:200]
+            )
+    return DemoSpaceStore.seeded(), StoreBinding.memory(configured=False)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    migrate_error: str | None = None
     if settings.database_url:
         try:
             run_migrations(settings.database_url)
@@ -46,9 +72,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             seed_demo_tenant(settings.database_url)
         except Exception as exc:  # noqa: BLE001
+            # Still non-fatal — a bad DATABASE_URL should not make the product
+            # unstartable — but the reason now reaches the binding, so /health
+            # reports "Postgres asked for, not in use, here is why" instead of a
+            # warning line and a boolean that says everything is fine.
+            migrate_error = str(exc)[:200]
             logger.warning("migrate/seed skipped: %s", exc)
 
-    app.state.space_store = _build_space_store(settings)
+    store, binding = _build_space_store(settings)
+    if migrate_error and not binding.persistent:
+        binding = StoreBinding.memory(
+            configured=True, reason=binding.reason or f"migrate/seed failed: {migrate_error}"
+        )
+    app.state.space_store = store
+    app.state.space_store_binding = binding
     cortex = CortexClient(settings.cortex_url)
     app.state.cortex = cortex
     ask = build_ask_service(cortex)
@@ -89,6 +126,10 @@ def create_app() -> FastAPI:
     app.include_router(amend.router)
     app.include_router(audit.router)
     app.include_router(library.router)
+    app.include_router(ontology.router)
+    app.include_router(trust.router)
+    app.include_router(runs.router)
+    app.include_router(admin.router)
     return app
 
 

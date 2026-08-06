@@ -1,0 +1,40 @@
+---
+description: Netie agent model routing — Grok 4.5 high for PRD/epic/ticket/verify; Composer 2.5 for research
+alwaysApply: true
+---
+
+# Agent model routing (founder lock)
+
+Parent agent MUST pass `model` on every Task/subagent call. Do not inherit casually.
+
+## Always Grok 4.5 high — `cursor-grok-4.5-high`
+
+Use **constantly** for prompt sanity, task cut, and slice quality:
+
+| Role | Why |
+|---|---|
+| `prd-agent` | Feedback intake, epic slice, ledger |
+| `epic-agent` | Tickets, acceptance, completeness |
+| `ticket-runner` | Build against acceptance |
+| Verifier / judge / independent re-check / close decision | Final truth |
+
+Also use Grok when: confidence is low, Composer output conflicts with CLAUDE.md / STATUS / issue acceptance, or you are about to close a GitHub issue.
+
+## Composer 2.5 — `composer-2.5` (research / gather only)
+
+Heavy web search, source gathering, explore/file maps, "where is X", parallel scan, other non-decision gather work.
+
+**Never** Composer for: `prd-agent`, `epic-agent`, `ticket-runner`, or final verify/close.
+
+## Unsure → Grok rechecks Composer
+
+If a Composer (or any research) answer is thin, hedged, or "less confidence":
+
+1. Do **not** ship or close on it.
+2. Re-ask as verifier/judge with **Grok 4.5 high** (question the claim; recheck against repo + issue body).
+3. Prefer Grok's verdict when they disagree.
+
+```
+explore/web (Composer 2.5)  →  PRD/epic/ticket (Grok 4.5 high)
+Composer draft              →  Grok verify if unsure / before close
+```

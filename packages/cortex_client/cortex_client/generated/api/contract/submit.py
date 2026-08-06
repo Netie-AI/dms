@@ -1,18 +1,14 @@
 from http import HTTPStatus
-from typing import Any, cast
-from urllib.parse import quote
+from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
-from ...types import Response, UNSET
 from ... import errors
-
+from ...client import AuthenticatedClient, Client
 from ...models.http_validation_error import HTTPValidationError
 from ...models.query_result import QueryResult
 from ...models.submit_request import SubmitRequest
-from typing import cast
-
+from ...types import Response
 
 
 def _get_kwargs(
@@ -79,7 +75,7 @@ def sync_detailed(
 ) -> Response[HTTPValidationError | QueryResult]:
     """ Contract Submit
 
-     Submit a plan under a signed session manifest.
+     Submit a plan under a signed session manifest (C4).
 
     Args:
         body (SubmitRequest):
@@ -112,7 +108,7 @@ def sync(
 ) -> HTTPValidationError | QueryResult | None:
     """ Contract Submit
 
-     Submit a plan under a signed session manifest.
+     Submit a plan under a signed session manifest (C4).
 
     Args:
         body (SubmitRequest):
@@ -140,7 +136,7 @@ async def asyncio_detailed(
 ) -> Response[HTTPValidationError | QueryResult]:
     """ Contract Submit
 
-     Submit a plan under a signed session manifest.
+     Submit a plan under a signed session manifest (C4).
 
     Args:
         body (SubmitRequest):
@@ -173,7 +169,7 @@ async def asyncio(
 ) -> HTTPValidationError | QueryResult | None:
     """ Contract Submit
 
-     Submit a plan under a signed session manifest.
+     Submit a plan under a signed session manifest (C4).
 
     Args:
         body (SubmitRequest):

@@ -1,18 +1,14 @@
 from http import HTTPStatus
-from typing import Any, cast
-from urllib.parse import quote
+from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
-from ...types import Response, UNSET
 from ... import errors
-
+from ...client import AuthenticatedClient, Client
 from ...models.answer import Answer
 from ...models.ask_request import AskRequest
 from ...models.http_validation_error import HTTPValidationError
-from typing import cast
-
+from ...types import Response
 
 
 def _get_kwargs(
@@ -79,7 +75,7 @@ def sync_detailed(
 ) -> Response[Answer | HTTPValidationError]:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):
@@ -112,7 +108,7 @@ def sync(
 ) -> Answer | HTTPValidationError | None:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):
@@ -140,7 +136,7 @@ async def asyncio_detailed(
 ) -> Response[Answer | HTTPValidationError]:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):
@@ -173,7 +169,7 @@ async def asyncio(
 ) -> Answer | HTTPValidationError | None:
     """ Contract Ask
 
-     Answer a governed question (DMS ask plane).
+     Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
         body (AskRequest):

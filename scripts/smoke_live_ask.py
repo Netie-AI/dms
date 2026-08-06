@@ -1,4 +1,4 @@
-"""Smoke: mint → session_bind → ask against Cortex (C4-min live flip).
+"""Smoke: mint → JWKS refresh → session_bind → ask against Cortex.
 
 Requires Cortex :8010 + OpenVault :5000. Exit 0 on success.
 Does not import CortexOS.
@@ -18,9 +18,10 @@ from dms_executor import Executor
 def main() -> int:
     cortex_url = os.environ.get("CORTEX_URL", "http://127.0.0.1:8010")
     ov = os.environ.get("OPENVAULT_URL", "http://127.0.0.1:5000")
+    os.environ.setdefault("OPENVAULT_HOME", r"D:\OpenVault\.openvault")
     print(f"CORTEX_URL={cortex_url} OPENVAULT_URL={ov}")
     cortex = CortexClient(cortex_url)
-    exe = Executor(cortex=cortex)
+    exe = Executor(cortex=cortex, openvault_url=ov)
     try:
         exe.startup()
     except Exception as exc:  # noqa: BLE001
@@ -47,6 +48,17 @@ def main() -> int:
         )
         print(f"ask abstained={ans.abstained} badge={ans.badge}")
         print((ans.answer or "")[:240])
+        if ans.abstained:
+            print("FAIL: answer abstained")
+            return 1
+        sql_used = getattr(ans, "sql_used", None)
+        token = getattr(ans, "drillthrough_token", None)
+        if sql_used and not token:
+            print("FAIL: sql_used present but drillthrough_token missing")
+            return 1
+        if token:
+            print(f"drillthrough_token present ({len(str(token))} chars)")
+        print("OK live smoke")
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"FAIL: {exc}")

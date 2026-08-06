@@ -6,14 +6,14 @@ from pathlib import Path
 
 import duckdb
 import pytest
-import yaml
-
 from dms_core.pipelines import GoldMetricDef
 from dms_executor.bronze import write_bronze_rows
 from dms_executor.contract_infer import infer_contract
 from dms_executor.demo_warehouse import ensure_demo_warehouse
-from dms_executor.lake_schema import ensure_lake_schemas
-from dms_executor.pipeline_loader import PipelineLoadError, load_pipeline_yaml, validate_pipeline_dict
+from dms_executor.pipeline_loader import (
+    PipelineLoadError,
+    load_pipeline_yaml,
+)
 from dms_executor.promote import run_promote, sign_gold_metric
 
 
@@ -49,7 +49,7 @@ lineage: propagate
 contract:
   columns:
     invoice_date: {type: date, required: true}
-    amount: {type: decimal(18,2), required: true, min: 0}
+    amount: {type: "decimal(18,2)", required: true, min: 0}
     region: {type: text, required: true}
     invoice_no: {type: text, required: true}
     line_no: {type: integer, required: true}
@@ -122,7 +122,7 @@ join_on: [invoice_no, line_no]
 contract:
   columns:
     invoice_date: {type: date, required: true}
-    amount: {type: decimal(18,2), required: true, min: 0}
+    amount: {type: "decimal(18,2)", required: true, min: 0}
     region: {type: text, required: true}
     invoice_no: {type: text, required: true}
     line_no: {type: integer, required: true}
@@ -150,7 +150,7 @@ target: silver.sales
 sources: [bronze.sales_raw]
 contract:
   columns:
-    amount: {type: decimal(18,2)}
+    amount: {type: "decimal(18,2)"}
 """
     with pytest.raises(PipelineLoadError, match="lineage"):
         load_pipeline_yaml(bad)
@@ -225,3 +225,57 @@ def test_example_pipeline_yaml_loads():
     pipe = load_pipeline_yaml(text, path=str(root))
     assert pipe.target == "silver.sales"
     assert pipe.lineage == "propagate"
+
+
+def test_unmatched_join_rows_are_quarantined_not_silently_dropped(wh: Path):
+    """An INNER JOIN removed unmatched rows upstream of both counters.
+
+    Three A rows against two B rows used to report passed=2, quarantined=0 -
+    one row gone with no reason code, while promote.py's docstring promises
+    rows that fail the contract land in quarantine and are never dropped.
+    """
+    cols_a = ["invoice_no", "line_no", "invoice_date", "amount", "region"]
+    cols_b = ["invoice_no", "line_no", "sku"]
+    rows_a = [
+        ["INV-1", "1", "2026-07-01", "10.00", "North"],
+        ["INV-2", "1", "2026-07-02", "20.00", "South"],
+        ["INV-3", "1", "2026-07-03", "30.00", "East"],  # no partner in B
+    ]
+    rows_b = [
+        ["INV-1", "1", "SKU-A"],
+        ["INV-2", "1", "SKU-B"],
+    ]
+    write_bronze_rows(table="unm_a", columns=cols_a, rows=rows_a, path=wh, ref_id="ref-a")
+    write_bronze_rows(table="unm_b", columns=cols_b, rows=rows_b, path=wh, ref_id="ref-b")
+    yaml_text = """
+target: silver.unmatched_demo
+sources: [bronze.unm_a, bronze.unm_b]
+lineage: propagate
+join_on: [invoice_no, line_no]
+contract:
+  columns:
+    invoice_date: {type: date, required: true}
+    amount: {type: "decimal(18,2)", required: true, min: 0}
+    region: {type: text, required: true}
+    invoice_no: {type: text, required: true}
+    line_no: {type: integer, required: true}
+    sku: {type: text, required: true}
+  dedup_key: [invoice_no, line_no]
+"""
+    receipt = run_promote(load_pipeline_yaml(yaml_text), path=wh)
+
+    assert receipt.source_rows == 3, "every row that set out must be counted"
+    assert receipt.passed == 2
+    assert receipt.quarantined == 1, "the unmatched row must be visible, not gone"
+    assert receipt.counts_by_reason.get("join_unmatched") == 1
+    assert receipt.reconciled, "passed + quarantined must account for every source row"
+
+    con = duckdb.connect(str(wh), read_only=True)
+    try:
+        row = con.execute(
+            "SELECT invoice_no, reason FROM quarantine.silver_unmatched_demo "
+            "WHERE reason = 'join_unmatched'"
+        ).fetchone()
+        assert row is not None and row[0] == "INV-3"
+    finally:
+        con.close()

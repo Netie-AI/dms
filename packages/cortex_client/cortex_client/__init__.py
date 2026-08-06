@@ -33,4 +33,4 @@ __all__ = [
     "ToolRegistryResponse",
 ]
 
-CONTRACT_VERSION = "1.1.0"
+CONTRACT_VERSION = "1.2.0"

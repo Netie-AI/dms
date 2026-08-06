@@ -14,10 +14,11 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    port: Number(process.env.VITE_UI_PORT ?? 3000),
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8090",
+        // Override when running a second stack beside a live one on :8090.
+        target: process.env.VITE_API_TARGET ?? "http://127.0.0.1:8090",
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api/, ""),
       },

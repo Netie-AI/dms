@@ -117,7 +117,19 @@ def test_live_ask_rebinds_on_session_expired(minter: ManifestMinter) -> None:
             self._ask_n += 1
             if self._ask_n == 1:
                 raise RuntimeError("session_expired: binding expired")
-            return AskResponse(answer="ok", badge="session", route="sql", audit_id="a2")
+            # A non-abstaining answer must carry sql_used and a value (E3), the
+            # same as the sibling fake above. The bare `answer="ok"` stub built
+            # an envelope that assert_envelope_valid rightly refuses, so the
+            # rebind path failed on envelope shape instead of on rebinding.
+            return AskResponse(
+                answer="Total revenue was RM 10.00.",
+                badge="certified",
+                sql_used="SELECT 1",
+                rows=[{"revenue_myr": 10.0}],
+                assumptions="fixture",
+                route="sql",
+                audit_id="a2",
+            )
 
     fake = Transient()
     exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
@@ -127,7 +139,9 @@ def test_live_ask_rebinds_on_session_expired(minter: ManifestMinter) -> None:
     assert len(fake.asks) == 2
 
 
-def test_chat_live_mode_pool_mismatch_http(minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chat_live_mode_pool_mismatch_http(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
     fake = FakeCortex(
         submits=[],
         asks=[],
