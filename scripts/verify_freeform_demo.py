@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -162,6 +161,7 @@ DEMO_SET: list[dict[str, Any]] = [
     {
         "id": "ff_hazardous_value",
         "why": "boolean filter + single scalar; a wrong filter shows up as a wrong magnitude",
+        # No join, so no fan-out: summing lots IS the stock value.
         "question": "what is the total stock value in MYR of hazardous inventory?",
         "oracle_sql": """
             SELECT 'hazardous' AS scope,
@@ -169,6 +169,53 @@ DEMO_SET: list[dict[str, Any]] = [
             FROM inventory WHERE is_hazardous
         """,
         "top_n": 1,
+    },
+    {
+        "id": "ff_shipment_cost_by_carrier",
+        "why": "money grouped over a table with a clean grain - shipments is unique per id",
+        "question": "which 3 carriers cost us the most in shipping, in MYR?",
+        "oracle_sql": """
+            SELECT carrier, ROUND(SUM(cost_myr), 2) AS shipping_cost_myr
+            FROM shipments GROUP BY carrier
+            ORDER BY shipping_cost_myr DESC, carrier ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": "SELECT ROUND(SUM(cost_myr), 2) FROM shipments",
+            "why": "carrier costs must sum to total shipping cost",
+        },
+    },
+    {
+        "id": "ff_stock_value_by_category",
+        "why": "the honest sibling of ff_category_sales - stock value, no join, so lots "
+               "are the unit of truth rather than a fan-out hazard",
+        "question": "what is our total stock value in MYR by category? top 3",
+        "oracle_sql": """
+            SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+            FROM inventory GROUP BY category
+            ORDER BY stock_value_myr DESC, category ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": "SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) FROM inventory",
+            "why": "category stock values must sum to total inventory value",
+        },
+    },
+    {
+        "id": "ff_unresolved_alerts_by_severity",
+        "why": "a count rather than money, behind a boolean filter - a dropped WHERE "
+               "shows up as an inflated count instead of a plausible sum",
+        "question": "how many unresolved alerts do we have of each severity?",
+        "oracle_sql": """
+            SELECT severity, COUNT(*) AS alert_count
+            FROM alerts WHERE NOT resolved
+            GROUP BY severity ORDER BY alert_count DESC, severity ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": "SELECT COUNT(*) FROM alerts WHERE NOT resolved",
+            "why": "severity counts must sum to the unresolved total",
+        },
     },
 ]
 
