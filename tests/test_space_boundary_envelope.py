@@ -237,3 +237,132 @@ def test_switching_space_mid_chat_does_not_reuse_the_first_binding(
         "Warehouse Ops was served under the manifest Finance bound first"
     )
     assert then_in_ops["badge"] == "ABSTAIN"
+
+
+# ---------------------------------------------------------------------------
+# The free-form (L2 FreeRoute) half of the boundary.
+#
+# Everything above mints ``badge="certified"`` - the L0 path, where a human
+# wrote the SQL. The demo the founder wants to give is free-form: the model
+# writes the SQL. That path had no boundary coverage at all, and it is the one
+# where the SQL is *chosen at answer time*, so "which tables can this question
+# reach" stops being a property of the pack and becomes a property of the
+# manifest alone.
+#
+# Demoing free-form on a path whose boundary is unproven is the expensive
+# mistake, because every claim made on stage about Spaces is inherited by the
+# answer path just shown.
+# ---------------------------------------------------------------------------
+
+FREEFORM_Q = "rank our outbound movements by value and show the top 3"
+
+
+@dataclass
+class FreeRouteCortex:
+    """A Cortex whose SQL is generated per-question, then manifest-checked.
+
+    Models the L2 route rather than the L0 one: there is no certified asset
+    behind the answer, so the badge comes back as ``generated``. The manifest
+    is the only thing standing between the question and the table.
+    """
+
+    wants_table: str = "transactions"
+    submits: list[Any] = field(default_factory=list)
+    asks: list[Any] = field(default_factory=list)
+    _bound: dict[str, set[str]] = field(default_factory=dict)
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        self._bound[req.manifest.session_id] = set(req.manifest.row_predicates)
+        return QueryResult(ok=True, status="bound", run_id="run-l2")
+
+    def ask(self, req: Any) -> AskResponse:
+        self.asks.append(req)
+        readable = self._bound.get(req.session_id, set())
+        if self.wants_table not in readable:
+            # What the real engine does: the generated SQL is refused because
+            # the manifest does not carry the table, not because a prompt asked
+            # nicely.
+            return AskResponse(
+                answer=(
+                    f"I cannot answer that here - this Space has no access to "
+                    f"{self.wants_table!r}."
+                ),
+                abstained=True,
+                badge="abstain",
+                rows=[],
+                route="refused",
+                audit_id="aud-l2-refused",
+            )
+        return AskResponse(
+            answer="Top 3 outbound movements: 726,158.36 / 581,836.43 / 538,201.10.",
+            abstained=False,
+            badge="generated",  # L2 - the model chose this SQL
+            sql_used=f"SELECT sku, SUM(qty*price) FROM {self.wants_table} LIMIT 3",
+            rows=[
+                {"sku": "SKU-00397", "value_myr": 726158.36},
+                {"sku": "SKU-00183", "value_myr": 581836.43},
+                {"sku": "SKU-00171", "value_myr": 538201.10},
+            ],
+            audit_id="aud-l2-ok",
+            route="generated",
+        )
+
+
+def _freeform_ask(minter: ManifestMinter, *, space_id: str) -> tuple[dict[str, Any], Any]:
+    cortex = FreeRouteCortex()
+    exe = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(FREEFORM_Q, space_id=space_id, session_id=f"ses_l2_{space_id[:8]}")
+    return env, cortex
+
+
+def test_freeform_answers_in_the_space_that_grants_the_table(
+    minter: ManifestMinter,
+) -> None:
+    """R-0005 first: the boundary must not be a blanket refusal of free-form."""
+    env, _ = _freeform_ask(minter, space_id=FINANCE)
+
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED", (
+        f"free-form in a granting Space should certify as L2_VALIDATED, got {env['badge']!r}"
+    )
+    assert env["values"], "a confident free-form answer must carry executed values"
+
+
+def test_freeform_cannot_reach_a_table_the_space_does_not_grant(
+    minter: ManifestMinter,
+) -> None:
+    """The moat, on the path where the model picks the SQL.
+
+    Asserted in two places, because either alone would be a half-truth:
+      - the manifest DMS minted never carried the foreign table (DMS's half), and
+      - the envelope the customer reads is an abstention with no confident badge.
+    """
+    env, cortex = _freeform_ask(minter, space_id=WAREHOUSE_OPS)
+
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN", (
+        f"free-form over an ungranted table must not certify; got {env['badge']!r}"
+    )
+    assert not env.get("values"), "an abstention must not ship values"
+
+    # DMS's half: the manifest never offered the table in the first place.
+    assert cortex.submits, "no manifest was ever submitted"
+    bound = set(cortex.submits[-1].manifest.row_predicates)
+    assert "transactions" not in bound, (
+        f"Warehouse Ops was handed a manifest containing 'transactions': {sorted(bound)}"
+    )
+
+
+def test_freeform_does_not_reuse_the_finance_binding_for_warehouse_ops(
+    minter: ManifestMinter,
+) -> None:
+    """Two Spaces, two sessions - a shared session id would leak the wider one."""
+    fin_env, fin_cortex = _freeform_ask(minter, space_id=FINANCE)
+    ops_env, ops_cortex = _freeform_ask(minter, space_id=WAREHOUSE_OPS)
+
+    fin_session = fin_cortex.submits[-1].manifest.session_id
+    ops_session = ops_cortex.submits[-1].manifest.session_id
+    assert fin_session != ops_session, "both Spaces bound the same session id"
+    assert fin_env["badge"] == "L2_VALIDATED"
+    assert ops_env["badge"] == "ABSTAIN"
