@@ -33,15 +33,18 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
 | E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
 | Playground | `playground/` + `playground_ask.py` — edit `my_questions.yaml`; L4/L5 labels only (P-DMS-33) |
-| SCORE-03 (#42) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
+| SCORE-03 (#42 CLOSED) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
 | Demo | `verify_demo_live.py` **31/31** live (2026-08-06) — but see #43 |
+| Local CI parity | `bash scripts/ci_local.sh all` — CI's gates on Python 3.11 in Docker |
+| Change harness | `python scripts/try_changes.py [--live]` — 41 checks, each states what it does *not* prove |
 
 ## Open next
 
 | ID | Work |
 |----|------|
-| **RUN NOW** | VQ-01 #39 → VQ-02 #40 (categoty / trusted Sales totals) |
-| #43 DEMO-COLD-01 | **first** run after cold start refuses fresh upload (403); warm runs pass — needs PRD routing |
+| **RUN NOW** | VQ-01 #39 — scoped, **blocked**: D:\Cortex has 22 files in flight on another lane (R-0006). Engine match already done; gap is one missing certified asset joining transactions→inventory. Truth + SQL + synonyms in the #39 comment. |
+| #43 DEMO-COLD-01 | **first** run after cold start refuses fresh upload (403); warm runs pass — **NEEDS-YOU** PRD routing + permission to delete `data/dms_demo.duckdb` to confirm cause |
+| #44 CI-03 | `protected-paths` flaked: claimed a trailer missing that its own log printed. Green on re-run. Cause unknown; not patched on purpose |
 | Epics | #33 EPIC-017 **N**; #35 EPIC-018 **N**; #38 EPIC-019 **N** (F32) |
 | L4/L5 | Aspiration only (P-DMS-33) — **NEEDS-YOU** confirm meanings or decline badges |
 | After | EPIC-019 after 017/018; not EPIC-023 first |
