@@ -68,7 +68,89 @@ def main() -> None:
     ews.append(["SKU-ALPHA", "Kuala Lumpur", 200.00])
     ews.append(["SKU-GAMMA", "Johor Bahru", 900.00])
     enc.save(ROOT / "encoding_value_norm.xlsx")
+
+    _f32_ambiguous_scope(ROOT / "f32_ambiguous_scope.xlsx")
+    _blank_rows_book(ROOT / "blank_rows_hanging.xlsx")
     print(f"wrote {sorted(p.name for p in ROOT.glob('*.xlsx'))}")
+
+
+def _f32_ambiguous_scope(path: Path) -> None:
+    """SCORE-03 / F32 — the founder's miss, rebuilt so the oracle can recompute it.
+
+    Two sheets that both answer "top 3 category sales", with a *different rank
+    order*, not merely different magnitudes. Sales is the truth; Wide_Fill
+    carries the exact ranking the live stack returned under a green badge
+    (Home / Sports / Misc). An ambiguous ask that silently picks Wide_Fill is
+    therefore wrong twice over, and no tolerance on the numbers can hide it.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sales"
+    ws.append(["# FY25 export - header below", None, None])
+    ws.append(["sku", "category", "sales_value_myr"])
+    for row in (
+        ("SKU-1", "Electronics", 945_366.40),
+        ("SKU-2", "Electronics", 600_000.00),
+        ("SKU-3", "Home", 799_018.49),
+        ("SKU-4", "Home", 400_000.00),
+        ("SKU-5", "Misc", 380_948.33),
+        ("SKU-6", "Sports", 300_000.00),
+    ):
+        ws.append(list(row))
+
+    # The trap sheet. Same headers, same dimension values, ~4x smaller totals -
+    # plausible enough that a reader who does not check scope will accept it.
+    wide = wb.create_sheet("Wide_Fill")
+    wide.append(["sku", "category", "sales_value_myr"])
+    for row in (
+        ("SKU-A", "Home", 383_803.56),
+        ("SKU-B", "Sports", 242_755.97),
+        ("SKU-C", "Misc", 228_548.84),
+        ("SKU-D", "Electronics", 100_000.00),
+    ):
+        wide.append(list(row))
+    wb.save(path)
+
+
+def _blank_rows_book(path: Path) -> None:
+    """SCORE-03 optional — trailing blank and hanging rows must not move the total.
+
+    ``Sales`` and ``Sales_Clean`` hold the same six data rows. Sales additionally
+    carries a mid-sheet blank band, hanging rows with a category but no measure,
+    a fully empty trailing band, and a stray footer. If blanks are ever counted
+    as zero-valued members the group set inflates; if a hanging row's category
+    is credited its neighbour's measure the totals deflate. Either way the two
+    sheets stop agreeing, which is the assertion.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sales"
+    ws.append(["sku", "category", "sales_value_myr"])
+    ws.append(["SKU-1", "Electronics", 1_000.50])
+    ws.append([None, None, None])  # blank band mid-table
+    ws.append(["SKU-2", "Electronics", 500.25])
+    ws.append(["SKU-3", "Home", 800.00])
+    ws.append(["SKU-4", "Home", None])  # hanging row - category, no measure
+    ws.append(["SKU-5", "Sports", 300.00])
+    ws.append([None, "Misc", None])  # hanging row - no sku, no measure
+    ws.append(["SKU-6", "Misc", 100.05])
+    ws.append(["SKU-7", "Home", 99.45])
+    for _ in range(12):  # trailing empty rows a human would drag over
+        ws.append([None, None, None])
+    ws.append(["Total", None, "=SUM(C2:C10)"])  # footer, never a data row
+
+    clean = wb.create_sheet("Sales_Clean")
+    clean.append(["sku", "category", "sales_value_myr"])
+    for row in (
+        ("SKU-1", "Electronics", 1_000.50),
+        ("SKU-2", "Electronics", 500.25),
+        ("SKU-3", "Home", 800.00),
+        ("SKU-5", "Sports", 300.00),
+        ("SKU-6", "Misc", 100.05),
+        ("SKU-7", "Home", 99.45),
+    ):
+        clean.append(list(row))
+    wb.save(path)
 
 
 if __name__ == "__main__":

@@ -148,6 +148,8 @@ def test_hostile_pack_declares_fail_modes_and_scopes() -> None:
         "empty_filter_beta_vs_sku_beta",
         "empty_filter_kl_vs_kuala_lumpur",
         "malay_paraphrase_top3",
+        "f32_ambiguous_categoty_top3",  # SCORE-03 underspecified scope + typo
+        "blank_hanging_rows_top3",  # SCORE-03 optional parsing trap
     }
     ids = {c["id"] for c in QUESTION_PACK}
     missing = required - ids
@@ -181,14 +183,110 @@ def test_eq_filter_oracle_uses_stored_encoding(tmp_path: Path) -> None:
 
 def test_resolve_oracle_on_shipped_hostile_fixtures() -> None:
     docs = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "hostile_score"
-    if not docs.is_dir():
-        return
+    # R-0002: no silent return. The fixtures are committed, so a missing dir is
+    # a broken checkout, not a reason to report green having checked nothing.
+    assert docs.is_dir(), (
+        f"hostile fixtures missing at {docs}; "
+        "regenerate with python scripts/gen_hostile_score_fixtures.py"
+    )
     for case in QUESTION_PACK:
         path = docs / str(case["workbook"])
         assert path.is_file(), f"missing fixture {path}"
         expected = resolve_oracle(case, path)
         assert expected, f"{case['id']} oracle empty"
         assert all(isinstance(v, float) for _, v in expected)
+
+
+HOSTILE_DOCS = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "hostile_score"
+
+# The Sales truth and the Wide_Fill ranking the live stack actually returned.
+F32_SALES_TRUTH = [
+    ("Electronics", 1_545_366.40),
+    ("Home", 1_199_018.49),
+    ("Misc", 380_948.33),
+]
+F32_WIDE_FILL_CLAIM = [
+    ("Home", 383_803.56),
+    ("Sports", 242_755.97),
+    ("Misc", 228_548.84),
+]
+
+
+def test_f32_scope_trap_sheets_disagree_on_rank_and_magnitude() -> None:
+    """SCORE-03 — the ambiguity only bites while the two candidate sheets differ.
+
+    If a regenerated fixture ever made Sales and Wide_Fill agree, a stack could
+    pick the wrong sheet and still score correct: the trap would report green
+    having tested nothing. Rank is checked separately from magnitude because
+    agreeing on either one alone already softens the trap.
+    """
+    book = HOSTILE_DOCS / "f32_ambiguous_scope.xlsx"
+    assert book.is_file(), f"missing {book}"
+
+    sales = oracle_top_n(book, "Sales", "category", "sales_value_myr", 3)
+    wide = oracle_top_n(book, "Wide_Fill", "category", "sales_value_myr", 3)
+
+    assert sales == F32_SALES_TRUTH
+    assert wide == F32_WIDE_FILL_CLAIM
+    assert [k for k, _ in sales] != [k for k, _ in wide], "scope trap: rank order agrees"
+    assert [v for _, v in sales] != [v for _, v in wide], "scope trap: magnitudes agree"
+
+
+def test_judge_marks_the_f32_wide_fill_ranking_wrong() -> None:
+    """The founder's miss, graded: confident badge + wrong-sheet ranking is WRONG.
+
+    Both halves are wrong here - the order and the numbers - so this would fail
+    on either check alone. That is intentional: it is the shape a reader cannot
+    catch, because every figure is individually plausible.
+    """
+    outcome, detail = judge(_env(_rows(F32_WIDE_FILL_CLAIM)), F32_SALES_TRUTH)
+    assert outcome == "WRONG"
+    assert "rank order" in detail
+
+
+def test_judge_marks_f32_right_rank_but_wide_fill_magnitudes_wrong() -> None:
+    """Rank repaired, scope still wrong. Tolerance must not launder the gap."""
+    plausible = [("Electronics", 100_000.00), ("Home", 383_803.56), ("Misc", 228_548.84)]
+    outcome, detail = judge(_env(_rows(plausible)), F32_SALES_TRUTH)
+    assert outcome == "WRONG"
+    assert "100,000.00" in detail
+
+
+def test_f32_abstention_costs_coverage_not_precision() -> None:
+    """Abstaining on an unanswerable-as-asked question is the correct behaviour.
+
+    Nothing in "show top 3 categoty sales" says which sheet, so there is no
+    defensible confident answer. The instrument must not punish the stack for
+    saying so - only for guessing and sounding sure.
+    """
+    outcome, _ = judge(_env(None, abstained=True), F32_SALES_TRUTH)
+    assert outcome == "abstained"
+
+
+def test_blank_and_hanging_rows_do_not_move_the_oracle() -> None:
+    """SCORE-03 optional — a messy sheet and a clean one must agree exactly.
+
+    Sales carries a mid-table blank band, two hanging rows with a category but
+    no measure, twelve trailing empty rows, and a formula footer. Sales_Clean
+    holds the same six data rows with none of it.
+    """
+    book = HOSTILE_DOCS / "blank_rows_hanging.xlsx"
+    assert book.is_file(), f"missing {book}"
+
+    messy = grouped_totals(book, "Sales", "category", "sales_value_myr")
+    clean = grouped_totals(book, "Sales_Clean", "category", "sales_value_myr")
+
+    assert messy == clean, f"blank/hanging rows moved the total: {messy} != {clean}"
+    assert set(messy) == {"Electronics", "Home", "Sports", "Misc"}, (
+        "blank or footer rows leaked in as group members"
+    )
+    assert "Total" not in messy, "the SUM footer was counted as a data row"
+    assert round(messy["Home"], 2) == 899.45, (
+        "the hanging Home row (no measure) must contribute nothing, not a zero member"
+    )
+    assert oracle_top_n(book, "Sales", "category", "sales_value_myr", 3) == oracle_top_n(
+        book, "Sales_Clean", "category", "sales_value_myr", 3
+    )
 
 
 def test_judge_marks_empty_filter_zero_as_wrong() -> None:

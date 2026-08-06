@@ -280,6 +280,59 @@ QUESTION_PACK: list[dict[str, Any]] = [
         ),
     },
     {
+        # F32 - the founder's miss. Every other case in this pack names its
+        # sheet; this one deliberately does not, because that is the whole
+        # defect: nothing in the question says which sheet, so the stack picks
+        # one and states the result with a confident badge. The workbook is
+        # named only so the oracle has a file to recompute from - the sheet, the
+        # dimension column, and the measure all stay unsaid, and "categoty" is
+        # left misspelled the way it was typed.
+        #
+        # The oracle is declared on Sales even though the question does not say
+        # Sales. That is not the instrument taking a side in an ambiguity: an
+        # answer with no defensible scope is not correct-but-unlucky, it is
+        # unfounded, and the only honest response to it is to abstain. Abstain
+        # costs coverage here and nothing else. What must never pass is the
+        # Wide_Fill ranking under a green badge.
+        "id": "f32_ambiguous_categoty_top3",
+        "workbook": "f32_ambiguous_scope.xlsx",
+        "sheet": "Sales",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": (
+            "F32 underspecified scope + typo - no sheet named, 'categoty' misspelled; "
+            "confident Wide_Fill ranking (Home 383,803.56 / Sports 242,755.97 / "
+            "Misc 228,548.84) against Sales truth (Electronics 1,545,366.40 / "
+            "Home 1,199,018.49 / Misc 380,948.33) - wrong rank AND wrong magnitude "
+            "under green; abstain is the correct answer until VQ-01 / E9-02 land"
+        ),
+        "question": "In f32_ambiguous_scope.xlsx, show top 3 categoty sales",
+    },
+    {
+        # Optional case allowed by SCORE-03, under EPIC-018 only. Not a scope
+        # trap - a parsing trap. The sheet carries a mid-table blank band,
+        # hanging rows with a category but no measure, twelve trailing empty
+        # rows, and a formula footer. Sales_Clean holds the same six data rows
+        # with none of that, so the two top-3s must be identical.
+        "id": "blank_hanging_rows_top3",
+        "workbook": "blank_rows_hanging.xlsx",
+        "sheet": "Sales",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": (
+            "blank/hanging rows treated as data - trailing empties counted as zero "
+            "members inflate the group set, or a hanging row is credited its "
+            "neighbour's measure and deflates the total; either way the messy sheet "
+            "stops agreeing with Sales_Clean while the badge stays green"
+        ),
+        "question": (
+            "In blank_rows_hanging.xlsx sheet Sales, what are the top 3 categories "
+            "by sales_value_myr?"
+        ),
+    },
+    {
         "id": "malay_paraphrase_top3",
         "workbook": "cf98e431_p50_01_sales_messy.xlsx",
         "sheet": "Sales",
@@ -436,13 +489,47 @@ def main(argv: list[str] | None = None) -> int:
     # Merge trap: these two scopes MUST disagree. Shared paraphrases of the same
     # scope (synonym / Malay) intentionally share an oracle and are not a WARN.
     by_id = {case["id"]: exp for case, exp in cases}
+
+    def _fingerprint(pairs: list[tuple[str, float]]) -> tuple[Any, ...]:
+        return tuple(k.lower() for k, _ in pairs) + tuple(round(v, 2) for _, v in pairs)
+
     a, b = by_id.get("sales01_cat_top3"), by_id.get("inventory03_cat_top3")
     if a is not None and b is not None:
-        fa = tuple(k for k, _ in a) + tuple(round(v, 2) for _, v in a)
-        fb = tuple(k for k, _ in b) + tuple(round(v, 2) for _, v in b)
+        fa, fb = _fingerprint(a), _fingerprint(b)
         print(f"\n  merge-trap oracles distinct: {fa != fb}")
         if fa == fb:
             print("  WARN sales01 and inventory03 share an answer - merge trap is blind")
+
+    # F32 scope trap: the ambiguity only bites if the two candidate sheets
+    # disagree. If they ever converge, a stack could pick the wrong sheet and
+    # still score correct - the trap would be reporting green while blind.
+    f32 = by_id.get("f32_ambiguous_categoty_top3")
+    if f32 is not None:
+        wide = oracle_top_n(
+            args.docs / "f32_ambiguous_scope.xlsx", "Wide_Fill", "category",
+            "sales_value_myr", 3,
+        )
+        distinct = _fingerprint(f32) != _fingerprint(wide)
+        print(f"  F32 scope-trap oracles distinct: {distinct}")
+        print(f"    Sales     {'  '.join(f'{k}={v:,.2f}' for k, v in f32)}")
+        print(f"    Wide_Fill {'  '.join(f'{k}={v:,.2f}' for k, v in wide)}")
+        if not distinct:
+            print("  WARN F32 Sales and Wide_Fill agree - the scope trap is blind")
+            return 1
+
+    # Blank/hanging rows must be invisible to the oracle. Asserted here rather
+    # than only in pytest so a regenerated fixture cannot quietly break it.
+    blanks = by_id.get("blank_hanging_rows_top3")
+    if blanks is not None:
+        clean = oracle_top_n(
+            args.docs / "blank_rows_hanging.xlsx", "Sales_Clean", "category",
+            "sales_value_myr", 3,
+        )
+        agree = _fingerprint(blanks) == _fingerprint(clean)
+        print(f"  blank/hanging rows do not move the oracle: {agree}")
+        if not agree:
+            print(f"  FAIL messy {_fingerprint(blanks)} != clean {_fingerprint(clean)}")
+            return 1
 
     if args.oracle_only:
         return 0
