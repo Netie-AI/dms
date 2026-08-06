@@ -316,10 +316,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  coverage               {coverage:6.2f} pct   ({answered}/{total})")
     print(f"  demo set               {total} curated questions"
           f" - not a representative sample, and not claimed as one")
-    if answered:
-        print(f"  error bound (R-0010)   0 wrong in {answered} answered bounds the true rate"
-              f" at ~{3.0 / answered * 100:.1f} pct, not at 0"
-              if not wrong else "")
+    # The rule of three (R-0010): zero errors in n trials bounds the true rate
+    # at 3/n with 95pct confidence. That only says something once n is large
+    # enough for 3/n to be below 1 - at n=1 it "bounds" the rate at 300 pct,
+    # which is not a bound, it is arithmetic with no content. Printing it would
+    # be exactly the kind of authoritative-looking nonsense this gate exists to
+    # catch, so below n=4 it says what is actually true: nothing yet.
+    if not wrong and answered:
+        bound = 3.0 / answered * 100.0
+        if bound < 100.0:
+            print(f"  error bound (R-0010)   0 wrong in {answered} answered bounds the true"
+                  f" error rate at ~{bound:.1f} pct - not at 0")
+        else:
+            print(f"  error bound (R-0010)   {answered} answered is too few to bound the"
+                  f" error rate at all; n>=300 before claiming <1 pct")
 
     if wrong:
         print(f"\nFAIL {wrong} confidently wrong. Coverage does not buy this back.")

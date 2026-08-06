@@ -35,11 +35,27 @@ class FakeCortex:
         self.asks.append(req)
         if self.ask_error is not None:
             raise self.ask_error
+        # A top-5 question answered with one row and ``SELECT 1`` describes an
+        # answer that cannot exist, and E10 (FF-01) is right to refuse it. The
+        # fixture now returns a shape its own question could actually produce:
+        # a grouped, ranked, multi-row result. Tests that care about session
+        # binding are unaffected; tests that care about answer shape now have a
+        # fixture that is not quietly lying to them.
         return self.ask_response or AskResponse(
-            answer="Top SKU revenue was RM 10.00.",
+            answer="Top 5 SKUs by revenue, highest first.",
             badge="certified",
-            sql_used="SELECT 1",
-            rows=[{"sku": "SKU-BETA", "sales_value_myr": 10.0}],
+            sql_used=(
+                "SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr "
+                "FROM transactions WHERE txn_type = 'OUT' "
+                "GROUP BY sku ORDER BY sales_value_myr DESC LIMIT 5"
+            ),
+            rows=[
+                {"sku": "SKU-00397", "sales_value_myr": 726158.36},
+                {"sku": "SKU-00183", "sales_value_myr": 581836.43},
+                {"sku": "SKU-00171", "sales_value_myr": 538201.10},
+                {"sku": "SKU-00042", "sales_value_myr": 401002.75},
+                {"sku": "SKU-00311", "sales_value_myr": 388940.12},
+            ],
             assumptions="fixture",
             audit_id="aud-1",
             route="sql",
