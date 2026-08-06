@@ -158,6 +158,56 @@ $ovOk = Test-HttpOk "$OpenVaultUrl/api/healthz"
 Write-Host ("Cortex    {0}  {1}" -f $(if ($cxOk) { "ok" } else { "DOWN" }), "$CortexUrl/health")
 Write-Host ("OpenVault {0}  {1}" -f $(if ($ovOk) { "ok" } else { "DOWN" }), "$OpenVaultUrl/api/healthz")
 
+# Warm the answer path before saying we are ready (#43).
+#
+# /health answering is liveness, not readiness. A cold engine returns 200 on
+# /health while its first real submit still takes long enough to time out, so
+# the launcher printed "Cortex ok" and the founder asked the first question
+# straight into the slow path. That first question is the demo's first
+# question, on a cold laptop.
+#
+# One throwaway ask absorbs the warm-up here instead. Its answer is discarded -
+# what matters is that the slow path has been walked once before anyone is
+# watching. Never fatal: if this cannot complete, the stack is still up and the
+# operator should see the real failure on a real question, not a launcher
+# refusing to finish.
+if ($apiOk) {
+  $apiBase = $ApiUrl -replace '/health$',''
+  # A real Space id is required. An invalid one 404s on space_not_found in
+  # well under a second, before the engine is touched at all - so it would
+  # print "warm" having warmed nothing, which is worse than not trying.
+  $warmSpace = $null
+  try {
+    $spaces = Invoke-RestMethod -Uri "$apiBase/v1/spaces" -UseBasicParsing -TimeoutSec 15
+    if ($spaces -is [array] -and $spaces.Count -gt 0) { $warmSpace = $spaces[0].id }
+    elseif ($spaces.spaces -and $spaces.spaces.Count -gt 0) { $warmSpace = $spaces.spaces[0].id }
+  } catch { }
+
+  if ($warmSpace) {
+    Write-Host "Warming the answer path (first submit on a cold engine is slow)..."
+    $warmBody = (@{ question = "warmup"; space_id = $warmSpace } | ConvertTo-Json -Compress)
+    $warmStart = Get-Date
+    try {
+      Invoke-WebRequest -Uri "$apiBase/v1/chat/ask" -Method POST -Body $warmBody `
+        -ContentType "application/json" -UseBasicParsing -TimeoutSec 180 | Out-Null
+    } catch {
+      # An abstain, a refusal, even a timeout are all fine. The answer is
+      # discarded; what matters is that the slow path has been walked once
+      # before anyone is watching. Never fatal - the stack is up either way,
+      # and the operator should meet a real failure on a real question rather
+      # than a launcher that refuses to finish.
+    }
+    $warmSecs = [math]::Round(((Get-Date) - $warmStart).TotalSeconds, 1)
+    if ($warmSecs -lt 0.5) {
+      Write-Host ("Warm-up returned in {0}s - too fast to have reached the engine; first real ask may still be slow" -f $warmSecs) -ForegroundColor Yellow
+    } else {
+      Write-Host ("Answer path warm ({0}s absorbed here instead of on your first question)" -f $warmSecs) -ForegroundColor Green
+    }
+  } else {
+    Write-Host "Skipped answer-path warm-up (no Space to ask against yet)" -ForegroundColor Yellow
+  }
+}
+
 Write-Host ""
 Write-Host "URLs" -ForegroundColor Cyan
 Write-Host "  Chat     $UiUrl/"

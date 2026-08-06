@@ -44,6 +44,69 @@ _POLICY_CODES = frozenset(
     }
 )
 
+#: HTTP status per engine error code.
+#:
+#: This table exists because the status used to be
+#: ``409 if code in {session_unbound, session_expired} else 403`` - so 403 was
+#: the *default*, and every code the classifier did not recognise was reported
+#: to the caller as "you may not do this".
+#:
+#: A cold engine's first submit times out, classifies as ``submit_failed``, and
+#: therefore arrived as Forbidden (#43). Those two answers demand opposite
+#: responses: a permission refusal is permanent and about who you are, a
+#: timeout is transient and clears on retry. Telling a user their own upload is
+#: forbidden, when the truth is the engine was still warming up, is the same
+#: misattribution class as a silent fallback - a degradation wearing a policy
+#: decision's clothes (R-0011).
+#:
+#: 403 now has to be earned by a code that genuinely means refusal.
+_STATUS_BY_CODE: dict[str, int] = {
+    # Policy - the control working. These are the only 403s.
+    "path_not_allowed": 403,
+    "statement_not_allowed": 403,
+    "sql_not_analyzable": 403,
+    "manifest_malformed": 403,
+    "manifest_rejected": 403,
+    "manifest_unknown_issuer": 403,
+    "manifest_signature_invalid": 403,
+    "manifest_not_yet_valid": 403,
+    "manifest_expired": 403,
+    "pool_mismatch": 403,
+    "pool_required": 403,
+    # Session lifecycle - rebind and retry.
+    "session_unbound": 409,
+    "session_expired": 409,
+    "session_bind_failed": 409,
+    # Load.
+    "pool_saturated": 429,
+    # The engine did not answer in time. Transient and retryable - never 403.
+    "pool_queue_timeout": 504,
+    "statement_timeout": 504,
+    # Caller sent something unusable.
+    "sql_required": 400,
+}
+
+_TIMEOUT_HINTS = ("timed out", "timeout", "deadline exceeded")
+
+
+def _looks_like_timeout(*parts: str | None) -> bool:
+    blob = " ".join(p for p in parts if p).lower()
+    return any(h in blob for h in _TIMEOUT_HINTS)
+
+
+def _status_for(code: str, detail: str | None) -> int:
+    """Map an engine failure onto an honest HTTP status.
+
+    Unknown codes become 502, not 403: an unclassified upstream failure is a
+    problem with the engine, not a statement about the caller's rights. If the
+    detail names a timeout, 504 - the classifier folds slow submits into the
+    generic ``submit_failed`` bucket, so the code alone cannot tell us.
+    """
+    known = _STATUS_BY_CODE.get(code)
+    if known is not None:
+        return known
+    return 504 if _looks_like_timeout(code, detail) else 502
+
 
 class AskBody(BaseModel):
     question: str = Field(min_length=1)
@@ -219,11 +282,8 @@ def chat_ask(
             logger.warning("live ask failed (%s); demo fallback", exc.code)
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
-        status = 409 if exc.code in {"session_unbound", "session_expired"} else 403
-        if exc.code == "pool_saturated":
-            status = 429
         raise HTTPException(
-            status_code=status,
+            status_code=_status_for(exc.code, exc.detail),
             detail={"code": exc.code, "message": exc.detail or exc.code},
         ) from exc
     except Exception as exc:  # noqa: BLE001
@@ -231,9 +291,19 @@ def chat_ask(
             logger.warning("live ask failed: %s; demo fallback", exc)
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _stamp_demo_fallback(env, "fallback — live ask failed")
+        # A slow engine and a broken one are different answers. 504 tells the
+        # caller to try again; 503 says the dependency is out. The launcher
+        # prints "Cortex ok" the moment /health responds, which is before the
+        # first submit can actually complete, so on a cold start this branch is
+        # reached by a timeout more often than by a real outage.
+        timed_out = _looks_like_timeout(str(exc), type(exc).__name__)
         raise HTTPException(
-            status_code=503,
-            detail={"code": "live_ask_failed", "message": str(exc)[:400]},
+            status_code=504 if timed_out else 503,
+            detail={
+                "code": "live_ask_timeout" if timed_out else "live_ask_failed",
+                "message": str(exc)[:400],
+                "retryable": timed_out,
+            },
         ) from exc
 
 
