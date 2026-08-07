@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +87,12 @@ DEMO_SET: list[dict[str, Any]] = [
         "id": "ff_carrier_ontime",
         "why": "the one free-form question with prior evidence; joins + filter + ratio",
         "question": "rank carriers by on-time percentage for hazmat only",
+        # `inventory` is one row per stock LOT, not per SKU - 7,388 rows for 509
+        # SKUs. Joining shipments to it directly counts every shipment once per
+        # lot, turning 1,214 hazardous shipments into 7,425 and reweighting the
+        # ratio by how many lots each SKU happens to have. It changes the
+        # ranking, not just the magnitudes: the naive join puts DHL MY first,
+        # the correct one puts J&T Express first.
         "oracle_sql": """
             SELECT s.carrier,
                    ROUND(100.0 * SUM(CASE WHEN s.status = 'DELIVERED'
@@ -95,8 +100,8 @@ DEMO_SET: list[dict[str, Any]] = [
                                           THEN 1 ELSE 0 END)
                          / NULLIF(COUNT(*), 0), 2) AS on_time_percentage
             FROM shipments s
-            JOIN inventory i ON s.sku = i.sku
-            WHERE i.is_hazardous
+            JOIN (SELECT DISTINCT sku FROM inventory WHERE is_hazardous) h
+              ON s.sku = h.sku
             GROUP BY s.carrier
             ORDER BY on_time_percentage DESC, s.carrier ASC
         """,
@@ -109,16 +114,36 @@ DEMO_SET: list[dict[str, Any]] = [
             "What is the total sales value in MYR for each inventory category, "
             "counting only outbound transactions? Give me the top 3."
         ),
+        # Same lot/SKU trap. The naive join fans 2,018 outbound transactions into
+        # 29,891 rows and inflates every category total by ~14.8x - and it moves
+        # the ranking: FOOD_DRY appears second under the naive join and is not in
+        # the top 3 at all once deduplicated.
+        #
+        # Proof the deduplicated form is right: its category totals sum to
+        # exactly 80,375,993.99, which is the overall outbound revenue the
+        # governed metric returns independently. The naive form sums to
+        # 1,192,883,779.21, which is not any revenue this business ever had.
+        # That conservation identity is asserted at run time below.
         "oracle_sql": """
-            SELECT i.category,
+            SELECT c.category,
                    ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
             FROM transactions t
-            JOIN inventory i ON t.sku = i.sku
+            JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
             WHERE t.txn_type = 'OUT'
-            GROUP BY i.category
-            ORDER BY sales_value_myr DESC, i.category ASC
+            GROUP BY c.category
+            ORDER BY sales_value_myr DESC, c.category ASC
         """,
         "top_n": 3,
+        # An oracle that can be checked against a number derived another way is
+        # worth far more than one that cannot. If a schema change ever breaks
+        # the grouping, this fires before the gate can judge anybody.
+        "conservation": {
+            "sql": (
+                "SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) "
+                "FROM transactions WHERE txn_type = 'OUT'"
+            ),
+            "why": "category totals must sum to overall outbound revenue",
+        },
     },
     {
         "id": "ff_leadtime_by_country",
@@ -136,6 +161,7 @@ DEMO_SET: list[dict[str, Any]] = [
     {
         "id": "ff_hazardous_value",
         "why": "boolean filter + single scalar; a wrong filter shows up as a wrong magnitude",
+        # No join, so no fan-out: summing lots IS the stock value.
         "question": "what is the total stock value in MYR of hazardous inventory?",
         "oracle_sql": """
             SELECT 'hazardous' AS scope,
@@ -144,16 +170,87 @@ DEMO_SET: list[dict[str, Any]] = [
         """,
         "top_n": 1,
     },
+    {
+        "id": "ff_shipment_cost_by_carrier",
+        "why": "money grouped over a table with a clean grain - shipments is unique per id",
+        "question": "which 3 carriers cost us the most in shipping, in MYR?",
+        "oracle_sql": """
+            SELECT carrier, ROUND(SUM(cost_myr), 2) AS shipping_cost_myr
+            FROM shipments GROUP BY carrier
+            ORDER BY shipping_cost_myr DESC, carrier ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": "SELECT ROUND(SUM(cost_myr), 2) FROM shipments",
+            "why": "carrier costs must sum to total shipping cost",
+        },
+    },
+    {
+        "id": "ff_stock_value_by_category",
+        "why": "the honest sibling of ff_category_sales - stock value, no join, so lots "
+               "are the unit of truth rather than a fan-out hazard",
+        "question": "what is our total stock value in MYR by category? top 3",
+        "oracle_sql": """
+            SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+            FROM inventory GROUP BY category
+            ORDER BY stock_value_myr DESC, category ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": "SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) FROM inventory",
+            "why": "category stock values must sum to total inventory value",
+        },
+    },
+    {
+        "id": "ff_unresolved_alerts_by_severity",
+        "why": "a count rather than money, behind a boolean filter - a dropped WHERE "
+               "shows up as an inflated count instead of a plausible sum",
+        "question": "how many unresolved alerts do we have of each severity?",
+        "oracle_sql": """
+            SELECT severity, COUNT(*) AS alert_count
+            FROM alerts WHERE NOT resolved
+            GROUP BY severity ORDER BY alert_count DESC, severity ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": "SELECT COUNT(*) FROM alerts WHERE NOT resolved",
+            "why": "severity counts must sum to the unresolved total",
+        },
+    },
 ]
 
 
+class OracleBroken(Exception):
+    """The oracle failed its own consistency check, so it cannot judge anything."""
+
+
 def oracle(case: dict[str, Any], warehouse: Path) -> list[tuple[str, float]]:
-    """Recompute truth with hand-written SQL. Never the answer path, never a gold file."""
+    """Recompute truth with hand-written SQL. Never the answer path, never a gold file.
+
+    Where a case declares a ``conservation`` identity, it is enforced here on the
+    *full* result before any truncation to top-N. This exists because the first
+    version of this file got two oracles wrong the same way: ``inventory`` holds
+    one row per stock lot rather than per SKU, so joining to it fanned the fact
+    tables out and inflated every total by ~15x. Both wrong oracles looked
+    entirely plausible, and one of them even agreed with what the live stack
+    returned - because the stack makes the same mistake. Two wrongs agreeing is
+    not verification, and that near-miss is what this check is for.
+    """
     import duckdb
 
     con = duckdb.connect(str(warehouse), read_only=True)
     try:
         rows = con.execute(" ".join(str(case["oracle_sql"]).split())).fetchall()
+        cons = case.get("conservation")
+        if cons:
+            expected = con.execute(" ".join(str(cons["sql"]).split())).fetchone()[0]
+            got = sum(float(r[1]) for r in rows if r[1] is not None)
+            if expected is None or abs(got - float(expected)) > 0.05:
+                raise OracleBroken(
+                    f"{case['id']}: {cons['why']} - oracle sums to {got:,.2f}, "
+                    f"independent total is {float(expected or 0):,.2f}. "
+                    "The oracle is wrong; fix it before trusting any verdict."
+                )
     finally:
         con.close()
     out: list[tuple[str, float]] = []
