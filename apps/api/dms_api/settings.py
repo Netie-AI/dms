@@ -17,6 +17,19 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173,http://localhost:5173"
     )
     cortex_url: str = "http://127.0.0.1:8010"
+    #: Seconds to wait on a Cortex call before giving up.
+    #:
+    #: The client's own default is 30s and nothing ever overrode it, which was
+    #: shorter than the path it calls. A free-form (L2) ask generates SQL through
+    #: a model provider inside the submit, and measured submits on this stack take
+    #: 32.6s and 45.4s. So every free-form question failed at the client, before
+    #: the engine had answered - not because the engine was wrong, but because DMS
+    #: stopped listening. Four of ten questions in the demo gate died this way.
+    #:
+    #: 120s is chosen to clear the measured worst case with headroom while staying
+    #: bounded: a hung engine must still fail rather than hold a worker forever.
+    #: Raise it for a slower provider, do not remove it.
+    cortex_timeout_seconds: float = 120.0
     # Viewer key for Cortex's read-only ontology/eval surfaces (off-contract, see
     # cortex_read.py). Matches Cortex's built-in demo key so local bring-up works;
     # set CORTEX_API_KEY wherever DMS_API_KEYS is set.

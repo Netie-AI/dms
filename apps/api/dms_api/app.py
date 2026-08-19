@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.space_store = store
     app.state.space_store_binding = binding
-    cortex = CortexClient(settings.cortex_url)
+    cortex = CortexClient(settings.cortex_url, timeout=settings.cortex_timeout_seconds)
     app.state.cortex = cortex
     ask = build_ask_service(cortex)
     app.state.ask_service = ask
