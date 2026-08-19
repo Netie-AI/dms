@@ -202,6 +202,96 @@ DEMO_SET: list[dict[str, Any]] = [
         },
     },
     {
+        # From the adversarial workflow. The strongest case in the set: it needs a
+        # SAFE dimension join (locations, 20 unique rows, for the cold-storage
+        # filter) and a HAZARDOUS one (inventory, for category) in the same query.
+        # Joining inventory raw does not merely inflate - it inverts ranks 2 and 3,
+        # because lots-per-sku differs. MACHINERY_PARTS 688 -> 10,816 kg, and
+        # PPE/MEDICAL swap. Denominated in kilograms on purpose: transactions and
+        # inventory disagree on unit_cost_myr for the same sku, so a money version
+        # would have two defensible oracles and could not be graded.
+        "id": "ff_writeoff_kg_coldstore_by_category",
+        "why": "two joins at once - one safe, one fan-out - where the trap "
+               "inverts rank, not just magnitude",
+        "question": (
+            "At our cold-storage warehouses only, how many kilograms of stock have "
+            "been written off, broken down by product category?"
+        ),
+        "oracle_sql": """
+            SELECT ic.category, SUM(t.quantity_kg) AS written_off_kg
+            FROM transactions t
+            JOIN locations l ON l.location_id = t.location_id
+            JOIN (SELECT DISTINCT sku, category FROM inventory) ic ON ic.sku = t.sku
+            WHERE t.txn_type = 'WRITE_OFF' AND l.is_cold_storage
+            GROUP BY ic.category
+            ORDER BY written_off_kg DESC, ic.category ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": (
+                "SELECT SUM(t.quantity_kg) FROM transactions t "
+                "JOIN locations l ON l.location_id = t.location_id "
+                "WHERE t.txn_type = 'WRITE_OFF' AND l.is_cold_storage"
+            ),
+            "why": "category write-offs must sum to the cold-store write-off total, "
+                   "computed without touching inventory at all",
+        },
+    },
+    {
+        "id": "ff_chemicals_freight_by_country",
+        "why": "three tables, one of them the fan-out hazard, resolving a dimension "
+               "the fact table does not carry",
+        "question": (
+            "For shipments of CHEMICALS that have already been delivered, what is the "
+            "total shipping cost broken down by the supplier's country?"
+        ),
+        "oracle_sql": """
+            WITH sku_category AS (SELECT DISTINCT sku, category FROM inventory)
+            SELECT sup.country AS supplier_country,
+                   ROUND(SUM(s.cost_myr), 2) AS total_shipping_cost_myr
+            FROM shipments s
+            JOIN sku_category sc ON sc.sku = s.sku
+            JOIN suppliers sup ON sup.supplier_id = s.supplier_id
+            WHERE sc.category = 'CHEMICALS' AND s.status = 'DELIVERED'
+            GROUP BY sup.country
+            ORDER BY total_shipping_cost_myr DESC, sup.country ASC
+        """,
+        "top_n": 3,
+        "conservation": {
+            "sql": (
+                "WITH sku_category AS (SELECT DISTINCT sku, category FROM inventory) "
+                "SELECT ROUND(SUM(s.cost_myr), 2) FROM shipments s "
+                "JOIN sku_category sc ON sc.sku = s.sku "
+                "JOIN suppliers sup ON sup.supplier_id = s.supplier_id "
+                "WHERE sc.category = 'CHEMICALS' AND s.status = 'DELIVERED'"
+            ),
+            "why": "country freight must sum to total delivered CHEMICALS freight",
+        },
+    },
+    {
+        # Reshaped from the workflow's version, which returned (kg, shipment_count).
+        # This gate grades column 1 as the value, so a two-metric scalar would have
+        # been graded on the shipment count while the question asks about kilograms.
+        "id": "ff_coldchain_breach_kg",
+        "why": "a scalar behind a NOT filter - dropping the negation yields the whole "
+               "population, which is a larger and entirely plausible number",
+        "question": (
+            "How many kilograms of FOOD_COLD goods have been delivered to warehouses "
+            "that are not cold storage?"
+        ),
+        "oracle_sql": """
+            WITH sku_category AS (SELECT DISTINCT sku, category FROM inventory)
+            SELECT 'ambient_breach' AS scope,
+                   ROUND(SUM(s.quantity_kg), 1) AS breach_kg
+            FROM shipments s
+            JOIN sku_category c ON c.sku = s.sku
+            JOIN locations l ON l.location_id = s.destination_location_id
+            WHERE c.category = 'FOOD_COLD' AND s.status = 'DELIVERED'
+              AND NOT l.is_cold_storage
+        """,
+        "top_n": 1,
+    },
+    {
         "id": "ff_unresolved_alerts_by_severity",
         "why": "a count rather than money, behind a boolean filter - a dropped WHERE "
                "shows up as an inflated count instead of a plausible sum",
