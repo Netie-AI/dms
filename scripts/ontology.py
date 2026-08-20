@@ -589,6 +589,9 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--demo", action="store_true", help="build and verify on the demo warehouse")
+    ap.add_argument("--adventureworks", action="store_true",
+                    help="derive an ontology from the extracted lake and verify it")
+    ap.add_argument("--database", help="limit --adventureworks to one database")
     ap.add_argument("--warehouse", type=Path,
                     default=Path(r"D:\Cortex\data\dms_demo.duckdb"))
     ap.add_argument("--describe", action="store_true", help="print the ontology as json")
@@ -597,10 +600,111 @@ def main(argv: list[str] | None = None) -> int:
     if args.describe:
         print(json.dumps(demo_ontology(args.warehouse).describe(), indent=2))
         return 0
-    if args.demo or True:
-        return run_demo(args.warehouse)
-    return 0
+    if args.adventureworks:
+        return run_adventureworks(args.database)
+    return run_demo(args.warehouse)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# --------------------------------------------------------------------------
+# deriving an ontology from a real database's own metadata
+# --------------------------------------------------------------------------
+
+
+def from_manifest(entry: dict[str, Any], lake_root: Path | None = None) -> Ontology:
+    """Build an ontology from an extracted database's keys and relationships.
+
+    Hand-authoring object types for a 71-table schema is not a plan, and neither
+    is inferring them from column names - that is how a join gets invented. A
+    relational database already carries the declarations: primary keys say what
+    identifies a row, foreign keys say what relates to what. This reads those and
+    turns them into objects and links.
+
+    What it does NOT do is trust them. Every derived link starts ``unverified``
+    and stays unusable until ``verify()`` has measured it against the extracted
+    data, because a declared foreign key says a value should exist in the parent,
+    not that the parent side is unique on those columns - and uniqueness is the
+    only property that makes a join safe to group through.
+
+    Measures are deliberately not derived. A sum over a numeric column is not a
+    metric; someone has to say what it means and at what grain. Inventing them
+    would recreate exactly the implicit-measure problem Power BI's own guidance
+    warns against.
+    """
+    root = lake_root or ROOT
+    onto = Ontology()
+    paths = {
+        f"{t['schema']}.{t['table']}": (root / str(t["path"])).as_posix()
+        for t in entry.get("tables", [])
+    }
+    pks: dict[str, list[str]] = dict(entry.get("primary_keys") or {})
+
+    for table, key in pks.items():
+        path = paths.get(table)
+        if path is None:
+            continue  # declared a key but was not extracted; validate_lake reports it
+        onto.add_object(table, f"read_parquet('{path}')", key)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for fk in entry.get("foreign_keys") or []:
+        grouped.setdefault(str(fk["name"]), []).append(fk)
+
+    for name, cols in grouped.items():
+        child, parent = str(cols[0]["from_table"]), str(cols[0]["to_table"])
+        if child not in onto.objects or parent not in onto.objects:
+            # An end of this link has no primary key or was not extracted. A link
+            # to an object that cannot identify a row is not a link.
+            continue
+        onto.add_link(
+            name,
+            child,
+            [str(c["from_column"]) for c in cols],
+            parent,
+            [str(c["to_column"]) for c in cols],
+        )
+    return onto
+
+
+def run_adventureworks(database: str | None = None) -> int:
+    """Derive, verify and report an ontology over every extracted database."""
+    import duckdb
+
+    manifest_path = ROOT / "data" / "lake" / "_reports" / "extract_manifest.json"
+    if not manifest_path.is_file():
+        print(f"FAIL no manifest at {manifest_path}")
+        print("     run python scripts/load_adventureworks.py --restore --extract first")
+        return 2
+
+    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if database:
+        entries = [e for e in entries if e["database"] == database]
+    con = duckdb.connect(":memory:")
+    worst = 0
+    try:
+        for entry in entries:
+            onto = from_manifest(entry)
+            violations = onto.verify(con)
+            hazards = [
+                link for link in onto.links.values() if link.cardinality != "many_to_one"
+            ]
+            print(f"\n=== {entry['database']} ===")
+            print(f"  {len(onto.objects)} object types, {len(onto.links)} links, "
+                  f"{len(hazards)} carrying a fan-out hazard")
+            for link in sorted(hazards, key=lambda link: -link.max_fanout)[:10]:
+                print(f"    FAN-OUT {link.from_object} -> {link.to_object} "
+                      f"up to {link.max_fanout}x via {link.name}")
+            if violations:
+                worst = 1
+                print(f"  {len(violations)} declarations are NOT true of the extracted data:")
+                for v in violations[:15]:
+                    print(f"    - [{v.check}] {v.subject}: {v.detail}")
+                if len(violations) > 15:
+                    print(f"    ... and {len(violations) - 15} more")
+            else:
+                print("  every declared key is unique and non-null in the extracted data")
+    finally:
+        con.close()
+    return worst

@@ -271,3 +271,151 @@ def test_a_dimension_join_is_left_not_inner(con) -> None:  # noqa: ANN001
     assert "LEFT JOIN" in got.sql.upper()
     total = sum(v for _, v in con.execute(got.sql).fetchall())
     assert total == 157.0, "the unmatched sale must still contribute to the measure"
+
+
+# --------------------------------------------------------------------------
+# deriving an ontology from a real database's own metadata
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def lake(tmp_path: Path):  # noqa: ANN201
+    """A two-table extract manifest with parquet beside it.
+
+    Stands in for AdventureWorks so this path is covered on a machine with no
+    SQL Server and no Docker (R-0002 - the check must never skip). It carries the
+    same shape that matters: a child table whose foreign key points at a parent
+    that is NOT unique on the referenced columns, which a declared FK cannot tell
+    you and only measurement can.
+    """
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    (tmp_path / "db").mkdir()
+    con.execute(
+        "COPY (SELECT * FROM (VALUES ('O1','C1',10.0),('O2','C1',20.0),('O3','C2',30.0)) "
+        "AS t(order_id, cust_ref, amount)) TO '"
+        + (tmp_path / "db" / "Sales.Orders.parquet").as_posix()
+        + "' (FORMAT PARQUET)"
+    )
+    # Two rows per cust_ref: a real customer table with one row per (id, version).
+    con.execute(
+        "COPY (SELECT * FROM (VALUES ('C1',1,'North'),('C1',2,'North'),('C2',1,'South')) "
+        "AS t(cust_ref, version, region)) TO '"
+        + (tmp_path / "db" / "Sales.Customers.parquet").as_posix()
+        + "' (FORMAT PARQUET)"
+    )
+    con.close()
+
+    manifest = {
+        "database": "Fixture",
+        "tables": [
+            {"schema": "Sales", "table": "Orders", "declared_rows": 3,
+             "extracted_rows": 3, "columns": 3, "path": "db/Sales.Orders.parquet"},
+            {"schema": "Sales", "table": "Customers", "declared_rows": 3,
+             "extracted_rows": 3, "columns": 3, "path": "db/Sales.Customers.parquet"},
+        ],
+        "skipped": [],
+        "primary_keys": {
+            "Sales.Orders": ["order_id"],
+            "Sales.Customers": ["cust_ref", "version"],
+        },
+        "foreign_keys": [
+            {"name": "FK_Orders_Customers", "from_table": "Sales.Orders",
+             "from_column": "cust_ref", "to_table": "Sales.Customers",
+             "to_column": "cust_ref"},
+        ],
+    }
+    return manifest, tmp_path
+
+
+def test_objects_and_links_are_derived_from_the_database_declarations(lake) -> None:  # noqa: ANN001
+    from ontology import from_manifest
+
+    manifest, root = lake
+    o = from_manifest(manifest, lake_root=root)
+    assert set(o.objects) == {"Sales.Orders", "Sales.Customers"}
+    assert o.objects["Sales.Customers"].key == ("cust_ref", "version")
+    assert set(o.links) == {"FK_Orders_Customers"}
+    assert not o.measures, "a sum over a numeric column is not a metric; nobody declared one"
+
+
+def test_a_derived_link_is_unusable_until_it_has_been_measured(lake) -> None:  # noqa: ANN001
+    """A declared foreign key says a value exists in the parent.
+
+    It does not say the parent side is unique on those columns, and uniqueness is
+    the only property that makes a join safe to group through. So a derived link
+    starts unverified and compile() refuses it.
+    """
+    import duckdb
+    from ontology import from_manifest
+
+    manifest, root = lake
+    o = from_manifest(manifest, lake_root=root)
+    assert o.links["FK_Orders_Customers"].cardinality == "unverified"
+    o.add_measure("revenue", "Sales.Orders", "SUM(f.amount)")
+    assert isinstance(o.compile("revenue"), Refusal)
+
+    con = duckdb.connect(":memory:")
+    try:
+        assert not o.verify(con)
+    finally:
+        con.close()
+    link = o.links["FK_Orders_Customers"]
+    assert link.cardinality == "many_to_many", (
+        "the FK is declared and valid, and the parent side is still not unique"
+    )
+    assert link.max_fanout == 2
+
+
+def test_the_measured_hazard_blocks_the_grouping_a_declared_fk_would_have_allowed(
+    lake,  # noqa: ANN001
+) -> None:
+    """This is the whole point: the schema permits it and the data does not.
+
+    Grouping revenue by Customers.region reads as an ordinary star-schema query.
+    Because C1 has two customer rows, the join doubles O1 and O2 - revenue goes
+    from 60 to 90 - and nothing about the foreign key would have warned anyone.
+    """
+    import duckdb
+    from ontology import from_manifest
+
+    manifest, root = lake
+    o = from_manifest(manifest, lake_root=root)
+    o.add_measure("revenue", "Sales.Orders", "SUM(f.amount)")
+    con = duckdb.connect(":memory:")
+    try:
+        o.verify(con)
+        got = o.compile("revenue", group_by=[("Sales.Customers", "region")])
+        assert isinstance(got, Refusal)
+        assert got.reason == "fanout_refused"
+        assert "2x" in got.detail
+
+        orders = (root / "db" / "Sales.Orders.parquet").as_posix()
+        customers = (root / "db" / "Sales.Customers.parquet").as_posix()
+        truth = con.execute(f"SELECT SUM(amount) FROM read_parquet('{orders}')").fetchone()[0]
+        inflated = con.execute(
+            f"SELECT SUM(o.amount) FROM read_parquet('{orders}') o "
+            f"JOIN read_parquet('{customers}') c ON o.cust_ref = c.cust_ref"
+        ).fetchone()[0]
+        assert truth == 60.0
+        assert inflated == 90.0, "the refused join inflates revenue by half"
+
+        # And the filter form of the same question is still permitted, because a
+        # semi-join cannot duplicate an order however many customer rows exist.
+        allowed = o.compile("revenue", filters=[("Sales.Customers", "region", "=", "North")])
+        assert isinstance(allowed, CompiledQuery)
+        assert con.execute(allowed.sql).fetchone()[0] == 30.0
+    finally:
+        con.close()
+
+
+def test_a_table_with_no_primary_key_becomes_no_object(lake) -> None:  # noqa: ANN001
+    """A thing that cannot identify one of itself is not an object type."""
+    from ontology import from_manifest
+
+    manifest, root = lake
+    manifest = {**manifest, "primary_keys": {"Sales.Orders": ["order_id"]}}
+    o = from_manifest(manifest, lake_root=root)
+    assert set(o.objects) == {"Sales.Orders"}
+    assert not o.links, "a link to an object that cannot identify a row is not a link"
