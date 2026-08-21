@@ -120,6 +120,12 @@ class Measure:
     name: str
     grain: str
     expression: str
+    # Descriptive only, and labelled as such. Nothing in the compiler consults
+    # it, because nothing here rolls a grouped result up into a total - the
+    # place a non-additive measure would actually go wrong. Recording a flag
+    # that implies a protection which does not exist is its own lie surface, so
+    # this says plainly that it is metadata for a future roll-up feature and
+    # not a guarantee today.
     additive: bool = True
     description: str = ""
 
@@ -263,6 +269,21 @@ class Ontology:
                     Violation("link_readable", name, f"{type(exc).__name__}: {exc}")
                 )
                 continue
+            if int(pn) == 0:
+                # "Unique because empty" is not a measurement, it is an absence
+                # of one, and the verdict would be cached and trusted. A
+                # dimension with no rows today is not unique tomorrow, so the
+                # link stays unverified and the compiler will refuse it.
+                violations.append(
+                    Violation(
+                        "link_unmeasurable",
+                        name,
+                        f"{link.to_object} has no rows, so its uniqueness on "
+                        f"({', '.join(link.to_columns)}) cannot be measured. The link "
+                        "stays unverified rather than being assumed safe.",
+                    )
+                )
+                continue
             if int(pn) == int(pdistinct):
                 self.links[name] = LinkType(
                     link.name, link.from_object, link.from_columns,
@@ -283,11 +304,51 @@ class Ontology:
 
     # -- compilation -----------------------------------------------------
 
-    def _link_between(self, fact: str, dim: str) -> LinkType | None:
-        for link in self.links.values():
-            if link.from_object == fact and link.to_object == dim:
-                return link
-        return None
+    def _links_between(self, fact: str, dim: str) -> list[LinkType]:
+        return [
+            link
+            for link in self.links.values()
+            if link.from_object == fact and link.to_object == dim
+        ]
+
+    def _resolve_link(
+        self, fact: str, dim: str, via: str | None
+    ) -> LinkType | Refusal | None:
+        """One path, or a refusal. Never a silent choice between two.
+
+        A role-playing dimension - a calendar reached by both order_date and
+        ship_date - gives two links between the same pair of objects, and
+        "amount by year" then has two defensible answers. Returning the first
+        match picks one and says nothing, which is the quietest way this layer
+        could produce a wrong number: the query is valid, the join is
+        many-to-one, no assertion fires, and the figure is simply about a
+        different question than the one asked.
+
+        Power BI's posture is to raise an ambiguous path error and require the
+        definition to name the path it means, and DR-0003 quotes that approvingly.
+        Doing anything else here would have contradicted our own decision record.
+        """
+        candidates = self._links_between(fact, dim)
+        if via is not None:
+            named = [link for link in candidates if link.name == via]
+            if not named:
+                return Refusal(
+                    "unknown_link",
+                    f"no link named {via!r} from {fact!r} to {dim!r}; "
+                    f"available: {', '.join(sorted(c.name for c in candidates)) or 'none'}",
+                )
+            return named[0]
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            return Refusal(
+                "ambiguous_path",
+                f"{len(candidates)} declared links join {fact!r} to {dim!r} "
+                f"({', '.join(sorted(c.name for c in candidates))}), and they do not "
+                "mean the same thing. Name the one you want with via=, rather than "
+                "letting the layer pick.",
+            )
+        return candidates[0]
 
     def compile(
         self,
@@ -295,6 +356,7 @@ class Ontology:
         *,
         group_by: Sequence[tuple[str, str]] = (),
         filters: Sequence[tuple[str, str, str, Any]] = (),
+        via: dict[str, str] | None = None,
         order_desc: bool = True,
         limit: int | None = None,
     ) -> CompiledQuery | Refusal:
@@ -330,7 +392,9 @@ class Ontology:
                 # value per contributing row.
                 expr = f"f.{_ident(column)}"
             else:
-                link = self._link_between(m.grain, obj_name)
+                link = self._resolve_link(m.grain, obj_name, (via or {}).get(obj_name))
+                if isinstance(link, Refusal):
+                    return link
                 if link is None:
                     return Refusal(
                         "no_path",
@@ -375,7 +439,9 @@ class Ontology:
             if obj_name == m.grain:
                 where.append(f"f.{_ident(column)} {op} {_render(op, value)}")
                 continue
-            link = self._link_between(m.grain, obj_name)
+            link = self._resolve_link(m.grain, obj_name, (via or {}).get(obj_name))
+            if isinstance(link, Refusal):
+                return link
             if link is None:
                 return Refusal(
                     "no_path",

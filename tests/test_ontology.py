@@ -419,3 +419,143 @@ def test_a_table_with_no_primary_key_becomes_no_object(lake) -> None:  # noqa: A
     o = from_manifest(manifest, lake_root=root)
     assert set(o.objects) == {"Sales.Orders"}
     assert not o.links, "a link to an object that cannot identify a row is not a link"
+
+
+# --------------------------------------------------------------------------
+# one path or none: the quietest way this layer could be wrong
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def roles():  # noqa: ANN201
+    """A calendar reached two ways - the role-playing dimension every model has."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    c.execute("CREATE TABLE cal (d DATE, yr INTEGER)")
+    c.execute("INSERT INTO cal VALUES (DATE '2026-01-01', 2026), (DATE '2027-01-01', 2027)")
+    c.execute("CREATE TABLE ord (id INTEGER, order_date DATE, ship_date DATE, amt DOUBLE)")
+    c.execute("INSERT INTO ord VALUES (1, DATE '2026-01-01', DATE '2027-01-01', 100)")
+    o = Ontology()
+    o.add_object("ord", "ord", ["id"])
+    o.add_object("cal", "cal", ["d"])
+    o.add_link("ordered_on", "ord", ["order_date"], "cal", ["d"])
+    o.add_link("shipped_on", "ord", ["ship_date"], "cal", ["d"])
+    o.add_measure("amount", "ord", "SUM(f.amt)")
+    o.verify(c)
+    try:
+        yield c, o
+    finally:
+        c.close()
+
+
+def test_two_links_to_the_same_object_is_refused_not_silently_resolved(roles) -> None:  # noqa: ANN001
+    """"Amount by year" has two defensible answers, and picking one says nothing.
+
+    Both links are individually many-to-one, so no assertion fires and the query
+    is valid. The figure is simply about a different question than the one asked
+    - the quietest wrong number this layer could produce.
+    """
+    _, o = roles
+    got = o.compile("amount", group_by=[("cal", "yr")])
+    assert isinstance(got, Refusal)
+    assert got.reason == "ambiguous_path"
+    assert "ordered_on" in got.detail and "shipped_on" in got.detail
+
+
+def test_the_two_paths_really_do_disagree(roles) -> None:  # noqa: ANN001
+    """A refusal is only justified while the two readings differ."""
+    c, o = roles
+    by_order = o.compile("amount", group_by=[("cal", "yr")], via={"cal": "ordered_on"})
+    by_ship = o.compile("amount", group_by=[("cal", "yr")], via={"cal": "shipped_on"})
+    assert c.execute(by_order.sql).fetchall() == [(2026, 100.0)]
+    assert c.execute(by_ship.sql).fetchall() == [(2027, 100.0)]
+
+
+def test_naming_the_path_resolves_the_ambiguity(roles) -> None:  # noqa: ANN001
+    _, o = roles
+    got = o.compile("amount", group_by=[("cal", "yr")], via={"cal": "shipped_on"})
+    assert isinstance(got, CompiledQuery)
+    assert "shipped_on" in " ".join(got.notes)
+
+
+def test_naming_a_path_that_does_not_exist_is_refused(roles) -> None:  # noqa: ANN001
+    _, o = roles
+    got = o.compile("amount", group_by=[("cal", "yr")], via={"cal": "invoiced_on"})
+    assert isinstance(got, Refusal)
+    assert got.reason == "unknown_link"
+    assert "ordered_on" in got.detail, "the refusal must list what is available"
+
+
+def test_ambiguity_is_refused_on_filters_too(roles) -> None:  # noqa: ANN001
+    _, o = roles
+    got = o.compile("amount", filters=[("cal", "yr", "=", 2026)])
+    assert isinstance(got, Refusal)
+    assert got.reason == "ambiguous_path"
+
+
+# --------------------------------------------------------------------------
+# an absence of measurement is not a measurement
+# --------------------------------------------------------------------------
+
+
+def test_a_link_to_an_empty_dimension_is_not_declared_safe() -> None:
+    """"Unique because empty" is a verdict that stops being true when rows arrive.
+
+    COUNT(*) = COUNT(DISTINCT) = 0 satisfies the uniqueness test trivially. The
+    verdict would then be cached and trusted for every later query.
+    """
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE f (id INTEGER, k INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO f VALUES (1, 1, 10)")
+        c.execute("CREATE TABLE d (k INTEGER, label VARCHAR)")
+        o = Ontology()
+        o.add_object("f", "f", ["id"])
+        o.add_object("d", "d", ["k"])
+        o.add_link("f_to_d", "f", ["k"], "d", ["k"])
+        o.add_measure("amt", "f", "SUM(f.amt)")
+
+        violations = o.verify(c)
+        assert [v.check for v in violations] == ["link_unmeasurable"]
+        assert o.links["f_to_d"].cardinality == "unverified"
+        assert not o.verified
+        assert isinstance(o.compile("amt", group_by=[("d", "label")]), Refusal)
+    finally:
+        c.close()
+
+
+def test_the_same_link_verifies_once_the_dimension_has_rows() -> None:
+    """And it must not stay refused forever - that would be R-0005."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE f (id INTEGER, k INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO f VALUES (1, 1, 10)")
+        c.execute("CREATE TABLE d (k INTEGER, label VARCHAR)")
+        c.execute("INSERT INTO d VALUES (1, 'A')")
+        o = Ontology()
+        o.add_object("f", "f", ["id"])
+        o.add_object("d", "d", ["k"])
+        o.add_link("f_to_d", "f", ["k"], "d", ["k"])
+        o.add_measure("amt", "f", "SUM(f.amt)")
+        assert not o.verify(c)
+        assert o.links["f_to_d"].cardinality == "many_to_one"
+        got = o.compile("amt", group_by=[("d", "label")])
+        assert isinstance(got, CompiledQuery)
+        assert c.execute(got.sql).fetchall() == [("A", 10.0)]
+    finally:
+        c.close()
+
+
+def test_grouping_by_two_verified_dimensions_at_once_is_allowed(con) -> None:  # noqa: ANN001
+    """Each many-to-one join adds at most one row, so the combination is safe."""
+    o = _ontology()
+    o.verify(con)
+    got = o.compile("revenue", group_by=[("product", "category"), ("region", "country")])
+    assert isinstance(got, CompiledQuery)
+    rows = con.execute(got.sql).fetchall()
+    assert sum(r[-1] for r in rows) == 150.0, "two joins must still conserve the total"
