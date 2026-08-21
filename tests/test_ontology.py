@@ -559,3 +559,121 @@ def test_grouping_by_two_verified_dimensions_at_once_is_allowed(con) -> None:  #
     assert isinstance(got, CompiledQuery)
     rows = con.execute(got.sql).fetchall()
     assert sum(r[-1] for r in rows) == 150.0, "two joins must still conserve the total"
+
+
+# --------------------------------------------------------------------------
+# execute the derived path, do not merely type-check it
+# --------------------------------------------------------------------------
+
+
+def test_a_derived_ontology_emits_sql_that_actually_runs(lake) -> None:  # noqa: ANN001
+    """The test that was missing, and the reason a parse error shipped.
+
+    Every other test of the derived path asserted `isinstance(got, CompiledQuery)`
+    and stopped. The alias was built as "d_" plus the object name, so a
+    schema-qualified table produced `d_Sales.Customers` - which DuckDB cannot
+    parse at all. Twenty-nine tests passed over SQL that could never run,
+    because none of them ran it. R-0001: assert the artifact, at the layer it is
+    used.
+    """
+    import duckdb
+    from ontology import from_manifest
+
+    manifest, root = lake
+    # Make the parent unique so the grouping is permitted and reaches execution.
+    manifest = {
+        **manifest,
+        "primary_keys": {
+            "Sales.Orders": ["order_id"],
+            "Sales.Customers": ["cust_ref"],
+        },
+    }
+    con = duckdb.connect(":memory:")
+    try:
+        con.execute(
+            "COPY (SELECT * FROM (VALUES ('C1','North'),('C2','South')) AS t(cust_ref, region)) "
+            "TO '" + (root / "db" / "Sales.Customers.parquet").as_posix()
+            + "' (FORMAT PARQUET)"
+        )
+        o = from_manifest(manifest, lake_root=root)
+        o.add_measure("revenue", "Sales.Orders", "SUM(f.amount)")
+        assert not o.verify(con)
+
+        got = o.compile("revenue", group_by=[("Sales.Customers", "region")])
+        assert isinstance(got, CompiledQuery)
+        assert "d_Sales." not in got.sql, "a dotted alias cannot be parsed"
+        rows = dict(con.execute(got.sql).fetchall())
+        assert rows == {"North": 30.0, "South": 30.0}
+        assert sum(rows.values()) == 60.0, "the derived join must conserve the total"
+    finally:
+        con.close()
+
+
+def test_two_attributes_of_one_dimension_share_a_single_join(con) -> None:  # noqa: ANN001
+    """Emitting the join twice produced an ambiguous reference, not a wrong number.
+
+    Still a defect: the query does not run, and the failure surfaces at execute
+    time rather than as a refusal that says what to do.
+    """
+    o = _ontology()
+    o.verify(con)
+    got = o.compile("revenue", group_by=[("region", "region"), ("region", "country")])
+    assert isinstance(got, CompiledQuery)
+    assert got.sql.upper().count("LEFT JOIN") == 1
+    assert len(got.notes) == 1
+    rows = con.execute(got.sql).fetchall()
+    assert sum(r[-1] for r in rows) == 150.0
+
+
+def test_a_link_whose_sides_differ_in_arity_is_rejected_at_authoring() -> None:
+    """zip() truncated, so the join used one column and verify() measured two."""
+    o = Ontology()
+    o.add_object("a", "sales", ["txn_id"])
+    o.add_object("b", "lots", ["lot_id"])
+    with pytest.raises(ValueError) as exc:
+        o.add_link("bad", "a", ["sku"], "b", ["sku", "category"])
+    assert "same arity" in str(exc.value)
+    with pytest.raises(ValueError):
+        o.add_link("empty", "a", [], "b", [])
+
+
+def test_two_constraints_sharing_a_name_stay_two_links(lake) -> None:  # noqa: ANN001
+    """Constraint names are unique per table, not per database.
+
+    Grouping by name alone merged an HR foreign key into a Sales one, producing
+    a single link holding the columns of both - which verify() then measured and
+    blessed as many-to-one.
+    """
+    from ontology import from_manifest
+
+    manifest, root = lake
+    manifest = {
+        **manifest,
+        "tables": [
+            *manifest["tables"],
+            {"schema": "HR", "table": "Staff", "declared_rows": 1, "extracted_rows": 1,
+             "columns": 2, "path": "db/Sales.Orders.parquet"},
+        ],
+        "primary_keys": {**manifest["primary_keys"], "HR.Staff": ["order_id"]},
+        "foreign_keys": [
+            *manifest["foreign_keys"],
+            {"name": "FK_Orders_Customers", "from_table": "HR.Staff",
+             "from_column": "cust_ref", "to_table": "Sales.Customers",
+             "to_column": "cust_ref"},
+        ],
+    }
+    o = from_manifest(manifest, lake_root=root)
+    assert len(o.links) == 2, f"two constraints collapsed into {len(o.links)}"
+    froms = {link.from_object for link in o.links.values()}
+    assert froms == {"Sales.Orders", "HR.Staff"}
+
+
+def test_limit_zero_means_zero_and_a_negative_limit_is_refused(con) -> None:  # noqa: ANN001
+    """`if limit:` treated 0 as unlimited, which is the opposite of what it says."""
+    o = _ontology()
+    o.verify(con)
+    zero = o.compile("revenue", group_by=[("product", "category")], limit=0)
+    assert isinstance(zero, CompiledQuery)
+    assert "LIMIT 0" in zero.sql
+    assert con.execute(zero.sql).fetchall() == []
+    assert isinstance(o.compile("revenue", limit=-5), Refusal)

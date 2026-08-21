@@ -32,6 +32,7 @@ from stream_ingest import (  # noqa: E402
     ingest_batch,
     quarantine_late,
     run,
+    sweep_unclaimed,  # noqa: F401
     visible_relation,
 )
 
@@ -126,10 +127,12 @@ def test_the_watermark_advances_only_over_rows_the_batch_covered(
 ) -> None:
     _seed(con, [(i, i * 10, 1.0) for i in range(1, 11)])
     batches = run(con, SPEC, tmp_path, batch_size=4)
-    assert batches[0].low is None and batches[0].high == 40
-    assert batches[1].low == 40 and batches[1].high == 80
+    # Marks are stored as text so the ledger only ever holds one type - see
+    # Ledger.commit. DuckDB casts the literal back against the column type.
+    assert batches[0].low is None and str(batches[0].high) == "40"
+    assert str(batches[1].low) == "40" and str(batches[1].high) == "80"
     ledger = Ledger.load(tmp_path / "orders" / "_ledger.json")
-    assert ledger.high_watermark("orders") == 100
+    assert ledger.high_watermark("orders") == "100"
 
 
 # --------------------------------------------------------------------------
@@ -174,8 +177,11 @@ def test_a_rejected_batch_leaves_the_previous_state_intact(
 
     assert _visible(con, tmp_path) == good, "a rejected batch changed what readers see"
     ledger = Ledger.load(tmp_path / "orders" / "_ledger.json")
-    assert len(ledger.batches) == 1
-    assert ledger.high_watermark("orders") == 10, "the watermark advanced over a rejected batch"
+    committed = [b for b in ledger.batches if b.state == "committed"]
+    assert len(committed) == 1
+    assert ledger.high_watermark("orders") == "10", (
+        "the watermark advanced over a rejected batch"
+    )
 
 
 def test_a_staged_part_is_not_visible_until_the_ledger_names_it(
@@ -301,3 +307,179 @@ def test_many_small_batches_and_one_large_batch_agree(con, tmp_path: Path) -> No
     ).fetchone()
     assert small == (100, 5050.0)
     assert (int(big[0]), float(big[1])) == small
+
+
+# --------------------------------------------------------------------------
+# the sweep: identity is primary, the interval is only a batching hint
+# --------------------------------------------------------------------------
+
+
+def _unclaimed(tmp_path: Path) -> list[Path]:
+    return sorted((tmp_path / "orders" / "_unclaimed").glob("*.parquet"))
+
+
+def test_a_null_watermark_row_is_swept_not_silently_dropped(
+    con,  # noqa: ANN001
+    tmp_path: Path,
+) -> None:
+    """Every interval predicate is three-valued, so a NULL watermark vanished.
+
+    `wm > low`, `wm <= high` and `MAX(wm)` all skip NULL, and so did the old
+    late-data scan. Three of ten rows disappeared with a clean exit and
+    late_rows 0 - a total 30 percent short, which is exactly the failure this
+    module's docstring claims cannot happen.
+    """
+    con.execute("CREATE OR REPLACE TABLE orders (order_id INTEGER, seq INTEGER, amount DOUBLE)")
+    for i in range(1, 8):
+        con.execute("INSERT INTO orders VALUES (?, ?, 100.0)", [i, i])
+    for i in range(8, 11):
+        con.execute("INSERT INTO orders VALUES (?, NULL, 100.0)", [i])
+
+    run(con, SPEC, tmp_path, batch_size=4)
+    parts = _unclaimed(tmp_path)
+    assert parts, "rows with a NULL watermark vanished with no trace"
+    swept = con.execute(
+        f"SELECT order_id FROM read_parquet('{parts[0].as_posix()}') ORDER BY order_id"
+    ).fetchall()
+    assert swept == [(8,), (9,), (10,)]
+
+
+def test_the_sweep_runs_on_an_idle_tick(con, tmp_path: Path) -> None:  # noqa: ANN001
+    """A skewed row was invisible until unrelated traffic happened to arrive.
+
+    The scan lived inside ingest_batch, so a quiet period meant no sweep. The
+    same row was invisible in one tick and reported in the next, and the only
+    difference was that something else showed up.
+    """
+    _seed(con, [(i, i * 10, 1.0) for i in range(1, 11)])
+    run(con, SPEC, tmp_path, batch_size=100)
+    con.execute("INSERT INTO orders VALUES (99, 5, 1.0)")
+
+    assert run(con, SPEC, tmp_path, batch_size=100) == [], "no batch should commit"
+    parts = _unclaimed(tmp_path)
+    assert parts, "an idle tick swept nothing"
+    assert con.execute(
+        f"SELECT order_id FROM read_parquet('{parts[0].as_posix()}')"
+    ).fetchall() == [(99,)]
+
+
+def test_a_row_tied_with_a_closed_high_mark_is_swept(con, tmp_path: Path) -> None:  # noqa: ANN001
+    """The next interval starts strictly above the mark, so nothing covers it."""
+    _seed(con, [(i, i, 1.0) for i in range(1, 11)])
+    run(con, SPEC, tmp_path, batch_size=100)
+    con.execute("INSERT INTO orders VALUES (77, 10, 1.0)")
+    run(con, SPEC, tmp_path, batch_size=100)
+    parts = _unclaimed(tmp_path)
+    assert parts
+    assert con.execute(
+        f"SELECT order_id FROM read_parquet('{parts[0].as_posix()}')"
+    ).fetchall() == [(77,)]
+
+
+def test_a_swept_row_is_counted_once_not_on_every_later_batch(
+    con,  # noqa: ANN001
+    tmp_path: Path,
+) -> None:
+    """One late row was re-counted and re-written by every subsequent batch."""
+    _seed(con, [(i, i * 10, 1.0) for i in range(1, 6)])
+    run(con, SPEC, tmp_path, batch_size=100)
+    con.execute("INSERT INTO orders VALUES (99, 5, 1.0)")
+    run(con, SPEC, tmp_path, batch_size=100)
+
+    for wave in range(2):
+        con.execute(
+            "INSERT INTO orders VALUES (?, ?, 1.0)", [200 + wave, 100 + wave * 10]
+        )
+        run(con, SPEC, tmp_path, batch_size=100)
+
+    ledger = Ledger.load(tmp_path / "orders" / "_ledger.json")
+    assert sum(b.late_rows for b in ledger.batches) == 1, "the same row swept repeatedly"
+
+
+def test_a_timestamp_watermark_survives_the_ledger_round_trip(
+    con,  # noqa: ANN001
+    tmp_path: Path,
+) -> None:
+    """The normal streaming watermark, and it crashed on the second run.
+
+    json.dumps(default=str) was a one-way cast, so a reloaded mark was a str
+    while a fresh one was a datetime, and max() over the pair raised TypeError.
+    The demo only used INTEGER, which is why this was green.
+    """
+    con.execute(
+        "CREATE TABLE ev AS SELECT i AS id, "
+        "TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i) SECOND AS ts, 1.0 AS amt "
+        "FROM range(1, 26) t(i)"
+    )
+    spec = SourceSpec("ev", "ev", ("id",), "ts")
+    run(con, spec, tmp_path, batch_size=10)
+    con.execute(
+        "INSERT INTO ev SELECT i, TIMESTAMP '2026-01-01 00:00:00' + INTERVAL (i) SECOND, 1.0 "
+        "FROM range(26, 41) t(i)"
+    )
+    run(con, spec, tmp_path, batch_size=10)
+
+    rel = visible_relation(tmp_path, "ev")
+    got = con.execute(f"SELECT COUNT(*), SUM(amt) FROM {rel}").fetchone()
+    want = con.execute("SELECT COUNT(*), SUM(amt) FROM ev").fetchone()
+    assert got == want
+
+
+def test_the_ledger_holds_exactly_one_type_for_a_mark(
+    con,  # noqa: ANN001
+    tmp_path: Path,
+) -> None:
+    _seed(con, [(i, i, 1.0) for i in range(1, 11)])
+    run(con, SPEC, tmp_path, batch_size=3)
+    ledger = Ledger.load(tmp_path / "orders" / "_ledger.json")
+    kinds = {type(b.high).__name__ for b in ledger.batches if b.high is not None}
+    assert kinds == {"str"}, f"mixed mark types in the ledger: {kinds}"
+
+
+def test_a_null_key_is_rejected_naming_the_null_not_a_duplicate(
+    con,  # noqa: ANN001
+    tmp_path: Path,
+) -> None:
+    """COUNT(DISTINCT) skips NULL, so one NULL key looked like a duplicate.
+
+    The two duplicate checks disagreed about NULL: the in-batch one treated it
+    as absent (so a lone NULL read as a duplicate), the cross-batch one used
+    equality (so a redelivered NULL key sailed past and double-counted).
+    """
+    _seed(con, [(i, i, 1.0) for i in range(1, 10)])
+    con.execute("INSERT INTO orders VALUES (NULL, 10, 1.0)")
+    with pytest.raises(BatchRejected) as exc:
+        run(con, SPEC, tmp_path, batch_size=100)
+    assert "NULL in the key" in str(exc.value)
+    assert "duplicate" not in str(exc.value)
+
+
+def test_a_batch_size_below_one_is_refused(con, tmp_path: Path) -> None:  # noqa: ANN001
+    """OFFSET batch_size-1 went negative and DuckDB raised a binder error."""
+    _seed(con, [(1, 1, 1.0)])
+    with pytest.raises(ValueError) as exc:
+        run(con, SPEC, tmp_path, batch_size=0)
+    assert "at least 1" in str(exc.value)
+
+
+def test_a_rejected_batch_still_gets_its_rows_swept(con, tmp_path: Path) -> None:  # noqa: ANN001
+    """A rejection must not also make the blocked rows invisible.
+
+    The rows a rejected batch would have carried are unclaimed by definition, so
+    the sweep is exactly what should notice them.
+    """
+    _seed(con, [(i, i, 1.0) for i in range(1, 6)])
+    run(con, SPEC, tmp_path, batch_size=100)
+    con.execute("INSERT INTO orders VALUES (3, 50, 1.0)")
+    con.execute("INSERT INTO orders VALUES (6, 51, 1.0)")
+    with pytest.raises(BatchRejected):
+        run(con, SPEC, tmp_path, batch_size=100)
+    parts = _unclaimed(tmp_path)
+    assert parts, "a rejection hid the rows it blocked"
+    ids = {
+        r[0]
+        for r in con.execute(
+            f"SELECT order_id FROM read_parquet('{parts[0].as_posix()}')"
+        ).fetchall()
+    }
+    assert 6 in ids, "the legitimately new row was never reported"

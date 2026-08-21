@@ -184,6 +184,17 @@ class Ontology:
         for obj in (from_object, to_object):
             if obj not in self.objects:
                 raise KeyError(f"link {name!r} names unknown object {obj!r}")
+        # zip() truncates silently, so a mismatched pair produced a join on the
+        # shorter list while verify() measured uniqueness on the longer one, and
+        # the note then claimed "verified many-to-one" over a join that really
+        # did duplicate rows. A declaration that cannot be checked as written is
+        # rejected as written.
+        if len(from_columns) != len(to_columns) or not from_columns:
+            raise ValueError(
+                f"link {name!r} joins {len(from_columns)} column(s) to "
+                f"{len(to_columns)}: {list(from_columns)} -> {list(to_columns)}. "
+                "A join cannot be checked unless both sides name the same arity."
+            )
         self.links[name] = LinkType(
             name, from_object, tuple(from_columns), to_object, tuple(to_columns)
         )
@@ -383,6 +394,16 @@ class Ontology:
         joins: list[str] = []
         notes: list[str] = []
         group_keys: list[str] = []
+        # Aliases are positional, not built from the object name. "d_" plus a
+        # schema-qualified name produced `d_Sales.Customers`, which DuckDB
+        # cannot parse - so every ontology derived from a real database emitted
+        # SQL that could never run, and the tests did not notice because they
+        # checked the returned object instead of executing it. That is the
+        # failure R-0001 names: assert the artifact, at the layer it is used.
+        # Keying on (object, link) also makes two attributes of one dimension
+        # share a single join rather than emitting a duplicate and an ambiguous
+        # reference.
+        aliases: dict[tuple[str, str], str] = {}
 
         for obj_name, column in group_by:
             if obj_name not in self.objects:
@@ -413,20 +434,24 @@ class Ontology:
                         f"and inflate {m.name}. Aggregate across the relationship "
                         "rather than joining through it.",
                     )
-                alias = f"d_{obj_name}"
-                dim = self.objects[obj_name]
-                on = " AND ".join(
-                    f"f.{_ident(a)} = {alias}.{_ident(b)}"
-                    for a, b in zip(link.from_columns, link.to_columns)
-                )
-                # LEFT JOIN, not INNER: an inner join silently drops fact rows
-                # whose key is absent from the dimension, which shrinks the
-                # measure without anything looking wrong.
-                joins.append(f"LEFT JOIN {dim.relation} {alias} ON {on}")
-                notes.append(
-                    f"joined {obj_name} through {link.name} (verified many-to-one, "
-                    "so no fact row is duplicated)"
-                )
+                slot = (obj_name, link.name)
+                alias = aliases.get(slot)
+                if alias is None:
+                    alias = f"d{len(aliases)}"
+                    aliases[slot] = alias
+                    dim = self.objects[obj_name]
+                    on = " AND ".join(
+                        f"f.{_ident(a)} = {alias}.{_ident(b)}"
+                        for a, b in zip(link.from_columns, link.to_columns)
+                    )
+                    # LEFT JOIN, not INNER: an inner join silently drops fact
+                    # rows whose key is absent from the dimension, shrinking the
+                    # measure without anything looking wrong.
+                    joins.append(f"LEFT JOIN {dim.relation} {alias} ON {on}")
+                    notes.append(
+                        f"joined {obj_name} through {link.name} (verified "
+                        "many-to-one, so no fact row is duplicated)"
+                    )
                 expr = f"{alias}.{_ident(column)}"
             label = f"{obj_name}_{column}"
             selects.append(f"{expr} AS {_ident(label)}")
@@ -473,7 +498,9 @@ class Ontology:
         if group_keys:
             sql += "\nGROUP BY " + ", ".join(group_keys)
             sql += f"\nORDER BY {_ident(m.name)} {'DESC' if order_desc else 'ASC'}"
-        if limit:
+        if limit is not None:
+            if int(limit) < 0:
+                return Refusal("bad_limit", f"limit {limit!r} is negative")
             sql += f"\nLIMIT {int(limit)}"
         return CompiledQuery(
             sql=sql,
@@ -714,18 +741,23 @@ def from_manifest(entry: dict[str, Any], lake_root: Path | None = None) -> Ontol
             continue  # declared a key but was not extracted; validate_lake reports it
         onto.add_object(table, f"read_parquet('{path}')", key)
 
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    # Grouped on the whole triple, not the name alone. Constraint names are
+    # unique per table in SQL Server, not per database, so two tables may each
+    # carry an FK_Customer - and grouping by name alone merged them into one
+    # link holding the columns of both, which verify() then measured and blessed.
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for fk in entry.get("foreign_keys") or []:
-        grouped.setdefault(str(fk["name"]), []).append(fk)
+        grouped.setdefault(
+            (str(fk["name"]), str(fk["from_table"]), str(fk["to_table"])), []
+        ).append(fk)
 
-    for name, cols in grouped.items():
-        child, parent = str(cols[0]["from_table"]), str(cols[0]["to_table"])
+    for (name, child, parent), cols in grouped.items():
         if child not in onto.objects or parent not in onto.objects:
             # An end of this link has no primary key or was not extracted. A link
             # to an object that cannot identify a row is not a link.
             continue
         onto.add_link(
-            name,
+            name if name not in onto.links else f"{name}@{child}",
             child,
             [str(c["from_column"]) for c in cols],
             parent,
