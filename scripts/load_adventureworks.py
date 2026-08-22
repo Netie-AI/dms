@@ -149,8 +149,13 @@ def ensure_container() -> None:
     _wait_for_sql()
 
 
-def _wait_for_sql(attempts: int = 60) -> None:
-    """SQL Server takes tens of seconds to accept connections on first boot."""
+def _wait_for_sql(attempts: int = 180) -> None:
+    """SQL Server takes tens of seconds to accept connections on first boot.
+
+    The 2025 image takes well over two minutes on a cold start - the first
+    --all run failed here at 120s with the lake still unbuilt. Six minutes is
+    a property of the image, not of any one run (R-0004).
+    """
     import pymssql
 
     last = ""

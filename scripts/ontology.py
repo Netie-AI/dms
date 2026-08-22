@@ -361,6 +361,158 @@ class Ontology:
             )
         return candidates[0]
 
+    def _resolve_path(
+        self,
+        grain: str,
+        dim: str,
+        via: dict[str, str] | None,
+        *,
+        for_filter: bool = False,
+    ) -> list[LinkType] | Refusal | None:
+        """The chain of verified many-to-one links from the grain to ``dim``.
+
+        One hop was never the real shape. "Sales by product category" on
+        AdventureWorks is SalesOrderDetail -> Product -> Subcategory -> Category:
+        three links, every one of them many-to-one, and a chain of many-to-one
+        LEFT JOINs adds at most one row per fact row at every hop, so it cannot
+        inflate. Refusing it as no_path was adversarial finding 27, upheld, and
+        the reason the insight layer could not reach a single roll-up.
+
+        Rules, in order:
+          * breadth-first from the grain, over many-to-one links only - a hop
+            through a many-to-many link is not a path, it is the fan-out;
+          * a hop whose (from, to) pair has more than one link is taken only if
+            ``via`` names which, otherwise the whole path is refused as
+            ambiguous - the role-playing calendar again, one level down;
+          * two different shortest paths to the same object is ambiguity of a
+            second kind (which intermediate object did you mean?) and is
+            refused the same way, naming both.
+        Longer-than-shortest paths are not considered: a reader who wants the
+        long way round declares the intermediate as the grouping object.
+
+        ``for_filter`` drops the cardinality rules and keeps the ambiguity ones.
+        A filter compiles to a semi-join - the fact table only ever sees
+        IN (key set) - so a many-to-many hop anywhere on the path cannot
+        duplicate a fact row, and refusing it would be R-0005: the multi-hop
+        patch did exactly that for one commit and two existing tests caught it.
+        """
+        via = via or {}
+        if grain == dim and dim not in via:
+            return []
+        best: dict[str, list[LinkType]] = {grain: []}
+        frontier = [grain]
+        while frontier:
+            nxt: list[str] = []
+            found: dict[str, list[list[LinkType]]] = {}
+            for obj in frontier:
+                by_pair: dict[str, list[LinkType]] = {}
+                for link in self.links.values():
+                    if link.from_object != obj:
+                        continue
+                    if link.to_object in best and not (link.to_object == dim == grain):
+                        continue
+                    by_pair.setdefault(link.to_object, []).append(link)
+                for to_obj, links in by_pair.items():
+                    m2o = [x for x in links if x.cardinality == "many_to_one"]
+                    chosen: LinkType | None
+                    if to_obj in via:
+                        named = [x for x in links if x.name == via[to_obj]]
+                        if not named:
+                            return Refusal(
+                                "unknown_link",
+                                f"no link named {via[to_obj]!r} into {to_obj!r}; "
+                                f"available: {', '.join(sorted(x.name for x in links))}",
+                            )
+                        if named[0].cardinality != "many_to_one" and not for_filter:
+                            return Refusal(
+                                "fanout_refused",
+                                f"{named[0].name!r} into {to_obj!r} is not many-to-one "
+                                f"(up to {named[0].max_fanout}x); grouping through it "
+                                "would inflate the measure.",
+                            )
+                        chosen = named[0]
+                    elif len(links) == 1 and (for_filter or len(m2o) == 1):
+                        chosen = links[0]
+                    elif len(links) > 1:
+                        # reachable, but only by naming the link
+                        if to_obj == dim:
+                            return Refusal(
+                                "ambiguous_path",
+                                f"{len(links)} declared links join {obj!r} to {dim!r} "
+                                f"({', '.join(sorted(x.name for x in links))}), and they "
+                                "do not mean the same thing. Name the one you want "
+                                "with via=, rather than letting the layer pick.",
+                            )
+                        continue
+                    else:
+                        if to_obj == dim:
+                            return Refusal(
+                                "fanout_refused",
+                                f"grouping by {dim!r} requires joining through "
+                                f"{links[0].name!r}, whose parent side is not unique "
+                                f"(up to {links[0].max_fanout}x). That join would make "
+                                f"each {grain} row contribute up to "
+                                f"{links[0].max_fanout} times and inflate the measure. "
+                                "Aggregate across the relationship rather than "
+                                "joining through it.",
+                            )
+                        continue
+                    found.setdefault(to_obj, []).append(best[obj] + [chosen])
+            for to_obj, paths in found.items():
+                if to_obj in best and to_obj != dim:
+                    continue
+                if len(paths) > 1:
+                    routes = "; ".join(
+                        " -> ".join(x.name for x in path) for path in paths
+                    )
+                    if to_obj == dim:
+                        return Refusal(
+                            "ambiguous_path",
+                            f"{len(paths)} different shortest paths reach {dim!r} from "
+                            f"{grain!r} ({routes}). Group by the intermediate object "
+                            "you mean, or name each hop with via=.",
+                        )
+                    continue
+                best[to_obj] = paths[0]
+                nxt.append(to_obj)
+                if to_obj == dim:
+                    return best[dim]
+            frontier = nxt
+        return None
+
+    def _join_chain(
+        self,
+        path: list[LinkType],
+        aliases: dict[tuple[str, str], str],
+        joins: list[str],
+        notes: list[str],
+        *,
+        root: str = "f",
+    ) -> str:
+        """Emit (or reuse) the LEFT JOINs for a path and return the final alias."""
+        prev = root
+        for link in path:
+            slot = (link.to_object, link.name)
+            alias = aliases.get(slot)
+            if alias is None:
+                alias = f"d{len(aliases)}"
+                aliases[slot] = alias
+                rel = self.objects[link.to_object].relation
+                on = " AND ".join(
+                    f"{prev}.{_ident(a)} = {alias}.{_ident(b)}"
+                    for a, b in zip(link.from_columns, link.to_columns)
+                )
+                # LEFT JOIN, not INNER: an inner join silently drops fact rows
+                # whose key is absent from the dimension, shrinking the measure
+                # without anything looking wrong.
+                joins.append(f"LEFT JOIN {rel} {alias} ON {on}")
+                notes.append(
+                    f"joined {link.to_object} through {link.name} (verified "
+                    "many-to-one, so no fact row is duplicated)"
+                )
+            prev = alias
+        return prev
+
     def compile(
         self,
         measure: str,
@@ -422,45 +574,18 @@ class Ontology:
                 # eleven DimAccount/DimEmployee self-join cases.
                 expr = f"f.{_ident(column)}"
             else:
-                link = self._resolve_link(m.grain, obj_name, (via or {}).get(obj_name))
-                if isinstance(link, Refusal):
-                    return link
-                if link is None:
+                path = self._resolve_path(m.grain, obj_name, via)
+                if isinstance(path, Refusal):
+                    return path
+                if path is None:
                     return Refusal(
                         "no_path",
-                        f"no declared link from {m.grain!r} to {obj_name!r}, so "
-                        f"{obj_name}.{column} is not an attribute of this measure's "
-                        "grain. Declare the link, or ask for a measure defined at "
-                        "that grain.",
+                        f"no chain of verified many-to-one links from {m.grain!r} to "
+                        f"{obj_name!r}, so {obj_name}.{column} is not an attribute of "
+                        "this measure's grain. Declare the link, or ask for a measure "
+                        "defined at that grain.",
                     )
-                if link.cardinality != "many_to_one":
-                    return Refusal(
-                        "fanout_refused",
-                        f"grouping by {obj_name}.{column} requires joining through "
-                        f"{link.name!r}, whose parent side is not unique (up to "
-                        f"{link.max_fanout}x). That join would make each "
-                        f"{m.grain} row contribute up to {link.max_fanout} times "
-                        f"and inflate {m.name}. Aggregate across the relationship "
-                        "rather than joining through it.",
-                    )
-                slot = (obj_name, link.name)
-                alias = aliases.get(slot)
-                if alias is None:
-                    alias = f"d{len(aliases)}"
-                    aliases[slot] = alias
-                    dim = self.objects[obj_name]
-                    on = " AND ".join(
-                        f"f.{_ident(a)} = {alias}.{_ident(b)}"
-                        for a, b in zip(link.from_columns, link.to_columns)
-                    )
-                    # LEFT JOIN, not INNER: an inner join silently drops fact
-                    # rows whose key is absent from the dimension, shrinking the
-                    # measure without anything looking wrong.
-                    joins.append(f"LEFT JOIN {dim.relation} {alias} ON {on}")
-                    notes.append(
-                        f"joined {obj_name} through {link.name} (verified "
-                        "many-to-one, so no fact row is duplicated)"
-                    )
+                alias = self._join_chain(path, aliases, joins, notes)
                 expr = f"{alias}.{_ident(column)}"
             label = f"{obj_name}_{column}"
             selects.append(f"{expr} AS {_ident(label)}")
@@ -473,26 +598,39 @@ class Ontology:
             if obj_name == m.grain and (via or {}).get(obj_name) is None:
                 where.append(f"f.{_ident(column)} {op} {_render(op, value)}")
                 continue
-            link = self._resolve_link(m.grain, obj_name, (via or {}).get(obj_name))
-            if isinstance(link, Refusal):
-                return link
-            if link is None:
+            path = self._resolve_path(m.grain, obj_name, via, for_filter=True)
+            if isinstance(path, Refusal):
+                return path
+            if path is None:
                 return Refusal(
                     "no_path",
-                    f"no declared link from {m.grain!r} to {obj_name!r}, so it "
-                    f"cannot be filtered on {obj_name}.{column}",
+                    f"no chain of declared links from {m.grain!r} to "
+                    f"{obj_name!r}, so it cannot be filtered on {obj_name}.{column}",
                 )
-            dim = self.objects[obj_name]
             # Filter-then-aggregate. The dimension resolves to a key set that is
             # pushed into the fact table as a semi-join, so the dimension never
             # appears in the aggregating FROM and its cardinality is irrelevant.
-            # This is why a filter is always safe while a grouping is not.
-            keycols = ", ".join(_ident(c) for c in link.to_columns)
-            factcols = ", ".join(f"f.{_ident(c)}" for c in link.from_columns)
-            where.append(
-                f"({factcols}) IN (SELECT {keycols} FROM {dim.relation} "
-                f"WHERE {_ident(column)} {op} {_render(op, value)})"
+            # This is why a filter is always safe while a grouping is not. Over
+            # a multi-hop path the key set is built by joining the dimensions
+            # among themselves, starting from the first hop's parent, and the
+            # fact table still only ever sees IN (key set).
+            first = path[0]
+            sub_aliases: dict[tuple[str, str], str] = {}
+            sub_joins: list[str] = []
+            sub_notes: list[str] = []
+            head_alias = self._join_chain(path[:1], sub_aliases, sub_joins, sub_notes)
+            # the first hop's parent is the FROM of the subquery, not a join
+            head_rel = self.objects[first.to_object].relation
+            tail_alias = self._join_chain(
+                path[1:], sub_aliases, sub_joins, sub_notes, root=head_alias
             )
+            keycols = ", ".join(f"{head_alias}.{_ident(c)}" for c in first.to_columns)
+            factcols = ", ".join(f"f.{_ident(c)}" for c in first.from_columns)
+            inner = f"SELECT {keycols} FROM {head_rel} {head_alias}"
+            if sub_joins[1:]:
+                inner += " " + " ".join(sub_joins[1:])
+            inner += f" WHERE {tail_alias}.{_ident(column)} {op} {_render(op, value)}"
+            where.append(f"({factcols}) IN ({inner})")
             notes.append(
                 f"filtered on {obj_name}.{column} by semi-join, which cannot "
                 "duplicate a fact row whatever the cardinality"

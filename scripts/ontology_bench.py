@@ -288,6 +288,11 @@ def generate_and_run(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # R-0012: a Windows console defaults to cp1252 and turns every accented
+    # label into a replacement glyph. Say what the data says.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     import duckdb
 
     ap = argparse.ArgumentParser(

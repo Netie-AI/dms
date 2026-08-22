@@ -720,3 +720,203 @@ def test_limit_zero_means_zero_and_a_negative_limit_is_refused(con) -> None:  # 
     assert "LIMIT 0" in zero.sql
     assert con.execute(zero.sql).fetchall() == []
     assert isinstance(o.compile("revenue", limit=-5), Refusal)
+
+
+# --------------------------------------------------------------------------
+# multi-hop: a chain of many-to-one links is still one row per fact row
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def chain():  # noqa: ANN201
+    """sales -> product -> subcategory -> category, every hop many-to-one.
+
+    Two lines of 100 and 50 on two products in different subcategories that
+    roll up to the same category, plus a third in another category. So by
+    category the truth is Bikes=150, Clothing=25, total 175, and any fan-out or
+    row loss breaks that arithmetic.
+    """
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    c.execute("CREATE TABLE sales (txn_id INTEGER, product_id INTEGER, amt DOUBLE)")
+    c.execute("INSERT INTO sales VALUES (1, 10, 100), (2, 11, 50), (3, 12, 25)")
+    c.execute("CREATE TABLE product (id INTEGER, subcat_id INTEGER, name VARCHAR)")
+    c.execute("INSERT INTO product VALUES (10, 100, 'Road'), (11, 101, 'MTB'), (12, 102, 'Jersey')")
+    c.execute("CREATE TABLE subcat (id INTEGER, cat_id INTEGER, name VARCHAR)")
+    c.execute("INSERT INTO subcat VALUES (100, 1, 'Road Bikes'), (101, 1, 'Mountain Bikes'), "
+              "(102, 2, 'Jerseys')")
+    c.execute("CREATE TABLE category (id INTEGER, name VARCHAR)")
+    c.execute("INSERT INTO category VALUES (1, 'Bikes'), (2, 'Clothing')")
+    o = Ontology()
+    o.add_object("sale", "sales", ["txn_id"])
+    o.add_object("product", "product", ["id"])
+    o.add_object("subcat", "subcat", ["id"])
+    o.add_object("category", "category", ["id"])
+    o.add_link("sale_product", "sale", ["product_id"], "product", ["id"])
+    o.add_link("product_subcat", "product", ["subcat_id"], "subcat", ["id"])
+    o.add_link("subcat_category", "subcat", ["cat_id"], "category", ["id"])
+    o.add_measure("revenue", "sale", "SUM(f.amt)")
+    assert not o.verify(c)
+    try:
+        yield c, o
+    finally:
+        c.close()
+
+
+def test_a_three_hop_grouping_compiles_executes_and_conserves(chain) -> None:  # noqa: ANN001
+    """The AdventureWorks shape: sales by product category is three links away."""
+    c, o = chain
+    got = o.compile("revenue", group_by=[("category", "name")])
+    assert isinstance(got, CompiledQuery), got
+    assert got.sql.upper().count("LEFT JOIN") == 3
+    rows = dict(c.execute(got.sql).fetchall())
+    assert rows == {"Bikes": 150.0, "Clothing": 25.0}
+    assert sum(rows.values()) == 175.0, "three hops must still conserve the total"
+
+
+def test_a_two_hop_filter_is_a_semi_join_over_the_chain(chain) -> None:  # noqa: ANN001
+    """Filter-then-aggregate survives the path: the fact only ever sees IN (keys)."""
+    c, o = chain
+    got = o.compile("revenue", filters=[("category", "name", "=", "Bikes")])
+    assert isinstance(got, CompiledQuery), got
+    assert " IN (" in got.sql and "LEFT JOIN" not in got.sql.split("WHERE")[0].upper()
+    assert c.execute(got.sql).fetchone()[0] == 150.0
+
+
+def test_a_many_to_many_hop_anywhere_in_the_chain_is_refused() -> None:
+    """The last hop joins on a column that is not unique; the path is refused.
+
+    The first version of this test duplicated a category ROW, which broke the
+    category object's own key and made the whole ontology unverified - the
+    refusal came back as ontology_unverified, which proves nothing about
+    fan-out. The hazard has to live on the LINK while every key stays unique:
+    subcat -> category joins on category.code, and two categories share a code.
+    """
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE sales (txn_id INTEGER, product_id INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO sales VALUES (1, 10, 100), (2, 11, 50), (3, 12, 25)")
+        c.execute("CREATE TABLE product (id INTEGER, subcat_id INTEGER)")
+        c.execute("INSERT INTO product VALUES (10, 100), (11, 101), (12, 102)")
+        c.execute("CREATE TABLE subcat (id INTEGER, cat_code VARCHAR)")
+        c.execute("INSERT INTO subcat VALUES (100, 'B'), (101, 'B'), (102, 'C')")
+        c.execute("CREATE TABLE category (id INTEGER, code VARCHAR, name VARCHAR)")
+        # two categories share code B - keys unique, link parent side not
+        c.execute("INSERT INTO category VALUES (1, 'B', 'Bikes'), (3, 'B', 'Bikes EU'), "
+                  "(2, 'C', 'Clothing')")
+        o = Ontology()
+        o.add_object("sale", "sales", ["txn_id"])
+        o.add_object("product", "product", ["id"])
+        o.add_object("subcat", "subcat", ["id"])
+        o.add_object("category", "category", ["id"])
+        o.add_link("sale_product", "sale", ["product_id"], "product", ["id"])
+        o.add_link("product_subcat", "product", ["subcat_id"], "subcat", ["id"])
+        o.add_link("subcat_category", "subcat", ["cat_code"], "category", ["code"])
+        o.add_measure("revenue", "sale", "SUM(f.amt)")
+        assert not o.verify(c), "every key is unique; only the link fans out"
+        assert o.links["subcat_category"].cardinality == "many_to_many"
+
+        got = o.compile("revenue", group_by=[("category", "name")])
+        assert isinstance(got, Refusal)
+        assert got.reason == "fanout_refused"
+        # the refused join really would have inflated: Bikes rows counted twice
+        inflated = c.execute(
+            "SELECT SUM(s.amt) FROM sales s JOIN product p ON s.product_id = p.id "
+            "JOIN subcat sc ON p.subcat_id = sc.id JOIN category k ON sc.cat_code = k.code"
+        ).fetchone()[0]
+        assert inflated == 325.0, "150 of Bikes revenue counted twice plus 25"
+        # and the filter form is still safe through the same hazard
+        flt = o.compile("revenue", filters=[("category", "name", "=", "Bikes")])
+        assert isinstance(flt, CompiledQuery)
+        assert c.execute(flt.sql).fetchone()[0] == 150.0
+    finally:
+        c.close()
+
+
+def test_two_shortest_paths_to_the_same_object_are_refused_naming_both() -> None:
+    """sales -> store -> region and sales -> customer -> region: which region?"""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE sales (id INTEGER, store_id INTEGER, cust_id INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO sales VALUES (1, 1, 1, 100)")
+        c.execute("CREATE TABLE store (id INTEGER, region_id INTEGER)")
+        c.execute("INSERT INTO store VALUES (1, 1)")
+        c.execute("CREATE TABLE customer (id INTEGER, region_id INTEGER)")
+        c.execute("INSERT INTO customer VALUES (1, 2)")
+        c.execute("CREATE TABLE region (id INTEGER, name VARCHAR)")
+        c.execute("INSERT INTO region VALUES (1, 'North'), (2, 'South')")
+        o = Ontology()
+        o.add_object("sale", "sales", ["id"])
+        o.add_object("store", "store", ["id"])
+        o.add_object("customer", "customer", ["id"])
+        o.add_object("region", "region", ["id"])
+        o.add_link("sale_store", "sale", ["store_id"], "store", ["id"])
+        o.add_link("sale_customer", "sale", ["cust_id"], "customer", ["id"])
+        o.add_link("store_region", "store", ["region_id"], "region", ["id"])
+        o.add_link("customer_region", "customer", ["region_id"], "region", ["id"])
+        o.add_measure("revenue", "sale", "SUM(f.amt)")
+        assert not o.verify(c)
+        got = o.compile("revenue", group_by=[("region", "name")])
+        assert isinstance(got, Refusal)
+        assert got.reason == "ambiguous_path"
+        assert "sale_store" in got.detail and "sale_customer" in got.detail
+        # the two readings genuinely disagree, so the refusal is justified
+        by_store = c.execute(
+            "SELECT r.name FROM sales s JOIN store st ON s.store_id = st.id "
+            "JOIN region r ON st.region_id = r.id"
+        ).fetchone()[0]
+        by_cust = c.execute(
+            "SELECT r.name FROM sales s JOIN customer cu ON s.cust_id = cu.id "
+            "JOIN region r ON cu.region_id = r.id"
+        ).fetchone()[0]
+        assert by_store != by_cust
+        # grouping by the intermediate object you mean is the way through
+        via_store = o.compile("revenue", group_by=[("store", "region_id")])
+        assert isinstance(via_store, CompiledQuery)
+    finally:
+        c.close()
+
+
+def test_via_resolves_a_role_playing_hop_in_the_middle_of_a_chain() -> None:
+    """order -> calendar(order_date | ship_date) -> fiscal_period: name the hop."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE ord (id INTEGER, order_date DATE, ship_date DATE, amt DOUBLE)")
+        c.execute("INSERT INTO ord VALUES (1, DATE '2026-01-01', DATE '2026-07-01', 100)")
+        c.execute("CREATE TABLE cal (d DATE, period_id INTEGER)")
+        c.execute("INSERT INTO cal VALUES (DATE '2026-01-01', 1), (DATE '2026-07-01', 2)")
+        c.execute("CREATE TABLE period (id INTEGER, name VARCHAR)")
+        c.execute("INSERT INTO period VALUES (1, 'H1'), (2, 'H2')")
+        o = Ontology()
+        o.add_object("ord", "ord", ["id"])
+        o.add_object("cal", "cal", ["d"])
+        o.add_object("period", "period", ["id"])
+        o.add_link("ordered_on", "ord", ["order_date"], "cal", ["d"])
+        o.add_link("shipped_on", "ord", ["ship_date"], "cal", ["d"])
+        o.add_link("cal_period", "cal", ["period_id"], "period", ["id"])
+        o.add_measure("amount", "ord", "SUM(f.amt)")
+        assert not o.verify(c)
+        assert isinstance(o.compile("amount", group_by=[("period", "name")]), Refusal)
+        h1 = o.compile("amount", group_by=[("period", "name")], via={"cal": "ordered_on"})
+        h2 = o.compile("amount", group_by=[("period", "name")], via={"cal": "shipped_on"})
+        assert isinstance(h1, CompiledQuery) and isinstance(h2, CompiledQuery)
+        assert dict(c.execute(h1.sql).fetchall()) == {"H1": 100.0}
+        assert dict(c.execute(h2.sql).fetchall()) == {"H2": 100.0}
+    finally:
+        c.close()
+
+
+def test_an_unreachable_object_is_still_no_path(chain) -> None:  # noqa: ANN001
+    c, o = chain
+    o.add_object("orphan", "category", ["id"])
+    o.verify(c)
+    got = o.compile("revenue", group_by=[("orphan", "name")])
+    assert isinstance(got, Refusal)
+    assert got.reason == "no_path"
