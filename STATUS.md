@@ -45,12 +45,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **Is F27 reversed?** On 2026-08-05 you declined "install as plugins inside MSSQL" and kept EPIC-020 extract-only. The 2026-08-07 ask ("appear in people's MS SQL Server") is the opposite. Extract-only keeps the Space boundary; live federation does not. Nothing SQL-Server-shaped starts until this is answered. |
-| **RUN NOW** | #57 FF-02 — a governed metric answered a *negated* question with its inverse (`NOT cold storage` → `is_cold_storage = TRUE`), 4 vs 102,986 under L1_GOVERNED_METRIC. The only confidently-wrong answer in the gate. |
+| **NEEDS-YOU** | **Is F27 reversed?** On 2026-08-05 you declined "install as plugins inside MSSQL" and kept EPIC-020 extract-only. The 2026-08-07 ask ("appear in people's MS SQL Server") is the opposite. Extract-only keeps the Space boundary; live federation does not. Nothing SQL-Server-shaped starts until this is answered. **Also (PRD F41 / F45):** accept DR-0003 items 1-2 and split EPIC-021 -> EPIC-021a (grain-guarded compiler in the engine; `scripts/ontology.py` is the prototype), and decide insights + brief (thin deterministic epic vs the EPIC-022 precision gate). |
+| **RUN NOW** | #57 FF-02 - a governed metric answered a *negated* question with its inverse (`NOT cold storage` -> `is_cold_storage = TRUE`), 4 vs 102,986 under L1_GOVERNED_METRIC. The only confidently-wrong answer in the gate. **Plus F40 P0** (EPIC-017 + Cortex#11): `python scripts/repro_refused_badge.py` exit 0 - a manifest refusal renders `L2_VALIDATED`, `abstained=false`; Cortex fix first, then the repro becomes a DMS envelope test. |
 | #59 FF-03 | The L2 validation gate names why it refused the SQL and throws it away — `violations` never reaches `str(exc)`. Cortex-side; one line. Blocks diagnosing free-form coverage. |
 | Free-form | Coverage is low and everything answered came from L0/L1, not L2. L2 generates SQL its own gate rejects — see #59 before concluding anything about the model. |
 | #39 VQ-01 | Scoped, **blocked**: D:\Cortex has 47 files in flight (R-0006). Verified truth + SQL + synonyms in the #39 comment. Earlier numbers there were corrected — the first set was a 15x fan-out. |
-| Epics | #33 EPIC-017; #35 EPIC-018; #38 EPIC-019 (F32) |
+| Epics | In flight: #33 EPIC-017 (#57, #59, F40) + #35 EPIC-018 (CI accuracy gate, promote-on-truth - F42/F46). Queued: #38 EPIC-019 (F32; value dictionary + pinned plans F46). PRD ledger F40-F48 routes the engine-side accuracy work; EPIC-020 stays blocked on F36. |
 | L4/L5 | Aspiration only (P-DMS-33) — **NEEDS-YOU** confirm meanings or decline badges |
 | #28 ENV-E4 | reorder/low-stock E4; parent #8 |
 | EPIC-016 #29 | Excel Copilot — likely wrong-priority if the direction shifts; park not close |
