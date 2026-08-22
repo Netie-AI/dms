@@ -698,8 +698,6 @@ def main(argv: list[str] | None = None) -> int:
     return run_demo(args.warehouse)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
 
 
 # --------------------------------------------------------------------------
@@ -806,3 +804,7 @@ def run_adventureworks(database: str | None = None) -> int:
     finally:
         con.close()
     return worst
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
