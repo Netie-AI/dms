@@ -25,13 +25,15 @@ agent) and Microsoft SQL Server / Power BI (semantic models, DAX measures, Q&A l
 schema, verified answers, indexed views) produced one convergent finding and several
 divergent ones.
 
-**The convergent finding.** All four vendors prevent fan-out inflation the same way, and
-none of them does it with a model. A metric is anchored to a declared grain, and the
-aggregation is not permitted to see a table finer than that grain:
+**The convergent finding.** Three of the four vendors anchor aggregation to a declared
+grain, and none of them does it with a model; the fourth (Fabric) validates generated SQL
+against a selected schema, which proves only that permitted objects are touched. The
+grain anchor is the mechanism copied here: a metric is anchored to a declared grain, and
+the aggregation is not permitted to see a table finer than that grain:
 
 | Vendor | Mechanism | Enforced at |
 |---|---|---|
-| Databricks | Metric view has one `source` that *is* the grain; the object cannot be joined to directly, it must materialise as a CTE first | definition + query compile |
+| Databricks | Metric view has one `source` that *is* the grain (the "must materialise as a CTE before joining" rule is repeated in secondary sources and was not found on the primary joins page - unverified) | definition + query compile |
 | Palantir | A derived property crossing a many-cardinality link **must** name an aggregation, or the definition is rejected | authoring time |
 | Power BI | Filter-then-aggregate: dimension predicates resolve to key sets pushed into the fact table; a dimension never appears in the aggregating `FROM` | model evaluation |
 | Fabric NL2SQL | Generated query is validated against the selected schema before execution | pre-execution |
@@ -67,8 +69,8 @@ Verified by reading the code and by execution, not by assertion.
 | Explicit `abstained` flag plus a provenance badge (not badge-absence) | **yes** | `dms_executor.envelope` |
 | No-executed-query means no authority to state a figure (E9) | **yes** | same |
 | Value dictionary / filter-literal normalisation against stored encodings | **partial** - a demote after the fact, no dictionary | hard rule 12 |
-| Declared grain per metric, enforced at plan time | **no** | - |
-| Join-cardinality verified at build time, not declared and trusted | **no** | - |
+| Declared grain per metric, enforced at plan time | **prototype** - `scripts/ontology.py`: measures declare grain, compile refuses fan-out, ambiguous, unknown; multi-hop; 51 tests; generated bench 431/431. Not on the ask path | `scripts/ontology.py` |
+| Join-cardinality verified at build time, not declared and trusted | **prototype** - `Ontology.verify()` measures parent uniqueness over non-NULL keys, key nullness, child readability; `validate_lake.py` on the lake | `scripts/ontology.py`, `scripts/validate_lake.py` |
 | Generated SQL validated against an allow-listed schema before execution | **partial** - `reject_hostile_chat_sql` is not on the ask path | `packages/executor` |
 | Verified answers: curated trigger phrase to pinned query plan | **no** | - |
 | Accuracy gate running in CI | **no** - every oracle gate is manual | `.github/workflows/ci.yml` |
@@ -100,14 +102,19 @@ per unit of irreversibility, so the cheap reversible wins land first.
    join below it, abstain rather than return a number. This is Power BI's `ISFILTERED`
    test and Databricks' metric-view source rule. It is the one change that stops fan-out
    as a *class* rather than case by case - which is what R-0004 asks for, and what the
-   ~15x bug on `fix/oracle-fanout` was a single instance of.
+   ~15x bug on `fix/oracle-fanout` was a single instance of. Prototyped in
+   `scripts/ontology.py`; what it guarantees is the JOIN SHAPE - the measure expression
+   is trusted as authored, and a filter through a many-to-many hop answers the
+   existential reading and says so (`CompiledQuery.existential`).
 
 2. **Verify declared cardinality instead of trusting it (Cortex, build time).** For every
    relationship a metric treats as the "one" side, run `SELECT COUNT(*) = COUNT(DISTINCT
    key) FROM dim` at build time and fail the build. This is strictly better than
-   Databricks, who document that `rely.at_most_one_match` is "not validated at runtime.
-   If the join produces a fan-out, measures return incorrect results." Our own warehouse
-   would have failed this check: `inventory` is 7,388 rows for 509 SKUs.
+   Databricks, whose primary documentation says of `rely.at_most_one_match`: "This
+   property is not validated at runtime. If the asserted side produces a fan-out,
+   measures return incorrect results." (docs.databricks.com/aws/en/uc-semantics/
+   metric-views/joins, fetched 2026-08-23). Our own warehouse would have failed this
+   check: `inventory` is 7,388 rows for 509 SKUs.
 
 3. **Schema allow-list validated before execution (Cortex).** Parse the generated SQL and
    reject any relation or column outside the grant. Fabric's pipeline is literally
@@ -184,7 +191,9 @@ answer. Both are per-question costs that grow with the data.
 - `tests/test_freeform_gate.py` proves the gate can fail (R-0007) on a fixture built in
   the test, so it never skips (R-0002).
 - Items 1-8 each land with an assertion on the DMS envelope from `POST /v1/chat/ask`
-  (CLAUDE.md 10a), never on generated SQL alone.
+  (CLAUDE.md 10a), never on generated SQL alone. Today none has: the grain guard exists as
+  `scripts/ontology.py` with tests on compiled SQL and executed rows and a generated bench
+  over the AdventureWorks lake, and nothing on the ask path calls it yet.
 
 ### What the adversarial round changed (W-0001, R-0003)
 
@@ -226,6 +235,16 @@ The generalisable lesson for items 1-8 above: **an accuracy mechanism needs an a
 who did not build it, and the adversary must run the mechanism rather than read it.** Every
 finding here was produced by executing `judge()` against candidate answers, not by
 inspection. None of it was visible to the author.
+
+## Sources
+
+Of the vendor claims above, one is cited to a primary page fetched during review
+(the Databricks `rely.at_most_one_match` wording). The remaining vendor descriptions came
+from a four-agent research pass over primary documentation whose transcript is not
+reproduced here; they are stated as findings of that pass, not as cited facts, and the
+one claim that pass could not place on a primary page (the Databricks CTE rule) is marked
+unverified above. A reader who needs a citation for a specific row should treat it as
+unverified until one is added.
 
 ## Open finding routed with this record
 
