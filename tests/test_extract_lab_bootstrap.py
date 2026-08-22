@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import re
-import sys
+import tomllib
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -19,10 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _toml() -> dict:
-    if sys.version_info >= (3, 11):
-        import tomllib
-    else:
-        import tomli as tomllib  # type: ignore[no-redef]
     return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
