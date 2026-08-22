@@ -2,6 +2,22 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-22 - S4 warehouse identity
+
+- **Two DuckDB files were the remaining S4 gap** (TAS-DMS §6, measured
+  2026-08-02). Studio ingest writes `DMS_WAREHOUSE_DB` (`data/dms_demo.duckdb`).
+  Cortex answers from `CORTEX_HOME/data/dms_demo.duckdb`. An uploaded sheet was
+  unreachable from `POST /v1/chat/ask` — a silent miss. dms#4/#5 (receipt
+  honesty, grounding) stay closed; this is the warehouse-identity leftover.
+- **Fix is an explicit bronze copy, not one file.** Demo seed uses
+  `txn_type='outbound'`; the engine file uses `'OUT'`. Pointing ingest at the
+  engine warehouse reseeds and drops its extra tables. `sync_bronze_to_serving`
+  copies bronze user tables only.
+- **Regression:** `tests/test_warehouse_identity.py` fails if an xlsx lands in
+  ingest and serving cannot see it; `--check` exits 1 on that diverge.
+- **Demo step:** `python scripts/sync_bronze_to_serving.py` (Start-DMSStack
+  runs it before Cortex starts, while the serving file is unlocked).
+
 ## 2026-08-06 - working-tree recovery, SCORE-03, demo 31/31
 
 - **Composition root recovered.** `apps/api/dms_api/wiring.py` had been

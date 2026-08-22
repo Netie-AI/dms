@@ -62,6 +62,13 @@ from dms_executor.warehouse_browse import (
     preview_bronze_table,
     preview_warehouse_table,
 )
+from dms_executor.warehouse_identity import (
+    bronze_missing_from_serving,
+    identity_check,
+    ingest_warehouse_path,
+    serving_warehouse_path,
+    sync_bronze_to_serving,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -600,4 +607,9 @@ __all__ = [
     "sign_gold_metric",
     "validate_pipeline_dict",
     "write_bronze_rows",
+    "bronze_missing_from_serving",
+    "identity_check",
+    "ingest_warehouse_path",
+    "serving_warehouse_path",
+    "sync_bronze_to_serving",
 ]
