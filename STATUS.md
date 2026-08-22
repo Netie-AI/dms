@@ -1,6 +1,6 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-08-05 afternoon  
+**Last updated:** 2026-08-22 morning  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -32,6 +32,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | SCORE-03 (#42 CLOSED) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
 | Demo | `verify_demo_live.py` **31/31** live, first run on a cold stack |
 | #48 CLOSED | E10 — a grouped/ranked ask can't be settled by an ungrouped scalar |
+| **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
 | #43 CLOSED | cold-start timeout was rendered as 403; now 504+retryable. Launcher warms the answer path (measured 30-48s) |
 | #44 CLOSED | protected-paths gate made deterministic; cause never found, ruled-out list in the issue |
 | #58 | Cortex client timeout was a hardcoded 30s < the path it calls. Now `cortex_timeout_seconds`, default 120 |
