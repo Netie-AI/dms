@@ -32,12 +32,14 @@ class ReceiptOut(BaseModel):
 @router.post("/ingest")
 async def ingest_file(
     cortex: CortexDep,
+    settings: SettingsDep,
     file: UploadFile = File(...),
     space_id: str | None = Form(None),
 ) -> ReceiptOut:
     """Single-file ingest (compat). Prefer /ingest-batch for multi-file triage."""
     decision = compliance_gate(
         action="studio.ingest",
+        actor=settings.dms_actor_user_id,
         metadata={"task_id": "studio.ingest", "filename": file.filename},
         client=cortex,
     )
@@ -72,11 +74,13 @@ async def ingest_file(
 @router.post("/ingest-batch")
 async def ingest_batch_files(
     cortex: CortexDep,
+    settings: SettingsDep,
     files: list[UploadFile] = File(...),
     space_id: str | None = Form(None),
 ) -> ReceiptOut:
     decision = compliance_gate(
         action="studio.ingest",
+        actor=settings.dms_actor_user_id,
         metadata={
             "task_id": "studio.ingest",
             "file_count": len(files),

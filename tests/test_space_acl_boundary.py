@@ -95,6 +95,14 @@ def test_two_spaces_do_not_mint_the_same_acl() -> None:
     assert q3.row_predicates != margin.row_predicates, (
         "both Spaces minted identical table access — the Space label is decorative"
     )
+    # dms#2 acceptance: not merely a different space_id stamp. Finance can
+    # read transactions; Warehouse Ops can read shipments. Before the
+    # grant split, both maps were {table: TRUE} for every DEMO_TABLE.
+    assert set(q3.row_predicates) != set(margin.row_predicates)
+    assert "transactions" in q3.row_predicates
+    assert "transactions" not in margin.row_predicates
+    assert "shipments" in margin.row_predicates
+    assert "shipments" not in q3.row_predicates
 
 
 def test_a_space_cannot_read_a_table_it_has_no_source_for() -> None:

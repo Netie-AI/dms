@@ -8,6 +8,10 @@ INVARIANT-CHANGE: hard rule 12 — executed SQL with zero rows demotes to ABSTAI
 INVARIANT-CHANGE: E9-02 (F32) — ambiguous multi-sheet / multi-file category
 ranking must not stay confident green when competing Sales vs Wide_Fill (or
 cross-file sales) scopes disagree; uniquely scoped executed ranks may certify.
+INVARIANT-CHANGE: E11 (FF-02) — a negated ask answered by the inverse
+predicate (NOT cold storage -> is_cold_storage = TRUE) must not stay
+L1_GOVERNED_METRIC; refuse or answer the complement, never the inverse
+under a success badge.
 """
 
 from __future__ import annotations
@@ -553,4 +557,143 @@ def test_e10_grouped_ask_with_a_real_breakdown_certifies():
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert len(env["rows"]) == 3
+    assert_envelope_valid(env)
+
+
+# ---------------------------------------------------------------------------
+# E11 / FF-02 — a negated ask is not settled by the inverse predicate.
+# ---------------------------------------------------------------------------
+
+_FF02_QUESTION = (
+    "How many kilograms of FOOD_COLD goods have been delivered to warehouses "
+    "that are not cold storage?"
+)
+_FF02_INVERSE_SQL = (
+    "SELECT ROUND(SUM(s.quantity_kg), 1) AS kg FROM shipments s "
+    "JOIN locations l ON l.location_id = s.destination_location_id "
+    "WHERE l.is_cold_storage = TRUE"
+)
+_FF02_CORRECT_SQL = (
+    "SELECT ROUND(SUM(s.quantity_kg), 1) AS kg FROM shipments s "
+    "JOIN locations l ON l.location_id = s.destination_location_id "
+    "WHERE c.category = 'FOOD_COLD' AND s.status = 'DELIVERED' "
+    "AND NOT l.is_cold_storage"
+)
+
+
+def test_e11_negated_ask_answered_by_inverse_demotes():
+    """The FF-02 shape, the only confidently-wrong gate answer.
+
+    Asked for warehouses that are *not* cold storage. Matched the governed
+    metric that filters ``is_cold_storage = TRUE``. Returned 4 (cold-store
+    count) instead of 102,986, under L1_GOVERNED_METRIC. Real figure, real
+    SQL, inverse question. This test goes red if that polarity is dropped.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_ff02",
+        text="Result: kg = 4",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 4, "label": "kg"}],
+        sql_used=_FF02_INVERSE_SQL,
+        rows=[{"kg": 4}],
+        question=_FF02_QUESTION,
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"a NOT-cold-storage ask settled with is_cold_storage=TRUE certified as "
+        f"{env['badge']!r}"
+    )
+    assert env["abstained"] is True
+    assert not env["values"], "an abstention must not ship the inverted figure"
+    assert "4" not in env["text"]
+    assert "inverse" in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_e11_negated_ask_with_negated_sql_still_certifies():
+    """R-0005 — the guard must not refuse a correctly polarised answer."""
+    env = build_answer_envelope(
+        answer_id="ans_ff02_ok",
+        text="Result: kg = 102,986",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 102986, "label": "kg"}],
+        sql_used=_FF02_CORRECT_SQL,
+        rows=[{"kg": 102986}],
+        question=_FF02_QUESTION,
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 102986
+    assert_envelope_valid(env)
+
+
+def test_e11_positive_cold_storage_ask_still_certifies():
+    """R-0005 — 'at our cold-storage warehouses' is not a negation."""
+    env = build_answer_envelope(
+        answer_id="ans_ff02_pos",
+        text="Result: kg = 4",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 4, "label": "kg"}],
+        sql_used=_FF02_INVERSE_SQL,
+        rows=[{"kg": 4}],
+        question=(
+            "At our cold-storage warehouses only, how many kilograms of stock "
+            "have been written off?"
+        ),
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 4
+    assert_envelope_valid(env)
+
+
+def test_e11_bare_boolean_predicate_is_still_the_inverse():
+    """The live metric may say ``AND l.is_cold_storage``, not ``= TRUE``."""
+    env = build_answer_envelope(
+        answer_id="ans_ff02_bare",
+        text="Result: n = 4",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 4, "label": "n"}],
+        sql_used=(
+            "SELECT COUNT(*) AS n FROM locations l "
+            "WHERE l.capacity_kg > 0 AND l.is_cold_storage"
+        ),
+        rows=[{"n": 4}],
+        question="how many warehouses are not cold storage?",
+    )
+
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert_envelope_valid(env)
+
+
+def test_e11_live_map_path_demotes_inverse_under_l1():
+    """Same constructor path as POST /v1/chat/ask (map_ask_response_to_envelope)."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Result: kg = 4",
+            "audit_id": "aud_ff02",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": _FF02_INVERSE_SQL,
+            "rows": [{"kg": 4}],
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="sp_ops",
+        session_id="ses_ff02",
+        question=_FF02_QUESTION,
+    )
+
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
     assert_envelope_valid(env)

@@ -75,8 +75,19 @@ def _to_gen_submit(req: ContractSubmitRequest) -> GenSubmitRequest:
 class CortexClient:
     """Pin base_url to a Cortex image/tag via compose; contract major must be 1."""
 
-    def __init__(self, base_url: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float = 30.0,
+        api_key: str | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
+        # Viewer key for off-contract surfaces (F5 gate, ontology). Ask/submit
+        # stay on the generated client; the gate used to POST with no header
+        # at all, so a Cortex that requires X-API-Key refused every mutation
+        # as anonymous (S1 ingest 403).
+        self.api_key = api_key
         self._client = GeneratedClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(timeout),

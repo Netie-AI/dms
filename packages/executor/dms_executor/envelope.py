@@ -331,6 +331,79 @@ def _should_demote_shape_mismatch(
     return not _GROUP_BY.search(stripped)
 
 
+# FF-02 / E11 — closed polarity contracts. Not intent inference: a question
+# phrase from this list plus a positive SQL predicate on the paired column,
+# with no negated form of that column in the same statement. Adding a
+# dimension means adding a row here, not growing a parser.
+_SQL_IDENT = r"(?:[\w]+\.)?"
+_POLARITY_CONTRACTS: tuple[tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]], ...] = (
+    (
+        re.compile(
+            r"\b(?:"
+            r"not\s+cold[\s-]*storage"
+            r"|non[\s-]*cold[\s-]*storage"
+            r"|aren't\s+cold[\s-]*storage"
+            r"|are\s+not\s+cold[\s-]*storage"
+            r"|is\s+not\s+cold[\s-]*storage"
+            r"|isn't\s+cold[\s-]*storage"
+            r"|except\s+cold[\s-]*storage"
+            r"|excluding\s+cold[\s-]*storage"
+            r")\b",
+            re.I,
+        ),
+        re.compile(
+            rf"(?:not\s+{_SQL_IDENT}is_cold_storage"
+            rf"|{_SQL_IDENT}is_cold_storage\s*=\s*(?:false|0)"
+            rf"|{_SQL_IDENT}is_cold_storage\s+is\s+(?:not\s+true|false))",
+            re.I,
+        ),
+        re.compile(
+            rf"(?:{_SQL_IDENT}is_cold_storage\s*=\s*(?:true|1)"
+            rf"|{_SQL_IDENT}is_cold_storage\s+is\s+true"
+            rf"|(?:where|and|or)\s+\(?\s*{_SQL_IDENT}is_cold_storage\b)",
+            re.I,
+        ),
+    ),
+)
+
+
+def _should_demote_polarity_invert(*, question: str | None, sql: str | None) -> bool:
+    """True when a negated ask was answered with the positive predicate.
+
+    The FF-02 shape. Asked for warehouses that are *not* cold storage.
+    Answered with ``is_cold_storage = TRUE`` under L1_GOVERNED_METRIC: 4
+    (the cold-store count) instead of 102,986. The figure was real and the
+    SQL was real; they answer the inverse question. A reader cannot detect
+    that from the envelope, which is what makes it the only confidently
+    -wrong gate answer.
+
+    Same honesty rule as E10: a closed contract, not an intent cascade.
+
+      1. the ask uses a listed negation phrase
+      2. the executed SQL applies the paired column as a positive filter
+      3. the executed SQL does not apply the negated form of that column
+
+    A positive ask ("at our cold-storage warehouses") never trips 1, so it
+    keeps certifying (R-0005). A negated ask answered with ``NOT
+    is_cold_storage`` trips 1 and the negative SQL pattern, so it also
+    certifies.
+    """
+    q = question or ""
+    if not q or not sql:
+        return False
+    stripped = _SQL_COMMENT.sub("", str(sql))
+    if not stripped.strip():
+        return False
+    for q_neg, sql_neg, sql_pos in _POLARITY_CONTRACTS:
+        if not q_neg.search(q):
+            continue
+        if sql_neg.search(stripped):
+            return False
+        if sql_pos.search(stripped):
+            return True
+    return False
+
+
 def _executed_query(sql: str | None) -> bool:
     """True when ``sql_used`` holds a statement, not a placeholder comment.
 
@@ -651,6 +724,25 @@ def build_answer_envelope(
         )
         assumptions_list.append(
             "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
+        )
+
+    # E11 (FF-02) — a negated ask must not be settled by the inverse filter.
+    # After E10: a shape mismatch is the more general complaint, and FF-02
+    # is a scalar so E10 does not fire. Polarity is the specific one.
+    if not abstained and _should_demote_polarity_invert(
+        question=question, sql=sql_used
+    ):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "You asked for the complement of a filter, and the query I matched "
+            "applies the filter itself - it answers the inverse question. "
+            "Rather than show you that number under a success badge, I'm "
+            "stopping here. Ask the positive form if that is what you want, "
+            "or rephrase so the negation is unmistakable."
+        )
+        assumptions_list.append(
+            "negated ask answered by the inverse predicate: polarity invert (E11/FF-02)"
         )
 
     if abstained:

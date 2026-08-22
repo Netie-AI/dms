@@ -52,9 +52,14 @@ def compliance_gate(
         "filled_template": filled,
         "actor": actor or "user",
     }
+    headers: dict[str, str] = {}
+    api_key = getattr(client, "api_key", None)
+    if api_key:
+        headers["X-API-Key"] = str(api_key)
+
     try:
         with httpx.Client(base_url=str(base).rstrip("/"), timeout=10.0) as http:
-            r = http.post("/dms/tasks/gate/check", json=payload)
+            r = http.post("/dms/tasks/gate/check", json=payload, headers=headers)
     except httpx.HTTPError:
         return ComplianceDecision(
             allowed=False, reason="gate_unavailable", action=action, event_id=event_id

@@ -2,6 +2,30 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-22 - FF-02 polarity, ingest gate headers
+
+- **E11 / FF-02 (#57).** A governed metric that answers a negated question
+  with the inverse predicate (`NOT cold storage` -> `is_cold_storage = TRUE`)
+  is now demoted at `build_answer_envelope`. Same honesty rule as E10: closed
+  contract on question phrase + SQL, not intent inference. The 4-vs-102,986
+  case abstains; a correctly polarised `NOT is_cold_storage` and a positive
+  cold-storage ask still certify. Tests go red if the polarity check is
+  dropped.
+- **Ingest 403 (S1).** `compliance_gate` posted `/dms/tasks/gate/check` with
+  no `X-API-Key` and actor defaulting to `"user"`, while read surfaces send
+  `CORTEX_API_KEY`. `CortexClient` now carries the viewer key; Studio ingest
+  sends the seeded actor. A stack with no Cortex still 403s
+  `gate_unavailable` - that is fail-closed, not a silent 200. If Cortex is
+  up and the task catalog has no `studio.ingest`, the 403 is
+  `gate_task_unknown` and stays Cortex-side (P-DMS-4). Do not soft-allow
+  mutations.
+- **ACL (#2) and warehouse (#4/#5).** Serving-path Space grants already
+  differ (Finance has `transactions`, Warehouse Ops has `shipments`). Studio
+  and live ask do **not** share a DuckDB: `DMS_WAREHOUSE_DB` vs Cortex
+  `data/dms_demo.duckdb`, and `txn_type` encodings disagree (`outbound` vs
+  `OUT`). An uploaded sheet remains silent to chat until Cortex reads the
+  same file. Not unified here.
+
 ## 2026-08-06 - working-tree recovery, SCORE-03, demo 31/31
 
 - **Composition root recovered.** `apps/api/dms_api/wiring.py` had been
