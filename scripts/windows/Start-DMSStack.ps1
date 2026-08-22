@@ -37,6 +37,47 @@ function Wait-HttpOk([string]$Url, [int]$Seconds = 60) {
   return $false
 }
 
+function Wait-TcpPort([string]$TargetHost, [int]$Port, [int]$Seconds = 45) {
+  $deadline = (Get-Date).AddSeconds($Seconds)
+  do {
+    try {
+      $client = New-Object System.Net.Sockets.TcpClient
+      $client.Connect($TargetHost, $Port)
+      $client.Close()
+      return $true
+    } catch {
+      Start-Sleep -Seconds 2
+    }
+  } while ((Get-Date) -lt $deadline)
+  return $false
+}
+
+function Invoke-DmsAlembicUpgrade {
+  # Host-run tests talk to compose postgres. Lifespan migrates only if the API
+  # process starts; pytest against 127.0.0.1:5432 does not. already-at-head is 0.
+  if (-not $env:DATABASE_URL) {
+    $env:DATABASE_URL = "postgresql://dms:dms@127.0.0.1:5432/dms"
+  }
+  if (-not (Wait-TcpPort "127.0.0.1" 5432 45)) {
+    Write-Host "Postgres not reachable on 127.0.0.1:5432; skipped alembic upgrade head" -ForegroundColor Yellow
+    return
+  }
+  Write-Host "alembic upgrade head..."
+  Push-Location $RepoRoot
+  try {
+    & python -m alembic upgrade head
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "alembic upgrade head ok" -ForegroundColor Green
+    } else {
+      Write-Host "alembic upgrade head failed (exit $LASTEXITCODE)" -ForegroundColor Red
+    }
+  } catch {
+    Write-Host "alembic upgrade head failed: $_" -ForegroundColor Red
+  } finally {
+    Pop-Location
+  }
+}
+
 $env:OPENVAULT_HOME = if ($env:OPENVAULT_HOME) { $env:OPENVAULT_HOME } else { "D:\OpenVault\.openvault" }
 $env:OPENVAULT_URL = $OpenVaultUrl
 $env:CORTEX_URL = $CortexUrl
@@ -69,9 +110,21 @@ Write-Host "Compose postgres (with host binding)..."
 Push-Location $ComposeDir
 try {
   docker compose -f docker-compose.yml -f docker-compose.hostdb.yml up -d postgres 2>$null | Out-Null
-  docker compose up -d api 2>$null | Out-Null
 } catch {
   Write-Host "Docker compose skipped/failed: $_" -ForegroundColor Yellow
+}
+Pop-Location
+
+# Host-run control-plane tests need dms.spaces on this postgres even when
+# the compose API never comes up (lifespan never runs). Run before the API
+# container so this does not race the appliance lifespan migrate.
+Invoke-DmsAlembicUpgrade
+
+Push-Location $ComposeDir
+try {
+  docker compose up -d api 2>$null | Out-Null
+} catch {
+  Write-Host "Docker compose api skipped/failed: $_" -ForegroundColor Yellow
 }
 Pop-Location
 

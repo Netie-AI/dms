@@ -77,6 +77,25 @@ uvicorn dms_api.app:app --reload --port 8090
 
 Desktop demo: double-click `scripts\windows\Start-DMS.bat` (ASCII-safe; do not double-click the .ps1).
 
+`Start-DMSStack.ps1` runs `alembic upgrade head` after compose postgres is
+reachable. The API image entrypoint and lifespan do the same (already-at-head
+is success). A fresh postgres volume then has `dms.spaces` without a manual
+migrate.
+
+## AdventureWorks extract (EPIC-020, extract-only)
+
+Restore shipped `.bak` files into a throwaway SQL Server container, extract to
+Parquet bronze, stop. Not a live SQL Server plugin.
+
+```powershell
+python scripts/load_adventureworks.py --all
+```
+
+`AW_IMAGE` defaults to `mcr.microsoft.com/mssql/server:2025-latest`. The
+AdventureWorks*2025 backups are SQL Server database version 998; a 2022 image
+cannot restore them. If a leftover container was created from a 2022 tag, the
+script fails before RESTORE and tells you to `docker rm -f` it.
+
 - API: http://127.0.0.1:8090/health
 - Compose: `deploy/compose/docker-compose.yml` (pins Cortex image tag)
 - Power BI: see `docs/POWERBI_DUCKLAKE.md` (never folder-connect DuckLake `data/`)

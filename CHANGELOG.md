@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-22 - extract-lab follow-up (pyarrow, migrate, AW_IMAGE)
+
+- **pyarrow** is a declared runtime dep. `scripts/load_adventureworks.py --extract`
+  writes Parquet via `pandas.DataFrame.to_parquet` and died mid-run when the
+  extra was missing.
+- **alembic upgrade head** runs on postgres bootstrap: API image entrypoint,
+  API lifespan (already did), and `Start-DMSStack.ps1` after host-bound
+  postgres is up. already-at-head is success. Fresh compose-postgres then has
+  `dms.spaces` without a manual migrate.
+- **AW_IMAGE** defaults to `mcr.microsoft.com/mssql/server:2025-latest`. A 2022
+  tag cannot restore the shipped AdventureWorks*2025 backups (version 998).
+  Script help, README, and a pre-RESTORE image/engine check say so.
+
 ## 2026-08-06 - working-tree recovery, SCORE-03, demo 31/31
 
 - **Composition root recovered.** `apps/api/dms_api/wiring.py` had been

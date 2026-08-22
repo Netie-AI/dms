@@ -17,4 +17,7 @@ RUN pip install --no-cache-dir \
 
 ENV PYTHONPATH=/app/apps/api:/app/packages/core:/app/packages/cortex_client:/app/packages/executor:/app/packages/ledger
 EXPOSE 8080
+# Entrypoint runs alembic upgrade head (idempotent) before uvicorn so a
+# fresh postgres volume has dms.spaces without a manual migrate.
+ENTRYPOINT ["/app/apps/api/entrypoint.sh"]
 CMD ["uvicorn", "dms_api.app:app", "--host", "0.0.0.0", "--port", "8080"]

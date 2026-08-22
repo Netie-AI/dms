@@ -23,6 +23,7 @@ services:
       retries: 10
 
   api:
+    # entrypoint.sh runs alembic upgrade head (idempotent) then uvicorn.
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
