@@ -12,7 +12,8 @@ and a verified dimension: concentration (the top few carry most of the total),
 dominance (one group is most of it), an unknown bucket (a material share of the
 measure lands on rows the dimension cannot label), or a refusal (the ontology
 knows the question is ambiguous and says so instead of guessing). Every figure
-comes out of the ontology compiler, which cannot fan out; every grouped total is
+comes out of the ontology compiler, which cannot fan out through its joins;
+every grouped total is
 checked against the raw ungrouped total computed with no join at all; and every
 insight carries the SQL that produced it. There is no model in the loop. A
 model may later *phrase* these; it never *produces* them.
@@ -26,9 +27,11 @@ declaration for AdventureWorks, written by a person and labelled with what each
 measure is NOT, because the caveat is the part a reader skips and the part that
 makes a number wrong to quote.
 
-Dimensions, by contrast, are discovered: any object reachable from the measure's
-grain over verified many-to-one links, and any low-cardinality text attribute on
-it. That is exactly the set the compiler can group by without inflating.
+Dimensions, by contrast, are discovered: every object the compiler can reach
+from the measure's grain (role-playing pairs tried once per link via=), and the
+short, populated, low-cardinality text attributes on it. Columns excluded as
+non-dimensions are listed in the report with the reason, and every grouping the
+compiler refused is listed as a refusal - nothing is dropped without a record.
 
   python scripts/insights.py --database AdventureWorks2025
   python scripts/insights.py --database AdventureWorks2025 --json out.json --top 12
@@ -121,7 +124,15 @@ class Insight:
     conserves: bool = True
 
 
-def _label_attrs(con: Any, rel: str, *, lo: int = 2, hi: int = 60) -> list[str]:
+def _label_attrs(
+    con: Any,
+    rel: str,
+    *,
+    lo: int = 2,
+    hi: int = 60,
+    excluded: list[dict[str, str]] | None = None,
+    owner: str = "",
+) -> list[str]:
     """Columns a business actually segments by - and nothing that merely looks like one.
 
     The first run of this miner reported that 95 pct of sales "lands on rows
@@ -141,51 +152,47 @@ def _label_attrs(con: Any, rel: str, *, lo: int = 2, hi: int = 60) -> list[str]:
             f'SELECT COUNT(DISTINCT "{name}"), COUNT("{name}"), COUNT(*), '
             f'MAX(LENGTH("{name}")) FROM {rel}'
         ).fetchone()
+        why = None
         if not (lo <= int(d) <= hi):
-            continue
-        if int(total) == 0 or int(nn) * 2 <= int(total):
-            continue
-        if maxlen is not None and int(maxlen) > 64:
+            why = f"{int(d)} distinct values (dimension range is {lo}..{hi})"
+        elif int(total) == 0 or int(nn) * 2 <= int(total):
+            why = f"populated on {int(nn)} of {int(total)} rows (needs more than half)"
+        elif maxlen is not None and int(maxlen) > 64:
+            why = f"values up to {int(maxlen)} chars (a label is 64 or fewer)"
+        if why is not None:
+            if excluded is not None:
+                excluded.append({"object": owner, "column": str(name), "why": why})
             continue
         out.append(str(name))
     return out
 
 
-def _reachable(onto: Any, grain: str, *, max_hops: int = 3) -> dict[str, list[str]]:
-    """Objects reachable from the grain over verified many-to-one links only.
+def _candidate_objects(onto: Any, grain: str) -> list[tuple[str, dict[str, str] | None]]:
+    """Every object the compiler can reach from the grain, with the via it needs.
 
-    Returns object -> list of link names forming the path. One path per object:
-    if two distinct paths reach the same object at the same depth the object is
-    dropped here, because the compiler will refuse it as ambiguous and an
-    insight built on a guessed path is not an insight.
+    The first version re-implemented path resolution here (_reachable) and
+    disagreed with compile() - it dropped role-playing dimensions the compiler
+    could reach with via=, kept objects the compiler then refused, and recorded
+    no refusal for either. There is one resolver now: compile()'s. Candidates
+    are every object; where a pair has more than one link, every link is tried
+    as a via; compile() decides, and every Refusal is recorded as a refusal.
     """
-    paths: dict[str, list[str]] = {grain: []}
-    frontier = [grain]
-    ambiguous: set[str] = set()
-    for _ in range(max_hops):
-        nxt: list[str] = []
-        seen_this_level: dict[str, list[str]] = {}
-        for obj in frontier:
-            for link in onto.links.values():
-                if link.from_object != obj or link.cardinality != "many_to_one":
-                    continue
-                if link.to_object in paths:
-                    continue
-                cand = paths[obj] + [link.name]
-                if link.to_object in seen_this_level:
-                    ambiguous.add(link.to_object)
-                else:
-                    seen_this_level[link.to_object] = cand
-        for obj, path in seen_this_level.items():
-            if obj in ambiguous:
-                continue
-            paths[obj] = path
-            nxt.append(obj)
-        frontier = nxt
-        if not frontier:
-            break
-    paths.pop(grain, None)
-    return paths
+    out: list[tuple[str, dict[str, str] | None]] = []
+    for obj in onto.objects:
+        if obj == grain:
+            continue
+        into = [x for x in onto.links.values() if x.to_object == obj]
+        by_from: dict[str, list[Any]] = {}
+        for x in into:
+            by_from.setdefault(x.from_object, []).append(x)
+        role_playing = [links for links in by_from.values() if len(links) > 1]
+        if role_playing:
+            for links in role_playing:
+                for link in links:
+                    out.append((obj, {obj: link.name}))
+        else:
+            out.append((obj, None))
+    return out
 
 
 def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
@@ -206,6 +213,8 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
     insights: list[Insight] = []
     refusals: list[dict[str, str]] = []
     broken: list[str] = []
+    excluded: list[dict[str, str]] = []
+    compiles = 0
     n_id = 0
 
     for m in declared:
@@ -216,29 +225,22 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
         if raw is None:
             continue
         raw = float(raw)
-        reach = _reachable(onto, m["grain"])
-        # also the grain's own attributes
         candidates: list[tuple[str, str, dict[str, str] | None]] = []
-        for attr in _label_attrs(con, fact_rel):
+        for attr in _label_attrs(con, fact_rel, excluded=excluded, owner=m["grain"]):
             candidates.append((m["grain"], attr, None))
-        for obj, path in reach.items():
-            via = {}
-            # via only needs naming where a pair has more than one link
-            for ln in path:
-                link = onto.links[ln]
-                siblings = [
-                    x for x in onto.links.values()
-                    if x.from_object == link.from_object and x.to_object == link.to_object
-                ]
-                if len(siblings) > 1:
-                    via[link.to_object] = ln
-            for attr in _label_attrs(con, onto.objects[obj].relation):
-                candidates.append((obj, attr, via or None))
+        for obj, via in _candidate_objects(onto, m["grain"]):
+            for attr in _label_attrs(con, onto.objects[obj].relation, excluded=excluded,
+                                     owner=obj):
+                candidates.append((obj, attr, via))
 
         for obj, attr, via in candidates:
+            compiles += 1
             got = onto.compile(m["name"], group_by=[(obj, attr)], via=via)
             if isinstance(got, Refusal):
-                refusals.append({"question": f"{m['name']} by {obj}.{attr}",
+                if got.reason in {"no_path"}:
+                    continue  # not reachable from this grain: not a question
+                refusals.append({"question": f"{m['name']} by {obj}.{attr}"
+                                 + (f" via {via}" if via else ""),
                                  "reason": got.reason, "detail": got.detail})
                 continue
             assert isinstance(got, CompiledQuery)
@@ -247,19 +249,34 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
             if len(vals) < 2:
                 continue
             total = sum(v for _, v in vals)
-            n = len(vals)
-            conserves = abs(total - raw) <= ABS_TOL * max(1, n)
+            conserves = abs(total - raw) <= ABS_TOL
             if not conserves:
                 broken.append(f"{m['name']} by {obj}.{attr}: grouped {total:,.2f} "
                               f"!= raw {raw:,.2f}")
                 continue
-            if total <= 0:
+            # Shares only mean something over a positive, same-signed total. A
+            # measure with refunds in it (mixed signs) produced "2 of 5 carry
+            # 4060 pct"; a zero or negative total vanished without a word.
+            if total <= 0 or any(v < 0 for _, v in vals):
+                refusals.append({"question": f"{m['name']} by {obj}.{attr}",
+                                 "reason": "signed_measure",
+                                 "detail": f"total {total:,.2f} with "
+                                           f"{sum(1 for _, v in vals if v < 0)} negative "
+                                           "groups - shares of a signed total are not a share"})
                 continue
-            ordered = sorted(vals, key=lambda kv: -kv[1])
+            # NULL is not a top value. It is the unlabelled remainder, reported
+            # on its own; ranking is over labelled groups, ties broken by label
+            # so the same data reports the same leader every run.
+            labelled = [(lbl, v) for lbl, v in vals if lbl is not None]
+            null_share = sum(v for lbl, v in vals if lbl is None) / total
+            if len(labelled) < 2:
+                continue
+            n = len(labelled)
+            ordered = sorted(labelled, key=lambda kv: (-kv[1], str(kv[0])))
             k = max(1, min(3, n // 2))
             top_share = sum(v for _, v in ordered[:k]) / total
             top1 = ordered[0][1] / total
-            null_share = sum(v for lbl, v in vals if lbl is None) / total
+            top2 = ordered[1][1] / total
             dim_label = f"{obj}.{attr}" if obj != m["grain"] else f"{attr}"
             caveats = [f"{m['name']}: {m['is']}; {m['is_not']}"]
             notes = list(got.notes)
@@ -278,7 +295,11 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
                 )
 
             uniform_k = k / n
-            if n >= 4 and top_share >= 0.5 and top_share - uniform_k >= 0.2:
+            tied_at_boundary = (
+                n > k and abs(ordered[k - 1][1] - ordered[k][1]) < 1e-9
+            )
+            if (n >= 4 and top_share >= 0.5 and top_share - uniform_k >= 0.2
+                    and not tied_at_boundary):
                 lbls = ", ".join(str(lbl) for lbl, _ in ordered[:k])
                 insights.append(_mk(
                     "concentration",
@@ -286,7 +307,7 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
                     f"{top_share * 100:.1f} pct of {m['name']}",
                     top_share - uniform_k,
                 ))
-            elif n >= 3 and top1 >= 0.4:
+            elif n >= 3 and top1 >= 0.4 and top1 > top2:
                 insights.append(_mk(
                     "dominance",
                     f"{ordered[0][0]!s} alone is {top1 * 100:.1f} pct of {m['name']} "
@@ -294,10 +315,14 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
                     top1 - 1.0 / n,
                 ))
             if null_share >= 0.05:
+                # Stated as what it is - rows with no value for this dimension -
+                # and not as "a data gap": on AdventureWorks the NULL currency
+                # rate is the US orders and the NULL salesperson is the online
+                # channel. What the absence means is a question for a person.
                 insights.append(_mk(
                     "unknown_bucket",
-                    f"{null_share * 100:.1f} pct of {m['name']} lands on rows "
-                    f"{dim_label} cannot label (NULL) - a data gap, not a category",
+                    f"{null_share * 100:.1f} pct of {m['name']} lands on rows with "
+                    f"no {dim_label} value",
                     min(null_share, 0.3),
                 ))
 
@@ -305,7 +330,7 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
     # One insight per (dimension, kind): the same territory split reported four
     # times over four measures is one story told four times. Measures then
     # rotate so the list is not all one metric.
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     # Two dimensions that split the measure into the SAME numbers are the same
     # story - EnglishProductSubcategoryName and its Spanish and French twins
     # produced three "insights" with identical figures. Identity is the value
@@ -315,7 +340,7 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
     cap = max(2, top // max(1, len(declared)) + 1)
     picked: list[Insight] = []
     for i in insights:
-        key = (i.dimension, i.kind)
+        key = (i.grain, i.dimension, i.kind)
         shape = (i.measure, i.kind, tuple(v for _, v in i.rows))
         if key in seen or shape in seen_shape or per_measure.get(i.measure, 0) >= cap:
             continue
@@ -331,8 +356,10 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
         "ontology": {"objects": len(onto.objects), "links": len(onto.links),
                      "measures": len(declared)},
         "insights": [asdict(i) for i in picked],
-        "candidates_examined": n_id,
-        "refusals": refusals[:20],
+        "insights_built": n_id,
+        "groupings_compiled": compiles,
+        "refusals": refusals[:40],
+        "columns_excluded": excluded,
         "broken": broken,
         "scope": ("every figure compiled by the ontology, every grouped total checked "
                   "against the raw total with no join; no model produced any number"),
@@ -383,8 +410,13 @@ def main(argv: list[str] | None = None) -> int:
     if report["refusals"]:
         print(f"  {len(report['refusals'])} questions refused as ambiguous or unreachable "
               f"(first: {report['refusals'][0]['question']} - {report['refusals'][0]['reason']})")
-    print(f"  candidates examined: {report['candidates_examined']}; "
-          f"scope: {report['scope']}")
+    print(f"  groupings compiled: {report['groupings_compiled']}; insights built: "
+          f"{report['insights_built']}; columns excluded as non-dimensions: "
+          f"{len(report['columns_excluded'])}")
+    for i in report["insights"][:3]:
+        for cv in i["caveats"]:
+            print(f"  caveat: {cv}")
+    print(f"  scope: {report['scope']}")
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")

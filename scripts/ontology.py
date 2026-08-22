@@ -1,4 +1,4 @@
-"""A semantic layer whose measures cannot fan out, because the SQL cannot express it.
+"""A semantic layer whose join shape cannot fan out a measure.
 
 Why this exists
 ---------------
@@ -8,12 +8,13 @@ wrong number after something produced it. Detectors are necessary and they do
 not compose - there is always one more shape nobody wrote a detector for, and
 the ~15x fan-out inflation on the demo warehouse was exactly that.
 
-All four vendors researched for DR-0003 solve this the same way, and not one of
-them uses a model to do it. The measure is anchored to a declared grain, and the
-aggregation is not permitted to see a table finer than that grain:
+Three of the four vendors researched for DR-0003 anchor aggregation to a
+declared grain, and none uses a model to do it; the fourth (Fabric) validates
+generated SQL against a schema, which proves only that permitted objects are
+touched. The mechanism copied here is the grain anchor:
 
-  Databricks   a metric view has one source that IS the grain, and the object
-               cannot be joined to directly - it must materialise as a CTE first
+  Databricks   a metric view has one source that IS the grain (the CTE rule
+               often repeated alongside this is not on the joins page; unverified)
   Palantir     a derived property crossing a many-cardinality link MUST name an
                aggregation, or the definition is rejected at authoring time
   Power BI     filter-then-aggregate: dimension predicates resolve to key sets
@@ -26,19 +27,26 @@ This module is that mechanism. A request names a measure, some filters and a
 grouping; the compiler emits SQL in which:
 
   * the aggregate runs over the fact table's own rows and nothing else;
-  * dimension filters become semi-joins (IN over a key set), which cannot
-    duplicate a fact row no matter what the dimension's cardinality is;
-  * a grouping attribute is only attached through a link whose parent side has
-    been MEASURED unique - anything else is refused, not guessed.
+  * dimension filters become semi-joins (IN over a key set), which never
+    duplicate a fact row; through a many-to-many link they keep any fact row
+    with at least one matching parent, and the CompiledQuery says so
+    (``existential``), because shares over such a filter do not partition the
+    total;
+  * a grouping attribute is only attached through links whose parent sides
+    have been MEASURED unique; an unverified or many-to-many hop, an ambiguous
+    hop, an unknown column or an unused via is refused. The measure
+    expression itself is trusted as authored.
 
 Where this goes further than the vendors
 ----------------------------------------
 Databricks lets you declare ``rely.at_most_one_match`` and their documentation
-says plainly it is "not validated at runtime. If the join produces a fan-out,
-measures return incorrect results." A declaration nobody checks is a comment.
-Here ``verify()`` executes every claim against the data, and ``compile()``
-refuses to use a link whose cardinality has not been verified. An unverified
-ontology can describe the world; it cannot answer a question.
+says plainly: "This property is not validated at runtime. If the asserted side
+produces a fan-out, measures return incorrect results." A declaration nobody
+checks is a comment. Here ``verify()`` measures key uniqueness, key nullness,
+child-side readability and parent-side uniqueness of every link, and
+``compile()`` refuses to use a link whose cardinality has not been measured.
+It does not read the measure expression. An unverified ontology can describe
+the world; it cannot answer a question.
 
 Refusal is a first-class result, for the same reason abstention is a first-class
 envelope state: a question this layer cannot answer correctly must come back as
@@ -155,6 +163,13 @@ class CompiledQuery:
     grain: str
     group_by: tuple[str, ...]
     notes: tuple[str, ...] = ()
+    # True when a filter crossed a many-to-many hop. The query then keeps a
+    # fact row if ANY linked row matches - one of two defensible readings of
+    # "where lot is hazardous" - and shares over such filters do not partition
+    # the total. Callers that must not choose a reading (the ask path) can
+    # refuse or abstain on this flag; callers that asked for the existential
+    # reading get it, named.
+    existential: bool = False
 
     def __bool__(self) -> bool:
         return True
@@ -224,6 +239,16 @@ class Ontology:
 
     # -- verification ----------------------------------------------------
 
+    def _columns(self, con: Any, obj: str) -> set[str]:
+        """Column names of an object's relation, cached at verify() time."""
+        cache = self.__dict__.setdefault("_column_cache", {})
+        if obj not in cache:
+            rel = self.objects[obj].relation
+            cache[obj] = {
+                str(r[0]) for r in con.execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()
+            }
+        return cache[obj]
+
     def verify(self, con: Any) -> list[Violation]:
         """Execute every claim. Nothing may be used until this has passed.
 
@@ -237,7 +262,15 @@ class Ontology:
                           than join through, and the compiler needs to know.
         """
         violations: list[Violation] = []
+        self.__dict__["_column_cache"] = {}
         for obj in self.objects.values():
+            try:
+                self._columns(con, obj.name)
+            except Exception as exc:  # noqa: BLE001
+                violations.append(
+                    Violation("relation_readable", obj.name, f"{type(exc).__name__}: {exc}")
+                )
+                continue
             cols = ", ".join(_ident(c) for c in obj.key)
             nulls = " OR ".join(f"{_ident(c)} IS NULL" for c in obj.key)
             try:
@@ -270,10 +303,25 @@ class Ontology:
 
         for name, link in list(self.links.items()):
             parent = self.objects[link.to_object]
+            child = self.objects[link.from_object]
             cols = ", ".join(_ident(c) for c in link.to_columns)
+            not_null = " AND ".join(f"{_ident(c)} IS NOT NULL" for c in link.to_columns)
             try:
+                # The child side is read too. verify() used to measure only the
+                # parent, so a link declared on a child column that does not
+                # exist was blessed "verified many-to-one" and failed at
+                # execution with a binder error - the layer promised a refusal
+                # and delivered a traceback.
+                child_cols = ", ".join(_ident(c) for c in link.from_columns)
+                con.execute(f"SELECT {child_cols} FROM {child.relation} LIMIT 0")
+                # Uniqueness is measured over parent rows whose key is not NULL.
+                # A NULL parent key never matches any child row, so it cannot
+                # fan anything out - but COUNT(*) counts it while
+                # COUNT(DISTINCT) does not, and one NULL row made a safe link
+                # read as many-to-many "up to 1x" and refused every grouping.
                 pn, pdistinct = con.execute(
-                    f"SELECT COUNT(*), COUNT(DISTINCT ({cols})) FROM {parent.relation}"
+                    f"SELECT COUNT(*), COUNT(DISTINCT ({cols})) FROM {parent.relation} "
+                    f"WHERE {not_null}"
                 ).fetchone()
             except Exception as exc:  # noqa: BLE001
                 violations.append(
@@ -303,7 +351,7 @@ class Ontology:
                 continue
             worst = con.execute(
                 f"SELECT MAX(n) FROM (SELECT COUNT(*) AS n FROM {parent.relation} "
-                f"GROUP BY {cols})"
+                f"WHERE {not_null} GROUP BY {cols})"
             ).fetchone()[0]
             self.links[name] = LinkType(
                 link.name, link.from_object, link.from_columns,
@@ -369,40 +417,63 @@ class Ontology:
         *,
         for_filter: bool = False,
     ) -> list[LinkType] | Refusal | None:
-        """The chain of verified many-to-one links from the grain to ``dim``.
+        """The chain of links from the grain to ``dim``, or a refusal, or None.
 
         One hop was never the real shape. "Sales by product category" on
         AdventureWorks is SalesOrderDetail -> Product -> Subcategory -> Category:
-        three links, every one of them many-to-one, and a chain of many-to-one
-        LEFT JOINs adds at most one row per fact row at every hop, so it cannot
-        inflate. Refusing it as no_path was adversarial finding 27, upheld, and
-        the reason the insight layer could not reach a single roll-up.
+        three links, every one many-to-one, and a chain of many-to-one LEFT
+        JOINs adds at most one row per fact row at every hop, so it cannot
+        inflate.
 
         Rules, in order:
-          * breadth-first from the grain, over many-to-one links only - a hop
-            through a many-to-many link is not a path, it is the fan-out;
-          * a hop whose (from, to) pair has more than one link is taken only if
-            ``via`` names which, otherwise the whole path is refused as
-            ambiguous - the role-playing calendar again, one level down;
-          * two different shortest paths to the same object is ambiguity of a
-            second kind (which intermediate object did you mean?) and is
-            refused the same way, naming both.
-        Longer-than-shortest paths are not considered: a reader who wants the
-        long way round declares the intermediate as the grouping object.
-
-        ``for_filter`` drops the cardinality rules and keeps the ambiguity ones.
-        A filter compiles to a semi-join - the fact table only ever sees
-        IN (key set) - so a many-to-many hop anywhere on the path cannot
-        duplicate a fact row, and refusing it would be R-0005: the multi-hop
-        patch did exactly that for one commit and two existing tests caught it.
+          * ``via`` is validated first: every key is an object, every value is
+            a declared link INTO that object. A via the search never used is
+            a refusal too - a silently ignored via is a question answered a
+            different way than it was asked;
+          * breadth-first from the grain. For grouping only many-to-one hops
+            are passable; for filters any hop is, because a semi-join cannot
+            duplicate a fact row (it CAN change the reading - see
+            ``existential``);
+          * a hop whose (from, to) pair has more than one link is passable
+            only through the link ``via`` names for that object;
+          * a hop that is NOT passable is remembered as blocked. When ``dim``
+            is reached on a clean path, the search checks whether any blocked
+            hop sat on a route no longer than the clean one; if so the clean
+            path is NOT returned - the question had a shorter reading the
+            layer would have had to guess about. The first version of this
+            resolver skipped blocked hops silently and once answered "revenue
+            by fiscal year" through customer -> cohort -> year when the
+            blocked order-date route was the one meant. That was the quietest
+            wrong number this layer could produce, found by an adversary
+            within a day;
+          * two different clean shortest paths to ``dim`` is ambiguity of the
+            second kind and is refused naming both.
         """
-        via = via or {}
+        via = dict(via or {})
+        # -- validate via up front ------------------------------------------
+        for obj, link_name in via.items():
+            if obj not in self.objects:
+                return Refusal("unknown_object", f"via names unknown object {obj!r}")
+            into = [x for x in self.links.values() if x.to_object == obj]
+            if link_name not in {x.name for x in into}:
+                return Refusal(
+                    "unknown_link",
+                    f"no link named {link_name!r} into {obj!r}; available: "
+                    f"{', '.join(sorted(x.name for x in into)) or 'none'}",
+                )
+
         if grain == dim and dim not in via:
             return []
+
         best: dict[str, list[LinkType]] = {grain: []}
+        depth: dict[str, int] = {grain: 0}
+        blocked: dict[str, tuple[int, Refusal]] = {}
+        used_via: set[str] = set()
         frontier = [grain]
-        while frontier:
-            nxt: list[str] = []
+        level = 0
+        found_dim: list[LinkType] | None = None
+        while frontier and found_dim is None:
+            level += 1
             found: dict[str, list[list[LinkType]]] = {}
             for obj in frontier:
                 by_pair: dict[str, list[LinkType]] = {}
@@ -413,70 +484,130 @@ class Ontology:
                         continue
                     by_pair.setdefault(link.to_object, []).append(link)
                 for to_obj, links in by_pair.items():
-                    m2o = [x for x in links if x.cardinality == "many_to_one"]
-                    chosen: LinkType | None
+                    chosen: LinkType | None = None
                     if to_obj in via:
                         named = [x for x in links if x.name == via[to_obj]]
                         if not named:
-                            return Refusal(
-                                "unknown_link",
-                                f"no link named {via[to_obj]!r} into {to_obj!r}; "
-                                f"available: {', '.join(sorted(x.name for x in links))}",
-                            )
-                        if named[0].cardinality != "many_to_one" and not for_filter:
-                            return Refusal(
-                                "fanout_refused",
-                                f"{named[0].name!r} into {to_obj!r} is not many-to-one "
-                                f"(up to {named[0].max_fanout}x); grouping through it "
-                                "would inflate the measure.",
-                            )
+                            # the named link enters to_obj from some OTHER
+                            # object; this edge is simply not the named one
+                            continue
                         chosen = named[0]
-                    elif len(links) == 1 and (for_filter or len(m2o) == 1):
-                        chosen = links[0]
+                        used_via.add(to_obj)
                     elif len(links) > 1:
-                        # reachable, but only by naming the link
-                        if to_obj == dim:
-                            return Refusal(
-                                "ambiguous_path",
-                                f"{len(links)} declared links join {obj!r} to {dim!r} "
-                                f"({', '.join(sorted(x.name for x in links))}), and they "
-                                "do not mean the same thing. Name the one you want "
-                                "with via=, rather than letting the layer pick.",
-                            )
+                        reason = Refusal(
+                            "ambiguous_path",
+                            f"{len(links)} declared links join {obj!r} to {to_obj!r} "
+                            f"({', '.join(sorted(x.name for x in links))}), and they do "
+                            "not mean the same thing. Name the one you want with "
+                            f"via={{{to_obj!r}: <link>}}, rather than letting the layer pick.",
+                        )
+                        blocked.setdefault(to_obj, (level, reason))
                         continue
                     else:
-                        if to_obj == dim:
-                            return Refusal(
-                                "fanout_refused",
-                                f"grouping by {dim!r} requires joining through "
-                                f"{links[0].name!r}, whose parent side is not unique "
-                                f"(up to {links[0].max_fanout}x). That join would make "
-                                f"each {grain} row contribute up to "
-                                f"{links[0].max_fanout} times and inflate the measure. "
-                                "Aggregate across the relationship rather than "
-                                "joining through it.",
-                            )
+                        chosen = links[0]
+                    if chosen.cardinality != "many_to_one" and not for_filter:
+                        reason = Refusal(
+                            "fanout_refused",
+                            f"reaching {to_obj!r} means joining through {chosen.name!r}, "
+                            f"whose parent side is not unique (up to {chosen.max_fanout}x). "
+                            f"That join would make each {grain} row contribute up to "
+                            f"{chosen.max_fanout} times and inflate the measure. Aggregate "
+                            "across the relationship rather than joining through it.",
+                        )
+                        blocked.setdefault(to_obj, (level, reason))
                         continue
                     found.setdefault(to_obj, []).append(best[obj] + [chosen])
+            nxt: list[str] = []
             for to_obj, paths in found.items():
                 if to_obj in best and to_obj != dim:
                     continue
                 if len(paths) > 1:
-                    routes = "; ".join(
-                        " -> ".join(x.name for x in path) for path in paths
+                    routes = "; ".join(" -> ".join(x.name for x in path) for path in paths)
+                    reason = Refusal(
+                        "ambiguous_path",
+                        f"{len(paths)} different shortest paths reach {to_obj!r} from "
+                        f"{grain!r} ({routes}). Group by the intermediate object you "
+                        "mean, or name each hop with via=.",
                     )
                     if to_obj == dim:
-                        return Refusal(
-                            "ambiguous_path",
-                            f"{len(paths)} different shortest paths reach {dim!r} from "
-                            f"{grain!r} ({routes}). Group by the intermediate object "
-                            "you mean, or name each hop with via=.",
-                        )
+                        return reason
+                    blocked.setdefault(to_obj, (level, reason))
                     continue
                 best[to_obj] = paths[0]
+                depth[to_obj] = level
                 nxt.append(to_obj)
                 if to_obj == dim:
-                    return best[dim]
+                    found_dim = paths[0]
+            frontier = nxt
+
+        if found_dim is None:
+            # dim not reached on a clean path. If it sits behind a blocked hop,
+            # the nearest such hop's reason is the answer; otherwise no path.
+            if dim in blocked:
+                return blocked[dim][1]
+            nearest: tuple[int, Refusal] | None = None
+            for b_obj, (lvl, reason) in blocked.items():
+                d = self._distance(b_obj, dim)
+                if d is not None and (nearest is None or lvl + d < nearest[0]):
+                    nearest = (lvl + d, reason)
+            return nearest[1] if nearest else None
+
+        # dim reached cleanly. A blocked hop whose route would reach dim in NO
+        # MORE hops than the clean path is another reading the layer would have
+        # had to guess about. The comparison is on where that route would
+        # ARRIVE, not where it was blocked: a many-to-many lot link blocked at
+        # depth 1 that reaches location at depth 2 does not compete with the
+        # direct location link at depth 1 - the first cut compared the wrong
+        # depths and refused every grouping next to a blocked sibling.
+        clean_depth = depth[dim]
+        for b_obj, (lvl, reason) in blocked.items():
+            d = self._distance(b_obj, dim)
+            if d is None or lvl + d > clean_depth:
+                continue
+            if b_obj == dim and lvl == clean_depth:
+                # two routes of the same length, one clean and one not: that is
+                # two readings, not one safe answer. Name both, resolvable by via.
+                clean = " -> ".join(x.name for x in found_dim)
+                return Refusal(
+                    "ambiguous_path",
+                    f"{dim!r} is reached by {clean} and also by a route the layer "
+                    f"cannot take ({reason.detail[:140]}). Name the path you mean "
+                    f"with via={{{dim!r}: <link>}}.",
+                )
+            return reason
+        # "Used" means on the returned path. The BFS may have expanded through a
+        # via-named link on some other branch; that does not make the via part
+        # of the answer, and a via that is not part of the answer is a question
+        # the caller asked that the layer would have answered differently.
+        on_path = {x.to_object for x in found_dim}
+        unused = set(via) - on_path
+        del used_via
+        if unused:
+            return Refusal(
+                "unused_via",
+                f"via named {sorted(unused)}, but the path to {dim!r} does not pass "
+                "through those objects, so the name would have been ignored. Name a "
+                "hop on the path, or drop it.",
+            )
+        return found_dim
+
+    def _distance(self, start: str, target: str) -> int | None:
+        """Shortest hop count over declared links, ignoring cardinality; None if unreachable."""
+        if start == target:
+            return 0
+        seen = {start}
+        frontier = [start]
+        hops = 0
+        while frontier:
+            hops += 1
+            nxt: list[str] = []
+            for cur in frontier:
+                for link in self.links.values():
+                    if link.from_object == cur and link.to_object not in seen:
+                        if link.to_object == target:
+                            return hops
+                        seen.add(link.to_object)
+                        nxt.append(link.to_object)
             frontier = nxt
         return None
 
@@ -557,9 +688,16 @@ class Ontology:
         # reference.
         aliases: dict[tuple[str, str], str] = {}
 
+        cols_known = self.__dict__.get("_column_cache", {})
         for obj_name, column in group_by:
             if obj_name not in self.objects:
                 return Refusal("unknown_object", f"cannot group by unknown object {obj_name!r}")
+            if obj_name in cols_known and column not in cols_known[obj_name]:
+                return Refusal(
+                    "unknown_column",
+                    f"{obj_name!r} has no column {column!r}; available: "
+                    f"{', '.join(sorted(cols_known[obj_name])[:12])}",
+                )
             if obj_name == m.grain and (via or {}).get(obj_name) is None:
                 # An attribute of the fact itself is free: it is already one
                 # value per contributing row. But only when no via names this
@@ -592,11 +730,34 @@ class Ontology:
             group_keys.append(expr)
 
         where: list[str] = []
+        existential = False
+        # Filters are grouped by the object they constrain, so two predicates
+        # on the same object compile into ONE semi-join: "lots that are
+        # hazardous AND from supplier 1" means one lot satisfying both, not
+        # any hazardous lot and any supplier-1 lot. The first version emitted
+        # one IN (...) per predicate and answered the second reading silently.
+        grouped: dict[str, list[tuple[str, str, Any]]] = {}
+        order: list[str] = []
         for obj_name, column, op, value in filters:
             if op.upper() not in {"=", "<>", "<", "<=", ">", ">=", "IN", "LIKE"}:
                 return Refusal("bad_operator", f"operator {op!r} is not allowed")
+            if obj_name not in self.objects:
+                return Refusal("unknown_object", f"cannot filter on unknown object {obj_name!r}")
+            if obj_name in cols_known and column not in cols_known[obj_name]:
+                return Refusal(
+                    "unknown_column",
+                    f"{obj_name!r} has no column {column!r}; available: "
+                    f"{', '.join(sorted(cols_known[obj_name])[:12])}",
+                )
+            if obj_name not in grouped:
+                order.append(obj_name)
+            grouped.setdefault(obj_name, []).append((column, op, value))
+
+        for obj_name in order:
+            preds = grouped[obj_name]
             if obj_name == m.grain and (via or {}).get(obj_name) is None:
-                where.append(f"f.{_ident(column)} {op} {_render(op, value)}")
+                for column, op, value in preds:
+                    where.append(f"f.{_ident(column)} {op} {_render(op, value)}")
                 continue
             path = self._resolve_path(m.grain, obj_name, via, for_filter=True)
             if isinstance(path, Refusal):
@@ -605,21 +766,20 @@ class Ontology:
                 return Refusal(
                     "no_path",
                     f"no chain of declared links from {m.grain!r} to "
-                    f"{obj_name!r}, so it cannot be filtered on {obj_name}.{column}",
+                    f"{obj_name!r}, so it cannot be filtered on "
+                    + ", ".join(f"{obj_name}.{c}" for c, _, _ in preds),
                 )
-            # Filter-then-aggregate. The dimension resolves to a key set that is
-            # pushed into the fact table as a semi-join, so the dimension never
-            # appears in the aggregating FROM and its cardinality is irrelevant.
-            # This is why a filter is always safe while a grouping is not. Over
-            # a multi-hop path the key set is built by joining the dimensions
-            # among themselves, starting from the first hop's parent, and the
-            # fact table still only ever sees IN (key set).
+            # Filter-then-aggregate: the object resolves to a key set pushed
+            # into the fact table as a semi-join, so it never appears in the
+            # aggregating FROM and cannot duplicate a fact row. Over a
+            # many-to-one path that is the whole story. Over a many-to-many
+            # hop it keeps a fact row if ANY linked row matches - the
+            # existential reading - and the CompiledQuery says so.
             first = path[0]
             sub_aliases: dict[tuple[str, str], str] = {}
             sub_joins: list[str] = []
             sub_notes: list[str] = []
             head_alias = self._join_chain(path[:1], sub_aliases, sub_joins, sub_notes)
-            # the first hop's parent is the FROM of the subquery, not a join
             head_rel = self.objects[first.to_object].relation
             tail_alias = self._join_chain(
                 path[1:], sub_aliases, sub_joins, sub_notes, root=head_alias
@@ -629,12 +789,24 @@ class Ontology:
             inner = f"SELECT {keycols} FROM {head_rel} {head_alias}"
             if sub_joins[1:]:
                 inner += " " + " ".join(sub_joins[1:])
-            inner += f" WHERE {tail_alias}.{_ident(column)} {op} {_render(op, value)}"
-            where.append(f"({factcols}) IN ({inner})")
-            notes.append(
-                f"filtered on {obj_name}.{column} by semi-join, which cannot "
-                "duplicate a fact row whatever the cardinality"
+            inner += " WHERE " + " AND ".join(
+                f"{tail_alias}.{_ident(c)} {op} {_render(op, v)}" for c, op, v in preds
             )
+            where.append(f"({factcols}) IN ({inner})")
+            m2m = [x for x in path if x.cardinality != "many_to_one"]
+            if m2m:
+                existential = True
+                notes.append(
+                    f"filtered on {obj_name} by semi-join through "
+                    f"{', '.join(x.name for x in m2m)} (many-to-many): keeps a "
+                    f"{m.grain} row if ANY linked {obj_name} matches. Shares over "
+                    "this filter do not partition the total."
+                )
+            else:
+                notes.append(
+                    f"filtered on {obj_name} by semi-join over a many-to-one path; "
+                    "no fact row is duplicated or re-read"
+                )
 
         agg = f"{m.expression} AS {_ident(m.name)}"
         sql = f"SELECT {', '.join([*selects, agg])}\nFROM {fact.relation} f"
@@ -655,6 +827,7 @@ class Ontology:
             grain=m.grain,
             group_by=tuple(f"{o}.{c}" for o, c in group_by),
             notes=tuple(notes),
+            existential=existential,
         )
 
     def describe(self) -> dict[str, Any]:
@@ -714,10 +887,14 @@ def demo_ontology(warehouse: Path) -> Ontology:
     o.add_object("lot", "inventory", ["sku", "location_id", "storage_bin", "supplier_id"])
     # A sku-grain view, derived rather than asserted - this is the object a
     # category grouping is actually an attribute of.
+    # Only category is an attribute of a SKU: measured, it is constant across
+    # every lot of every SKU (0 violations). sku_name varies across lots for
+    # 499 SKUs and is_hazardous for 50, so ANY_VALUE over them would assert an
+    # attribute the data does not have. Those stay on the lot, where they are
+    # true, and are filtered existentially.
     o.add_object(
         "product",
-        "(SELECT sku, ANY_VALUE(sku_name) AS sku_name, ANY_VALUE(category) AS category, "
-        "ANY_VALUE(is_hazardous) AS is_hazardous FROM inventory GROUP BY sku)",
+        "(SELECT sku, ANY_VALUE(category) AS category FROM inventory GROUP BY sku)",
         ["sku"],
     )
 
@@ -795,14 +972,16 @@ def run_demo(warehouse: Path) -> int:
         bad = onto.compile("outbound_value_myr", group_by=[("lot", "category")], limit=3)
         _show(con, bad)
 
-        print("\n  -- a filter on a many-to-many dimension is still safe --")
+        print("\n  -- a filter through the many-to-many lot link: allowed, and named --")
         filtered = onto.compile(
             "outbound_value_myr",
             group_by=[("location", "state")],
-            filters=[("product", "is_hazardous", "=", True)],
+            filters=[("lot", "is_hazardous", "=", True)],
             limit=3,
         )
         _show(con, filtered)
+        if isinstance(filtered, CompiledQuery):
+            print(f"    existential: {filtered.existential}")
     finally:
         con.close()
     print("\nPASS every declaration held, and the fan-out query was refused.")

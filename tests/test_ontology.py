@@ -920,3 +920,260 @@ def test_an_unreachable_object_is_still_no_path(chain) -> None:  # noqa: ANN001
     got = o.compile("revenue", group_by=[("orphan", "name")])
     assert isinstance(got, Refusal)
     assert got.reason == "no_path"
+
+
+# --------------------------------------------------------------------------
+# the adversarial round on the resolver: a blocked hop is never skipped silently
+# --------------------------------------------------------------------------
+
+
+def test_a_blocked_shorter_route_is_refused_not_bypassed_by_a_longer_clean_one() -> None:
+    """"Revenue by fiscal year" has an order-date reading two hops away.
+
+    The first resolver skipped the ambiguous sale -> cal hop and carried on to
+    sale -> customer -> cohort -> fy, three clean hops, and answered the
+    customer-cohort year with no refusal and no note. A valid query about a
+    different question - the quietest wrong number this layer can produce.
+    """
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE sales (id INTEGER, order_date DATE, ship_date DATE, "
+                  "cust_id INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO sales VALUES (1, DATE '2025-03-01', DATE '2025-03-05', 1, 100), "
+                  "(2, DATE '2026-03-01', DATE '2026-03-05', 1, 50)")
+        c.execute("CREATE TABLE cal (d DATE, fy_year INTEGER)")
+        c.execute("INSERT INTO cal VALUES (DATE '2025-03-01', 2025), (DATE '2025-03-05', 2025), "
+                  "(DATE '2026-03-01', 2026), (DATE '2026-03-05', 2026)")
+        c.execute("CREATE TABLE customer (id INTEGER, cohort_id INTEGER)")
+        c.execute("INSERT INTO customer VALUES (1, 10)")
+        c.execute("CREATE TABLE cohort (id INTEGER, fy_year INTEGER)")
+        c.execute("INSERT INTO cohort VALUES (10, 2024)")
+        c.execute("CREATE TABLE fy (year INTEGER, label VARCHAR)")
+        c.execute("INSERT INTO fy VALUES (2024, 'FY24'), (2025, 'FY25'), (2026, 'FY26')")
+        o = Ontology()
+        for name, rel, key in [("sale", "sales", ["id"]), ("cal", "cal", ["d"]),
+                               ("customer", "customer", ["id"]), ("cohort", "cohort", ["id"]),
+                               ("fy", "fy", ["year"])]:
+            o.add_object(name, rel, key)
+        o.add_link("ordered_on", "sale", ["order_date"], "cal", ["d"])
+        o.add_link("shipped_on", "sale", ["ship_date"], "cal", ["d"])
+        o.add_link("cal_fy", "cal", ["fy_year"], "fy", ["year"])
+        o.add_link("sale_customer", "sale", ["cust_id"], "customer", ["id"])
+        o.add_link("customer_cohort", "customer", ["cohort_id"], "cohort", ["id"])
+        o.add_link("cohort_fy", "cohort", ["fy_year"], "fy", ["year"])
+        o.add_measure("rev", "sale", "SUM(f.amt)")
+        assert not o.verify(c)
+
+        got = o.compile("rev", group_by=[("fy", "label")])
+        assert isinstance(got, Refusal), got
+        assert got.reason == "ambiguous_path"
+        assert "ordered_on" in got.detail and "shipped_on" in got.detail
+        # the filter form must refuse too - it matched nothing before
+        flt = o.compile("rev", filters=[("fy", "label", "=", "FY25")])
+        assert isinstance(flt, Refusal)
+        # naming the hop gives the order-date reading
+        by_order = o.compile("rev", group_by=[("fy", "label")], via={"cal": "ordered_on"})
+        assert isinstance(by_order, CompiledQuery)
+        assert dict(c.execute(by_order.sql).fetchall()) == {"FY25": 100.0, "FY26": 50.0}
+    finally:
+        c.close()
+
+
+def test_a_blocked_hop_unrelated_to_the_target_does_not_refuse_a_clean_path() -> None:
+    """R-0005: a role-playing calendar must not block "revenue by store region"."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE sales (id INTEGER, d1 DATE, d2 DATE, store_id INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO sales VALUES (1, DATE '2025-01-01', DATE '2025-01-02', 1, 100)")
+        c.execute("CREATE TABLE cal (d DATE, yr INTEGER)")
+        c.execute("INSERT INTO cal VALUES (DATE '2025-01-01', 2025), (DATE '2025-01-02', 2025)")
+        c.execute("CREATE TABLE store (id INTEGER, region VARCHAR)")
+        c.execute("INSERT INTO store VALUES (1, 'North')")
+        o = Ontology()
+        o.add_object("sale", "sales", ["id"])
+        o.add_object("cal", "cal", ["d"])
+        o.add_object("store", "store", ["id"])
+        o.add_link("on_d1", "sale", ["d1"], "cal", ["d"])
+        o.add_link("on_d2", "sale", ["d2"], "cal", ["d"])
+        o.add_link("sale_store", "sale", ["store_id"], "store", ["id"])
+        o.add_measure("rev", "sale", "SUM(f.amt)")
+        assert not o.verify(c)
+        got = o.compile("rev", group_by=[("store", "region")])
+        assert isinstance(got, CompiledQuery), got
+        assert dict(c.execute(got.sql).fetchall()) == {"North": 100.0}
+    finally:
+        c.close()
+
+
+def test_via_works_on_a_diamond_and_the_bare_diamond_is_refused_naming_both() -> None:
+    """via was matched only against the current frontier node's links, so the
+    documented remedy "name each hop with via=" never worked on a diamond."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE f (id INTEGER, a_id INTEGER, b_id INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO f VALUES (1, 1, 2, 100), (2, 2, 1, 50)")
+        c.execute("CREATE TABLE a (id INTEGER, d_id INTEGER)")
+        c.execute("INSERT INTO a VALUES (1, 10), (2, 20)")
+        c.execute("CREATE TABLE b (id INTEGER, d_id INTEGER)")
+        c.execute("INSERT INTO b VALUES (1, 10), (2, 20)")
+        c.execute("CREATE TABLE d (id INTEGER, name VARCHAR)")
+        c.execute("INSERT INTO d VALUES (10, 'ten'), (20, 'twenty')")
+        o = Ontology()
+        for name, key in [("F", ["id"]), ("A", ["id"]), ("B", ["id"]), ("D", ["id"])]:
+            o.add_object(name, name.lower(), key)
+        o.add_link("f_a", "F", ["a_id"], "A", ["id"])
+        o.add_link("f_b", "F", ["b_id"], "B", ["id"])
+        o.add_link("a_d", "A", ["d_id"], "D", ["id"])
+        o.add_link("b_d", "B", ["d_id"], "D", ["id"])
+        o.add_measure("amt", "F", "SUM(f.amt)")
+        assert not o.verify(c)
+        bare = o.compile("amt", group_by=[("D", "name")])
+        assert isinstance(bare, Refusal) and bare.reason == "ambiguous_path"
+        assert "a_d" in bare.detail and "b_d" in bare.detail
+        via_a = o.compile("amt", group_by=[("D", "name")], via={"D": "a_d"})
+        assert isinstance(via_a, CompiledQuery), via_a
+        assert dict(c.execute(via_a.sql).fetchall()) == {"ten": 100.0, "twenty": 50.0}
+        via_b = o.compile("amt", group_by=[("D", "name")], via={"D": "b_d"})
+        assert isinstance(via_b, CompiledQuery), via_b
+        assert dict(c.execute(via_b.sql).fetchall()) == {"twenty": 100.0, "ten": 50.0}
+    finally:
+        c.close()
+
+
+def test_a_diamond_with_one_unsafe_branch_is_ambiguous_and_via_picks_the_safe_one() -> None:
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE f (id INTEGER, a_id INTEGER, b_id INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO f VALUES (1, 1, 1, 100)")
+        c.execute("CREATE TABLE a (id INTEGER, d_code VARCHAR)")
+        c.execute("INSERT INTO a VALUES (1, 'X')")
+        c.execute("CREATE TABLE b (id INTEGER, d_code VARCHAR)")
+        c.execute("INSERT INTO b VALUES (1, 'X')")
+        # d is not unique on code -> the b_d link below fans out; a_d joins on id
+        c.execute("CREATE TABLE d (id INTEGER, code VARCHAR, name VARCHAR)")
+        c.execute("INSERT INTO d VALUES (10, 'X', 'ten'), (11, 'X', 'ten-bis')")
+        c.execute("ALTER TABLE a ADD COLUMN d_id INTEGER; UPDATE a SET d_id = 10")
+        o = Ontology()
+        for name, key in [("F", ["id"]), ("A", ["id"]), ("B", ["id"]), ("D", ["id"])]:
+            o.add_object(name, name.lower(), key)
+        o.add_link("f_a", "F", ["a_id"], "A", ["id"])
+        o.add_link("f_b", "F", ["b_id"], "B", ["id"])
+        o.add_link("a_d", "A", ["d_id"], "D", ["id"])
+        o.add_link("b_d", "B", ["d_code"], "D", ["code"])
+        o.add_measure("amt", "F", "SUM(f.amt)")
+        assert not o.verify(c)
+        assert o.links["b_d"].cardinality == "many_to_many"
+        bare = o.compile("amt", group_by=[("D", "name")])
+        assert isinstance(bare, Refusal) and bare.reason == "ambiguous_path"
+        safe = o.compile("amt", group_by=[("D", "name")], via={"D": "a_d"})
+        assert isinstance(safe, CompiledQuery), safe
+        assert dict(c.execute(safe.sql).fetchall()) == {"ten": 100.0}
+    finally:
+        c.close()
+
+
+def test_a_null_parent_key_does_not_make_a_unique_link_many_to_many() -> None:
+    """COUNT(*) counts a NULL key row, COUNT(DISTINCT) does not; a NULL parent
+    key never matches a child, so it cannot fan out. One NULL row made a safe
+    link read 'many_to_many up to 1x' and refused every grouping through it."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE f (id INTEGER, k INTEGER, amt DOUBLE)")
+        c.execute("INSERT INTO f VALUES (1, 1, 100), (2, 2, 50), (3, 9, 25)")
+        c.execute("CREATE TABLE d (k INTEGER, name VARCHAR)")
+        c.execute("INSERT INTO d VALUES (1, 'ex'), (2, 'why'), (NULL, 'ghost')")
+        o = Ontology()
+        o.add_object("f", "f", ["id"])
+        o.add_object("d", "d", ["name"])
+        o.add_link("f_d", "f", ["k"], "d", ["k"])
+        o.add_measure("amt", "f", "SUM(f.amt)")
+        assert not o.verify(c)
+        assert o.links["f_d"].cardinality == "many_to_one"
+        got = o.compile("amt", group_by=[("d", "name")])
+        assert isinstance(got, CompiledQuery), got
+        rows = dict(c.execute(got.sql).fetchall())
+        assert rows == {"ex": 100.0, "why": 50.0, None: 25.0}
+        assert sum(rows.values()) == 175.0
+    finally:
+        c.close()
+
+
+def test_an_unknown_column_is_refused_not_emitted(con) -> None:  # noqa: ANN001
+    """The layer promised a refusal and delivered a binder error at execution."""
+    o = _ontology()
+    o.verify(con)
+    got = o.compile("revenue", group_by=[("product", "categorie")])
+    assert isinstance(got, Refusal)
+    assert got.reason == "unknown_column"
+    assert "category" in got.detail, "the refusal must list what is available"
+    flt = o.compile("revenue", filters=[("region", "contry", "=", "MY")])
+    assert isinstance(flt, Refusal) and flt.reason == "unknown_column"
+
+
+def test_a_link_on_a_missing_child_column_fails_verification() -> None:
+    """verify() read only the parent side, so a bad child column was blessed."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE f (id INTEGER, k INTEGER)")
+        c.execute("CREATE TABLE d (k INTEGER, name VARCHAR)")
+        c.execute("INSERT INTO d VALUES (1, 'x')")
+        o = Ontology()
+        o.add_object("f", "f", ["id"])
+        o.add_object("d", "d", ["k"])
+        o.add_link("bad", "f", ["no_such_col"], "d", ["k"])
+        v = o.verify(c)
+        assert [x.check for x in v] == ["link_readable"]
+        assert not o.verified
+    finally:
+        c.close()
+
+
+def test_two_filters_on_one_many_to_many_object_mean_the_same_linked_row(con) -> None:  # noqa: ANN001
+    """"lots that are ALPHA and qty > 25" - one lot satisfying both, not any-each.
+
+    Two separate IN (...) clauses answered any-lot-each silently. SKU-1 has lots
+    of 10, 20, 30 - all ALPHA; SKU-2 has one BETA lot of 40. One semi-join with
+    both predicates keeps SKU-1 (lot 30 is ALPHA and > 25) and not SKU-2.
+    """
+    o = _ontology()
+    o.verify(con)
+    got = o.compile("revenue", filters=[("lot", "category", "=", "ALPHA"), ("lot", "qty", ">", 25)])
+    assert isinstance(got, CompiledQuery), got
+    assert got.sql.count(" IN (") == 1, "two predicates on one object must be one semi-join"
+    assert got.existential, "a filter through the lot link is existential and must say so"
+    assert con.execute(got.sql).fetchone()[0] == 100.0
+    # a pair no single lot satisfies returns nothing, not the any-each union
+    none = o.compile("revenue", filters=[("lot", "category", "=", "BETA"), ("lot", "qty", "<", 35)])
+    assert isinstance(none, CompiledQuery)
+    assert con.execute(none.sql).fetchone()[0] in (None, 0.0)
+
+
+def test_a_filter_over_a_many_to_one_path_is_not_flagged_existential(con) -> None:  # noqa: ANN001
+    o = _ontology()
+    o.verify(con)
+    got = o.compile("revenue", filters=[("region", "country", "=", "MY")])
+    assert isinstance(got, CompiledQuery)
+    assert not got.existential
+
+
+def test_an_unused_via_is_refused_not_ignored(con) -> None:  # noqa: ANN001
+    """A via the path never passed through would have been silently dropped."""
+    o = _ontology()
+    o.verify(con)
+    got = o.compile("revenue", group_by=[("region", "country")], via={"product": "sale_of_product"})
+    assert isinstance(got, Refusal)
+    assert got.reason == "unused_via"
+    typo = o.compile("revenue", group_by=[("region", "country")], via={"product": "no_such"})
+    assert isinstance(typo, Refusal) and typo.reason == "unknown_link"
