@@ -21,17 +21,24 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 import duckdb
 
 from dms_executor.bronze import _ensure_registry
 from dms_executor.demo_warehouse import DEMO_TABLES, warehouse_path
+from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 
 # Always quoted. Ingest stems keep leading digits (15_q3_sales_export_Q3).
 _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
 _PROTECTED = frozenset((*DEMO_TABLES, "meta"))
 _WIN_ENGINE = Path(r"D:\Cortex") / "data" / "dms_demo.duckdb"
+
+
+class BronzeRow(TypedDict):
+    table: str
+    row_count: int
 
 
 def _env_path(*names: str) -> Path | None:
@@ -88,7 +95,7 @@ def _q(name: str) -> str:
     return f'"{name}"'
 
 
-def list_bronze_readonly(path: Path) -> list[dict[str, object]]:
+def list_bronze_readonly(path: Path) -> list[BronzeRow]:
     """Bronze user tables without ``ensure_demo_warehouse`` (must not reseed the engine file)."""
     db = Path(path)
     if not db.is_file():
@@ -103,11 +110,12 @@ def list_bronze_readonly(path: Path) -> list[dict[str, object]]:
              ORDER BY table_name
             """
         ).fetchall()
-        out: list[dict[str, object]] = []
-        for (name,) in rows:
+        out: list[BronzeRow] = []
+        for (raw_name,) in rows:
+            name = str(raw_name)
             if name in _PROTECTED:
                 continue
-            n = int(con.execute(f"SELECT COUNT(*) FROM bronze.{_q(name)}").fetchone()[0])
+            n = scalar_int(con.execute(f"SELECT COUNT(*) FROM bronze.{_q(name)}").fetchone())
             out.append({"table": f"bronze.{name}", "row_count": n})
         return out
     except duckdb.Error:  # missing schema / unreadable file => no bronze
@@ -218,7 +226,7 @@ def sync_bronze_to_serving(
         _ensure_registry(con)
         con.execute(f"ATTACH '{src.as_posix()}' AS ingest_wh (READ_ONLY)")
         names = [
-            r[0]
+            str(r[0])
             for r in con.execute(
                 """
                 SELECT table_name FROM information_schema.tables
@@ -236,15 +244,17 @@ def sync_bronze_to_serving(
             con.execute(f"CREATE TABLE bronze.{q} AS SELECT * FROM ingest_wh.bronze.{q}")
             copied.append(f"bronze.{name}")
         # Registry rows travel with the tables so serving-side grants/lists agree.
-        reg = con.execute(
-            """
-            SELECT COUNT(*) FROM information_schema.tables
-             WHERE table_catalog = 'ingest_wh'
-               AND table_schema = 'bronze'
-               AND table_name = '_ingest_registry'
-            """
-        ).fetchone()
-        if reg and int(reg[0]) > 0 and copied:
+        reg_n = scalar_int(
+            con.execute(
+                """
+                SELECT COUNT(*) FROM information_schema.tables
+                 WHERE table_catalog = 'ingest_wh'
+                   AND table_schema = 'bronze'
+                   AND table_name = '_ingest_registry'
+                """
+            ).fetchone()
+        )
+        if reg_n > 0 and copied:
             stems = [t.split(".", 1)[1] for t in copied]
             con.execute(
                 "DELETE FROM bronze._ingest_registry WHERE table_name IN ({})".format(
