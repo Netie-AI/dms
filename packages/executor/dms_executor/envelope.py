@@ -833,13 +833,13 @@ def build_answer_envelope(
     # E11 (FF-02) — a negated ask must not be settled by a metric whose filter
     # asserts the positive. Runs last so a shape or scope complaint stays the
     # more specific reason when both apply.
-    conflict = None if abstained else _polarity_conflict_label(question=question, sql=sql_used)
-    if conflict:
+    inverted = None if abstained else _polarity_conflict_label(question=question, sql=sql_used)
+    if inverted:
         badge_out = "ABSTAIN"
         abstained = True
         text = (
-            f"You asked to exclude {conflict}, but the query I matched filters "
-            f"for {conflict} being true. That is the inverse of the question, "
+            f"You asked to exclude {inverted}, but the query I matched filters "
+            f"for {inverted} being true. That is the inverse of the question, "
             f"so I cannot confirm the figure. Rather than show you the positive "
             f"count as though it answered the negated ask, I'm stopping here."
         )
