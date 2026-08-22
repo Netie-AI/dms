@@ -494,6 +494,49 @@ def test_ambiguity_is_refused_on_filters_too(roles) -> None:  # noqa: ANN001
     assert got.reason == "ambiguous_path"
 
 
+def test_a_self_link_via_is_not_silently_dropped() -> None:
+    """"By manager name" is not "by own name". Dropping via= answers the other one.
+
+    A self-linked grain (employee.manager_id -> employee.id) has two readings of
+    group_by employee.name: the row's own name, and the parent reached through
+    the named link. The fact-attribute shortcut must not fire when via names
+    this object, or the compiler returns a valid query about the wrong person.
+    """
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute(
+            "CREATE TABLE emp (id INTEGER, name VARCHAR, manager_id INTEGER, amt DOUBLE)"
+        )
+        c.execute(
+            "INSERT INTO emp VALUES (1, 'Ava', 2, 100), (2, 'Ben', NULL, 50)"
+        )
+        o = Ontology()
+        o.add_object("emp", "emp", ["id"])
+        o.add_link("managed_by", "emp", ["manager_id"], "emp", ["id"])
+        o.add_measure("amount", "emp", "SUM(f.amt)")
+        o.verify(c)
+        own = o.compile("amount", group_by=[("emp", "name")])
+        via_mgr = o.compile(
+            "amount", group_by=[("emp", "name")], via={"emp": "managed_by"}
+        )
+        assert isinstance(own, CompiledQuery)
+        assert "JOIN" not in own.sql.upper()
+        assert dict(c.execute(own.sql).fetchall()) == {"Ava": 100.0, "Ben": 50.0}
+        assert isinstance(via_mgr, CompiledQuery)
+        assert "JOIN" in via_mgr.sql.upper()
+        assert dict(c.execute(via_mgr.sql).fetchall()) == {"Ben": 100.0, None: 50.0}
+        own_f = o.compile("amount", filters=[("emp", "name", "=", "Ben")])
+        via_f = o.compile(
+            "amount", filters=[("emp", "name", "=", "Ben")], via={"emp": "managed_by"}
+        )
+        assert c.execute(own_f.sql).fetchone()[0] == 50.0
+        assert c.execute(via_f.sql).fetchone()[0] == 100.0
+    finally:
+        c.close()
+
+
 # --------------------------------------------------------------------------
 # an absence of measurement is not a measurement
 # --------------------------------------------------------------------------

@@ -408,9 +408,18 @@ class Ontology:
         for obj_name, column in group_by:
             if obj_name not in self.objects:
                 return Refusal("unknown_object", f"cannot group by unknown object {obj_name!r}")
-            if obj_name == m.grain:
+            if obj_name == m.grain and (via or {}).get(obj_name) is None:
                 # An attribute of the fact itself is free: it is already one
-                # value per contributing row.
+                # value per contributing row. But only when no via names this
+                # object: a self-linked table (an employee's manager, an
+                # account's parent) has TWO readings of "by attr" - its own and
+                # its parent's - and adversarial review showed via= being
+                # silently dropped here, so "revenue by manager name" came back
+                # grouped by the employee's own name. Answering a different
+                # question than the one asked is the quietest wrong number; a
+                # named via now resolves the link like any other, as a
+                # self-join. The generated bench re-found this on real data:
+                # eleven DimAccount/DimEmployee self-join cases.
                 expr = f"f.{_ident(column)}"
             else:
                 link = self._resolve_link(m.grain, obj_name, (via or {}).get(obj_name))
@@ -461,7 +470,7 @@ class Ontology:
         for obj_name, column, op, value in filters:
             if op.upper() not in {"=", "<>", "<", "<=", ">", ">=", "IN", "LIKE"}:
                 return Refusal("bad_operator", f"operator {op!r} is not allowed")
-            if obj_name == m.grain:
+            if obj_name == m.grain and (via or {}).get(obj_name) is None:
                 where.append(f"f.{_ident(column)} {op} {_render(op, value)}")
                 continue
             link = self._resolve_link(m.grain, obj_name, (via or {}).get(obj_name))
