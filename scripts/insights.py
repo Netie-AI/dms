@@ -249,7 +249,14 @@ def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
             if len(vals) < 2:
                 continue
             total = sum(v for _, v in vals)
-            conserves = abs(total - raw) <= ABS_TOL
+            # Each group is rounded to 2 dp by the measure expression, so the
+            # grouped sum can differ from the once-rounded raw total by at most
+            # 0.005 per group plus 0.005 for the total. That is the whole error
+            # rounding can explain; anything above it is not rounding. The first
+            # bound was 0.02 * groups - four times too loose - and the second a
+            # flat 0.02 that failed two honest 35-group roll-ups by 0.04.
+            tol = 0.005 * len(vals) + 0.005 + 1e-6
+            conserves = abs(total - raw) <= tol
             if not conserves:
                 broken.append(f"{m['name']} by {obj}.{attr}: grouped {total:,.2f} "
                               f"!= raw {raw:,.2f}")
