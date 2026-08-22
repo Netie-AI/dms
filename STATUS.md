@@ -1,6 +1,6 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-08-05 afternoon  
+**Last updated:** 2026-08-23  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -25,10 +25,8 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Result |
 |----|--------|
-| REVEAL-01 (#26 CLOSED) | `/v1/library/reveal` + SourcePanel Open original |
 | E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
 | E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
-| Playground | `playground/` + `playground_ask.py` — edit `my_questions.yaml`; L4/L5 labels only (P-DMS-33) |
 | SCORE-03 (#42 CLOSED) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
 | Demo | `verify_demo_live.py` **31/31** live, first run on a cold stack |
 | #48 CLOSED | E10 — a grouped/ranked ask can't be settled by an ungrouped scalar |
@@ -36,6 +34,8 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | #44 CLOSED | protected-paths gate made deterministic; cause never found, ruled-out list in the issue |
 | #58 | Cortex client timeout was a hardcoded 30s < the path it calls. Now `cortex_timeout_seconds`, default 120 |
 | Free-form gate | `scripts/verify_freeform_demo.py` — oracle recomputed per run, conservation identities, must-abstain cases |
+| AW lake | `.bak` restore → 114 tables parquet → `validate_lake.py` all 146 links held → `ontology.py --adventureworks` 110 objects verified. Proof: compiled revenue == oracle, conserves to 123.2M |
+| Ontology | `scripts/ontology.py` — grain guard: measures fan-out, refuses unverified/ambiguous paths. `stream_ingest.py` — atomic visibility + identity sweep. 60 tests |
 | Lineage | `scripts/show_lineage.py` — row conservation bronze→silver; exits 1 on fan-out |
 | Local CI parity | `bash scripts/ci_local.sh all` — CI's gates on Python 3.11 in Docker |
 | Change harness | `python scripts/try_changes.py [--live]` — 41 checks, each states what it does *not* prove |
