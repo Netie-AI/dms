@@ -69,7 +69,11 @@ export function rowsToCsv(rows: Record<string, unknown>[]): string {
 }
 
 export function csvDownloadName(answerId: string): string {
-  const safe = answerId.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+  const safe = answerId
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/\.{2,}/g, ".")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 80);
   return `dms_answer_${safe || "export"}.csv`;
 }
 
