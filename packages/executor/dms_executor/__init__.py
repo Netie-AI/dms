@@ -377,6 +377,10 @@ class Executor:
             raise SubmitError(err.code, err.detail) from exc
 
 
+#: Engine routes that mean "no answer was produced". Authoritative over any
+#: badge the engine sends alongside them - see map_ask_response_to_envelope.
+_REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
+
 _BADGE_MAP = {
     "certified": "L0_CERTIFIED",
     "certified_metric": "L0_CERTIFIED",
@@ -451,11 +455,30 @@ def map_ask_response_to_envelope(
 
     badge_raw = resp.badge
     route_l = (resp.route or "").lower()
-    if not badge_raw:
-        if resp.abstained or route_l in ("abstain", "blocked", "needs_clarification"):
-            badge_raw = "abstain"
-        else:
-            badge_raw = "l2_validated"
+
+    # A refusal is a refusal whatever badge rides along with it.
+    #
+    # This check used to sit inside `if not badge_raw`, so it was reachable only
+    # when the engine sent no badge at all. An engine that refused AND sent a
+    # confident badge went straight through: a manifest refusal arrives as
+    # route/layer "refused" carrying badge "session", "session" maps to
+    # L2_VALIDATED, and the customer read "generated - check sources" over a
+    # question the engine had declined to answer, with abstained=False.
+    #
+    # Every E1-E9 invariant passed while that happened, and that is the point:
+    # a refusal dressed as an answer is internally consistent, so no amount of
+    # checking the envelope against itself can catch it. The signal lives in the
+    # route, and the route has to outrank the badge.
+    #
+    # Reproduced end to end by scripts/repro_refused_badge.py (F40 / Cortex#11).
+    # The engine-side fix - teaching _is_abstain_signal about "refused" - is
+    # still needed and is not what this is. This is the half DMS owns: whatever
+    # the engine sends, DMS does not put a confident badge on a refusal.
+    refused = route_l in _REFUSAL_ROUTES
+    if refused:
+        badge_raw = "abstain"
+    elif not badge_raw:
+        badge_raw = "abstain" if resp.abstained else "l2_validated"
     # Unknown engine badge => ABSTAIN, not L2_VALIDATED. See normalize_badge():
     # defaulting an unrecognised badge to a *confident* one means the failure
     # mode of DMS lagging Cortex is a green badge over an unvalidated answer.

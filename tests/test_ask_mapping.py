@@ -268,3 +268,66 @@ def test_known_engine_badges_still_certify():
         assert env["badge"] == expected, f"{engine_badge} should map to {expected}"
         assert env["abstained"] is False
         assert_envelope_valid(env)
+
+
+def test_a_refusal_never_arrives_as_a_validated_answer():
+    """F40 / Cortex#11: a manifest refusal reached the customer as L2_VALIDATED.
+
+    The engine refuses with route/layer "refused" and badge "session". DMS
+    consulted the route only when the badge was *empty*, so a refusal carrying a
+    confident badge went straight through: "session" maps to L2_VALIDATED, and
+    the customer read "generated - check sources" over a question the engine had
+    declined to answer, with abstained=False.
+
+    Every E1-E9 invariant passed while that happened. A refusal dressed as an
+    answer is internally consistent, so checking the envelope against itself
+    cannot catch it - the route has to be read, and it has to outrank the badge.
+
+    The engine-side fix is still needed; this pins the half DMS owns.
+    """
+    resp = AskResponse.model_validate(
+        {
+            "answer": (
+                "That question can't be answered inside this session's data grant "
+                "(PathNotAllowed). Nothing was read."
+            ),
+            "audit_id": "aud_refused",
+            "route": "refused",
+            "provenance": {"badge": "session", "layer": "refused"},
+            "sql_used": None,
+            "rows": [],
+            "abstained": False,
+        }
+    )
+    env = map_ask_response_to_envelope(resp, space_id="sp_x", session_id="ses_r")
+
+    assert env["badge"] == "ABSTAIN", (
+        f"a refusal certified as {env['badge']!r} - the engine read nothing"
+    )
+    assert env["abstained"] is True
+    assert not env["values"], "a refusal must not ship values"
+    assert_envelope_valid(env)
+
+
+def test_a_legitimate_session_answer_still_certifies():
+    """R-0005 - `session` is a real answer route, not a refusal.
+
+    The fix keys on the ROUTE, not the badge, precisely so the badge `session`
+    keeps its meaning on questions the engine actually answered. If this fails,
+    the fix has started refusing legitimate work.
+    """
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Revenue was 80,375,993.99.",
+            "audit_id": "aud_session_ok",
+            "route": "session",
+            "provenance": {"badge": "session"},
+            "sql_used": "SELECT SUM(x) FROM t",
+            "rows": [{"revenue_myr": 80375993.99}],
+        }
+    )
+    env = map_ask_response_to_envelope(resp, space_id="sp_x", session_id="ses_ok")
+
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert_envelope_valid(env)
