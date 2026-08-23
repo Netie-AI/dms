@@ -34,9 +34,9 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | #58 | Cortex client timeout was a hardcoded 30s < the path it calls. Now `cortex_timeout_seconds`, default 120 |
 | Free-form gate | `scripts/verify_freeform_demo.py` — oracle recomputed per run, conservation identities, must-abstain cases |
 | AW lake | `.bak` restore → 114 tables parquet → `validate_lake.py` all 146 links held → `ontology.py --adventureworks` 110 objects verified. Proof: compiled revenue == oracle, conserves to 123.2M |
-| Ontology | `scripts/ontology.py` — grain guard: measures fan-out, refuses unverified/ambiguous paths; **multi-hop** (3-link roll-ups), `via=` for role-playing hops, self-links. `stream_ingest.py` — atomic visibility + identity sweep. 41+26 tests |
-| Engine bench | `scripts/ontology_bench.py` — **431 generated cases, 0 wrong, 7 correct refusals** over 3 AW dbs → engine-layer error ≤0.70% (R-0010). Deterministic layer only; NL understanding is the free-form gate (n=24). First run caught a self-join defect |
-| Insights + brief | `scripts/insights.py` (declared measures, discovered dims, every figure compiled+conserved, no model) → `scripts/brief.py` pptx/html; test reads the deck back, every number must be in the report. `data/lake/_reports/aw_brief.pptx` |
+| Ontology | `scripts/ontology.py` — grain guard: measures fan-out, refuses ambiguous/unverified/unknown-column; multi-hop (3-link roll-ups), `via=` names role-playing hops, a blocked shorter route refuses rather than silently taking a longer clean one; m2m filters allowed and flagged `existential`. 51 tests |
+| Engine bench | `scripts/ontology_bench.py` — 896 cases / **811 answerable over 494 distinct shapes, 0 wrong**, 3 AW dbs, 1/2/3-hop. Bound: ~0.37% on cases, **~0.61% on shapes** (R-0010). Deterministic layer only — NL understanding is the free-form gate (n=25, ~15.8%). 78 no-match probes counted apart as known-gap, not passes. Falsified: LEFT→INNER JOIN makes it exit 1 |
+| Insights + brief | `scripts/insights.py` (declared measures, discovered dims, ranking over labelled same-signed values, every figure compiled+conserved, no model) → `scripts/brief.py` pptx/html; **main() reads the deck back** before PASS. `data/lake/_reports/aw_brief.pptx` |
 | Lineage | `scripts/show_lineage.py` — row conservation bronze→silver; exits 1 on fan-out |
 | Local CI parity | `bash scripts/ci_local.sh all` — CI's gates on Python 3.11 in Docker |
 | Change harness | `python scripts/try_changes.py [--live]` — 41 checks, each states what it does *not* prove |
