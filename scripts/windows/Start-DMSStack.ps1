@@ -56,8 +56,42 @@ if ($EnableL2) {
 if (-not $env:DMS_DEMO_FALLBACK) { $env:DMS_DEMO_FALLBACK = "0" }
 if ($env:DMS_ASK_MODE -eq "" -or $null -eq $env:DMS_ASK_MODE) { $env:DMS_ASK_MODE = "live" }
 
+# Warehouse identity (S4 / TAS-DMS §6). Ingest writes DMS_WAREHOUSE_DB; Cortex
+# answers from CORTEX_HOME\data\dms_demo.duckdb unless pointed elsewhere.
+# Two files is the measured bug. Sync bronze into the serving file *before*
+# Cortex starts (DuckDB lock). Demo schemas stay split (outbound vs OUT).
+if (-not $env:DMS_WAREHOUSE_DB) {
+  $env:DMS_WAREHOUSE_DB = Join-Path $RepoRoot "data\dms_demo.duckdb"
+}
+$cortexHome = if ($env:CORTEX_HOME) { $env:CORTEX_HOME } else { "D:\Cortex" }
+if (-not $env:CORTEX_WAREHOUSE_DB) {
+  $discovered = Join-Path $cortexHome "data\dms_demo.duckdb"
+  if (Test-Path $discovered) { $env:CORTEX_WAREHOUSE_DB = $discovered }
+}
+if (-not $env:DMS_ORACLE_WAREHOUSE -and $env:CORTEX_WAREHOUSE_DB) {
+  $env:DMS_ORACLE_WAREHOUSE = $env:CORTEX_WAREHOUSE_DB
+}
+
 Write-Host "DMS open-all - repo $RepoRoot" -ForegroundColor Cyan
 Write-Host "OPENVAULT_HOME=$($env:OPENVAULT_HOME)"
+Write-Host ("DMS warehouse    {0}" -f $env:DMS_WAREHOUSE_DB)
+if ($env:CORTEX_WAREHOUSE_DB) {
+  Write-Host ("Cortex warehouse {0}" -f $env:CORTEX_WAREHOUSE_DB)
+  $dmsWh = [System.IO.Path]::GetFullPath($env:DMS_WAREHOUSE_DB)
+  $cxWh = [System.IO.Path]::GetFullPath($env:CORTEX_WAREHOUSE_DB)
+  if ($dmsWh -ne $cxWh) {
+    $syncScript = Join-Path $RepoRoot "scripts\sync_bronze_to_serving.py"
+    if (Test-Path $syncScript) {
+      Write-Host "Two warehouse files - copying bronze into the file chat reads..."
+      python $syncScript
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host "Bronze sync failed. Stop Cortex and run: python scripts\sync_bronze_to_serving.py" -ForegroundColor Yellow
+      }
+    }
+  } else {
+    Write-Host "Warehouse identity: one file"
+  }
+}
 
 # --- Postgres (compose) ---
 # The base compose file deliberately leaves postgres on `expose: 5432` so the
@@ -107,7 +141,7 @@ if ($StartSiblings) {
       Start-Process powershell.exe -ArgumentList @(
         "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
-        "`$env:PACK='dms'; `$env:OPENVAULT_HOME='$($env:OPENVAULT_HOME)'; `$env:OPENVAULT_URL='$OpenVaultUrl'; `$env:DMS_L2_ENABLED='$l2Flag'; ${l2ModelEnv}Set-Location 'D:\Cortex'; python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010"
+        "`$env:PACK='dms'; `$env:OPENVAULT_HOME='$($env:OPENVAULT_HOME)'; `$env:OPENVAULT_URL='$OpenVaultUrl'; `$env:DMS_L2_ENABLED='$l2Flag'; `$env:CORTEX_WAREHOUSE_DB='$($env:CORTEX_WAREHOUSE_DB)'; ${l2ModelEnv}Set-Location 'D:\Cortex'; python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010"
       ) -WindowStyle Minimized
     } else {
       Write-Host "Cortex start script missing: $cxScript" -ForegroundColor Yellow
@@ -127,6 +161,8 @@ if (-not $apiOk -and -not $NoLocalApiFallback) {
     "`$env:CORTEX_URL='$CortexUrl'",
     "`$env:DMS_ASK_MODE='$($env:DMS_ASK_MODE)'",
     "`$env:DMS_DEMO_FALLBACK='$($env:DMS_DEMO_FALLBACK)'",
+    "`$env:DMS_WAREHOUSE_DB='$($env:DMS_WAREHOUSE_DB)'",
+    "`$env:CORTEX_WAREHOUSE_DB='$($env:CORTEX_WAREHOUSE_DB)'",
     "Set-Location '$RepoRoot'",
     "python -m uvicorn dms_api.app:app --app-dir apps/api --host 127.0.0.1 --port 8090"
   ) -join "; "
@@ -225,4 +261,5 @@ if ($OpenBrowser) {
 }
 
 Write-Host "Live smoke: python scripts/smoke_live_ask.py"
+Write-Host "After a Studio upload (if chat cannot see it): stop Cortex, python scripts/sync_bronze_to_serving.py, restart"
 Write-Host "Desktop shortcut: double-click Install-DesktopShortcut.bat once"
