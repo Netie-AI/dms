@@ -161,9 +161,15 @@ def gold_sign_metric(
     metric_id: str,
     name: str,
     sql: str,
-    steward_id: str,
+    actor: str,
     cortex: CortexClient | None,
 ) -> dict[str, Any]:
+    """Sign a gold metric onto the ledger as ``actor``, which the caller resolves server-side.
+
+    There is deliberately no ``steward_id`` parameter. It used to arrive from the request
+    body and become the ledger actor; the steward now *is* the resolved actor, so a caller
+    cannot name a third party as the signer of a certified metric.
+    """
     if cortex is None:
         raise ValueError("Cortex client required to sign gold metric onto the ledger")
 
@@ -174,9 +180,9 @@ def gold_sign_metric(
         metric_id=metric_id,
         name=name,
         sql=sql,
-        steward_id=steward_id,
+        steward_id=actor,
     )
-    signed = dms_executor.sign_gold_metric(metric, cortex_append=_append, actor=steward_id)
+    signed = dms_executor.sign_gold_metric(metric, cortex_append=_append, actor=actor)
     if not signed.ledger_entry_id:
         raise ValueError("Cortex ledger append did not return entry_id")
     return signed.to_dict()
