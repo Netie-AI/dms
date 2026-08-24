@@ -518,9 +518,24 @@ def sign_gold_metric(
     metric: GoldMetricDef,
     *,
     cortex_append: Any,
-    actor: str | None = None,
+    actor: str,
 ) -> GoldMetricDef:
-    """Append metric.certify to Cortex ledger; return metric with ledger_entry_id + signature."""
+    """Append metric.certify to Cortex ledger; return metric with ledger_entry_id + signature.
+
+    ``actor`` is required and must be resolved server-side by the caller. It used to
+    default to None and fall back to ``metric.steward_id``, which arrives from a request
+    body - so whoever called the route named the actor written onto a tamper-evident
+    record (KB attack A-0005, identity in place of the trust flag). The fallback is the
+    binding where caller data became identity, so it is removed here rather than at the
+    one route that exposed it (R-0004).
+
+    ``metric.steward_id`` stays in the payload as the claimed steward, but it is never
+    the actor. DR-0004 records that under both open options the actor is derived
+    server-side - from configuration, or from an authenticated principal - never from a
+    request field.
+    """
+    if not actor:
+        raise ValueError("sign_gold_metric requires a server-resolved actor")
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload = {
         "metric_id": metric.metric_id,
@@ -532,7 +547,7 @@ def sign_gold_metric(
     resp = cortex_append(
         event_type="metric.certify",
         payload=payload,
-        actor=actor or metric.steward_id,
+        actor=actor,
     )
     entry_id = getattr(resp, "entry_id", None) or (
         resp.get("entry_id") if isinstance(resp, dict) else None

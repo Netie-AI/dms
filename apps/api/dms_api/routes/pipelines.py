@@ -8,7 +8,7 @@ from cortex_client import compliance_gate
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dms_api.deps import CortexDep
+from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.wiring import (
     gold_sign_metric,
@@ -33,7 +33,8 @@ class GoldSignBody(BaseModel):
     metric_id: str
     name: str
     sql: str
-    steward_id: str
+    # No steward_id. The signer is resolved server-side - see DR-0004. A request field
+    # that names the actor on a tamper-evident record is KB attack A-0005.
 
 
 @router.post("/run")
@@ -73,9 +74,11 @@ def infer_contract(body: InferBody, cortex: CortexDep) -> dict[str, Any]:
 
 
 @router.post("/gold/sign")
-def sign_gold(body: GoldSignBody, cortex: CortexDep) -> dict[str, Any]:
+def sign_gold(body: GoldSignBody, settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
+    actor = settings.dms_actor_user_id
     decision = compliance_gate(
         action="pipeline.gold_sign",
+        actor=actor,
         metadata={"task_id": "pipeline.gold_sign", "metric_id": body.metric_id},
         client=cortex,
     )
@@ -85,7 +88,7 @@ def sign_gold(body: GoldSignBody, cortex: CortexDep) -> dict[str, Any]:
             metric_id=body.metric_id,
             name=body.name,
             sql=body.sql,
-            steward_id=body.steward_id,
+            actor=actor,
             cortex=cortex,
         )
     except ValueError as exc:
