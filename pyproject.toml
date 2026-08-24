@@ -37,6 +37,11 @@ dev = [
   "mypy>=1.8",
   "ruff>=0.3",
   "import-linter>=2.0",
+  # scripts/brief.py writes the pptx and tests/test_insights_brief.py reads it back.
+  # Declared here rather than guarded with a skip: the deck read-back is the gate that
+  # asserts the artifact the customer receives (R-0001), and a skipped test is a failing
+  # test (R-0002). If the dependency is absent the suite must go red, not quiet.
+  "python-pptx>=0.6.23",
 ]
 
 [tool.setuptools.packages.find]
