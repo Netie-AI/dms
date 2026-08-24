@@ -1,6 +1,6 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-08-22  
+**Last updated:** 2026-08-24  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -25,7 +25,6 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Result |
 |----|--------|
-| REVEAL-01 (#26 CLOSED) | `/v1/library/reveal` + SourcePanel Open original |
 | E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
 | E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
 | S4 warehouse identity | Bronze copy `DMS_WAREHOUSE_DB` → `CORTEX_WAREHOUSE_DB`; `sync_bronze_to_serving.py --check` fails if chat cannot see an upload |
@@ -37,6 +36,10 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | #44 CLOSED | protected-paths gate made deterministic; cause never found, ruled-out list in the issue |
 | #58 | Cortex client timeout was a hardcoded 30s < the path it calls. Now `cortex_timeout_seconds`, default 120 |
 | Free-form gate | `scripts/verify_freeform_demo.py` — oracle recomputed per run, conservation identities, must-abstain cases |
+| AW lake | `.bak` restore → 114 tables parquet → `validate_lake.py` all 146 links held → `ontology.py --adventureworks` 110 objects verified. Proof: compiled revenue == oracle, conserves to 123.2M |
+| Ontology | `scripts/ontology.py` — grain guard: measures fan-out, refuses ambiguous/unverified/unknown-column; multi-hop (3-link roll-ups), `via=` names role-playing hops, a blocked shorter route refuses rather than silently taking a longer clean one; m2m filters allowed and flagged `existential`. 51 tests |
+| Engine bench | `scripts/ontology_bench.py` — 896 cases / **811 answerable over 494 distinct shapes, 0 wrong**, 3 AW dbs, 1/2/3-hop. Bound: ~0.37% on cases, **~0.61% on shapes** (R-0010). Deterministic layer only — NL understanding is the free-form gate (n=25, ~15.8%). 78 no-match probes counted apart as known-gap, not passes. Falsified: LEFT→INNER JOIN makes it exit 1 |
+| Insights + brief | `scripts/insights.py` (declared measures, discovered dims, ranking over labelled same-signed values, every figure compiled+conserved, no model) → `scripts/brief.py` pptx/html; **main() reads the deck back** before PASS. `data/lake/_reports/aw_brief.pptx` |
 | Lineage | `scripts/show_lineage.py` — row conservation bronze→silver; exits 1 on fan-out |
 | Local CI parity | `bash scripts/ci_local.sh all` — CI's gates on Python 3.11 in Docker |
 | Change harness | `python scripts/try_changes.py [--live]` — 41 checks, each states what it does *not* prove |
@@ -45,11 +48,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **Is F27 reversed?** On 2026-08-05 you declined "install as plugins inside MSSQL" and kept EPIC-020 extract-only. The 2026-08-07 ask ("appear in people's MS SQL Server") is the opposite. Extract-only keeps the Space boundary; live federation does not. Nothing SQL-Server-shaped starts until this is answered. |
-| **RUN NOW** | #59 FF-03 — L2 validation gate names why it refused the SQL and throws it away; `violations` never reaches `str(exc)`. Cortex-side. |
+| **NEEDS-YOU** | **Is F27 reversed?** (F36, open since 2026-08-07) On 2026-08-05 you declined "install as plugins inside MSSQL" and kept EPIC-020 extract-only. The 2026-08-07 ask is the opposite. Extract-only keeps the Space boundary; live federation does not. Nothing SQL-Server-shaped starts until this is answered. **Also:** F41 accept DR-0003 items 1-2 and split EPIC-021 -> EPIC-021a; F45 insights + brief (thin epic vs EPIC-022 gate); F37 approve EPIC-024; F68 monetization has zero prior PRD coverage. |
+| **RUN NOW** | #59 FF-03 - the L2 validation gate names why it refused the SQL and throws it away; `violations` never reaches `str(exc)`. Cortex-side; one line. Blocks diagnosing free-form coverage. **Plus F40 P0** (EPIC-017 + Cortex#11): `python scripts/repro_refused_badge.py` exit 0 - a manifest refusal renders `L2_VALIDATED`, `abstained=false`; Cortex fix first, then the repro becomes a DMS envelope test. |
+| **P0 open** | **F51 A-0007** - `library.py` preview routes nest the Space check inside `if space_id:`, so omitting the parameter skips it; neither calls `compliance_gate`. `tests/invariants/test_boundaries.py:39` inspects no GET, so CI is green on a surface it cannot see. **Plus** a caller can forge a signed gold metric: `is_signed` is `bool(signature and steward_id and signed_at)`, all three settable on `POST /v1/pipelines/run`, nothing verifies against the chain. |
 | Free-form | Coverage is low and everything answered came from L0/L1, not L2. L2 generates SQL its own gate rejects — see #59 before concluding anything about the model. |
 | #39 VQ-01 | Scoped, **blocked**: D:\Cortex has 47 files in flight (R-0006). Verified truth + SQL + synonyms in the #39 comment. Earlier numbers there were corrected — the first set was a 15x fan-out. |
-| Epics | #33 EPIC-017; #35 EPIC-018; #38 EPIC-019 (F32) |
+| Epics | In flight: #33 EPIC-017 (#57, #59, F40) + #35 EPIC-018 (CI accuracy gate, promote-on-truth - F42/F46). Queued: #38 EPIC-019 (F32; value dictionary + pinned plans F46). PRD ledger F40-F48 routes the engine-side accuracy work; EPIC-020 stays blocked on F36. |
 | L4/L5 | Aspiration only (P-DMS-33) — **NEEDS-YOU** confirm meanings or decline badges |
 | #28 ENV-E4 | reorder/low-stock E4; parent #8 |
 | EPIC-016 #29 | Excel Copilot — likely wrong-priority if the direction shifts; park not close |
