@@ -24,18 +24,29 @@ def list_warehouse_tables(
     path: Path | None = None,
     space_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List demo warehouse tables. When ``space_id`` is set, only that Space's grants."""
-    ensure_demo_warehouse(path)
-    allowed = _ALLOWED
-    if space_id:
-        from dms_executor.demo_grants import COMPANY_SCOPED, DEMO_SPACE_GRANTS, canonical_space_id
+    """List demo warehouse tables under ``space_id``, or the company default scope.
 
+    ``space_id=None`` is the company default ACL, not the absence of a check. It used
+    to allowlist every table in ``DEMO_TABLES``, which included ``alerts`` - a table no
+    Space grants and every named Space refuses. See ``company_default_tables``.
+    """
+    ensure_demo_warehouse(path)
+    from dms_executor.demo_grants import (
+        COMPANY_SCOPED,
+        DEMO_SPACE_GRANTS,
+        canonical_space_id,
+        company_default_tables,
+    )
+
+    if space_id:
         entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space_id))
         if entry:
             allowed = frozenset(entry[1])
         else:
             # Unknown Space: company-scoped reference tables only (no other Space's facts).
             allowed = frozenset(COMPANY_SCOPED)
+    else:
+        allowed = frozenset(company_default_tables())
     con = connect_readonly(path)
     out: list[dict[str, Any]] = []
     try:

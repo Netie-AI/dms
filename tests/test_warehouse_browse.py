@@ -54,8 +54,16 @@ def test_library_preview_route(warehouse: Path, monkeypatch: pytest.MonkeyPatch)
     assert len(body["rows"]) <= 3
     assert body["row_count"] > len(body["rows"])
 
+    # A table that does not exist is refused for scope (403), not reported missing
+    # (404). It used to 404 here, which made the pair of status codes an enumeration
+    # oracle: 404 meant "no such table", 403 meant "real table you may not read", so a
+    # caller could map the warehouse by reading status codes alone. Both answers are
+    # now "not in scope", because a name you have no grant for is not a name you are
+    # entitled to learn the existence of.
     bad = client.get("/v1/library/warehouse/nope/preview")
-    assert bad.status_code == 404
+    assert bad.status_code == 403
+    assert bad.json()["detail"]["code"] == "warehouse_not_in_space"
+    assert bad.json()["detail"]["scope"] == "company-default"
 
 
 def test_every_tree_leaf_previews(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:

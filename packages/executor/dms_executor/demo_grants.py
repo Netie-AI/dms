@@ -58,6 +58,30 @@ _SPACE_ALIASES: dict[str, str] = {
 }
 
 
+def company_default_tables() -> tuple[str, ...]:
+    """Every table some Space grants - what "Company (default ACL)" actually means.
+
+    The Space switcher's empty option is labelled "Company (default ACL)"
+    (``apps/ui/src/components/TopBar.tsx:53``), so a request with no ``space_id`` is
+    asking for the company-wide scope. It is not asking for "no scope", and it was
+    being served as though it were: the unscoped read allowlisted every demo table,
+    including ``alerts``, which **no** Space grants. Every named Space refused
+    ``alerts`` with a 403 while the unnamed read returned its rows (KB attack A-0007).
+
+    A table no Space grants is ungrantable under any scope, named or not. So the
+    company default is the union of the Spaces' grants, not the whole warehouse.
+
+    This deliberately does NOT narrow one Space's view to another's - the union is
+    wider than any single Space. Under DR-0004 Option A there is no principal, so
+    nothing here distinguishes one caller from another; this bounds what the
+    *deployment* may read, which is all a scope check can mean without authentication.
+    """
+    seen: dict[str, None] = dict.fromkeys(COMPANY_SCOPED)
+    for _name, tables in DEMO_SPACE_GRANTS.values():
+        seen.update(dict.fromkeys(tables))
+    return tuple(seen)
+
+
 def source_id_for(table: str) -> uuid.UUID:
     """Stable id for a table-backed source."""
     return uuid.uuid5(_SOURCE_NS, table)
