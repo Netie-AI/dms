@@ -31,6 +31,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | SCORE-03 (#42 CLOSED) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
 | Demo | `verify_demo_live.py` **31/31** live, first run on a cold stack |
 | #48 CLOSED | E10 — a grouped/ranked ask can't be settled by an ungrouped scalar |
+| #57 FF-02 | E11 — negated ask cannot keep L1 when the filter asserts the positive |
 | #43 CLOSED | cold-start timeout was rendered as 403; now 504+retryable. Launcher warms the answer path (measured 30-48s) |
 | #44 CLOSED | protected-paths gate made deterministic; cause never found, ruled-out list in the issue |
 | #58 | Cortex client timeout was a hardcoded 30s < the path it calls. Now `cortex_timeout_seconds`, default 120 |
@@ -47,9 +48,9 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **Is F27 reversed?** On 2026-08-05 you declined "install as plugins inside MSSQL" and kept EPIC-020 extract-only. The 2026-08-07 ask ("appear in people's MS SQL Server") is the opposite. Extract-only keeps the Space boundary; live federation does not. Nothing SQL-Server-shaped starts until this is answered. **Also (PRD F41 / F45):** accept DR-0003 items 1-2 and split EPIC-021 -> EPIC-021a (grain-guarded compiler in the engine; `scripts/ontology.py` is the prototype), and decide insights + brief (thin deterministic epic vs the EPIC-022 precision gate). |
-| **RUN NOW** | #57 FF-02 - a governed metric answered a *negated* question with its inverse (`NOT cold storage` -> `is_cold_storage = TRUE`), 4 vs 102,986 under L1_GOVERNED_METRIC. The only confidently-wrong answer in the gate. **Plus F40 P0** (EPIC-017 + Cortex#11): `python scripts/repro_refused_badge.py` exit 0 - a manifest refusal renders `L2_VALIDATED`, `abstained=false`; Cortex fix first, then the repro becomes a DMS envelope test. |
-| #59 FF-03 | The L2 validation gate names why it refused the SQL and throws it away — `violations` never reaches `str(exc)`. Cortex-side; one line. Blocks diagnosing free-form coverage. |
+| **NEEDS-YOU** | **Is F27 reversed?** (F36, open since 2026-08-07) On 2026-08-05 you declined "install as plugins inside MSSQL" and kept EPIC-020 extract-only. The 2026-08-07 ask is the opposite. Extract-only keeps the Space boundary; live federation does not. Nothing SQL-Server-shaped starts until this is answered. **Also:** F41 accept DR-0003 items 1-2 and split EPIC-021 -> EPIC-021a; F45 insights + brief (thin epic vs EPIC-022 gate); F37 approve EPIC-024; F68 monetization has zero prior PRD coverage. |
+| **RUN NOW** | #59 FF-03 - the L2 validation gate names why it refused the SQL and throws it away; `violations` never reaches `str(exc)`. Cortex-side; one line. Blocks diagnosing free-form coverage. **Plus F40 P0** (EPIC-017 + Cortex#11): `python scripts/repro_refused_badge.py` exit 0 - a manifest refusal renders `L2_VALIDATED`, `abstained=false`; Cortex fix first, then the repro becomes a DMS envelope test. |
+| **P0 open** | **F51 A-0007** - `library.py` preview routes nest the Space check inside `if space_id:`, so omitting the parameter skips it; neither calls `compliance_gate`. `tests/invariants/test_boundaries.py:39` inspects no GET, so CI is green on a surface it cannot see. **Plus** a caller can forge a signed gold metric: `is_signed` is `bool(signature and steward_id and signed_at)`, all three settable on `POST /v1/pipelines/run`, nothing verifies against the chain. |
 | Free-form | Coverage is low and everything answered came from L0/L1, not L2. L2 generates SQL its own gate rejects — see #59 before concluding anything about the model. |
 | #39 VQ-01 | Scoped, **blocked**: D:\Cortex has 47 files in flight (R-0006). Verified truth + SQL + synonyms in the #39 comment. Earlier numbers there were corrected — the first set was a 15x fan-out. |
 | Epics | In flight: #33 EPIC-017 (#57, #59, F40) + #35 EPIC-018 (CI accuracy gate, promote-on-truth - F42/F46). Queued: #38 EPIC-019 (F32; value dictionary + pinned plans F46). PRD ledger F40-F48 routes the engine-side accuracy work; EPIC-020 stays blocked on F36. |

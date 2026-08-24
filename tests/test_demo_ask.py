@@ -70,6 +70,71 @@ def test_divide_revenue_by_5(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -
     assert env["chart"]["kind"] == "bar"
 
 
+PREDICTIVE_QUESTIONS = [
+    "what will next quarter revenue be",
+    "forecast revenue for next month",
+    "project total sales for the coming year",
+    "how much revenue do you expect us to make",
+    "what are the top 5 SKUs going to be next quarter",
+    "what is the outlook for year-end revenue",
+    "estimate warehouse capacity utilisation for next year",
+]
+
+
+@pytest.mark.parametrize("question", PREDICTIVE_QUESTIONS)
+def test_predictive_questions_abstain(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, question: str
+) -> None:
+    """Invariant 12 — a forecast must never get a historical number + green badge."""
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+    env = answer_demo_question(question)
+    assert env["badge"] == "ABSTAIN", question
+    assert env["abstained"] is True, question
+    assert env["values"] == []
+    assert env["rows"] == []
+    assert env["contributing_sources"] == []
+    assert env["drillthrough_token"] is None
+    assert "RM" not in env["text"], f"abstain leaked a number: {env['text']!r}"
+
+
+def test_predictive_abstain_says_why_it_refused(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0011 — the reason must reach the customer, not only a log line."""
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+    env = answer_demo_question("forecast revenue for next month")
+    assert "forecast" in env["text"].lower()
+    assert any("predictive" in a.lower() for a in env["assumptions"])
+
+
+def test_predictive_guard_does_not_swallow_historical_asks(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0005 — a control that refuses legitimate work is a failure, not a win."""
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    from dms_executor import demo_warehouse as dw
+
+    dw._SEEDED.clear()
+    ensure_demo_warehouse(warehouse)
+    for question in (
+        "What was total revenue?",
+        "Top 5 selling SKUs by revenue",
+        "Show warehouse capacity utilisation",
+        "the next 5 SKUs by revenue",
+    ):
+        env = answer_demo_question(question)
+        assert env["badge"] == "L2_VALIDATED", question
+        assert env["abstained"] is False, question
+
+
 def test_exclude_multiple_skus_and_bare_beta(
     warehouse: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

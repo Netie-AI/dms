@@ -331,6 +331,205 @@ def _should_demote_shape_mismatch(
     return not _GROUP_BY.search(stripped)
 
 
+# Closed list from FF-02. Not a parser: these are the markers that flip a
+# filter. "without" / "except" / "ignoring" stay out - they are demo SKU
+# exclusion words, not this guard's job.
+_NEGATION_MARK = re.compile(r"\b(?:not|excluding|other\s+than)\b|non-", re.I)
+_WORD = re.compile(r"[A-Za-z0-9]+")
+_FUNCTION_WORDS = frozenset(
+    "a an the that those these this are is was were be been being to of in on "
+    "for and or nor have has had do does did we our they their it its with from "
+    "by as at if which who whom what when where than then so how many much any "
+    "all only just".split()
+)
+_CLAUSE_STOP = frozenset("how what give show list tell because since while although".split())
+_SQL_KW = frozenset(
+    "select from where and or not in as on join left right inner outer cross "
+    "full group by order limit offset having union all distinct with asc desc "
+    "true false null is like ilike between case when then else end cast "
+    "coalesce count sum avg min max round upper lower exists into values over "
+    "partition".split()
+)
+_SQL_ATOM = re.compile(r"'([^']*)'|\"([^\"]*)\"|(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)")
+_SQL_KW_POS = re.compile(r"\b(?:where|having|from)\b", re.I)
+
+
+def _norm_concept_tokens(raw: str) -> frozenset[str]:
+    parts = [p for p in re.split(r"[^a-z0-9]+", raw.lower()) if p]
+    if parts and parts[0] in {"is", "has"}:
+        parts = parts[1:]
+    return frozenset(parts)
+
+
+def _negated_concepts(question: str | None) -> list[frozenset[str]]:
+    """Content-word sets the ask negated (not / non- / excluding / other than)."""
+    if not question:
+        return []
+    out: list[frozenset[str]] = []
+    for m in _NEGATION_MARK.finditer(question):
+        tail = question[m.end() :]
+        words: list[str] = []
+        last_end = 0
+        for tok in _WORD.finditer(tail):
+            if words and re.search(r"[?!.;]", tail[last_end : tok.start()]):
+                break
+            low = tok.group(0).lower()
+            last_end = tok.end()
+            if low in _CLAUSE_STOP and words:
+                break
+            if low in _FUNCTION_WORDS:
+                continue
+            words.append(low)
+            if len(words) >= 4:
+                break
+        concept = frozenset(words)
+        if concept:
+            out.append(concept)
+    return out
+
+
+def _concepts_overlap(negated: frozenset[str], predicate: frozenset[str]) -> bool:
+    """True when a SQL atom's tokens and the negated phrase are "about the same thing".
+
+    A single shared 3+ letter word counts only when it is not diluted by other
+    words on either side - either the whole negated phrase is covered by the
+    atom, or the whole atom is covered by the negated phrase. Two SQL atoms
+    (``is_hazardous``, a literal) almost always contribute one token each, so
+    requiring 2+ shared tokens whenever the negated phrase has more than one
+    word (the original rule) meant a negated phrase that picked up its subject
+    noun - "non-hazardous **inventory**", "excluding cancelled **shipments**" -
+    could never match a column or literal that only ever carries the
+    distinguishing word. The subject noun is not a filter, so it should not be
+    able to veto a match on the word that is.
+
+    Full containment either direction keeps this from turning into "any shared
+    word counts": a random incidental overlap on an unrelated column would
+    still need that column's own token set to be a clean subset (or superset)
+    of what was negated, not merely intersect it.
+    """
+    if not negated or not predicate:
+        return False
+    common = negated & predicate
+    if not common:
+        return False
+    if len(common) >= 2:
+        return True
+    word = next(iter(common))
+    if len(word) < 3:
+        return False
+    return negated <= predicate or predicate <= negated
+
+
+def _in_filter_clause(sql: str, pos: int) -> bool:
+    window = sql[:pos]
+    last = -1
+    kind = ""
+    for m in _SQL_KW_POS.finditer(window):
+        last = m.start()
+        kind = m.group(0).lower()
+    return last >= 0 and kind in {"where", "having"}
+
+
+def _literal_polarity(pre: str) -> str | None:
+    s = pre.rstrip()
+    if s.endswith("!=") or s.endswith("<>"):
+        return "negative"
+    if re.search(r"\bnot\s+in\s*\([^)]*$", s, re.I):
+        return "negative"
+    if s.endswith("=") or re.search(r"\bin\s*\([^)]*$", s, re.I):
+        return "positive"
+    return None
+
+
+def _ident_polarity(sql: str, start: int, end: int, name: str) -> str | None:
+    pre = sql[max(0, start - 40) : start]
+    post = sql[end : end + 40]
+    if re.search(r"\bnot\s+(?:\w+\.)?$", pre, re.I):
+        return "negative"
+    if re.match(r"\s*(!=|<>)\s*", post, re.I):
+        return "negative"
+    if re.match(r"\s+is\s+not\b", post, re.I):
+        return "negative"
+    if re.match(r"\s*(?:=|is)\s*(false|0)\b", post, re.I):
+        return "negative"
+    if re.match(r"\s*(?:=|is)\s*(true|1)\b", post, re.I):
+        return "positive"
+    if re.match(r"\s+not\s+in\b", post, re.I):
+        return "negative"
+    if re.match(r"\s+in\s*\(", post, re.I):
+        return "positive"
+    if re.match(r"^(is|has)_", name, re.I) and _in_filter_clause(sql, start):
+        return "positive"
+    return None
+
+
+def _sql_filter_polarity(sql: str, concept: frozenset[str]) -> str | None:
+    """'positive' / 'negative' if a filter atom overlaps ``concept``, else None."""
+    seen: set[str] = set()
+    for m in _SQL_ATOM.finditer(sql):
+        literal = m.group(1) if m.group(1) is not None else m.group(2)
+        ident = m.group(3)
+        if ident is not None and ident.lower() in _SQL_KW:
+            continue
+        if literal is not None:
+            tokens = _norm_concept_tokens(literal)
+            if not _concepts_overlap(concept, tokens):
+                continue
+            pol = _literal_polarity(sql[: m.start()])
+        else:
+            assert ident is not None
+            tokens = _norm_concept_tokens(ident)
+            if not _concepts_overlap(concept, tokens):
+                continue
+            pol = _ident_polarity(sql, m.start(), m.end(), ident)
+        if pol is None:
+            continue
+        seen.add(pol)
+    if "positive" in seen:
+        return "positive"
+    if "negative" in seen:
+        return "negative"
+    return None
+
+
+def _polarity_conflict_label(
+    *,
+    question: str | None,
+    sql: str | None,
+) -> str | None:
+    """The negated phrase a positive SQL filter contradicts, or None.
+
+    FF-02 / E11. Cortex matched a governed metric on a surface token and
+    ignored negation: "not cold storage" came back as
+    ``is_cold_storage = TRUE`` under L1_GOVERNED_METRIC. This is not a second
+    matcher. It is the same class of envelope post-condition as E10: when the
+    executed filter observably asserts the positive of something the ask
+    negated, refuse the governed badge.
+
+    All three must hold:
+
+      1. the ask contains a closed-list negation marker
+      2. a filter atom in the executed SQL overlaps that negated phrase
+      3. that atom is asserted positive (``= TRUE``, bare ``is_*``, ``= 'X'``)
+
+    A positive ask never trips 1, so "How many cold storage locations do we
+    have?" keeps returning 4 under L1 (R-0005). A query that already has
+    ``NOT is_cold_storage`` agrees on polarity and is left alone.
+    """
+    concepts = _negated_concepts(question)
+    if not concepts:
+        return None
+    if not sql:
+        return None
+    stripped = _SQL_COMMENT.sub("", str(sql))
+    if not stripped.strip():
+        return None
+    for concept in concepts:
+        if _sql_filter_polarity(stripped, concept) == "positive":
+            return " ".join(sorted(concept))
+    return None
+
+
 def _executed_query(sql: str | None) -> bool:
     """True when ``sql_used`` holds a statement, not a placeholder comment.
 
@@ -651,6 +850,23 @@ def build_answer_envelope(
         )
         assumptions_list.append(
             "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
+        )
+
+    # E11 (FF-02) — a negated ask must not be settled by a metric whose filter
+    # asserts the positive. Runs last so a shape or scope complaint stays the
+    # more specific reason when both apply.
+    inverted = None if abstained else _polarity_conflict_label(question=question, sql=sql_used)
+    if inverted:
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            f"You asked to exclude {inverted}, but the query I matched filters "
+            f"for {inverted} being true. That is the inverse of the question, "
+            f"so I cannot confirm the figure. Rather than show you the positive "
+            f"count as though it answered the negated ask, I'm stopping here."
+        )
+        assumptions_list.append(
+            "negated ask answered by a positive filter: polarity mismatch (E11/FF-02)"
         )
 
     if abstained:

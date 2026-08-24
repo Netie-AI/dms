@@ -8,6 +8,8 @@ INVARIANT-CHANGE: hard rule 12 — executed SQL with zero rows demotes to ABSTAI
 INVARIANT-CHANGE: E9-02 (F32) — ambiguous multi-sheet / multi-file category
 ranking must not stay confident green when competing Sales vs Wide_Fill (or
 cross-file sales) scopes disagree; uniquely scoped executed ranks may certify.
+INVARIANT-CHANGE: E11 (FF-02) — a negated ask must not keep L1_GOVERNED_METRIC
+when the matched metric's filter asserts the positive of that negation.
 """
 
 from __future__ import annotations
@@ -554,3 +556,237 @@ def test_e10_grouped_ask_with_a_real_breakdown_certifies():
     assert env["abstained"] is False
     assert len(env["rows"]) == 3
     assert_envelope_valid(env)
+
+
+# ---------------------------------------------------------------------------
+# E11 / FF-02 — a negated ask is not settled by a metric whose filter is the
+# positive of that negation.
+# ---------------------------------------------------------------------------
+
+_COLD_COUNT_SQL = "SELECT COUNT(*) AS cold_count FROM locations WHERE is_cold_storage = TRUE"
+_COLD_COUNT_ROWS = [{"cold_count": 4}]
+_NEGATED_COLD_ASK = (
+    "How many kilograms of FOOD_COLD goods have been delivered to warehouses "
+    "that are not cold storage?"
+)
+_POSITIVE_COLD_ASK = "How many cold storage locations do we have?"
+
+
+def test_e11_negated_ask_answered_by_positive_filter_demotes():
+    """The FF-02 shape, caught live by scripts/verify_freeform_demo.py.
+
+    Asked for kilograms of FOOD_COLD delivered to warehouses that are *not*
+    cold storage. Answered with cold_count=4 from
+    ``WHERE is_cold_storage = TRUE`` under L1_GOVERNED_METRIC. Ask and answer
+    are both scalar (E10 does not fire). The match inverted polarity on the
+    token "cold storage" and still stamped governed.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_ff02",
+        text="Result: cold_count = 4",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 4, "label": "cold_count"}],
+        sql_used=_COLD_COUNT_SQL,
+        rows=list(_COLD_COUNT_ROWS),
+        question=_NEGATED_COLD_ASK,
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"a NOT-cold-storage ask settled with is_cold_storage=TRUE certified as {env['badge']!r}"
+    )
+    assert env["abstained"] is True
+    assert not env["values"], "an abstention must not ship the inverted figure"
+    assert not env["rows"]
+    assert "4" not in env["text"], "the substituted cold_count must not render"
+    assert "inverse" in env["text"].lower() or "exclude" in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        _NEGATED_COLD_ASK,
+        "kilograms delivered to warehouses excluding cold storage",
+        "FOOD_COLD goods delivered to sites other than cold storage",
+        "FOOD_COLD delivered to non-cold-storage warehouses",
+    ],
+)
+def test_e11_closed_list_negation_markers_demote(question: str):
+    """The minimum subset: not / excluding / other than / non- all flip polarity."""
+    env = build_answer_envelope(
+        answer_id="ans_ff02_mark",
+        text="Result: cold_count = 4",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 4, "label": "cold_count"}],
+        sql_used=_COLD_COUNT_SQL,
+        rows=list(_COLD_COUNT_ROWS),
+        question=question,
+    )
+    assert env["badge"] == "ABSTAIN", question
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert_envelope_valid(env)
+
+
+def test_e11_positive_cold_storage_ask_still_certifies():
+    """R-0005 — the guard must narrow matching, not disable the metric.
+
+    'How many cold storage locations do we have?' is the metric's own
+    question. Same SQL, same 4. If E11 were implemented as 'is_cold_storage
+    in the SQL is suspicious', this would go red.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_cold_ok",
+        text="Result: cold_count = 4",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 4, "label": "cold_count"}],
+        sql_used=_COLD_COUNT_SQL,
+        rows=list(_COLD_COUNT_ROWS),
+        question=_POSITIVE_COLD_ASK,
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 4
+    assert env["rows"][0]["cold_count"] == 4
+    assert "4" in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_e11_ask_path_map_demotes_polarity_mismatch():
+    """Same constructor path as POST /v1/chat/ask (map_ask_response_to_envelope)."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Result: cold_count = 4",
+            "audit_id": "aud_ff02",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": _COLD_COUNT_SQL,
+            "rows": list(_COLD_COUNT_ROWS),
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="sp_finance",
+        session_id="ses_ff02",
+        question=_NEGATED_COLD_ASK,
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "4" not in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_e11_sql_that_already_negates_the_filter_still_certifies():
+    """Polarity agreement is not a mismatch. L2 answering the negated ask
+    with ``NOT l.is_cold_storage`` must keep its figure (R-0005).
+    """
+    env = build_answer_envelope(
+        answer_id="ans_breach_ok",
+        text="Result: ambient_breach = 102,986.0",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": 102986.0, "label": "breach_kg"}],
+        sql_used=(
+            "SELECT ROUND(SUM(s.quantity_kg), 1) AS breach_kg "
+            "FROM shipments s "
+            "JOIN sku_category c ON c.sku = s.sku "
+            "JOIN locations l ON l.location_id = s.destination_location_id "
+            "WHERE c.category = 'FOOD_COLD' AND s.status = 'DELIVERED' "
+            "AND NOT l.is_cold_storage"
+        ),
+        rows=[{"breach_kg": 102986.0}],
+        question=_NEGATED_COLD_ASK,
+    )
+
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 102986.0
+    assert_envelope_valid(env)
+
+
+def test_e11_subject_noun_does_not_shield_a_wrong_answer():
+    """A trailing noun in the negated phrase must not veto the real match.
+
+    "non-hazardous **inventory**" negates {hazardous, inventory}. The filter
+    that matters is a single column, ``is_hazardous``, which can never carry
+    the subject noun too - a SQL identifier is not a sentence. Requiring both
+    negated words to appear together on one atom meant the distinguishing word
+    ("hazardous") matching cleanly was overridden by the *other* word never
+    being able to match anything, and the answer certified.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_nonhaz_wrong",
+        text="Result: value = 999999.99",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 999999.99, "label": "value"}],
+        sql_used=(
+            "SELECT SUM(quantity_kg * unit_cost_myr) AS value "
+            "FROM inventory WHERE is_hazardous = TRUE"
+        ),
+        rows=[{"value": 999999.99}],
+        question="total value of non-hazardous inventory",
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"non-hazardous answered from is_hazardous = TRUE certified as {env['badge']!r}"
+    )
+    assert env["abstained"] is True
+
+
+def test_e11_excluded_literal_does_not_hide_behind_its_own_table_name():
+    """Same shape as above, on a literal instead of a boolean column.
+
+    "excluding cancelled **shipments**" negates {cancelled, shipments}. The
+    filter that matters is the literal ``'CANCELLED'`` on ``status`` - the
+    literal can carry "cancelled" but never "shipments", which is the name of
+    the table the filter lives in, not a value any column holds.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_excl_wrong",
+        text="Result: total = 500000.00",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 500000.00, "label": "total"}],
+        sql_used="SELECT SUM(cost_myr) AS total FROM shipments WHERE status = 'CANCELLED'",
+        rows=[{"total": 500000.00}],
+        question="total shipping cost excluding cancelled shipments",
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"'excluding cancelled shipments' answered from status = 'CANCELLED' "
+        f"certified as {env['badge']!r}"
+    )
+    assert env["abstained"] is True
+
+
+def test_e11_single_shared_word_does_not_launder_an_unrelated_column():
+    """R-0005 guard on the fix above: the relaxed rule must stay narrow.
+
+    A column that happens to share a word with the negated phrase's subject
+    noun, but is otherwise unrelated to the actual filter, must not itself
+    trigger a demote - only the column carrying the real distinguishing word
+    does, and it correctly answers in the negative here.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_coincidental_ok",
+        text="Result: value = 100.00",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 100.00, "label": "value"}],
+        sql_used=(
+            "SELECT SUM(x) AS value FROM inventory "
+            "WHERE is_hazardous = FALSE AND inventory_active = TRUE"
+        ),
+        rows=[{"value": 100.00}],
+        question="total value of non-hazardous inventory",
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
