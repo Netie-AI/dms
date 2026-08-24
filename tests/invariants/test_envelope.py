@@ -708,3 +708,85 @@ def test_e11_sql_that_already_negates_the_filter_still_certifies():
     assert env["abstained"] is False
     assert env["values"][0]["value"] == 102986.0
     assert_envelope_valid(env)
+
+
+def test_e11_subject_noun_does_not_shield_a_wrong_answer():
+    """A trailing noun in the negated phrase must not veto the real match.
+
+    "non-hazardous **inventory**" negates {hazardous, inventory}. The filter
+    that matters is a single column, ``is_hazardous``, which can never carry
+    the subject noun too - a SQL identifier is not a sentence. Requiring both
+    negated words to appear together on one atom meant the distinguishing word
+    ("hazardous") matching cleanly was overridden by the *other* word never
+    being able to match anything, and the answer certified.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_nonhaz_wrong",
+        text="Result: value = 999999.99",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 999999.99, "label": "value"}],
+        sql_used=(
+            "SELECT SUM(quantity_kg * unit_cost_myr) AS value "
+            "FROM inventory WHERE is_hazardous = TRUE"
+        ),
+        rows=[{"value": 999999.99}],
+        question="total value of non-hazardous inventory",
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"non-hazardous answered from is_hazardous = TRUE certified as {env['badge']!r}"
+    )
+    assert env["abstained"] is True
+
+
+def test_e11_excluded_literal_does_not_hide_behind_its_own_table_name():
+    """Same shape as above, on a literal instead of a boolean column.
+
+    "excluding cancelled **shipments**" negates {cancelled, shipments}. The
+    filter that matters is the literal ``'CANCELLED'`` on ``status`` - the
+    literal can carry "cancelled" but never "shipments", which is the name of
+    the table the filter lives in, not a value any column holds.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_excl_wrong",
+        text="Result: total = 500000.00",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 500000.00, "label": "total"}],
+        sql_used="SELECT SUM(cost_myr) AS total FROM shipments WHERE status = 'CANCELLED'",
+        rows=[{"total": 500000.00}],
+        question="total shipping cost excluding cancelled shipments",
+    )
+
+    assert env["badge"] == "ABSTAIN", (
+        f"'excluding cancelled shipments' answered from status = 'CANCELLED' "
+        f"certified as {env['badge']!r}"
+    )
+    assert env["abstained"] is True
+
+
+def test_e11_single_shared_word_does_not_launder_an_unrelated_column():
+    """R-0005 guard on the fix above: the relaxed rule must stay narrow.
+
+    A column that happens to share a word with the negated phrase's subject
+    noun, but is otherwise unrelated to the actual filter, must not itself
+    trigger a demote - only the column carrying the real distinguishing word
+    does, and it correctly answers in the negative here.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_coincidental_ok",
+        text="Result: value = 100.00",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 100.00, "label": "value"}],
+        sql_used=(
+            "SELECT SUM(x) AS value FROM inventory "
+            "WHERE is_hazardous = FALSE AND inventory_active = TRUE"
+        ),
+        rows=[{"value": 100.00}],
+        question="total value of non-hazardous inventory",
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False

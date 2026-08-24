@@ -389,13 +389,35 @@ def _negated_concepts(question: str | None) -> list[frozenset[str]]:
 
 
 def _concepts_overlap(negated: frozenset[str], predicate: frozenset[str]) -> bool:
+    """True when a SQL atom's tokens and the negated phrase are "about the same thing".
+
+    A single shared 3+ letter word counts only when it is not diluted by other
+    words on either side - either the whole negated phrase is covered by the
+    atom, or the whole atom is covered by the negated phrase. Two SQL atoms
+    (``is_hazardous``, a literal) almost always contribute one token each, so
+    requiring 2+ shared tokens whenever the negated phrase has more than one
+    word (the original rule) meant a negated phrase that picked up its subject
+    noun - "non-hazardous **inventory**", "excluding cancelled **shipments**" -
+    could never match a column or literal that only ever carries the
+    distinguishing word. The subject noun is not a filter, so it should not be
+    able to veto a match on the word that is.
+
+    Full containment either direction keeps this from turning into "any shared
+    word counts": a random incidental overlap on an unrelated column would
+    still need that column's own token set to be a clean subset (or superset)
+    of what was negated, not merely intersect it.
+    """
     if not negated or not predicate:
         return False
     common = negated & predicate
-    if len(negated) >= 2:
-        return negated <= predicate or len(common) >= 2
-    only = next(iter(negated))
-    return only in predicate and len(only) >= 3
+    if not common:
+        return False
+    if len(common) >= 2:
+        return True
+    word = next(iter(common))
+    if len(word) < 3:
+        return False
+    return negated <= predicate or predicate <= negated
 
 
 def _in_filter_clause(sql: str, pos: int) -> bool:
