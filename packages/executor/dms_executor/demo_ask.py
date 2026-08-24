@@ -63,6 +63,37 @@ def _money(n: float) -> str:
     return f"RM {n:,.2f}"
 
 
+# Predictive intent — the demo warehouse has history only and no forecast model.
+# Deliberately excludes a bare "next" so rank phrasings ("the next 5 SKUs") stay
+# answerable; only future *periods* count.
+_PREDICTIVE = re.compile(
+    r"\b(?:"
+    r"will|won'?t|"  # "what will revenue be", "will we run out"
+    r"forecast(?:s|ed|ing)?|"
+    r"predict(?:s|ed|ing|ion|ions|ive)?|"
+    r"project(?:s|ed|ing|ion|ions)?|"
+    r"extrapolat\w*|"
+    r"estimat\w*|"
+    r"expect(?:s|ed|ing|ation|ations)?|"
+    r"anticipat\w*|"
+    r"outlook|likely|"
+    r"future|"
+    r"forward\s+look\w*"
+    r")\b"
+    r"|\bwhat\s+if\b"
+    r"|\bhypothetical\w*\b"
+    r"|\bgoing\s+to\s+be\b"
+    r"|\bnext\s+(?:fiscal\s+|financial\s+)?(?:quarter|qtr|month|year|week|fy|q[1-4])\b"
+    r"|\b(?:coming|upcoming|following)\s+(?:quarter|qtr|month|year|week)\b"
+    r"|\byear[\s-]end\s+(?:number|numbers|revenue|sales|figure|figures)\b",
+    re.I,
+)
+
+
+def _is_predictive(question: str) -> bool:
+    return bool(_PREDICTIVE.search(question or ""))
+
+
 def _scale_factor(question: str) -> float | None:
     q = question.lower().strip()
     m = re.search(r"\bdivid(?:e|ed|ing)\b.*?\bby\s+(\d+(?:\.\d+)?)", q)
@@ -227,9 +258,10 @@ def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[
     """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN."""
     q = question.lower().strip()
 
-    # Mirror Cortex live path: predictive asks must never invent a historical total.
-    if re.search(r"\b(forecast|predict|projection|what if|hypothetical|next quarter)\b", q):
-        return _abstain(space_id=space_id)
+    # Mirror Cortex live path, ahead of every keyword match: a predictive ask must
+    # never be served a historical number under an L2 badge.
+    if _is_predictive(question):
+        return _abstain_predictive(space_id=space_id)
 
     factor = _scale_factor(q)
 
@@ -570,20 +602,45 @@ def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
     )
 
 
-def _abstain(*, space_id: str | None) -> dict[str, Any]:
+def _abstain(
+    *,
+    space_id: str | None,
+    answer_id: str = "ans_demo_abstain",
+    text: str | None = None,
+    assumptions: list[str] | None = None,
+) -> dict[str, Any]:
     return _pack(
-        answer_id="ans_demo_abstain",
-        text=(
+        answer_id=answer_id,
+        text=text
+        or (
             "I cannot answer that from the demo warehouse without inventing a number. "
             "Try one of the suggested questions."
         ),
         values=[],
         badge="ABSTAIN",
         abstained=True,
-        assumptions=["demo router abstained — 0 confidently wrong"],
+        assumptions=assumptions or ["demo router abstained — 0 confidently wrong"],
         space_id=space_id,
         contributing_sources=[],
         rows=[],
+    )
+
+
+def _abstain_predictive(*, space_id: str | None) -> dict[str, Any]:
+    """Same envelope shape as the out-of-scope abstain, forecast-specific prose."""
+    return _abstain(
+        space_id=space_id,
+        answer_id="ans_demo_abstain_predictive",
+        text=(
+            "I cannot answer that from the demo warehouse without inventing a number. "
+            "The demo warehouse holds historical transactions only — it has no forecast "
+            "model, so any figure I gave you for a future period would be a guess. "
+            "Try one of the suggested questions."
+        ),
+        assumptions=[
+            "predictive intent detected — demo router abstained",
+            "demo warehouse is historical only — no forecast model",
+        ],
     )
 
 
