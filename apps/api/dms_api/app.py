@@ -8,7 +8,7 @@ from cortex_client import CortexClient
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from dms_api.middleware_actor import DevActorMiddleware
+from dms_api.middleware_actor import RejectIdentityHeadersMiddleware
 from dms_api.migrate import run_migrations
 from dms_api.routes import (
     admin,
@@ -116,7 +116,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(DevActorMiddleware)
+    app.add_middleware(RejectIdentityHeadersMiddleware)
     app.include_router(health.router, tags=["health"])
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)

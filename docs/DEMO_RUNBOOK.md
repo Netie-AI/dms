@@ -3,7 +3,35 @@
 **Audience:** founder / buyer laptop demo  
 **Honesty:** DMS = governed SQL + Space ACL (Cortex HTTP). AirGPT = freeform hybrid RAG over real files (Explorer reveal). Do not collapse them into one product pitch.
 
-**Last aligned:** 2026-08-03
+**Last aligned:** 2026-08-25
+
+---
+
+## 0. The trust boundary - say this before anyone asks
+
+**DR-0004 Option A, decided 2026-08-25.** There is no authentication in DMS. Identity is
+resolved from server-side configuration, and a request that tries to name its own tenant,
+actor or role is refused with a 400.
+
+The sentence that must appear in the SOW, and must be said out loud in any demo where a
+buyer's IT or compliance function is in the room:
+
+> The API trusts its network. Anyone who can reach the host can act as the configured
+> steward. Identity in the ledger is the identity of the deployment, not of a person.
+
+So the install is single-tenant, on the customer's own network, VPN-only or air-gapped.
+**Do not demo this on a shared or internet-reachable host**, and do not answer "yes" to
+"is it access-controlled per user" - the honest answer is "not yet; that is Option B in
+`docs/decisions/0004-the-authentication-trust-boundary.md`, and it is not built."
+
+Two consequences worth knowing before the room asks:
+
+- **Object-level permissions are not real yet.** A row predicate keyed to an identity
+  nobody verified enforces nothing. `acl_grants` has the columns and the predicate is
+  carried on the signed manifest, but every producer emits `TRUE`.
+- **A-0007 is open** (PRD-001 F51): `GET /v1/library/warehouse/{table}/preview` skips its
+  Space check when `space_id` is omitted. Until that ticket lands, treat every warehouse
+  table in a demo Space as readable by anyone who can reach the host.
 
 ---
 

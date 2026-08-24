@@ -1,7 +1,9 @@
 ---
-status: proposed
+status: accepted
 date: 2026-08-24
-decision-makers: founder (pending) - routed via prd-agent, PRD-001 feedback ledger F49
+decided: 2026-08-25
+decision-makers: founder - routed via prd-agent, PRD-001 feedback ledger F49
+outcome: Option A - name the trust boundary and constrain the first sale
 ---
 
 # DR-0004 - The authentication trust boundary, and what the first contract may promise
@@ -80,9 +82,27 @@ escalation, and it would arrive wearing the appearance of progress.
 
 ## Decision Outcome
 
-**PENDING - founder.** No option is chosen and this record authorises nothing.
+**Option A, decided by the founder on 2026-08-25.**
 
-What is true under either A or B, and therefore does not wait for this decision:
+The first install is single-tenant, on the customer's own network, reachable only over
+VPN or air-gapped. There is no identity provider. Actors come from server-side
+configuration, never from a request. **The limitation is a named condition of sale and
+must appear in the SOW before the contract is signed, not after a customer finds it:**
+
+> The API trusts its network. Anyone who can reach the host can act as the configured
+> steward. Identity in the ledger is the identity of the deployment, not of a person.
+
+What was implemented on this decision:
+
+- `apps/api/dms_api/middleware_actor.py` - `DevActorMiddleware` is gone. In its place
+  `RejectIdentityHeadersMiddleware` **refuses** any request carrying
+  `x-dms-tenant-id`, `x-dms-actor-id` or `x-dms-role` with a 400 that names the header
+  and cites this record. Deleting the middleware would have left the hole open to
+  whoever added the headers back; refusing is enforcement, and it is testable.
+- `tests/invariants/test_actor_trust_boundary.py` - the assertions this record's
+  Confirmation section demanded.
+
+What is true under either A or B, and therefore did not wait for this decision:
 
 1. `steward_id` is removed from `GoldSignBody` and the ledger actor is derived
    server-side. Under A the source is configuration; under B it is the principal. Under
@@ -117,27 +137,59 @@ eventually be honoured by a route written by someone who read only the first of 
 
 ## Confirmation
 
-**Stated honestly: the enforcer for this decision does not exist yet.** This section names
-what must exist before the decision may be called honoured, and a record that named a
-non-existent test as if it ran would be a wish (`DOCUMENT_SYSTEM.md` Tier 5).
+The enforcer now exists for Option A. What it does and does not cover:
 
-Exists today, and is the file to extend:
+**Exists, and was verified able to fail before being trusted green (R-0007):**
 
-- `tests/invariants/test_boundaries.py` - real, and currently blind to this class:
-  `:39` sets `MUTATING_METHODS = {"post", "put", "patch", "delete"}`, so it inspects no
-  GET at all. Extending it to classify a route by what it **reaches** rather than by its
-  HTTP verb touches a protected path and needs an `INVARIANT-CHANGE:` trailer, and the
-  extended gate must be shown to fail before it is trusted green (R-0007).
+- `tests/invariants/test_actor_trust_boundary.py` - 7 assertions. No request header can
+  determine identity (each of the three, plus a case-insensitivity check, since HTTP
+  header names are case-insensitive and a control that was not would be a hole); no
+  request field can (`GoldSignBody` is asserted to declare none of `steward_id`, `actor`,
+  `actor_user_id`, `tenant_id`, `role`, `user_id`); the rejected Option C is pinned
+  rejected by asserting `DevActorMiddleware` no longer exists; and R-0005 is guarded -
+  the same request without the header still answers 200.
+- **R-0007 probe run:** replacing the middleware with a pass-through that reads the
+  headers and ignores them - the plausible-looking alternative, and the silent one -
+  turns 4 of the 7 red. Restoring the refusal returns all 7 green.
+- `tests/test_pipeline_promote.py` - the A-0005 half: `sign_gold_metric` requires a
+  server-resolved actor, with no fallback to caller-supplied `metric.steward_id`.
 
-Must be created before this record moves to `accepted`:
+**Does NOT exist, and is not claimed:**
 
-- an assertion that **no request field and no request header can determine a ledger
-  actor** - the direct regression test for `A-0005`, asserted on the response of
-  `POST /v1/pipelines/gold/sign` and on `GET /v1/audit/ledger`, which are the artifacts a
-  customer receives (R-0001, CLAUDE.md hard rule 10a). Asserting on the Cortex append
-  payload is necessary and insufficient.
-- under B only: an assertion that a request with no credential is refused on every route
-  that reaches customer rows.
+- No test asserts a credential is required, because under Option A there are no
+  credentials. That assertion belongs to Option B and writing it now would assert a
+  control that does not exist.
+- Nothing here proves the *network* boundary. Whether the host is genuinely reachable
+  only over VPN or air-gap is a deployment property, not a code property, and no test in
+  this repo can verify it. `deploy/compose/Caddyfile` has no auth and no TLS. The SOW
+  sentence above is the only control on that, and it is a human one.
+- A-0007 on the read path remains **open** (PRD-001 F51): the Space scope check in
+  `apps/api/dms_api/routes/library.py` is nested inside `if space_id:` and is skipped
+  when the parameter is omitted. Option A does not close it.
 
-Until both exist, this record stays `proposed` and no claim about authentication may
-appear in any external asset (PRD-001 section 8).
+Still outstanding, and tracked elsewhere rather than blocking this record:
+
+- `tests/invariants/test_boundaries.py` - blind to this class: `:39` sets
+  `MUTATING_METHODS = {"post", "put", "patch", "delete"}`, so it inspects no GET at all.
+  Extending it to classify a route by what it **reaches** rather than by its HTTP verb
+  touches a protected path and needs an `INVARIANT-CHANGE:` trailer, and the extended
+  gate must be shown to fail before it is trusted green. That is PRD-001 F51's companion
+  ticket, not this record's work.
+
+**One weakening of the original Confirmation, stated rather than quietly dropped.** This
+record asked for the A-0005 assertion to be made *on the response of*
+`POST /v1/pipelines/gold/sign` and on `GET /v1/audit/ledger` - the artifacts a customer
+receives (R-0001, CLAUDE.md hard rule 10a). What exists instead asserts on the **request
+schema** (`GoldSignBody.model_fields`) and on the **binding**
+(`sign_gold_metric` refusing an unresolved actor). Signing end to end needs a live Cortex
+and a real ledger append, which no test in this repo stands up.
+
+The schema assertion is strong in one specific way - a field pydantic does not declare
+cannot be sent at all, so it forecloses the input rather than checking the output. It is
+still not the same claim as "the ledger recorded the server's actor", and that claim is
+**unverified here**. It should be added to `scripts/verify_demo_live.py`, which does run
+against a live stack.
+
+No claim about authentication may appear in any external asset beyond the SOW sentence
+above (PRD-001 section 8), and that sentence is a statement of a limitation, not a
+capability.
