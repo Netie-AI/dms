@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-22 - FF-02 polarity guard (E11)
+
+- **#57 FF-02.** A governed metric answered "warehouses that are not cold
+  storage" with `SELECT COUNT(*) ... WHERE is_cold_storage = TRUE` (4 vs
+  oracle 102,986) under `L1_GOVERNED_METRIC`. Ask and answer were both
+  scalar, so E10 did not fire. Envelope now demotes when a closed-list
+  negation (`not`, `non-`, `excluding`, `other than`) overlaps a filter
+  that asserts the positive. Same class as E10: Cortex still matches;
+  DMS refuses the governed badge. Positive "How many cold storage
+  locations do we have?" still returns 4 under L1 (R-0005).
+  `INVARIANT-CHANGE` in envelope tests.
+
 ## 2026-08-22 - S4 warehouse identity
 
 - **Two DuckDB files were the remaining S4 gap** (TAS-DMS §6, measured
