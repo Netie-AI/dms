@@ -92,6 +92,10 @@ def _default_warehouse() -> Path:
     ``inventory`` has no ``category`` column while Cortex's does. Pointing the
     oracle at the wrong file produces either a binder error or, far worse, a
     confident comparison against data the stack never read.
+
+    Uploaded bronze is the S4 case: copy it with
+    ``scripts/sync_bronze_to_serving.py`` rather than pointing ingest at this
+    file (demo seed is ``outbound``, engine seed is ``OUT``).
     """
     env = os.environ.get("DMS_ORACLE_WAREHOUSE")
     if env:

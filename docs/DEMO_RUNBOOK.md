@@ -48,6 +48,8 @@ D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -Ope
 python D:\DMS\scripts\verify_demo_live.py
 python D:\DMS\scripts\verify_l2_vs_l1.py
 python D:\DMS\scripts\smoke_live_ask.py
+# S4: fail if an upload landed in DMS's DuckDB but not the file chat reads
+python D:\DMS\scripts\sync_bronze_to_serving.py --check
 
 # Playground (L0-L3 probe + L4/L5 aspirations) — after stack is up
 python D:\DMS\scripts\gen_playground_data.py
@@ -142,8 +144,9 @@ python tests\RAG\edge_probe.py --space-id 8
 |---|----------|-----|
 | B1 | Upload | Studio → Finance → `15_q3_sales_export.xlsx` |
 | B2 | Receipt | Show ingested=1, bronze table |
-| B3 | Ground | Chat grounded to that file → ask about `units_sold` |
-| B4 | Library | Preview bronze rows |
+| B3 | Serve | If chat cannot see the new table: stop Cortex, `python scripts/sync_bronze_to_serving.py`, restart. Start-DMSStack does this copy before it starts the engine. |
+| B4 | Ground | Chat grounded to that file → ask about `units_sold` |
+| B5 | Library | Preview bronze rows |
 
 ### Act C — AirGPT MAX RAG (4–5 min) — subtitle: "Freeform over the real files"
 

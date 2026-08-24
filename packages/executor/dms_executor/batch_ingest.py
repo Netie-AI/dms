@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -14,6 +15,9 @@ from dms_executor.bronze import ingest_csv_bytes
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
 from dms_executor.document_chunks import index_unstructured_upload
 from dms_executor.triage import classify_bytes, parse_csv_grid
+from dms_executor.warehouse_identity import maybe_sync_bronze_to_serving
+
+logger = logging.getLogger(__name__)
 
 
 def _blob_put(key: str, data: bytes, *, root: Path) -> str:
@@ -175,6 +179,17 @@ def ingest_batch(
                 tr.reason = f"ingest_error:{exc}"[:180]
                 need_attention += 1
             results.append(tr)
+
+    if ingested_count:
+        synced = maybe_sync_bronze_to_serving(db_path)
+        if synced is not None and not synced.ok:
+            logger.warning(
+                "bronze landed in %s but chat serving %s was not updated (%s): %s",
+                synced.ingest,
+                synced.serving,
+                synced.status,
+                synced.error or "run python scripts/sync_bronze_to_serving.py",
+            )
 
     return TriageReceipt(
         files_seen=len(files),

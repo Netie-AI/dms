@@ -2,7 +2,8 @@
 
 Synthetic tables (no PII) for personal stress-test. Path via DMS_WAREHOUSE_DB.
 Demo uses txn_type='outbound' (Cortex warehouse uses 'OUT' — do not point demo at
-Cortex's duckdb file).
+Cortex's duckdb file). Uploaded bronze is copied to the engine file by
+``warehouse_identity.sync_bronze_to_serving`` instead.
 """
 
 from __future__ import annotations

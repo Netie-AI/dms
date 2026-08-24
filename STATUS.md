@@ -1,6 +1,6 @@
 # STATUS.md — DMS
 
-**Last updated:** 2026-08-23  
+**Last updated:** 2026-08-24  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -27,6 +27,8 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 |----|--------|
 | E9-01 (#34 CLOSED) | E9 on ask path + invent-totals tests |
 | E9-02 (#41 CLOSED) | F32 ambiguous Sales vs Wide_Fill ranking demote |
+| S4 warehouse identity | Bronze copy `DMS_WAREHOUSE_DB` → `CORTEX_WAREHOUSE_DB`; `sync_bronze_to_serving.py --check` fails if chat cannot see an upload |
+| SCORE-03 (#42 CLOSED) | F32 ambiguous + blank-row pack cases; falsified R-0007 |
 | Demo | `verify_demo_live.py` **31/31** live, first run on a cold stack |
 | #48 CLOSED | E10 — a grouped/ranked ask can't be settled by an ungrouped scalar |
 | #43 CLOSED | cold-start timeout was rendered as 403; now 504+retryable. Launcher warms the answer path (measured 30-48s) |
