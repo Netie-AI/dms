@@ -242,6 +242,36 @@ them (EPIC-019 VQ-02 + EPIC-021 semantic).
 **Condition:** founder confirms L4/L5 definitions (or declines new badges). Until
 then: no L4/L5 badge in envelope; build via 019/021; playground is the probe.
 
+## P-DMS-34 - The TB-tier loader ceiling, and the concurrency floor under it
+
+Two measured limits, parked together because the second is the one that bites first.
+**Loader ceiling:** `scripts/load_adventureworks.py:402` does `pd.read_sql('SELECT *
+FROM ...')`, materialising a whole table in pandas at a measured 19.1x RAM amplification
+over on-disk Parquet - roughly 700 MB of Parquet per table on a 13.67 GB host, with no
+chunk size to raise. Query speed is not the constraint: a 3-table join over 121,317 x
+31,465 rows ran in 0.260s. The fix is a streaming extract; `scripts/stream_ingest.py`
+already exists on `feat/ontology-grain-guard` and is routed to EPIC-020 under PRD-001 F43.
+**Concurrency floor:** one DuckDB writer excludes all readers, reproduced in-process
+(ConnectionException) and cross-process (IOException). This breaks at **91 rows**, not at
+a terabyte - one Studio upload overlapping one chat ask is enough. It has no PRD clause,
+which is why it parks rather than becoming an epic, but it should be said out loud before
+anyone demos two browser tabs.
+**Condition:** a named customer table above the ceiling (loader half), **or** a demo or
+pilot with two concurrent users (concurrency half). Until then: EPIC-020 owns the extract
+lane and stays blocked on F36; do not open a scale epic. Origin: PRD-001 F58.
+
+## P-DMS-35 - A governed record over someone else's scheduler
+
+The jobs half of the 2026-08-24 platform ask. Building a scheduler is declined outright
+(PRD-001 F63): Airflow, Prefect, Dagster and Temporal are funded, free or low three
+figures a month, and have hiring pools. The only differentiated sliver is the thin
+record - "this scheduled answer is governed, cited, and in the ledger" - written over
+whatever cron the customer already runs. It has no PRD clause and no customer asking.
+It is also worth nothing before authentication exists: a scheduled write with no
+principal is an unattributed write on a timer (`DR-0004`).
+**Condition:** a customer names a recurring answer they need to land in the ledger,
+**and** `DR-0004` is accepted. Until then: no scheduler, no DAG engine, no jobs page.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.
