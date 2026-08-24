@@ -1,4 +1,4 @@
-﻿"""DR-0004 Option A - identity is resolved server-side, never from a request.
+"""DR-0004 Option A - identity is resolved server-side, never from a request.
 
 The Confirmation section of DR-0004 names two assertions that must exist before the
 record may move from ``proposed`` to ``accepted``:
@@ -19,7 +19,6 @@ from __future__ import annotations
 import pytest
 from dms_api.middleware_actor import IDENTITY_HEADERS
 from fastapi.testclient import TestClient
-
 
 #: Cheap route that exists and does no network probing. ``/health`` would work too but
 #: it live-probes Cortex and OpenVault, which is seconds per call and unrelated to what
