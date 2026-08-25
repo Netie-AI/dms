@@ -189,47 +189,112 @@ def list_wh_tables(space_id: str | None = Query(None)) -> list[dict[str, Any]]:
     return warehouse_tables(space_id=space_id)
 
 
+def _scope_label(space_id: str | None) -> str:
+    """Name the scope that was applied, so the answer says what it was answered under.
+
+    "company-default" is the UI's "Company (default ACL)" option, not "unscoped" - the
+    distinction is the whole of A-0007 and the response should not be ambiguous about it.
+    """
+    return f"space:{space_id}" if space_id else "company-default"
+
+
+def _refuse(code: str, table: str, space_id: str | None) -> HTTPException:
+    """Structured refusal. Never an empty 200 - that reads as a table with no rows."""
+    return HTTPException(
+        status_code=403,
+        detail={
+            "code": code,
+            "message": f"{table} not in scope",
+            "scope": _scope_label(space_id),
+        },
+    )
+
+
 @router.get("/warehouse/{table}/preview")
 def preview_wh_table(
     table: str,
+    cortex: CortexDep,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     space_id: str | None = Query(None),
 ) -> dict[str, Any]:
-    if space_id:
-        allowed = {t["table"] for t in warehouse_tables(space_id=space_id)}
-        if table.strip().lower() not in {a.lower() for a in allowed}:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "warehouse_not_in_space", "message": f"{table} not in Space scope"},
-            )
+    """Preview a warehouse table under the named Space, or the company default ACL.
+
+    The scope check used to be nested inside ``if space_id:``, so omitting the parameter
+    skipped it entirely (A-0007). It now always runs: ``warehouse_tables(space_id=None)``
+    resolves the company default scope rather than the whole warehouse.
+    """
+    decision = compliance_gate(
+        action="library.preview_warehouse",
+        metadata={
+            "task_id": "library.preview_warehouse",
+            "table": table[:120],
+            "scope": _scope_label(space_id),
+        },
+        client=cortex,
+    )
+    # mutation=False: this is a read, and gatekeeping.py's stated posture is that an
+    # unreachable gate must not refuse a read the way it refuses a write. The scope
+    # check below is NOT subject to that - it runs whether or not Cortex answered, so
+    # an outage costs the audit record, never the boundary.
+    enforce(decision, mutation=False)
+
+    allowed = {t["table"] for t in warehouse_tables(space_id=space_id)}
+    if table.strip().lower() not in {a.lower() for a in allowed}:
+        raise _refuse("warehouse_not_in_space", table, space_id)
     try:
-        return warehouse_preview(table, limit=limit, offset=offset)
+        preview = warehouse_preview(table, limit=limit, offset=offset)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    preview["scope"] = _scope_label(space_id)
+    return preview
 
 
 @router.get("/bronze/{table:path}/preview")
 def preview_bronze(
     table: str,
+    cortex: CortexDep,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     space_id: str | None = Query(None),
 ) -> dict[str, Any]:
+    """Preview a bronze table under the named Space, or the company default ACL.
+
+    Same A-0007 shape as the warehouse route above. Bronze tables are uploads, so the
+    company default is every table registered to some Space - an upload registered to
+    none is not previewable under any scope.
+    """
+    decision = compliance_gate(
+        action="library.preview_bronze",
+        metadata={
+            "task_id": "library.preview_bronze",
+            "table": table[:120],
+            "scope": _scope_label(space_id),
+        },
+        client=cortex,
+    )
+    enforce(decision, mutation=False)  # read posture - see the warehouse route above
+
     if space_id:
+        # Only a named Space can actually refuse here. bronze_list(space_id=None)
+        # returns every registered upload, so listing on the company-default path
+        # would open a second DuckDB connection to compute a set that refuses
+        # nothing - and DuckDB is single-writer, so a needless read is a needless
+        # chance to collide with an in-flight ingest (P-DMS-34).
         allowed = {t["table"] for t in bronze_list(space_id=space_id)}
         raw = table.strip().lower()
         allowed_lower = {a.lower() for a in allowed}
         allowed_base = {a.lower().rsplit(".", 1)[-1] for a in allowed}
         if raw not in allowed_lower and raw.rsplit(".", 1)[-1] not in allowed_base:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "bronze_not_in_space", "message": f"{table} not in Space scope"},
-            )
+            raise _refuse("bronze_not_in_space", table, space_id)
     try:
-        return bronze_preview(table, limit=limit, offset=offset)
+        preview = bronze_preview(table, limit=limit, offset=offset)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        # Same answer as an ungranted table, deliberately. 404 for "no such table"
+        # beside 403 for "real but not yours" is an enumeration oracle.
+        raise _refuse("bronze_not_in_space", table, space_id) from exc
+    preview["scope"] = _scope_label(space_id)
+    return preview
 
 
 @router.post("/reveal")
