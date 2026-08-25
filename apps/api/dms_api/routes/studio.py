@@ -27,6 +27,12 @@ class ReceiptOut(BaseModel):
     per_class: dict[str, int] | None = None
     files: list[dict[str, Any]] | None = None
     summary: str | None = None
+    #: "ok" | "not_needed" | "not_attempted" | "failed" - see TriageReceipt.
+    #: Without this on the response model the field exists on the receipt and is
+    #: dropped on the way out, which is the same silence in a new place.
+    serving_sync: str | None = None
+    serving_sync_detail: str | None = None
+    chat_can_see_it: bool | None = None
 
 
 @router.post("/ingest")
@@ -66,6 +72,9 @@ async def ingest_file(
         per_class=receipt.get("per_class"),
         files=receipt.get("files"),
         summary=receipt.get("summary"),
+        serving_sync=receipt.get("serving_sync"),
+        serving_sync_detail=receipt.get("serving_sync_detail"),
+        chat_can_see_it=receipt.get("chat_can_see_it"),
     )
 
 
@@ -104,6 +113,9 @@ async def ingest_batch_files(
         per_class=receipt.get("per_class"),
         files=receipt.get("files"),
         summary=receipt.get("summary"),
+        serving_sync=receipt.get("serving_sync"),
+        serving_sync_detail=receipt.get("serving_sync_detail"),
+        chat_can_see_it=receipt.get("chat_can_see_it"),
     )
 
 
