@@ -13,6 +13,11 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.hostdb.yml up -d postgres
 #
+# Start-DMSStack.ps1 then runs `alembic upgrade head` against this bind so
+# tests/control_plane see dms.spaces without a manual migrate. already-at-head
+# is success. Appliance `docker compose up` migrates via the API entrypoint
+# (and again in lifespan).
+#
 # Then DATABASE_URL=postgresql://dms:dms@127.0.0.1:5432/dms for a host-run API.
 # Deploying the appliance? Use docker-compose.yml alone.
 #

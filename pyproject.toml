@@ -29,6 +29,8 @@ dependencies = [
   "python-multipart>=0.0.9",
   "PyYAML>=6.0",
   "openpyxl>=3.1",
+  # pandas.DataFrame.to_parquet in scripts/load_adventureworks.py --extract
+  "pyarrow>=14",
 ]
 
 [project.optional-dependencies]
