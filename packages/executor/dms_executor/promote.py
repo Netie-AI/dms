@@ -514,13 +514,37 @@ def _run_silver(
     )
 
 
+def _append_hash(resp: Any) -> str | None:
+    """Chain hash from an append response. Never invent one; never fall back to entry_id.
+
+    The field is ``hash`` on LedgerAppendResponse. Reading ``entry_hash`` alone used to
+    return None every time and the signature silently degraded to the entry id — an
+    identifier, which verifies nothing (PRD-001 F52(b)). Accept either name so a
+    dict-shaped stub still works, but never treat the id as a hash.
+    """
+    sig = getattr(resp, "hash", None) or getattr(resp, "entry_hash", None)
+    if sig is None and isinstance(resp, dict):
+        sig = resp.get("hash") or resp.get("entry_hash")
+    if sig is None or sig == "":
+        return None
+    return str(sig)
+
+
+def _verify_ok(result: Any) -> bool:
+    ok = getattr(result, "ok", None)
+    if ok is None and isinstance(result, dict):
+        ok = result.get("ok")
+    return bool(ok)
+
+
 def sign_gold_metric(
     metric: GoldMetricDef,
     *,
     cortex_append: Any,
+    cortex_verify: Any,
     actor: str,
 ) -> GoldMetricDef:
-    """Append metric.certify to Cortex ledger; return metric with ledger_entry_id + signature.
+    """Append metric.certify, then read the chain back before treating it as signed.
 
     ``actor`` is required and must be resolved server-side by the caller. It used to
     default to None and fall back to ``metric.steward_id``, which arrives from a request
@@ -533,9 +557,20 @@ def sign_gold_metric(
     the actor. DR-0004 records that under both open options the actor is derived
     server-side - from configuration, or from an authenticated principal - never from a
     request field.
+
+    Append alone is not attestation. F70 closed the caller-asserted field hole; this
+    closes the "append said ok, so it is signed" hole: if verify says the chain is not
+    intact (or the append returned no real hash), the metric stays unsigned and the
+    caller gets an honest error. One shared guard — both /gold/sign and /run go through
+    here. Reuses Cortex ``verify_ledger``; no local hash chain.
     """
     if not actor:
         raise ValueError("sign_gold_metric requires a server-resolved actor")
+    if cortex_verify is None:
+        raise ValueError(
+            "sign_gold_metric requires cortex_verify to read the ledger chain back "
+            "before a metric can count as signed"
+        )
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     payload = {
         "metric_id": metric.metric_id,
@@ -552,24 +587,32 @@ def sign_gold_metric(
     entry_id = getattr(resp, "entry_id", None) or (
         resp.get("entry_id") if isinstance(resp, dict) else None
     )
-    # The chain hash is ``hash`` on LedgerAppendResponse. This read ``entry_hash``,
-    # which does not exist on that model, so getattr returned None every time and the
-    # signature silently degraded to the entry id - an identifier, which verifies
-    # nothing (PRD-001 F52(b)). Accept either name so a dict-shaped stub still works,
-    # but read the real one first.
-    sig = (
-        getattr(resp, "hash", None)
-        or getattr(resp, "entry_hash", None)
-        or (resp.get("hash") or resp.get("entry_hash") if isinstance(resp, dict) else None)
-        or entry_id
-        or f"sig_{uuid.uuid4().hex[:16]}"
-    )
+    if not entry_id:
+        raise ValueError("Cortex ledger append did not return entry_id; metric is not signed")
+    sig = _append_hash(resp)
+    if not sig:
+        raise ValueError(
+            "Cortex ledger append did not return a chain hash; metric is not signed"
+        )
+    if sig == str(entry_id):
+        raise ValueError(
+            "Cortex ledger append returned hash equal to entry_id; that is not a "
+            "signature — metric is not signed"
+        )
+
+    verify_result = cortex_verify()
+    if not _verify_ok(verify_result):
+        raise ValueError(
+            "Cortex ledger verify failed after append; the chain is not intact and "
+            "the metric is not signed"
+        )
+
     return GoldMetricDef(
         metric_id=metric.metric_id,
         name=metric.name,
         sql=metric.sql,
         steward_id=metric.steward_id,
         signed_at=now,
-        ledger_entry_id=str(entry_id) if entry_id else None,
-        signature=str(sig),
+        ledger_entry_id=str(entry_id),
+        signature=sig,
     )

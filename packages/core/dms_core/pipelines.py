@@ -163,10 +163,11 @@ class GoldMetricDef:
         appended to the chain.
 
         Requiring the entry id does not make this a *verification* - it is still a
-        claim about state, and nothing here re-reads the chain to confirm the entry
-        exists. What makes it trustworthy is that the value can no longer arrive on a
-        request: ``wiring.pipeline_run`` refuses caller-supplied attestation fields and
-        signs server-side. This property is the second lock, not the first.
+        claim about state, and nothing here re-reads the chain. What makes it
+        trustworthy is that these fields are only set after ``sign_gold_metric`` has
+        appended *and* called Cortex ``verify_ledger`` successfully, and
+        ``wiring.pipeline_run`` refuses caller-supplied attestation fields. This
+        property is the second lock, not the first.
         """
         return bool(self.signature and self.steward_id and self.signed_at and self.ledger_entry_id)
 

@@ -155,6 +155,7 @@ def test_the_signature_is_the_chain_hash_not_the_entry_id() -> None:
     signed = sign_gold_metric(
         GoldMetricDef(metric_id="m", name="n", sql="SELECT 1 AS total", steward_id="s"),
         cortex_append=lambda **kw: _Resp(),
+        cortex_verify=lambda: type("V", (), {"ok": True})(),
         actor="svc_steward",
     )
 
@@ -184,6 +185,129 @@ def test_the_ledger_actor_is_still_the_resolved_one(client: TestClient) -> None:
             metric_id="m", name="n", sql="SELECT 1 AS total", steward_id="cfo@victim.example"
         ),
         cortex_append=_capture,
+        cortex_verify=lambda: type("V", (), {"ok": True})(),
         actor="svc_steward",
     )
     assert seen["actor"] == "svc_steward"
+
+
+def test_append_ok_but_verify_not_ok_refuses_and_does_not_present_as_signed() -> None:
+    """F70 readback: an append response is not attestation until the chain verifies."""
+    from dms_executor.promote import sign_gold_metric
+
+    class _Resp:
+        entry_id = "led_fresh"
+        hash = "sha256:looks_real"
+
+    with pytest.raises(ValueError, match="ledger verify failed"):
+        sign_gold_metric(
+            GoldMetricDef(metric_id="m", name="n", sql="SELECT 1 AS total", steward_id="s"),
+            cortex_append=lambda **kw: _Resp(),
+            cortex_verify=lambda: type("V", (), {"ok": False, "first_break": "led_1"})(),
+            actor="svc_steward",
+        )
+
+
+def test_hash_equal_to_entry_id_is_refused() -> None:
+    """F52(b) closed as refuse, not as silent degradation."""
+    from dms_executor.promote import sign_gold_metric
+
+    class _Resp:
+        entry_id = "led_same"
+        hash = "led_same"
+
+    with pytest.raises(ValueError, match="hash equal to entry_id"):
+        sign_gold_metric(
+            GoldMetricDef(metric_id="m", name="n", sql="SELECT 1 AS total", steward_id="s"),
+            cortex_append=lambda **kw: _Resp(),
+            cortex_verify=lambda: type("V", (), {"ok": True})(),
+            actor="svc_steward",
+        )
+
+
+def test_verify_fail_on_run_is_http_4xx_and_promote_does_not_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Customer surface: append returns entry_id+hash, verify says broken → 400, no promote."""
+    import dms_executor
+    from cortex_client.models import LedgerAppendResponse, LedgerVerifyResponse
+    from dms_api import deps
+
+    class _FakeCortex:
+        def ledger_append(self, req):  # noqa: ANN001
+            return LedgerAppendResponse(entry_id="led_1", hash="sha256:abc")
+
+        def verify_ledger(self):
+            return LedgerVerifyResponse(ok=False, first_break="led_1", checked=1)
+
+    promoted: list[Any] = []
+
+    def _capture_promote(*args, **kwargs):
+        promoted.append((args, kwargs))
+        raise AssertionError("run_promote must not run when verify fails")
+
+    monkeypatch.setattr(dms_executor, "run_promote", _capture_promote)
+
+    app = client.app
+    app.dependency_overrides[deps.get_cortex_client] = lambda: _FakeCortex()
+
+    try:
+        resp = client.post(
+            "/v1/pipelines/run",
+            json={
+                "yaml_text": (
+                    "target: gold.sales_total\n"
+                    "sources: [silver.sales]\n"
+                    "lineage: aggregate\n"
+                    "lineage_reason: metric aggregate for test\n"
+                ),
+                "gold_metric": {
+                    "metric_id": "m_revenue",
+                    "name": "Revenue",
+                    "sql": "SELECT 1 AS total",
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400, f"expected 4xx, got {resp.status_code} {resp.text[:300]}"
+    detail = str(resp.json().get("detail", "")).lower()
+    assert "verify" in detail or "ledger" in detail
+    assert promoted == [], "gold promote ran despite a broken ledger verify"
+
+
+def test_append_and_verify_ok_still_signs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path stub: append + verify ok → signed metric returned from /gold/sign."""
+    from cortex_client.models import LedgerAppendResponse, LedgerVerifyResponse
+    from dms_api import deps
+
+    class _FakeCortex:
+        def ledger_append(self, req):  # noqa: ANN001
+            return LedgerAppendResponse(entry_id="led_ok", hash="sha256:okhash")
+
+        def verify_ledger(self):
+            return LedgerVerifyResponse(ok=True, checked=2)
+
+    app = client.app
+    app.dependency_overrides[deps.get_cortex_client] = lambda: _FakeCortex()
+    try:
+        resp = client.post(
+            "/v1/pipelines/gold/sign",
+            json={
+                "metric_id": "m_revenue",
+                "name": "Revenue",
+                "sql": "SELECT 1 AS total",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, f"{resp.status_code} {resp.text[:300]}"
+    body = resp.json()
+    assert body["is_signed"] is True
+    assert body["ledger_entry_id"] == "led_ok"
+    assert body["signature"] == "sha256:okhash"
+    assert body["signature"] != body["ledger_entry_id"]
