@@ -224,7 +224,7 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 | #24 RAG-01 | dms | CLOSED | Chunk table + ingest |
 | #33 RAG-02 | Cortex | CLOSED | Lexical/hybrid retrieve |
 | #32 RAG-03 | Cortex | CLOSED | Route then doc-RAG |
-| #23 RAG-04 | dms | OPEN (verify-close ready) | Envelope sources + scope chip — **close only after independent verify** |
+| #23 RAG-04 | dms | CLOSED | Envelope sources + scope chip — independent verify held (text/rows/sources on POST /v1/chat/ask) |
 | #22 RAG-05 | dms | CLOSED | Cross-space chunk leak — adversarial ask green |
 | #34 EPIC-015 | Cortex | OPEN / PARTIAL | Parent RAG epic — RAG-04/05 checked |
 | #26 REVEAL-01 | dms | CLOSED | Explorer reveal from SourcePanel |
