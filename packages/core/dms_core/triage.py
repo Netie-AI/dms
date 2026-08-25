@@ -79,6 +79,43 @@ class TriageReceipt:
     per_class: dict[str, int] = field(default_factory=dict)
     files: list[FileTriageResult] = field(default_factory=list)
     ingest_id: str = ""
+    #: Whether the rows reached the warehouse chat actually reads.
+    #:
+    #: "ingested" only ever meant "landed in bronze". When ingest and serving are
+    #: two DuckDB files, bronze can land and chat still not see it - the receipt
+    #: said ingested=N, the next question abstained, and nothing on screen
+    #: connected the two. The failure went to a logger, which is not a place a
+    #: customer looks (R-0011).
+    #:
+    #: Three states, deliberately not two. "not_attempted" is not a synonym for
+    #: ok: it means no serving warehouse is configured, so nothing was copied and
+    #: nothing was verified. Collapsing it into success is how the silence
+    #: started.
+    serving_sync: str = "not_attempted"
+    serving_sync_detail: str = ""
+
+    @property
+    def chat_can_see_it(self) -> bool:
+        """True only on a positive statement, never on absence of bad news."""
+        return self.serving_sync in {"ok", "not_needed"}
+
+    def _summary(self) -> str:
+        base = (
+            f"{self.files_seen} files · {self.ingested} ingested · "
+            f"{self.need_attention} need attention"
+        )
+        if not self.ingested:
+            return base
+        if self.serving_sync == "failed":
+            return (
+                f"{base} — but chat cannot see "
+                f"{'them' if self.ingested != 1 else 'it'} yet: "
+                f"{self.serving_sync_detail or 'the serving warehouse was not updated'}. "
+                f"Run: python scripts/sync_bronze_to_serving.py"
+            )
+        if self.serving_sync == "not_attempted":
+            return f"{base} · serving sync not attempted (no serving warehouse configured)"
+        return f"{base} · chat can see it"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,8 +125,8 @@ class TriageReceipt:
             "per_class": dict(self.per_class),
             "files": [f.to_dict() for f in self.files],
             "ingest_id": self.ingest_id,
-            "summary": (
-                f"{self.files_seen} files · {self.ingested} ingested · "
-                f"{self.need_attention} need attention"
-            ),
+            "serving_sync": self.serving_sync,
+            "serving_sync_detail": self.serving_sync_detail,
+            "chat_can_see_it": self.chat_can_see_it,
+            "summary": self._summary(),
         }
