@@ -33,21 +33,23 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
 | Local CI parity | `bash scripts/ci_local.sh all`; `python scripts/try_changes.py [--live]` - 41 checks, each states what it does *not* prove |
 | **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
+| **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
+| **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
+| **F70 CLOSED** (#76) | A caller could assert its own certification: `is_signed` was three request fields, so `/v1/pipelines/run` passed the gold gate with nothing on the chain. Attestation is now refused on the request and produced server-side. **F52(b)** with it - `entry_hash` does not exist on the response, so the signature had degraded to the entry id |
+| **#75 CLOSED** | An upload whose serving sync failed reported `ingested=N`. Three states now on the receipt, and "not attempted" is distinct from ok |
 
 ## Open next
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **F70 / #76** is filed **unparented** - open EPIC-025 or re-parent under EPIC-003; it may not be worked until you name a parent. **F36** (open since 2026-08-07) blocks EPIC-020 -> EPIC-021. **F41** split EPIC-021a. **F45** insights/brief epic. **F37** approve EPIC-024 (highest nearness - it renders data already computed). **F68** monetization has zero prior PRD coverage. **P-DMS-33** L4/L5 badge meanings. |
-| **P0 #72** | `space_id` omitted skips the Space check on both Library preview routes. **Exploit run:** unscoped preview returns 15 rows of `transactions` and 5 of `shipments`; the same ask *with* a Space returns 403. Trap: the UI sends `space_id` only `if (spaceId)` (R-0005) |
-| **P0 #73** | The boundary invariant sets `MUTATING_METHODS` to the four write verbs, so it inspects no GET - green on the surface that leaks. Protected path; needs `INVARIANT-CHANGE` and must be proven able to fail |
-| **#74** | Re-derive every data-revealing GET. Two of five previously reported are fine (`space_id` required -> 422); five others were never named |
-| **#76 F70** | A caller can forge a steward-signed gold metric: `is_signed` is `bool(signature and steward_id and signed_at)`, all three settable on `/v1/pipelines/run`, nothing verified against the chain. Distinct from F50 - that wrote a false name *into* the ledger; this bypasses it |
-| **#75** | An upload whose serving sync failed still reports `ingested=N` (R-0011). Happens whenever Cortex holds the DuckDB file, which is always |
+| **NEEDS-YOU** | **F70** was fixed unparented on founder direction - still name its epic (EPIC-025, or under EPIC-003). **F36** (open since 2026-08-07) blocks EPIC-020 -> EPIC-021. **F41** split EPIC-021a. **F45** insights/brief epic. **F37** approve EPIC-024 (highest nearness - it renders data already computed). **F68** monetization has zero prior PRD coverage. **P-DMS-33** L4/L5 badge meanings. |
+| **Not verified** | Every P0 fix this wave was proven **offline**. `verify_demo_live.py` (31/31) and `sync_bronze_to_serving.py --check` need a live stack and were **not run**, so no R-0005 check against the running product exists for any of them |
+| **Still not closed** | **Nothing verifies a signature.** F70 stops an attestation being *asserted*; no read-back against the Cortex chain exists, so an entry removed or never durably committed still presents as signed. Also: a gold promote now requires a reachable Cortex |
+| **Lane collisions** | Two agent lanes worked this queue in parallel and collided **three times**; #75 was fully duplicated and closed as superseded (#84). Claim a ticket by comment before starting - KB **F-0025** |
 | **RUN NOW** | **#59 FF-03** Cortex-side one-liner: the L2 gate throws away its own `violations`. Blocks diagnosing free-form. **F40 P0**: `repro_refused_badge.py` exit 0 - a refusal renders `L2_VALIDATED` |
 | Epics | In flight: **EPIC-003 (#6)** + **EPIC-017 (#33)**. **EPIC-018 (#35) -> QUEUED** (all three tickets closed; it held a slot with nothing seated; never close it - that orphans F42/F46). EPIC-003 verdict re-derived from code: **INCOMPLETE** |
 | Truth to hold | **The product has served 91 rows.** Concurrency breaks at that size - one DuckDB writer excludes all readers. No scale claim may be made (P-DMS-34) |
-| PRs open | #64, #65 (Cursor lane) both **CONFLICTING** with main after the merge wave; #65 is EPIC-020 work, blocked on F36 |
+| PRs open | none. #64 and #65 (Cursor lane) merged; the P0 wave merged as #78 #79 #80 #81 #82 #85 |
 | #39 VQ-01 | Scoped, **blocked**: D:\Cortex has 47 files in flight (R-0006). Verified truth in the #39 comment |
 
 ## Agent models
