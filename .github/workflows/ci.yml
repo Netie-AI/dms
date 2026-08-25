@@ -59,7 +59,21 @@ jobs:
           # being evidence (R-0007), and a control that refuses correct work
           # trains people to re-run it until it agrees (R-0005).
           PROTECTED_RE='^(tests/invariants/|\.importlinter$)'
-          CHANGED=$(git diff --name-only "$BASE" "$HEAD" || true)
+          # Diff from the MERGE BASE, not from the base branch tip.
+          #
+          # `git diff BASE HEAD` answers "how do these two commits differ", which
+          # is not the question. When main moves ahead, a file main changed and
+          # this branch simply does not have yet shows up as changed here - and
+          # the gate blames the PR for it. Measured on #82: main's 51501c2
+          # touched tests/invariants/test_boundaries.py, the PR touched nothing
+          # protected, and the gate still refused it. Its own diagnostic printed
+          # the contradiction - "Protected paths touched: test_boundaries.py"
+          # directly above an empty list of commits touching them.
+          #
+          # A control that refuses correct work is a failure, not a win (R-0005),
+          # and this one refused every PR that fell behind main.
+          MERGE_BASE=$(git merge-base "$BASE" "$HEAD" 2>/dev/null || echo "$BASE")
+          CHANGED=$(git diff --name-only "$MERGE_BASE" "$HEAD" || true)
           TOUCHED=$(printf '%s\n' "$CHANGED" | grep -E "$PROTECTED_RE" || true)
 
           if [ -z "$TOUCHED" ]; then
@@ -70,15 +84,15 @@ jobs:
           echo "Protected paths touched:"
           printf '  %s\n' $TOUCHED
           echo
-          echo "Commits in $BASE..$HEAD that touch them:"
-          git log --format='  %h %s' "$BASE..$HEAD" -- tests/invariants/ .importlinter
+          echo "Commits in $MERGE_BASE..$HEAD that touch them:"
+          git log --format='  %h %s' "$MERGE_BASE..$HEAD" -- tests/invariants/ .importlinter
 
           # git greps its own commit bodies. No shell pipeline in the decision.
-          WITH_TRAILER=$(git log --format=%h --grep='INVARIANT-CHANGE:' "$BASE..$HEAD")
+          WITH_TRAILER=$(git log --format=%h --grep='INVARIANT-CHANGE:' "$MERGE_BASE..$HEAD")
           echo
           echo "Commits carrying an INVARIANT-CHANGE: trailer:"
           if [ -n "$WITH_TRAILER" ]; then
-            git log --format='  %h %s' --grep='INVARIANT-CHANGE:' "$BASE..$HEAD"
+            git log --format='  %h %s' --grep='INVARIANT-CHANGE:' "$MERGE_BASE..$HEAD"
           else
             echo "  (none)"
           fi
