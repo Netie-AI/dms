@@ -47,13 +47,11 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 |----|------|
 | **NEEDS-YOU** | Name F70's epic. **F36** blocks EPIC-020 -> 021. **F41** split 021a. **F45** insights/brief. **F37** approve EPIC-024. **F68** monetization. **P-DMS-33** L4/L5 badges |
 | **Not verified live** | P0 wave proven offline. `verify_demo_live.py` / serving `--check` not re-run this session |
-| **Signature read-back** | F70 leftover: `is_signed` is still four fields; no `verify_ledger` after append. Isolated runner on `cursor/ledger-signature-readback-68a9` |
-| **#28 ENV-E4** | Reorder/low-stock live asks 500 the envelope. Runner on `cursor/env-e4-listing-crash-68a9` |
-| **#25 SPACE-UI** | Hunt leftover unscoped windows. Runner on `cursor/space-ui-all-leftover-68a9`. No invent if already scoped |
-| **Blocked** | **#59 FF-03** Cortex (this token cannot see Netie-AI/Cortex). **#39 VQ-01** Cortex files in flight (R-0006). Issues API 403 here - GitHub is still SoT, this agent cannot list them |
+| **In review** | **#92** F70 read-back (`verify_ledger` after append). **#91** ENV-E4 (#28) listing 500. **#90** SPACE-UI (#25) Runs/Amend + stale views. All three CI green, not merged |
+| **Blocked** | **#59 FF-03** Cortex (this token cannot see Netie-AI/Cortex). **#39 VQ-01** Cortex files in flight (R-0006). Issues API 403 here |
 | Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B, never claim persisted). **EPIC-017 (#33)** in flight. **EPIC-018 (#35) QUEUED** - do not close it |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | `main` CI green (run 32849806928). Open PRs: **none**. Merged today through #88 |
+| CI / PRs | `main` green (32849806928). Ready: #89 (this), #90, #91, #92 |
 
 ## Agent models
 
