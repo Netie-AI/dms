@@ -17,7 +17,20 @@ router = APIRouter(prefix="/v1/audit", tags=["audit"])
 
 
 @router.get("/ledger")
-def list_ledger_refs(settings: SettingsDep) -> list[dict[str, Any]]:
+def list_ledger_refs(settings: SettingsDep, cortex: CortexDep) -> list[dict[str, Any]]:
+    # Gated before the connection opens, not after the rows are read. A read
+    # that has already happened cannot be un-read by a later refusal (A-0007-03).
+    decision = compliance_gate(
+        action="audit.ledger.read",
+        metadata={"task_id": "audit.ledger.read"},
+        client=cortex,
+    )
+    # mutation=False: these are reads. gatekeeping.py is explicit that an
+    # unreachable gate must not refuse a read - "refusing to answer a question
+    # is not the same risk as applying an unrecorded change". Without this the
+    # three routes would 403 whenever Cortex is down, which is a control
+    # refusing legitimate work (R-0005), not a boundary holding.
+    enforce(decision, mutation=False)
     if not settings.database_url:
         return []
     with psycopg.connect(settings.database_url) as conn:
