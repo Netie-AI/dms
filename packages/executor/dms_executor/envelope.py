@@ -590,8 +590,10 @@ def orphan_money_figures(
 def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
     """Numeric facts a listing may honestly render from the result set.
 
-    Direct cells plus same-row |a−b| (shortfall) and ×/÷100 (percent display).
-    Never invents a figure that is not recoverable from a row.
+    Direct cells plus same-row |a−b| (shortfall / gap). Never ×/÷100 — that
+    launders invented currency that happens to equal qty×100 into values[] under
+    a green badge (R-0003 recheck). Never invents a figure not recoverable as a
+    cell or same-row absolute difference.
     """
     out: list[float] = []
     for row in rows[:50]:
@@ -599,10 +601,7 @@ def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
         for val in row.values():
             if isinstance(val, (int, float)) and not isinstance(val, bool):
                 nums.append(float(val))
-        for a in nums:
-            out.append(a)
-            out.append(abs(a) * 100.0)
-            out.append(abs(a) / 100.0)
+        out.extend(nums)
         for i, a in enumerate(nums):
             for b in nums[i + 1 :]:
                 out.append(abs(a - b))
@@ -948,7 +947,7 @@ def build_answer_envelope(
 
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.
-    # Promote figures grounded in row cells (incl. same-row shortfall); if any
+    # Promote figures grounded in row cells or same-row |a−b| (shortfall); if any
     # orphan remains, abstain rather than invent or crash (R-0005: matching
     # listings keep their green badge via the promote path).
     if not abstained:

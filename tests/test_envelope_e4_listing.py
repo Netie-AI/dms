@@ -113,6 +113,35 @@ def test_ungrounded_currency_in_listing_abstains_not_500():
     assert "1,234.56" not in env["text"] and "1234.56" not in env["text"]
 
 
+def test_qty_times_100_currency_is_not_grounded():
+    """R-0007: coincidental qty×100 must not launder invent into a green badge.
+
+    qty 80.0 → 8,000.00 under a naive ×100 rule. That is not a shortfall and
+    must ABSTAIN — otherwise E4 certifies a lying badge (CLAUDE.md 10a).
+    """
+    text = (
+        "Low stock on RS622XKR (qty 80.0, reorder 200.0). "
+        "Estimated exposure is RM 8,000.00."
+    )
+    env = build_answer_envelope(
+        answer_id="ans_e4_scale_launder",
+        text=text,
+        badge="L2_VALIDATED",
+        abstained=False,
+        sql_used=_REORDER_SQL,
+        rows=_REORDER_ROWS[:1],
+        values=[],
+        ask_mode="live",
+        audit_id="aud_e4_scale",
+        question="low stock exposure",
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["values"] == []
+    assert "8,000.00" not in env["text"] and "8000" not in env["text"]
+
+
 def test_map_ask_reorder_shortfall_does_not_500():
     """Customer path: map_ask_response_to_envelope + assert must not raise."""
     resp = AskResponse.model_validate(
