@@ -70,6 +70,9 @@ class _BoundaryVisitor(ast.NodeVisitor):
         self.excel_writes: list[tuple[int, str]] = []
         self.cortexos_imports: list[int] = []
         self.mutation_routes: list[tuple[int, str, bool]] = []  # lineno, decorator, has_gate
+        #: A-0007 (#73). GET handlers that take an OPTIONAL space_id and guard
+        #: their scope check behind it: (lineno, function name).
+        self.skippable_scope_routes: list[tuple[int, str]] = []
         self._current_fn_has_gate = False
         self._current_fn_is_mutation = False
         self._current_fn_lineno = 0
@@ -141,6 +144,8 @@ class _BoundaryVisitor(ast.NodeVisitor):
             self.mutation_routes.append(
                 (self._current_fn_lineno, self._current_fn_deco, self._current_fn_has_gate)
             )
+        if _is_get_route(node) and _has_skippable_scope_check(node):
+            self.skippable_scope_routes.append((node.lineno, node.name))
 
         self._current_fn_has_gate = prev_gate
         self._current_fn_is_mutation = prev_mut
@@ -162,6 +167,95 @@ class _BoundaryVisitor(ast.NodeVisitor):
         if isinstance(deco, ast.Attribute) and deco.attr.lower() in MUTATING_METHODS:
             return deco.attr.lower()
         return None
+
+
+def _is_get_route(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for deco in node.decorator_list:
+        if isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute):
+            if deco.func.attr.lower() == "get":
+                return True
+        if isinstance(deco, ast.Attribute) and deco.attr.lower() == "get":
+            return True
+    return False
+
+
+def _space_id_is_optional(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the handler accepts ``space_id`` and the caller may omit it.
+
+    Required (``Query(...)``) is fine - a caller cannot skip the check by
+    leaving it out, because FastAPI answers 422 instead.
+    """
+    args = node.args
+    positional = args.posonlyargs + args.args
+    pos_defaults = dict(zip([a.arg for a in positional[len(positional) - len(args.defaults):]],
+                            args.defaults))
+    kw_defaults = {a.arg: d for a, d in zip(args.kwonlyargs, args.kw_defaults)}
+    default = pos_defaults.get("space_id", kw_defaults.get("space_id"))
+    if default is None:
+        # Either no space_id at all, or it is required with no default.
+        return False
+    if isinstance(default, ast.Constant) and default.value is None:
+        return True
+    # Query(None) / Query(default=None) is optional; Query(...) is required.
+    if isinstance(default, ast.Call):
+        for a in default.args:
+            if isinstance(a, ast.Constant) and a.value is None:
+                return True
+            if isinstance(a, ast.Constant) and a.value is Ellipsis:
+                return False
+        for kw in default.keywords:
+            if kw.arg == "default" and isinstance(kw.value, ast.Constant):
+                return kw.value.value is None
+    return False
+
+
+def _guards_on_space_id(test: ast.AST) -> bool:
+    for sub in ast.walk(test):
+        if isinstance(sub, ast.Name) and sub.id == "space_id":
+            return True
+    return False
+
+
+def _has_skippable_scope_check(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when ``space_id``'s only job is deciding whether scoping happens.
+
+    The A-0007 shape. Verb is the wrong classifier for a data-revealing route,
+    and so is "does it call compliance_gate": the leak was not an ungated route,
+    it was a route whose *scope* check the caller could switch off by leaving a
+    query parameter blank.
+
+    The signal is what ``space_id`` is used FOR. If every reference to it sits
+    inside an ``if space_id:`` - as the test, or within the block that test
+    guards - then omitting it skips the scoping entirely. If it is also fed into
+    scope computation outside that branch, the scoping happens either way and
+    the branch only chooses *which* scope, which is what the fixed routes do.
+
+    My first attempt at this asked "is there a raise outside the guard", and it
+    passed on the known-leaky code: the unrelated ``except ValueError -> 404``
+    re-raise counted as a refusal outside the branch. A detector that green-lit
+    the very routes it was written for is the same R-0007 failure as the
+    invariant it replaces, so it is worth naming rather than quietly rewriting.
+    """
+    if not _space_id_is_optional(node):
+        return False
+
+    guards = [
+        stmt
+        for stmt in ast.walk(node)
+        if isinstance(stmt, ast.If) and _guards_on_space_id(stmt.test)
+    ]
+    if not guards:
+        return False
+
+    guarded_nodes: set[int] = set()
+    for g in guards:
+        for n in ast.walk(g):
+            guarded_nodes.add(id(n))
+
+    for ref in ast.walk(node):
+        if isinstance(ref, ast.Name) and ref.id == "space_id" and id(ref) not in guarded_nodes:
+            return False  # used outside the branch - scoping is not optional
+    return True
 
 
 def _scan(path: Path) -> _BoundaryVisitor:
@@ -286,3 +380,38 @@ def test_no_local_gate_policy_functions() -> None:
 def test_agent_contract_docs_present() -> None:
     for rel in ("CLAUDE.md", ".cursorrules", "AGENTS.md", ".importlinter"):
         assert (ROOT / rel).is_file(), f"missing {rel}"
+
+
+def test_data_revealing_gets_cannot_skip_their_scope_check(
+    scans: dict[str, _BoundaryVisitor],
+) -> None:
+    """A-0007 (#73). The boundary invariant used to inspect no GET at all.
+
+    ``MUTATING_METHODS`` was the only classifier, so ``test_mutation_routes_
+    call_compliance_gate`` iterated POST/PUT/PATCH/DELETE and nothing else. The
+    suite was green while ``GET /v1/library/warehouse/alerts/preview`` with no
+    ``space_id`` returned rows of a table no Space grants. That is R-0007
+    exactly: green from a check that never ran.
+
+    Verb is the wrong classifier. A GET that returns warehouse rows reveals as
+    much as any mutation writes, and the failure here was not an ungated route -
+    it was a route whose *scope* check the caller could switch off by leaving a
+    query parameter blank. So this asserts on the shape: an optional
+    ``space_id`` whose truthiness decides whether the refusal is reachable.
+
+    Scoping unconditionally and branching on ``space_id`` only to choose *which*
+    scope is fine, and is what the fixed routes do.
+    """
+    offenders: list[str] = []
+    for rel, v in scans.items():
+        if not rel.startswith("apps/api/"):
+            continue
+        for lineno, name in v.skippable_scope_routes:
+            offenders.append(
+                f"{rel}:{lineno} {name}() - scope check is inside `if space_id:`, "
+                "so omitting the parameter skips it"
+            )
+    assert not offenders, (
+        "A data-revealing GET must not let the caller switch off its own scope check "
+        "by omitting space_id:\n" + "\n".join(offenders)
+    )
