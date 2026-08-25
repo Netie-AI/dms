@@ -38,15 +38,18 @@ class GoldSignBody(BaseModel):
 
 
 @router.post("/run")
-def run_pipeline(body: RunBody, cortex: CortexDep) -> dict[str, Any]:
+def run_pipeline(body: RunBody, settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
+    actor = settings.dms_actor_user_id
     decision = compliance_gate(
         action="pipeline.promote",
+        actor=actor,
         metadata={"task_id": "pipeline.promote", "pipeline": body.pipeline},
         client=cortex,
     )
     enforce(decision)
     try:
         receipt = pipeline_run(
+            actor=actor,
             pipeline=body.pipeline,
             yaml_text=body.yaml_text,
             gold_metric=body.gold_metric,

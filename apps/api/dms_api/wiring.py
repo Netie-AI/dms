@@ -124,30 +124,82 @@ def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None)
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
 
+#: Fields that constitute an ATTESTATION rather than a definition. A caller may say
+#: what a metric is; it may not say that the metric was certified, because saying so
+#: is the certification. Accepting these from a request body is how an unsigned metric
+#: passed the promote gate without ever touching the ledger (PRD-001 F70, dms#76).
+ATTESTATION_FIELDS = ("signature", "signed_at", "ledger_entry_id", "steward_id")
+
+
+def _ledger_append(cortex: CortexClient):
+    def _append(*, event_type: str, payload: dict[str, Any], actor: str | None = None):
+        return append_event(cortex, event_type=event_type, payload=payload, actor=actor)
+
+    return _append
+
+
 def pipeline_run(
     *,
+    actor: str,
     pipeline: str | None = None,
     yaml_text: str | None = None,
     gold_metric: dict[str, Any] | None = None,
     cortex: CortexClient | None = None,
 ) -> dict[str, Any]:
+    """Run a promote pipeline. A gold metric is signed HERE, never accepted as signed.
+
+    ``run_promote`` gates on ``GoldMetricDef.is_signed``, which was
+    ``bool(signature and steward_id and signed_at)`` - three plain fields this function
+    used to copy straight out of the caller's ``gold_metric`` dict. So a request could
+    assert its own certification and the gate believed it, with no ledger entry
+    anywhere. Distinct from A-0005: that wrote a false name *into* the chain, this
+    bypassed the chain entirely.
+
+    The definition still comes from the caller. The attestation is produced here by an
+    actual append, and a caller that tries to supply one is refused rather than having
+    it silently dropped - a request that believes it signed something and was ignored
+    is the same class of lie in the other direction (R-0011).
+    """
+    # Checked before the pipeline is even resolved. Two reasons: a forged attestation
+    # is not a request worth doing any work for, and answering 404-not-found ahead of
+    # it would tell a caller attempting forgery which pipelines exist.
+    if gold_metric:
+        offered = [f for f in ATTESTATION_FIELDS if gold_metric.get(f)]
+        if offered:
+            raise ValueError(
+                "a caller may not assert a metric is signed: remove "
+                + ", ".join(offered)
+                + ". The signature is produced server-side by a ledger append."
+            )
+
     if yaml_text:
         pipe = dms_executor.load_pipeline_yaml(yaml_text)
     elif pipeline:
         pipe = dms_executor.load_pipeline_by_name(pipeline)
     else:
         raise ValueError("pipeline name or yaml_text required")
+
     metric = None
     if gold_metric:
-        metric = GoldMetricDef(
+        if cortex is None:
+            raise ValueError(
+                "Cortex client required to sign a gold metric onto the ledger; "
+                "a gold promote cannot proceed unsigned"
+            )
+        unsigned = GoldMetricDef(
             metric_id=str(gold_metric["metric_id"]),
             name=str(gold_metric["name"]),
             sql=str(gold_metric["sql"]),
-            steward_id=str(gold_metric["steward_id"]),
-            signed_at=gold_metric.get("signed_at"),
-            ledger_entry_id=gold_metric.get("ledger_entry_id"),
-            signature=gold_metric.get("signature"),
+            steward_id=actor,
         )
+        metric = dms_executor.sign_gold_metric(
+            unsigned,
+            cortex_append=_ledger_append(cortex),
+            actor=actor,
+        )
+        if not metric.ledger_entry_id:
+            raise ValueError("Cortex ledger append did not return entry_id")
+
     receipt = dms_executor.run_promote(pipe, gold_metric=metric)
     return receipt.to_dict()
 
@@ -173,8 +225,7 @@ def gold_sign_metric(
     if cortex is None:
         raise ValueError("Cortex client required to sign gold metric onto the ledger")
 
-    def _append(*, event_type: str, payload: dict[str, Any], actor: str | None = None):
-        return append_event(cortex, event_type=event_type, payload=payload, actor=actor)
+    _append = _ledger_append(cortex)
 
     metric = GoldMetricDef(
         metric_id=metric_id,

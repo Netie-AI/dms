@@ -154,7 +154,21 @@ class GoldMetricDef:
 
     @property
     def is_signed(self) -> bool:
-        return bool(self.signature and self.steward_id and self.signed_at)
+        """Whether this metric carries a completed ledger attestation.
+
+        ``ledger_entry_id`` is part of the condition, not decoration. Without it the
+        three remaining fields are just strings, and a caller that could set them could
+        assert its own certification - which is exactly what ``POST /v1/pipelines/run``
+        allowed before dms#76: a gold promote passed this gate with nothing ever
+        appended to the chain.
+
+        Requiring the entry id does not make this a *verification* - it is still a
+        claim about state, and nothing here re-reads the chain to confirm the entry
+        exists. What makes it trustworthy is that the value can no longer arrive on a
+        request: ``wiring.pipeline_run`` refuses caller-supplied attestation fields and
+        signs server-side. This property is the second lock, not the first.
+        """
+        return bool(self.signature and self.steward_id and self.signed_at and self.ledger_entry_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {

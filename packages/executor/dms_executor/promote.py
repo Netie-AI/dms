@@ -552,7 +552,18 @@ def sign_gold_metric(
     entry_id = getattr(resp, "entry_id", None) or (
         resp.get("entry_id") if isinstance(resp, dict) else None
     )
-    sig = getattr(resp, "entry_hash", None) or entry_id or f"sig_{uuid.uuid4().hex[:16]}"
+    # The chain hash is ``hash`` on LedgerAppendResponse. This read ``entry_hash``,
+    # which does not exist on that model, so getattr returned None every time and the
+    # signature silently degraded to the entry id - an identifier, which verifies
+    # nothing (PRD-001 F52(b)). Accept either name so a dict-shaped stub still works,
+    # but read the real one first.
+    sig = (
+        getattr(resp, "hash", None)
+        or getattr(resp, "entry_hash", None)
+        or (resp.get("hash") or resp.get("entry_hash") if isinstance(resp, dict) else None)
+        or entry_id
+        or f"sig_{uuid.uuid4().hex[:16]}"
+    )
     return GoldMetricDef(
         metric_id=metric.metric_id,
         name=metric.name,
