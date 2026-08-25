@@ -5,7 +5,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { useApp } from "@/context/AppContext";
 import { COPILOT_PROMPTS, copyText } from "@/lib/copilotPrompts";
-import { formatCellValue } from "@/lib/formatCellValue";
+import { csvDownloadName, isSummaryExport, rowsToCsv } from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
 
@@ -117,28 +117,6 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const rows = envelope.rows ?? [];
   const { prose, insights } = splitInsights(envelope.text);
 
-  function isSummaryExport(rowsToCheck: Record<string, unknown>[]): boolean {
-    if (rowsToCheck.length !== 1) return false;
-    const keys = Object.keys(rowsToCheck[0]);
-    if (keys.length !== 1) return false;
-    const key = keys[0].toLowerCase();
-    return /count|total|sum|avg|average|min|max|revenue|value|metric/.test(key);
-  }
-
-  function rowsToCsv(rowsToExport: Record<string, unknown>[]): string {
-    const cols = Object.keys(rowsToExport[0]);
-    const escape = (v: unknown) => {
-      const s = formatCellValue(v);
-      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-      return s;
-    };
-    const lines = [
-      cols.join(","),
-      ...rowsToExport.map((row) => cols.map((c) => escape(row[c])).join(",")),
-    ];
-    return lines.join("\n");
-  }
-
   async function fetchDrillRows(): Promise<Record<string, unknown>[] | null> {
     const token = envelope.drillthrough_token;
     if (!token) return null;
@@ -195,9 +173,8 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     const blob = new Blob([rowsToCsv(exportRows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     a.href = url;
-    a.download = `dms_answer_${stamp}.csv`;
+    a.download = csvDownloadName(envelope.answer_id);
     a.click();
     URL.revokeObjectURL(url);
   }
