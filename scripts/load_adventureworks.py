@@ -59,10 +59,13 @@ CONTAINER = os.environ.get("AW_CONTAINER", "dms-mssql-adventureworks")
 # SQL Server restores forward, never backward: an engine can read a backup taken
 # on its own version or older, and refuses anything newer with error 3169. The
 # AdventureWorks*2025 backups carry database version 998 (SQL Server 2025), so a
-# 2022 image (version 958) cannot read them, while a 2025 image reads all three.
+# 2022 image (version 957) cannot read them, while a 2025 image reads all three.
 # Pin the newest, not the oldest.
-IMAGE = os.environ.get("AW_IMAGE", "mcr.microsoft.com/mssql/server:2025-latest")
+AW_IMAGE_DEFAULT = "mcr.microsoft.com/mssql/server:2025-latest"
+IMAGE = os.environ.get("AW_IMAGE", AW_IMAGE_DEFAULT)
 _DB_VERSION = {998: "2025", 957: "2022", 904: "2019", 869: "2017", 852: "2016"}
+# ProductMajorVersion -> marketing year. 17 is SQL Server 2025.
+_TOO_OLD_MAJORS = {13: "2016", 14: "2017", 15: "2019", 16: "2022"}
 PORT = int(os.environ.get("AW_PORT", "14330"))
 # A throwaway local container needs a password that satisfies SQL Server's policy.
 # It is a build tool with no data of ours in it; override if the default offends.
@@ -78,6 +81,37 @@ DATABASES = [
 
 class StageFailed(Exception):
     """A stage did not complete. Never swallowed - R-0002."""
+
+
+def image_cannot_restore_2025(image: str) -> bool:
+    """True when a published mssql tag is older than SQL Server 2025.
+
+    AdventureWorks*2025 .bak files are database version 998. A 2022 engine
+    tops out at 957 and refuses the restore with error 3169.
+    """
+    if not image or ":" not in image:
+        return False
+    tag = image.rsplit(":", 1)[-1].lower()
+    for year in ("2016", "2017", "2019", "2022"):
+        if tag == year or tag.startswith(f"{year}-") or tag.startswith(f"{year}."):
+            return True
+    return False
+
+
+def _image_too_old_message(image: str) -> str:
+    return (
+        f"{image} cannot restore the shipped AdventureWorks*2025 backups "
+        f"(SQL Server database version 998; a 2022 engine stops at 957). "
+        f"This is extract-only: recreate the throwaway container.\n"
+        f"    docker rm -f {CONTAINER}\n"
+        f"    AW_IMAGE={AW_IMAGE_DEFAULT} "
+        f"python scripts/load_adventureworks.py --restore"
+    )
+
+
+def assert_image_can_restore_2025(image: str) -> None:
+    if image_cannot_restore_2025(image):
+        raise StageFailed(_image_too_old_message(image))
 
 
 def _backup_mounts() -> list[str]:
@@ -116,11 +150,32 @@ def container_state() -> str:
     return got.stdout.strip() if got.returncode == 0 else "absent"
 
 
+def _container_image() -> str:
+    got = _docker("inspect", "-f", "{{.Config.Image}}", CONTAINER, timeout=30)
+    return got.stdout.strip() if got.returncode == 0 else ""
+
+
+def _assert_engine_can_restore_2025() -> None:
+    """Fail before RESTORE when the running engine is SQL Server 2022 or older."""
+    running = _container_image()
+    if running:
+        assert_image_can_restore_2025(running)
+    rows = _rows("SELECT CAST(SERVERPROPERTY('ProductMajorVersion') AS int)")
+    if not rows or rows[0][0] is None:
+        return
+    major = int(rows[0][0])
+    year = _TOO_OLD_MAJORS.get(major)
+    if year is not None:
+        raise StageFailed(_image_too_old_message(f"{running or IMAGE} (SQL Server {year})"))
+
+
 def ensure_container() -> None:
     """Start the restore container, mounting the backup directory read-only."""
+    assert_image_can_restore_2025(IMAGE)
     state = container_state()
     if state == "running":
         print(f"  container {CONTAINER} already running")
+        assert_image_can_restore_2025(_container_image() or IMAGE)
     elif state in {"exited", "created", "paused"}:
         print(f"  container {CONTAINER} is {state}; starting")
         got = _docker("start", CONTAINER)
@@ -147,6 +202,7 @@ def ensure_container() -> None:
             raise StageFailed(f"docker run failed: {got.stderr.strip()[:400]}")
 
     _wait_for_sql()
+    _assert_engine_can_restore_2025()
 
 
 def _wait_for_sql(attempts: int = 180) -> None:
@@ -281,7 +337,7 @@ def _explain_restore_error(db: str, bak: str, exc: Exception) -> str:
         f"SQL Server {running}. SQL Server restores forward only. Use a newer "
         f"image and recreate the container:\n"
         f"    docker rm -f {CONTAINER}\n"
-        f"    AW_IMAGE=mcr.microsoft.com/mssql/server:{made_on}-latest "
+        f"    AW_IMAGE={AW_IMAGE_DEFAULT} "
         f"python scripts/load_adventureworks.py --restore"
     )
 
@@ -453,7 +509,15 @@ def stage_extract() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "AW_IMAGE defaults to "
+            f"{AW_IMAGE_DEFAULT}. "
+            "AdventureWorks*2025 .bak files are SQL Server version 998; a 2022 "
+            "image cannot restore them. Extract-only: restore -> extract -> "
+            "bronze. Not a live SQL Server plugin."
+        ),
     )
     ap.add_argument("--restore", action="store_true", help="start the container and restore")
     ap.add_argument("--extract", action="store_true", help="pull every table to parquet")
