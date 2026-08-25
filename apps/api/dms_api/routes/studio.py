@@ -27,6 +27,11 @@ class ReceiptOut(BaseModel):
     per_class: dict[str, int] | None = None
     files: list[dict[str, Any]] | None = None
     summary: str | None = None
+    #: Whether chat can actually see what just landed (#75). Bronze landing and chat
+    #: being able to read it are two different events; the receipt used to report only
+    #: the first. Never None on a real receipt - "not attempted" is a state, not an
+    #: absence, and an omitted field would read as "fine" (R-0011).
+    serving_sync: dict[str, Any] | None = None
 
 
 @router.post("/ingest")
@@ -66,6 +71,7 @@ async def ingest_file(
         per_class=receipt.get("per_class"),
         files=receipt.get("files"),
         summary=receipt.get("summary"),
+        serving_sync=receipt.get("serving_sync"),
     )
 
 
@@ -104,6 +110,7 @@ async def ingest_batch_files(
         per_class=receipt.get("per_class"),
         files=receipt.get("files"),
         summary=receipt.get("summary"),
+        serving_sync=receipt.get("serving_sync"),
     )
 
 

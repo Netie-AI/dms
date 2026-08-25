@@ -9,7 +9,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from dms_core.triage import FileTriageResult, SheetClass, TriageReceipt
+from dms_core.triage import (
+    SYNC_FAILED,
+    SYNC_NOT_ATTEMPTED,
+    SYNC_OK,
+    FileTriageResult,
+    ServingSync,
+    SheetClass,
+    TriageReceipt,
+)
 
 from dms_executor.bronze import ingest_csv_bytes
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
@@ -180,15 +188,50 @@ def ingest_batch(
                 need_attention += 1
             results.append(tr)
 
+    serving_sync = ServingSync()
     if ingested_count:
         synced = maybe_sync_bronze_to_serving(db_path)
-        if synced is not None and not synced.ok:
+        if synced is None:
+            # No explicit serving warehouse (or skipped under pytest). Nothing was
+            # published, and nothing is stale. That is its own outcome.
+            serving_sync = ServingSync(
+                state=SYNC_NOT_ATTEMPTED,
+                status="no_serving_configured",
+                detail=(
+                    "No separate chat warehouse is configured, so the upload was not "
+                    "copied anywhere. Chat reads the ingest warehouse directly."
+                ),
+            )
+        elif synced.ok:
+            serving_sync = ServingSync(
+                state=SYNC_OK,
+                status=synced.status,
+                detail=(
+                    f"{len(synced.copied)} table(s) published to the chat warehouse."
+                    if synced.copied
+                    else "Chat already reads this warehouse; nothing needed copying."
+                ),
+            )
+        else:
+            # This used to be a logger.warning and nothing else, four lines above a
+            # receipt that reported ingested=N. The customer saw the N and not the
+            # warning (R-0011).
+            action = "Run: python scripts/sync_bronze_to_serving.py"
+            serving_sync = ServingSync(
+                state=SYNC_FAILED,
+                status=synced.status,
+                detail=(
+                    synced.error
+                    or f"Could not copy bronze into the chat warehouse ({synced.status})."
+                ),
+                action=action,
+            )
             logger.warning(
                 "bronze landed in %s but chat serving %s was not updated (%s): %s",
                 synced.ingest,
                 synced.serving,
                 synced.status,
-                synced.error or "run python scripts/sync_bronze_to_serving.py",
+                synced.error or action,
             )
 
     return TriageReceipt(
@@ -198,4 +241,5 @@ def ingest_batch(
         per_class=per_class,
         files=results,
         ingest_id=ingest_id,
+        serving_sync=serving_sync,
     )
