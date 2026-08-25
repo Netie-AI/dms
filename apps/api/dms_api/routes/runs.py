@@ -16,10 +16,12 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+from cortex_client import compliance_gate
 from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter, Query
 
-from dms_api.deps import SettingsDep
+from dms_api.deps import CortexDep, SettingsDep
+from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 
@@ -60,13 +62,42 @@ def _reasons(receipt: dict[str, Any] | None) -> list[dict[str, str]]:
 @router.get("")
 def list_runs(
     settings: SettingsDep,
+    cortex: CortexDep,
     kind: str | None = Query(None, description="ingest | query"),
     limit: int = Query(50, ge=1, le=200),
+    space_id: str | None = Query(None, description="restrict the feed to one Space"),
 ) -> dict[str, Any]:
+    """One feed of ingest and query runs, scoped to a Space when one is named.
+
+    This route had no ``space_id`` at all. It filtered on ``tenant_id`` and joined
+    ``dms.spaces`` only to read a display name, so a single unscoped call returned
+    every Space's runs and **the caller could not have narrowed it if they wanted
+    to** - not a skippable check like the Library previews, an absent one.
+    Measured before the fix, on a configured control plane with two Spaces holding
+    one run each, one request returned both.
+
+    ``space_id`` is optional because the runs feed is legitimately a
+    company-wide view. What changed is that naming a Space now means something:
+    the filter goes into the SQL, so it cannot be forgotten by a later branch.
+    The applied scope is named on the response for the same reason the previews
+    name theirs - a feed that silently widened is the failure being fixed.
+    """
+    decision = compliance_gate(
+        action="runs.read",
+        metadata={"task_id": "runs.read", "space_id": space_id or ""},
+        client=cortex,
+    )
+    # mutation=False: these are reads. gatekeeping.py is explicit that an
+    # unreachable gate must not refuse a read - "refusing to answer a question
+    # is not the same risk as applying an unrecorded change". Without this the
+    # three routes would 403 whenever Cortex is down, which is a control
+    # refusing legitimate work (R-0005), not a boundary holding.
+    enforce(decision, mutation=False)
     if not settings.database_url:
         return {"configured": False, "hint": _NOT_CONFIGURED_HINT, "runs": []}
 
     tenant = UUID(settings.dms_tenant_id)
+    space_uuid = UUID(space_id) if space_id else None
     runs: list[dict[str, Any]] = []
     with psycopg.connect(settings.database_url) as conn:
         set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
@@ -77,10 +108,11 @@ def list_runs(
                   FROM dms.ingest_run i
                   LEFT JOIN dms.spaces s ON s.id = i.space_id
                  WHERE i.tenant_id = %s
+                   AND (%s::uuid IS NULL OR i.space_id = %s::uuid)
                  ORDER BY i.created_at DESC
                  LIMIT %s
                 """,
-                (tenant, limit),
+                (tenant, space_uuid, space_uuid, limit),
             ).fetchall()
             for r in rows:
                 receipt = r[2] if isinstance(r[2], dict) else {}
@@ -102,10 +134,11 @@ def list_runs(
                   FROM dms.query_run q
                   LEFT JOIN dms.spaces s ON s.id = q.space_id
                  WHERE q.tenant_id = %s
+                   AND (%s::uuid IS NULL OR q.space_id = %s::uuid)
                  ORDER BY q.created_at DESC
                  LIMIT %s
                 """,
-                (tenant, limit),
+                (tenant, space_uuid, space_uuid, limit),
             ).fetchall()
             for r in rows:
                 sql_text = r[2] or ""
@@ -127,4 +160,9 @@ def list_runs(
     counts: dict[str, int] = {}
     for run in runs:
         counts[run["status"]] = counts.get(run["status"], 0) + 1
-    return {"configured": True, "runs": runs[:limit], "counts": counts}
+    return {
+        "configured": True,
+        "runs": runs[:limit],
+        "counts": counts,
+        "scope": f"space:{space_id}" if space_id else "all-spaces",
+    }

@@ -16,10 +16,12 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+from cortex_client import compliance_gate
 from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter
 
-from dms_api.deps import SettingsDep
+from dms_api.deps import CortexDep, SettingsDep
+from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -30,7 +32,25 @@ _NOT_CONFIGURED_HINT = (
 
 
 @router.get("/overview")
-def admin_overview(settings: SettingsDep) -> dict[str, Any]:
+def admin_overview(settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
+    """Users, roles, departments, ACL grants and pools for this tenant.
+
+    The heaviest read in the API - emails, display names, every acl_grants row -
+    and until now the only route of its size with no gate at all. Gated before
+    the connection opens: a refusal that arrives after the rows are read has not
+    refused anything (A-0007-03).
+    """
+    decision = compliance_gate(
+        action="admin.overview.read",
+        metadata={"task_id": "admin.overview.read"},
+        client=cortex,
+    )
+    # mutation=False: these are reads. gatekeeping.py is explicit that an
+    # unreachable gate must not refuse a read - "refusing to answer a question
+    # is not the same risk as applying an unrecorded change". Without this the
+    # three routes would 403 whenever Cortex is down, which is a control
+    # refusing legitimate work (R-0005), not a boundary holding.
+    enforce(decision, mutation=False)
     if not settings.database_url:
         return {
             "configured": False,
