@@ -38,6 +38,41 @@ EXCEL_WRITE_PATTERNS = (
 
 MUTATING_METHODS = {"post", "put", "patch", "delete"}
 
+#: Every HTTP method a route can be declared with. ``MUTATING_METHODS`` above is a
+#: subset, and using it as the only classifier is what made this file green on the
+#: surface that leaked: the gate inspected no GET at all, so it could not fail on one
+#: however many customer rows the route returned (A-0007, dms#73).
+ROUTE_METHODS = MUTATING_METHODS | {"get", "head", "options"}
+
+#: Callees that reach customer data - warehouse rows, bronze uploads, document chunks,
+#: or a Postgres connection carrying tenant context. A route is classified by what its
+#: body REACHES, not by its verb. ``set_tenant_context`` stands in for the control
+#: plane generally: it is called on every Postgres path in ``apps/api`` precisely
+#: because RLS needs it, so it is the reliable marker for "this route reads the
+#: control plane".
+DATA_REVEALING_CALLEES = frozenset(
+    {
+        # warehouse / bronze reads
+        "warehouse_preview",
+        "bronze_preview",
+        "warehouse_tables",
+        "bronze_list",
+        "library_tree",
+        # document chunks
+        "search_document_chunks",
+        "list_document_chunks",
+        # filesystem
+        "reveal_origin_uri",
+        # control plane
+        "set_tenant_context",
+        # writes that also return data
+        "batch_ingest",
+        "bronze_ingest",
+        "pipeline_run",
+        "gold_sign_metric",
+    }
+)
+
 
 def _iter_py_files() -> list[Path]:
     files: list[Path] = []
@@ -73,10 +108,15 @@ class _BoundaryVisitor(ast.NodeVisitor):
         #: A-0007 (#73). GET handlers that take an OPTIONAL space_id and guard
         #: their scope check behind it: (lineno, function name).
         self.skippable_scope_routes: list[tuple[int, str]] = []
+        #: lineno, method, name, has_gate, sorted callees reached
+        self.data_routes: list[tuple[int, str, str, bool, tuple[str, ...]]] = []
         self._current_fn_has_gate = False
         self._current_fn_is_mutation = False
         self._current_fn_lineno = 0
         self._current_fn_deco = ""
+        self._current_fn_method = ""
+        self._current_fn_name = ""
+        self._current_fn_reaches: set[str] = set()
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -118,6 +158,15 @@ class _BoundaryVisitor(ast.NodeVisitor):
         if isinstance(node.func, ast.Attribute) and node.func.attr == "compliance_gate":
             self._current_fn_has_gate = True
 
+        # Anything this route reaches that returns customer data.
+        callee = None
+        if isinstance(node.func, ast.Name):
+            callee = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            callee = node.func.attr
+        if callee in DATA_REVEALING_CALLEES:
+            self._current_fn_reaches.add(callee)
+
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -128,15 +177,22 @@ class _BoundaryVisitor(ast.NodeVisitor):
 
     def _visit_fn(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         deco_method = self._mutation_decorator(node)
+        route_method = self._any_route_method(node)
         prev_gate = self._current_fn_has_gate
         prev_mut = self._current_fn_is_mutation
         prev_lineno = self._current_fn_lineno
         prev_deco = self._current_fn_deco
+        prev_method = self._current_fn_method
+        prev_name = self._current_fn_name
+        prev_reaches = self._current_fn_reaches
 
         self._current_fn_has_gate = False
         self._current_fn_is_mutation = deco_method is not None
         self._current_fn_lineno = node.lineno
         self._current_fn_deco = deco_method or ""
+        self._current_fn_method = route_method or ""
+        self._current_fn_name = node.name
+        self._current_fn_reaches = set()
 
         self.generic_visit(node)
 
@@ -146,17 +202,43 @@ class _BoundaryVisitor(ast.NodeVisitor):
             )
         if _is_get_route(node) and _has_skippable_scope_check(node):
             self.skippable_scope_routes.append((node.lineno, node.name))
+        if route_method and self._current_fn_reaches:
+            self.data_routes.append(
+                (
+                    self._current_fn_lineno,
+                    self._current_fn_method,
+                    self._current_fn_name,
+                    self._current_fn_has_gate,
+                    tuple(sorted(self._current_fn_reaches)),
+                )
+            )
 
         self._current_fn_has_gate = prev_gate
         self._current_fn_is_mutation = prev_mut
         self._current_fn_lineno = prev_lineno
         self._current_fn_deco = prev_deco
+        self._current_fn_method = prev_method
+        self._current_fn_name = prev_name
+        self._current_fn_reaches = prev_reaches
 
     def _mutation_decorator(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
         for deco in node.decorator_list:
             method = self._router_method(deco)
             if method in MUTATING_METHODS:
                 return method
+        return None
+
+    def _any_route_method(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+        """The route's HTTP method whatever it is - GET included.
+
+        ``_mutation_decorator`` deliberately stays narrow because the mutation gate
+        means something different (a write must fail closed). This one classifies the
+        route so the *data-revealing* check can look at every verb.
+        """
+        for deco in node.decorator_list:
+            func = deco.func if isinstance(deco, ast.Call) else deco
+            if isinstance(func, ast.Attribute) and func.attr.lower() in ROUTE_METHODS:
+                return func.attr.lower()
         return None
 
     def _router_method(self, deco: ast.AST) -> str | None:
@@ -324,6 +406,59 @@ def test_mutation_routes_call_compliance_gate(scans: dict[str, _BoundaryVisitor]
             if not has_gate:
                 offenders.append(f"{rel}:{lineno} @{method} missing compliance_gate()")
     assert not offenders, "Mutation routes must call compliance_gate:\n" + "\n".join(offenders)
+
+
+def test_data_revealing_routes_call_compliance_gate(scans: dict[str, _BoundaryVisitor]) -> None:
+    """Any route that REACHES customer data must gate, whatever its HTTP method.
+
+    dms#73. ``test_mutation_routes_call_compliance_gate`` above classifies by verb,
+    which is the right classifier for the question it asks (a write must fail closed)
+    and the wrong one for this question. Verb-only meant the suite inspected no GET,
+    so it was green while ``GET /v1/library/warehouse/alerts/preview`` returned rows of
+    a table no Space grants (A-0007, dms#72).
+
+    There is deliberately **no allowlist**. An allowlist here would recreate the exact
+    failure this test exists to prevent - a green result standing in for a surface
+    nobody looked at. If a route legitimately needs no gate, it must not reach one of
+    ``DATA_REVEALING_CALLEES``; if it does reach one, it gates.
+    """
+    offenders: list[str] = []
+    for rel, v in scans.items():
+        if not rel.startswith("apps/api/"):
+            continue
+        for lineno, method, name, has_gate, reached in v.data_routes:
+            if not has_gate:
+                offenders.append(
+                    f"{rel}:{lineno} @{method} {name}() reaches {', '.join(reached)} "
+                    f"without compliance_gate"
+                )
+    assert not offenders, (
+        "Routes that reach customer data must call compliance_gate "
+        "(classified by what the body reaches, not by HTTP method):\n" + "\n".join(offenders)
+    )
+
+
+def test_the_data_revealing_check_actually_inspects_get_routes(
+    scans: dict[str, _BoundaryVisitor],
+) -> None:
+    """Guard the guard: prove the check has GETs in scope at all.
+
+    Without this, deleting ``"get"`` from ``ROUTE_METHODS`` would leave
+    ``test_data_revealing_routes_call_compliance_gate`` passing while inspecting
+    nothing - which is precisely the defect being fixed, reintroduced silently. A gate
+    whose scope can empty without failing is not evidence (R-0007).
+    """
+    get_routes = [
+        f"{rel}:{lineno} {name}"
+        for rel, v in scans.items()
+        if rel.startswith("apps/api/")
+        for lineno, method, name, _gate, _reached in v.data_routes
+        if method == "get"
+    ]
+    assert len(get_routes) >= 8, (
+        "the data-revealing check is inspecting almost no GET routes, so its green "
+        f"result means nothing. Found {len(get_routes)}: {get_routes}"
+    )
 
 
 def test_no_cortexos_imports(scans: dict[str, _BoundaryVisitor]) -> None:

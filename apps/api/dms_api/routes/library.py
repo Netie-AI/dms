@@ -118,6 +118,7 @@ def list_sources(
 @router.get("/chunks/search")
 def search_chunks(
     settings: SettingsDep,
+    cortex: CortexDep,
     space_id: str = Query(..., description="Space that owns the document chunks"),
     q: str = Query(..., min_length=1, description="Lexical search query"),
     limit: int = Query(8, ge=1, le=100),
@@ -125,6 +126,12 @@ def search_chunks(
 ) -> list[dict[str, Any]]:
     """Ranked chunk search scoped at storage query (RAG-02)."""
     _ = settings
+    decision = compliance_gate(
+        action="library.search_chunks",
+        metadata={"task_id": "library.search_chunks", "scope": _scope_label(space_id)},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     return search_document_chunks(
         space_id=space_id,
         q=q,
@@ -136,8 +143,15 @@ def search_chunks(
 @router.get("/data-map")
 def data_map(
     settings: SettingsDep,
+    cortex: CortexDep,
     space_id: str | None = Query(None),
 ) -> dict[str, Any]:
+    decision = compliance_gate(
+        action="library.data_map",
+        metadata={"task_id": "library.data_map", "scope": _scope_label(space_id)},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     bronze = bronze_list(space_id=space_id)
     sources = _list_sources(settings, space_id=space_id)
     warehouse = warehouse_tables(space_id=space_id)
@@ -163,11 +177,18 @@ def data_map(
 @router.get("/tree")
 def library_tree_route(
     settings: SettingsDep,
+    cortex: CortexDep,
     space_id: str | None = Query(None),
 ) -> dict[str, Any]:
     """Foldable Space repository tree (Sources / Bronze / Warehouse)."""
     from dms_api.wiring import library_tree as build_tree
 
+    decision = compliance_gate(
+        action="library.tree",
+        metadata={"task_id": "library.tree", "scope": _scope_label(space_id)},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     sources = _list_sources(settings, space_id=space_id)
     space_name = None
     if space_id:
@@ -185,7 +206,16 @@ def library_tree_route(
 
 
 @router.get("/warehouse/tables")
-def list_wh_tables(space_id: str | None = Query(None)) -> list[dict[str, Any]]:
+def list_wh_tables(
+    cortex: CortexDep,
+    space_id: str | None = Query(None),
+) -> list[dict[str, Any]]:
+    decision = compliance_gate(
+        action="library.list_warehouse_tables",
+        metadata={"task_id": "library.list_warehouse_tables", "scope": _scope_label(space_id)},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     return warehouse_tables(space_id=space_id)
 
 
