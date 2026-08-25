@@ -183,9 +183,64 @@ export function fetchTrustRun(
 
 /* ── Runs · Admin · Library · Spaces ────────────────────────────────────── */
 
-export function fetchRuns(kind?: string, signal?: AbortSignal): Promise<RunsBody> {
-  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  return getJson<RunsBody>(`/v1/runs${qs}`, signal);
+/** Path for the runs feed. When the UI has an active Space, space_id must travel —
+ *  the API already scopes; omitting it is the leftover that showed every Space. */
+export function runsPath(kind?: string, spaceId?: string | null): string {
+  const qs = new URLSearchParams();
+  if (kind) qs.set("kind", kind);
+  if (spaceId) qs.set("space_id", spaceId);
+  const q = qs.toString();
+  return `/v1/runs${q ? `?${q}` : ""}`;
+}
+
+export function fetchRuns(
+  kind?: string,
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<RunsBody> {
+  return getJson<RunsBody>(runsPath(kind, spaceId), signal);
+}
+
+/** Amend proposal list — same rule as runs: active Space → space_id on the wire. */
+export function amendProposalsPath(spaceId?: string | null): string {
+  const qs = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : "";
+  return `/v1/amend/proposals${qs}`;
+}
+
+export type AmendProposal = {
+  id: string;
+  space_id?: string | null;
+  created_at?: string | null;
+  version_num?: number;
+  status?: string;
+  idempotency_token?: string;
+  diff?: { summary?: string; plain?: string };
+};
+
+export function fetchAmendProposals(
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<AmendProposal[]> {
+  return getJson<AmendProposal[]>(amendProposalsPath(spaceId), signal);
+}
+
+export async function postAmendProposal(
+  summary: string,
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<AmendProposal & { proposal_id?: string }> {
+  const res = await fetch("/api/v1/amend/proposals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      summary,
+      space_id: spaceId ?? undefined,
+      diff: { summary, plain: `Propose: ${summary}` },
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return (await res.json()) as AmendProposal & { proposal_id?: string };
 }
 
 export function fetchAdminOverview(signal?: AbortSignal): Promise<AdminOverview> {

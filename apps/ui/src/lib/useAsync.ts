@@ -27,6 +27,9 @@ export function useAsync<T>(
 
   useEffect(() => {
     const ctrl = new AbortController();
+    // Drop the prior payload immediately so a Space switch cannot leave the
+    // previous Space's rows on screen while the next fetch is in flight.
+    setData(null);
     setLoading(true);
     setError(null);
     run(ctrl.signal)

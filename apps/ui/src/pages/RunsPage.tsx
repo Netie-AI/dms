@@ -8,6 +8,7 @@ import {
   Section,
   StatTile,
 } from "@/components/PageShell";
+import { useApp } from "@/context/AppContext";
 import { fetchRuns } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
 import type { RunRecord, RunsBody } from "@/lib/types";
@@ -71,10 +72,11 @@ function RunRow({ run }: { run: RunRecord }) {
 }
 
 export function RunsPage() {
+  const { activeSpaceId } = useApp();
   const [kind, setKind] = useState("");
   const { data, error, loading, reload } = useAsync<RunsBody>(
-    (signal) => fetchRuns(kind || undefined, signal),
-    [kind],
+    (signal) => fetchRuns(kind || undefined, activeSpaceId, signal),
+    [kind, activeSpaceId],
   );
 
   const runs = data?.runs ?? [];

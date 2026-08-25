@@ -136,15 +136,23 @@ export function LibraryPage() {
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
+    // Drop previous Space's tree/selection/preview before the next fetch lands.
+    setTree(null);
+    setActive(null);
+    setPreview(null);
+    setPreviewErr(null);
+    setPreviewOffset(0);
     setLoading(true);
     setErr(null);
+    const ctrl = new AbortController();
     const q = activeSpaceId ? `?space_id=${encodeURIComponent(activeSpaceId)}` : "";
-    void fetch(`/api/v1/library/tree${q}`)
+    void fetch(`/api/v1/library/tree${q}`, { signal: ctrl.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error(String(r.status));
         return r.json();
       })
       .then((body: LibraryTree) => {
+        if (ctrl.signal.aborted) return;
         setTree(body);
         const firstWh = body.nodes
           .find((n) => n.id === "folder:warehouse")
@@ -154,8 +162,14 @@ export function LibraryPage() {
           if (target) setActive({ kind: target.kind, table: target.table });
         }
       })
-      .catch((e) => setErr(String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (ctrl.signal.aborted) return;
+        setErr(String(e));
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoading(false);
+      });
+    return () => ctrl.abort();
   }, [activeSpaceId]);
 
   useEffect(() => {

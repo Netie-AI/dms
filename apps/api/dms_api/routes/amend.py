@@ -14,7 +14,7 @@ from dms_core.control_plane.proposals import (
     create_proposal_version,
 )
 from dms_core.control_plane.session import set_tenant_context
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
@@ -62,16 +62,27 @@ def _conn(settings: SettingsDep):
 
 
 @router.get("/proposals")
-def list_proposals(settings: SettingsDep, cortex: CortexDep) -> list[dict[str, Any]]:
+def list_proposals(
+    settings: SettingsDep,
+    cortex: CortexDep,
+    space_id: str | None = Query(None, description="restrict proposals to one Space"),
+) -> list[dict[str, Any]]:
+    """List proposals, scoped to a Space when one is named.
+
+    Without ``space_id`` this is the company-wide steward view. Naming a Space
+    must narrow the SQL — otherwise an active Space in the UI still listed every
+    Space's pending diffs (SPACE-UI-ALL leftover).
+    """
     decision = compliance_gate(
         action="amend.list_proposals",
         actor=settings.dms_actor_user_id,
-        metadata={"task_id": "amend.list_proposals"},
+        metadata={"task_id": "amend.list_proposals", "space_id": space_id or ""},
         client=cortex,
     )
     enforce(decision, mutation=False)
     if not settings.database_url:
         return []
+    space_uuid = uuid.UUID(space_id) if space_id else None
     with _conn(settings) as conn:
         set_tenant_context(conn, settings.dms_tenant_id, role="steward")
         rows = conn.execute(
@@ -85,10 +96,11 @@ def list_proposals(settings: SettingsDep, cortex: CortexDep) -> list[dict[str, A
                  ORDER BY pv.version_num DESC LIMIT 1
               ) v ON true
              WHERE p.tenant_id::text = %s
+               AND (%s::uuid IS NULL OR p.space_id = %s::uuid)
              ORDER BY p.created_at DESC
              LIMIT 50
             """,
-            (settings.dms_tenant_id,),
+            (settings.dms_tenant_id, space_uuid, space_uuid),
         ).fetchall()
         conn.commit()
     return [
