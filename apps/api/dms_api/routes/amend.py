@@ -62,7 +62,14 @@ def _conn(settings: SettingsDep):
 
 
 @router.get("/proposals")
-def list_proposals(settings: SettingsDep) -> list[dict[str, Any]]:
+def list_proposals(settings: SettingsDep, cortex: CortexDep) -> list[dict[str, Any]]:
+    decision = compliance_gate(
+        action="amend.list_proposals",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "amend.list_proposals"},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     if not settings.database_url:
         return []
     with _conn(settings) as conn:

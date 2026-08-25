@@ -112,7 +112,12 @@ def list_bronze(
     cortex: CortexDep,
     space_id: str | None = Query(None),
 ) -> list[dict[str, Any]]:
-    _ = cortex
+    decision = compliance_gate(
+        action="studio.list_bronze",
+        metadata={"task_id": "studio.list_bronze", "space_id": space_id or "company-default"},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     return bronze_list(space_id=space_id)
 
 
@@ -123,6 +128,11 @@ def list_chunks(
     space_id: str = Query(..., description="Space that owns the document chunks"),
 ) -> list[dict[str, Any]]:
     """Steward list of space-scoped document chunks (RAG-01)."""
-    _ = cortex
     _ = settings
+    decision = compliance_gate(
+        action="studio.list_chunks",
+        metadata={"task_id": "studio.list_chunks", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     return list_document_chunks(space_id=space_id)
