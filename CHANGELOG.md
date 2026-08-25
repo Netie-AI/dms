@@ -30,6 +30,13 @@ Append-only. Never edited, only added to. Newest first.
 - **Demo step:** `python scripts/sync_bronze_to_serving.py` (Start-DMSStack
   runs it before Cortex starts, while the serving file is unlocked).
 
+## 2026-08-22 - CSV-01 deterministic download
+
+- **CSV-01 (#18).** Download CSV is a pure serializer: UTF-8 BOM, RFC 4180
+  quoting, CRLF, first-seen column union, raw JSON numbers (no `en-MY`
+  thousands separators). Filename is `dms_answer_<answer_id>.csv` — no clock.
+  No model on the path. Summary one-cell answers still fetch drill rows first.
+
 ## 2026-08-06 - working-tree recovery, SCORE-03, demo 31/31
 
 - **Composition root recovered.** `apps/api/dms_api/wiring.py` had been
