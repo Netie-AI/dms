@@ -80,6 +80,15 @@ export function StudioPage() {
   }, [activeSpaceId]);
 
   useEffect(() => {
+    // Switching Space must not leave the previous Space's tree/preview/selection.
+    setTree(null);
+    setTreeErr(null);
+    setActiveId(null);
+    setPreview(null);
+    setPreviewErr(null);
+    setPreviewTarget(null);
+    setPreviewOffset(0);
+    setSelected(new Set());
     void loadTree();
   }, [loadTree]);
 

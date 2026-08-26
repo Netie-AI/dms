@@ -1,50 +1,43 @@
 import { useEffect, useState } from "react";
-
-type Proposal = {
-  id: string;
-  space_id?: string | null;
-  version_num?: number;
-  status?: string;
-  idempotency_token?: string;
-  diff?: { summary?: string };
-};
+import { useApp } from "@/context/AppContext";
+import {
+  fetchAmendProposals,
+  postAmendProposal,
+  type AmendProposal,
+} from "@/lib/api";
 
 export function AmendPage() {
-  const [list, setList] = useState<Proposal[]>([]);
+  const { activeSpaceId } = useApp();
+  const [list, setList] = useState<AmendProposal[]>([]);
   const [summary, setSummary] = useState("Correct quantity on demo row");
   const [msg, setMsg] = useState<string | null>(null);
 
   const reload = () => {
-    void fetch("/api/v1/amend/proposals")
-      .then((r) => r.json())
+    // Clear first so a Space switch cannot leave another Space's diffs on screen.
+    setList([]);
+    void fetchAmendProposals(activeSpaceId)
       .then(setList)
       .catch(() => setList([]));
   };
 
   useEffect(() => {
     reload();
-  }, []);
+    // reload closes over activeSpaceId; re-run when the Space switcher moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpaceId]);
 
   const propose = async () => {
     setMsg(null);
-    const res = await fetch("/api/v1/amend/proposals", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        summary,
-        diff: { summary, plain: `Propose: ${summary}` },
-      }),
-    });
-    if (!res.ok) {
-      setMsg(await res.text());
-      return;
+    try {
+      const body = await postAmendProposal(summary, activeSpaceId);
+      setMsg(`Proposed v${body.version_num} — token ${body.idempotency_token?.slice(0, 12)}…`);
+      reload();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
     }
-    const body = await res.json();
-    setMsg(`Proposed v${body.version_num} — token ${body.idempotency_token?.slice(0, 12)}…`);
-    reload();
   };
 
-  const confirm = async (p: Proposal) => {
+  const confirm = async (p: AmendProposal) => {
     if (!p.idempotency_token) return;
     const res = await fetch(`/api/v1/amend/proposals/${p.id}/confirm`, {
       method: "POST",
