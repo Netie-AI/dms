@@ -138,6 +138,15 @@ def _ledger_append(cortex: CortexClient):
     return _append
 
 
+def _ledger_verify(cortex: CortexClient):
+    """Read the Cortex chain back — the only verify surface, no local hash chain."""
+
+    def _verify():
+        return cortex.verify_ledger()
+
+    return _verify
+
+
 def pipeline_run(
     *,
     actor: str,
@@ -156,9 +165,10 @@ def pipeline_run(
     bypassed the chain entirely.
 
     The definition still comes from the caller. The attestation is produced here by an
-    actual append, and a caller that tries to supply one is refused rather than having
-    it silently dropped - a request that believes it signed something and was ignored
-    is the same class of lie in the other direction (R-0011).
+    actual append *and* a chain readback (``verify_ledger``), and a caller that tries to
+    supply one is refused rather than having it silently dropped - a request that
+    believes it signed something and was ignored is the same class of lie in the other
+    direction (R-0011).
     """
     # Checked before the pipeline is even resolved. Two reasons: a forged attestation
     # is not a request worth doing any work for, and answering 404-not-found ahead of
@@ -195,10 +205,11 @@ def pipeline_run(
         metric = dms_executor.sign_gold_metric(
             unsigned,
             cortex_append=_ledger_append(cortex),
+            cortex_verify=_ledger_verify(cortex),
             actor=actor,
         )
-        if not metric.ledger_entry_id:
-            raise ValueError("Cortex ledger append did not return entry_id")
+        if not metric.is_signed:
+            raise ValueError("gold metric is not signed after ledger append+verify")
 
     receipt = dms_executor.run_promote(pipe, gold_metric=metric)
     return receipt.to_dict()
@@ -225,15 +236,18 @@ def gold_sign_metric(
     if cortex is None:
         raise ValueError("Cortex client required to sign gold metric onto the ledger")
 
-    _append = _ledger_append(cortex)
-
     metric = GoldMetricDef(
         metric_id=metric_id,
         name=name,
         sql=sql,
         steward_id=actor,
     )
-    signed = dms_executor.sign_gold_metric(metric, cortex_append=_append, actor=actor)
-    if not signed.ledger_entry_id:
-        raise ValueError("Cortex ledger append did not return entry_id")
+    signed = dms_executor.sign_gold_metric(
+        metric,
+        cortex_append=_ledger_append(cortex),
+        cortex_verify=_ledger_verify(cortex),
+        actor=actor,
+    )
+    if not signed.is_signed:
+        raise ValueError("gold metric is not signed after ledger append+verify")
     return signed.to_dict()

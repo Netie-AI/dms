@@ -212,6 +212,7 @@ lineage_reason: "metric aggregate — row-level _src not retained by design"
             steward_id="steward_1",
         ),
         cortex_append=lambda **kw: _Fake(),
+        cortex_verify=lambda: type("V", (), {"ok": True})(),
         actor="steward_1",
     )
     assert signed.is_signed
@@ -250,7 +251,12 @@ def test_ledger_actor_is_never_taken_from_caller_supplied_metric_data():
     )
 
     # A resolved actor is used verbatim and does not defer to the metric.
-    sign_gold_metric(metric, cortex_append=_capture, actor="svc_dms_steward")
+    sign_gold_metric(
+        metric,
+        cortex_append=_capture,
+        cortex_verify=lambda: type("V", (), {"ok": True})(),
+        actor="svc_dms_steward",
+    )
     assert seen["actor"] == "svc_dms_steward"
     assert seen["actor"] != metric.steward_id
 
@@ -258,7 +264,12 @@ def test_ledger_actor_is_never_taken_from_caller_supplied_metric_data():
     # line and wrote "ceo@victim.example" onto the chain; failing closed is the fix.
     seen.clear()
     with pytest.raises(ValueError):
-        sign_gold_metric(metric, cortex_append=_capture, actor="")
+        sign_gold_metric(
+            metric,
+            cortex_append=_capture,
+            cortex_verify=lambda: type("V", (), {"ok": True})(),
+            actor="",
+        )
     assert seen == {}, (
         f"an append happened with no resolved actor: {seen.get('actor')!r} - A-0005 is back"
     )
@@ -279,7 +290,12 @@ def test_signing_without_a_resolved_actor_is_refused():
     )
 
     with pytest.raises(ValueError, match="server-resolved actor"):
-        sign_gold_metric(metric, cortex_append=lambda **kw: _Resp(), actor="")
+        sign_gold_metric(
+            metric,
+            cortex_append=lambda **kw: _Resp(),
+            cortex_verify=lambda: type("V", (), {"ok": True})(),
+            actor="",
+        )
 
     with pytest.raises(TypeError):
         sign_gold_metric(metric, cortex_append=lambda **kw: _Resp())  # type: ignore[call-arg]
