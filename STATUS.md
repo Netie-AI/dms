@@ -29,7 +29,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | Predictive (#67) | A literal-list guard certified 4 forecast asks with historical numbers under `L2_VALIDATED`. Now intent-based. KB **F-0021** |
 | Ontology (#68) | `scripts/ontology.py` grain guard - refuses fan-out, ambiguous and unverified roll-ups; multi-hop; `via=`; a blocked short route refuses rather than silently taking a longer one |
 | Engine bench | 811 answerable over 494 shapes, **0 disagreements with an independent oracle**. Bound ~0.61% on shapes (R-0010) - **but the corpus is 3 variants of ONE schema family**: AdventureWorksLT2022 shares 9 of its 12 table names with AW2025, and DW2025 is the same fictional company as a star schema. Every declared key is correct **by construction** (110 PKs unique, 146 FKs no orphans), so the four failure classes that decide customer viability - FK on the wrong column, orphan rows, duplicate business key behind a clean surrogate, a column whose name lies - **cannot occur in it**. On the honest coarse unit (3 databases) the bound is 100%. Falsified: LEFT->INNER exits 1 |
-| Free-form | **Not a measurement.** The often-quoted "n=25, ~15.8%" is 3 errors in 19 answerable, and it is an upper bound *conditional on a clean gate run that has never happened* - F40 breaks the badge input. Quote it as "no recorded green run" until F40 closes (R-0011) |
+| Free-form | **Not a measurement.** Quote "no recorded green run" until Cortex#11 closes the engine half of F40 (R-0011). DMS half is closed (#66): `map_ask_response_to_envelope` demotes `route=refused` even when badge is `session`. `repro_refused_badge.py` still prints P0 because it calls `build_answer_envelope` with no route |
 | Bench in CI | **No.** Neither `ontology_bench.py` nor `verify_freeform_demo.py` runs in `ci_local.sh` or `try_changes.py`; `bench.json` is a 2026-08-23 snapshot nothing re-derives, so a regression in `scripts/ontology.py` turns nothing red |
 | AW lake | 114 tables, 146 links held, 110 objects. Compiled revenue == oracle, conserves to 123.2M. **Never read by `apps/` or `packages/`** |
 | Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
@@ -39,20 +39,19 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
 | **F70 CLOSED** (#76) | A caller could assert its own certification: `is_signed` was three request fields, so `/v1/pipelines/run` passed the gold gate with nothing on the chain. Attestation is now refused on the request and produced server-side. **F52(b)** with it - `entry_hash` does not exist on the response, so the signature had degraded to the entry id |
 | **#75 CLOSED** | An upload whose serving sync failed reported `ingested=N`. Three states now on the receipt, and "not attempted" is distinct from ok |
+| **F40 DMS half (#66)** | A Cortex `route=refused` with `badge=session` no longer ships as `L2_VALIDATED`. Engine half is Cortex#11 |
 
 ## Open next
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **F70** was fixed unparented on founder direction - still name its epic (EPIC-025, or under EPIC-003). **F36** (open since 2026-08-07) blocks EPIC-020 -> EPIC-021. **F41** split EPIC-021a. **F45** insights/brief epic. **F37** approve EPIC-024 (highest nearness - it renders data already computed). **F68** monetization has zero prior PRD coverage. **P-DMS-33** L4/L5 badge meanings. |
-| **Not verified** | Every P0 fix this wave was proven **offline**. `verify_demo_live.py` (31/31) and `sync_bronze_to_serving.py --check` need a live stack and were **not run**, so no R-0005 check against the running product exists for any of them |
-| **Still not closed** | **Nothing verifies a signature.** F70 stops an attestation being *asserted*; no read-back against the Cortex chain exists, so an entry removed or never durably committed still presents as signed. Also: a gold promote now requires a reachable Cortex |
-| **Lane collisions** | Two agent lanes worked this queue in parallel and collided **three times**; #75 was fully duplicated and closed as superseded (#84). Claim a ticket by comment before starting - KB **F-0025** |
-| **RUN NOW** | **#59 FF-03** Cortex-side one-liner: the L2 gate throws away its own `violations`. Blocks diagnosing free-form. **F40 P0**: `repro_refused_badge.py` exit 0 - a refusal renders `L2_VALIDATED` |
-| Epics | In flight: **EPIC-003 (#6)** + **EPIC-017 (#33)**. **EPIC-018 (#35) -> QUEUED** (all three tickets closed; it held a slot with nothing seated; never close it - that orphans F42/F46). EPIC-003 verdict re-derived from code: **INCOMPLETE** |
-| Truth to hold | **The product has served 91 rows.** Concurrency breaks at that size - one DuckDB writer excludes all readers. No scale claim may be made (P-DMS-34) |
-| PRs open | none. #64 and #65 (Cursor lane) merged; the P0 wave merged as #78 #79 #80 #81 #82 #85 |
-| #39 VQ-01 | Scoped, **blocked**: D:\Cortex has 47 files in flight (R-0006). Verified truth in the #39 comment |
+| **NEEDS-YOU** | Name F70's epic. **F36** blocks EPIC-020 -> 021. **F41** split 021a. **F45** insights/brief. **F37** approve EPIC-024. **F68** monetization. **P-DMS-33** L4/L5 badges |
+| **Not verified live** | P0 wave proven offline. `verify_demo_live.py` / serving `--check` not re-run this session |
+| **In review** | **#92** F70 read-back (`verify_ledger` after append). **#91** ENV-E4 (#28) listing 500. **#90** SPACE-UI (#25) Runs/Amend + stale views. All three CI green, not merged |
+| **Blocked** | **#59 FF-03** Cortex (this token cannot see Netie-AI/Cortex). **#39 VQ-01** Cortex files in flight (R-0006). Issues API 403 here |
+| Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B, never claim persisted). **EPIC-017 (#33)** in flight. **EPIC-018 (#35) QUEUED** - do not close it |
+| Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
+| CI / PRs | `main` green (32849806928). Ready: #89 (this), #90, #91, #92 |
 
 ## Agent models
 
