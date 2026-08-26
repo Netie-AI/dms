@@ -37,21 +37,23 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
 | **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
 | **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
-| **F70 CLOSED** (#76) | A caller could assert its own certification: `is_signed` was three request fields, so `/v1/pipelines/run` passed the gold gate with nothing on the chain. Attestation is now refused on the request and produced server-side. **F52(b)** with it - `entry_hash` does not exist on the response, so the signature had degraded to the entry id |
-| **#75 CLOSED** | An upload whose serving sync failed reported `ingested=N`. Three states now on the receipt, and "not attempted" is distinct from ok |
-| **F40 DMS half (#66)** | A Cortex `route=refused` with `badge=session` no longer ships as `L2_VALIDATED`. Engine half is Cortex#11 |
+| **F70 CLOSED** (#76,#92) | Caller cannot assert certification; after append, `sign_gold_metric` `verify_ledger`s before signed. **F52(b)** hash not entry_id |
+| **#75 CLOSED** | An upload whose serving sync failed reported `ingested=N`. Three states on the receipt |
+| **F40 DMS half (#66)** | `route=refused` does not ship as `L2_VALIDATED`. Engine half is Cortex#11 |
+| **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
+| **#25 SPACE-UI (#90)** | Runs/Amend send `space_id`; Library/Studio clear on Space switch |
+| **#23 RAG-04 (#94)** | Customer envelope asserts text, rows, sources on `POST /v1/chat/ask` |
 
 ## Open next
 
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | Name F70's epic. **F36** blocks EPIC-020 -> 021. **F41** split 021a. **F45** insights/brief. **F37** approve EPIC-024. **F68** monetization. **P-DMS-33** L4/L5 badges |
-| **Not verified live** | P0 wave proven offline. `verify_demo_live.py` / serving `--check` not re-run this session |
-| **In review** | **#92** F70 read-back (`verify_ledger` after append). **#91** ENV-E4 (#28) listing 500. **#90** SPACE-UI (#25) Runs/Amend + stale views. All three CI green, not merged |
-| **Blocked** | **#59 FF-03** Cortex (this token cannot see Netie-AI/Cortex). **#39 VQ-01** Cortex files in flight (R-0006). Issues API 403 here |
-| Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B, never claim persisted). **EPIC-017 (#33)** in flight. **EPIC-018 (#35) QUEUED** - do not close it |
+| **Not verified live** | Merge wave proven in CI. `verify_demo_live.py` / serving `--check` not re-run on a live stack |
+| **Cortex (handoff)** | **Cortex#11 / F40 engine:** `_is_abstain_signal` must recognise `refused`. **#59 FF-03:** L2 gate drops `violations`. **#39 VQ-01:** blocked on Cortex tree (R-0006). **EPIC-015 #34** PARTIAL |
+| Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B). **EPIC-017 (#33)** in flight until Cortex#11/#59. **EPIC-018 (#35) QUEUED** - do not close it |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | `main` green (32849806928). Ready: #89 (this), #90, #91, #92 |
+| CI / PRs | Merged #89-#94. Open PRs: **none** |
 
 ## Agent models
 

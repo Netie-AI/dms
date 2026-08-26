@@ -40,11 +40,11 @@ Two consequences worth knowing before the room asks:
 
 | Area | Color | Ticket / epic | What is true |
 |------|-------|---------------|--------------|
-| L0/L1/L2 ask + Spaces UI | Green | DEMO-PATH-01 #16 CLOSED; SPACE-UI #25 OPEN on main (PR #90 in review) | Core stranger path green; Runs/Amend Space wiring not on main until #90 merges |
+| L0/L1/L2 ask + Spaces UI | Green | DEMO-PATH-01 #16 CLOSED; SPACE-UI #25 CLOSED (#90) | Core stranger path green; Runs/Amend pass `space_id` |
 | Doc chunks schema + ingest | Green | RAG-01 #24 CLOSED; Cortex RAG-02 #33 / RAG-03 #32 CLOSED | Chunks indexed on Space upload; L0/L1/L2 then doc-RAG on abstain |
 | RAG envelope + adversarial | Green | DMS RAG-04 #23 CLOSED; RAG-05 #22 CLOSED; Cortex EPIC-015 #34 PARTIAL | Envelope + adversarial ask green; Cortex epic still PARTIAL on older RAG-01..03 boxes |
 | Postgres Spaces | Yellow by design | EPIC-003 #6 OPEN | Founder choice B: **in-memory for demo**; never claim persisted |
-| Reorder / low-stock asks | Red on main | ENV-E4 #28 OPEN on main; PR #91 in review | **main still crashes** on E4 listings until #91 merges — **skip on stage** |
+| Reorder / low-stock asks | Green on envelope | ENV-E4 #28 CLOSED (#91) | Listings abstain or cite; no customer 500. Live Cortex still un-run |
 | Stack stability | Yellow | ops, not a ticket | Kill stale :8010/:8090 before show; Defender slows Python |
 | Explorer reveal on citation | Green | REVEAL-01 dms#26 CLOSED | SourcePanel **Open original** → `POST /v1/library/reveal` (allowlisted roots); AirGPT still has `reveal-path` |
 
@@ -165,7 +165,7 @@ python tests\RAG\edge_probe.py --space-id 8
 
 **Say:** "Badge is the contract — L0 human SQL, L1 metric, L2 generated-then-gated, abstain over a wrong green number."
 
-**Skip on stage:** `Which SKUs are below reorder level?` / `low stock` (E4 crash on main; OPEN on main, PR #91 in review).
+**Skip on stage:** none for E4 (closed #91). Object-level ACL is still `TRUE` (say that).
 
 ### Act B — DMS Studio ingest (2 min) — subtitle: "Your Excel into the Space"
 
@@ -199,7 +199,7 @@ python tests\RAG\edge_probe.py --space-id 8
 | Vague doc / notes / messy Excel | Weak (abstain or L2) | **hybrid_max** |
 | Open original file in Explorer | **Open original** (`/v1/library/reveal`) | **reveal-path** |
 | Exclusion / freeform follow-ups | L1/L2 + confirm chips | Fast, fewer confirm loops |
-| Reorder / low-stock listing | Broken on main (E4; PR #91 in review) — skip | Try warehouse / inventory books |
+| Reorder / low-stock listing | DMS envelope (#91) | Try warehouse / inventory books |
 
 ---
 
@@ -230,9 +230,9 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 | #34 EPIC-015 | Cortex | OPEN / PARTIAL | Parent RAG epic — RAG-04/05 checked |
 | #26 REVEAL-01 | dms | CLOSED | Explorer reveal from SourcePanel |
 | #27 DUAL-EVAL-01 | dms | OPEN optional | Shared Top-5 + edge score vs AirGPT |
-| #28 ENV-E4 | dms | OPEN on main; PR #91 in review | Reorder/low-stock E4 crash — **main still crashes** until #91 merges |
+| #28 ENV-E4 | dms | CLOSED (#91) | Reorder/low-stock listings no longer 500 |
 | #6 EPIC-003 | dms | OPEN | Space serving path; **memory store is intentional** |
-| #25 SPACE-UI-ALL | dms | OPEN on main; PR #90 in review | Space-scoped UI windows — not on main until #90 merges |
+| #25 SPACE-UI-ALL | dms | CLOSED (#90) | Runs/Amend scoped; Library/Studio clear on switch |
 | #72 A-0007 | dms | CLOSED | Company default ACL is a real scope; missing/ungranted → 403 |
 | #19–21 MCP | dms | OPEN blocked | Parked |
 
@@ -253,6 +253,5 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 ## 8. What is not demo-ready (do not promise)
 
 - Postgres-backed Spaces as default (founder: memory + honest banner)
-- Reorder / low-stock live asks on **main** (E4) — OPEN on main; PR #91 in review; still crashes until merge
-- Space-scoped Runs/Amend UI on **main** — OPEN on main; PR #90 in review; not shipped until merge
+- Object-level row ACL (predicates are still `TRUE`)
 - Treating AirGPT and DMS as one stack behind one URL
