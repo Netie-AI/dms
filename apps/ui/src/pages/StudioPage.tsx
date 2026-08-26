@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { useApp } from "@/context/AppContext";
 import {
+  describeApiError,
   fetchLibraryTree,
   fetchTablePreview,
   PREVIEW_PAGE_SIZE,
@@ -137,12 +138,12 @@ export function StudioPage() {
       if (files.length === 1) {
         fd.append("file", files[0]);
         const res = await fetch("/api/v1/studio/ingest", { method: "POST", body: fd });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(describeApiError(await res.text()));
         setReceipt((await res.json()) as Receipt);
       } else {
         for (const f of files) fd.append("files", f);
         const res = await fetch("/api/v1/studio/ingest-batch", { method: "POST", body: fd });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(describeApiError(await res.text()));
         setReceipt((await res.json()) as Receipt);
       }
       setActivity({ label: "Receipt ready", progress: 100 });

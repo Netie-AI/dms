@@ -49,11 +49,11 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | Vendored OpenAPI 1.2.0 from Cortex main (`08efc36d…`). **#59 FF-03** landed on Cortex (`SqlGateAbstain` str carries violations, #63); DMS tests never pinned the old bare message. Cortex#66 closed unmerged. Cortex#11 F40 remains |
+| **This tick** | This PR: E9-02 ungrounded Wide_Fill + health abort. Main has OpenAPI pin + Cortex FF-03. Cortex#11 F40 remains |
 | **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
 | Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | cursor/origin-continue-68a9 on origin. Leftover cursor/* squash-landed. #95/#96 overlap |
+| CI / PRs | #99 this. #97 Playwright (conflict). #98 superseded. #101 E12 has venv junk |
 
 ## Agent models
 

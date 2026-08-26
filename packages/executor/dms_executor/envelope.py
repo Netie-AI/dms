@@ -53,6 +53,7 @@ _DOC_ROUTE_KINDS = frozenset({"doc_rag", "document", "rag", "document_retrieval"
 
 
 _SQL_COMMENT = re.compile(r"--[^\n]*")
+_SQL_RELATION = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][\w.]*)", re.I)
 
 # Sheet-class scopes that disagree on category totals in the hostile pack
 # (Sales vs Wide_Fill ~2x). Used only for F32 demote — not intent/typo fix.
@@ -232,6 +233,32 @@ def _scope_uniquely_named(
     return False
 
 
+def _sql_cited_labels(sql: str | None) -> list[str]:
+    """Relation names after FROM/JOIN. Placeholder comments yield nothing."""
+    raw = (sql or "").strip()
+    if not raw or raw.startswith("--"):
+        return []
+    stripped = _SQL_COMMENT.sub(" ", raw)
+    return list(dict.fromkeys(m.group(1) for m in _SQL_RELATION.finditer(stripped)))
+
+
+def _paired_sheet_sibling(label: str) -> str | None:
+    """Other Sales/Wide_Fill class on the same workbook stem, or None.
+
+    Only the ``stem_Sales`` / ``stem_Wide_Fill`` pattern. A bare ``FROM sales``
+    is not a workbook pair and must not invent a competitor.
+    """
+    bare = _bare_label(label)
+    m = _SHEET_CLASS.search(bare.replace("-", "_"))
+    if not m:
+        return None
+    sheet = _norm_sheet_token(m.group("sheet"))
+    stem = m.group("stem")
+    other = "Wide_Fill" if sheet == "sales" else "Sales"
+    prefix = "bronze." if str(label).lower().startswith("bronze.") else ""
+    return f"{prefix}{stem}_{other}"
+
+
 def _should_demote_ambiguous_ranking(
     *,
     question: str | None,
@@ -241,16 +268,25 @@ def _should_demote_ambiguous_ranking(
     text: str,
     values: list[dict[str, Any]],
     rows: list[dict[str, Any]],
+    sql_used: str | None = None,
 ) -> list[str]:
     """Return competing labels when F32 demote applies; else empty.
 
     Prefer an explicit ``competing_scopes`` plant (tests); otherwise derive from
-    grounded tables + cited containers. Does not fix typos / intent regex.
+    grounded tables + cited containers + executed SQL. A Wide_Fill ranking on
+    an ungrounded demo ACL still has to demote: ``live_ask`` forwards
+    ``acl.row_predicates`` (DEMO_TABLES), which never includes the hostile
+    bronze pair. Does not fix typos / intent regex.
     """
     if competing_scopes is not None:
         competing = list(dict.fromkeys(str(x) for x in competing_scopes if x))
     else:
-        labels = list(grounded_tables or []) + list(source_labels)
+        cited = _sql_cited_labels(sql_used)
+        labels = list(grounded_tables or []) + list(source_labels) + list(cited)
+        for lab in cited:
+            sib = _paired_sheet_sibling(lab)
+            if sib:
+                labels.append(sib)
         competing = competing_category_scopes(labels)
     if len(competing) < 2:
         return []
@@ -891,6 +927,7 @@ def build_answer_envelope(
             grounded_tables=grounded_tables,
             competing_scopes=competing_scopes,
             source_labels=source_labels,
+            sql_used=sql_used,
             text=text or "",
             values=values_out,
             rows=rows_out,

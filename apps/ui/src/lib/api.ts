@@ -64,12 +64,35 @@ export type HealthBody = {
   };
 };
 
+/** Turn a raw API error body into a sentence a steward can act on. */
+export function describeApiError(body: string): string {
+  let reason = body.trim();
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    if (typeof parsed.detail === "string") reason = parsed.detail;
+  } catch {
+    /* keep raw body */
+  }
+  if (reason === "gate_unavailable") {
+    return "Cortex gate is unreachable. Start Cortex before writing -- an ungated change is refused.";
+  }
+  if (reason === "gate_task_unknown") {
+    return "Cortex does not know this task yet. The write is refused rather than applied ungated.";
+  }
+  return reason;
+}
+
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthBody | null> {
   try {
     const res = await fetch("/api/health", { signal });
     if (!res.ok) return null;
     return (await res.json()) as HealthBody;
-  } catch {
+  } catch (err) {
+    // Abort is not "API down" — React StrictMode unmounts the first effect and
+    // treating that as offline painted a red banner over a live stack.
+    if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+      throw err;
+    }
     return null;
   }
 }
@@ -239,7 +262,7 @@ export async function postAmendProposal(
     }),
     signal,
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(describeApiError(await res.text()));
   return (await res.json()) as AmendProposal & { proposal_id?: string };
 }
 
@@ -382,7 +405,9 @@ export async function createSpace(
   });
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(res.status === 409 ? "A Space with that name already exists." : detail);
+    throw new Error(
+      res.status === 409 ? "A Space with that name already exists." : describeApiError(detail),
+    );
   }
   return (await res.json()) as { space: SpaceSummary; persisted: boolean; hint?: string };
 }

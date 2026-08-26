@@ -141,37 +141,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const ctrl = new AbortController();
     const tick = () => {
-      void fetchHealth(ctrl.signal).then((body) => {
-        setApiOnline(body?.status === "ok");
-        if (body?.ask_mode) setAskMode(body.ask_mode);
-        if (typeof body?.demo_fallback === "boolean") {
-          setDemoFallbackEnabled(body.demo_fallback);
-        }
-        if (typeof body?.database_configured === "boolean") {
-          setDatabaseConfigured(body.database_configured);
-        }
-        const persistent = body?.database?.persistent;
-        if (typeof persistent === "boolean") {
-          setSpacesPersisted(persistent);
-        } else if (body?.backend === "memory") {
-          setSpacesPersisted(false);
-        }
-        setSpacesStorageHint(body?.database?.hint ?? null);
-        const c = body?.dependencies?.cortex;
-        const ov = body?.dependencies?.openvault;
-        if (c) {
-          setCortexContractRoutesOk(c.contract_routes !== false);
-          setCortexContractOk(c.ok !== false);
-          const refreshOk = c.jwks_refresh?.ok !== false;
-          const trustHint =
-            c.error ||
-            c.jwks_refresh?.hint ||
-            ov?.trust?.hint ||
-            null;
-          setCortexTrustOk(refreshOk && (ov?.trust?.jwks_ok !== false || ov?.ok !== false));
-          setCortexTrustHint(trustHint);
-        }
-      });
+      void fetchHealth(ctrl.signal)
+        .then((body) => {
+          if (ctrl.signal.aborted) return;
+          setApiOnline(body?.status === "ok");
+          if (body?.ask_mode) setAskMode(body.ask_mode);
+          if (typeof body?.demo_fallback === "boolean") {
+            setDemoFallbackEnabled(body.demo_fallback);
+          }
+          if (typeof body?.database_configured === "boolean") {
+            setDatabaseConfigured(body.database_configured);
+          }
+          const persistent = body?.database?.persistent;
+          if (typeof persistent === "boolean") {
+            setSpacesPersisted(persistent);
+          } else if (body?.backend === "memory") {
+            setSpacesPersisted(false);
+          }
+          setSpacesStorageHint(body?.database?.hint ?? null);
+          const c = body?.dependencies?.cortex;
+          const ov = body?.dependencies?.openvault;
+          if (c) {
+            setCortexContractRoutesOk(c.contract_routes !== false);
+            setCortexContractOk(c.ok !== false);
+            const refreshOk = c.jwks_refresh?.ok !== false;
+            const trustHint =
+              c.error ||
+              c.jwks_refresh?.hint ||
+              ov?.trust?.hint ||
+              null;
+            setCortexTrustOk(refreshOk && (ov?.trust?.jwks_ok !== false || ov?.ok !== false));
+            setCortexTrustHint(trustHint);
+          }
+        })
+        .catch((err: unknown) => {
+          if (ctrl.signal.aborted) return;
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          setApiOnline(false);
+        });
     };
     tick();
     const id = window.setInterval(tick, 8000);
@@ -185,6 +192,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const ctrl = new AbortController();
     void fetchSpaces(ctrl.signal)
       .then((body) => {
+        if (ctrl.signal.aborted) return;
         const list = body.spaces;
         if (!list.length) return;
         setSpaces(list);
@@ -198,7 +206,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return list[0]?.id ?? null;
         });
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setSpacesFromApi(false);
       });
     return () => ctrl.abort();
@@ -251,7 +261,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const userId = `u_${Date.now()}`;
     setMessages((prev) => [...prev, { id: userId, role: "user", text: trimmed }]);
     setAsking(true);
-    setActivity({ label: "Asking Cortex…", progress: null });
+    setActivity({ label: "Asking…", progress: null });
     setAskError(null);
     setComposerPaused(false);
     setComposerPauseReason(null);

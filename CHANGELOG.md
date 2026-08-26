@@ -14,6 +14,18 @@ Append-only. Never edited, only added to. Newest first.
   gate: {exc}`). DMS tests never asserted the old bare "exhausted retries"
   string; no test update required.
 
+## 2026-08-26 - E9-02 ungrounded Wide_Fill + health abort
+
+- **E9-02.** An ungrounded ask used DEMO_TABLES as `grounded_tables`, so F32
+  demote never saw Sales vs Wide_Fill and a green ranking could ship. Executed
+  SQL that names `stem_Sales` / `stem_Wide_Fill` now infers the sibling pair.
+  Bare `FROM sales` is not a workbook pair. HTTP `POST /v1/chat/ask` asserts
+  badge/text/rows without a client `grounded_tables` plant (rule 10/10a).
+  `INVARIANT-CHANGE` in envelope tests. EPIC-018 stays queued.
+- **UI health poll.** React StrictMode aborted the first `/api/health` fetch
+  and the catch painted API offline over a live stack. Abort is not down.
+  `gate_unavailable` copy names starting Cortex; mutations still fail closed.
+
 ## 2026-08-22 - FF-02 polarity guard (E11)
 
 - **#57 FF-02.** A governed metric answered "warehouses that are not cold

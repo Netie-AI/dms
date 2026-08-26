@@ -8,6 +8,8 @@ INVARIANT-CHANGE: hard rule 12 — executed SQL with zero rows demotes to ABSTAI
 INVARIANT-CHANGE: E9-02 (F32) — ambiguous multi-sheet / multi-file category
 ranking must not stay confident green when competing Sales vs Wide_Fill (or
 cross-file sales) scopes disagree; uniquely scoped executed ranks may certify.
+INVARIANT-CHANGE: E9-02 verify — SQL-cited stem_Sales/stem_Wide_Fill infers the
+sibling pair so an ungrounded DEMO_TABLES ask cannot keep Wide_Fill green.
 INVARIANT-CHANGE: E11 (FF-02) — a negated ask must not keep L1_GOVERNED_METRIC
 when the matched metric's filter asserts the positive of that negation.
 """
@@ -21,6 +23,7 @@ from pathlib import Path
 import pytest
 from cortex_client.models import AskResponse
 from dms_executor import map_ask_response_to_envelope
+from dms_executor.demo_warehouse import DEMO_TABLES
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -201,9 +204,10 @@ def test_e9_leaves_executed_sql_answers_alone():
 def test_f32_ambiguous_ranking_demotes_wide_fill_class_totals():
     """F32: ambiguous ask + competing Sales/Wide_Fill must not stay green.
 
-    Planted Wide_Fill-class ranking under a confident badge with executed SQL
-    on one non-disambiguated sheet — the demote must fire. Removing the E9-02
-    guard makes this fixture fail red.
+    Planted Wide_Fill-class ranking with executed SQL on one non-disambiguated
+    sheet. Competing labels come from the SQL identifier + its workbook sibling,
+    not a test-only ``competing_scopes`` plant. Removing the E9-02 guard makes
+    this fixture fail red.
     """
     home, sports, misc = _WIDE_FILL_CLASS
     env = build_answer_envelope(
@@ -229,8 +233,7 @@ def test_f32_ambiguous_ranking_demotes_wide_fill_class_totals():
             {"category": "Misc", "sales_value_myr": misc},
         ],
         question="show top 3 categoty sales",
-        competing_scopes=_F32_COMPETING,
-        grounded_tables=_F32_COMPETING,
+        grounded_tables=list(DEMO_TABLES),
         ask_mode="live",
     )
     assert env["abstained"] is True
@@ -314,7 +317,12 @@ def test_f32_grounded_single_table_may_certify():
 
 
 def test_f32_ask_path_map_demotes_ambiguous_ranking():
-    """Same constructor path as POST /v1/chat/ask (map_ask_response_to_envelope)."""
+    """live_ask path: map_ask_response_to_envelope with DEMO_TABLES, no plant.
+
+    ``Executor.live_ask`` passes grounded_tables from the minted ACL and never
+    sets competing_scopes. An ungrounded ask is DEMO_TABLES. Wide_Fill in SQL
+    must still demote.
+    """
     home, sports, misc = _WIDE_FILL_CLASS
     resp = AskResponse.model_validate(
         {
@@ -340,13 +348,16 @@ def test_f32_ask_path_map_demotes_ambiguous_ranking():
         resp,
         space_id="sp_hostile",
         session_id="ses_f32",
-        grounded_tables=_F32_COMPETING,
+        grounded_tables=list(DEMO_TABLES),
         question="show top 3 categoty sales",
-        competing_scopes=_F32_COMPETING,
     )
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
+    assert env["values"] == []
+    assert env["rows"] == []
     assert "383,803.56" not in env["text"]
+    assert "scope conflict" in env["text"].lower()
+    assert env["audit_id"] == "aud_f32"
     assert_envelope_valid(env)
 
 
