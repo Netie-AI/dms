@@ -48,12 +48,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | Name F70's epic. **F36** blocks EPIC-020 -> 021. **F41** split 021a. **F45** insights/brief. **F37** approve EPIC-024. **F68** monetization. **P-DMS-33** L4/L5 badges |
+| **NEEDS-YOU** | GitHub Actions billing/spending limit (jobs not starting since #89-#94 merge). Name F70's epic. **F36** blocks EPIC-020 -> 021. **F41** split 021a. **F45** insights/brief. **F37** EPIC-024. **F68**. **P-DMS-33** L4/L5 |
 | **Not verified live** | Merge wave proven in CI. `verify_demo_live.py` / serving `--check` not re-run on a live stack |
 | **Cortex (handoff)** | **Cortex#11 / F40 engine:** `_is_abstain_signal` must recognise `refused`. **#59 FF-03:** L2 gate drops `violations`. **#39 VQ-01:** blocked on Cortex tree (R-0006). **EPIC-015 #34** PARTIAL |
 | Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B). **EPIC-017 (#33)** in flight until Cortex#11/#59. **EPIC-018 (#35) QUEUED** - do not close it |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | Merged #89-#94. Remaining DMS work is Cortex-blocked + founder NEEDS-YOU |
+| CI / PRs | Merged #89-#94. Post-merge Actions did not start (org billing). Remaining: Cortex-blocked |
 
 ## Agent models
 
