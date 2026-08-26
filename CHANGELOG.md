@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-26 - Playwright smoke + health abort race
+
+- **UI health poll.** React StrictMode aborted the first `/api/health` fetch and
+  the catch painted "API offline" over a live stack. Abort is no longer treated
+  as down. Playwright chat smoke requires `API · ok`.
+- **gate_unavailable copy.** Create Space / ingest / amend no longer dump
+  `{"detail":"gate_unavailable"}`. Mutations still fail closed (no bypass).
+- **e2e.** `apps/ui` Playwright: 10 tests, chrome + suggested ask + Spaces
+  honesty + Studio file inputs + Amend copy. `npm run test:e2e`.
+
 ## 2026-08-22 - FF-02 polarity guard (E11)
 
 - **#57 FF-02.** A governed metric answered "warehouses that are not cold
