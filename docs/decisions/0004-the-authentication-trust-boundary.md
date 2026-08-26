@@ -108,9 +108,9 @@ What is true under either A or B, and therefore did not wait for this decision:
    server-side. Under A the source is configuration; under B it is the principal. Under
    neither is it a request field. This closes the live `A-0005` instance today.
 2. `compliance_gate` receives an `actor` on every gated mutation.
-3. `A-0007` on the read path is closed regardless (PRD-001 F51, routed to EPIC-003):
-   the Space scope check at `apps/api/dms_api/routes/library.py:199` and `:219` is nested
-   inside `if space_id:` and is skipped when the parameter is omitted.
+3. `A-0007` on the read path is **CLOSED** (#72, PRD-001 F51): Company default ACL
+   is a real scope. Warehouse preview no longer skips the Space check when
+   `space_id` is omitted; missing and ungranted both answer 403.
 
 What genuinely differs: whether the product may be sold to a buyer who will not accept a
 network as its security boundary, and whether "who approved it" in the ledger means a
@@ -163,18 +163,17 @@ The enforcer now exists for Option A. What it does and does not cover:
   only over VPN or air-gap is a deployment property, not a code property, and no test in
   this repo can verify it. `deploy/compose/Caddyfile` has no auth and no TLS. The SOW
   sentence above is the only control on that, and it is a human one.
-- A-0007 on the read path remains **open** (PRD-001 F51): the Space scope check in
-  `apps/api/dms_api/routes/library.py` is nested inside `if space_id:` and is skipped
-  when the parameter is omitted. Option A does not close it.
+- A-0007 on the read path is **CLOSED** (#72): "Company (default ACL)" is a real
+  scope. Omitting `space_id` no longer skips the Space check; missing and ungranted
+  both answer 403. Option A did not require this, but the ticket landed and the
+  Confirmation must not still say open.
 
-Still outstanding, and tracked elsewhere rather than blocking this record:
+Still outstanding at decision time, later closed elsewhere (not this record's work):
 
-- `tests/invariants/test_boundaries.py` - blind to this class: `:39` sets
-  `MUTATING_METHODS = {"post", "put", "patch", "delete"}`, so it inspects no GET at all.
-  Extending it to classify a route by what it **reaches** rather than by its HTTP verb
-  touches a protected path and needs an `INVARIANT-CHANGE:` trailer, and the extended
-  gate must be shown to fail before it is trusted green. That is PRD-001 F51's companion
-  ticket, not this record's work.
+- `tests/invariants/test_boundaries.py` previously classified only by HTTP verb
+  (`MUTATING_METHODS`), so it inspected no GET. That companion (PRD-001 F51 /
+  #73+#74) is **CLOSED**: routes are classified by what they **reach**, and
+  ungated data-revealing GETs are gated. Do not re-open that claim here.
 
 **One weakening of the original Confirmation, stated rather than quietly dropped.** This
 record asked for the A-0005 assertion to be made *on the response of*
