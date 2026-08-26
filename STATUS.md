@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-08-25  
+**Last updated:** 2026-08-26  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -48,12 +48,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | GitHub Actions billing/spending limit (jobs not starting since #89-#94 merge). Name F70's epic. **F36** blocks EPIC-020 -> 021. **F41** split 021a. **F45** insights/brief. **F37** EPIC-024. **F68**. **P-DMS-33** L4/L5 |
-| **Not verified live** | Merge wave proven in CI. `verify_demo_live.py` / serving `--check` not re-run on a live stack |
-| **Cortex (handoff)** | **Cortex#11 / F40 engine:** `_is_abstain_signal` must recognise `refused`. **#59 FF-03:** L2 gate drops `violations`. **#39 VQ-01:** blocked on Cortex tree (R-0006). **EPIC-015 #34** PARTIAL |
-| Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B). **EPIC-017 (#33)** in flight until Cortex#11/#59. **EPIC-018 (#35) QUEUED** - do not close it |
+| **NEEDS-YOU** | GitHub Actions billing/spending limit. F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
+| **This tick** | Merged #89-#94. Closed #25 #28. **#59** is Cortex **#66** (CI red, do not merge). Cortex#11 F40 engine still open |
+| **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
+| Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | Merged #89-#94. Post-merge Actions did not start (org billing). Remaining: Cortex-blocked |
+| CI / PRs | This PR + founder #96 overlap on STATUS. Actions billing. Cortex #66 UNSTABLE; #41 draft CONFLICTING |
 
 ## Agent models
 
