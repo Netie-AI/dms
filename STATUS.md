@@ -53,7 +53,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | **Cortex (handoff)** | **Cortex#11 / F40 engine:** `_is_abstain_signal` must recognise `refused`. **#59 FF-03:** L2 gate drops `violations`. **#39 VQ-01:** blocked on Cortex tree (R-0006). **EPIC-015 #34** PARTIAL |
 | Epics | **EPIC-003 (#6) INCOMPLETE** (memory store is founder B). **EPIC-017 (#33)** in flight until Cortex#11/#59. **EPIC-018 (#35) QUEUED** - do not close it |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | Merged #89-#94. Open PRs: **none** |
+| CI / PRs | Merged #89-#94. Remaining DMS work is Cortex-blocked + founder NEEDS-YOU |
 
 ## Agent models
 
