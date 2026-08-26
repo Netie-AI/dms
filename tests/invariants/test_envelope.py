@@ -201,9 +201,10 @@ def test_e9_leaves_executed_sql_answers_alone():
 def test_f32_ambiguous_ranking_demotes_wide_fill_class_totals():
     """F32: ambiguous ask + competing Sales/Wide_Fill must not stay green.
 
-    Planted Wide_Fill-class ranking under a confident badge with executed SQL
-    on one non-disambiguated sheet — the demote must fire. Removing the E9-02
-    guard makes this fixture fail red.
+    Wide_Fill-class ranking under a confident badge with executed SQL on one
+    non-disambiguated sheet — the demote must fire. Competing labels come from
+    ``grounded_tables`` (what ``live_ask`` passes), not a test-only plant.
+    Removing the E9-02 guard makes this fixture fail red.
     """
     home, sports, misc = _WIDE_FILL_CLASS
     env = build_answer_envelope(
@@ -229,7 +230,6 @@ def test_f32_ambiguous_ranking_demotes_wide_fill_class_totals():
             {"category": "Misc", "sales_value_myr": misc},
         ],
         question="show top 3 categoty sales",
-        competing_scopes=_F32_COMPETING,
         grounded_tables=_F32_COMPETING,
         ask_mode="live",
     )
@@ -314,7 +314,12 @@ def test_f32_grounded_single_table_may_certify():
 
 
 def test_f32_ask_path_map_demotes_ambiguous_ranking():
-    """Same constructor path as POST /v1/chat/ask (map_ask_response_to_envelope)."""
+    """live_ask path: map_ask_response_to_envelope with no competing_scopes plant.
+
+    ``Executor.live_ask`` passes grounded_tables from the minted ACL and never
+    sets competing_scopes. A plant-only demote would green this and still ship
+    Wide_Fill totals on POST /v1/chat/ask.
+    """
     home, sports, misc = _WIDE_FILL_CLASS
     resp = AskResponse.model_validate(
         {
@@ -342,11 +347,14 @@ def test_f32_ask_path_map_demotes_ambiguous_ranking():
         session_id="ses_f32",
         grounded_tables=_F32_COMPETING,
         question="show top 3 categoty sales",
-        competing_scopes=_F32_COMPETING,
     )
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
+    assert env["values"] == []
+    assert env["rows"] == []
     assert "383,803.56" not in env["text"]
+    assert "scope conflict" in env["text"].lower()
+    assert env["audit_id"] == "aud_f32"
     assert_envelope_valid(env)
 
 
