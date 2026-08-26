@@ -48,12 +48,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | GitHub Actions billing/spending limit. F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | Merged #89-#94. Closed #25 #28. **#59** is Cortex **#66** (CI red, do not merge). Cortex#11 F40 engine still open |
+| **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
+| **This tick** | Local gate green (ruff/mypy/imports/457 pytest/try_changes 36/vitest 28). GitHub Actions ignored. Cortex#11 F40; Cortex#66 do not merge |
 | **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
 | Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | This PR + founder #96 overlap on STATUS. Actions billing. Cortex #66 UNSTABLE; #41 draft CONFLICTING |
+| CI / PRs | cursor/origin-continue-68a9 on origin. Leftover cursor/* squash-landed. #95/#96 overlap |
 
 ## Agent models
 
