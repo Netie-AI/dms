@@ -563,6 +563,82 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) < 0.011 or abs(a - b) / max(abs(b), 1e-9) < 1e-4
 
 
+def _value_nums(values: list[dict[str, Any]] | None) -> list[float]:
+    out: list[float] = []
+    for v in values or []:
+        if not isinstance(v, dict):
+            continue
+        raw = v.get("value")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            out.append(float(raw))
+    return out
+
+
+def orphan_money_figures(
+    text: str,
+    values: list[dict[str, Any]] | None,
+) -> list[float]:
+    """Money-like prose figures with no matching entry in ``values[]`` (E4).
+
+    Same filter ``assert_envelope_valid`` uses: bare integers are ranks / years /
+    SKU tails and are ignored.
+    """
+    have = _value_nums(values)
+    return [n for n in _money_like(text or "") if not any(_close(n, h) for h in have)]
+
+
+def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
+    """Numeric facts a listing may honestly render from the result set.
+
+    Direct cells plus same-row |a−b| (shortfall / gap). Never ×/÷100 — that
+    launders invented currency that happens to equal qty×100 into values[] under
+    a green badge (R-0003 recheck). Never invents a figure not recoverable as a
+    cell or same-row absolute difference.
+    """
+    out: list[float] = []
+    for row in rows[:50]:
+        nums: list[float] = []
+        for val in row.values():
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                nums.append(float(val))
+        out.extend(nums)
+        for i, a in enumerate(nums):
+            for b in nums[i + 1 :]:
+                out.append(abs(a - b))
+    return out
+
+
+def _grounded_prose_figures(
+    text: str,
+    existing: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Promote prose figures that are recoverable from row cells into values[].
+
+    Direct cells are already harvested by ``_ensure_values``. Live reorder /
+    low-stock answers often also print shortfall (= reorder − qty) which is not
+    a selected column — still citeable from the row, so E4 can hold without
+    inventing.
+    """
+    if not rows:
+        return []
+    grounded = _row_grounded_candidates(rows)
+    if not grounded:
+        return []
+    have = _value_nums(existing)
+    out: list[dict[str, Any]] = []
+    idx = len(existing)
+    for n in _money_like(text or ""):
+        if any(_close(n, h) for h in have):
+            continue
+        if not any(_close(n, g) for g in grounded):
+            continue
+        out.append({"id": f"v{idx}", "value": n, "label": "grounded"})
+        have.append(n)
+        idx += 1
+    return out
+
+
 def _cited_figures(
     text: str,
     sources: list[dict[str, Any]],
@@ -869,6 +945,29 @@ def build_answer_envelope(
             "negated ask answered by a positive filter: polarity mismatch (E11/FF-02)"
         )
 
+    # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
+    # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.
+    # Promote figures grounded in row cells or same-row |a−b| (shortfall); if any
+    # orphan remains, abstain rather than invent or crash (R-0005: matching
+    # listings keep their green badge via the promote path).
+    if not abstained:
+        values_out = values_out + _grounded_prose_figures(
+            text or "", values_out, rows_out
+        )
+        orphans = orphan_money_figures(text or "", values_out)
+        if orphans:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = (
+                "This answer states figure(s) I cannot cite from the query "
+                "result. Rather than show numbers I cannot stand behind, I'm "
+                "stopping here. Ask for columns returned by the query, or a "
+                "metric that includes the figure in the result set."
+            )
+            assumptions_list.append(
+                "prose figure not in query result: withheld (E4)"
+            )
+
     if abstained:
         values_out = []
         sources = []
@@ -1045,23 +1144,11 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
 
     # E4 — money-like / decimal literals in prose must appear in values[]
     if values and text and not abstained:
-        value_nums = [
-            float(v["value"])
-            for v in values
-            if isinstance(v, dict) and isinstance(v.get("value"), (int, float))
-        ]
-        for m in _NUMBER_IN_TEXT.finditer(text):
-            raw = m.group(1)
-            if "," not in raw and "." not in raw:
-                continue  # skip bare integers (ranks, SKU tails, years)
-            try:
-                n = float(raw.replace(",", ""))
-            except ValueError:
-                continue
-            assert value_nums and any(
-                abs(n - vn) < 0.011 or abs(n - vn) / max(abs(vn), 1e-9) < 1e-4
-                for vn in value_nums
-            ), f"E4: orphan number {n} in text not in values[]={value_nums}"
+        orphans = orphan_money_figures(text, values if isinstance(values, list) else [])
+        assert not orphans, (
+            f"E4: orphan number {orphans[0]} in text not in "
+            f"values[]={_value_nums(values if isinstance(values, list) else [])}"
+        )
 
     # E6
     if envelope.get("demo_fallback_used") is True:
@@ -1107,5 +1194,6 @@ __all__ = [
     "competing_category_scopes",
     "normalize_badge",
     "normalize_contributing_sources",
+    "orphan_money_figures",
     "unbacked_numbers",
 ]
