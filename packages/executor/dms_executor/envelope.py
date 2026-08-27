@@ -331,6 +331,41 @@ def _should_demote_shape_mismatch(
     return not _GROUP_BY.search(stripped)
 
 
+#: Markers that ask for one number. Closed list, not a parser. Combined with
+#: "not a multi-row ask" this is the inverse of E10.
+_TOTAL_ASK = re.compile(r"\b(?:total|sum|how\s+many|quantity|count)\b", re.I)
+
+
+def _requests_single_total(question: str | None) -> bool:
+    if _requests_multiple_rows(question):
+        return False
+    return bool(_TOTAL_ASK.search(question or ""))
+
+
+def _should_demote_scalar_ask_got_ranking(
+    *,
+    question: str | None,
+    sql: str | None,
+    rows: list[dict[str, Any]],
+) -> bool:
+    """True when a one-number ask was answered with a grouped ranking.
+
+    Live 2026-08-27: "What is total inventory quantity?" returned ten
+    category-value rows under L2_VALIDATED from a stored query skill. Real
+    SQL, real figures, different question (ANS-02 on the customer envelope).
+    """
+    if not _requests_single_total(question):
+        return False
+    if len(rows) < 2:
+        return False
+    if not sql:
+        return False
+    stripped = _SQL_COMMENT.sub("", str(sql))
+    if not stripped.strip():
+        return False
+    return bool(_GROUP_BY.search(stripped))
+
+
 # Closed list from FF-02. Not a parser: these are the markers that flip a
 # filter. "without" / "except" / "ignoring" stay out - they are demo SKU
 # exclusion words, not this guard's job.
@@ -926,6 +961,23 @@ def build_answer_envelope(
         )
         assumptions_list.append(
             "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
+        )
+
+    # E12 — inverse of E10. A one-number ask must not be settled by a grouped
+    # ranking. Same class as Cortex ANS-02: adjacent answer, green badge.
+    if not abstained and _should_demote_scalar_ask_got_ranking(
+        question=question, sql=sql_used, rows=rows_out
+    ):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "You asked for one total, and the query I matched returns a grouped "
+            "ranking instead. Those figures answer a different question. Rather "
+            "than show a breakdown as though it were the total, I'm stopping "
+            "here. Ask for the breakdown by name, or for the overall total."
+        )
+        assumptions_list.append(
+            "scalar ask answered by a grouped ranking: shape mismatch (E12/ANS-02)"
         )
 
     # E11 (FF-02) — a negated ask must not be settled by a metric whose filter

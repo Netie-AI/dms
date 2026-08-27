@@ -530,6 +530,55 @@ def test_e10_grouped_query_returning_one_group_still_certifies():
     assert_envelope_valid(env)
 
 
+def test_e12_scalar_ask_answered_by_ranking_demotes():
+    """ANS-02 on the customer envelope: one-number ask, grouped ranking back.
+
+    Live 2026-08-27: "What is total inventory quantity?" returned 10 category
+    value rows under L2_VALIDATED from a stored query skill.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_e12",
+        text="Found 10 row(s).",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": 67710506.66, "label": "total_value_myr"}],
+        sql_used=(
+            "SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr "
+            "FROM inventory GROUP BY category LIMIT 1000"
+        ),
+        rows=[
+            {"category": "FOOD_COLD", "total_value_myr": 67710506.66},
+            {"category": "CHEMICALS", "total_value_myr": 61894503.52},
+        ],
+        question="What is total inventory quantity?",
+    )
+
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert "different question" in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_e12_plain_scalar_ask_still_certifies():
+    """R-0005: a true one-row total must stay certified."""
+    env = build_answer_envelope(
+        answer_id="ans_e12_ok",
+        text="Result: qty = 91",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 91, "label": "qty"}],
+        sql_used="SELECT SUM(quantity_kg) AS qty FROM inventory",
+        rows=[{"qty": 91}],
+        question="What is total inventory quantity?",
+    )
+
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 91
+    assert_envelope_valid(env)
+
+
 def test_e10_grouped_ask_with_a_real_breakdown_certifies():
     """The happy path the demo needs: asked for three, given three."""
     env = build_answer_envelope(
