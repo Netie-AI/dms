@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-27 - vendor Cortex OpenAPI 1.2.0 pin
+
+- Copied `contract/openapi-1.2.0.json` + `.sha256` from Cortex origin/main
+  via `scripts/sync_contract.py`. DMS does not author the spec. Pin
+  `08efc36d84f976e1255ae33c4f19e563f50d52835833fab53cdb1837258bdb1b`.
+  Pruned generation surface is unchanged (same 6 paths / 20 schemas), so
+  `cortex_client.generated` was not regenerated.
+- **#59 FF-03.** Cortex `SqlGateAbstain.__str__` on origin/main interpolates
+  `violations` into the abstain reason (`L2 generation failed validation
+  gate: {exc}`). DMS tests never asserted the old bare "exhausted retries"
+  string; no test update required.
+
 ## 2026-08-22 - FF-02 polarity guard (E11)
 
 - **#57 FF-02.** A governed metric answered "warehouses that are not cold
