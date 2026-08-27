@@ -101,6 +101,31 @@
         "title": "AddEntryRequest",
         "type": "object"
       },
+      "AgentPostIn": {
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AgentPostIn",
+        "type": "object"
+      },
       "AnalyseEntryRequest": {
         "properties": {
           "raw_text": {
@@ -718,53 +743,51 @@
         "title": "CompleteEventRequest",
         "type": "object"
       },
-      "ComputerUseRequest": {
-        "description": "Pointer NETIE_CU_PLANNER=1 body \u2014 see docs/CONTRACTS.md / Beat Realtime pack.",
+      "ComputerControlIn": {
         "properties": {
-          "device_id": {
-            "default": "",
-            "title": "Device Id",
+          "action": {
+            "minLength": 1,
+            "title": "Action",
             "type": "string"
           },
-          "hot_context": {
-            "default": "",
-            "title": "Hot Context",
-            "type": "string"
-          },
-          "instruction": {
-            "default": "",
-            "title": "Instruction",
-            "type": "string"
-          },
-          "policy": {
-            "additionalProperties": true,
-            "title": "Policy",
-            "type": "object"
-          },
-          "prior": {
-            "additionalProperties": true,
-            "title": "Prior",
-            "type": "object"
-          },
-          "screen": {
+          "text": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Screen"
+            "title": "Text"
           },
-          "skills": {
-            "items": {},
-            "title": "Skills",
-            "type": "array"
+          "x": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X"
+          },
+          "y": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y"
           }
         },
-        "title": "ComputerUseRequest",
+        "required": [
+          "action"
+        ],
+        "title": "ComputerControlIn",
         "type": "object"
       },
       "ConfirmDimsRequest": {
@@ -808,6 +831,36 @@
           "h"
         ],
         "title": "ConfirmDimsRequest",
+        "type": "object"
+      },
+      "ConstructorRunBody": {
+        "properties": {
+          "edges": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "run_id": {
+            "default": "constructor_run",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "title": "ConstructorRunBody",
         "type": "object"
       },
       "ContractAnswer": {
@@ -1963,6 +2016,31 @@
             ],
             "title": "Chart Spec"
           },
+          "grant_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Kind"
+          },
+          "granted_sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Granted Sources"
+          },
           "layer": {
             "anyOf": [
               {
@@ -2130,6 +2208,42 @@
           "audit_id"
         ],
         "title": "DMSQueryResponse",
+        "type": "object"
+      },
+      "DispatchIn": {
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "DispatchIn",
         "type": "object"
       },
       "DraftBody": {
@@ -2845,6 +2959,20 @@
         "title": "ImportFolderBody",
         "type": "object"
       },
+      "InstructIn": {
+        "properties": {
+          "instruction": {
+            "minLength": 1,
+            "title": "Instruction",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instruction"
+        ],
+        "title": "InstructIn",
+        "type": "object"
+      },
       "IntakeRequest": {
         "properties": {
           "actor": {
@@ -2882,6 +3010,22 @@
           "photo"
         ],
         "title": "IntakeRequest",
+        "type": "object"
+      },
+      "IssueKeyBody": {
+        "properties": {
+          "label": {
+            "default": "constructor cortex viewer",
+            "title": "Label",
+            "type": "string"
+          },
+          "tier": {
+            "default": "free",
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "title": "IssueKeyBody",
         "type": "object"
       },
       "JustWorksIn": {
@@ -3167,6 +3311,26 @@
           "note"
         ],
         "title": "NoteAppendRequest",
+        "type": "object"
+      },
+      "OpenChatIn": {
+        "properties": {
+          "task": {
+            "minLength": 1,
+            "title": "Task",
+            "type": "string"
+          },
+          "workspace": {
+            "minLength": 1,
+            "title": "Workspace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace",
+          "task"
+        ],
+        "title": "OpenChatIn",
         "type": "object"
       },
       "OsrBody": {

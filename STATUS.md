@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-08-26  
+**Last updated:** 2026-08-27  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -49,7 +49,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | Local gate green (ruff/mypy/imports/457 pytest/try_changes 36/vitest 28). GitHub Actions ignored. Cortex#11 F40; Cortex#66 do not merge |
+| **This tick** | Vendored OpenAPI 1.2.0 from Cortex main (`08efc36d…`). **#59 FF-03** landed on Cortex (`SqlGateAbstain` str carries violations, #63); DMS tests never pinned the old bare message. Cortex#66 closed unmerged. Cortex#11 F40 remains |
 | **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
 | Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
