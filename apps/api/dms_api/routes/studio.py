@@ -5,12 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
-from dms_api.wiring import batch_ingest, bronze_list, list_document_chunks
+from dms_api.wiring import (
+    batch_ingest,
+    bronze_list,
+    extract_xlsx_result,
+    get_xlsx_artifact,
+    list_document_chunks,
+)
 
 router = APIRouter(prefix="/v1/studio", tags=["studio"])
 
@@ -148,3 +154,55 @@ def list_chunks(
     )
     enforce(decision, mutation=False)
     return list_document_chunks(space_id=space_id)
+
+
+class XlsxExtractBody(BaseModel):
+    workbook_path: str = Field(min_length=1, max_length=2048)
+    space_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/xlsx-extract")
+def extract_xlsx(
+    body: XlsxExtractBody,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """XLSX-ORCH-11 — copy a Copilot-built workbook into Space Docs / artifacts."""
+    _ = settings
+    decision = compliance_gate(
+        action="studio.xlsx_extract",
+        metadata={
+            "task_id": "studio.xlsx_extract",
+            "space_id": body.space_id,
+        },
+        client=cortex,
+    )
+    enforce(decision)
+    try:
+        return extract_xlsx_result(
+            workbook_path=body.workbook_path, space_id=body.space_id
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/artifacts/{artifact_id}")
+def get_extracted_artifact(
+    artifact_id: str,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Later reveal of a durable XLSX-ORCH-11 artifact id."""
+    _ = settings
+    decision = compliance_gate(
+        action="studio.get_artifact",
+        metadata={"task_id": "studio.get_artifact", "artifact_id": artifact_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
+    found = get_xlsx_artifact(artifact_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="artifact_not_found")
+    return found

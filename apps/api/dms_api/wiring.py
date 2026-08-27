@@ -124,6 +124,38 @@ def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None)
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
 
+def extract_xlsx_result(*, workbook_path: str, space_id: str) -> dict[str, Any]:
+    """XLSX-ORCH-11 — byte-faithful copy of a Copilot-built workbook into Docs."""
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    return dms_executor.extract_resulting_xlsx(
+        workbook_path,
+        space_id=space_id,
+        tenant_id=settings.dms_tenant_id,
+        database_url=settings.database_url,
+    )
+
+
+def get_xlsx_artifact(artifact_id: str) -> dict[str, Any] | None:
+    """Later reveal of an XLSX-ORCH-11 artifact by durable id."""
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    found = dms_executor.get_artifact(artifact_id)
+    if found is not None:
+        return found
+    if not settings.database_url:
+        return None
+    from dms_core.control_plane.space_artifacts import get_artifact as pg_get
+
+    return pg_get(
+        settings.database_url,
+        tenant_id=settings.dms_tenant_id,
+        artifact_id=artifact_id,
+    )
+
+
 #: Fields that constitute an ATTESTATION rather than a definition. A caller may say
 #: what a metric is; it may not say that the metric was certified, because saying so
 #: is the certification. Accepting these from a request body is how an unsigned metric

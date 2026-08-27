@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-27 - XLSX-ORCH-11 extract resulting workbook (dms#31)
+
+- Byte-faithful copy of a workbook produced elsewhere into the Space
+  artifact store (`blobs/sha256/...` + `artifacts/{id}.json`). A later
+  `get_artifact(id)` resolves the same path. Hard rule 5 holds: copying
+  bytes is not authoring a workbook (no `to_excel` / openpyxl save /
+  xlsxwriter in packages).
+- Sheet-presence proof runs on the STORED bytes. Missing Cover / OnTime
+  Export / Analysis / Presentation Chart families => `complete=false`,
+  never silently green. Truncated store raises `store_truncated`.
+- Kind is `xlsx_result`, a new additive table `dms.space_artifacts`
+  (0004). Not AirGPT #20 ingested originals.
+- Does not drive Copilot/Pointer. Live input still depends on dms#30.
+
 ## 2026-08-22 - FF-02 polarity guard (E11)
 
 - **#57 FF-02.** A governed metric answered "warehouses that are not cold

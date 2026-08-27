@@ -69,6 +69,7 @@ from dms_executor.warehouse_identity import (
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
+from dms_executor.xlsx_extract import extract_resulting_xlsx, get_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -635,4 +636,6 @@ __all__ = [
     "ingest_warehouse_path",
     "serving_warehouse_path",
     "sync_bronze_to_serving",
+    "extract_resulting_xlsx",
+    "get_artifact",
 ]
