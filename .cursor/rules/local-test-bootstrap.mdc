@@ -1,0 +1,66 @@
+---
+description: Local DMS test bootstrap so agents do not re-hunt wheels or lose pytest logs.
+alwaysApply: true
+---
+
+# Local test bootstrap (DMS)
+
+distill: skill_distill/captures/2026-08-27_cursor_dms-local-ci-bootstrap.md
+
+Before claiming a build is green, run the suite. Do not invent a second runner.
+
+## Bootstrap (this machine)
+
+```
+E:\DMS\.venv\Scripts\python.exe -m pip show cortex-contract
+# must be 1.2.x from a wheel. Not on PyPI. Not pip -e into E:\Cortex.
+# (re)build: python -m build --wheel E:\Cortex\packages\cortex_contract
+#            pip install that .whl
+```
+
+## pytest (Windows)
+
+```
+$env:DMS_SKIP_CONTROL_PLANE_TESTS="1"   # unless hostdb Postgres is up
+$env:DMS_DEMO_FALLBACK="0"
+New-Item -ItemType Directory -Force E:\DMS\.tmp | Out-Null
+E:\DMS\.venv\Scripts\python.exe -m pytest tests -q --tb=short -p no:cacheprovider
+```
+
+Redirect logs to `E:\DMS\.tmp\pytest_full.txt`, never `$TMPDIR/...` (Git Bash
+turns that into `/pytest_full.txt` and dies with Permission denied).
+
+Do **not** pass `--timeout`. `pytest-timeout` is not a dep. Do **not** treat a
+leading `EEEE` block as "the product is broken" until you check Postgres:
+`tests/control_plane` hard-errors without it unless the skip env is set.
+
+Control-plane (needs Docker Desktop + hostdb):
+
+```
+docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.hostdb.yml up -d postgres
+```
+
+Then unset the skip. `conftest.py` drops schema `dms` CASCADE. Never point
+`DATABASE_URL` at real data.
+
+## Stack-free oracles (no API)
+
+```
+python scripts/score_answers.py --docs tests/fixtures/hostile_score --oracle-only
+python scripts/verify_freeform_demo.py --self-check
+```
+
+These are **not** in GitHub CI today (F42 / EPIC-018 CI-ACCURACY). A green
+`pytest tests/` does not prove answer precision.
+
+## Local CI parity (needs Docker)
+
+`bash scripts/ci_local.sh all` -- set `CORTEX_CONTRACT_SRC=E:/Cortex/packages/cortex_contract`
+because the script default is `D:/Cortex/...` and `D:\Cortex` does not exist here.
+
+## Push / merge
+
+GitHub CI already runs ruff, mypy, import-linter, pytest (with the skip).
+Do not skip that by pushing `--no-verify`. Do not add `--timeout` to CI pytest.
+Do not start or close the founder's Docker (R-0015). If Docker is down, say so
+and run the skip-env suite + oracle-only, not a fake full gate.
