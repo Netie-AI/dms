@@ -14,6 +14,8 @@ INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
 badge when executed SQL is GROUP BY and 2+ rows come back.
 INVARIANT-CHANGE: E11 (FF-02) — a negated ask must not keep L1_GOVERNED_METRIC
 when the matched metric's filter asserts the positive of that negation.
+INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
+badge when the matched query returns a grouped ranking.
 """
 
 from __future__ import annotations
@@ -589,6 +591,38 @@ def test_e12_plain_scalar_ask_still_certifies():
     assert env["badge"] == "L1_GOVERNED_METRIC"
     assert env["abstained"] is False
     assert env["values"][0]["value"] == 91
+    assert_envelope_valid(env)
+
+
+def test_e12_ask_path_map_demotes_ranking_for_a_total():
+    """Same constructor path as POST /v1/chat/ask (map_ask_response_to_envelope)."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "FOOD_COLD 67,710,506.66; CHEMICALS 61,894,503.52",
+            "audit_id": "aud_e12",
+            "route": "query_skill",
+            "provenance": {"badge": "query_skill", "layer": "L2"},
+            "sql_used": (
+                "SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr "
+                "FROM inventory GROUP BY category LIMIT 1000"
+            ),
+            "rows": [
+                {"category": "FOOD_COLD", "total_value_myr": 67710506.66},
+                {"category": "CHEMICALS", "total_value_myr": 61894503.52},
+            ],
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="sp_ops",
+        session_id="ses_e12",
+        question="What is total inventory quantity?",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "67,710,506.66" not in env["text"]
     assert_envelope_valid(env)
 
 
