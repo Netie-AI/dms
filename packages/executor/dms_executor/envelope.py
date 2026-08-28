@@ -133,7 +133,9 @@ def competing_category_scopes(
             continue
         classed.append((lab, _workbook_stem(lab), sheet))
     if len(classed) < 2:
-        return []
+        # No label carries a *named* sheet class. Fall back to name shape, which
+        # is what a real customer workbook looks like.
+        return _sheet_siblings(items)
     # Same stem, different sheet class → classic Sales vs Wide_Fill trap.
     by_stem: dict[str, set[str]] = {}
     for _, stem, sheet in classed:
@@ -150,6 +152,50 @@ def competing_category_scopes(
     if len(stems) >= 2:
         return list(dict.fromkeys(lab for lab, _, _ in classed))
     return []
+
+
+def _sheet_siblings(labels: list[str]) -> list[str]:
+    """Labels that are different sheets of the same workbook, by name shape alone.
+
+    The named-class path above only recognises sheets called ``Sales`` or
+    ``Wide_Fill``, because it was built against one fixture family. In production
+    the labels are granted table names (``Executor.live_ask`` passes
+    ``sorted(acl.row_predicates)`` and never plants ``competing_scopes``), so a
+    customer workbook whose sheets are ``Summary`` and ``Detail`` produced no
+    conflict and no demote — the defect class was only ever caught when the
+    customer happened to name a sheet the way the fixture did.
+
+    ``batch_ingest`` names a multi-sheet upload ``<file_stem>_<SheetName>`` with
+    non-alphanumerics collapsed to ``_``, so two labels sharing a leading ``_``
+    token prefix and differing afterwards are two sheets of one workbook. That is
+    ambiguous on its own: the question did not say which sheet, and the engine
+    picked one. No schema knowledge is needed, and nothing outside the label set
+    is consulted — the set is its own evidence.
+
+    Deliberately narrow. The caller still requires multiple ranking totals in the
+    answer and that the ask did not pin the scope, so this widens *which* label
+    shapes can conflict, not when a conflict demotes.
+    """
+    parts: list[tuple[str, list[str]]] = []
+    for lab in labels:
+        toks = [t for t in _bare_label(lab).lower().replace("-", "_").split("_") if t]
+        if len(toks) >= 2:
+            parts.append((lab, toks))
+    if len(parts) < 2:
+        return []
+    out: list[str] = []
+    for i in range(len(parts)):
+        for j in range(i + 1, len(parts)):
+            (lab_a, a), (lab_b, b) = parts[i], parts[j]
+            n = 0
+            while n < len(a) and n < len(b) and a[n] == b[n]:
+                n += 1
+            # A shared workbook stem, and each label still has a distinct sheet
+            # remainder. len("".join) guards against two one-character stems
+            # colliding into a conflict that is really a coincidence.
+            if n >= 1 and len("".join(a[:n])) >= 3 and n < len(a) and n < len(b):
+                out.extend((lab_a, lab_b))
+    return list(dict.fromkeys(out))
 
 
 def _ranking_totals_present(
@@ -306,6 +352,7 @@ _PER_GROUP_ASK = re.compile(
     r"\b(?:for\s+each|per|each)\s+[a-z_]+"
     r"|\bbreakdown\b"
     r"|\bgroup(?:ed)?\s+by\b"
+    r"|\bby\s+[a-z_]+\b"
     r"|\brank\s+[a-z_]+",
     re.I,
 )
