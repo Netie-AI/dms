@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-08-27  
+**Last updated:** 2026-08-28  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -23,7 +23,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Result |
 |----|--------|
 | Demo | `verify_demo_live.py` **31/31** live on a cold stack. Bounds error at ~3/31, not zero (R-0010) |
-| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57 CLOSED) - all asserted on the customer envelope |
+| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104) - all asserted on the customer envelope |
 | **A-0005 CLOSED** (#70) | The ledger actor is resolved server-side. `sign_gold_metric` requires it, with no fallback to caller data, so `/gold/sign` and `/run` both close at the binding (R-0004) |
 | **DR-0004 accepted** (#71) | **Option A** - identity from config, never a request. `x-dms-*` headers are **refused** with 400, not ignored. 7 invariants; 4 go red against a pass-through (R-0007) |
 | Predictive (#67) | A literal-list guard certified 4 forecast asks with historical numbers under `L2_VALIDATED`. Now intent-based. KB **F-0021** |
@@ -38,7 +38,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
 | **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
 | **F70 CLOSED** (#76,#92) | Caller cannot assert certification; after append, `sign_gold_metric` `verify_ledger`s before signed. **F52(b)** hash not entry_id |
-| **#75 CLOSED** | An upload whose serving sync failed reported `ingested=N`. Three states on the receipt |
+| **#75 CLOSED**, ingest P0 (#103) | Three states on the sync receipt. And the `DEMO_TABLES` filter that **silently dropped** a customer table named `transactions` / `inventory` / `alerts` is gone - chat had been answering from the 15-row demo seed under a green badge. Skips are now reported; the copy swaps in a transaction |
 | **F40 DMS half (#66)** | `route=refused` does not ship as `L2_VALIDATED`. Engine half is Cortex#11 |
 | **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
 | **#25 SPACE-UI (#90)** | Runs/Amend send `space_id`; Library/Studio clear on Space switch |
@@ -49,11 +49,11 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | Landed #99 (E9-02, E12, health abort) and #102 (Playwright 10/10 demo stack). Cortex#11 F40 remains |
+| **This tick** | Landed #99 (E9-02, E12, health abort) and #102 (Playwright 10/10). Open and green: **#103** ingest P0, **#104** F32 sheet shape. Local 2026-08-28 **488 passed, 31 skipped** (17m55s). Cortex#11 F40 remains |
 | **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
 | Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | No open product PRs. Closed superseded #97/#98/#101 |
+| CI / PRs | **#103 + #104** open, three jobs green each. Actions runs again. **Parked, do not merge:** `park/f45-space-insights` (F45 STOP), `park/epic-020-source-db-connector` (F36), `feat/xlsx-orch-11-extract` (EPIC-016 parked) |
 
 ## Agent models
 
