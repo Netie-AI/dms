@@ -124,6 +124,20 @@ def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None)
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
 
+def xlsx_orch_crosscheck(
+    pack: dict[str, Any],
+    *,
+    workbook_path: str | None = None,
+) -> dict[str, Any]:
+    """XLSX-ORCH-10 -- governed cross-check. Pointer paste is not executed here."""
+    return dms_executor.crosscheck_airgpt_pack(pack, workbook_path=workbook_path)
+
+
+def xlsx_orch_pointer_receipt(pack_id: str, result_path: str) -> dict[str, Any]:
+    """Pointer-posted resulting path. Extract remains dms#31."""
+    return dms_executor.receive_pointer_result(pack_id, result_path)
+
+
 #: Fields that constitute an ATTESTATION rather than a definition. A caller may say
 #: what a metric is; it may not say that the metric was certified, because saying so
 #: is the certification. Accepting these from a request body is how an unsigned metric

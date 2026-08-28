@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-08-27  
+**Last updated:** 2026-08-28  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -49,7 +49,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | Landed #99 (E9-02, E12, health abort) and #102 (Playwright 10/10 demo stack). Cortex#11 F40 remains |
+| **This tick** | #30 cross-check on `feat/xlsx-orch-10-crosscheck`. #32 golden gate in-repo. Pointer paste still Pointer. |
 | **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
 | Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |

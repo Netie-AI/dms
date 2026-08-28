@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-28 - XLSX-ORCH-10 pack cross-check + XLSX-ORCH-12 golden gate
+
+- **#30.** DMS consumes the AirGPT Copilot prompt pack (AirGPT PR #53 schema),
+  governed-cross-checks it, and emits a Pointer-paste payload. Status stays
+  `awaiting_pointer_receipt`. DMS does not paste, drive Copilot, or treat MCP
+  as primary. HTTP: `POST /v1/studio/xlsx-orch/crosscheck` and
+  `POST /v1/studio/xlsx-orch/pointer-receipt`.
+- **#32.** FRTR golden checker reads Analysis/Export numbers (~300.27 /
+  ~184005 of 200000). MCP-primary and openpyxl-as-primary origins fail.
+  Live Copilot workbook still depends on Pointer paste.
+- Hard rule 5: no workbook authoring in packages. Gates:
+  `tests/test_xlsx_orch.py`, `tests/test_xlsx_orch_http.py`,
+  `tests/test_xlsx_golden.py`.
+
 ## 2026-08-28 - Playwright chrome/chat e2e
 
 - **#102.** Chrome, Chat, Spaces/Studio/Amend smoke against a local demo

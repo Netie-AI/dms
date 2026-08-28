@@ -24,6 +24,7 @@ from dms_api.routes import (
     spaces,
     studio,
     trust,
+    xlsx_orch,
 )
 from dms_api.settings import get_settings
 from dms_api.store.binding import StoreBinding
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(spaces.router)
     app.include_router(chat.router)
     app.include_router(studio.router)
+    app.include_router(xlsx_orch.router)
     app.include_router(pipelines.router)
     app.include_router(amend.router)
     app.include_router(audit.router)

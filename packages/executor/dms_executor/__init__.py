@@ -69,6 +69,8 @@ from dms_executor.warehouse_identity import (
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
+from dms_executor.xlsx_golden import verify_frtr_golden
+from dms_executor.xlsx_orch import crosscheck_airgpt_pack, receive_pointer_result
 
 logger = logging.getLogger(__name__)
 
@@ -635,4 +637,7 @@ __all__ = [
     "ingest_warehouse_path",
     "serving_warehouse_path",
     "sync_bronze_to_serving",
+    "crosscheck_airgpt_pack",
+    "receive_pointer_result",
+    "verify_frtr_golden",
 ]
