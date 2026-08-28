@@ -128,3 +128,75 @@ def test_chat_ask_post_ungrounded_demotes_wide_fill_ranking(
     monkeypatch.delenv("DMS_ASK_MODE", raising=False)
     monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
     settings_mod.get_settings.cache_clear()
+
+
+@dataclass
+class _GroupedTotalCortex:
+    """Engine answers a one-number ask with a category ranking (E12 live miss)."""
+
+    asks: list[AskRequest] = field(default_factory=list)
+
+    def submit(self, req: Any) -> QueryResult:
+        return QueryResult(ok=True, status="bound", run_id="run-e12")
+
+    def ask(self, req: AskRequest) -> AskResponse:
+        self.asks.append(req)
+        return AskResponse(
+            answer="Found 10 row(s).",
+            audit_id="aud_e12_http",
+            route="query_skill",
+            provenance={"badge": "query_skill", "layer": "L2"},
+            sql_used=(
+                "SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr "
+                "FROM inventory GROUP BY category LIMIT 1000"
+            ),
+            rows=[
+                {"category": "FOOD_COLD", "total_value_myr": 67710506.66},
+                {"category": "CHEMICALS", "total_value_myr": 61894503.52},
+            ],
+            drillthrough_token="dt_e12",
+        )
+
+
+def test_chat_ask_post_scalar_ask_does_not_ship_ranking(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /v1/chat/ask — E12: total/quantity ask must not keep a ranking."""
+    from dms_api import settings as settings_mod
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    settings_mod.get_settings.cache_clear()
+
+    cortex = _GroupedTotalCortex()
+    app = create_app()
+    app.state.ask_service = Executor(
+        cortex=cortex,  # type: ignore[arg-type]
+        minter=minter,
+    )
+    app.state.cortex = cortex
+    client = TestClient(app)
+
+    body = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "What is total inventory quantity?",
+            "session_id": "ses_e12",
+        },
+    ).json()
+
+    assert_envelope_valid(body)
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["values"] == []
+    assert body["rows"] == []
+    assert "different question" in body["text"].lower()
+    assert "67710506.66" not in body["text"]
+    assert body["audit_id"] == "aud_e12_http"
+    assert len(cortex.asks) == 1
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.delenv("DMS_ASK_MODE", raising=False)
+    monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
+    settings_mod.get_settings.cache_clear()

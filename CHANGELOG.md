@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-28 - E12 scalar ask vs ranking
+
+- **E12 / ANS-02.** Live ask "What is total inventory quantity?" returned a
+  10-row category ranking under `L2_VALIDATED` (stored query skill). Inverse of
+  E10: a one-number ask with `GROUP BY` and 2+ rows demotes. A true one-row
+  SUM stays certified (R-0005). Folded from #101 without its venv/tmp junk.
+  HTTP `POST /v1/chat/ask` asserted. `INVARIANT-CHANGE` in envelope tests.
+
 ## 2026-08-27 - vendor Cortex OpenAPI 1.2.0 pin
 
 - Copied `contract/openapi-1.2.0.json` + `.sha256` from Cortex origin/main
