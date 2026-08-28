@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-08-28 - Playwright chrome/chat e2e
+
+- **#102.** Chrome, Chat, Spaces/Studio/Amend smoke against a local demo
+  stack (API `:8090` `DMS_ASK_MODE=demo` + UI `:3000`). 10/10 in this VM.
+  Product abort/gate copy already landed in #99; this is the suite only.
+
 ## 2026-08-28 - E12 scalar ask vs ranking
 
 - **E12 / ANS-02.** Live ask "What is total inventory quantity?" returned a
