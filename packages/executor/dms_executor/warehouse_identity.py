@@ -26,13 +26,20 @@ from typing import TypedDict
 import duckdb
 
 from dms_executor.bronze import _ensure_registry
-from dms_executor.demo_warehouse import DEMO_TABLES, warehouse_path
+from dms_executor.demo_warehouse import warehouse_path
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 
 # Always quoted. Ingest stems keep leading digits (15_q3_sales_export_Q3).
 _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
-_PROTECTED = frozenset((*DEMO_TABLES, "meta"))
+# Do NOT reintroduce a DEMO_TABLES filter over bronze. The demo seed lives in the
+# serving file's ``main`` schema and this module only ever writes ``bronze.<name>``,
+# so the two cannot collide. There used to be one, and a customer table named
+# ``transactions`` (or inventory / locations / suppliers / shipments / alerts / meta —
+# names real schemas are full of) was dropped by the sync while the receipt still
+# reported ``copied`` and Studio still listed it. Chat then answered from the 15-row
+# synthetic demo table under a green badge: CLAUDE.md rule 12, exactly.
+# Locked by test_a_customer_table_named_like_a_demo_table_is_not_silently_dropped.
 _WIN_ENGINE = Path(r"D:\Cortex") / "data" / "dms_demo.duckdb"
 
 
@@ -113,8 +120,6 @@ def list_bronze_readonly(path: Path) -> list[BronzeRow]:
         out: list[BronzeRow] = []
         for (raw_name,) in rows:
             name = str(raw_name)
-            if name in _PROTECTED:
-                continue
             n = scalar_int(con.execute(f"SELECT COUNT(*) FROM bronze.{_q(name)}").fetchone())
             out.append({"table": f"bronze.{name}", "row_count": n})
         return out
@@ -154,11 +159,15 @@ class SyncResult:
     ingest: Path
     serving: Path | None
     copied: list[str] = field(default_factory=list)
+    #: Tables the sync deliberately did not copy, with the reason. A skip that is not
+    #: reported is indistinguishable from a table that arrived, which is how a
+    #: customer's `transactions` upload used to disappear behind a green receipt.
+    skipped: list[str] = field(default_factory=list)
     error: str = ""
 
     @property
     def ok(self) -> bool:
-        return self.status in {"same_file", "copied", "nothing_to_copy"}
+        return not self.skipped and self.status in {"same_file", "copied", "nothing_to_copy"}
 
 
 def identity_check(
@@ -197,8 +206,10 @@ def sync_bronze_to_serving(
 ) -> SyncResult:
     """Copy bronze user tables from ingest DuckDB into the serving DuckDB.
 
-    Does not overwrite ``DEMO_TABLES`` / ``meta``. Does not create a missing
-    serving file (that would invent an engine warehouse).
+    Copies every bronze user table, including ones whose name matches a demo table —
+    the demo seed is in ``main``, this writes ``bronze``, so they cannot collide.
+    Does not create a missing serving file (that would invent an engine warehouse).
+    Anything not copied is reported in ``SyncResult.skipped``, never dropped silently.
     """
     src = (ingest or ingest_warehouse_path()).resolve()
     dst_raw = serving if serving is not None else discovered_engine_warehouse()
@@ -221,6 +232,7 @@ def sync_bronze_to_serving(
 
     con = duckdb.connect(str(dst))
     copied: list[str] = []
+    skipped: list[str] = []
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
@@ -237,11 +249,28 @@ def sync_bronze_to_serving(
             ).fetchall()
         ]
         for name in names:
-            if name in _PROTECTED or not _IDENT.match(name):
+            if not _IDENT.match(name):
+                # A skip must never be silent. This used to `continue`, so a table the
+                # customer had successfully ingested simply never arrived and the
+                # receipt still said "ok".
+                skipped.append(f"bronze.{name}: not a bare identifier")
                 continue
             q = _q(name)
-            con.execute(f"DROP TABLE IF EXISTS bronze.{q}")
-            con.execute(f"CREATE TABLE bronze.{q} AS SELECT * FROM ingest_wh.bronze.{q}")
+            # Build beside, then swap inside a transaction. DROP-then-CREATE as two
+            # autocommitted statements leaves a window in which an ask sees no table
+            # at all, and a mid-loop failure leaves the serving file half-applied.
+            stg = _q(f"_sync_{name}")
+            con.execute(f"DROP TABLE IF EXISTS bronze.{stg}")
+            con.execute(f"CREATE TABLE bronze.{stg} AS SELECT * FROM ingest_wh.bronze.{q}")
+            con.execute("BEGIN TRANSACTION")
+            try:
+                con.execute(f"DROP TABLE IF EXISTS bronze.{q}")
+                con.execute(f"ALTER TABLE bronze.{stg} RENAME TO {q}")
+            except Exception:  # noqa: BLE001
+                con.execute("ROLLBACK")
+                con.execute(f"DROP TABLE IF EXISTS bronze.{stg}")
+                raise
+            con.execute("COMMIT")
             copied.append(f"bronze.{name}")
         # Registry rows travel with the tables so serving-side grants/lists agree.
         reg_n = scalar_int(
@@ -271,12 +300,23 @@ def sync_bronze_to_serving(
                 stems,
             )
         if not copied:
-            return SyncResult(status="nothing_to_copy", ingest=src, serving=dst)
-        return SyncResult(status="copied", ingest=src, serving=dst, copied=copied)
+            return SyncResult(
+                status="nothing_to_copy", ingest=src, serving=dst, skipped=skipped
+            )
+        return SyncResult(
+            status="copied", ingest=src, serving=dst, copied=copied, skipped=skipped
+        )
     except Exception as exc:  # noqa: BLE001 — lock / attach must not crash ingest
         err = str(exc)
         status = "locked" if "lock" in err.lower() else "error"
-        return SyncResult(status=status, ingest=src, serving=dst, copied=copied, error=err[:300])
+        return SyncResult(
+            status=status,
+            ingest=src,
+            serving=dst,
+            copied=copied,
+            skipped=skipped,
+            error=err[:300],
+        )
     finally:
         con.close()
 
