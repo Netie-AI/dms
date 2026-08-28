@@ -49,11 +49,11 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | E9-02 ungrounded Wide_Fill + E12 scalar-vs-ranking + health abort. Main has OpenAPI pin. Cortex#11 F40 remains |
+| **This tick** | Landed #99 (E9-02 ungrounded, E12, health abort). OpenAPI pin on main. Cortex#11 F40 remains |
 | **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
 | Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | #99 this (on main+#100). Close #98 and #101 as superseded. #97 Playwright still draft |
+| CI / PRs | Open: #102 Playwright e2e (draft). Closed superseded #97/#98/#101 |
 
 ## Agent models
 
