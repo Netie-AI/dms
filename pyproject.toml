@@ -34,6 +34,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Live source-database drivers for dms_executor.db_connector. Optional because
+# the connector imports them lazily and its tests run against a fake DB-API
+# connection — CI needs neither driver, a deployment that reads a real source
+# needs the one matching its source. pyodbc additionally needs the system
+# msodbcsql18 driver; the legacy Windows "SQL Server" driver cannot reach
+# Azure SQL, which requires TLS 1.2.
+sources = [
+  "pyodbc>=5.1",
+  "PyMySQL>=1.1",
+]
 dev = [
   "pytest>=8.0",
   "mypy>=1.8",
