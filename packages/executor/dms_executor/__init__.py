@@ -314,6 +314,13 @@ class Executor:
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
+        from dms_executor.space_insights import maybe_grain_insights
+
+        insights = maybe_grain_insights(
+            question, space_id=space_id, session_id=session_id
+        )
+        if insights is not None:
+            return insights
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
