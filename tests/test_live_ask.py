@@ -217,6 +217,46 @@ def _ask(client) -> Any:
     )
 
 
+def test_e12_http_ask_demotes_ranking_for_a_total(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /v1/chat/ask: one-number ask, grouped ranking back -> ABSTAIN (E12)."""
+    fake = FakeCortex(
+        submits=[],
+        asks=[],
+        ask_response=AskResponse(
+            answer="FOOD_COLD 67,710,506.66; CHEMICALS 61,894,503.52",
+            badge="query_skill",
+            sql_used=(
+                "SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr "
+                "FROM inventory GROUP BY category LIMIT 1000"
+            ),
+            rows=[
+                {"category": "FOOD_COLD", "total_value_myr": 67710506.66},
+                {"category": "CHEMICALS", "total_value_myr": 61894503.52},
+            ],
+            audit_id="aud_e12_http",
+            route="query_skill",
+        ),
+    )
+    client = _live_client(minter, monkeypatch, fake)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "What is total inventory quantity?",
+            "space_id": "sp_q3_audit",
+            "session_id": "ses_e12",
+        },
+    )
+    assert r.status_code == 200
+    env = r.json()
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "67,710,506.66" not in (env.get("text") or "")
+
+
 def test_a_submit_timeout_is_not_reported_as_forbidden(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:

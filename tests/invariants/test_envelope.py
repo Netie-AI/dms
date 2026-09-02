@@ -14,6 +14,8 @@ INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
 badge when executed SQL is GROUP BY and 2+ rows come back.
 INVARIANT-CHANGE: E11 (FF-02) — a negated ask must not keep L1_GOVERNED_METRIC
 when the matched metric's filter asserts the positive of that negation.
+INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
+badge when the matched query returns a grouped ranking.
 """
 
 from __future__ import annotations
@@ -592,6 +594,65 @@ def test_e12_plain_scalar_ask_still_certifies():
     assert_envelope_valid(env)
 
 
+def test_e12_total_by_category_keeps_ranking():
+    """A total that names the group is a breakdown ask, not ANS-02."""
+    env = build_answer_envelope(
+        answer_id="ans_e12_by",
+        text="FOOD_COLD 67,710,506.66; CHEMICALS 61,894,503.52",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[
+            {"id": "v0", "value": 67710506.66, "label": "FOOD_COLD"},
+            {"id": "v1", "value": 61894503.52, "label": "CHEMICALS"},
+        ],
+        sql_used=(
+            "SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr "
+            "FROM inventory GROUP BY category LIMIT 1000"
+        ),
+        rows=[
+            {"category": "FOOD_COLD", "total_value_myr": 67710506.66},
+            {"category": "CHEMICALS", "total_value_myr": 61894503.52},
+        ],
+        question="What is total stock value by category?",
+    )
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert env["rows"]
+    assert_envelope_valid(env)
+
+
+def test_e12_ask_path_map_demotes_ranking_for_a_total():
+    """Same constructor path as POST /v1/chat/ask (map_ask_response_to_envelope)."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "FOOD_COLD 67,710,506.66; CHEMICALS 61,894,503.52",
+            "audit_id": "aud_e12",
+            "route": "query_skill",
+            "provenance": {"badge": "query_skill", "layer": "L2"},
+            "sql_used": (
+                "SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr "
+                "FROM inventory GROUP BY category LIMIT 1000"
+            ),
+            "rows": [
+                {"category": "FOOD_COLD", "total_value_myr": 67710506.66},
+                {"category": "CHEMICALS", "total_value_myr": 61894503.52},
+            ],
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="sp_ops",
+        session_id="ses_e12",
+        question="What is total inventory quantity?",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "67,710,506.66" not in env["text"]
+    assert_envelope_valid(env)
+
+
 def test_e10_grouped_ask_with_a_real_breakdown_certifies():
     """The happy path the demo needs: asked for three, given three."""
     env = build_answer_envelope(
@@ -852,3 +913,105 @@ def test_e11_single_shared_word_does_not_launder_an_unrelated_column():
 
     assert env["badge"] == "L1_GOVERNED_METRIC"
     assert env["abstained"] is False
+
+
+#: What a real customer upload looks like: one workbook, two sheets, neither
+#: named the way the original F32 fixture family was.
+_F32_REAL_WORKBOOK = [
+    "bronze.q3_regional_report_Summary",
+    "bronze.q3_regional_report_Detail",
+]
+
+
+def test_f32_demotes_on_a_customer_workbook_whose_sheets_are_not_named_sales():
+    """F32 must fire on sheet shape, not on the fixture's sheet names.
+
+    The named-class path only recognised ``Sales`` and ``Wide_Fill``. Production
+    never plants ``competing_scopes`` — ``Executor.live_ask`` passes
+    ``sorted(acl.row_predicates)`` as ``grounded_tables`` — so a workbook with
+    sheets ``Summary`` and ``Detail`` produced no conflict, and an ask that did
+    not pin the sheet shipped one sheet's ranking under a green badge while the
+    other sheet held different numbers. Nothing downstream could catch it.
+
+    Note this fixture passes NO ``competing_scopes``: it exercises the derivation
+    path that every other F32 test plants around.
+    """
+    home, sports, misc = _WIDE_FILL_CLASS
+    env = build_answer_envelope(
+        answer_id="a_f32_real",
+        text=(
+            f"Top 3 category sales are Home {home:,.2f} MYR, "
+            f"Sports {sports:,.2f} MYR and Misc {misc:,.2f} MYR."
+        ),
+        badge="L2_VALIDATED",
+        values=[
+            {"id": "v0", "value": home, "label": "sales_value_myr"},
+            {"id": "v1", "value": sports, "label": "sales_value_myr"},
+            {"id": "v2", "value": misc, "label": "sales_value_myr"},
+        ],
+        sql_used=(
+            "SELECT category, SUM(sales_value_myr) AS sales_value_myr "
+            "FROM bronze.q3_regional_report_Detail "
+            "GROUP BY category ORDER BY 2 DESC LIMIT 3"
+        ),
+        rows=[
+            {"category": "Home", "sales_value_myr": home},
+            {"category": "Sports", "sales_value_myr": sports},
+            {"category": "Misc", "sales_value_myr": misc},
+        ],
+        question="show top 3 category sales",
+        grounded_tables=_F32_REAL_WORKBOOK,
+        ask_mode="live",
+    )
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert "scope conflict" in env["text"].lower()
+    for n in ("383,803.56", "242,755.97", "228,548.84"):
+        assert n not in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_f32_does_not_demote_a_legitimate_multi_table_grant():
+    """The widened shape rule must not turn ordinary Space grants into abstains.
+
+    A demo Space grants six unrelated single-token tables. They share no stem, so
+    they are not alternate scopes for the same thing and a ranking over them must
+    stay certified. This is the false-positive guard on the change above.
+    """
+    home, sports, misc = _WIDE_FILL_CLASS
+    env = build_answer_envelope(
+        answer_id="a_f32_ok",
+        text=(
+            f"Top 3 category sales are Home {home:,.2f} MYR, "
+            f"Sports {sports:,.2f} MYR and Misc {misc:,.2f} MYR."
+        ),
+        badge="L2_VALIDATED",
+        values=[
+            {"id": "v0", "value": home, "label": "sales_value_myr"},
+            {"id": "v1", "value": sports, "label": "sales_value_myr"},
+            {"id": "v2", "value": misc, "label": "sales_value_myr"},
+        ],
+        sql_used=(
+            "SELECT category, SUM(sales_value_myr) AS sales_value_myr "
+            "FROM transactions GROUP BY category ORDER BY 2 DESC LIMIT 3"
+        ),
+        rows=[
+            {"category": "Home", "sales_value_myr": home},
+            {"category": "Sports", "sales_value_myr": sports},
+            {"category": "Misc", "sales_value_myr": misc},
+        ],
+        question="show top 3 category sales",
+        grounded_tables=[
+            "alerts",
+            "inventory",
+            "locations",
+            "shipments",
+            "suppliers",
+            "transactions",
+        ],
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert "383,803.56" in env["text"]
+    assert_envelope_valid(env)
