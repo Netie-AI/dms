@@ -146,3 +146,51 @@ def test_check_script_exits_1_when_paths_diverge(pair: tuple[Path, Path]) -> Non
 
     again = subprocess.run(cmd, check=False, capture_output=True, text=True)
     assert again.returncode == 0, again.stdout + again.stderr
+
+
+@pytest.mark.parametrize("name", sorted((*DEMO_TABLES, "meta")))
+def test_a_customer_table_named_like_a_demo_table_is_not_silently_dropped(
+    pair: tuple[Path, Path], name: str
+) -> None:
+    """The P0 this file exists to prevent, in its most likely real-world shape.
+
+    ``transactions``, ``inventory``, ``locations``, ``suppliers``, ``shipments``,
+    ``alerts`` and ``meta`` are names real customer schemas are full of. The sync
+    used to skip exactly those, silently: ingest reported ``ingested=3``, the sync
+    reported ``copied``, ``identity_check`` reported aligned, and the table was
+    absent from the file chat reads. Chat then answered from the 15-row synthetic
+    demo table in ``main`` under a green badge — a plausible number that no
+    downstream check can catch.
+
+    The demo seed is in ``main``; the sync writes ``bronze``. They cannot collide.
+    """
+    ingest, serving = pair
+    csv = b"txn_id,amount_myr\nT1,1000000\nT2,2500000\nT3,4000000\n"
+    receipt = ingest_batch([(f"{name}.csv", csv)], path=ingest)
+    assert receipt.ingested == 1
+    table = receipt.files[0].table
+    assert table == f"bronze.{name}"
+
+    # It must be listed on the ingest side — Studio shows what it lists.
+    assert table in {t["table"] for t in list_bronze_readonly(ingest)}
+
+    result = sync_bronze_to_serving(ingest=ingest, serving=serving)
+    assert result.skipped == [], f"a skip must never be silent: {result.skipped}"
+    assert result.ok
+    assert table in result.copied
+
+    # The rows chat reads are the customer's three, not the demo seed's.
+    assert bronze_missing_from_serving(ingest, serving) == []
+    con = duckdb.connect(str(serving), read_only=True)
+    try:
+        assert int(con.execute(f'SELECT COUNT(*) FROM bronze."{name}"').fetchone()[0]) == 3
+        assert int(
+            con.execute(f'SELECT SUM(CAST(amount_myr AS BIGINT)) FROM bronze."{name}"').fetchone()[
+                0
+            ]
+        ) == 7_500_000
+        # The demo seed in main is untouched — that is why the filter was wrong.
+        if name in DEMO_TABLES:
+            assert int(con.execute(f'SELECT COUNT(*) FROM main."{name}"').fetchone()[0]) > 0
+    finally:
+        con.close()

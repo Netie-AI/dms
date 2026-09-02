@@ -68,6 +68,7 @@ python -m venv .venv
 # Real contract wheel first (P-DMS-25) — never rely on netie.pth / editable Cortex tree
 powershell -NoProfile -File D:\Cortex\scripts\windows\Build-CortexContractWheel.ps1
 pip install D:\Cortex\packages\cortex_contract\dist\cortex_contract-1.2.0-py3-none-any.whl
+# This laptop: E:\DMS and E:\Cortex. pytest: $env:DMS_SKIP_CONTROL_PLANE_TESTS="1" unless hostdb is up. No --timeout. Log under .tmp\ not $TMPDIR.
 
 pip install -e ./packages/core -e ./packages/cortex_client -e ./packages/executor -e ./packages/ledger
 pip install -e ".[dev]"

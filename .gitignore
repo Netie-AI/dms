@@ -1,6 +1,10 @@
 .env
-.venv/
+# .venv* not .venv: an audit venv named .venv_audit slipped past the exact
+# match and put pip.exe plus 3,237 lines of vendored licences on a branch.
+.venv*/
 venv/
+# Local pytest / scratch output. Never a release artifact, never reviewable.
+.tmp/
 __pycache__/
 *.pyc
 node_modules/
