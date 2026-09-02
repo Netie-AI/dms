@@ -124,6 +124,50 @@ def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None)
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
 
+def xlsx_orch_crosscheck(
+    pack: dict[str, Any],
+    *,
+    workbook_path: str = "",
+    pack_id: str | None = None,
+) -> dict[str, Any]:
+    from dms_executor.xlsx_orch import run_crosscheck
+
+    return run_crosscheck(pack, workbook_path=workbook_path, pack_id=pack_id)
+
+
+def xlsx_orch_extract(
+    *,
+    pack_id: str,
+    space_id: str,
+    producer: str,
+    result_path: str = "",
+    filename: str = "",
+    data: bytes | None = None,
+) -> dict[str, Any]:
+    from dms_executor.xlsx_orch import run_extract
+
+    return run_extract(
+        pack_id=pack_id,
+        space_id=space_id,
+        producer=producer,
+        result_path=result_path,
+        filename=filename,
+        data=data,
+    )
+
+
+def xlsx_orch_golden(
+    *,
+    pack_id: str = "",
+    space_id: str = "",
+    path: str = "",
+    producer: str | None = None,
+) -> dict[str, Any]:
+    from dms_executor.xlsx_orch import run_golden
+
+    return run_golden(pack_id=pack_id, space_id=space_id, path=path, producer=producer)
+
+
 #: Fields that constitute an ATTESTATION rather than a definition. A caller may say
 #: what a metric is; it may not say that the metric was certified, because saying so
 #: is the certification. Accepting these from a request body is how an unsigned metric

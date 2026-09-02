@@ -2,6 +2,101 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - Trust ask-path + Share fallback + viz CSV lock
+
+- **Live reconfirm.** Hostile `score_answers` after API restart: precision
+  100.00 pct (10/10), coverage 71.43 pct (10/14), 0 WRONG. Curated same
+  10/14. Trust `/v1/trust/summary` attaches both packs and keeps Cortex
+  `claim.supported` false (eval 404). Cream Ask still has Trust; Operate
+  keeps Studio.
+- **Share.** `copyText` falls back to `execCommand` when Clipboard API is
+  denied. Spaces shows Copied / Copy failed per Space.
+- **Viz bakeoff.** Envelope locked to certified sales01 CSV (Electronics /
+  Home / Sports). Pointer channel fails closed if that CSV drifts.
+
+## 2026-09-03 - hostile coverage 71 pct + grouped accuracy-check
+
+- **Hostile two waves.** Named-sheet bronze intercept now does exact filters
+  (`SKU-BETA` / `Kuala Lumpur` L0; `BETA` / `KL` hard-rule-12 abstain) and
+  `TRY_CAST` so VARCHAR ingest still sums. Live Finance pack: wave 71.43 pct
+  (10/14) then 64.29 pct (9/14 under lock), serial confirm 71.43 pct.
+  Precision-on-answered 100.00 pct, 0 WRONG. RAG / F32 / encoding traps stay
+  abstain. Do not start EPIC-022 while EPIC-017 is open.
+- **CEO Check accuracy.** Grouped spend no longer treats the first country as
+  a grand total. Browser: Match, 4 grouped values = row sum.
+- **Trust.** Filters must use stored encoding (SKU-BETA, not BETA).
+
+## 2026-09-03 - EPIC-016 DMS pack cross-check / extract / golden
+
+- **#30 DMS half.** `POST /v1/studio/xlsx-orch/crosscheck` consumes the AirGPT
+  D04 pack, schema-checks the source xlsx (OnTime + cost, refuse Summary
+  theater), strengthens the pack, returns `awaiting_pointer_receipt`. Does not
+  paste into Excel Copilot.
+- **#31 DMS half.** `POST /v1/studio/xlsx-orch/extract` stores a Pointer-posted
+  result xlsx byte-faithful under `space_docs/`. No path -> named
+  `awaiting_pointer_receipt`. MCP/openpyxl producer refused.
+- **#32 gate.** `POST /v1/studio/xlsx-orch/golden` asserts avg ~300.27 and
+  ~184005/200000 on Analysis/Export, and fails when Export row count disagrees
+  (theater trap). Live Copilot workbook still owed by Pointer.
+- **Gate:** `tests/test_xlsx_orch.py` (11 passed). Pointer paste -> P-DMS-36.
+
+## 2026-09-03 - bronze sync + Constructor Space routing
+
+- **Hostile live after serving sync.** Cortex was down; `sync_bronze_to_serving.py`
+  copied bronze (including hostile sheets) into `E:\Cortex\data\dms_demo.duckdb`.
+  `score_answers --space Finance`: precision-on-answered 100.00 pct (6/6),
+  coverage 54.55 pct (6/11), 0 WRONG. Five abstains are the traps (RAG, BETA,
+  KL, F32 categoty, blank-band ungrantable). Added `sales01_widefill_top3`.
+- **Constructor `--ask` routes by grant.** Shipments ask Warehouse Ops, alerts
+  stay ungranted. Live: 5/5 grantable objects L0. Does not compile ontology.py.
+- **Curated CEO pack.** 10/14 L0 including Ops shipment cost; 4 traps abstain;
+  0 WRONG. Trust blurb: suggested asks are the walkthrough; a green typo is a fail.
+
+## 2026-08-28 - F73 three accuracy/surface/delivery agents
+
+- **Genie walkthrough analog.** `scripts/score_curated.py --live`: 9/13 L0
+  certified hits, 4 traps abstain, precision-on-answered 100.00 pct, 0 WRONG.
+  Constructor `--ask` maps catalog objects to those questions (4/6 L0;
+  shipments + alerts abstain). Excel last-mile: `.tmp/curated_spend.xlsx`
+  BarClustered matches Finance spend envelope (Malaysia longest).
+- **Ask-mode dead links.** Cream Chat no longer points at Studio/Ontology/Audit;
+  `ceoSafeHref` sends the CEO to Library or Trust.
+- **Constructor ingest plan.** Catalog HTTP -> table list CSV
+  (`bronze.constructor_objects`, 6 objects). `--ingest` posts to Studio.
+  Does not import or compile `scripts/ontology.py`. Foundry dumps refused.
+  Serving sync still locked while Cortex holds DuckDB.
+- **CEO Library ground.** Ask mode has no Studio. Library preview now has
+  **Ask about this table** (same Chat state as Studio). Cream hides Studio
+  ingest links. Empty-state asks include live-curated spend-by-country.
+- **Grounded Excel scope.** `live_ask` prefixes `Using only <bronze table>:`
+  because contract AskRequest has no tables field. Manifest still refuses
+  `FROM transactions`. Hostile score now grounds each workbook; 403
+  `grounding_not_grantable` scores as abstain, not WRONG.
+- **E12 over-abstain.** `total spend by country` is a grouped ask. `_PER_GROUP_ASK`
+  now includes `by <token>` so E12 does not demote certified `GROUP BY` queries
+  that match the question. Live: Finance spend `L0_CERTIFIED` 4 rows; Ops still
+  abstains (`suppliers` not in manifest). Stock-by-category answers in both
+  Spaces. `pytest` mapping/live/envelope/space-boundary: 66 passed.
+- **Hostile live.** After uvicorn restart (stale process had no xlsx demote):
+  `score_answers` PASS 0 WRONG, coverage 0/11. BETA `.xlsx` ask abstains instead
+  of shipping 80M demo outbound revenue.
+- **F73.** Founder `/goal` + `/create-subagent` routed to existing Wave 7
+  (017/018/019), EPIC-016 last-mile, EPIC-003 mock honesty. No new epic.
+  Project agents: `.cursor/agents/dms-accuracy.md`, `dms-surface.md`,
+  `dms-delivery.md`.
+- **F40 repro honesty.** `scripts/repro_refused_badge.py` LINK 2 now uses
+  `map_ask_response_to_envelope` (the ask path). The old P0 used
+  `build_answer_envelope` with no route and inverted abstain logic.
+- **Product modes.** Cream = Ask (CEO nav: Chat, Spaces, Library, Trust;
+  Claude-white). Graphite = Operate (full appliance). Dead search and
+  `aminah@` stub removed. CEO empty-state asks include a typo trap.
+- **Constructor source.** `scripts/constructor_source.py` stages GET
+  `/cortex/constructor/ontology` (fixture when Cortex is down). Foundry
+  CLI dumps refused. Does not import CortexOS or compile `ontology.py`.
+- **Browser.** Ask mode: CEO nav (C/Sp/L/T) + "Ask your company's data".
+  Operate mode: Studio/Ontology/Amend/Audit/Runs + role switcher.
+- **Excel last mile.** `.tmp/viz_envelope.xlsx` BarClustered `Top3` from
+  Sales oracle Electronics=1545366.4 / Home=1199018.49 / Misc=380948.33.
 ## 2026-08-28 - Playwright chrome/chat e2e
 
 - **#102.** Chrome, Chat, Spaces/Studio/Amend smoke against a local demo

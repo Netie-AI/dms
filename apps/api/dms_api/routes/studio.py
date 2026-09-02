@@ -10,7 +10,14 @@ from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
-from dms_api.wiring import batch_ingest, bronze_list, list_document_chunks
+from dms_api.wiring import (
+    batch_ingest,
+    bronze_list,
+    list_document_chunks,
+    xlsx_orch_crosscheck,
+    xlsx_orch_extract,
+    xlsx_orch_golden,
+)
 
 router = APIRouter(prefix="/v1/studio", tags=["studio"])
 
@@ -148,3 +155,77 @@ def list_chunks(
     )
     enforce(decision, mutation=False)
     return list_document_chunks(space_id=space_id)
+
+
+class XlsxOrchCrosscheckIn(BaseModel):
+    pack: dict[str, Any]
+    workbook_path: str = ""
+    pack_id: str | None = None
+
+
+class XlsxOrchExtractIn(BaseModel):
+    pack_id: str
+    space_id: str | None = None
+    producer: str = "pointer_copilot"
+    result_path: str = ""
+
+
+class XlsxOrchGoldenIn(BaseModel):
+    pack_id: str = ""
+    space_id: str | None = None
+    path: str = ""
+    producer: str | None = None
+
+
+@router.post("/xlsx-orch/crosscheck")
+def xlsx_orch_crosscheck_route(body: XlsxOrchCrosscheckIn, cortex: CortexDep) -> dict[str, Any]:
+    """AirGPT D04 POSTs a candidate pack here. DMS does not paste into Excel."""
+    decision = compliance_gate(
+        action="studio.xlsx_orch.crosscheck",
+        metadata={"task_id": "studio.xlsx_orch.crosscheck"},
+        client=cortex,
+    )
+    enforce(decision)
+    return xlsx_orch_crosscheck(
+        body.pack,
+        workbook_path=body.workbook_path,
+        pack_id=body.pack_id,
+    )
+
+
+@router.post("/xlsx-orch/extract")
+def xlsx_orch_extract_route(body: XlsxOrchExtractIn, cortex: CortexDep) -> dict[str, Any]:
+    """Store a Pointer-posted result xlsx. DMS does not generate the workbook."""
+    decision = compliance_gate(
+        action="studio.xlsx_orch.extract",
+        metadata={
+            "task_id": "studio.xlsx_orch.extract",
+            "pack_id": body.pack_id,
+            "space_id": body.space_id or "company-default",
+        },
+        client=cortex,
+    )
+    enforce(decision)
+    return xlsx_orch_extract(
+        pack_id=body.pack_id,
+        space_id=body.space_id or "company-default",
+        producer=body.producer,
+        result_path=body.result_path,
+    )
+
+
+@router.post("/xlsx-orch/golden")
+def xlsx_orch_golden_route(body: XlsxOrchGoldenIn, cortex: CortexDep) -> dict[str, Any]:
+    """FRTR golden on a stored Copilot-path artifact. Refuses MCP/openpyxl producer."""
+    decision = compliance_gate(
+        action="studio.xlsx_orch.golden",
+        metadata={"task_id": "studio.xlsx_orch.golden", "pack_id": body.pack_id},
+        client=cortex,
+    )
+    enforce(decision)
+    return xlsx_orch_golden(
+        pack_id=body.pack_id,
+        space_id=body.space_id or "company-default",
+        path=body.path,
+        producer=body.producer,
+    )

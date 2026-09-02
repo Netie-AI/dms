@@ -10,7 +10,14 @@ import {
   StatTile,
 } from "@/components/PageShell";
 import { useApp } from "@/context/AppContext";
+import {
+  MOCK_STOCK_ASK,
+  MOCK_WAREHOUSE_OPS_ID,
+  shareSpacePayload,
+} from "@/lib/answerDelivery";
 import { createSpace, fetchSpaceSources } from "@/lib/api";
+import { copyText } from "@/lib/copilotPrompts";
+import { ceoSafeHref } from "@/lib/productMode";
 import type { LibrarySource } from "@/lib/types";
 
 /**
@@ -28,6 +35,8 @@ export function SpacesPage() {
     databaseConfigured,
     spacesPersisted,
     spacesStorageHint,
+    productMode,
+    ask,
   } = useApp();
   const navigate = useNavigate();
   const [spaceSources, setSpaceSources] = useState<Record<string, LibrarySource[]>>({});
@@ -37,6 +46,7 @@ export function SpacesPage() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [shareFlash, setShareFlash] = useState<string | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -81,14 +91,18 @@ export function SpacesPage() {
       <PageHeader
         phase="T3 · scope"
         title="Spaces"
-        blurb="A Space is a sandbox of sources. Asking inside one is the difference between “the AI can see everything” and a scope a steward can point at. Attach sources in Studio; the scope chip above the composer always reports the Space in force."
+        blurb={
+          productMode === "cream"
+            ? "A Space is what a question can see. Share one, open the Warehouse Ops mock, then ask in Chat — badge, rows, and CSV come back without Studio jargon."
+            : "A Space is a sandbox of sources. Asking inside one is the difference between “the AI can see everything” and a scope a steward can point at. Attach sources in Studio; the scope chip above the composer always reports the Space in force."
+        }
         actions={
           <button
             type="button"
-            onClick={() => navigate("/studio")}
+            onClick={() => navigate(ceoSafeHref(productMode, "/studio"))}
             className="h-9 border border-[var(--color-line)] px-3 text-sm hover:border-[var(--color-accent)]"
           >
-            Attach a source
+            {productMode === "cream" ? "Open Library" : "Attach a source"}
           </button>
         }
       />
@@ -206,6 +220,36 @@ export function SpacesPage() {
                       >
                         {active ? "In scope" : "Ask in this Space"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void copyText(shareSpacePayload(space)).then((ok) => {
+                            setShareFlash(ok ? space.id : `fail:${space.id}`);
+                            window.setTimeout(() => setShareFlash(null), 1600);
+                          });
+                        }}
+                        className="border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+                      >
+                        {shareFlash === space.id
+                          ? "Copied"
+                          : shareFlash === `fail:${space.id}`
+                            ? "Copy failed"
+                            : "Share Space"}
+                      </button>
+                      {space.id === MOCK_WAREHOUSE_OPS_ID && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveSpaceId(space.id);
+                            navigate("/");
+                            void ask(MOCK_STOCK_ASK);
+                          }}
+                          className="border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+                          title={MOCK_STOCK_ASK}
+                        >
+                          Mock stock ask
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {

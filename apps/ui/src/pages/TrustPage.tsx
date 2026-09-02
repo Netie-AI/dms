@@ -272,7 +272,7 @@ export function TrustPage() {
       <PageHeader
         phase="Assurance · engine benchmarks"
         title="Trust"
-        blurb="Invariant 12 says a green badge on a wrong number is a P0. This page is where you check that instead of taking it: how many questions were scored, how many came back wrong, and whether the claim is currently backed by enough evidence to make."
+        blurb="Invariant 12 says a green badge on a wrong number is a P0. This page is where you check that instead of taking it: how many questions were scored, how many came back wrong, and whether the claim is currently backed by enough evidence to make. Chat suggested asks are the certified walkthrough a CEO can click; a typo trap that stays green is a fail. Filters must use the stored encoding (SKU-BETA, not BETA). Coverage (questions answered) never buys a wrong number. We do not invent an accuracy percent here."
         actions={
           <button
             type="button"
@@ -290,6 +290,39 @@ export function TrustPage() {
           title="Evidence unavailable — Cortex did not answer"
           hint={data.hint ?? "Start the engine on :8010, then Refresh."}
         />
+      )}
+
+      {!!data?.ask_path?.length && (
+        <Section title="DMS ask-path (this app, not the Cortex corpus)">
+          <p className="mb-3 text-sm text-[var(--color-ink-muted)]">
+            Live <code className="font-mono">score_answers</code> /{" "}
+            <code className="font-mono">score_curated</code> against POST /v1/chat/ask.
+            Precision-on-answered is the law. Coverage never buys a WRONG. This does not
+            substitute for the Cortex claim above.
+          </p>
+          <ul className="space-y-2">
+            {data.ask_path.map((row) => (
+              <li
+                key={row.pack}
+                className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-3.5 py-3 text-sm"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-medium">{row.pack}</p>
+                  <Pill tone={row.wrong === 0 && row.passed ? "ok" : "danger"}>
+                    {row.wrong === 0 ? "0 WRONG" : `${row.wrong} WRONG`}
+                  </Pill>
+                  <Pill>
+                    precision {row.precision_on_answered.toFixed(2)}% ({row.correct}/
+                    {row.answered})
+                  </Pill>
+                  <Pill>
+                    coverage {row.coverage_pct.toFixed(1)}% ({row.answered}/{row.total})
+                  </Pill>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Section>
       )}
 
       <AsyncBoundary loading={loading} error={error} onRetry={reload}>

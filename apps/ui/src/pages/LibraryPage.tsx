@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { useApp } from "@/context/AppContext";
 import {
@@ -121,7 +121,8 @@ function TreeRows({
 }
 
 export function LibraryPage() {
-  const { databaseConfigured, activeSpaceId, activeSpace } = useApp();
+  const { databaseConfigured, activeSpaceId, activeSpace, productMode } = useApp();
+  const navigate = useNavigate();
   const [tree, setTree] = useState<LibraryTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -275,10 +276,17 @@ export function LibraryPage() {
             )}
             {!loading && filteredNodes.length === 0 && (
               <p className="px-3 py-3 text-xs text-[var(--color-ink-muted)]">
-                No nodes —{" "}
-                <Link to="/studio" className="text-[var(--color-accent)] hover:underline">
-                  ingest in Studio
-                </Link>
+                No nodes
+                {productMode === "cream" ? (
+                  " — switch to Operate in the top bar to ingest files."
+                ) : (
+                  <>
+                    {" — "}
+                    <Link to="/studio" className="text-[var(--color-accent)] hover:underline">
+                      ingest in Studio
+                    </Link>
+                  </>
+                )}
               </p>
             )}
             {!loading && (
@@ -320,12 +328,18 @@ export function LibraryPage() {
                   <dd className="inline break-all font-mono">{metaField(active.meta, "ref")}</dd>
                 </div>
               </dl>
-              <Link
-                to="/studio"
-                className="mt-4 inline-block text-sm text-[var(--color-accent)] hover:underline"
-              >
-                Open Studio to ingest →
-              </Link>
+              {productMode === "graphite" ? (
+                <Link
+                  to="/studio"
+                  className="mt-4 inline-block text-sm text-[var(--color-accent)] hover:underline"
+                >
+                  Open Studio to ingest →
+                </Link>
+              ) : (
+                <p className="mt-4 text-sm text-[var(--color-ink-muted)]">
+                  Switch to Operate to ingest this file.
+                </p>
+              )}
             </div>
           )}
           {previewBusy && (
@@ -336,10 +350,26 @@ export function LibraryPage() {
             <>
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-lg font-semibold text-[var(--color-ink)]">{preview.table}</h2>
-                <p className="text-xs text-[var(--color-ink-muted)]">
-                  {preview.row_count.toLocaleString()} rows · {preview.columns.length} columns
-                  {preview.kind === "bronze" ? " · bronze" : ""}
-                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <p className="text-xs text-[var(--color-ink-muted)]">
+                    {preview.row_count.toLocaleString()} rows · {preview.columns.length} columns
+                    {preview.kind === "bronze" ? " · bronze" : ""}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigate("/", {
+                        state: {
+                          groundedTables: [preview.table],
+                          groundedLabels: [preview.table],
+                        },
+                      })
+                    }
+                    className="border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+                  >
+                    Ask about this table
+                  </button>
+                </div>
               </div>
               {preview.note && (
                 <p className="mb-3 text-xs text-[var(--color-ink-muted)]">{preview.note}</p>

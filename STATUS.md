@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-08-28  
+**Last updated:** 2026-09-03  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -23,14 +23,14 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Result |
 |----|--------|
 | Demo | `verify_demo_live.py` **31/31** live on a cold stack. Bounds error at ~3/31, not zero (R-0010) |
-| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104) - all asserted on the customer envelope |
+| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104) - all asserted on the customer envelope. E12 does not treat `total ... by <dim>` as one-number (live Finance spend was eating cq_spend_by_country) |
 | **A-0005 CLOSED** (#70) | The ledger actor is resolved server-side. `sign_gold_metric` requires it, with no fallback to caller data, so `/gold/sign` and `/run` both close at the binding (R-0004) |
 | **DR-0004 accepted** (#71) | **Option A** - identity from config, never a request. `x-dms-*` headers are **refused** with 400, not ignored. 7 invariants; 4 go red against a pass-through (R-0007) |
 | Predictive (#67) | A literal-list guard certified 4 forecast asks with historical numbers under `L2_VALIDATED`. Now intent-based. KB **F-0021** |
 | Ontology (#68) | `scripts/ontology.py` grain guard - refuses fan-out, ambiguous and unverified roll-ups; multi-hop; `via=`; a blocked short route refuses rather than silently taking a longer one |
 | Engine bench | 811 answerable over 494 shapes, **0 disagreements with an independent oracle**. Bound ~0.61% on shapes (R-0010) - **but the corpus is 3 variants of ONE schema family**: AdventureWorksLT2022 shares 9 of its 12 table names with AW2025, and DW2025 is the same fictional company as a star schema. Every declared key is correct **by construction** (110 PKs unique, 146 FKs no orphans), so the four failure classes that decide customer viability - FK on the wrong column, orphan rows, duplicate business key behind a clean surrogate, a column whose name lies - **cannot occur in it**. On the honest coarse unit (3 databases) the bound is 100%. Falsified: LEFT->INNER exits 1 |
-| Free-form | **Not a measurement.** Quote "no recorded green run" until Cortex#11 closes the engine half of F40 (R-0011). DMS half is closed (#66): `map_ask_response_to_envelope` demotes `route=refused` even when badge is `session`. `repro_refused_badge.py` still prints P0 because it calls `build_answer_envelope` with no route |
-| Bench in CI | **No.** Neither `ontology_bench.py` nor `verify_freeform_demo.py` runs in `ci_local.sh` or `try_changes.py`; `bench.json` is a 2026-08-23 snapshot nothing re-derives, so a regression in `scripts/ontology.py` turns nothing red |
+| Free-form | **Not a measurement.** Quote "no recorded green run" until Cortex#11 closes the engine half of F40 (R-0011). DMS half is closed (#66): `map_ask_response_to_envelope` demotes `route=refused` even when badge is `session`. `repro_refused_badge.py` LINK 2 is that map; exit 1 = DMS half closed. LINK 1 is Cortex#11 |
+| Bench in CI | **Fixture vs lake CLI (R-0011).** `tests/test_ontology_bench.py` (6 in-process cases, no parquet lake) is collected by `pytest tests/` and GitHub `.github/workflows/ci.yml` already runs that. Lake CLI `scripts/ontology_bench.py` (896 cases / 494 shapes) is **not** a GitHub job. F42 / #35 CI-ACCURACY queued. Local 2026-08-28: **488 passed, 31 skipped** (17m55s). `try_changes` 36/36. `score_answers --oracle-only` exit 0. `verify_freeform_demo --self-check` red: warehouse drift |
 | AW lake | 114 tables, 146 links held, 110 objects. Compiled revenue == oracle, conserves to 123.2M. **Never read by `apps/` or `packages/`** |
 | Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
 | Local CI parity | `bash scripts/ci_local.sh all`; `python scripts/try_changes.py [--live]` - 41 checks, each states what it does *not* prove |
@@ -48,10 +48,10 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68**. Constructor live-run needs a VM (`app.netie.ai/cortex` 404) |
-| **This tick** | Landed #99 (E9-02, E12, health abort) and #102 (Playwright 10/10). Open and green: **#103** ingest P0, **#104** F32 sheet shape. Local 2026-08-28 **488 passed, 31 skipped** (17m55s). Cortex#11 F40 remains |
-| **F71** | Re-ask of F39. No new epic. Do not merge Constructor with `scripts/ontology.py` |
-| Epics | **EPIC-003 (#6) INCOMPLETE** + **EPIC-017 (#33)** in flight. **EPIC-018 QUEUED** - do not close |
+| **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68** monetization. `app.netie.ai/cortex` 404; Constructor catalog works on :8012 with `CORTEX_API_KEY` |
+| **This tick** | Landed **#103** ingest P0, **#104** F32 sheet shape, **#105** STATUS. Hostile + curated 100% precision 0 WRONG 10/14. Cream Share Copied, Mock stock certified, Check accuracy Match 642,969,499.25. Constructor fixture-ask 2/2 L0. Viz CSV locked. F36 + live catalog 401 + Genie bakeoff remain |
+| **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
+| Epics | **EPIC-003 (#6)** tickets 72-74 closed; live both-halves now hold. **EPIC-017 (#33)** still open (Cortex#11 F40 engine). **EPIC-018 QUEUED** |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
 | CI / PRs | **#103 + #104** open, three jobs green each. Actions runs again. **Parked, do not merge:** `park/f45-space-insights` (F45 STOP), `park/epic-020-source-db-connector` (F36), `feat/xlsx-orch-11-extract` (EPIC-016 parked) |
 

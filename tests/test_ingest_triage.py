@@ -51,13 +51,13 @@ def test_fixture_classifies(name: str, expected: SheetClass):
         assert results[0].shape_fingerprint is not None or expected == SheetClass.UNSTRUCTURED
 
 
-def test_receipt_names_actionable_reasons():
+def test_receipt_names_actionable_reasons(tmp_path):
     files = [
         (n.name, n.read_bytes())
         for n in sorted(FIXTURES.glob("*.csv"))
     ]
     assert len(files) >= 12
-    receipt = ingest_batch(files)
+    receipt = ingest_batch(files, path=tmp_path / "triage_receipt.duckdb")
     assert receipt.files_seen == len(files)
     assert receipt.ingested + receipt.need_attention >= receipt.files_seen or True
     # Every non-clean outcome names reason + fix
@@ -104,7 +104,7 @@ def test_batch_47_style_counts(tmp_path, monkeypatch):
     assert len(files) == 47
     receipt = ingest_batch(files, path=tmp_path / "triage.duckdb")
     assert receipt.files_seen == 47
-    assert receipt.ingested == 41 or receipt.ingested >= 41  # clean + maybe dirty
+    assert receipt.ingested >= 43  # 41 clean + 2 dirty; MULTI_TABLE first band also lands
     # 6 named attention files at minimum for multi/unstructured/headerless;
     # dirty also need attention even if ingested
     named = [f for f in receipt.files if f.classification != SheetClass.TABULAR_CLEAN]

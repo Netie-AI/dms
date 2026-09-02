@@ -108,6 +108,26 @@ def test_sync_makes_serving_see_the_upload(pair: tuple[Path, Path]) -> None:
         assert n > 0
 
 
+def test_locked_serving_file_does_not_raise(
+    pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows exclusive lock: Cortex holds serving; ingest must not 500."""
+    ingest, serving = pair
+    ingest_batch([("units.csv", b"sku,qty\nA,1\n")], path=ingest)
+
+    def _busy(_path: str, *args: object, **kwargs: object) -> object:
+        raise duckdb.IOException(
+            "Cannot open file: The process cannot access the file "
+            "because it is being used by another process."
+        )
+
+    monkeypatch.setattr(duckdb, "connect", _busy)
+    result = sync_bronze_to_serving(ingest=ingest, serving=serving)
+    assert result.ok is False
+    assert result.status == "locked"
+    assert "being used" in result.error
+
+
 def test_same_path_is_aligned(tmp_path: Path) -> None:
     one = tmp_path / "one.duckdb"
     ensure_demo_warehouse(one)

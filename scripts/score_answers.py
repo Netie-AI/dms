@@ -27,6 +27,7 @@ Exit 1 on a single confidently-wrong answer, regardless of coverage.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -169,6 +170,19 @@ QUESTION_PACK: list[dict[str, Any]] = [
         ),
     },
     {
+        "id": "sales01_widefill_top3",
+        "workbook": "cf98e431_p50_01_sales_messy.xlsx",
+        "sheet": "Wide_Fill",
+        "dim": "category",
+        "measure": "sales_value_myr",
+        "top_n": 3,
+        "fail_mode_today": "wrong-sheet scope - answers Sales while Wide_Fill is named",
+        "question": (
+            "In cf98e431_p50_01_sales_messy.xlsx sheet Wide_Fill, what are the top 3 "
+            "categories by sales_value_myr?"
+        ),
+    },
+    {
         # Adversarial pair with the case above: same question shape, different
         # workbook. A system that merges sources returns one number for both.
         "id": "inventory03_cat_top3",
@@ -277,6 +291,40 @@ QUESTION_PACK: list[dict[str, Any]] = [
         ),
         "question": (
             "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city KL?"
+        ),
+    },
+    {
+        "id": "exact_sku_beta_total",
+        "workbook": "encoding_value_norm.xlsx",
+        "sheet": "Sales",
+        "oracle": "eq_filter",
+        "filter_col": "sku",
+        "filter_value": "SKU-BETA",
+        "measure": "sales_value_myr",
+        "fail_mode_today": (
+            "exact stored encoding still PathNotAllowed FROM transactions; "
+            "must certify SKU-BETA from the named sheet, never rewrite BETA"
+        ),
+        "question": (
+            "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr "
+            "for sku SKU-BETA?"
+        ),
+    },
+    {
+        "id": "exact_city_kuala_lumpur_total",
+        "workbook": "encoding_value_norm.xlsx",
+        "sheet": "Sales",
+        "oracle": "eq_filter",
+        "filter_col": "city",
+        "filter_value": "Kuala Lumpur",
+        "measure": "sales_value_myr",
+        "fail_mode_today": (
+            "exact city encoding still PathNotAllowed FROM transactions; "
+            "must certify Kuala Lumpur from the named sheet, never rewrite KL"
+        ),
+        "question": (
+            "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr "
+            "for city Kuala Lumpur?"
         ),
     },
     {
@@ -407,15 +455,37 @@ def judge(env: dict[str, Any], expected: list[tuple[str, float]]) -> tuple[str, 
     return "correct", ", ".join(f"{k}={v:,.2f}" for k, v in claimed)
 
 
-def ask_live(question: str, space_id: str, timeout: float) -> dict[str, Any]:
+def ask_live(
+    question: str,
+    space_id: str,
+    timeout: float,
+    *,
+    grounded_tables: list[str] | None = None,
+) -> dict[str, Any]:
     import httpx
 
     base = os.environ.get("DMS_URL", "http://127.0.0.1:8090").rstrip("/")
+    payload: dict[str, Any] = {"question": question, "space_id": space_id}
+    if grounded_tables:
+        payload["grounded_tables"] = grounded_tables
     resp = httpx.post(
         f"{base}/v1/chat/ask",
-        json={"question": question, "space_id": space_id},
+        json=payload,
         timeout=timeout,
     )
+    if resp.status_code == 403:
+        detail = resp.json().get("detail") if resp.headers.get("content-type", "").startswith("application/json") else {}
+        if not isinstance(detail, dict):
+            detail = {"message": str(detail)}
+        code = str(detail.get("code") or "")
+        if code in {"grounding_not_grantable", "outside_grounded_scope"}:
+            return {
+                "abstained": True,
+                "badge": "ABSTAIN",
+                "text": str(detail.get("message") or code),
+                "rows": [],
+                "values": [],
+            }
     resp.raise_for_status()
     return dict(resp.json())
 
@@ -539,7 +609,17 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
     for case, expected in cases:
         try:
-            env = ask_live(str(case["question"]), str(args.space), args.timeout)
+            from dms_executor.bronze import bronze_table_for_sheet
+
+            grounded = [
+                bronze_table_for_sheet(str(case["workbook"]), str(case.get("sheet") or "Sales"))
+            ]
+            env = ask_live(
+                str(case["question"]),
+                str(args.space),
+                args.timeout,
+                grounded_tables=grounded,
+            )
         except Exception as exc:  # noqa: BLE001 - a dead stack is a run failure, not a score
             print(f"  {case['id']:<32} ERROR  {type(exc).__name__}: {exc}")
             failures.append(f"{case['id']}: ask failed ({type(exc).__name__})")
@@ -564,6 +644,28 @@ def main(argv: list[str] | None = None) -> int:
     print("\n=== RESULT ===")
     print(f"  precision-on-answered  {precision:6.2f} pct   ({correct}/{answered})")
     print(f"  coverage               {coverage:6.2f} pct   ({answered}/{total})")
+
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (Path(__file__).resolve().parents[1] / ".tmp"))
+    art.mkdir(parents=True, exist_ok=True)
+    (art / "score_hostile.json").write_text(
+        json.dumps(
+            {
+                "kind": "dms.score_answers",
+                "pack": "hostile_score",
+                "precision_on_answered": round(precision, 2),
+                "coverage_pct": round(coverage, 2),
+                "correct": correct,
+                "answered": answered,
+                "wrong": wrong,
+                "total": total,
+                "abstained": total - answered,
+                "passed": wrong == 0 and not failures,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     if wrong:
         print(f"\nFAIL {wrong} confidently wrong answer(s). Coverage does not buy this back.")

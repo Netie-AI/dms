@@ -59,6 +59,7 @@ export type AnswerEnvelope = {
   rows?: Record<string, unknown>[];
   chart?: ChartSpec;
   suggestions?: string[];
+  grounded_tables?: string[];
 };
 
 export type SpaceSummary = {
@@ -244,10 +245,24 @@ export type CorpusSizes = {
   expanded_totals?: TrustTotals;
 };
 
+export type AskPathScore = {
+  kind?: string;
+  pack: string;
+  precision_on_answered: number;
+  coverage_pct: number;
+  correct: number;
+  answered: number;
+  wrong: number;
+  total: number;
+  abstained?: number;
+  passed: boolean;
+};
+
 export type TrustSummary = Degradable & {
   thresholds?: Record<string, unknown>;
   runs?: Record<string, TrustRun>;
   claim: TrustClaim;
+  ask_path?: AskPathScore[];
 };
 
 export type TrustRunDetailItem = {

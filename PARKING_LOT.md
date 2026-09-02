@@ -263,6 +263,16 @@ principal is an unattributed write on a timer (`DR-0004`).
 **Condition:** a customer names a recurring answer they need to land in the ledger,
 **and** `DR-0004` is accepted. Until then: no scheduler, no DAG engine, no jobs page.
 
+## P-DMS-36 - Pointer paste into Excel Copilot (EPIC-016 remainder)
+
+DMS now cross-checks the AirGPT pack, stores a posted result xlsx, and goldens
+Analysis/Export numbers. It does not open Excel and does not paste.
+**Unlock:** Pointer pastes the validated pack into Excel Copilot on the correct
+FRTR 00027-class workbook, then POSTs the resulting xlsx to
+`POST /v1/studio/xlsx-orch/extract` with `producer=pointer_copilot`. Then #32
+live golden can run on that artifact (avg ~300.27, ~184005/200000, Export row
+count agrees). Until then: `awaiting_pointer_receipt` is the honest status.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any
 
 from dms_core.triage import FileTriageResult, SheetClass, TriageReceipt
 
-from dms_executor.bronze import ingest_csv_bytes
+from dms_executor.bronze import bronze_table_for_sheet, ingest_csv_bytes
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
 from dms_executor.document_chunks import index_unstructured_upload
 from dms_executor.triage import classify_bytes, parse_csv_grid
@@ -29,26 +30,79 @@ def _blob_put(key: str, data: bytes, *, root: Path) -> str:
     return str(dest.as_posix())
 
 
+def _row_cells(row: list[Any]) -> list[str]:
+    return [("" if c is None else str(c)).strip() for c in row]
+
+
+def _blank_row(cells: list[str]) -> bool:
+    return all(not c for c in cells)
+
+
+def _numericish(text: str) -> bool:
+    t = text.replace(",", "").replace(" ", "")
+    if t.startswith("="):
+        return False
+    try:
+        float(t)
+        return True
+    except ValueError:
+        return False
+
+
+_HEADERISH = re.compile(
+    r"^(sku|category|region|month|revenue|units|id|name|date|qty|quantity|"
+    r"sales|city|product|status|amount|value|code|type)",
+    re.I,
+)
+
+
+def _looks_like_header(cells: list[str]) -> bool:
+    nonempty = [c for c in cells if c]
+    if len(nonempty) < 2 or any(_numericish(c) for c in nonempty):
+        return False
+    named = sum(1 for c in nonempty if _HEADERISH.match(c) or "_" in c)
+    return named >= 2
+
+
 def _grid_to_csv_bytes(grid: list[list[Any]], header_row: int) -> bytes:
     import csv
     import io
 
     buf = io.StringIO()
     w = csv.writer(buf)
-    # Use header row and subsequent non-blank rows until a sparse notes row
     if header_row >= len(grid):
         return b""
-    header = grid[header_row]
-    w.writerow([("" if c is None else str(c)) for c in header])
-    for row in grid[header_row + 1 :]:
-        cells = [("" if c is None else str(c)).strip() for c in row]
-        if all(not c for c in cells):
-            break
-        # stop at long single-cell notes
+    rows = [_row_cells(r) for r in grid]
+    header = rows[header_row]
+    header_key = tuple(c.lower() for c in header)
+    w.writerow(header)
+    i = header_row + 1
+    while i < len(rows):
+        cells = rows[i]
+        if _blank_row(cells):
+            i += 1
+            continue
         nonempty = [c for c in cells if c]
         if len(nonempty) == 1 and len(nonempty[0]) > 40:
             break
+        if nonempty and nonempty[0].lower() in {"total", "grand total", "sum"}:
+            break
+        row_key = tuple(c.lower() for c in cells)
+        if row_key == header_key:
+            i += 1
+            continue
+        if _looks_like_header(cells) and row_key != header_key:
+            break
+        if len(nonempty) == 1:
+            j = i + 1
+            while j < len(rows) and _blank_row(rows[j]):
+                j += 1
+            if j < len(rows) and _looks_like_header(rows[j]):
+                nxt = tuple(c.lower() for c in rows[j])
+                if nxt != header_key:
+                    break
         w.writerow(cells)
+        i += 1
     return buf.getvalue().encode("utf-8")
 
 
@@ -113,13 +167,15 @@ def ingest_batch(
                 results.append(tr)
                 continue
 
-            if tr.classification in (SheetClass.MULTI_TABLE, SheetClass.HEADERLESS):
+            if tr.classification == SheetClass.HEADERLESS:
                 tr.ingested = False
                 need_attention += 1
                 results.append(tr)
                 continue
 
-            # TABULAR_CLEAN or TABULAR_DIRTY — attempt bronze write
+            # TABULAR_CLEAN / TABULAR_DIRTY / MULTI_TABLE — attempt bronze write.
+            # MULTI_TABLE still needs attention (split remaining regions), but the
+            # first header band is what a uniquely scoped sheet ask can certify.
             # Dirty still lands (honest receipt names the fix) so steward can repair later
             try:
                 if filename.lower().endswith((".xlsx", ".xlsm")):
@@ -143,14 +199,19 @@ def ingest_batch(
                         filename=f"{stem}.csv",
                         data=csv_bytes,
                         path=db_path,
-                        table_name="".join(c if c.isalnum() else "_" for c in stem)[:40],
+                        table_name=bronze_table_for_sheet(filename, tr.sheet or "sheet").split(
+                            ".", 1
+                        )[-1],
                         space_id=space_id,
                     )
                 else:
-                    # CSV: if dirty with title row, re-slice from header_row
-                    if tr.header_row and tr.header_row > 0:
+                    # CSV: title row, or MULTI_TABLE first band (stop at blank).
+                    # Whole-file ingest would union stacked tables — the merge trap.
+                    if tr.classification == SheetClass.MULTI_TABLE or (
+                        tr.header_row and tr.header_row > 0
+                    ):
                         grid = parse_csv_grid(data)
-                        csv_bytes = _grid_to_csv_bytes(grid, tr.header_row)
+                        csv_bytes = _grid_to_csv_bytes(grid, tr.header_row or 0)
                         receipt = ingest_csv_bytes(
                             filename=filename,
                             data=csv_bytes,
@@ -172,7 +233,10 @@ def ingest_batch(
                     tr.ingested = True
                     tr.table = receipt.table
                     ingested_count += 1
-                    if tr.classification == SheetClass.TABULAR_DIRTY:
+                    if tr.classification in (
+                        SheetClass.TABULAR_DIRTY,
+                        SheetClass.MULTI_TABLE,
+                    ):
                         need_attention += 1  # ingested but needs attention
             except Exception as exc:  # noqa: BLE001
                 tr.ingested = False

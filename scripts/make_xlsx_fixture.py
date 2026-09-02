@@ -21,26 +21,53 @@ _NS_PKG = "http://schemas.openxmlformats.org/package/2006"
 _NS_DOC = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _NS_SML = "application/vnd.openxmlformats-officedocument.spreadsheetml"
 
-_CONTENT_TYPES = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="{_NS_PKG}/content-types">
-<Default Extension="rels"
- ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/xl/workbook.xml" ContentType="{_NS_SML}.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="{_NS_SML}.worksheet+xml"/>
-<Override PartName="/xl/styles.xml" ContentType="{_NS_SML}.styles+xml"/>
-</Types>"""
-
 _ROOT_RELS = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="{_NS_PKG}/relationships">
 <Relationship Id="rId1" Type="{_NS_DOC}/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"""
 
-_WB_RELS = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="{_NS_PKG}/relationships">
-<Relationship Id="rId1" Type="{_NS_DOC}/worksheet" Target="worksheets/sheet1.xml"/>
-<Relationship Id="rId2" Type="{_NS_DOC}/styles" Target="styles.xml"/>
-</Relationships>"""
+
+def _content_types_xml(sheet_count: int) -> str:
+    overrides = [
+        f'<Override PartName="/xl/workbook.xml" ContentType="{_NS_SML}.sheet.main+xml"/>'
+    ]
+    for i in range(1, sheet_count + 1):
+        overrides.append(
+            f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
+            f'ContentType="{_NS_SML}.worksheet+xml"/>'
+        )
+    overrides.append(
+        f'<Override PartName="/xl/styles.xml" ContentType="{_NS_SML}.styles+xml"/>'
+    )
+    return (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Types xmlns="{_NS_PKG}/content-types">'
+        '<Default Extension="rels" '
+        'ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        + "".join(overrides)
+        + "</Types>"
+    )
+
+
+def _wb_rels_xml(sheet_count: int) -> str:
+    rels = []
+    for i in range(1, sheet_count + 1):
+        rels.append(
+            f'<Relationship Id="rId{i}" Type="{_NS_DOC}/worksheet" '
+            f'Target="worksheets/sheet{i}.xml"/>'
+        )
+    rels.append(
+        f'<Relationship Id="rId{sheet_count + 1}" Type="{_NS_DOC}/styles" '
+        'Target="styles.xml"/>'
+    )
+    return (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<Relationships xmlns="{_NS_PKG}/relationships">'
+        + "".join(rels)
+        + "</Relationships>"
+    )
+
 
 _STYLES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -87,22 +114,34 @@ def _sheet_xml(rows: list[list[object]]) -> str:
     )
 
 
-def write_xlsx(path: Path, *, sheet_name: str, rows: list[list[object]]) -> None:
+def write_xlsx_sheets(path: Path, sheets: list[tuple[str, list[list[object]]]]) -> None:
+    """Write a multi-sheet xlsx via stdlib zip/OOXML. Never openpyxl.Workbook.save."""
+    if not sheets:
+        raise ValueError("at least one sheet is required")
+    sheet_tags = []
+    for i, (name, _rows) in enumerate(sheets, start=1):
+        sheet_tags.append(
+            f'<sheet name="{_esc(name)}" sheetId="{i}" r:id="rId{i}"/>'
+        )
     workbook = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        f'<sheets><sheet name="{_esc(sheet_name)}" sheetId="1" r:id="rId1"/></sheets>'
-        "</workbook>"
+        f'<sheets>{"".join(sheet_tags)}</sheets></workbook>'
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", _CONTENT_TYPES)
+        z.writestr("[Content_Types].xml", _content_types_xml(len(sheets)))
         z.writestr("_rels/.rels", _ROOT_RELS)
         z.writestr("xl/workbook.xml", workbook)
-        z.writestr("xl/_rels/workbook.xml.rels", _WB_RELS)
+        z.writestr("xl/_rels/workbook.xml.rels", _wb_rels_xml(len(sheets)))
         z.writestr("xl/styles.xml", _STYLES)
-        z.writestr("xl/worksheets/sheet1.xml", _sheet_xml(rows))
+        for i, (_name, rows) in enumerate(sheets, start=1):
+            z.writestr(f"xl/worksheets/sheet{i}.xml", _sheet_xml(rows))
+
+
+def write_xlsx(path: Path, *, sheet_name: str, rows: list[list[object]]) -> None:
+    write_xlsx_sheets(path, [(sheet_name, rows)])
 
 
 #: The fixture whose absence let P0-DEMO-01 ship: every other ingest fixture is

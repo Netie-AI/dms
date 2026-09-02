@@ -4,6 +4,7 @@ import { useApp } from "@/context/AppContext";
 import { postReveal } from "@/lib/api";
 import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
+import { sourcesHeadline } from "@/lib/sourcePanel";
 
 function formatMoney(n: number) {
   return new Intl.NumberFormat("en-MY", {
@@ -66,9 +67,7 @@ export function SourcePanel() {
             Sources
           </p>
           <p className="mt-0.5 text-sm text-[var(--color-ink)]">
-            {sorted.length
-              ? `${sorted.length} files · ${totalRows.toLocaleString()} rows`
-              : "No answer yet — ask from Chat"}
+            {sourcesHeadline(answer, sorted, totalRows)}
           </p>
         </div>
         <button
@@ -99,8 +98,9 @@ export function SourcePanel() {
       <div className="flex-1 overflow-y-auto p-2">
         {sorted.length === 0 ? (
           <p className="px-2 py-6 text-sm text-[var(--color-ink-muted)]">
-            When an answer arrives, contributing sources appear here — docked,
-            never a modal.
+            {answer
+              ? "Cortex did not attach a file card. Use SQL on the answer, or Library, to see the table."
+              : "When an answer arrives, contributing sources appear here - docked, never a modal."}
           </p>
         ) : (
           <ul className="flex flex-col gap-2">

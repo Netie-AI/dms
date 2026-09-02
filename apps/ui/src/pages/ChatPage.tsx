@@ -26,6 +26,7 @@ export function ChatPage() {
     groundedTables,
     groundedLabels,
     setGrounded,
+    productMode,
   } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
@@ -57,6 +58,7 @@ export function ChatPage() {
   };
 
   const empty = messages.length === 0 && !askError;
+  const chatWidth = productMode === "cream" ? "max-w-3xl" : "max-w-2xl";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -81,17 +83,24 @@ export function ChatPage() {
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
         {empty ? (
-          <div className="mx-auto max-w-2xl">
+          <div className={`mx-auto ${chatWidth}`}>
             <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-[var(--color-ink)]">
-              Ask about your data
+              {productMode === "cream" ? "Ask your company's data" : "Ask about your data"}
             </h1>
             <p className="mt-2 text-[var(--color-ink-muted)]">
               {activeSpace
                 ? `Scoped to ${activeSpace.name}. Every number is a button back to its cell.`
                 : "Company default ACL. Pick a Space in the top bar to sandbox sources."}
             </p>
+            {productMode === "cream" && (
+              <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+                If we cannot stand behind a figure, we say so. Open Library, pick a
+                table, Ask about this table. Share the CSV from any answer.
+                Operate mode in the top bar opens Studio, ontology, and the ledger.
+              </p>
+            )}
             {askMode === "demo" && (
               <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
                 Demo ask mode — answers compute from the local DuckDB warehouse. Not certified.
@@ -144,7 +153,7 @@ export function ChatPage() {
             </ul>
           </div>
         ) : (
-          <div className="mx-auto max-w-2xl space-y-4">
+          <div className={`mx-auto ${chatWidth} space-y-4`}>
             <div className="flex items-center justify-between gap-3">
               <p className="truncate text-xs text-[var(--color-ink-muted)]">
                 Session {sessionId}
@@ -207,8 +216,8 @@ export function ChatPage() {
         )}
       </div>
 
-      <div className="border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3">
-        <div className="mx-auto flex max-w-2xl flex-col gap-2">
+      <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3">
+        <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
           <ScopeChip />
           {composerPaused && composerPauseReason && (
             <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">

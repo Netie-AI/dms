@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { navIdsForMode } from "@/lib/productMode";
 import type { NavId } from "@/lib/types";
 
 type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
@@ -87,10 +88,15 @@ function linkClass(isActive: boolean): string {
 }
 
 export function LeftNav() {
-  const { navCollapsed, role } = useApp();
+  const { navCollapsed, role, productMode } = useApp();
+  const allowed = navIdsForMode(productMode);
   const visible = GROUPS.map((g) => ({
     ...g,
-    items: g.items.filter((i) => !ADMIN_ONLY.includes(i.id) || role === "admin"),
+    items: g.items.filter(
+      (i) =>
+        (!ADMIN_ONLY.includes(i.id) || role === "admin") &&
+        (allowed == null || allowed.has(i.id)),
+    ),
   })).filter((g) => g.items.length);
 
   if (navCollapsed) {
@@ -137,6 +143,9 @@ export function LeftNav() {
         <p className="mt-0.5 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
           DMS
         </p>
+        <p className="mt-1 text-[10px] text-[var(--color-accent)]">
+          {productMode === "cream" ? "Ask mode" : "Operate mode"}
+        </p>
       </div>
       <div className="flex flex-1 flex-col gap-3 p-2">
         {visible.map((group) => (
@@ -161,7 +170,7 @@ export function LeftNav() {
           </div>
         ))}
       </div>
-      {role !== "admin" && (
+      {productMode === "graphite" && role !== "admin" && (
         <p className="border-t border-[var(--color-line)] px-3 py-2 text-[10px] leading-snug text-[var(--color-ink-muted)]">
           Admin is hidden for the {role} role.
         </p>

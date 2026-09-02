@@ -132,6 +132,20 @@ def test_trust_refuses_the_claim_when_evidence_is_unavailable(client, monkeypatc
     assert body["claim"]["blockers"]
 
 
+def test_trust_ask_path_does_not_flip_cortex_claim(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    (tmp_path / "score_hostile.json").write_text(
+        '{"pack":"hostile_score","precision_on_answered":100,"coverage_pct":71.43,'
+        '"correct":10,"answered":10,"wrong":0,"total":14,"passed":true}',
+        encoding="utf-8",
+    )
+    _stub_cortex(monkeypatch, None, ok=False)
+    body = client.get("/v1/trust/summary").json()
+    assert body["claim"]["supported"] is False
+    assert body["ask_path"][0]["pack"] == "hostile_score"
+    assert body["ask_path"][0]["wrong"] == 0
+
+
 def test_trust_run_detail_degrades_to_an_empty_list(client, monkeypatch):
     _stub_cortex(monkeypatch, None, ok=False)
     body = client.get("/v1/trust/runs/corpus").json()
