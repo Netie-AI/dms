@@ -16,6 +16,9 @@ INVARIANT-CHANGE: E11 (FF-02) — a negated ask must not keep L1_GOVERNED_METRIC
 when the matched metric's filter asserts the positive of that negation.
 INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
 badge when the matched query returns a grouped ranking.
+INVARIANT-CHANGE: E9-03 — a confident badge with no executed rows and no SQL
+must demote to ABSTAIN (governed_metric empty-result shrug).
+INVARIANT-CHANGE: xlsx-named ask answered from demo warehouse SQL demotes.
 """
 
 from __future__ import annotations
@@ -380,6 +383,59 @@ def test_empty_executed_result_demotes_hard_rule_12():
     assert env["badge"] == "ABSTAIN"
     assert "0.00" not in env["text"] or "No matching rows" in env["text"]
     assert any("hard rule 12" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
+def test_e9_03_governed_metric_with_no_rows_demotes():
+    """Live hostile pack: L1_GOVERNED_METRIC, empty rows, SQL stub, v_count=0.
+
+    BETA / KL / Malay paraphrase shipped a green badge the score_answers judge
+    reads as WRONG (confident + no ranking). Abstain costs coverage, not precision.
+    """
+    env = build_answer_envelope(
+        answer_id="a_e903",
+        text="I can't map that filter onto a governed metric.",
+        badge="L1_GOVERNED_METRIC",
+        values=[{"id": "v_count", "value": 0.0, "label": "row_count"}],
+        sql_used="-- live ask (SQL not returned)",
+        rows=[],
+        route="governed_metric",
+        ask_mode="live",
+        question=(
+            "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for sku BETA?"
+        ),
+    )
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert not env["values"]
+    assert any("E9-03" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
+def test_xlsx_named_ask_answered_from_demo_warehouse_demotes():
+    """Hostile pack: encoding_value_norm.xlsx sku BETA -> outbound revenue."""
+    env = build_answer_envelope(
+        answer_id="a_xlsx_demo",
+        text="Result: revenue_myr = 80787598.3",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 80787598.3, "label": "revenue_myr"}],
+        sql_used=(
+            "SELECT ROUND(COALESCE(SUM(quantity_kg * unit_cost_myr), 0), 2) "
+            "AS revenue_myr FROM transactions WHERE txn_type = 'OUT' LIMIT 1000"
+        ),
+        rows=[{"revenue_myr": 80787598.3}],
+        question=(
+            "In encoding_value_norm.xlsx sheet Sales, what is total "
+            "sales_value_myr for sku BETA?"
+        ),
+        ask_mode="live",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert "80787598" not in env["text"]
+    assert any("demo warehouse" in a for a in env["assumptions"])
     assert_envelope_valid(env)
 
 

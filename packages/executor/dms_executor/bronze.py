@@ -34,6 +34,15 @@ def _safe_table_stem(filename: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40]
 
 
+def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
+    """Ident ingest writes: ``{stem}_{sheet}``, alnum/underscore, 40 chars, ``bronze.`` prefix."""
+    stem = Path(filename).stem
+    if sheet:
+        stem = f"{stem}_{sheet}"
+    ident = "".join(c if c.isalnum() else "_" for c in stem)[:40]
+    return f"bronze.{ident}"
+
+
 #: Which source file each bronze table was built from. Bronze tables carry
 #: ``_ingest_id`` per row but nothing recorded the *file*, so a second upload
 #: could take over an existing table's name with no way to tell afterwards that

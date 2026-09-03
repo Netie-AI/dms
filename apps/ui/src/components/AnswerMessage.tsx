@@ -4,7 +4,12 @@ import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { useApp } from "@/context/AppContext";
-import { COPILOT_PROMPTS, copyText } from "@/lib/copilotPrompts";
+import {
+  checkAnswerTotals,
+  shareEnvelopePayload,
+} from "@/lib/answerDelivery";
+import { ceoSafeHref } from "@/lib/productMode";
+import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
 import { csvDownloadName, isSummaryExport, rowsToCsv } from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
@@ -104,7 +109,7 @@ function renderWithValues(
 }
 
 export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
-  const { selectValue, setSourcePanelOpen, ask, suggestions } = useApp();
+  const { selectValue, setSourcePanelOpen, ask, suggestions, productMode } = useApp();
   const [showSql, setShowSql] = useState(false);
   const [showLayer, setShowLayer] = useState(false);
   const [showCopilot, setShowCopilot] = useState(false);
@@ -112,6 +117,8 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const [drillErr, setDrillErr] = useState<string | null>(null);
   const [drillBusy, setDrillBusy] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [shareNote, setShareNote] = useState<string | null>(null);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
   const confirmFired = useRef(false);
   const rows = envelope.rows ?? [];
@@ -238,6 +245,34 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             Download CSV
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => {
+            void copyText(shareEnvelopePayload(envelope)).then((ok) => {
+              setShareNote(ok ? "Envelope copied" : "Copy failed");
+              window.setTimeout(() => setShareNote(null), 1600);
+            });
+          }}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          {shareNote ?? "Share answer"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const r = checkAnswerTotals(envelope);
+            setCheckNote(r.message);
+          }}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Check accuracy
+        </button>
+        <Link
+          to="/trust"
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Trust runs
+        </Link>
         {rows.length > 0 && (
           <button
             type="button"
@@ -267,7 +302,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         )}
         {envelope.audit_id && (
           <a
-            href="/audit"
+            href={ceoSafeHref(productMode, "/audit")}
             className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
             title={envelope.audit_id}
           >
@@ -284,19 +319,39 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             {LAYER_COPY[envelope.badge].detail}
           </p>
           <p className="mt-2 flex flex-wrap gap-3 text-xs">
-            <Link to="/ontology" className="text-[var(--color-accent)] hover:underline">
-              See the governed metrics
+            <Link
+              to={ceoSafeHref(productMode, "/ontology")}
+              className="text-[var(--color-accent)] hover:underline"
+            >
+              {productMode === "cream" ? "Open the tables" : "See the governed metrics"}
             </Link>
             <Link to="/trust" className="text-[var(--color-accent)] hover:underline">
               See the evidence behind this badge
             </Link>
             {envelope.audit_id && (
-              <Link to="/audit" className="text-[var(--color-accent)] hover:underline">
-                Find this in the ledger
+              <Link
+                to={ceoSafeHref(productMode, "/audit")}
+                className="text-[var(--color-accent)] hover:underline"
+              >
+                {productMode === "cream" ? "Check this number" : "Find this in the ledger"}
               </Link>
             )}
           </p>
         </div>
+      )}
+      {checkNote && (
+        <p
+          className={`mb-3 border px-3 py-2 text-xs ${
+            checkNote.startsWith("Mismatch")
+              ? "border-[var(--color-danger)]/40 text-[var(--color-danger)]"
+              : "border-[var(--color-line)] text-[var(--color-ink-muted)]"
+          }`}
+        >
+          {checkNote}{" "}
+          <Link to="/trust" className="text-[var(--color-accent)] hover:underline">
+            Open Trust
+          </Link>
+        </p>
       )}
       <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
         {renderWithValues(prose, envelope.values, selectValue)}
@@ -355,11 +410,17 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             </p>
           )}
           <p className="mt-2 flex flex-wrap gap-3 text-xs">
-            <Link to="/ontology" className="text-[var(--color-accent)] hover:underline">
-              Browse what can be asked
+            <Link
+              to={ceoSafeHref(productMode, "/ontology")}
+              className="text-[var(--color-accent)] hover:underline"
+            >
+              {productMode === "cream" ? "Pick a table in Library" : "Browse what can be asked"}
             </Link>
-            <Link to="/studio" className="text-[var(--color-accent)] hover:underline">
-              Attach the missing source
+            <Link
+              to={ceoSafeHref(productMode, "/studio")}
+              className="text-[var(--color-accent)] hover:underline"
+            >
+              {productMode === "cream" ? "Ask about this table" : "Attach the missing source"}
             </Link>
           </p>
         </div>
@@ -382,7 +443,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
                   type="button"
                   className="shrink-0 underline-offset-2 hover:underline"
                   onClick={() => {
-                    void copyText(p).then((ok) => {
+                    void copyText(copilotClipboard(p)).then((ok) => {
                       if (ok) {
                         setCopiedIdx(i);
                         window.setTimeout(() => setCopiedIdx(null), 1200);

@@ -1,0 +1,89 @@
+# Genie-class walkthrough: exact certified questions + traps.
+# Precision-on-answered stays 100.00 pct. Coverage grows only on L0 hits.
+# Not EPIC-019 (no new verified-query repo). Measures existing L0 assets
+# through POST /v1/chat/ask.
+
+spaces:
+  finance: cccccccc-cccc-cccc-cccc-cccccccccccc
+  ops: dddddddd-dddd-dddd-dddd-dddddddddddd
+
+questions:
+  - id: cq_spend_by_country
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: What is our total spend by supplier country?
+
+  - id: cq_stock_value_by_category
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: What is total stock value by category?
+
+  - id: cq_sales_top5_value
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Top 5 selling SKUs by revenue
+
+  - id: cq_sku_count
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: How many SKUs do we have in inventory?
+
+  - id: cq_capacity_utilisation
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Show warehouse capacity utilisation
+
+  - id: cq_sales_top3_volume
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Top 3 SKUs by quantity sold
+
+  - id: cq_sku_count_by_category
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Show SKU count by category
+
+  - id: cq_low_stock_wh_a
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Which SKUs are below reorder level in warehouse A?
+
+  - id: ops_stock_value
+    space: ops
+    expect: l0
+    min_rows: 1
+    question: What is total stock value by category?
+
+  - id: ops_shipment_cost
+    space: ops
+    expect: l0
+    min_rows: 1
+    question: Show shipment cost by destination
+
+  - id: ops_spend_boundary
+    space: ops
+    expect: abstain
+    question: What is our total spend by supplier country?
+
+  - id: trap_categoty
+    space: finance
+    expect: abstain
+    question: Show top 3 categoty sales
+
+  - id: trap_last_month
+    space: finance
+    expect: abstain
+    question: Just give me last month's number
+
+  - id: trap_short_paraphrase
+    space: finance
+    expect: abstain
+    question: Are we short on anything the warehouse should worry about?

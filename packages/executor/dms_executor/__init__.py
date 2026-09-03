@@ -30,8 +30,13 @@ from dms_executor.bronze import (
     list_bronze_tables,
     write_bronze_rows,
 )
+from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
 from dms_executor.contract_infer import infer_contract
-from dms_executor.demo_ask import answer_demo_question, normalize_ask_question
+from dms_executor.demo_ask import (
+    answer_demo_question,
+    normalize_ask_question,
+    with_grounded_scope,
+)
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
 from dms_executor.envelope import (
@@ -55,7 +60,12 @@ from dms_executor.pipeline_loader import (
     validate_pipeline_dict,
 )
 from dms_executor.promote import run_promote, sign_gold_metric
-from dms_executor.reveal import allowlisted_roots, is_filesystem_uri, reveal_path
+from dms_executor.reveal import (
+    allowlisted_roots,
+    is_filesystem_uri,
+    resolve_allowlisted_file,
+    reveal_path,
+)
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.warehouse_browse import (
     list_warehouse_tables,
@@ -69,6 +79,7 @@ from dms_executor.warehouse_identity import (
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
+from dms_executor.xlsx_orch import run_crosscheck, run_extract, run_golden
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +324,12 @@ class Executor:
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
-        question = normalize_ask_question(question)
+        question = with_grounded_scope(normalize_ask_question(question), tables)
+        bronze_env = maybe_bronze_sheet_ask(
+            question, space_id=space_id, session_id=session_id
+        )
+        if bronze_env is not None:
+            return bronze_env
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
@@ -597,6 +613,9 @@ def get_serving_engine() -> ServingEnginePort:
 
 
 __all__ = [
+    "run_crosscheck",
+    "run_extract",
+    "run_golden",
     "Executor",
     "IngestReceipt",
     "ManifestMinter",
@@ -624,6 +643,7 @@ __all__ = [
     "preview_warehouse_table",
     "allowlisted_roots",
     "is_filesystem_uri",
+    "resolve_allowlisted_file",
     "reveal_path",
     "resolve_session_acl",
     "run_promote",

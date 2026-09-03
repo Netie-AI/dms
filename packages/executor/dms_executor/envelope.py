@@ -346,14 +346,17 @@ def _should_demote_ambiguous_ranking(
 #: Phrases that ask, unambiguously, for more than one row back. Deliberately a
 #: short closed list: this is not intent inference, it is reading an explicit
 #: cardinality request. "top 3" cannot mean one number; "for each category"
-#: cannot mean one number.
+#: cannot mean one number. "total spend by country" is the same request as
+#: "per country" - E12 must not treat the word "total" as a one-number ask
+#: when a grouping preposition is present (live 2026-08-28: Finance spend
+#: and stock-by-category certified queries were demoted).
 _TOP_N_ASK = re.compile(r"\b(?:top|bottom|first|last|highest|lowest)\s+(\d+)\b", re.I)
 _PER_GROUP_ASK = re.compile(
     r"\b(?:for\s+each|per|each)\s+[a-z_]+"
     r"|\bbreakdown\b"
     r"|\bgroup(?:ed)?\s+by\b"
-    r"|\bby\s+[a-z_]+\b"
-    r"|\brank\s+[a-z_]+",
+    r"|\brank\s+[a-z_]+"
+    r"|\bby\s+[a-z_][a-z0-9_]*",
     re.I,
 )
 _GROUP_BY = re.compile(r"\bgroup\s+by\b", re.I)
@@ -412,6 +415,34 @@ def _should_demote_shape_mismatch(
     if not stripped.strip():
         return False
     return not _GROUP_BY.search(stripped)
+
+
+_XLSX_IN_ASK = re.compile(r"[\w.-]+\.xlsx", re.I)
+_DEMO_FROM = re.compile(
+    r"\bfrom\s+(?:main\.)?(?:transactions|inventory|shipments|suppliers|locations|alerts)\b",
+    re.I,
+)
+
+
+def _should_demote_xlsx_ask_hit_demo_warehouse(
+    *,
+    question: str | None,
+    sql: str | None,
+) -> bool:
+    """True when the ask named a workbook but SQL ran on the demo warehouse.
+
+    Live 2026-08-28 hostile pack: 'sku BETA' / Malay paraphrase / product-family
+    on an uploaded xlsx returned ``transactions`` outbound revenue or an
+    ``inventory`` SKU ranking under L1. Real SQL, different dataset.
+    """
+    if not _XLSX_IN_ASK.search(question or ""):
+        return False
+    stripped = _SQL_COMMENT.sub("", str(sql or ""))
+    if not stripped.strip():
+        return False
+    if "bronze." in stripped.lower():
+        return False
+    return bool(_DEMO_FROM.search(stripped))
 
 
 #: Markers that ask for one number. Closed list, not a parser. Combined with
@@ -994,6 +1025,28 @@ def build_answer_envelope(
             "empty result after executed SQL: withheld (hard rule 12)"
         )
 
+    # E9-03 — a confident badge with no rows and no executed SQL. Hard rule 12
+    # covers SQL-that-matched-nothing. E9 covers uncited figures in prose. The
+    # leftover is a governed_metric / semantic path that ships L1, a synthetic
+    # v_count=0, and nothing a customer can check (live hostile pack 2026-08-28:
+    # BETA / KL / Malay paraphrase).
+    doc_quote = (route or "").lower() in _DOC_ROUTE_KINDS and bool(sources)
+    if (
+        not abstained
+        and not rows_out
+        and not _executed_query(sql_used)
+        and not doc_quote
+    ):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "I don't have executed rows for that, so I cannot certify a figure. "
+            "Name a table and a metric, or ground the ask in one uploaded file."
+        )
+        assumptions_list.append(
+            "confident badge with no executed rows: withheld (E9-03)"
+        )
+
     # E9-02 / F32 — ranking totals over non-unique Sales vs Wide_Fill (or
     # multi-file sales) scopes must not stay confident green. SQL-on-one-sheet
     # is not enough when the ask did not pin workbook+sheet.
@@ -1062,6 +1115,23 @@ def build_answer_envelope(
         )
         assumptions_list.append(
             "scalar ask answered by a grouped ranking: shape mismatch (E12/ANS-02)"
+        )
+
+    # Named-workbook ask answered from the demo warehouse (not bronze).
+    if not abstained and _should_demote_xlsx_ask_hit_demo_warehouse(
+        question=question, sql=sql_used
+    ):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "You named a workbook, and the query I matched reads the demo "
+            "warehouse instead of that file. Those figures answer a different "
+            "dataset. Rather than show them as though they came from the "
+            "upload, I'm stopping here. Ground the ask in that file, or ask "
+            "without a filename to use the Space warehouse."
+        )
+        assumptions_list.append(
+            "xlsx-named ask answered from demo warehouse: scope mismatch"
         )
 
     # E11 (FF-02) — a negated ask must not be settled by a metric whose filter

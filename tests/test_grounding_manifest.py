@@ -112,6 +112,9 @@ def test_the_ui_count_equals_the_minted_manifest_length(minter: ManifestMinter) 
     assert len(env["grounded_tables"]) == len(minted.row_predicates)
     assert env["grounded_tables"] == [UPLOAD]
     assert set(minted.row_predicates) == {UPLOAD}
+    sent = cortex.asks[-1].question
+    assert UPLOAD in sent, "Cortex ask must name the ticked table (AskRequest has no tables field)"
+    assert sent.startswith("Using only ")
 
 
 def test_an_ungrantable_selection_refuses_instead_of_widening(

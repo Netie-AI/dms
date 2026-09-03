@@ -9,7 +9,9 @@ import {
   type ReactNode,
 } from "react";
 import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
+import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
+import { storedProductMode, type ProductMode } from "@/lib/productMode";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
 export type ChatMessage =
@@ -76,6 +78,8 @@ type AppState = {
   setSourcePanelOpen: (open: boolean) => void;
   navCollapsed: boolean;
   toggleNav: () => void;
+  productMode: ProductMode;
+  setProductMode: (mode: ProductMode) => void;
 };
 
 const AppContext = createContext<AppState | null>(null);
@@ -108,7 +112,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [spaces, setSpaces] = useState<SpaceSummary[]>(FIXTURE_SPACES);
   const [spacesFromApi, setSpacesFromApi] = useState(false);
   const [scopedSourceCount, setScopedSourceCount] = useState<number | null>(null);
-  const [activeSpaceId, setActiveSpaceId] = useState<string | null>(FIXTURE_SPACES[0].id);
+  const [activeSpaceId, setActiveSpaceIdState] = useState<string | null>(FIXTURE_SPACES[0].id);
   const [role, setRole] = useState<AppRole>("steward");
   const [selectedValueId, setSelectedValueId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState(newSessionId);
@@ -123,20 +127,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activity, setActivity] = useState<ActivityState>(null);
   const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
   const [sourcePanelOpen, setSourcePanelOpen] = useState(true);
-  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [productMode, setProductModeState] = useState<ProductMode>(storedProductMode);
+  const [navCollapsed, setNavCollapsed] = useState(() => storedProductMode() === "cream");
   const queueRef = useRef<string[]>([]);
   const drainingRef = useRef(false);
+  const groundedTablesRef = useRef(groundedTables);
+  const activeSpaceIdRef = useRef(activeSpaceId);
+  const sessionIdRef = useRef(sessionId);
+  groundedTablesRef.current = groundedTables;
+  sessionIdRef.current = sessionId;
+
   const setGrounded = useCallback((tables: string[], labels: string[] = []) => {
     setGroundedTables(tables);
     setGroundedLabels(labels.length ? labels : tables);
   }, []);
 
-  const groundedTablesRef = useRef(groundedTables);
-  const activeSpaceIdRef = useRef(activeSpaceId);
-  const sessionIdRef = useRef(sessionId);
-  activeSpaceIdRef.current = activeSpaceId;
-  groundedTablesRef.current = groundedTables;
-  sessionIdRef.current = sessionId;
+  const setActiveSpaceId = useCallback((id: string | null) => {
+    activeSpaceIdRef.current = id;
+    setActiveSpaceIdState(id);
+  }, []);
+
+  const setProductMode = useCallback((mode: ProductMode) => {
+    setProductModeState(mode);
+    setNavCollapsed(mode === "cream");
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = productMode;
+    window.localStorage.setItem("dms-theme", productMode);
+  }, [productMode]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -201,9 +220,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setSpacesPersisted(false);
         }
         if (body.hint) setSpacesStorageHint(body.hint);
-        setActiveSpaceId((prev) => {
+        setActiveSpaceIdState((prev) => {
           if (prev && list.some((s) => s.id === prev)) return prev;
-          return list[0]?.id ?? null;
+          const next = list[0]?.id ?? null;
+          activeSpaceIdRef.current = next;
+          return next;
         });
       })
       .catch((err: unknown) => {
@@ -378,11 +399,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clearThread,
     focusedSourceId,
     setFocusedSourceId,
-    contributingSources: latestAnswer?.contributing_sources ?? [],
+    contributingSources: sourcesForPanel(latestAnswer),
     sourcePanelOpen,
     setSourcePanelOpen,
     navCollapsed,
     toggleNav: () => setNavCollapsed((c) => !c),
+    productMode,
+    setProductMode,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

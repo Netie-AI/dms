@@ -215,6 +215,18 @@ def test_without_excluding_is_not_sku_filter(
         assert normalize_ask_question(q).lower().startswith("top ")
 
 
+def test_with_grounded_scope_names_ticked_table() -> None:
+    from dms_executor.demo_ask import with_grounded_scope
+
+    q = with_grounded_scope("total sales for sku BETA", ["bronze.encoding_value_norm_Sales"])
+    assert q.startswith("Using only bronze.encoding_value_norm_Sales:")
+    already = with_grounded_scope(
+        "Using only bronze.encoding_value_norm_Sales: total",
+        ["bronze.encoding_value_norm_Sales"],
+    )
+    assert already.count("Using only") == 1
+
+
 def test_forecast_never_answers_with_historical_total(
     warehouse: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1,4 +1,4 @@
-import type { AnswerEnvelope, SpaceSummary } from "./types";
+import type { SpaceSummary } from "./types";
 
 export const FIXTURE_SPACES: SpaceSummary[] = [
   {
@@ -15,22 +15,12 @@ export const FIXTURE_SPACES: SpaceSummary[] = [
   },
 ];
 
-/** Cortex L1 vocabulary — divide-by-5 is demo fallback only, not the hero. */
+/** Exact certified questions a CEO can click, plus one typo trap that must abstain. */
 export const SUGGESTED_QUESTIONS = [
+  "What is our total spend by supplier country?",
+  "What is total stock value by category?",
   "Top 5 selling SKUs by revenue",
-  "What was revenue last month?",
-  "Which SKUs are below reorder level?",
+  "How many SKUs do we have in inventory?",
   "Show warehouse capacity utilisation",
-  "What was total revenue?",
-  "List active alerts across the warehouse network",
+  "Show top 3 categoty sales",
 ];
-
-export const FIXTURE_ANSWER: AnswerEnvelope = {
-  answer_id: "ans_fixture_offline",
-  text: "Offline fixture — start the API for live or demo answers.",
-  values: [],
-  badge: "ABSTAIN",
-  assumptions: ["offline fixture"],
-  as_of: "2026-07-30T09:14:00Z",
-  contributing_sources: [],
-};

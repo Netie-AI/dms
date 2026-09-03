@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { ceoSafeHref } from "@/lib/productMode";
 import type { AppRole } from "@/lib/types";
 
 const ROLES: AppRole[] = ["viewer", "steward", "admin"];
-type Theme = "cream" | "graphite";
 
 export function TopBar() {
   const {
@@ -15,18 +15,12 @@ export function TopBar() {
     role,
     setRole,
     apiOnline,
+    productMode,
+    setProductMode,
   } = useApp();
   const navigate = useNavigate();
-  const [search, setSearch] = useState("");
   const [newOpen, setNewOpen] = useState(false);
-  const [theme, setTheme] = useState<Theme>(() =>
-    window.localStorage.getItem("dms-theme") === "graphite" ? "graphite" : "cream",
-  );
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("dms-theme", theme);
-  }, [theme]);
+  const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-3 backdrop-blur-sm">
@@ -73,21 +67,23 @@ export function TopBar() {
               className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
               onClick={() => {
                 setNewOpen(false);
-                navigate("/studio");
+                navigate(ceoSafeHref(productMode, "/studio"));
               }}
             >
-              Upload source
+              {productMode === "cream" ? "Open Library" : "Upload source"}
             </button>
-            <button
-              type="button"
-              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
-              onClick={() => {
-                setNewOpen(false);
-                navigate("/amend");
-              }}
-            >
-              New amend proposal
-            </button>
+            {productMode === "graphite" && (
+              <button
+                type="button"
+                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+                onClick={() => {
+                  setNewOpen(false);
+                  navigate("/amend");
+                }}
+              >
+                New amend proposal
+              </button>
+            )}
             <button
               type="button"
               className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
@@ -122,15 +118,7 @@ export function TopBar() {
         <span className="hidden sm:inline">Library</span>
       </Link>
 
-      <div className="mx-auto flex w-full max-w-md flex-1">
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search Spaces, sources, proposals…"
-          className="h-8 w-full border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-3 text-sm placeholder:text-[var(--color-ink-muted)]"
-        />
-      </div>
+      <div className="mx-auto flex-1" />
 
       <span
         className={`hidden text-xs sm:inline ${
@@ -144,35 +132,40 @@ export function TopBar() {
         {apiOnline === true ? "API · ok" : apiOnline === false ? "API · offline" : "API · …"}
       </span>
 
-      <button
-        type="button"
-        onClick={() => setTheme((current) => (current === "cream" ? "graphite" : "cream"))}
-        className="h-8 border border-[var(--color-line)] px-2 text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
-        aria-label={`Switch to ${theme === "cream" ? "graphite" : "cream"} theme`}
-      >
-        {theme === "cream" ? "Graphite" : "Cream"}
-      </button>
-
-      <select
-        aria-label="Role"
-        value={role}
-        onChange={(e) => setRole(e.target.value as AppRole)}
-        className="h-8 border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
-      >
-        {ROLES.map((r) => (
-          <option key={r} value={r}>
-            {r}
-          </option>
-        ))}
-      </select>
+      <span className="hidden text-[10px] uppercase tracking-[0.12em] text-[var(--color-ink-muted)] sm:inline">
+        {productMode === "cream" ? "Ask" : "Operate"}
+      </span>
 
       <button
         type="button"
-        className="h-8 border border-[var(--color-line)] px-2 text-sm text-[var(--color-ink-muted)]"
-        title="User menu (U0 stub)"
+        onClick={() => setProductMode(nextMode)}
+        className="h-8 border border-[var(--color-accent)] px-2.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+        aria-label={
+          productMode === "cream" ? "Switch to operator mode" : "Switch to ask mode"
+        }
+        title={
+          productMode === "cream"
+            ? "Ask mode (Claude-white). Switch to operator chrome."
+            : "Operator mode. Switch to ask / Claude-white."
+        }
       >
-        aminah@
+        {productMode === "cream" ? "Switch to Operate" : "Switch to Ask"}
       </button>
+
+      {productMode === "graphite" && (
+        <select
+          aria-label="Role"
+          value={role}
+          onChange={(e) => setRole(e.target.value as AppRole)}
+          className="h-8 border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
+        >
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      )}
     </header>
   );
 }

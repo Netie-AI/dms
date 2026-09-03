@@ -230,10 +230,14 @@ def sync_bronze_to_serving(
             error="serving warehouse missing — will not create it",
         )
 
-    con = duckdb.connect(str(dst))
     copied: list[str] = []
     skipped: list[str] = []
+    con = None
     try:
+        # Windows exclusive lock: Cortex holds the serving file. connect()
+        # throws before ATTACH, so it must sit inside this try or ingest 500s
+        # after bronze already landed.
+        con = duckdb.connect(str(dst))
         ensure_lake_schemas(con)
         _ensure_registry(con)
         con.execute(f"ATTACH '{src.as_posix()}' AS ingest_wh (READ_ONLY)")
@@ -308,7 +312,8 @@ def sync_bronze_to_serving(
         )
     except Exception as exc:  # noqa: BLE001 — lock / attach must not crash ingest
         err = str(exc)
-        status = "locked" if "lock" in err.lower() else "error"
+        busy = "being used by another process" in err or "lock" in err.lower()
+        status = "locked" if busy else "error"
         return SyncResult(
             status=status,
             ingest=src,
@@ -318,7 +323,8 @@ def sync_bronze_to_serving(
             error=err[:300],
         )
     finally:
-        con.close()
+        if con is not None:
+            con.close()
 
 
 def maybe_sync_bronze_to_serving(ingest: Path | None = None) -> SyncResult | None:

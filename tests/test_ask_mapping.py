@@ -181,6 +181,77 @@ def test_map_empty_sql_result_demotes_hard_rule_12():
     assert_envelope_valid(env)
 
 
+def test_e12_total_by_dimension_keeps_grouped_certified_query():
+    """'total spend by country' is a grouped ask. E12 must not demote it.
+
+    Live 2026-08-28: cq_spend_by_country answered Finance, then E12 ate it
+    because the question contained 'total'. That made EPIC-003 look broken
+    on the serving path while the Space grant was fine.
+    """
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Result: MY 12.4; SG 8.1",
+            "audit_id": "aud_e12_by",
+            "route": "certified_metric",
+            "provenance": {"badge": "certified", "layer": "L0"},
+            "sql_used": (
+                "SELECT s.country, SUM(i.quantity_kg * i.unit_cost_myr) "
+                "AS total_spend_myr FROM inventory AS i JOIN suppliers AS s "
+                "ON i.supplier_id = s.supplier_id GROUP BY s.country LIMIT 1000"
+            ),
+            "rows": [
+                {"country": "MY", "total_spend_myr": 12.4},
+                {"country": "SG", "total_spend_myr": 8.1},
+            ],
+            "abstained": False,
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        session_id="ses_e12_by",
+        question="What is our total spend by supplier country?",
+    )
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["abstained"] is False
+    assert env["rows"]
+    assert not any("shape mismatch" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
+def test_xlsx_named_ask_mapped_from_demo_warehouse_demotes():
+    """Same constructor as POST /v1/chat/ask. Live 0/3: BETA xlsx -> outbound revenue."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Result: revenue_myr = 80787598.3",
+            "audit_id": "aud_xlsx_demo",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": (
+                "SELECT ROUND(COALESCE(SUM(quantity_kg * unit_cost_myr), 0), 2) "
+                "AS revenue_myr FROM transactions WHERE txn_type = 'OUT' LIMIT 1000"
+            ),
+            "rows": [{"revenue_myr": 80787598.3}],
+            "abstained": False,
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        session_id="ses_xlsx",
+        question=(
+            "In encoding_value_norm.xlsx sheet Sales, what is total "
+            "sales_value_myr for sku BETA?"
+        ),
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert "80787598" not in (env["text"] or "")
+    assert any("demo warehouse" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
 def test_live_envelope_forwards_drillthrough_token():
     resp = AskResponse.model_validate(
         {

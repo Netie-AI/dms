@@ -153,6 +153,25 @@ _NO_EXCLUSION_CHIP = re.compile(
 )
 
 
+def with_grounded_scope(question: str, tables: list[str] | None) -> str:
+    """Name ticked files in the only field Cortex ask accepts (question).
+
+    AskRequest is question/session_id/space_id. Manifest bind refuses the wrong
+    SQL after generation. Live 2026-08-28: bronze ground still emitted
+    ``FROM transactions`` (PathNotAllowed) because the NL layer never saw the
+    table. This is the user's explicit scope, not intent inference (F28).
+    """
+    q = question.strip()
+    missing = [
+        t
+        for t in (tables or [])
+        if t and t.lower() not in q.lower() and t.split(".", 1)[-1].lower() not in q.lower()
+    ]
+    if not missing:
+        return q
+    return f"Using only {', '.join(missing)}: {q}"
+
+
 def normalize_ask_question(question: str) -> str:
     """Map decline chips ('…without excluding') to a plain rank question."""
     q = question.strip()
