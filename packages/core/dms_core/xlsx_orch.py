@@ -485,10 +485,27 @@ def evaluate_frtr_golden(
     }
 
 
+def _safe_component(raw: str, fallback: str) -> str:
+    # Dots are not allowed: ``..`` survived the old ``[^.]+`` keep-list and
+    # ``root / .. / xlsx_orch / pack`` walked out of space_docs.
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", raw or "")[:80].strip("_")
+    if not cleaned or cleaned in {".", ".."} or ".." in cleaned:
+        return fallback
+    return cleaned
+
+
 def artifact_dir(root: Path, *, space_id: str, pack_id: str) -> Path:
-    safe_space = re.sub(r"[^a-zA-Z0-9._-]+", "_", space_id or "company-default")[:80]
-    safe_pack = re.sub(r"[^a-zA-Z0-9._-]+", "_", pack_id or "pack")[:80]
+    safe_space = _safe_component(space_id or "company-default", "company-default")
+    safe_pack = _safe_component(pack_id or "pack", "pack")
     return root / safe_space / "xlsx_orch" / safe_pack
+
+
+def _dir_under_root(root: Path, dest: Path) -> bool:
+    try:
+        dest.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def store_artifact(
@@ -519,6 +536,12 @@ def store_artifact(
             "error": "producer must be pointer_copilot (Pointer paste) or test_fixture",
         }
     dest_dir = artifact_dir(root, space_id=space_id, pack_id=pack_id)
+    if not _dir_under_root(root, dest_dir):
+        return {
+            "ok": False,
+            "reason": "path_not_allowlisted",
+            "error": "artifact dir escaped space_docs root",
+        }
     dest_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(filename).name or "result.xlsx"
     dest = dest_dir / safe_name
@@ -543,7 +566,10 @@ def store_artifact(
 
 
 def load_artifact_meta(root: Path, *, space_id: str, pack_id: str) -> dict[str, Any] | None:
-    fp = artifact_dir(root, space_id=space_id, pack_id=pack_id) / "artifact.json"
+    dest_dir = artifact_dir(root, space_id=space_id, pack_id=pack_id)
+    if not _dir_under_root(root, dest_dir):
+        return None
+    fp = dest_dir / "artifact.json"
     if not fp.is_file():
         return None
     try:

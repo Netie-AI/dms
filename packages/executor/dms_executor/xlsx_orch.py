@@ -2,6 +2,8 @@
 
 Swap scenario: local FS -> MinIO / S3 via ObjectStorePort. No duckdb.execute.
 Excel is source-only: this copies posted bytes; it does not Workbook.save.
+Caller-supplied paths must resolve under allowlisted_roots (warehouse parent
++ DMS_REVEAL_ROOTS). Bytes posted in the body skip the read-side check.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from dms_core.xlsx_orch import (
 )
 
 from dms_executor.demo_warehouse import warehouse_path
+from dms_executor.reveal import resolve_allowlisted_file
 from dms_executor.triage import parse_xlsx_grids
 
 
@@ -26,14 +29,41 @@ def space_docs_root(warehouse: Path | None = None) -> Path:
     return db.parent / "space_docs"
 
 
-def _load_sheets_from_path(path: str | Path) -> list[tuple[str, list[list[Any]]]] | None:
-    p = Path(path)
-    if not p.is_file():
-        return None
+def _path_outside(path: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "rejected",
+        "reason": "path_not_allowlisted",
+        "error": f"path is outside allowlisted roots: {path}",
+        "paste_owner": "pointer",
+    }
+
+
+def _load_sheets_from_path(path: str | Path) -> list[tuple[str, list[list[Any]]]] | dict[str, Any]:
+    raw = str(path or "").strip()
+    hit = resolve_allowlisted_file(raw)
+    if not hit.get("ok"):
+        if hit.get("error") == "path_not_allowlisted":
+            return _path_outside(raw)
+        return {
+            "ok": False,
+            "status": "rejected",
+            "reason": "workbook_unreadable",
+            "error": f"cannot read workbook_path: {raw}",
+            "paste_owner": "pointer",
+        }
+    resolved: Path = hit["path"]
     try:
-        return parse_xlsx_grids(p.read_bytes())
+        sheets = parse_xlsx_grids(resolved.read_bytes())
     except Exception:  # noqa: BLE001
-        return None
+        return {
+            "ok": False,
+            "status": "rejected",
+            "reason": "workbook_unreadable",
+            "error": f"cannot read workbook_path: {raw}",
+            "paste_owner": "pointer",
+        }
+    return sheets
 
 
 def run_crosscheck(
@@ -43,15 +73,12 @@ def run_crosscheck(
     pack_id: str | None = None,
 ) -> dict[str, Any]:
     path = str(workbook_path or "").strip()
-    sheets = _load_sheets_from_path(path) if path else None
-    if path and sheets is None:
-        return {
-            "ok": False,
-            "status": "rejected",
-            "reason": "workbook_unreadable",
-            "error": f"cannot read workbook_path: {path}",
-            "paste_owner": "pointer",
-        }
+    sheets: list[tuple[str, list[list[Any]]]] | None = None
+    if path:
+        loaded = _load_sheets_from_path(path)
+        if isinstance(loaded, dict):
+            return loaded
+        sheets = loaded
     return crosscheck_pack(
         pack,
         sheets=sheets,
@@ -84,16 +111,19 @@ def run_extract(
                     "POST the resulting xlsx. DMS does not invent a workbook."
                 ),
             }
-        p = Path(src)
-        if not p.is_file():
+        hit = resolve_allowlisted_file(src)
+        if not hit.get("ok"):
+            if hit.get("error") == "path_not_allowlisted":
+                return _path_outside(src)
             return {
                 "ok": False,
                 "status": "awaiting_pointer_receipt",
                 "reason": "result_path_missing",
-                "error": f"result_path is not a file: {p}",
+                "error": f"result_path is not a file: {src}",
             }
-        raw = p.read_bytes()
-        name = p.name
+        resolved: Path = hit["path"]
+        raw = resolved.read_bytes()
+        name = resolved.name
     try:
         sheets = parse_xlsx_grids(raw)
     except Exception as exc:  # noqa: BLE001
@@ -135,7 +165,7 @@ def run_golden(
             space_id=space_id or "company-default",
             pack_id=pack_id,
         )
-    src = path or (meta or {}).get("path") or ""
+    src = str(path or (meta or {}).get("path") or "").strip()
     if not src:
         return {
             "ok": False,
@@ -145,15 +175,10 @@ def run_golden(
                 "resulting xlsx to /v1/studio/xlsx-orch/extract"
             ),
         }
-    p = Path(str(src))
-    if not p.is_file():
-        return {
-            "ok": False,
-            "reason": "artifact_missing",
-            "error": f"stored path is not a file: {p}",
-        }
-    sheets = _load_sheets_from_path(p)
-    if sheets is None:
-        return {"ok": False, "reason": "xlsx_read_error", "error": f"cannot read {p}"}
+    loaded = _load_sheets_from_path(src)
+    if isinstance(loaded, dict):
+        if loaded.get("reason") == "path_not_allowlisted":
+            return loaded
+        return {"ok": False, "reason": "xlsx_read_error", "error": loaded.get("error")}
     prod = producer or (meta or {}).get("producer")
-    return evaluate_frtr_golden(sheets, producer=prod)
+    return evaluate_frtr_golden(loaded, producer=prod)

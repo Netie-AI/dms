@@ -60,7 +60,12 @@ from dms_executor.pipeline_loader import (
     validate_pipeline_dict,
 )
 from dms_executor.promote import run_promote, sign_gold_metric
-from dms_executor.reveal import allowlisted_roots, is_filesystem_uri, reveal_path
+from dms_executor.reveal import (
+    allowlisted_roots,
+    is_filesystem_uri,
+    resolve_allowlisted_file,
+    reveal_path,
+)
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.warehouse_browse import (
     list_warehouse_tables,
@@ -638,6 +643,7 @@ __all__ = [
     "preview_warehouse_table",
     "allowlisted_roots",
     "is_filesystem_uri",
+    "resolve_allowlisted_file",
     "reveal_path",
     "resolve_session_acl",
     "run_promote",

@@ -309,3 +309,80 @@ def test_frtr_golden_passes_when_analysis_and_export_agree() -> None:
     assert abs(float(out["avg_cost"]) - 300.27) <= 0.05
     assert abs(int(out["ontime_count"]) - 184005) <= 50
     assert abs(int(out["total_count"]) - 200000) <= 50
+
+
+def _outside_xlsx(tmp_path: Path) -> Path:
+    dest = tmp_path.parent / f"xlsx_orch_outside_{tmp_path.name}.xlsx"
+    write_xlsx_sheets(
+        dest,
+        [("Carriers", [["Carrier"], ["Acme"]])],
+    )
+    return dest
+
+
+def test_crosscheck_refuses_path_outside_allowlist(
+    client: TestClient, tmp_path: Path
+) -> None:
+    outside = _outside_xlsx(tmp_path)
+    try:
+        resp = client.post(
+            "/v1/studio/xlsx-orch/crosscheck",
+            json={
+                "pack": _candidate_pack(),
+                "workbook_path": str(outside),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["reason"] == "path_not_allowlisted"
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_extract_refuses_path_outside_allowlist(
+    client: TestClient, tmp_path: Path
+) -> None:
+    outside = _outside_xlsx(tmp_path)
+    try:
+        resp = client.post(
+            "/v1/studio/xlsx-orch/extract",
+            json={
+                "pack_id": "orch_outside",
+                "space_id": FINANCE,
+                "producer": "pointer_copilot",
+                "result_path": str(outside),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["reason"] == "path_not_allowlisted"
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_golden_refuses_dotdot_escape(client: TestClient, tmp_path: Path) -> None:
+    outside = _outside_xlsx(tmp_path)
+    sneak = str(tmp_path / ".." / outside.name)
+    try:
+        resp = client.post(
+            "/v1/studio/xlsx-orch/golden",
+            json={"path": sneak, "producer": "pointer_copilot"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["reason"] == "path_not_allowlisted"
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_artifact_dir_rejects_dotdot(tmp_path: Path) -> None:
+    from dms_core.xlsx_orch import artifact_dir
+
+    dest = artifact_dir(tmp_path, space_id="..", pack_id="..")
+    assert dest.resolve() == (tmp_path / "company-default" / "xlsx_orch" / "pack").resolve()
+    sneak = artifact_dir(tmp_path, space_id="foo/../../etc", pack_id="x")
+    assert "etc" not in {p.name for p in sneak.resolve().parents}
+    sneak.resolve().relative_to(tmp_path.resolve())

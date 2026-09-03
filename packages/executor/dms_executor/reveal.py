@@ -59,6 +59,26 @@ def _under_roots(resolved: Path, roots: list[Path]) -> bool:
     return False
 
 
+def resolve_allowlisted_file(path: str | Path) -> dict[str, Any]:
+    """Resolve a caller-supplied path to a file under allowlisted_roots.
+
+    Empty path is the caller's problem. Relative paths are resolved against cwd
+    then checked, so ``..`` cannot walk out of the warehouse tree.
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return {"ok": False, "error": "path_required"}
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except OSError:
+        return {"ok": False, "error": "unresolvable_path"}
+    if not _under_roots(resolved, allowlisted_roots()):
+        return {"ok": False, "error": "path_not_allowlisted", "path": str(resolved)}
+    if not resolved.is_file():
+        return {"ok": False, "error": "not_a_file", "path": str(resolved)}
+    return {"ok": True, "path": resolved}
+
+
 def reveal_path(path: str, *, open_explorer: bool = True) -> dict[str, Any]:
     """Reveal path in Explorer if allowlisted. Never shell-opens outside roots."""
     raw = (path or "").strip()

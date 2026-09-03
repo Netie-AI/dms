@@ -2,6 +2,17 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - xlsx-orch paths stay inside the warehouse tree
+
+- **Read-side allowlist.** `POST /v1/studio/xlsx-orch/{crosscheck,extract,golden}`
+  used to open any caller-supplied absolute path. They now go through
+  `resolve_allowlisted_file` (same roots as REVEAL-01: warehouse parent +
+  `DMS_REVEAL_ROOTS`). Outside paths return `path_not_allowlisted` without a
+  read. Mutation: the three new tests go red if the guard is skipped.
+- **Write-side.** `artifact_dir` no longer keeps `.` in space/pack ids, so
+  `space_id=..` cannot walk out of `space_docs`. Store/load also refuse a dest
+  that does not resolve under the root.
+
 ## 2026-09-03 - Trust ask-path + Share fallback + viz CSV lock
 
 - **Live reconfirm.** Hostile `score_answers` after API restart: precision
