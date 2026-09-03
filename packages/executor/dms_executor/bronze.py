@@ -120,6 +120,53 @@ def _record_ingest(
     )
 
 
+def record_source_pull(
+    *,
+    table_name: str,
+    source: str,
+    ingest_id: str,
+    row_count: int,
+    truncated: bool,
+    space_id: str | None = None,
+    path: Path | None = None,
+) -> str:
+    """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
+
+    The registry was built for files: ``filename`` and a content ``sha256``. A SQL pull
+    has neither, and the parked connector wrote none of this, so a SQL-sourced table
+    carried row provenance (``_src``) and no source provenance - half an answer.
+
+    Rather than widen a table other lanes read, the file columns carry the SQL
+    equivalents. ``filename`` holds the credential-free source string
+    (``sqlserver://host:port/db#schema.table``). ``sha256`` holds a fingerprint of the
+    pull - source, row count, truncation - so a re-pull that landed a different number
+    of rows is detectable as a different ingest rather than silently the same one.
+
+    Lives here, not in the connector, because the connector must never hold a DuckDB
+    handle: extract-only is asserted on its source text
+    (``tests/invariants/test_extract_only.py``).
+    """
+    fingerprint = hashlib.sha256(
+        f"{source}|rows={row_count}|truncated={truncated}".encode("utf-8")
+    ).hexdigest()
+    db = ensure_demo_warehouse(path or warehouse_path())
+    con = duckdb.connect(str(db))
+    try:
+        ensure_lake_schemas(con)
+        _ensure_registry(con)
+        _record_ingest(
+            con,
+            table_name=table_name,
+            filename=source,
+            digest=fingerprint,
+            ingest_id=ingest_id,
+            space_id=space_id,
+        )
+    finally:
+        con.close()
+    return fingerprint
+
+
 def ingest_csv_bytes(
     *,
     filename: str,
