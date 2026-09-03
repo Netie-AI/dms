@@ -130,9 +130,7 @@ def xlsx_orch_crosscheck(
     workbook_path: str = "",
     pack_id: str | None = None,
 ) -> dict[str, Any]:
-    from dms_executor.xlsx_orch import run_crosscheck
-
-    return run_crosscheck(pack, workbook_path=workbook_path, pack_id=pack_id)
+    return dms_executor.run_crosscheck(pack, workbook_path=workbook_path, pack_id=pack_id)
 
 
 def xlsx_orch_extract(
@@ -144,9 +142,7 @@ def xlsx_orch_extract(
     filename: str = "",
     data: bytes | None = None,
 ) -> dict[str, Any]:
-    from dms_executor.xlsx_orch import run_extract
-
-    return run_extract(
+    return dms_executor.run_extract(
         pack_id=pack_id,
         space_id=space_id,
         producer=producer,
@@ -163,9 +159,7 @@ def xlsx_orch_golden(
     path: str = "",
     producer: str | None = None,
 ) -> dict[str, Any]:
-    from dms_executor.xlsx_orch import run_golden
-
-    return run_golden(pack_id=pack_id, space_id=space_id, path=path, producer=producer)
+    return dms_executor.run_golden(pack_id=pack_id, space_id=space_id, path=path, producer=producer)
 
 
 #: Fields that constitute an ATTESTATION rather than a definition. A caller may say

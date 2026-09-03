@@ -74,6 +74,7 @@ from dms_executor.warehouse_identity import (
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
+from dms_executor.xlsx_orch import run_crosscheck, run_extract, run_golden
 
 logger = logging.getLogger(__name__)
 
@@ -607,6 +608,9 @@ def get_serving_engine() -> ServingEnginePort:
 
 
 __all__ = [
+    "run_crosscheck",
+    "run_extract",
+    "run_golden",
     "Executor",
     "IngestReceipt",
     "ManifestMinter",
