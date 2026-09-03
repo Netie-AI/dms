@@ -432,3 +432,101 @@ def test_a_declared_fk_the_data_supports_is_compiled_not_refused(
         assert sum(float(r[-1]) for r in grouped) == 60.0, grouped
     finally:
         con.close()
+
+
+# --- verify-agent FAIL on PR #111: a capped pull must SAY so, and a lossy stem must not overwrite
+
+
+def test_a_capped_pull_says_so_on_the_preview(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R-0001, on the artifact a person reads. row_count=2 alone reads as a two-row table."""
+    from dms_api.app import create_app
+    from fastapi.testclient import TestClient
+
+    con = _FakeConnection(
+        [("dbo", "orders")],
+        (["order_id", "amount"], [["A", "1"], ["B", "2"], ["C", "3"]]),
+    )
+    _install(monkeypatch, con)
+
+    pull = dbc.ingest_source_table(_cfg(), "orders", max_rows=2, path=wh)
+    assert pull.truncated is True and pull.row_count == 2
+
+    r = TestClient(create_app()).get("/v1/library/bronze/dbo_orders/preview", params={"limit": 10})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["truncated"] is True, body
+    assert body["row_count"] == 2
+    assert "capped" in (body.get("truncation_note") or "").lower(), body
+
+    db = duckdb.connect(str(wh), read_only=True)
+    try:
+        row = db.execute(
+            "SELECT row_count, truncated FROM bronze._ingest_registry "
+            "WHERE table_name = 'dbo_orders'"
+        ).fetchone()
+    finally:
+        db.close()
+    assert row == (2, True), "row_count and truncated must be readable columns, not hash inputs"
+
+
+def test_an_uncapped_pull_is_not_reported_as_capped(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0005 sibling: the new field must not cry wolf."""
+    from dms_api.app import create_app
+    from fastapi.testclient import TestClient
+
+    _install(monkeypatch, _FakeConnection([("dbo", "orders")], (["order_id"], [["A"], ["B"]])))
+    dbc.ingest_source_table(_cfg(), "orders", max_rows=10, path=wh)
+    body = TestClient(create_app()).get("/v1/library/bronze/dbo_orders/preview").json()
+    assert body["truncated"] is False
+    assert body["truncation_note"] is None
+
+
+def test_two_source_tables_one_stem_apart_do_not_overwrite_each_other(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dbo.a-b and dbo.a_b both sanitise to dbo_a_b. Pre-fix the second DROPped the first
+    while SourceExtract.pulls reported both as landed - a silent overwrite (R-0011)."""
+    con = _FakeConnection(
+        [("dbo", "a-b"), ("dbo", "a_b")],
+        {
+            "[dbo].[a-b]": (["k", "v"], [["1", "x"], ["2", "y"]]),
+            "[dbo].[a_b]": (["k", "v"], [["9", "z"]]),
+        },
+    )
+    _install(monkeypatch, con)
+
+    extract = dbc.ingest_source_database(_cfg(), path=wh)
+
+    names = [p.bronze_table for p in extract.pulls]
+    assert len(set(names)) == 2, f"two source tables landed under one name: {names}"
+    assert extract.pulls[0].note is None
+    assert extract.pulls[1].note is not None, (
+        "the collision must be reported, not resolved in silence"
+    )
+
+    db = duckdb.connect(str(wh), read_only=True)
+    try:
+        counts = {
+            n: db.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0] for n in names
+        }
+        registry = db.execute(
+            "SELECT COUNT(*) FROM bronze._ingest_registry WHERE filename LIKE '%#dbo.a%'"
+        ).fetchone()[0]
+    finally:
+        db.close()
+    assert sorted(counts.values()) == [1, 2], counts
+    assert registry == 2
+
+
+def test_the_same_source_table_repulled_replaces_itself_not_a_neighbour(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-ingesting is what a person means by pulling again; the claim must not suffix it."""
+    con = _FakeConnection([("dbo", "orders")], (["order_id"], [["A"], ["B"]]))
+    _install(monkeypatch, con)
+    first = dbc.ingest_source_table(_cfg(), "orders", path=wh)
+    second = dbc.ingest_source_table(_cfg(), "orders", path=wh)
+    assert first.bronze_table == second.bronze_table
+    assert second.note is None

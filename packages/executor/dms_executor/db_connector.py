@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from dms_executor.bronze import record_source_pull, write_bronze_rows
+from dms_executor.bronze import (
+    claim_source_table_name,
+    record_source_pull,
+    write_bronze_rows,
+)
 
 SourceKind = Literal["sqlserver", "mysql"]
 
@@ -101,6 +105,9 @@ class SourcePull:
     truncated: bool
     ingest_id: str
     ref_id: str
+    #: Set when the bronze name was suffixed because another source already held the
+    #: sanitised stem. Reported, never silent.
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -473,8 +480,17 @@ def _pull_one(
     if not columns:
         raise ValueError(f"{target.qualified} exposed no columns")
     source = f"{cfg.describe()}#{target.qualified}"
+    # A caller-named bronze_table is taken as given. A derived one goes through the
+    # registry's claim so two source tables one alnum-stem apart cannot overwrite each
+    # other - the second gets a suffix and the receipt carries a note.
+    note: str | None = None
+    name = bronze_table
+    if name is None:
+        name, note = claim_source_table_name(
+            stem=_bronze_name(target), source=source, path=path
+        )
     landed = write_bronze_rows(
-        table=bronze_table or _bronze_name(target),
+        table=name,
         columns=columns,
         rows=rows,
         ref_id=ref_id,
@@ -498,6 +514,7 @@ def _pull_one(
         truncated=truncated,
         ingest_id=ingest_id,
         ref_id=ref_id,
+        note=note,
     )
 
 

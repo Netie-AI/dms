@@ -73,6 +73,13 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
     }
     if "space_id" not in cols:
         con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN space_id VARCHAR")
+    # Source provenance for SQL pulls (DR-0005 part 4). These were folded into the
+    # sha256 fingerprint and nothing could read them back - a one-way function is
+    # not a field. Same widen-if-missing idiom as space_id above.
+    if "row_count" not in cols:
+        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN row_count INTEGER")
+    if "truncated" not in cols:
+        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN truncated BOOLEAN")
 
 
 def _claim_table_name(
@@ -112,12 +119,42 @@ def _record_ingest(
     digest: str,
     ingest_id: str,
     space_id: str | None = None,
+    row_count: int | None = None,
+    truncated: bool | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
+    # Named columns, not positional VALUES. The registry has been widened three
+    # times; a positional insert silently misaligns the moment a column is added.
     con.execute(
-        f"INSERT INTO {_REGISTRY} VALUES (?, ?, ?, ?, now(), ?)",
-        [table_name, filename, digest, ingest_id, space_id],
+        f"INSERT INTO {_REGISTRY} "
+        "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, truncated) "
+        "VALUES (?, ?, ?, ?, now(), ?, ?, ?)",
+        [table_name, filename, digest, ingest_id, space_id, row_count, truncated],
     )
+
+
+def claim_source_table_name(
+    *, stem: str, source: str, path: Path | None = None
+) -> tuple[str, str | None]:
+    """Reserve a bronze name for a SQL-sourced table without taking another table's.
+
+    The connector's name sanitiser is lossy: ``dbo.a-b`` and ``dbo.a_b`` both become
+    ``dbo_a_b``, and any two names sharing a 60-character prefix collide. The parked
+    connector wrote straight to that name, so the second pull DROPped the first while the
+    receipt reported both as landed - a silent overwrite (R-0011). The file path already
+    had the answer in ``_claim_table_name``: same stem held by a *different* source gets a
+    suffix and a note. This is that claim, keyed on the credential-free source string.
+
+    Returns ``(table_name, collision_note)``. The note is ``None`` when nothing collided.
+    """
+    db = ensure_demo_warehouse(path or warehouse_path())
+    con = duckdb.connect(str(db))
+    try:
+        ensure_lake_schemas(con)
+        _ensure_registry(con)
+        return _claim_table_name(con, stem=stem, filename=source, digest="")
+    finally:
+        con.close()
 
 
 def record_source_pull(
@@ -161,6 +198,8 @@ def record_source_pull(
             digest=fingerprint,
             ingest_id=ingest_id,
             space_id=space_id,
+            row_count=row_count,
+            truncated=truncated,
         )
     finally:
         con.close()
