@@ -154,6 +154,21 @@ def preview_bronze_table(
         rel = con.execute(f"SELECT * FROM {qual} LIMIT {lim} OFFSET {off}")
         cols = [d[0] for d in rel.description]
         rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
+        source = None
+        extracted_at = None
+        try:
+            # filename is the file path for a CSV ingest, and the credential-free
+            # source string for a SQL pull (DR-0005 part 4). created_at is extracted_at.
+            reg = con.execute(
+                "SELECT filename, created_at FROM bronze._ingest_registry WHERE table_name = ?",
+                [name],
+            ).fetchone()
+            if reg is not None:
+                source = None if reg[0] is None else str(reg[0])
+                extracted_at = None if reg[1] is None else str(reg[1])
+        except Exception:  # noqa: BLE001 - registry may not exist yet
+            source = None
+            extracted_at = None
     finally:
         con.close()
     return {
@@ -164,5 +179,7 @@ def preview_bronze_table(
         "limit": lim,
         "offset": off,
         "kind": "bronze",
+        "source": source,
+        "extracted_at": extracted_at,
         "note": "Read-only bronze lake preview — provenance columns attached at ingest.",
     }

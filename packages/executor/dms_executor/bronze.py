@@ -147,7 +147,7 @@ def record_source_pull(
     (``tests/invariants/test_extract_only.py``).
     """
     fingerprint = hashlib.sha256(
-        f"{source}|rows={row_count}|truncated={truncated}".encode("utf-8")
+        f"{source}|rows={row_count}|truncated={truncated}".encode()
     ).hexdigest()
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db))

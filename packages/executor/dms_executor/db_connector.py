@@ -1,4 +1,4 @@
-"""Live source-database connector — SQL Server / Azure SQL (ODBC) and MySQL.
+"""Live source-database connector - SQL Server / Azure SQL (ODBC) and MySQL.
 
 Rows are pulled with the source's own driver and landed through
 ``write_bronze_rows``. Nothing here uses DuckDB's ``ATTACH``/``INSTALL``
@@ -344,6 +344,7 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
     invented; the database already says what identifies a row and what relates to
     what. These are handed to the ontology compiler as claims to be measured.
     """
+    params: tuple[Any, ...]
     if cfg.kind == "sqlserver":
         pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
     else:
@@ -392,7 +393,7 @@ def _resolve(cfg: SourceConfig, con: Any, schema: str | None, table: str) -> Sou
     """Match a requested table against what the source actually exposes.
 
     Identifiers cannot be parameterised, so the only safe source of an
-    identifier is the server's own catalog — never the caller's string.
+    identifier is the server's own catalog - never the caller's string.
     """
     available = list_source_tables(cfg, con=con)
     wanted = table.lower()
