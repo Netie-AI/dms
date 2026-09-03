@@ -398,6 +398,56 @@ export async function fetchTablePreview(
     : fetchWarehousePreview(target.table, limit, offset, spaceId, signal);
 }
 
+/* ── Promote receipts (EPIC-024 LINEAGE-02) ────────────────────────────────
+ * Typed read of GET /v1/pipelines/receipts. Nothing renders yet (tickets 3-4).
+ * Same /api + query shape as fetchBronzePreview; errors use describeApiError
+ * rather than getJson's status string, and never return null (that is
+ * fetchHealth — a 403 must not look like no_receipt_yet, R-0011).
+ */
+
+export type PromoteReceipt = {
+  run_id: string;
+  target: string;
+  sources: string[];
+  source_rows: number | null;
+  passed: number;
+  quarantined: number;
+  unmatched: number;
+  reconciled: boolean;
+  counts_by_reason: Record<string, number>;
+  dedup_key: string[];
+  lineage: string;
+  table: string | null;
+  quarantine_table: string | null;
+};
+
+export type PromoteReceiptState =
+  | {
+      target: string;
+      state: "recorded";
+      recorded_at: string;
+      runs: number;
+      receipt: PromoteReceipt;
+    }
+  | {
+      target: string;
+      state: "no_receipt_yet";
+      runs: 0;
+      receipt: null;
+    };
+
+export async function fetchPromoteReceipt(
+  target: string,
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<PromoteReceiptState> {
+  const qs = new URLSearchParams({ target });
+  if (spaceId) qs.set("space_id", spaceId);
+  const res = await fetch(`/api/v1/pipelines/receipts?${qs}`, { signal });
+  if (!res.ok) throw new Error(describeApiError(await res.text()));
+  return (await res.json()) as PromoteReceiptState;
+}
+
 export async function createSpace(
   name: string,
 ): Promise<{ space: SpaceSummary; persisted: boolean; hint?: string }> {
