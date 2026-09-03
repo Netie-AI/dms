@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from dms_api.deps import CortexDep, SettingsDep
@@ -13,6 +13,7 @@ from dms_api.gatekeeping import enforce
 from dms_api.wiring import (
     gold_sign_metric,
     pipeline_infer_contract,
+    pipeline_latest_receipt,
     pipeline_run,
 )
 
@@ -60,6 +61,33 @@ def run_pipeline(body: RunBody, settings: SettingsDep, cortex: CortexDep) -> dic
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return receipt
+
+
+def _scope_label(space_id: str | None) -> str:
+    """Name the scope applied. Promote targets have no grant model; do not invent one."""
+    return f"space:{space_id}" if space_id else "company-default"
+
+
+@router.get("/receipts")
+def get_pipeline_receipts(
+    cortex: CortexDep,
+    target: str = Query(...),
+    space_id: str | None = Query(None),
+) -> dict[str, Any]:
+    """Latest promote receipt for ``target``. Read posture; never a bare 404."""
+    decision = compliance_gate(
+        action="pipeline.receipts",
+        metadata={
+            "task_id": "pipeline.receipts",
+            "target": target,
+            "scope": _scope_label(space_id),
+        },
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
+    body = pipeline_latest_receipt(target=target)
+    body["scope"] = _scope_label(space_id)
+    return body
 
 
 @router.post("/infer-contract")

@@ -2,6 +2,21 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - Promote receipts persist and are readable (EPIC-024 ticket 1)
+
+- **Store.** Each silver/gold promote writes `main._promote_receipts` on the
+  same DuckDB connection as the target (transaction: both commit or the run
+  fails). Full `to_dict()` as JSON; `recorded_at` minted in Python UTC. Rejected
+  homes: Postgres `dms` (Library must work without `DATABASE_URL`) and a JSON
+  file (no transaction against the lake).
+- **Read.** `GET /v1/pipelines/receipts?target=` is gated
+  (`pipeline.receipts`, `enforce(mutation=False)`). `recorded` vs
+  `no_receipt_yet` (never zeros, never a bare 404). Writer-held lake is
+  `lake_busy` 503. Scope is named; targets still have no grant model.
+- **Honest gap.** Promotes from before this merge were never stored; they
+  answer `no_receipt_yet`. Nothing is rendered — tickets 2-4 own the UI.
+  dms#113.
+
 ## 2026-09-03 - SQL source freshness is one watermark (EPIC-020 ticket 5)
 
 - **One clock.** `extracted_at` is minted in Python at pull time and stored as a

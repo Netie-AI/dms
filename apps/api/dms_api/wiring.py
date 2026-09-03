@@ -342,6 +342,17 @@ def pipeline_run(
     return receipt.to_dict()
 
 
+def pipeline_latest_receipt(*, target: str) -> dict[str, Any]:
+    """Read the latest stored promote receipt. Maps a busy lake to 503, never 500."""
+    try:
+        return dms_executor.latest_promote_receipt(target)
+    except dms_executor.LakeBusy as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "lake_busy", "message": str(exc)},
+        ) from None
+
+
 def pipeline_infer_contract(*, source: str) -> dict[str, Any]:
     return dms_executor.infer_contract(source).to_dict()
 

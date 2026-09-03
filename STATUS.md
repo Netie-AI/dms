@@ -49,11 +49,11 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **#111 merged** (`37bfd95f`). Writer `D:/DMS-epic020` now SQLSRC-05 (#114) watermark. Do not merge park/epic-020. EPIC-016 stays OPEN. |
+| **This tick** | EPIC-024 LINEAGE-01 (#113): persist receipts + GET /v1/pipelines/receipts. Off main `25d3b612`. Do not merge park/epic-020. |
 | **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
 | Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)** - DR-0005 pair. #112 CLOSED. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). EPIC-003 (#6) + EPIC-017 (#33) QUEUED. #59 CLOSED. EPIC-018 QUEUED |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | **#111 merged.** Next is SQLSRC-05 on `feat/epic-020-sqlsrc-05-watermark`. Parks stay parked. Floor: Cortex#44. |
+| CI / PRs | LINEAGE-01 on `cursor/lineage-01-promote-receipts-3103`. Parks stay parked. Floor: Cortex#44. |
 
 ## Agent models
 

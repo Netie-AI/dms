@@ -6,6 +6,7 @@ lineage: propagate keeps _src[] and _ingest_id on the target.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -22,6 +23,132 @@ from dms_executor.pipeline_loader import PipelineLoadError
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _QUAL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+
+#: Leading underscore keeps this out of list_bronze_tables / Library tree.
+_RECEIPTS = "main._promote_receipts"
+_LOCK_ERRORS: tuple[type[BaseException], ...] = (duckdb.IOException,)
+if hasattr(duckdb, "ConnectionException"):
+    _LOCK_ERRORS = (duckdb.IOException, duckdb.ConnectionException)
+
+
+class LakeBusy(Exception):
+    """Writer holds the lake file; a miss must not be reported as no_receipt_yet."""
+
+
+def _ensure_receipts(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_RECEIPTS} (
+          run_id VARCHAR PRIMARY KEY,
+          target VARCHAR,
+          recorded_at TIMESTAMPTZ,
+          reconciled BOOLEAN,
+          unmatched INTEGER,
+          receipt_json VARCHAR
+        )
+        """
+    )
+
+
+def _record_promote_receipt(con: duckdb.DuckDBPyConnection, receipt: PromoteReceipt) -> None:
+    """Persist the receipt on the same connection as the target write.
+
+    ``recorded_at`` is minted once in Python UTC so the read route returns the
+    instant the store holds. Full ``to_dict()`` is stored as JSON; the read
+    path must not recompute it.
+    """
+    _ensure_receipts(con)
+    recorded_at = datetime.now(UTC)
+    con.execute(
+        f"""
+        INSERT INTO {_RECEIPTS}
+          (run_id, target, recorded_at, reconciled, unmatched, receipt_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            receipt.run_id,
+            receipt.target,
+            recorded_at,
+            receipt.reconciled,
+            receipt.unmatched,
+            json.dumps(receipt.to_dict()),
+        ],
+    )
+
+
+def _utc_iso(value: datetime | str) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        else:
+            value = value.astimezone(UTC)
+        return value.isoformat().replace("+00:00", "Z")
+    return str(value)
+
+
+def latest_promote_receipt(target: str, *, path: Path | None = None) -> dict[str, Any]:
+    """Latest stored receipt for ``target``, or the honest empty state.
+
+    Opens the lake read-only. A writer holding the file raises ``LakeBusy``
+    rather than looking like no promote has run.
+    """
+    empty: dict[str, Any] = {
+        "target": target,
+        "state": "no_receipt_yet",
+        "runs": 0,
+        "receipt": None,
+    }
+    db = path or warehouse_path()
+    if not Path(db).is_file():
+        return empty
+    try:
+        con = duckdb.connect(str(db), read_only=True)
+    except _LOCK_ERRORS as exc:
+        raise LakeBusy(
+            "warehouse is held by a writer; retry when the promote finishes"
+        ) from exc
+    try:
+        exists = con.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'main' AND table_name = '_promote_receipts'
+            """
+        ).fetchone()
+        if not exists or int(exists[0]) < 1:
+            return empty
+        count_row = con.execute(
+            f"SELECT COUNT(*) FROM {_RECEIPTS} WHERE target = ?",
+            [target],
+        ).fetchone()
+        runs = int(count_row[0]) if count_row else 0
+        if runs == 0:
+            return empty
+        row = con.execute(
+            f"""
+            SELECT recorded_at, receipt_json
+            FROM {_RECEIPTS}
+            WHERE target = ?
+            ORDER BY recorded_at DESC, run_id DESC
+            LIMIT 1
+            """,
+            [target],
+        ).fetchone()
+        if row is None:
+            return empty
+        recorded_at, receipt_json = row[0], row[1]
+        return {
+            "target": target,
+            "state": "recorded",
+            "recorded_at": _utc_iso(recorded_at),
+            "runs": runs,
+            "receipt": json.loads(str(receipt_json)),
+        }
+    except _LOCK_ERRORS as exc:
+        raise LakeBusy(
+            "warehouse is held by a writer; retry when the promote finishes"
+        ) from exc
+    finally:
+        con.close()
 
 
 def _qi(name: str) -> str:
@@ -239,11 +366,22 @@ def run_promote(
     run_id = str(uuid.uuid4())
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db))
+    started = False
     try:
         ensure_lake_schemas(con)
+        con.execute("BEGIN")
+        started = True
         if pipe.is_gold:
-            return _run_gold(con, pipe, run_id=run_id, gold_metric=gold_metric)
-        return _run_silver(con, pipe, run_id=run_id)
+            receipt = _run_gold(con, pipe, run_id=run_id, gold_metric=gold_metric)
+        else:
+            receipt = _run_silver(con, pipe, run_id=run_id)
+        con.execute("COMMIT")
+        started = False
+        return receipt
+    except Exception:
+        if started:
+            con.execute("ROLLBACK")
+        raise
     finally:
         con.close()
 
@@ -271,7 +409,7 @@ def _run_gold(
     # Materialize metric result as gold table (aggregate — document lineage)
     con.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM ({gold_metric.sql})")
     n = scalar_int(con.execute(f"SELECT COUNT(*) FROM {target}").fetchone())
-    return PromoteReceipt(
+    receipt = PromoteReceipt(
         run_id=run_id,
         target=pipe.target,
         sources=list(pipe.sources),
@@ -283,6 +421,8 @@ def _run_gold(
         table=pipe.target,
         quarantine_table=None,
     )
+    _record_promote_receipt(con, receipt)
+    return receipt
 
 
 def _run_silver(
@@ -498,7 +638,7 @@ def _run_silver(
     if unmatched:
         counts["join_cardinality_change"] = abs(unmatched)
 
-    return PromoteReceipt(
+    receipt = PromoteReceipt(
         run_id=run_id,
         target=pipe.target,
         sources=list(pipe.sources),
@@ -512,6 +652,8 @@ def _run_silver(
         table=pipe.target,
         quarantine_table=q_table,
     )
+    _record_promote_receipt(con, receipt)
+    return receipt
 
 
 def _append_hash(resp: Any) -> str | None:

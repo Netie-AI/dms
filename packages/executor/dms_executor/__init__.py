@@ -66,7 +66,12 @@ from dms_executor.pipeline_loader import (
     load_pipeline_yaml,
     validate_pipeline_dict,
 )
-from dms_executor.promote import run_promote, sign_gold_metric
+from dms_executor.promote import (
+    LakeBusy,
+    latest_promote_receipt,
+    run_promote,
+    sign_gold_metric,
+)
 from dms_executor.reveal import (
     allowlisted_roots,
     is_filesystem_uri,
@@ -658,6 +663,8 @@ __all__ = [
     "resolve_allowlisted_file",
     "reveal_path",
     "resolve_session_acl",
+    "LakeBusy",
+    "latest_promote_receipt",
     "run_promote",
     "sign_gold_metric",
     "validate_pipeline_dict",
