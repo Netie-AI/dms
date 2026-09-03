@@ -373,10 +373,16 @@ export function fetchWarehousePreview(
   );
 }
 
-/** Which preview endpoint a tree node id maps to, or null when it has none. */
+/** Which preview endpoint a tree node id maps to, or null when it has none.
+ * Silver/gold promote nodes have no row preview (LINEAGE-03). Do not map them
+ * to warehouse preview — that 403s as warehouse_not_in_space.
+ */
 export function previewForNode(
   id: string,
 ): { kind: "bronze" | "warehouse"; table: string } | null {
+  if (id.startsWith("silver:") || id.startsWith("gold:")) {
+    return null;
+  }
   if (id.startsWith("bronze:")) {
     return { kind: "bronze", table: id.slice("bronze:".length) };
   }
@@ -398,8 +404,8 @@ export async function fetchTablePreview(
     : fetchWarehousePreview(target.table, limit, offset, spaceId, signal);
 }
 
-/* ── Promote receipts (EPIC-024 LINEAGE-02) ────────────────────────────────
- * Typed read of GET /v1/pipelines/receipts. Nothing renders yet (tickets 3-4).
+/* ── Promote receipts (EPIC-024 LINEAGE-02/03) ────────────────────────────
+ * Typed read of GET /v1/pipelines/receipts. LibraryPage renders the panel.
  * Same /api + query shape as fetchBronzePreview; errors use describeApiError
  * rather than getJson's status string, and never return null (that is
  * fetchHealth — a 403 must not look like no_receipt_yet, R-0011).

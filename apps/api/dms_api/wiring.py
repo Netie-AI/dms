@@ -111,6 +111,7 @@ def library_tree(
         warehouse_tables=warehouse,
         space_id=space_id,
         space_name=space_name,
+        promote_targets=[] if space_id else dms_executor.list_promote_targets(),
     )
 
 
