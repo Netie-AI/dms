@@ -1,6 +1,24 @@
-import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type APIResponse,
+  type Page,
+} from "@playwright/test";
 
-test.describe.configure({ timeout: 120_000 });
+test.describe.configure({ mode: "serial", timeout: 120_000 });
+
+async function openCompanyLibrary(page: Page): Promise<void> {
+  const spaces = page.waitForResponse(
+    (r) => r.url().includes("/v1/spaces") && r.ok(),
+  );
+  await page.goto("/library");
+  await spaces;
+  await expect(page.getByRole("heading", { name: "Library", level: 1 })).toBeVisible();
+  await page.getByLabel("Space").selectOption({ label: "Company (default ACL)" });
+  await expect(page.getByLabel("Space")).toHaveValue("");
+  await expect(page.locator("strong").filter({ hasText: "Company (default ACL)" })).toBeVisible();
+}
 
 type Receipt = {
   source_rows: number | null;
@@ -130,9 +148,7 @@ test.describe("Library promote receipt", () => {
   });
 
   test("healthy node numbers match the /run receipt", async ({ page }) => {
-    await page.goto("/library");
-    await expect(page.getByRole("heading", { name: "Library", level: 1 })).toBeVisible();
-    await page.getByLabel("Space").selectOption("");
+    await openCompanyLibrary(page);
     await expect(page.getByTestId("promote-node-silver.e2e_sales")).toBeVisible({
       timeout: 30_000,
     });
@@ -155,9 +171,7 @@ test.describe("Library promote receipt", () => {
   });
 
   test("fan-out node is a defect with the run's negative unmatched", async ({ page }) => {
-    await page.goto("/library");
-    await expect(page.getByRole("heading", { name: "Library", level: 1 })).toBeVisible();
-    await page.getByLabel("Space").selectOption("");
+    await openCompanyLibrary(page);
     await expect(page.getByTestId("promote-node-silver.e2e_fanout")).toBeVisible({
       timeout: 30_000,
     });
