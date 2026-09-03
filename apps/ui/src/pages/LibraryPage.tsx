@@ -425,10 +425,9 @@ export function LibraryPage() {
               {receiptBusy && (
                 <p className="mt-2 text-xs text-[var(--color-ink-muted)]">Loading receipt…</p>
               )}
-              {receiptErr && (
-                <p className="mt-2 text-sm text-[var(--color-danger)]">{receiptErr}</p>
-              )}
-              {receipt ? <PromoteReceiptPanel state={receipt} /> : null}
+              {!receiptBusy ? (
+                <PromoteReceiptPanel state={receipt} error={receiptErr} />
+              ) : null}
             </div>
           )}
           {previewBusy && active?.kind !== "promote" && (
