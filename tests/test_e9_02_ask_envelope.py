@@ -16,11 +16,16 @@ from cortex_client.models import AskRequest, AskResponse
 from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_executor import Executor
+from dms_executor.demo_grants import DemoSessionStore
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
 _WIDE_FILL_CLASS = (383803.56, 242755.97, 228548.84)
+_F32_COMPETING = [
+    "bronze.aa64458a_p50_03_inventory_messy_Sales",
+    "bronze.aa64458a_p50_03_inventory_messy_Wide_Fill",
+]
 
 
 @dataclass
@@ -194,6 +199,61 @@ def test_chat_ask_post_scalar_ask_does_not_ship_ranking(
     assert "different question" in body["text"].lower()
     assert "67710506.66" not in body["text"]
     assert body["audit_id"] == "aud_e12_http"
+    assert len(cortex.asks) == 1
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.delenv("DMS_ASK_MODE", raising=False)
+    monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
+    settings_mod.get_settings.cache_clear()
+
+
+def test_chat_ask_post_demotes_ambiguous_multi_sheet_ranking(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /v1/chat/ask when the client DOES name both sheets of one workbook.
+
+    Recovered from the closed #98. The twin above sends no ``grounded_tables``;
+    this one sends both sheets, so the conflict has to be derived from the label
+    set itself. ``Executor.live_ask`` never plants ``competing_scopes`` - it
+    passes ``sorted(acl.row_predicates)`` - so a plant-only demote would green
+    this and still ship Wide_Fill totals to a customer.
+    """
+    from dms_api import settings as settings_mod
+
+    settings_mod.get_settings.cache_clear()
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    settings_mod.get_settings.cache_clear()
+
+    cortex = _WideFillRankingCortex()
+    app = create_app()
+    app.state.ask_service = Executor(
+        cortex=cortex,  # type: ignore[arg-type]
+        minter=minter,
+        session_store=DemoSessionStore(uploads=lambda: tuple(_F32_COMPETING)),
+    )
+    app.state.cortex = cortex
+    client = TestClient(app)
+
+    body = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": "show top 3 categoty sales",
+            "session_id": "ses_e902",
+            "grounded_tables": list(_F32_COMPETING),
+        },
+    ).json()
+
+    assert_envelope_valid(body)
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["values"] == []
+    assert body["rows"] == []
+    assert "scope conflict" in body["text"].lower()
+    for n in ("383,803.56", "242,755.97", "228,548.84"):
+        assert n not in body["text"]
+    assert body["audit_id"] == "aud_e902_http"
+    assert body["drillthrough_token"] in (None, "")
     assert len(cortex.asks) == 1
 
     settings_mod.get_settings.cache_clear()
