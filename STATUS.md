@@ -48,12 +48,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68** monetization. `app.netie.ai/cortex` 404; Constructor catalog works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | Landed **#103** ingest P0, **#104** F32 sheet shape, **#105** STATUS. Hostile + curated 100% precision 0 WRONG 10/14. Cream Share Copied, Mock stock certified, Check accuracy Match 642,969,499.25. Constructor fixture-ask 2/2 L0. Viz CSV locked. F36 + live catalog 401 + Genie bakeoff remain |
+| **NEEDS-YOU** | **F36 + F37 DECIDED** by your delegation - DR-0005: F27 stands, extract-only; EPIC-020 dms#108 + EPIC-024 dms#109 now in flight. F70 parent DECIDED (EPIC-025 #87). Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
+| **This tick** | Landed **#106** (surfaces + scoring + xlsx-orch with path allowlist). Hostile claim 100% precision 0 WRONG 10/14. EPIC-016 tickets **stay OPEN** (PRD park). F36 + F37 still founder. |
 | **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
-| Epics | **EPIC-003 (#6)** tickets 72-74 closed; live both-halves now hold. **EPIC-017 (#33)** still open (Cortex#11 F40 engine). **EPIC-018 QUEUED** |
+| Epics | **In flight: EPIC-020 (#108) foundation + EPIC-024 (#109) surface** - the DR-0005 pair, one invisible one visible. **EPIC-003 (#6) -> QUEUED** (72-74 closed; F55 waits on DR-0004). **EPIC-017 (#33) -> QUEUED** (#59 is Cortex-side). EPIC-018 QUEUED. Never closed - that orphans children |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | **#103 + #104** open, three jobs green each. Actions runs again. **Parked, do not merge:** `park/f45-space-insights` (F45 STOP), `park/epic-020-source-db-connector` (F36), `feat/xlsx-orch-11-extract` (EPIC-016 parked) |
+| CI / PRs | **#106 merged.** No open DMS PRs. **Parked, do not merge:** `park/f45-space-insights` (F45 STOP), `park/epic-020-source-db-connector` (F36). Keep `feat/xlsx-orch-10/11` - unique leftover vs #106 (Postgres `space_artifacts`). |
 
 ## Agent models
 
