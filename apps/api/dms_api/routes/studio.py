@@ -45,12 +45,14 @@ class ReceiptOut(BaseModel):
 @router.post("/ingest")
 async def ingest_file(
     cortex: CortexDep,
+    settings: SettingsDep,
     file: UploadFile = File(...),
     space_id: str | None = Form(None),
 ) -> ReceiptOut:
     """Single-file ingest (compat). Prefer /ingest-batch for multi-file triage."""
     decision = compliance_gate(
         action="studio.ingest",
+        actor=settings.dms_actor_user_id,
         metadata={"task_id": "studio.ingest", "filename": file.filename},
         client=cortex,
     )
@@ -88,15 +90,14 @@ async def ingest_file(
 @router.post("/ingest-batch")
 async def ingest_batch_files(
     cortex: CortexDep,
+    settings: SettingsDep,
     files: list[UploadFile] = File(...),
     space_id: str | None = Form(None),
 ) -> ReceiptOut:
     decision = compliance_gate(
         action="studio.ingest",
-        metadata={
-            "task_id": "studio.ingest",
-            "file_count": len(files),
-        },
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "studio.ingest", "file_count": len(files)},
         client=cortex,
     )
     enforce(decision)
@@ -129,10 +130,12 @@ async def ingest_batch_files(
 @router.get("/bronze")
 def list_bronze(
     cortex: CortexDep,
+    settings: SettingsDep,
     space_id: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     decision = compliance_gate(
         action="studio.list_bronze",
+        actor=settings.dms_actor_user_id,
         metadata={"task_id": "studio.list_bronze", "space_id": space_id or "company-default"},
         client=cortex,
     )
@@ -147,9 +150,9 @@ def list_chunks(
     space_id: str = Query(..., description="Space that owns the document chunks"),
 ) -> list[dict[str, Any]]:
     """Steward list of space-scoped document chunks (RAG-01)."""
-    _ = settings
     decision = compliance_gate(
         action="studio.list_chunks",
+        actor=settings.dms_actor_user_id,
         metadata={"task_id": "studio.list_chunks", "space_id": space_id},
         client=cortex,
     )
@@ -178,10 +181,15 @@ class XlsxOrchGoldenIn(BaseModel):
 
 
 @router.post("/xlsx-orch/crosscheck")
-def xlsx_orch_crosscheck_route(body: XlsxOrchCrosscheckIn, cortex: CortexDep) -> dict[str, Any]:
+def xlsx_orch_crosscheck_route(
+    body: XlsxOrchCrosscheckIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
     """AirGPT D04 POSTs a candidate pack here. DMS does not paste into Excel."""
     decision = compliance_gate(
         action="studio.xlsx_orch.crosscheck",
+        actor=settings.dms_actor_user_id,
         metadata={"task_id": "studio.xlsx_orch.crosscheck"},
         client=cortex,
     )
@@ -194,10 +202,15 @@ def xlsx_orch_crosscheck_route(body: XlsxOrchCrosscheckIn, cortex: CortexDep) ->
 
 
 @router.post("/xlsx-orch/extract")
-def xlsx_orch_extract_route(body: XlsxOrchExtractIn, cortex: CortexDep) -> dict[str, Any]:
+def xlsx_orch_extract_route(
+    body: XlsxOrchExtractIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
     """Store a Pointer-posted result xlsx. DMS does not generate the workbook."""
     decision = compliance_gate(
         action="studio.xlsx_orch.extract",
+        actor=settings.dms_actor_user_id,
         metadata={
             "task_id": "studio.xlsx_orch.extract",
             "pack_id": body.pack_id,
@@ -215,10 +228,15 @@ def xlsx_orch_extract_route(body: XlsxOrchExtractIn, cortex: CortexDep) -> dict[
 
 
 @router.post("/xlsx-orch/golden")
-def xlsx_orch_golden_route(body: XlsxOrchGoldenIn, cortex: CortexDep) -> dict[str, Any]:
+def xlsx_orch_golden_route(
+    body: XlsxOrchGoldenIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
     """FRTR golden on a stored Copilot-path artifact. Refuses MCP/openpyxl producer."""
     decision = compliance_gate(
         action="studio.xlsx_orch.golden",
+        actor=settings.dms_actor_user_id,
         metadata={"task_id": "studio.xlsx_orch.golden", "pack_id": body.pack_id},
         client=cortex,
     )

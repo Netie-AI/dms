@@ -10,19 +10,9 @@ which is indistinguishable from a catalog miss unless we look at the request.
 These tests pin the request we send. They do not prove Cortex packed
 ``studio.ingest`` (P-DMS-4 / gate_task_unknown is Cortex-side).
 Recovered from the abandoned branch ``cursor/ff02-polarity-acl-ingest-3ebf``
-(never opened as a PR). Two of its four tests do **not** hold against `main`
-today and were deliberately left off rather than adjusted to pass:
-
-* ``test_gate_forwards_api_key_and_actor`` - expects ``X-API-Key`` on the F5
-  request. `main` does not send it.
-* ``test_studio_ingest_passes_the_seeded_actor`` - expects Studio ingest to
-  forward ``settings.dms_actor_user_id`` as the gate actor. `main` forwards
-  ``None``.
-
-Either `main` has a gap - DR-0004 says identity comes from config and never
-from a request, which reads as an argument for the seeded actor - or those two
-encode a design that was superseded. That is a product call, not a test fix, so
-they are named here instead of being made green.
+(never opened as a PR). Two of its four tests now hold: F5 forwards
+``X-API-Key`` from the Cortex client, and Studio ingest names
+``settings.dms_actor_user_id`` (DR-0004 Option A - identity from config).
 """
 
 from __future__ import annotations
@@ -73,6 +63,68 @@ def test_gate_without_api_key_stays_anonymous(monkeypatch) -> None:
     assert decision.allowed is False
     assert decision.reason == "gate_refused"
     assert "X-API-Key" not in captured["headers"]
+
+
+def test_gate_forwards_api_key_and_actor(monkeypatch) -> None:
+    """Read surfaces send CORTEX_API_KEY. F5 must too, or mutations look anonymous."""
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> bool:
+            return False
+
+        def post(self, path: str, json: dict[str, Any] | None = None, headers: dict | None = None):
+            captured["headers"] = headers or {}
+            captured["json"] = json or {}
+            return _FakeResp(200, {"status": "ok", "executable": True})
+
+    monkeypatch.setattr("cortex_client.gate.httpx.Client", _FakeClient)
+
+    class _Client:
+        base_url = "http://cortex.test"
+        api_key = "k-from-config"
+
+    actor = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    decision = compliance_gate(
+        action="studio.ingest",
+        actor=actor,
+        client=_Client(),
+    )
+    assert decision.allowed is True
+    assert captured["headers"]["X-API-Key"] == "k-from-config"
+    assert captured["json"]["actor"] == actor
+
+
+def test_studio_ingest_passes_the_seeded_actor(monkeypatch) -> None:
+    """DR-0004 Option A: Studio ingest names the configured steward, never a request field."""
+    from cortex_client.gate import ComplianceDecision
+
+    seen: dict[str, Any] = {}
+
+    def _allow(*, action: str, actor: str | None = None, **kwargs: Any) -> ComplianceDecision:
+        seen["action"] = action
+        seen["actor"] = actor
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    monkeypatch.setattr("dms_api.routes.studio.compliance_gate", _allow)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    get_settings.cache_clear()
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/studio/ingest",
+        files={"file": ("sales.csv", b"sku,qty\nA,1\n", "text/csv")},
+    )
+    assert r.status_code == 200, r.text
+    settings = get_settings()
+    assert seen["action"] == "studio.ingest"
+    assert seen["actor"] == settings.dms_actor_user_id
+    get_settings.cache_clear()
 
 
 def test_studio_ingest_without_cortex_is_403_gate_unavailable(monkeypatch) -> None:
