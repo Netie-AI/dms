@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,7 +87,7 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
 
 def mint_extracted_at() -> str:
     """One UTC ISO-8601 stamp for a SQL pull. Minted in Python, not by DuckDB now()."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def source_kind_of(filename: str | None) -> str:
@@ -116,9 +116,9 @@ def format_extracted_at(value: Any) -> str | None:
         except ValueError:
             return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     else:
-        dt = dt.astimezone(timezone.utc)
+        dt = dt.astimezone(UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

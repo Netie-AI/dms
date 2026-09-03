@@ -27,8 +27,8 @@ ORDERS_SOURCE = "sqlserver://db.example.net:1433/sales#dbo.orders"
 
 @pytest.fixture()
 def warehouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    from dms_executor.demo_warehouse import ensure_demo_warehouse
     from dms_executor import demo_warehouse as dw
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
 
     path = tmp_path / "sqlsrc05.duckdb"
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(path))
