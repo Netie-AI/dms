@@ -5,8 +5,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cortex_client import CortexClient
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from dms_api.middleware_actor import RejectIdentityHeadersMiddleware
 from dms_api.migrate import run_migrations
@@ -31,6 +33,11 @@ from dms_api.store.memory import DemoSpaceStore
 from dms_api.wiring import build_ask_service
 
 logger = logging.getLogger(__name__)
+
+
+def _validation_detail_without_input(exc: RequestValidationError) -> list[dict]:
+    """Drop request `input` and `ctx` so a 422 cannot echo a password (R-0004)."""
+    return [{k: v for k, v in err.items() if k not in ("input", "ctx")} for err in exc.errors()]
 
 
 def _build_space_store(settings) -> tuple[object, StoreBinding]:
@@ -121,6 +128,15 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RejectIdentityHeadersMiddleware)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422, content={"detail": _validation_detail_without_input(exc)}
+        )
+
     app.include_router(health.router, tags=["health"])
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)

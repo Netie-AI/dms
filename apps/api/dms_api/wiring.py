@@ -9,6 +9,7 @@ from cortex_client import CortexClient
 from dms_core.ask import AskServicePort
 from dms_core.pipelines import GoldMetricDef
 from dms_ledger import append_event
+from fastapi import HTTPException
 
 
 def build_ask_service(
@@ -150,6 +151,93 @@ def xlsx_orch_extract(
         filename=filename,
         data=data,
     )
+
+
+def sql_source_describe(
+    *,
+    kind: str,
+    host: str,
+    database: str,
+    port: int | None = None,
+) -> str:
+    """Credential-free source label for the gate metadata. Dummy user, empty password."""
+    cfg = dms_executor.SourceConfig(
+        kind=kind,  # type: ignore[arg-type]
+        host=host,
+        database=database,
+        user="gate",
+        password="",
+        port=port,
+    )
+    return cfg.describe()
+
+
+def sql_source_ingest(
+    *,
+    kind: str,
+    host: str,
+    database: str,
+    user: str,
+    password: str,
+    port: int | None = None,
+    tables: list[str] | None = None,
+    max_rows: int | None = None,
+    space_id: str | None = None,
+    encrypt: bool = True,
+    trust_server_certificate: bool = False,
+) -> dict[str, Any]:
+    """Pull a SQL source into bronze. Receipt is built field-by-field, never asdict."""
+    ceiling = dms_executor.DEFAULT_MAX_ROWS
+    cap = ceiling if max_rows is None else min(int(max_rows), ceiling)
+    if cap < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "bad_request", "message": "max_rows must be >= 1"},
+        )
+    try:
+        cfg = dms_executor.SourceConfig(
+            kind=kind,  # type: ignore[arg-type]
+            host=host,
+            database=database,
+            user=user,
+            password=password,
+            port=port,
+            encrypt=encrypt,
+            trust_server_certificate=trust_server_certificate,
+        )
+        extract = dms_executor.ingest_source_database(
+            cfg, tables=tables, max_rows=cap, space_id=space_id
+        )
+    except dms_executor.SourceConnectionError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "source_unreachable", "message": str(exc)},
+        ) from None
+    except dms_executor.UnknownSourceTable as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "source_table_unknown", "message": str(exc)},
+        ) from None
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "bad_request", "message": str(exc)},
+        ) from None
+    return {
+        "source": extract.source,
+        "tables": [
+            {
+                "bronze_table": p.bronze_table,
+                "source": p.source,
+                "row_count": p.row_count,
+                "truncated": p.truncated,
+            }
+            for p in extract.pulls
+        ],
+        "skipped": list(extract.skipped),
+        "declared_primary_keys": len(extract.keys.primary_keys),
+        "declared_foreign_keys": len(extract.keys.foreign_keys),
+    }
 
 
 def xlsx_orch_golden(
