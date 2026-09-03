@@ -214,3 +214,10 @@ def test_a_customer_table_named_like_a_demo_table_is_not_silently_dropped(
             assert int(con.execute(f'SELECT COUNT(*) FROM main."{name}"').fetchone()[0]) > 0
     finally:
         con.close()
+
+
+def test_start_dms_stack_cortex_child_pins_cortex_warehouse() -> None:
+    """Cortex must not inherit the DMS lake (Windows DuckDB exclusive lock)."""
+    start = (ROOT / "scripts" / "windows" / "Start-DMSStack.ps1").read_text(encoding="utf-8")
+    assert "CortexOS.api.main:app" in start
+    assert "`$env:DMS_WAREHOUSE_DB='$cxWh'" in start

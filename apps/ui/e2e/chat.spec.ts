@@ -3,7 +3,9 @@ import { expect, test } from "@playwright/test";
 test.describe("Chat experience", () => {
   test("empty chat shows suggestions and a live API", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Ask about your data" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: /Ask (about your|your company's) data/ }),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Top 5 selling SKUs by revenue" })).toBeVisible();
     await expect(page.getByText("API · ok")).toBeVisible();
     await expect(page.getByText(/DMS API unreachable/i)).toHaveCount(0);
