@@ -70,6 +70,7 @@ DATA_REVEALING_CALLEES = frozenset(
         "bronze_ingest",
         "sql_source_ingest",
         "pipeline_run",
+        "pipeline_latest_receipt",
         "gold_sign_metric",
     }
 )
