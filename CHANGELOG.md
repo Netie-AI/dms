@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - Studio ingest names the configured actor
+
+- **DR-0004 Option A.** `POST /v1/studio/ingest` (and the other Studio hops)
+  now pass `settings.dms_actor_user_id` into F5. They used to send `actor=None`,
+  so Cortex recorded the literal default `"user"`. Identity still never comes
+  from a request header.
+- **F5 key.** `compliance_gate` forwards `X-API-Key` from `CortexClient.api_key`
+  when one is set, and still sends none when it is not (fail closed, not spoof).
+  Lifespan constructs the client with `settings.cortex_api_key`.
+
 ## 2026-09-03 - xlsx-orch paths stay inside the warehouse tree
 
 - **Read-side allowlist.** `POST /v1/studio/xlsx-orch/{crosscheck,extract,golden}`
