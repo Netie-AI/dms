@@ -2,15 +2,6 @@
 
 Append-only. Never edited, only added to. Newest first.
 
-## 2026-09-03 - fetchPromoteReceipt typed client (EPIC-024 ticket 2)
-
-- **First pipeline call in `api.ts`.** `fetchPromoteReceipt(target, spaceId?,
-  signal?)` reads `GET /v1/pipelines/receipts?target=` (and `space_id` when
-  given). Discriminated union: `recorded` has a non-null receipt;
-  `no_receipt_yet` has `receipt: null`. `source_rows` is `number | null`;
-  `unmatched` is a signed number. Non-OK throws `describeApiError` — never
-  `null` (a 403 is not no-receipt). Nothing renders. dms#115.
-
 ## 2026-09-03 - Promote receipts persist and are readable (EPIC-024 ticket 1)
 
 - **Store.** Each silver/gold promote writes `main._promote_receipts` on the
