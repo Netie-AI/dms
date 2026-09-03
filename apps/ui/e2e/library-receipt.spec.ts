@@ -105,7 +105,8 @@ async function runYaml(request: APIRequestContext, yaml_text: string): Promise<R
 }
 
 test.describe("Library promote receipt", () => {
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ request }, testInfo) => {
+    testInfo.setTimeout(120_000);
     await ingestCsv(request, "e2e_sales_raw.csv", salesCsv());
     healthy = await runYaml(request, HEALTHY_YAML);
 

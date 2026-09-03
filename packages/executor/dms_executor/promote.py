@@ -102,7 +102,7 @@ def latest_promote_receipt(target: str, *, path: Path | None = None) -> dict[str
     if not Path(db).is_file():
         return empty
     try:
-        con = duckdb.connect(str(db), read_only=True)
+        con = duckdb.connect(str(db))
     except _LOCK_ERRORS as exc:
         raise LakeBusy(
             "warehouse is held by a writer; retry when the promote finishes"

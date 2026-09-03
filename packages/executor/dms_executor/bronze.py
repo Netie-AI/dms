@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -49,6 +50,7 @@ def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
 #: could take over an existing table's name with no way to tell afterwards that
 #: it had ever belonged to something else.
 _REGISTRY = "bronze._ingest_registry"
+_REGISTRY_LOCK = threading.Lock()
 
 
 def mint_extracted_at() -> str:
@@ -66,41 +68,43 @@ def classify_source_kind(filename: str | None) -> str:
 
 
 def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {_REGISTRY} (
-          table_name VARCHAR PRIMARY KEY,
-          filename   VARCHAR,
-          sha256     VARCHAR,
-          ingest_id  VARCHAR,
-          created_at TIMESTAMPTZ
+    # Library fires /tree twice. Two ALTER ADD COLUMN on the same catalog 500s.
+    with _REGISTRY_LOCK:
+        con.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_REGISTRY} (
+              table_name VARCHAR PRIMARY KEY,
+              filename   VARCHAR,
+              sha256     VARCHAR,
+              ingest_id  VARCHAR,
+              created_at TIMESTAMPTZ
+            )
+            """
         )
-        """
-    )
-    cols = {
-        r[0]
-        for r in con.execute(
-            """
-            SELECT column_name FROM information_schema.columns
-            WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'
-            """
-        ).fetchall()
-    }
-    if "space_id" not in cols:
-        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN space_id VARCHAR")
-    # Source provenance for SQL pulls (DR-0005 part 4). These were folded into the
-    # sha256 fingerprint and nothing could read them back - a one-way function is
-    # not a field. Same widen-if-missing idiom as space_id above.
-    if "row_count" not in cols:
-        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN row_count INTEGER")
-    if "truncated" not in cols:
-        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN truncated BOOLEAN")
-    # VARCHAR, not TIMESTAMPTZ: DuckDB's str(created_at) is not the Python mint, and
-    # the four artifacts have to show one identical string (SQLSRC-05).
-    if "extracted_at" not in cols:
-        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN extracted_at VARCHAR")
-    if "source_kind" not in cols:
-        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_kind VARCHAR")
+        cols = {
+            r[0]
+            for r in con.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'
+                """
+            ).fetchall()
+        }
+        if "space_id" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN space_id VARCHAR")
+        # Source provenance for SQL pulls (DR-0005 part 4). These were folded into the
+        # sha256 fingerprint and nothing could read them back - a one-way function is
+        # not a field. Same widen-if-missing idiom as space_id above.
+        if "row_count" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN row_count INTEGER")
+        if "truncated" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN truncated BOOLEAN")
+        # VARCHAR, not TIMESTAMPTZ: DuckDB's str(created_at) is not the Python mint, and
+        # the four artifacts have to show one identical string (SQLSRC-05).
+        if "extracted_at" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN extracted_at VARCHAR")
+        if "source_kind" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_kind VARCHAR")
 
 
 def _claim_table_name(
@@ -254,7 +258,7 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
     db = path or warehouse_path()
     if not Path(db).is_file():
         return {}
-    con = duckdb.connect(str(db), read_only=True)
+    con = duckdb.connect(str(db))
     try:
         rows = con.execute(
             f"SELECT table_name, filename, extracted_at, truncated, source_kind "
@@ -512,14 +516,13 @@ def list_bronze_tables(
 
     db = ensure_demo_warehouse(path or warehouse_path())
     canon_space = canonical_space_id(space_id) if space_id else None
-    init = duckdb.connect(str(db))
+    # One write-mode connection for ensure + list. A second read_only=True
+    # connect 500s while any sibling request still holds RW (Library fires
+    # /tree and /tree?space_id= in parallel).
+    con = duckdb.connect(str(db))
     try:
-        ensure_lake_schemas(init)
-        _ensure_registry(init)
-    finally:
-        init.close()
-    con = duckdb.connect(str(db), read_only=True)
-    try:
+        ensure_lake_schemas(con)
+        _ensure_registry(con)
         # Internal bookkeeping tables are named with a leading underscore and
         # must not reach the file picker — _ingest_registry used to exist only
         # after a CSV ingest, and now that it is created up front it would

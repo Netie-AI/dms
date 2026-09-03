@@ -49,7 +49,7 @@ def warehouse_path() -> Path:
 
 def _schema_ok(db: Path) -> bool:
     try:
-        con = duckdb.connect(str(db), read_only=True)
+        con = duckdb.connect(str(db))
         try:
             row = con.execute(
                 "SELECT value FROM meta WHERE key = 'schema_version'"
@@ -249,7 +249,8 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
 
 def connect_readonly(path: Path | None = None) -> duckdb.DuckDBPyConnection:
     db = ensure_demo_warehouse(path)
-    return duckdb.connect(str(db), read_only=True)
+    # Same config as writers. Mixed read_only=True vs RW on one file 500s DuckDB.
+    return duckdb.connect(str(db))
 
 
 def execute_sql(sql: str, *, path: Path | None = None) -> list[dict[str, Any]]:
