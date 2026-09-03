@@ -15,6 +15,7 @@ from dms_executor.demo_warehouse import (
     total_outbound_revenue,
 )
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.warehouse_browse import stamp_source_watermarks
 
 SUGGESTIONS = [
     "What was total revenue?",
@@ -55,6 +56,7 @@ def _pack(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("as_of", _as_of())
     kwargs.setdefault("suggestions", SUGGESTIONS)
     env = build_answer_envelope(**kwargs)
+    stamp_source_watermarks(env.get("contributing_sources") or [])
     assert_envelope_valid(env)
     return env
 

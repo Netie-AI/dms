@@ -10,6 +10,7 @@ import {
   type TablePreview,
   type TreeNode as ApiTreeNode,
 } from "@/lib/api";
+import { showSqlSource, showTruncatedFlag, watermarkTimeLabel } from "@/lib/previewWatermark";
 
 type TreeMeta = {
   kind?: string;
@@ -18,6 +19,10 @@ type TreeMeta = {
   table?: string;
   ref?: string;
   space_name?: string | null;
+  source?: string | null;
+  extracted_at?: string | null;
+  truncated?: boolean | null;
+  source_kind?: "sql" | "file" | null;
 };
 
 type TreeNode = ApiTreeNode & {
@@ -92,6 +97,19 @@ function TreeRows({
               {typeof n.meta?.row_count === "number" && (
                 <span className="tabular-nums text-[10px] text-[var(--color-ink-muted)]">
                   {n.meta.row_count}
+                </span>
+              )}
+              {n.node_type === "bronze" && n.meta && (
+                <span className="max-w-[9rem] truncate text-[10px] text-[var(--color-ink-muted)]">
+                  {watermarkTimeLabel(n.meta as TreeMeta).text}
+                </span>
+              )}
+              {n.meta && (n.meta as TreeMeta).truncated === true && (
+                <span
+                  data-testid="tree-truncated"
+                  className="shrink-0 text-[10px] text-[var(--color-danger)]"
+                >
+                  capped at max_rows
                 </span>
               )}
             </button>
@@ -355,6 +373,27 @@ export function LibraryPage() {
                     {preview.row_count.toLocaleString()} rows · {preview.columns.length} columns
                     {preview.kind === "bronze" ? " · bronze" : ""}
                   </p>
+                  {preview.kind === "bronze" && showSqlSource(preview) && (
+                    <p data-testid="preview-source" className="text-xs text-[var(--color-ink-muted)]">
+                      {preview.source}
+                    </p>
+                  )}
+                  {preview.kind === "bronze" && (
+                    <p
+                      data-testid={watermarkTimeLabel(preview).testId}
+                      className="text-xs text-[var(--color-ink-muted)]"
+                    >
+                      {watermarkTimeLabel(preview).text}
+                    </p>
+                  )}
+                  {preview.kind === "bronze" && showTruncatedFlag(preview) && (
+                    <p
+                      data-testid="preview-truncated"
+                      className="text-xs text-[var(--color-danger)]"
+                    >
+                      capped at max_rows
+                    </p>
+                  )}
                   <button
                     type="button"
                     onClick={() =>

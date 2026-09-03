@@ -6,7 +6,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from dms_executor.bronze import list_bronze_tables
+import duckdb
+
+from dms_executor.bronze import format_extracted_at, list_bronze_tables, source_kind_of
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     connect_readonly,
@@ -145,8 +147,6 @@ def preview_bronze_table(
     lim = max(1, min(int(limit), 500))
     off = max(0, min(int(offset), 100_000))
     db = ensure_demo_warehouse(path or warehouse_path())
-    import duckdb
-
     con = duckdb.connect(str(db), read_only=True)
     try:
         qual = f'"{schema}"."{name}"'
@@ -157,21 +157,27 @@ def preview_bronze_table(
         source = None
         extracted_at = None
         truncated: bool | None = None
+        source_kind: str | None = None
         try:
             # filename is the file path for a CSV ingest, and the credential-free
-            # source string for a SQL pull (DR-0005 part 4). created_at is extracted_at.
+            # source string for a SQL pull (DR-0005 part 4). created_at is extracted_at
+            # when the pull minted it in Python.
             reg = con.execute(
-                "SELECT filename, created_at, truncated FROM bronze._ingest_registry "
-                "WHERE table_name = ?",
+                "SELECT filename, created_at, truncated, source_kind "
+                "FROM bronze._ingest_registry WHERE table_name = ?",
                 [name],
             ).fetchone()
             if reg is not None:
                 source = None if reg[0] is None else str(reg[0])
-                extracted_at = None if reg[1] is None else str(reg[1])
+                extracted_at = format_extracted_at(reg[1])
                 truncated = None if reg[2] is None else bool(reg[2])
+                stored_kind = None if reg[3] is None else str(reg[3])
+                source_kind = stored_kind or (source_kind_of(source) if source else None)
         except Exception:  # noqa: BLE001 - registry may not exist yet
             source = None
             extracted_at = None
+            truncated = None
+            source_kind = None
     finally:
         con.close()
     return {
@@ -184,6 +190,7 @@ def preview_bronze_table(
         "kind": "bronze",
         "source": source,
         "extracted_at": extracted_at,
+        "source_kind": source_kind,
         # A capped pull says so here, on the artifact the customer reads. row_count is
         # what LANDED; when truncated is true the source holds more than that, and a
         # table presented as complete is a wrong number waiting to happen.
@@ -196,3 +203,62 @@ def preview_bronze_table(
         ),
         "note": "Read-only bronze lake preview — provenance columns attached at ingest.",
     }
+
+
+def stamp_source_watermarks(
+    sources: list[dict[str, Any]],
+    *,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Stamp extracted_at / source_kind from the ingest registry after normalisation.
+
+    Cortex authors contributing_sources; DMS owns the watermark. One read-only
+    DuckDB connection per ask, never one per source (P-DMS-34). A citation
+    under a name the registry does not hold gets extracted_at=None, not a skip
+    and never now() (R-0011 / R-0002).
+    """
+    if not sources:
+        return sources
+    db = path or warehouse_path()
+    watermarks: dict[str, dict[str, Any]] = {}
+    try:
+        con = duckdb.connect(str(db), read_only=True)
+    except Exception:  # noqa: BLE001 - no lake yet
+        for src in sources:
+            src["extracted_at"] = None
+        return sources
+    try:
+        try:
+            rows = con.execute(
+                "SELECT table_name, filename, created_at, truncated, source_kind "
+                "FROM bronze._ingest_registry"
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - registry missing
+            rows = []
+        for table_name, filename, created_at, _truncated, kind in rows:
+            fname = None if filename is None else str(filename)
+            stored_kind = None if kind is None else str(kind)
+            entry = {
+                "extracted_at": format_extracted_at(created_at),
+                "source_kind": stored_kind or (source_kind_of(fname) if fname else None),
+            }
+            name = str(table_name)
+            watermarks[name] = entry
+            watermarks[f"bronze.{name}"] = entry
+        known = set(watermarks)
+        for src in sources:
+            container = str(src.get("container") or "")
+            try:
+                label = _resolve_bronze_label(container, known)
+            except ValueError:
+                src["extracted_at"] = None
+                continue
+            hit = watermarks.get(label)
+            if hit is None:
+                src["extracted_at"] = None
+                continue
+            src["extracted_at"] = hit["extracted_at"]
+            src["source_kind"] = hit["source_kind"]
+    finally:
+        con.close()
+    return sources

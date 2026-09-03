@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,58 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN row_count INTEGER")
     if "truncated" not in cols:
         con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN truncated BOOLEAN")
+    if "source_kind" not in cols:
+        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_kind VARCHAR")
+
+
+def mint_extracted_at() -> str:
+    """One UTC ISO-8601 stamp for a SQL pull. Minted in Python, not by DuckDB now()."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def source_kind_of(filename: str | None) -> str:
+    """sqlserver:// and mysql:// are SQL pulls; everything else is a file upload."""
+    raw = (filename or "").lower()
+    if raw.startswith("sqlserver://") or raw.startswith("mysql://"):
+        return "sql"
+    return "file"
+
+
+def format_extracted_at(value: Any) -> str | None:
+    """Canonical UTC ISO-8601. Missing stays None - never now() (R-0011)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        text = text.replace(" ", "T", 1)
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _watermark_from_registry_row(
+    filename: Any, created_at: Any, truncated: Any, kind: Any
+) -> dict[str, Any]:
+    fname = None if filename is None else str(filename)
+    stored_kind = None if kind is None else str(kind)
+    return {
+        "source": fname,
+        "extracted_at": format_extracted_at(created_at),
+        "truncated": None if truncated is None else bool(truncated),
+        "source_kind": stored_kind or (source_kind_of(fname) if fname else None),
+    }
 
 
 def _claim_table_name(
@@ -119,18 +172,40 @@ def _record_ingest(
     digest: str,
     ingest_id: str,
     space_id: str | None = None,
+    created_at: str | None = None,
     row_count: int | None = None,
     truncated: bool | None = None,
+    source_kind: str | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
-    # Named columns, not positional VALUES. The registry has been widened three
+    kind = source_kind if source_kind is not None else source_kind_of(filename)
+    # Named columns, not positional VALUES. The registry has been widened four
     # times; a positional insert silently misaligns the moment a column is added.
-    con.execute(
-        f"INSERT INTO {_REGISTRY} "
-        "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, truncated) "
-        "VALUES (?, ?, ?, ?, now(), ?, ?, ?)",
-        [table_name, filename, digest, ingest_id, space_id, row_count, truncated],
+    # SQL pulls pass created_at (Python-minted). CSV keeps DuckDB now().
+    cols = (
+        "table_name, filename, sha256, ingest_id, created_at, space_id, "
+        "row_count, truncated, source_kind"
     )
+    if created_at is None:
+        con.execute(
+            f"INSERT INTO {_REGISTRY} ({cols}) VALUES (?, ?, ?, ?, now(), ?, ?, ?, ?)",
+            [table_name, filename, digest, ingest_id, space_id, row_count, truncated, kind],
+        )
+    else:
+        con.execute(
+            f"INSERT INTO {_REGISTRY} ({cols}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                table_name,
+                filename,
+                digest,
+                ingest_id,
+                created_at,
+                space_id,
+                row_count,
+                truncated,
+                kind,
+            ],
+        )
 
 
 def claim_source_table_name(
@@ -164,6 +239,7 @@ def record_source_pull(
     ingest_id: str,
     row_count: int,
     truncated: bool,
+    extracted_at: str,
     space_id: str | None = None,
     path: Path | None = None,
 ) -> str:
@@ -173,11 +249,16 @@ def record_source_pull(
     has neither, and the parked connector wrote none of this, so a SQL-sourced table
     carried row provenance (``_src``) and no source provenance - half an answer.
 
-    Rather than widen a table other lanes read, the file columns carry the SQL
-    equivalents. ``filename`` holds the credential-free source string
+    ``filename`` holds the credential-free source string
     (``sqlserver://host:port/db#schema.table``). ``sha256`` holds a fingerprint of the
     pull - source, row count, truncation - so a re-pull that landed a different number
     of rows is detectable as a different ingest rather than silently the same one.
+    ``row_count``, ``truncated``, and ``source_kind`` are also stored as columns so
+    the Library node can read them back. The fingerprint stays; it is how a re-pull
+    is detectable.
+
+    ``extracted_at`` is minted once in Python and written to ``created_at``. DuckDB
+    ``now()`` is the CSV default, not the SQL-pull clock.
 
     Lives here, not in the connector, because the connector must never hold a DuckDB
     handle: extract-only is asserted on its source text
@@ -198,8 +279,10 @@ def record_source_pull(
             digest=fingerprint,
             ingest_id=ingest_id,
             space_id=space_id,
+            created_at=extracted_at,
             row_count=row_count,
             truncated=truncated,
+            source_kind="sql",
         )
     finally:
         con.close()
@@ -415,13 +498,12 @@ def list_bronze_tables(
 
     db = ensure_demo_warehouse(path or warehouse_path())
     canon_space = canonical_space_id(space_id) if space_id else None
-    if canon_space:
-        init = duckdb.connect(str(db))
-        try:
-            ensure_lake_schemas(init)
-            _ensure_registry(init)
-        finally:
-            init.close()
+    init = duckdb.connect(str(db))
+    try:
+        ensure_lake_schemas(init)
+        _ensure_registry(init)
+    finally:
+        init.close()
     con = duckdb.connect(str(db), read_only=True)
     try:
         # Internal bookkeeping tables are named with a leading underscore and
@@ -455,13 +537,30 @@ def list_bronze_tables(
                     """
                 ).fetchall()
             ]
+        watermarks: dict[str, dict[str, Any]] = {}
+        try:
+            for table_name, filename, created_at, truncated, kind in con.execute(
+                f"SELECT table_name, filename, created_at, truncated, source_kind "
+                f"FROM {_REGISTRY}"
+            ).fetchall():
+                watermarks[str(table_name)] = _watermark_from_registry_row(
+                    filename, created_at, truncated, kind
+                )
+        except Exception:  # noqa: BLE001 - registry may be mid-widen
+            watermarks = {}
         out = []
         for schema, name, row_space in rows:
             cnt = scalar_int(
                 con.execute(f'SELECT COUNT(*) FROM "{schema}"."{name}"').fetchone()
             )
             label = f"{schema}.{name}" if schema != "main" else name
-            entry: dict[str, Any] = {"table": label, "row_count": cnt}
+            mark = watermarks.get(name) or {
+                "source": None,
+                "extracted_at": None,
+                "truncated": None,
+                "source_kind": None,
+            }
+            entry: dict[str, Any] = {"table": label, "row_count": cnt, **mark}
             if row_space:
                 entry["space_id"] = row_space
             out.append(entry)

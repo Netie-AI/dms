@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - SQL pull freshness watermark (EPIC-020 ticket 5, dms#114)
+
+- **One `extracted_at`.** Minted once in Python (`datetime.now(timezone.utc)`) in
+  `_pull_one`, written to the ingest registry, returned on `SourcePull`, and stamped
+  on the `POST /v1/studio/sources/sql` receipt. Preview, Library tree meta, and ask
+  `sources[]` (after `normalize_contributing_sources`) show that same ISO-8601 string.
+- **Registry widened, fingerprint kept.** `row_count`, `truncated`, and `source_kind`
+  are readable columns via the same `ALTER TABLE` probe as `space_id`. File uploads
+  are `source_kind=file` ("uploaded"), SQL pulls are `sql` ("extracted"). A table with
+  no registry row shows `extracted_at: null` / "no watermark recorded", never `now()`.
+- **No scheduler.** The watermark is the visible half of PRD-001 section 3. A Cortex
+  citation under a non-registry name is `extracted_at: null`, not a skip.
+
 ## 2026-09-03 - Studio SQL source extract (EPIC-020 ticket 4)
 
 - **`POST /v1/studio/sources/sql`.** Steward posts connection details; F5 runs first

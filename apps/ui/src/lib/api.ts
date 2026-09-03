@@ -321,9 +321,12 @@ export type TablePreview = {
   row_count?: number;
   limit?: number;
   offset?: number;
-  truncated?: boolean;
+  truncated?: boolean | null;
   note?: string;
   kind?: string;
+  source?: string | null;
+  extracted_at?: string | null;
+  source_kind?: "sql" | "file" | null;
 };
 
 export function fetchLibraryTree(

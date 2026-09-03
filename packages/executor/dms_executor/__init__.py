@@ -78,6 +78,7 @@ from dms_executor.warehouse_browse import (
     list_warehouse_tables,
     preview_bronze_table,
     preview_warehouse_table,
+    stamp_source_watermarks,
 )
 from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
@@ -370,6 +371,7 @@ class Executor:
             # reads comes from the grant and not from the request.
             grounded_tables=sorted(acl.row_predicates),
             question=question,
+            warehouse_path=self._warehouse,
         )
 
     def submit_sql(
@@ -472,6 +474,7 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    warehouse_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import (
@@ -605,6 +608,12 @@ def map_ask_response_to_envelope(
         question=question,
         competing_scopes=competing_scopes,
     )
+    # Stamp after the last normalize (build_answer_envelope re-normalises and
+    # would drop a Cortex-sent extracted_at). DMS owns the watermark.
+    stamp_source_watermarks(
+        env.get("contributing_sources") or [],
+        path=Path(warehouse_path) if warehouse_path else None,
+    )
     assert_envelope_valid(env)
     return env
 
@@ -652,6 +661,7 @@ __all__ = [
     "load_pipeline_yaml",
     "map_ask_response_to_envelope",
     "preview_bronze_table",
+    "stamp_source_watermarks",
     "preview_warehouse_table",
     "allowlisted_roots",
     "is_filesystem_uri",

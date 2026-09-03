@@ -26,6 +26,9 @@ export type ContributingSource = {
   snippet?: string;
   chunk_index?: number;
   space_id?: string;
+  /** Registry watermark. Null when Cortex cites a name the registry does not hold. */
+  extracted_at?: string | null;
+  source_kind?: "sql" | "file" | null;
 };
 
 export type ChartSpec = {
