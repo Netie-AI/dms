@@ -205,7 +205,7 @@ export function LibraryPage() {
         ? fetchWarehousePreview(active.table, PREVIEW_PAGE_SIZE, previewOffset, activeSpaceId)
         : fetchBronzePreview(active.table, PREVIEW_PAGE_SIZE, previewOffset, activeSpaceId);
     void load
-      .then(setPreview)
+      .then((p) => setPreview(p as Preview))
       .catch((e) => {
         setPreview(null);
         setPreviewErr(String(e));
