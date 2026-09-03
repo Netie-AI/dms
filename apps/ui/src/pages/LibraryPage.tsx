@@ -4,13 +4,16 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { useApp } from "@/context/AppContext";
 import {
   fetchBronzePreview,
+  fetchPromoteReceipt,
   fetchWarehousePreview,
   PREVIEW_PAGE_SIZE,
   previewForNode,
+  type PromoteReceiptState,
   type TablePreview,
   type TreeNode as ApiTreeNode,
 } from "@/lib/api";
 import { bronzeWhenLabel } from "@/lib/bronzeProvenance";
+import { PromoteReceiptPanel } from "@/components/PromoteReceiptPanel";
 
 type TreeMeta = {
   kind?: string;
@@ -23,10 +26,11 @@ type TreeMeta = {
   extracted_at?: string | null;
   truncated?: boolean | null;
   source_kind?: string | null;
+  target?: string | null;
 };
 
 type TreeNode = ApiTreeNode & {
-  node_type?: "source" | "bronze" | "warehouse";
+  node_type?: "source" | "bronze" | "warehouse" | "silver" | "gold";
   meta?: TreeMeta | Record<string, unknown> | null;
 };
 
@@ -47,6 +51,7 @@ type ActiveRef =
   | { kind: "warehouse"; table: string }
   | { kind: "bronze"; table: string }
   | { kind: "source"; id: string; label: string; meta?: TreeMeta | Record<string, unknown> | null }
+  | { kind: "promote"; id: string; target: string }
   | null;
 
 function TreeRows({
@@ -73,16 +78,22 @@ function TreeRows({
         const selected =
           (target &&
             active &&
-            active.kind !== "source" &&
+            (active.kind === "bronze" || active.kind === "warehouse") &&
             target.kind === active.kind &&
             target.table === active.table) ||
-          (active?.kind === "source" && n.id === active.id);
+          (active?.kind === "source" && n.id === active.id) ||
+          (active?.kind === "promote" && n.id === active.id);
         const pad = 8 + depth * 12;
         return (
           <li key={n.id} role="treeitem" aria-expanded={isFolder ? open : undefined}>
             <button
               type="button"
               onClick={() => (isFolder ? toggle(n.id) : onSelect(n))}
+              data-testid={
+                n.node_type === "silver" || n.node_type === "gold"
+                  ? `promote-node-${String((n.meta as TreeMeta | undefined)?.target ?? n.id)}`
+                  : undefined
+              }
               className={`flex w-full items-center gap-1 py-1.5 pr-2 text-left text-sm ${
                 selected
                   ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
@@ -148,8 +159,18 @@ export function LibraryPage() {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [previewOffset, setPreviewOffset] = useState(0);
+  const [receipt, setReceipt] = useState<PromoteReceiptState | null>(null);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const [receiptErr, setReceiptErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(
-    () => new Set(["folder:sources", "folder:bronze", "folder:warehouse"]),
+    () =>
+      new Set([
+        "folder:sources",
+        "folder:bronze",
+        "folder:warehouse",
+        "folder:silver",
+        "folder:gold",
+      ]),
   );
   const [filter, setFilter] = useState("");
 
@@ -160,6 +181,8 @@ export function LibraryPage() {
     setPreview(null);
     setPreviewErr(null);
     setPreviewOffset(0);
+    setReceipt(null);
+    setReceiptErr(null);
     setLoading(true);
     setErr(null);
     const ctrl = new AbortController();
@@ -191,10 +214,11 @@ export function LibraryPage() {
   }, [activeSpaceId]);
 
   useEffect(() => {
-    if (!active || active.kind === "source") {
-      if (active?.kind === "source") {
+    if (!active || active.kind === "source" || active.kind === "promote") {
+      if (active?.kind === "source" || active?.kind === "promote") {
         setPreview(null);
         setPreviewErr(null);
+        setPreviewBusy(false);
       }
       return;
     }
@@ -212,6 +236,31 @@ export function LibraryPage() {
       })
       .finally(() => setPreviewBusy(false));
   }, [active, previewOffset, activeSpaceId]);
+
+  useEffect(() => {
+    if (active?.kind !== "promote") {
+      setReceipt(null);
+      setReceiptErr(null);
+      setReceiptBusy(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    setReceiptBusy(true);
+    setReceiptErr(null);
+    void fetchPromoteReceipt(active.target, activeSpaceId, ctrl.signal)
+      .then((s) => {
+        if (!ctrl.signal.aborted) setReceipt(s);
+      })
+      .catch((e) => {
+        if (ctrl.signal.aborted) return;
+        setReceipt(null);
+        setReceiptErr(String(e));
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setReceiptBusy(false);
+      });
+    return () => ctrl.abort();
+  }, [active, activeSpaceId]);
 
   const filteredNodes = useMemo(() => {
     if (!tree) return [];
@@ -241,11 +290,22 @@ export function LibraryPage() {
   };
 
   const onSelect = (n: TreeNode) => {
-    const target = previewForNode(n.id);
-    if (target) {
+    const previewTarget = previewForNode(n.id);
+    if (previewTarget) {
       setPreviewOffset(0);
-      setActive({ kind: target.kind, table: target.table });
-    } else if (n.node_type === "source" || n.id.startsWith("source:")) {
+      setActive({ kind: previewTarget.kind, table: previewTarget.table });
+      return;
+    }
+    if (n.node_type === "silver" || n.node_type === "gold") {
+      const meta = n.meta as TreeMeta | undefined;
+      const target = typeof meta?.target === "string" ? meta.target : "";
+      if (!target) return;
+      setActive({ kind: "promote", id: n.id, target });
+      setPreview(null);
+      setPreviewErr(null);
+      return;
+    }
+    if (n.node_type === "source" || n.id.startsWith("source:")) {
       setActive({ kind: "source", id: n.id, label: n.label, meta: n.meta });
       setPreview(null);
     }
@@ -265,7 +325,7 @@ export function LibraryPage() {
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
           Folders and files for <strong className="text-[var(--color-ink)]">{scopeLabel}</strong> —
-          expand Sources / Bronze / Warehouse like DbGate. Excel stays source-only.
+          expand Sources / Bronze / Warehouse / Silver / Gold like DbGate. Excel stays source-only.
         </p>
         {dbOk === false && (
           <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
@@ -359,11 +419,25 @@ export function LibraryPage() {
               )}
             </div>
           )}
-          {previewBusy && (
+          {active?.kind === "promote" && (
+            <div className="max-w-xl border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
+              <h2 className="text-lg font-semibold">{active.target}</h2>
+              {receiptBusy && (
+                <p className="mt-2 text-xs text-[var(--color-ink-muted)]">Loading receipt…</p>
+              )}
+              {receiptErr && (
+                <p className="mt-2 text-sm text-[var(--color-danger)]">{receiptErr}</p>
+              )}
+              {receipt ? <PromoteReceiptPanel state={receipt} /> : null}
+            </div>
+          )}
+          {previewBusy && active?.kind !== "promote" && (
             <p className="mb-3 text-xs text-[var(--color-ink-muted)]">Loading preview…</p>
           )}
-          {previewErr && <p className="text-sm text-[var(--color-danger)]">{previewErr}</p>}
-          {preview && active?.kind !== "source" && (
+          {previewErr && active?.kind !== "promote" && (
+            <p className="text-sm text-[var(--color-danger)]">{previewErr}</p>
+          )}
+          {preview && (active?.kind === "bronze" || active?.kind === "warehouse") && (
             <>
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-lg font-semibold text-[var(--color-ink)]">{preview.table}</h2>

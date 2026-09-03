@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchPromoteReceipt } from "./api";
+import { fetchPromoteReceipt, previewForNode } from "./api";
 import type { PromoteReceipt, PromoteReceiptState } from "./api";
 
 afterEach(() => {
@@ -17,6 +17,17 @@ function mockFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
   vi.stubGlobal("fetch", fn);
   return fn;
 }
+
+describe("previewForNode", () => {
+  it("does not map silver/gold ids to a warehouse preview", () => {
+    expect(previewForNode("silver:silver.sales")).toBeNull();
+    expect(previewForNode("gold:gold.sales_total")).toBeNull();
+    expect(previewForNode("warehouse:transactions")).toEqual({
+      kind: "warehouse",
+      table: "transactions",
+    });
+  });
+});
 
 describe("fetchPromoteReceipt", () => {
   it("recorded: receipt is non-null and source_rows may be null", async () => {

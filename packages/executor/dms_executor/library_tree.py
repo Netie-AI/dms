@@ -12,6 +12,7 @@ def build_library_tree(
     warehouse_tables: list[dict[str, Any]],
     space_id: str | None = None,
     space_name: str | None = None,
+    promote_targets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return a foldable tree for Library left nav."""
     if space_id:
@@ -80,6 +81,23 @@ def build_library_tree(
         for t in warehouse_tables
     ]
 
+    def _promote_children(schema: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"{schema}:{t.get('target')}",
+                "kind": "leaf",
+                "node_type": schema,
+                "label": t.get("target"),
+                "meta": {
+                    "row_count": t.get("row_count"),
+                    "table": t.get("table"),
+                    "target": t.get("target"),
+                },
+            }
+            for t in (promote_targets or [])
+            if t.get("schema") == schema
+        ]
+
     nodes = [
         {
             "id": "folder:sources",
@@ -100,6 +118,25 @@ def build_library_tree(
             "children": wh_children,
         },
     ]
+    # Named Spaces hide promote targets (no grant model yet). Company default
+    # gets Silver/Gold folders even when empty so the surface exists.
+    if not space_id:
+        nodes.extend(
+            [
+                {
+                    "id": "folder:silver",
+                    "kind": "folder",
+                    "label": "Silver",
+                    "children": _promote_children("silver"),
+                },
+                {
+                    "id": "folder:gold",
+                    "kind": "folder",
+                    "label": "Gold",
+                    "children": _promote_children("gold"),
+                },
+            ]
+        )
     return {
         "space_id": space_id,
         "space_name": space_name,

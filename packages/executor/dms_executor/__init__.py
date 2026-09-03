@@ -80,6 +80,7 @@ from dms_executor.reveal import (
 )
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.warehouse_browse import (
+    list_promote_targets,
     list_warehouse_tables,
     preview_bronze_table,
     preview_warehouse_table,
@@ -652,6 +653,7 @@ __all__ = [
     "intersect_space_grants",
     "get_serving_engine",
     "list_bronze_tables",
+    "list_promote_targets",
     "list_warehouse_tables",
     "load_pipeline_by_name",
     "load_pipeline_yaml",

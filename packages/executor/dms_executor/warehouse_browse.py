@@ -63,6 +63,58 @@ def list_warehouse_tables(
     return out
 
 
+def list_promote_targets(*, path: Path | None = None) -> list[dict[str, Any]]:
+    """Silver/gold tables in the lake. Not demo warehouse; not a row preview.
+
+    Company-default Library only. Named Spaces pass an empty list at the tree
+    builder - there is no promote-target grant yet (EPIC-024 LINEAGE-03).
+    """
+    db = path or warehouse_path()
+    if not Path(db).is_file():
+        return []
+    import duckdb
+
+    from dms_executor.lake_schema import ensure_lake_schemas
+
+    init = duckdb.connect(str(db))
+    try:
+        ensure_lake_schemas(init)
+    finally:
+        init.close()
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        rows = con.execute(
+            """
+            SELECT table_schema, table_name
+              FROM information_schema.tables
+             WHERE table_schema IN ('silver', 'gold')
+             ORDER BY table_schema, table_name
+            """
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for schema, name in rows:
+            schema_s = str(schema)
+            name_s = str(name)
+            if name_s.startswith("_"):
+                continue
+            if not _IDENT.match(schema_s) or not _IDENT.match(name_s):
+                continue
+            cnt = scalar_int(
+                con.execute(f'SELECT COUNT(*) FROM "{schema_s}"."{name_s}"').fetchone()
+            )
+            out.append(
+                {
+                    "schema": schema_s,
+                    "table": name_s,
+                    "target": f"{schema_s}.{name_s}",
+                    "row_count": cnt,
+                }
+            )
+        return out
+    finally:
+        con.close()
+
+
 def preview_warehouse_table(
     table: str,
     *,
