@@ -34,6 +34,8 @@ Open http://127.0.0.1:3000 — Chat is the landing surface. With API up, Spaces 
 `GET /v1/spaces` and Ask hits `POST /v1/chat/ask` (`DMS_ASK_MODE=demo` by default).
 Demo answers use **L2 “generated — check sources”** — never certified green.
 
+`npm run test:e2e` needs the local stack with Cortex up (`Start-DMSStack.ps1 -StartSiblings -StartUi`). Cortex must open its own duckdb, not `DMS_WAREHOUSE_DB` — a shared file makes Studio ingest return ingested=0. The Library receipt spec leaves `e2e_`-prefixed tables in the lake.
+
 ## U0 / demo-core acceptance (this slice)
 
 - Empty Chat shows **six** suggested questions aligned to the demo warehouse.

@@ -154,3 +154,21 @@ def test_data_map_notes_missing_database(warehouse: Path, monkeypatch: pytest.Mo
     assert body["database_configured"] is False
     assert "DATABASE_URL" in body["note"]
     assert isinstance(body["warehouse_tables"], list)
+
+
+def test_parallel_library_lists_same_file(warehouse: Path) -> None:
+    """Library fires /tree twice. RW then read_only=True 500s DuckDB."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from dms_executor.bronze import list_bronze_tables
+    from dms_executor.warehouse_browse import list_promote_targets, list_warehouse_tables
+
+    def one() -> None:
+        list_bronze_tables(path=warehouse)
+        list_warehouse_tables(path=warehouse)
+        list_promote_targets(path=warehouse)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futs = [pool.submit(one) for _ in range(16)]
+        for fut in futs:
+            fut.result()

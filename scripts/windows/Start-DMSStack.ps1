@@ -191,16 +191,21 @@ if ($StartSiblings) {
       } catch { }
       $l2Flag = if ($env:DMS_L2_ENABLED) { $env:DMS_L2_ENABLED } else { "0" }
       $l2ModelEnv = if ($env:DMS_L2_MODEL) { "`$env:DMS_L2_MODEL='$($env:DMS_L2_MODEL)'; " } else { "" }
+      # Cortex warehouse.py reads DMS_WAREHOUSE_DB, not CORTEX_WAREHOUSE_DB.
+      # Start-Process inherits this script's DMS lake; on Windows that exclusive-locks
+      # Studio ingest (LINEAGE-05). Pin the child to the Cortex file.
+      $cxWh = if ($env:CORTEX_WAREHOUSE_DB) { $env:CORTEX_WAREHOUSE_DB } else { Join-Path $cortexHome "data\dms_demo.duckdb" }
       Start-Process powershell.exe -ArgumentList @(
         "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-Command",
-        "`$env:PACK='dms'; `$env:OPENVAULT_HOME='$($env:OPENVAULT_HOME)'; `$env:OPENVAULT_URL='$OpenVaultUrl'; `$env:DMS_L2_ENABLED='$l2Flag'; `$env:CORTEX_WAREHOUSE_DB='$($env:CORTEX_WAREHOUSE_DB)'; ${l2ModelEnv}Set-Location 'D:\Cortex'; python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010"
+        "`$env:PACK='dms'; `$env:OPENVAULT_HOME='$($env:OPENVAULT_HOME)'; `$env:OPENVAULT_URL='$OpenVaultUrl'; `$env:DMS_L2_ENABLED='$l2Flag'; `$env:DMS_WAREHOUSE_DB='$cxWh'; `$env:CORTEX_WAREHOUSE_DB='$cxWh'; ${l2ModelEnv}Set-Location 'D:\Cortex'; python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010"
       ) -WindowStyle Minimized
     } else {
       Write-Host "Cortex start script missing: $cxScript" -ForegroundColor Yellow
     }
   } else {
     Write-Host "Cortex already ok"
+    Write-Host "If Studio ingest cannot open the DMS lake, Cortex is holding it. Restart Cortex with DMS_WAREHOUSE_DB set to the Cortex file, not the DMS file."
   }
 }
 

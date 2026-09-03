@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const ROUTES: { path: string; heading: string }[] = [
-  { path: "/", heading: "Ask about your data" },
+const ROUTES: { path: string; heading: string | RegExp }[] = [
+  { path: "/", heading: /Ask (about your|your company's) data/ },
   { path: "/spaces", heading: "Spaces" },
   { path: "/library", heading: "Library" },
   { path: "/studio", heading: "Studio" },
@@ -14,7 +14,19 @@ const ROUTES: { path: string; heading: string }[] = [
 
 async function waitForChrome(page: Page) {
   await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Chat" })).toBeVisible();
+  const chat = page.getByRole("link", { name: "Chat", exact: true });
+  if (!(await chat.isVisible())) {
+    await page.getByRole("button", { name: "Toggle sidebar" }).click();
+  }
+  await expect(chat).toBeVisible();
+}
+
+async function toOperate(page: Page) {
+  const btn = page.getByRole("button", { name: "Switch to operator mode" });
+  if (await btn.isVisible()) {
+    await btn.click();
+  }
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
 }
 
 test.describe("DMS product chrome", () => {
@@ -29,6 +41,7 @@ test.describe("DMS product chrome", () => {
   test("admin is hidden for steward and visible after switching role", async ({ page }) => {
     await page.goto("/");
     await waitForChrome(page);
+    await toOperate(page);
     await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
     await page.getByLabel("Role").selectOption("admin");
     await expect(page.getByRole("link", { name: "Admin" })).toBeVisible();
@@ -39,6 +52,7 @@ test.describe("DMS product chrome", () => {
   test("space switcher and New menu reach Studio and Spaces", async ({ page }) => {
     await page.goto("/");
     await waitForChrome(page);
+    await toOperate(page);
     const switcher = page.getByLabel("Space");
     await expect(switcher).toBeVisible();
     const options = await switcher.locator("option").allTextContents();
@@ -50,6 +64,7 @@ test.describe("DMS product chrome", () => {
     await expect(page.getByRole("heading", { name: "Studio", level: 1 })).toBeVisible();
 
     await page.goto("/");
+    await waitForChrome(page);
     await page.getByRole("button", { name: "+ New" }).click();
     await page.getByRole("button", { name: "New Space" }).click();
     await expect(page.getByRole("heading", { name: "Spaces", level: 1 })).toBeVisible();
@@ -58,9 +73,9 @@ test.describe("DMS product chrome", () => {
   test("theme toggle flips html data-theme", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "cream");
-    await page.getByRole("button", { name: "Switch to graphite theme" }).click();
+    await page.getByRole("button", { name: "Switch to operator mode" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
-    await page.getByRole("button", { name: "Switch to cream theme" }).click();
+    await page.getByRole("button", { name: "Switch to ask mode" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "cream");
   });
 });

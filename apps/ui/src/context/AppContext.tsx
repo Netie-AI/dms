@@ -221,7 +221,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         if (body.hint) setSpacesStorageHint(body.hint);
         setActiveSpaceIdState((prev) => {
-          if (prev && list.some((s) => s.id === prev)) return prev;
+          // null is Company (default ACL), a real choice. Do not treat it as
+          // uninitialized or the first Space fetch snaps the switcher back.
+          if (prev === null) return prev;
+          if (list.some((s) => s.id === prev)) return prev;
           const next = list[0]?.id ?? null;
           activeSpaceIdRef.current = next;
           return next;
