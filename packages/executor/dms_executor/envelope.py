@@ -12,6 +12,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from dms_executor.bronze import stamp_contributing_source_watermarks
+
 ALLOWED_BADGES = frozenset(
     {
         "L0_CERTIFIED",
@@ -983,6 +985,7 @@ def build_answer_envelope(
         contributing_sources,
         space_id=space_id,
     )
+    sources = stamp_contributing_source_watermarks(sources)
     rows_out = [dict(r) for r in (rows or []) if isinstance(r, dict)]
     values_out = _ensure_values(values, rows_out, abstained=abstained)
 

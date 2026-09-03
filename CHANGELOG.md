@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - SQL source freshness is one watermark (EPIC-020 ticket 5)
+
+- **One clock.** `extracted_at` is minted in Python at pull time and stored as a
+  VARCHAR on the ingest registry (widened, not a sidecar). Receipt, bronze
+  preview, Library tree node, and ask `sources[]` show that same string.
+- **File vs SQL.** `source_kind` is `sql` when the registry filename is a
+  `sqlserver://` or `mysql://` source, else `file`. Library copy says extracted
+  vs uploaded. A table with no registry row shows `extracted_at: null`.
+
 ## 2026-09-03 - Studio SQL source extract (EPIC-020 ticket 4)
 
 - **`POST /v1/studio/sources/sql`.** Steward posts connection details; F5 runs first

@@ -10,6 +10,7 @@ import {
   type TablePreview,
   type TreeNode as ApiTreeNode,
 } from "@/lib/api";
+import { bronzeWhenLabel } from "@/lib/bronzeProvenance";
 
 type TreeMeta = {
   kind?: string;
@@ -18,6 +19,10 @@ type TreeMeta = {
   table?: string;
   ref?: string;
   space_name?: string | null;
+  source?: string | null;
+  extracted_at?: string | null;
+  truncated?: boolean | null;
+  source_kind?: string | null;
 };
 
 type TreeNode = ApiTreeNode & {
@@ -92,6 +97,18 @@ function TreeRows({
               {typeof n.meta?.row_count === "number" && (
                 <span className="tabular-nums text-[10px] text-[var(--color-ink-muted)]">
                   {n.meta.row_count}
+                </span>
+              )}
+              {Boolean(
+                n.meta &&
+                  "truncated" in n.meta &&
+                  (n.meta as TreeMeta).truncated,
+              ) && (
+                <span
+                  data-testid="bronze-node-truncated"
+                  className="text-[10px] text-[var(--color-danger)]"
+                >
+                  capped at max_rows
                 </span>
               )}
             </button>
@@ -355,6 +372,25 @@ export function LibraryPage() {
                     {preview.row_count.toLocaleString()} rows · {preview.columns.length} columns
                     {preview.kind === "bronze" ? " · bronze" : ""}
                   </p>
+                  {preview.kind === "bronze" && (
+                    <p
+                      className="text-xs text-[var(--color-ink-muted)]"
+                      data-testid="bronze-extracted-at"
+                    >
+                      {preview.source_kind === "sql" && preview.source ? (
+                        <span data-testid="bronze-source">{preview.source} · </span>
+                      ) : null}
+                      {bronzeWhenLabel(preview)}
+                    </p>
+                  )}
+                  {preview.kind === "bronze" && preview.truncated ? (
+                    <p
+                      data-testid="bronze-truncated-flag"
+                      className="text-xs text-[var(--color-danger)]"
+                    >
+                      capped at max_rows
+                    </p>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() =>

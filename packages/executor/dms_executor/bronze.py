@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,20 @@ def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
 _REGISTRY = "bronze._ingest_registry"
 
 
+def mint_extracted_at() -> str:
+    """One UTC clock for a pull. Same string on the receipt, preview, tree, and envelope."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def classify_source_kind(filename: str | None) -> str:
+    """SQL pulls use SourceConfig.describe() as filename; everything else is a file."""
+    if filename and (
+        filename.startswith("sqlserver://") or filename.startswith("mysql://")
+    ):
+        return "sql"
+    return "file"
+
+
 def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         f"""
@@ -80,6 +95,12 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN row_count INTEGER")
     if "truncated" not in cols:
         con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN truncated BOOLEAN")
+    # VARCHAR, not TIMESTAMPTZ: DuckDB's str(created_at) is not the Python mint, and
+    # the four artifacts have to show one identical string (SQLSRC-05).
+    if "extracted_at" not in cols:
+        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN extracted_at VARCHAR")
+    if "source_kind" not in cols:
+        con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_kind VARCHAR")
 
 
 def _claim_table_name(
@@ -121,15 +142,32 @@ def _record_ingest(
     space_id: str | None = None,
     row_count: int | None = None,
     truncated: bool | None = None,
+    extracted_at: str | None = None,
+    source_kind: str | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
+    kind = source_kind or classify_source_kind(filename)
+    stamp = extracted_at or mint_extracted_at()
     # Named columns, not positional VALUES. The registry has been widened three
     # times; a positional insert silently misaligns the moment a column is added.
+    # created_at is the same mint so CSV and SQL share one clock; now() is not used.
     con.execute(
         f"INSERT INTO {_REGISTRY} "
-        "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, truncated) "
-        "VALUES (?, ?, ?, ?, now(), ?, ?, ?)",
-        [table_name, filename, digest, ingest_id, space_id, row_count, truncated],
+        "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, "
+        "truncated, extracted_at, source_kind) "
+        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?)",
+        [
+            table_name,
+            filename,
+            digest,
+            ingest_id,
+            stamp,
+            space_id,
+            row_count,
+            truncated,
+            stamp,
+            kind,
+        ],
     )
 
 
@@ -166,6 +204,7 @@ def record_source_pull(
     truncated: bool,
     space_id: str | None = None,
     path: Path | None = None,
+    extracted_at: str | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -173,11 +212,12 @@ def record_source_pull(
     has neither, and the parked connector wrote none of this, so a SQL-sourced table
     carried row provenance (``_src``) and no source provenance - half an answer.
 
-    Rather than widen a table other lanes read, the file columns carry the SQL
-    equivalents. ``filename`` holds the credential-free source string
+    ``filename`` holds the credential-free source string
     (``sqlserver://host:port/db#schema.table``). ``sha256`` holds a fingerprint of the
     pull - source, row count, truncation - so a re-pull that landed a different number
     of rows is detectable as a different ingest rather than silently the same one.
+    ``extracted_at`` / ``source_kind`` / ``row_count`` / ``truncated`` are real columns
+    (widened, not a sidecar) because a one-way fingerprint cannot be read back.
 
     Lives here, not in the connector, because the connector must never hold a DuckDB
     handle: extract-only is asserted on its source text
@@ -186,6 +226,7 @@ def record_source_pull(
     fingerprint = hashlib.sha256(
         f"{source}|rows={row_count}|truncated={truncated}".encode()
     ).hexdigest()
+    stamp = extracted_at or mint_extracted_at()
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db))
     try:
@@ -200,10 +241,66 @@ def record_source_pull(
             space_id=space_id,
             row_count=row_count,
             truncated=truncated,
+            extracted_at=stamp,
+            source_kind="sql",
         )
     finally:
         con.close()
     return fingerprint
+
+
+def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """One read-only pass over the registry. Does not seed a warehouse (P-DMS-34)."""
+    db = path or warehouse_path()
+    if not Path(db).is_file():
+        return {}
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        rows = con.execute(
+            f"SELECT table_name, filename, extracted_at, truncated, source_kind "
+            f"FROM {_REGISTRY}"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - registry or columns may not exist yet
+        return {}
+    finally:
+        con.close()
+    out: dict[str, dict[str, Any]] = {}
+    for name, filename, extracted_at, truncated, source_kind in rows:
+        rec = {
+            "source": None if filename is None else str(filename),
+            "extracted_at": None if extracted_at is None else str(extracted_at),
+            "truncated": None if truncated is None else bool(truncated),
+            "source_kind": source_kind or classify_source_kind(
+                None if filename is None else str(filename)
+            ),
+        }
+        for alias in (name, f"bronze.{name}", f"bronze:{name}"):
+            out[alias] = rec
+    return out
+
+
+def stamp_contributing_source_watermarks(
+    sources: list[dict[str, Any]],
+    *,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Attach extracted_at / source_kind after Cortex normalisation. Unknown -> null."""
+    marks = lookup_ingest_watermarks(path=path)
+    stamped: list[dict[str, Any]] = []
+    for src in sources:
+        item = dict(src)
+        container = str(item.get("container") or "")
+        rec = marks.get(container)
+        if rec is None and container.startswith("bronze:"):
+            rec = marks.get(container.removeprefix("bronze:"))
+        if rec is None and container.startswith("bronze."):
+            rec = marks.get(container.removeprefix("bronze."))
+        if rec is None and "." in container:
+            rec = marks.get(container.rsplit(".", 1)[-1])
+        item["extracted_at"] = rec["extracted_at"] if rec else None
+        item["source_kind"] = rec["source_kind"] if rec else None
+        stamped.append(item)
+    return stamped
 
 
 def ingest_csv_bytes(
@@ -415,13 +512,12 @@ def list_bronze_tables(
 
     db = ensure_demo_warehouse(path or warehouse_path())
     canon_space = canonical_space_id(space_id) if space_id else None
-    if canon_space:
-        init = duckdb.connect(str(db))
-        try:
-            ensure_lake_schemas(init)
-            _ensure_registry(init)
-        finally:
-            init.close()
+    init = duckdb.connect(str(db))
+    try:
+        ensure_lake_schemas(init)
+        _ensure_registry(init)
+    finally:
+        init.close()
     con = duckdb.connect(str(db), read_only=True)
     try:
         # Internal bookkeeping tables are named with a leading underscore and
@@ -455,6 +551,15 @@ def list_bronze_tables(
                     """
                 ).fetchall()
             ]
+        watermarks: dict[str, tuple[Any, ...]] = {}
+        try:
+            for reg in con.execute(
+                f"SELECT table_name, filename, extracted_at, truncated, source_kind "
+                f"FROM {_REGISTRY}"
+            ).fetchall():
+                watermarks[str(reg[0])] = reg
+        except Exception:  # noqa: BLE001 - old warehouse without the columns
+            watermarks = {}
         out = []
         for schema, name, row_space in rows:
             cnt = scalar_int(
@@ -464,6 +569,20 @@ def list_bronze_tables(
             entry: dict[str, Any] = {"table": label, "row_count": cnt}
             if row_space:
                 entry["space_id"] = row_space
+            wm = watermarks.get(name)
+            if wm is not None:
+                filename, extracted_at, truncated, source_kind = wm[1], wm[2], wm[3], wm[4]
+                entry["source"] = None if filename is None else str(filename)
+                entry["extracted_at"] = None if extracted_at is None else str(extracted_at)
+                entry["truncated"] = None if truncated is None else bool(truncated)
+                entry["source_kind"] = source_kind or classify_source_kind(
+                    None if filename is None else str(filename)
+                )
+            else:
+                entry["source"] = None
+                entry["extracted_at"] = None
+                entry["truncated"] = None
+                entry["source_kind"] = None
             out.append(entry)
         return out
     finally:

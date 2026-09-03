@@ -26,6 +26,9 @@ export type ContributingSource = {
   snippet?: string;
   chunk_index?: number;
   space_id?: string;
+  /** Lake provenance (SQLSRC-05). Distinct from kind (xlsx/csv/sql/...). */
+  extracted_at?: string | null;
+  source_kind?: "sql" | "file" | null;
 };
 
 export type ChartSpec = {

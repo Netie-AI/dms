@@ -138,6 +138,14 @@ export function SourcePanel() {
                       {" · "}
                       {formatMoney(src.contribution)} · {pct}%
                     </p>
+                    {src.source_kind === "sql" && src.extracted_at ? (
+                      <p
+                        data-testid="source-extracted-at"
+                        className="mt-1 text-[10px] text-[var(--color-ink-muted)]"
+                      >
+                        extracted {src.extracted_at}
+                      </p>
+                    ) : null}
                   </button>
                   {open && (
                     <div className="mt-1 space-y-2 px-1 pb-2">
