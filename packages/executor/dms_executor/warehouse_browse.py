@@ -157,21 +157,27 @@ def preview_bronze_table(
         source = None
         extracted_at = None
         truncated: bool | None = None
+        source_kind: str | None = None
         try:
             # filename is the file path for a CSV ingest, and the credential-free
-            # source string for a SQL pull (DR-0005 part 4). created_at is extracted_at.
+            # source string for a SQL pull (DR-0005 part 4). extracted_at is the
+            # Python-minted watermark, not DuckDB now().
+            from dms_executor.bronze import classify_source_kind
+
             reg = con.execute(
-                "SELECT filename, created_at, truncated FROM bronze._ingest_registry "
-                "WHERE table_name = ?",
+                "SELECT filename, extracted_at, truncated, source_kind "
+                "FROM bronze._ingest_registry WHERE table_name = ?",
                 [name],
             ).fetchone()
             if reg is not None:
                 source = None if reg[0] is None else str(reg[0])
                 extracted_at = None if reg[1] is None else str(reg[1])
                 truncated = None if reg[2] is None else bool(reg[2])
+                source_kind = reg[3] or classify_source_kind(source)
         except Exception:  # noqa: BLE001 - registry may not exist yet
             source = None
             extracted_at = None
+            source_kind = None
     finally:
         con.close()
     return {
@@ -184,6 +190,7 @@ def preview_bronze_table(
         "kind": "bronze",
         "source": source,
         "extracted_at": extracted_at,
+        "source_kind": source_kind,
         # A capped pull says so here, on the artifact the customer reads. row_count is
         # what LANDED; when truncated is true the source holds more than that, and a
         # table presented as complete is a wrong number waiting to happen.

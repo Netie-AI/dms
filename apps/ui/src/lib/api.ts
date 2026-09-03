@@ -324,6 +324,9 @@ export type TablePreview = {
   truncated?: boolean;
   note?: string;
   kind?: string;
+  source?: string | null;
+  extracted_at?: string | null;
+  source_kind?: string | null;
 };
 
 export function fetchLibraryTree(

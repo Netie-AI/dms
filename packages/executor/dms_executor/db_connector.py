@@ -25,6 +25,7 @@ from typing import Any, Literal
 
 from dms_executor.bronze import (
     claim_source_table_name,
+    mint_extracted_at,
     record_source_pull,
     write_bronze_rows,
 )
@@ -105,6 +106,7 @@ class SourcePull:
     truncated: bool
     ingest_id: str
     ref_id: str
+    extracted_at: str
     #: Set when the bronze name was suffixed because another source already held the
     #: sanitised stem. Reported, never silent.
     note: str | None = None
@@ -476,6 +478,7 @@ def _pull_one(
     """
     ingest_id = str(uuid.uuid4())
     ref_id = str(uuid.uuid4())
+    extracted_at = mint_extracted_at()
     columns, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
     if not columns:
         raise ValueError(f"{target.qualified} exposed no columns")
@@ -505,6 +508,7 @@ def _pull_one(
         truncated=truncated,
         space_id=space_id,
         path=path,
+        extracted_at=extracted_at,
     )
     return SourcePull(
         bronze_table=landed,
@@ -514,6 +518,7 @@ def _pull_one(
         truncated=truncated,
         ingest_id=ingest_id,
         ref_id=ref_id,
+        extracted_at=extracted_at,
         note=note,
     )
 

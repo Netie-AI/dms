@@ -58,7 +58,14 @@ def build_library_tree(
             "kind": "leaf",
             "node_type": "bronze",
             "label": t.get("table"),
-            "meta": {"row_count": t.get("row_count"), "table": t.get("table")},
+            "meta": {
+                "row_count": t.get("row_count"),
+                "table": t.get("table"),
+                "source": t.get("source"),
+                "extracted_at": t.get("extracted_at"),
+                "truncated": t.get("truncated"),
+                "source_kind": t.get("source_kind"),
+            },
         }
         for t in bronze_tables
     ]

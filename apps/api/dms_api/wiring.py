@@ -231,6 +231,7 @@ def sql_source_ingest(
                 "source": p.source,
                 "row_count": p.row_count,
                 "truncated": p.truncated,
+                "extracted_at": p.extracted_at,
             }
             for p in extract.pulls
         ],
