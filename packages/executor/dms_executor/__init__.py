@@ -32,6 +32,13 @@ from dms_executor.bronze import (
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
 from dms_executor.contract_infer import infer_contract
+from dms_executor.db_connector import (
+    DEFAULT_MAX_ROWS,
+    SourceConfig,
+    SourceConnectionError,
+    UnknownSourceTable,
+    ingest_source_database,
+)
 from dms_executor.demo_ask import (
     answer_demo_question,
     normalize_ask_question,
@@ -630,7 +637,12 @@ __all__ = [
     "classify_bytes",
     "classify_grid",
     "ingest_batch",
+    "DEFAULT_MAX_ROWS",
+    "SourceConfig",
+    "SourceConnectionError",
+    "UnknownSourceTable",
     "ingest_csv_bytes",
+    "ingest_source_database",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

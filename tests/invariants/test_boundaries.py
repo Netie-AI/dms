@@ -68,6 +68,7 @@ DATA_REVEALING_CALLEES = frozenset(
         # writes that also return data
         "batch_ingest",
         "bronze_ingest",
+        "sql_source_ingest",
         "pipeline_run",
         "gold_sign_metric",
     }

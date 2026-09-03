@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from fastapi import APIRouter, File, Form, Query, UploadFile
@@ -14,6 +14,8 @@ from dms_api.wiring import (
     batch_ingest,
     bronze_list,
     list_document_chunks,
+    sql_source_describe,
+    sql_source_ingest,
     xlsx_orch_crosscheck,
     xlsx_orch_extract,
     xlsx_orch_golden,
@@ -246,4 +248,50 @@ def xlsx_orch_golden_route(
         space_id=body.space_id or "company-default",
         path=body.path,
         producer=body.producer,
+    )
+
+
+class SqlSourceIn(BaseModel):
+    kind: Literal["sqlserver", "mysql"]
+    host: str
+    database: str
+    user: str
+    password: str = Field(default="", max_length=256)
+    port: int | None = None
+    tables: list[str] | None = None
+    max_rows: int | None = None
+    space_id: str | None = None
+    encrypt: bool = True
+    trust_server_certificate: bool = False
+
+
+@router.post("/sources/sql")
+def sql_source_ingest_route(
+    body: SqlSourceIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Extract a SQL Server or MySQL source into bronze. Credentials are not stored."""
+    label = sql_source_describe(
+        kind=body.kind, host=body.host, database=body.database, port=body.port
+    )
+    decision = compliance_gate(
+        action="studio.sql_source",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "studio.sql_source", "source": label, "kind": body.kind},
+        client=cortex,
+    )
+    enforce(decision)
+    return sql_source_ingest(
+        kind=body.kind,
+        host=body.host,
+        database=body.database,
+        user=body.user,
+        password=body.password,
+        port=body.port,
+        tables=body.tables,
+        max_rows=body.max_rows,
+        space_id=body.space_id,
+        encrypt=body.encrypt,
+        trust_server_certificate=body.trust_server_certificate,
     )

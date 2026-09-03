@@ -48,12 +48,12 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | F70 epic name. **F36** blocks EPIC-020->021. **F41** EPIC-021a. **F37** EPIC-024. **F68** monetization. `app.netie.ai/cortex` 404; Constructor catalog works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | Landed **#103** ingest P0, **#104** F32 sheet shape, **#105** STATUS. Hostile + curated 100% precision 0 WRONG 10/14. Cream Share Copied, Mock stock certified, Check accuracy Match 642,969,499.25. Constructor fixture-ask 2/2 L0. Viz CSV locked. F36 + live catalog 401 + Genie bakeoff remain |
+| **NEEDS-YOU** | **F36 + F37 DECIDED** by your delegation - DR-0005: F27 stands, extract-only; EPIC-020 dms#108 + EPIC-024 dms#109 now in flight. F70 parent DECIDED (EPIC-025 #87). Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
+| **This tick** | EPIC-020 on `D:/DMS-epic020` (not D:/DMS - F-0019). Tickets 1-3: registry source on preview, key bridge refuses a lying FK, extract-only invariant. Do not write this epic on D:/DMS. |
 | **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
-| Epics | **EPIC-003 (#6)** tickets 72-74 closed; live both-halves now hold. **EPIC-017 (#33)** still open (Cortex#11 F40 engine). **EPIC-018 QUEUED** |
+| Epics | **In flight: EPIC-020 (#108) foundation + EPIC-024 (#109) surface** - the DR-0005 pair. Tickets **#112-#119** filed by epic-agent. EPIC-003 (#6) + EPIC-017 (#33) **QUEUED**, never closed. #59 is CLOSED. EPIC-018 QUEUED |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | **#103 + #104** open, three jobs green each. Actions runs again. **Parked, do not merge:** `park/f45-space-insights` (F45 STOP), `park/epic-020-source-db-connector` (F36), `feat/xlsx-orch-11-extract` (EPIC-016 parked) |
+| CI / PRs | **#111 open** (EPIC-020 tickets 1-3; verify FAIL fixed in 265e15db, re-verify pending). Parked, do not merge: park/f45-space-insights (F45 STOP). feat/xlsx-orch-10/11 leftover vs #106 |
 
 ## Agent models
 

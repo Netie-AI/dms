@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-03 - Studio SQL source extract (EPIC-020 ticket 4)
+
+- **`POST /v1/studio/sources/sql`.** Steward posts connection details; F5 runs first
+  (`studio.sql_source`, config actor). Rows land in bronze through the existing
+  extract-only connector. The receipt names `source`, landed tables, `skipped`,
+  and declared key counts - never the password, never `asdict` of the extract.
+- **422 cannot echo secrets.** App-level `RequestValidationError` handler drops
+  `input` and `ctx`. Three probes (over-long password, list body, int password)
+  no longer leak `p;w}d`.
+
 ## 2026-09-03 - Studio ingest names the configured actor
 
 - **DR-0004 Option A.** `POST /v1/studio/ingest` (and the other Studio hops)

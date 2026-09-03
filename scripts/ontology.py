@@ -60,7 +60,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -1031,7 +1031,12 @@ def main(argv: list[str] | None = None) -> int:
 # --------------------------------------------------------------------------
 
 
-def from_manifest(entry: dict[str, Any], lake_root: Path | None = None) -> Ontology:
+def from_manifest(
+    entry: dict[str, Any],
+    lake_root: Path | None = None,
+    *,
+    relation_for: Callable[[str, str], str] | None = None,
+) -> Ontology:
     """Build an ontology from an extracted database's keys and relationships.
 
     Hand-authoring object types for a 71-table schema is not a plan, and neither
@@ -1057,13 +1062,22 @@ def from_manifest(entry: dict[str, Any], lake_root: Path | None = None) -> Ontol
         f"{t['schema']}.{t['table']}": (root / str(t["path"])).as_posix()
         for t in entry.get("tables", [])
     }
+
+    # Where an object's rows live is the one thing that differs between an extracted
+    # parquet lake and a SQL source landed in bronze. The keys, the links, and the
+    # refusal logic are identical, so the caller supplies the relation and everything
+    # else is shared. The default is the parquet lake this function was written for.
+    def _parquet(schema: str, table: str) -> str:
+        return f"read_parquet('{paths[f'{schema}.{table}']}')"
+
+    relation = relation_for or _parquet
     pks: dict[str, list[str]] = dict(entry.get("primary_keys") or {})
 
     for table, key in pks.items():
-        path = paths.get(table)
-        if path is None:
+        if table not in paths:
             continue  # declared a key but was not extracted; validate_lake reports it
-        onto.add_object(table, f"read_parquet('{path}')", key)
+        schema, _, name = table.partition(".")
+        onto.add_object(table, relation(schema, name), key)
 
     # Grouped on the whole triple, not the name alone. Constraint names are
     # unique per table in SQL Server, not per database, so two tables may each
