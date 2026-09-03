@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchPromoteReceipt, previewForNode } from "./api";
 import type { PromoteReceipt, PromoteReceiptState } from "./api";
+import { describeReceiptDefect } from "./promoteReceipt";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -17,6 +18,89 @@ function mockFetch(status: number, body: unknown): ReturnType<typeof vi.fn> {
   vi.stubGlobal("fetch", fn);
   return fn;
 }
+
+describe("describeReceiptDefect", () => {
+  const base: PromoteReceipt = {
+    run_id: "r",
+    target: "silver.s",
+    sources: ["bronze.a"],
+    source_rows: 1000,
+    passed: 997,
+    quarantined: 3,
+    unmatched: 0,
+    reconciled: true,
+    counts_by_reason: {},
+    dedup_key: [],
+    lineage: "propagate",
+    table: "silver.s",
+    quarantine_table: null,
+  };
+
+  it("returns null when reconciled", () => {
+    expect(describeReceiptDefect(base)).toBeNull();
+  });
+
+  it("lost: unmatched > 0, sentence uses unmatched not abs from reasons", () => {
+    const d = describeReceiptDefect({
+      ...base,
+      passed: 997,
+      quarantined: 0,
+      unmatched: 3,
+      reconciled: false,
+      counts_by_reason: { join_cardinality_change: 3 },
+    });
+    expect(d).toEqual({
+      kind: "lost",
+      sentence:
+        "3 rows did not arrive: they are in neither the target nor quarantine.",
+    });
+  });
+
+  it("fan-out: unmatched < 0, N is -unmatched", () => {
+    const d = describeReceiptDefect({
+      ...base,
+      passed: 1400,
+      quarantined: 0,
+      unmatched: -400,
+      reconciled: false,
+      counts_by_reason: { join_cardinality_change: 400 },
+    });
+    expect(d).toEqual({
+      kind: "fanout",
+      sentence: "Join fan-out: 400 more rows came out than went in.",
+    });
+  });
+
+  it("unmeasured: source_rows null", () => {
+    const d = describeReceiptDefect({
+      ...base,
+      source_rows: null,
+      passed: 10,
+      quarantined: 0,
+      unmatched: 0,
+      reconciled: false,
+    });
+    expect(d).toEqual({
+      kind: "unmeasured",
+      sentence: "Cannot be reconciled: this run recorded no input count.",
+    });
+  });
+
+  it("mismatch: unmatched 0 but passed + quarantined != source_rows", () => {
+    const d = describeReceiptDefect({
+      ...base,
+      passed: 900,
+      quarantined: 0,
+      unmatched: 0,
+      reconciled: false,
+    });
+    expect(d).toEqual({
+      kind: "mismatch",
+      sentence:
+        "Row count does not add up: source_rows and passed + quarantined differ by 100.",
+    });
+  });
+});
 
 describe("previewForNode", () => {
   it("does not map silver/gold ids to a warehouse preview", () => {
