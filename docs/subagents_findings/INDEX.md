@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (lineage-05-company-space + library-tree-duckdb).
+PREFLIGHT for this goal: PARTIAL (vq-01 envelope + hostile-coverage).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-04 | vq-01-ask-envelope | VQ-01, categoty, L0_CERTIFIED, chat/ask, Wide_Fill | HTTP mock: certified warehouse ranks map to L0_CERTIFIED; not Wide_Fill. Cortex match is PR #125. | `2026-09-04_vq-01-ask-envelope.md` |
 | 2026-09-03 | lineage-05-company-space-race | lineage-05, playwright, company-default, space-switcher, fetchSpaces | selectOption empty is a no-op; fetchSpaces snaps null company-default back to Finance. 12/12 and 31/31 on ticket ports. | `2026-09-03_lineage-05-company-space-race.md` |
 | 2026-09-03 | library-tree-duckdb-config | library, duckdb, read_only, lineage-05, 500 | /tree 500s if DuckDB mixes RO+RW on one file. List/preview/receipt stay write-mode. | `2026-09-03_library-tree-duckdb-config.md` |
 | 2026-09-03 | playwright-cream-chrome | playwright, cream, graphite, ingest, duckdb-lock, lineage-05 | Cream locators fixed 10/10. Ingest 0: Cortex :8010 pid 32816 holds D:/DMS/data/dms_demo.duckdb. Do not kill :8010/:8090. | `2026-09-03_playwright-cream-chrome.md` |
