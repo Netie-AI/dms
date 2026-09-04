@@ -31,7 +31,6 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
-from dms_executor.verified_queries import maybe_verified_ask
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -80,15 +79,16 @@ from dms_executor.reveal import (
     reveal_path,
 )
 from dms_executor.triage import classify_bytes, classify_grid
+from dms_executor.verified_queries import (
+    list_verified_queries,
+    maybe_verified_ask,
+    register_verified_query,
+)
 from dms_executor.warehouse_browse import (
     list_promote_targets,
     list_warehouse_tables,
     preview_bronze_table,
     preview_warehouse_table,
-)
-from dms_executor.verified_queries import (
-    list_verified_queries,
-    register_verified_query,
 )
 from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
