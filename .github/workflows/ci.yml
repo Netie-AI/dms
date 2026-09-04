@@ -211,3 +211,7 @@ jobs:
         run: |
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
           python -m pytest tests/ -q --tb=short
+
+      - name: Oracle self-test (stack-free, not live ask)
+        # F42 / EPIC-018: recomputes hostile-pack oracles. Does not POST /v1/chat/ask.
+        run: python scripts/score_answers.py --docs tests/fixtures/hostile_score --oracle-only
