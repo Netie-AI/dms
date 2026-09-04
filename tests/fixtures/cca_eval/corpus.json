@@ -1,0 +1,32 @@
+{
+  "precision_on_answered_must_be": 1.0,
+  "cases": [
+    {
+      "id": "sku_skip",
+      "question": "Top 5 selling SKUs by revenue",
+      "expect": "skip_cascade"
+    },
+    {
+      "id": "ambiguous_lease_buy",
+      "question": "lease or buy this site",
+      "expect": "abstain"
+    },
+    {
+      "id": "sea_commercial_rental_empty_pack",
+      "question": "rental across SEA, commercial only, ignore residential",
+      "expect": "abstain"
+    },
+    {
+      "id": "sea_commercial_rental_landed_pack",
+      "question": "rental across SEA, commercial only, ignore residential",
+      "expect": "certified_trace",
+      "class_encodings": {
+        "commercial": ["COMMERCIAL"],
+        "residential": ["RESIDENTIAL"]
+      },
+      "landed_class_dim": ["COMMERCIAL", "RESIDENTIAL"],
+      "region_members": {"SEA": ["MY"]},
+      "landed_geo_dim": ["MY", "SG"]
+    }
+  ]
+}

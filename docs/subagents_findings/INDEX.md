@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (cca-01..05 + vq-01 oracle). C7-05 still blocked.
+PREFLIGHT for this goal: PARTIAL (cca-01..06 PRs; C7-05 blocked).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-04 | cca-06-eval-corpus | CCA-06, precision-on-answered, WRONG, R-0003, dms#138 | Stack-free corpus. Fail on planted L0 on abstain. Certified golden is trace-only. | `2026-09-04_cca-06-eval-corpus.md` |
 | 2026-09-04 | cca-05-orchestrator | CCA-05, live_ask, cascade_path, before L0, dms#137 | Cascade after VQ, before Cortex. Ordinary SKU asks skip. Mid-stage abstain does not call Cortex. | `2026-09-04_cca-05-orchestrator.md` |
 | 2026-09-04 | cca-04-geo-sea | CCA-04, SEA, geo_region_members, landed dim, dms#136 | Empty SEA pack by default. CERTIFY pack ∩ dim only. Extra proposed countries abstain. | `2026-09-04_cca-04-geo-sea.md` |
 | 2026-09-04 | cca-03-asset-class | CCA-03, commercial, residential, encodings, dms#135 | Empty class encodings by default. CERTIFY only on landed dim. Missing encoding abstains before L0. | `2026-09-04_cca-03-asset-class.md` |
