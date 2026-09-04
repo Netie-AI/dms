@@ -79,6 +79,11 @@ from dms_executor.reveal import (
     reveal_path,
 )
 from dms_executor.triage import classify_bytes, classify_grid
+from dms_executor.verified_queries import (
+    list_verified_queries,
+    maybe_verified_ask,
+    register_verified_query,
+)
 from dms_executor.warehouse_browse import (
     list_promote_targets,
     list_warehouse_tables,
@@ -337,7 +342,18 @@ class Executor:
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
-        question = with_grounded_scope(normalize_ask_question(question), tables)
+        question = normalize_ask_question(question)
+        verified_env = maybe_verified_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            warehouse=self._warehouse,
+            grantable=set(self.grantable_tables(space_id=space_id)),
+            tables=tables,
+        )
+        if verified_env is not None:
+            return verified_env
+        question = with_grounded_scope(question, tables)
         bronze_env = maybe_bronze_sheet_ask(
             question, space_id=space_id, session_id=session_id
         )
@@ -655,11 +671,13 @@ __all__ = [
     "list_bronze_tables",
     "list_promote_targets",
     "list_warehouse_tables",
+    "list_verified_queries",
     "load_pipeline_by_name",
     "load_pipeline_yaml",
     "map_ask_response_to_envelope",
     "preview_bronze_table",
     "preview_warehouse_table",
+    "register_verified_query",
     "allowlisted_roots",
     "is_filesystem_uri",
     "resolve_allowlisted_file",

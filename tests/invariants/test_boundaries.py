@@ -72,6 +72,8 @@ DATA_REVEALING_CALLEES = frozenset(
         "pipeline_run",
         "pipeline_latest_receipt",
         "gold_sign_metric",
+        "list_verified_queries",
+        "register_verified_query",
     }
 )
 

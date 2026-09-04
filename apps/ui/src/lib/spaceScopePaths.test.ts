@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amendProposalsPath, runsPath } from "./api";
+import { amendProposalsPath, runsPath, verifiedQueriesPath } from "./api";
 
 /**
  * SPACE-UI-ALL leftover: API already scoped Runs/Amend; the UI helpers must put
@@ -27,5 +27,19 @@ describe("space-scoped list paths", () => {
   it("amendProposalsPath omits space_id for Company (default ACL)", () => {
     expect(amendProposalsPath()).toBe("/v1/amend/proposals");
     expect(amendProposalsPath(null)).toBe("/v1/amend/proposals");
+  });
+});
+
+describe("verifiedQueriesPath", () => {
+  it("always sends space_id, using company-default when none is selected", () => {
+    expect(verifiedQueriesPath("sp_finance")).toBe(
+      "/v1/studio/verified-queries?space_id=sp_finance",
+    );
+    expect(verifiedQueriesPath()).toBe(
+      "/v1/studio/verified-queries?space_id=company-default",
+    );
+    expect(verifiedQueriesPath(null)).toBe(
+      "/v1/studio/verified-queries?space_id=company-default",
+    );
   });
 });

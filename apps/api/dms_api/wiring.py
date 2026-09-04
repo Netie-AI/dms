@@ -154,6 +154,25 @@ def xlsx_orch_extract(
     )
 
 
+def register_verified_query(
+    *,
+    space_id: str,
+    question: str,
+    sql: str,
+    synonyms: list[str] | None = None,
+) -> dict[str, Any]:
+    return dms_executor.register_verified_query(
+        space_id=space_id,
+        question=question,
+        sql=sql,
+        synonyms=synonyms,
+    )
+
+
+def list_verified_queries(*, space_id: str) -> list[dict[str, Any]]:
+    return dms_executor.list_verified_queries(space_id=space_id)
+
+
 def sql_source_describe(
     *,
     kind: str,
