@@ -1,7 +1,10 @@
-"""Bake FreeRoute models on one L2 freeform ask; promote winner.
+"""Bake FreeRoute models on one L2 freeform ask.
 
 Requires Cortex process with DMS_L2_ENABLED=1 (or runs in-process answer()).
 Writes docs/L2_MODEL_BAKEOFF.md under DMS.
+
+F46 / EPIC-018: promotion is oracle precision-on-answered then coverage, never
+badge or latency. A confident L2_VALIDATED with no oracle fields is not a pin.
 """
 
 from __future__ import annotations
@@ -30,6 +33,47 @@ CANDIDATES = [
     "llama-3.3-70b-versatile",
     "openai/gpt-oss-20b",
 ]
+
+
+def select_promote_winner(results: list[dict]) -> str | None:
+    """Pick a model only from EPIC-018 oracle scores. Never badge or latency.
+
+    Eligible rows must carry ``wrong == 0``, ``precision_on_answered``, and
+    ``coverage``. Highest precision wins; coverage breaks ties; model name is
+    last (stable, not ``ms``). Missing oracle fields => not eligible.
+    """
+    eligible: list[dict] = []
+    for r in results:
+        if r.get("wrong") is None:
+            continue
+        if r.get("precision_on_answered") is None:
+            continue
+        if r.get("coverage") is None:
+            continue
+        try:
+            wrong = int(r["wrong"])
+            prec = float(r["precision_on_answered"])
+            cov = float(r["coverage"])
+        except (TypeError, ValueError):
+            continue
+        if wrong != 0:
+            continue
+        model = r.get("model")
+        if not model:
+            continue
+        eligible.append(
+            {
+                "model": str(model),
+                "precision_on_answered": prec,
+                "coverage": cov,
+            }
+        )
+    if not eligible:
+        return None
+    eligible.sort(
+        key=lambda x: (-x["precision_on_answered"], -x["coverage"], x["model"])
+    )
+    return eligible[0]["model"]
 
 
 def ov() -> str:
@@ -119,16 +163,17 @@ def main() -> int:
         results.append(r)
         print(f"L2 {m}: badge={r.get('badge')} abstain={r.get('abstain')} ms={r.get('ms')}")
 
-    winners = [r for r in results if r.get("badge") == "L2_VALIDATED" and not r.get("abstain")]
-    # Prefer fastest validated named model; else auto
-    winners.sort(key=lambda x: (0 if x["model"] != "auto" else 1, x.get("ms") or 9e9))
-    winner = winners[0]["model"] if winners else (live[0] if live else "auto")
+    winner = select_promote_winner(results)
 
     lines = [
         "# L2 FreeRoute model bakeoff",
         "",
         f"Question: `{Q}`",
-        f"Winner (promoted): **`{winner}`**",
+        (
+            f"Winner (promoted): **`{winner}`**"
+            if winner
+            else "Winner (promoted): **none** (no oracle scores; F46 will not pin on badge/latency)"
+        ),
         "",
         "## FreeRoute probe (SELECT 1)",
         "",
@@ -154,18 +199,27 @@ def main() -> int:
         "",
         "## Promote",
         "",
-        "```powershell",
-        f"D:\\DMS\\scripts\\windows\\Start-DMSStack.ps1 -StartSiblings -EnableL2 -L2Model {winner}",
-        "# or: $env:DMS_L2_MODEL='" + winner + "'",
-        "```",
-        "",
-        f"Generator default remains `auto` if unset; launcher `-L2Model` pins **{winner}**.",
-        "",
     ]
+    if winner:
+        lines += [
+            "```powershell",
+            f"D:\\DMS\\scripts\\windows\\Start-DMSStack.ps1 -StartSiblings -EnableL2 -L2Model {winner}",
+            "# or: $env:DMS_L2_MODEL='" + winner + "'",
+            "```",
+            "",
+            f"Pin is from oracle precision-on-answered then coverage, not badge or latency. `{winner}`.",
+            "",
+        ]
+    else:
+        lines += [
+            "No pin. Attach `wrong`, `precision_on_answered`, and `coverage` from",
+            "`scripts/score_answers.py` (EPIC-018 instrument) before promoting.",
+            "A confident `L2_VALIDATED` or a faster probe is not enough (F46).",
+            "",
+        ]
     OUT.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {OUT}")
-    print(json.dumps({"winner": winner, "validated": [w["model"] for w in winners]}, indent=2))
-    # write machine json next to md
+    print(json.dumps({"winner": winner, "oracle_promote": bool(winner)}, indent=2))
     (REPO / "docs" / "L2_MODEL_BAKEOFF.json").write_text(
         json.dumps(
             {"winner": winner, "probe": rows_probe, "l2": results, "question": Q},
@@ -173,7 +227,7 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
-    return 0 if winners else 2
+    return 0 if winner else 2
 
 
 if __name__ == "__main__":
