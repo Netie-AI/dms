@@ -966,6 +966,8 @@ def build_answer_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    constraint_trace: list[dict[str, Any]] | None = None,
+    cascade_path: bool = False,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -988,6 +990,37 @@ def build_answer_envelope(
     sources = stamp_contributing_source_watermarks(sources)
     rows_out = [dict(r) for r in (rows or []) if isinstance(r, dict)]
     values_out = _ensure_values(values, rows_out, abstained=abstained)
+
+    # CCA-01 — cascade path fails closed if the schema is missing or a later
+    # stage is CERTIFIED after a prior ABSTAIN/REFUSE. Encodings are not invented
+    # here (CCA-03/04). Does not skip E9: numbers still need executed SQL.
+    trace_out: list[dict[str, Any]] | None = None
+    if cascade_path or constraint_trace is not None:
+        from dms_executor.constraint_cascade import (
+            ConstraintSchemaError,
+            parse_trace,
+            refuse_missing_schema,
+        )
+
+        try:
+            trace_out = parse_trace(constraint_trace)
+        except ConstraintSchemaError as exc:
+            badge_out = "ABSTAIN"
+            abstained = True
+            if constraint_trace is None:
+                miss = refuse_missing_schema()
+                text = miss["text"]
+                assumptions_list.extend(miss["assumptions"])
+            else:
+                text = (
+                    f"Constraint cascade refused: {exc}. "
+                    "Later stages did not run as CERTIFIED."
+                )
+                assumptions_list.append(f"CCA-01: {exc}")
+            values_out = []
+            rows_out = []
+            sql_used = None
+            trace_out = []
 
     # E9 — a path that executed no query has no authority to render a figure it
     # cannot point at. Demote rather than certify: a green badge over a prose
@@ -1223,6 +1256,8 @@ def build_answer_envelope(
         # come from the manifest, not from the request that asked for it.
         "grounded_tables": list(grounded_tables or []),
     }
+    if trace_out is not None:
+        env["constraint_trace"] = trace_out
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
     return env
