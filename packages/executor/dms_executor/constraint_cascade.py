@@ -103,6 +103,19 @@ def require_certified_priors(trace: list[dict[str, Any]]) -> None:
             blocked = True
 
 
+def cascade_may_certify_numbers(trace: list[dict[str, Any]]) -> bool:
+    """L0 figures may ship only when sense is CERTIFIED and no stage abstained."""
+    if not trace:
+        return False
+    sense_ok = False
+    for item in trace:
+        if item["status"] != "CERTIFIED":
+            return False
+        if item["type"] == "sense":
+            sense_ok = True
+    return sense_ok
+
+
 def refuse_missing_schema() -> dict[str, Any]:
     """Closed-fail payload for a cascade-path ask with no schema (before L0)."""
     return {

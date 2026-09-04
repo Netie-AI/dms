@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (cca-01 + cca-02 sense + vq-01 oracle).
+PREFLIGHT for this goal: PARTIAL (cca-01..03 binders + vq-01 oracle).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-04 | cca-03-asset-class | CCA-03, commercial, residential, encodings, dms#135 | Empty class encodings by default. CERTIFY only on landed dim. Missing encoding abstains before L0. | `2026-09-04_cca-03-asset-class.md` |
 | 2026-09-04 | cca-02-sense-binder | CCA-02, lease, buy, housing-rent, bind_sense, ambiguous, dms#134 | Closed synonym pack. CERTIFY one sense or ABSTAIN. cascade_path will not ship L0 on uncertified sense. | `2026-09-04_cca-02-sense-binder.md` |
 | 2026-09-04 | cca-01-constraint-schema | CCA-01, cascade, constraint_trace, CERTIFIED, ABSTAIN, dms#133 | Typed constraints + envelope stage trace. Later CERTIFIED after ABSTAIN is illegal. Missing schema refuses before L0. Rename require_certified_priors: def gate_* is banned outside cortex_client. | `2026-09-04_cca-01-constraint-schema.md` |
 | 2026-09-04 | vq-01-oracle-ranks | VQ-01, categoty, ELECTRONICS, DISTINCT, fan-out, dms#39 | Envelope pins conservation ranks; 133M JOIN and Wide_Fill fail. Cortex DISTINCT sku SQL is on main. | `2026-09-04_vq-01-oracle-ranks.md` |

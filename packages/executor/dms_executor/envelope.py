@@ -1022,27 +1022,27 @@ def build_answer_envelope(
             sql_used = None
             trace_out = []
         else:
-            from dms_executor.sense_binder import sense_certified
+            from dms_executor.constraint_cascade import cascade_may_certify_numbers
 
-            # CCA-02: an uncertified sense must not ship L0 numbers, even when
-            # the trace is schema-legal (sense ABSTAIN, later stages omitted).
-            if cascade_path and not sense_certified(trace_out):
+            # CCA-02/03: schema-legal traces still must not ship L0 numbers when
+            # sense is uncertified or a later stage abstained.
+            if cascade_path and not cascade_may_certify_numbers(trace_out):
                 badge_out = "ABSTAIN"
                 abstained = True
                 why = next(
                     (
                         r
                         for c in trace_out
-                        if c.get("type") == "sense"
+                        if c.get("status") != "CERTIFIED"
                         for r in (c.get("reasons") or [])
                     ),
-                    "sense is not CERTIFIED",
+                    "cascade stage is not CERTIFIED",
                 )
                 text = (
                     f"{why}. No later cascade stage ran as CERTIFIED, "
                     "and I will not certify a figure."
                 )
-                assumptions_list.append(f"CCA-02: {why}")
+                assumptions_list.append(f"CCA: {why}")
                 values_out = []
                 rows_out = []
                 sql_used = None
