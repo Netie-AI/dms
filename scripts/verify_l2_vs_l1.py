@@ -15,6 +15,13 @@ from typing import Any
 
 import httpx
 
+# Corrected warehouse ranks (dms#39). Naive JOIN inventory inflates ~14.8x.
+_VQ01_ORACLE = [
+    ("ELECTRONICS", 8_953_922.60),
+    ("CHEMICALS", 8_799_446.70),
+    ("FOOD_COLD", 8_754_427.11),
+]
+
 # L0/L1 control — must NOT become L2 when templates match.
 L0_L1_CASES = [
     {
@@ -22,6 +29,13 @@ L0_L1_CASES = [
         "question": "Top 5 selling SKUs by revenue",
         "expect_badges": {"L0_CERTIFIED", "L1_GOVERNED_METRIC"},
         "must_not_abstain": True,
+    },
+    {
+        "id": "categoty_top3",
+        "question": "show top 3 categoty sales",
+        "expect_badges": {"L0_CERTIFIED", "L1_GOVERNED_METRIC"},
+        "must_not_abstain": True,
+        "expect_ranks": _VQ01_ORACLE,
     },
 ]
 
@@ -109,6 +123,19 @@ def run_l0_l1(client: httpx.Client) -> list[str]:
             )
         if badge == "L2_VALIDATED":
             fails.append(f"{case['id']}: L0/L1 question wrongly answered as L2")
+        ranks = case.get("expect_ranks")
+        if ranks and not env.get("abstained"):
+            rows = list(env.get("rows") or [])
+            got = [
+                (
+                    str(r.get("category") or ""),
+                    round(float(r.get("sales_value_myr") or r.get("value") or 0), 2),
+                )
+                for r in rows[: len(ranks)]
+            ]
+            want = [(c, round(float(v), 2)) for c, v in ranks]
+            if got != want:
+                fails.append(f"{case['id']}: ranks {got} != oracle {want}")
     return fails
 
 
