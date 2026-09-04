@@ -121,6 +121,7 @@ class Executor:
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
         session_store: Any | None = None,
+        cascade_packs: dict[str, Any] | None = None,
     ) -> None:
         self._cortex = cortex
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
@@ -136,6 +137,7 @@ class Executor:
             # uploads rather than the demo warehouse's.
             uploads=lambda: ingested_bronze_tables(self._warehouse)
         )
+        self._cascade_packs = dict(cascade_packs or {})
         if fetch_key_on_start:
             self.startup()
 
@@ -353,6 +355,45 @@ class Executor:
         )
         if verified_env is not None:
             return verified_env
+        from dms_executor.cascade_orchestrator import (
+            cascade_allows_l0,
+            run_constraint_cascade,
+        )
+
+        packs = self._cascade_packs
+        cascade_applies, cascade_trace = run_constraint_cascade(
+            question,
+            class_encodings=packs.get("class_encodings"),
+            landed_class_dim=packs.get("landed_class_dim"),
+            region_members=packs.get("region_members"),
+            landed_geo_dim=packs.get("landed_geo_dim"),
+            proposed_geo_members=packs.get("proposed_geo_members"),
+        )
+        if cascade_applies and not cascade_allows_l0(cascade_trace):
+            # Mid-stage abstain: do not execute unverified L0 SQL as certified.
+            why = next(
+                (
+                    r
+                    for c in cascade_trace
+                    if c.get("status") != "CERTIFIED"
+                    for r in (c.get("reasons") or [])
+                ),
+                "constraint cascade abstained",
+            )
+            env = build_answer_envelope(
+                answer_id=f"ans_cca_{session_id or 'x'}",
+                text=why,
+                badge="ABSTAIN",
+                abstained=True,
+                ask_mode="live",
+                space_id=space_id,
+                session_id=session_id,
+                question=question,
+                cascade_path=True,
+                constraint_trace=cascade_trace,
+            )
+            assert_envelope_valid(env)
+            return env
         question = with_grounded_scope(question, tables)
         bronze_env = maybe_bronze_sheet_ask(
             question, space_id=space_id, session_id=session_id
@@ -392,6 +433,8 @@ class Executor:
             # reads comes from the grant and not from the request.
             grounded_tables=sorted(acl.row_predicates),
             question=question,
+            cascade_path=cascade_applies,
+            constraint_trace=cascade_trace if cascade_applies else None,
         )
 
     def submit_sql(
@@ -494,6 +537,8 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    cascade_path: bool = False,
+    constraint_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import (
@@ -626,6 +671,8 @@ def map_ask_response_to_envelope(
         grounded_tables=grounded_tables,
         question=question,
         competing_scopes=competing_scopes,
+        cascade_path=cascade_path,
+        constraint_trace=constraint_trace,
     )
     assert_envelope_valid(env)
     return env

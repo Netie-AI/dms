@@ -12,6 +12,7 @@ from cortex_contract.execution import QueryResult
 from dms_api.app import create_app
 from dms_core.ask import AskServiceError
 from dms_executor import Executor
+from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
@@ -313,3 +314,47 @@ def test_a_real_policy_refusal_still_returns_403(
 
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "statement_not_allowed"
+
+
+def test_cascade_abstain_does_not_call_cortex_l0(minter: ManifestMinter) -> None:
+    fake = FakeCortex(submits=[], asks=[])
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "rental across SEA, commercial only, ignore residential",
+        session_id="ses_cca05_abs",
+    )
+    assert fake.asks == []
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["constraint_trace"]
+    assert any(c["status"] == "ABSTAIN" for c in env["constraint_trace"])
+    assert_envelope_valid(env)
+
+
+def test_cascade_happy_path_stamps_trace_on_l0(minter: ManifestMinter) -> None:
+    fake = FakeCortex(submits=[], asks=[])
+    exe = Executor(
+        cortex=fake,
+        minter=minter,  # type: ignore[arg-type]
+        cascade_packs={
+            "class_encodings": {
+                "commercial": ("COMMERCIAL",),
+                "residential": ("RESIDENTIAL",),
+            },
+            "landed_class_dim": ("COMMERCIAL", "RESIDENTIAL"),
+            "region_members": {"SEA": ("MY",)},
+            "landed_geo_dim": ("MY", "SG"),
+        },
+    )
+    env = exe.live_ask(
+        "rental across SEA, commercial only, ignore residential",
+        session_id="ses_cca05_ok",
+    )
+    assert len(fake.asks) == 1
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["constraint_trace"][0]["type"] == "sense"
+    assert env["constraint_trace"][1]["type"] == "asset_class"
+    assert env["constraint_trace"][2]["type"] == "geo"
+    assert all(c["status"] == "CERTIFIED" for c in env["constraint_trace"])
+    assert_envelope_valid(env)
