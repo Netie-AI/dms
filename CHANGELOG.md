@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-04 - Studio register of Space-scoped verified Q→SQL (VQ-02)
+
+- **Store.** Steward-certified question→SQL pairs persist in DuckDB
+  `main._verified_queries`, keyed by Space. Not a global pack YAML rewrite.
+  Hostile SQL and tables outside the Space grant are refused at register.
+- **Ask.** `POST /v1/chat/ask` in that Space hits the asset as `L0_CERTIFIED`
+  with executed rows. A foreign Space does not inherit the SQL. Cortex pack
+  match (VQ-01) is unchanged.
+- **Studio.** Register control on the Studio page for the active Space.
+  `POST /v1/studio/verified-queries` calls `compliance_gate` before write.
+  dms#40.
+
 ## 2026-09-03 - Promote receipts persist and are readable (EPIC-024 ticket 1)
 
 - **Store.** Each silver/gold promote writes `main._promote_receipts` on the

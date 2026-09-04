@@ -454,6 +454,48 @@ export async function fetchPromoteReceipt(
   return (await res.json()) as PromoteReceiptState;
 }
 
+/** Company default is a named scope, never "omit space_id and see every Space". */
+export function verifiedQueriesPath(spaceId?: string | null): string {
+  const scope = spaceId || "company-default";
+  return `/v1/studio/verified-queries?space_id=${encodeURIComponent(scope)}`;
+}
+
+export type VerifiedQueryAsset = {
+  asset_id: string;
+  space_id: string;
+  question: string;
+  sql: string;
+  synonyms: string[];
+  created_at: string;
+};
+
+export async function fetchVerifiedQueries(
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<VerifiedQueryAsset[]> {
+  const res = await fetch(`/api${verifiedQueriesPath(spaceId)}`, { signal });
+  if (!res.ok) throw new Error(describeApiError(await res.text()));
+  return (await res.json()) as VerifiedQueryAsset[];
+}
+
+export async function registerVerifiedQuery(
+  body: { spaceId?: string | null; question: string; sql: string },
+  signal?: AbortSignal,
+): Promise<VerifiedQueryAsset> {
+  const res = await fetch("/api/v1/studio/verified-queries", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      space_id: body.spaceId || "company-default",
+      question: body.question,
+      sql: body.sql,
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(describeApiError(await res.text()));
+  return (await res.json()) as VerifiedQueryAsset;
+}
+
 export async function createSpace(
   name: string,
 ): Promise<{ space: SpaceSummary; persisted: boolean; hint?: string }> {

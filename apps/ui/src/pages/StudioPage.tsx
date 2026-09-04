@@ -6,11 +6,14 @@ import {
   describeApiError,
   fetchLibraryTree,
   fetchTablePreview,
+  fetchVerifiedQueries,
   PREVIEW_PAGE_SIZE,
   previewForNode,
+  registerVerifiedQuery,
   type LibraryTree,
   type TablePreview,
   type TreeNode,
+  type VerifiedQueryAsset,
 } from "@/lib/api";
 
 type FileRow = {
@@ -52,6 +55,12 @@ export function StudioPage() {
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [vqQuestion, setVqQuestion] = useState("");
+  const [vqSql, setVqSql] = useState("");
+  const [vqBusy, setVqBusy] = useState(false);
+  const [vqErr, setVqErr] = useState<string | null>(null);
+  const [vqOk, setVqOk] = useState<string | null>(null);
+  const [vqAssets, setVqAssets] = useState<VerifiedQueryAsset[]>([]);
 
   const [tree, setTree] = useState<LibraryTree | null>(null);
   const [treeErr, setTreeErr] = useState<string | null>(null);
@@ -80,6 +89,14 @@ export function StudioPage() {
     }
   }, [activeSpaceId]);
 
+  const loadVerified = useCallback(async () => {
+    try {
+      setVqAssets(await fetchVerifiedQueries(activeSpaceId));
+    } catch (e) {
+      setVqErr(e instanceof Error ? e.message : "could not list certified questions");
+    }
+  }, [activeSpaceId]);
+
   useEffect(() => {
     // Switching Space must not leave the previous Space's tree/preview/selection.
     setTree(null);
@@ -90,8 +107,14 @@ export function StudioPage() {
     setPreviewTarget(null);
     setPreviewOffset(0);
     setSelected(new Set());
+    setVqQuestion("");
+    setVqSql("");
+    setVqErr(null);
+    setVqOk(null);
+    setVqAssets([]);
     void loadTree();
-  }, [loadTree]);
+    void loadVerified();
+  }, [loadTree, loadVerified]);
 
   const openPreview = useCallback((node: TreeNode) => {
     const target = previewForNode(node.id);
@@ -179,6 +202,30 @@ export function StudioPage() {
       .map((l) => previewForNode(l.id)?.table)
       .filter(Boolean) as string[];
     navigate("/", { state: { groundedTables: tables, groundedLabels: selectedLabels } });
+  };
+
+  const registerCertified = async () => {
+    const question = vqQuestion.trim();
+    const sql = vqSql.trim();
+    if (!question || !sql) return;
+    setVqBusy(true);
+    setVqErr(null);
+    setVqOk(null);
+    try {
+      const asset = await registerVerifiedQuery({
+        spaceId: activeSpaceId,
+        question,
+        sql,
+      });
+      setVqOk(`Registered ${asset.asset_id} for this Space.`);
+      setVqQuestion("");
+      setVqSql("");
+      await loadVerified();
+    } catch (e) {
+      setVqErr(e instanceof Error ? e.message : "register failed");
+    } finally {
+      setVqBusy(false);
+    }
   };
 
   const attention = receipt?.need_attention ?? receipt?.quarantined ?? 0;
@@ -399,6 +446,60 @@ export function StudioPage() {
             </p>
           )}
         </div>
+      </div>
+
+      <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
+          Certified question
+        </p>
+        <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
+          Register a verified question and the SQL that answers it. Chat in this Space
+          will use that SQL under a confident badge. Other Spaces do not inherit it.
+        </p>
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <label className="block text-xs text-[var(--color-ink-muted)]">
+            Question
+            <textarea
+              value={vqQuestion}
+              onChange={(e) => setVqQuestion(e.target.value)}
+              rows={3}
+              className="mt-1 w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm text-[var(--color-ink)]"
+              placeholder="What is the capacity of warehouse A?"
+            />
+          </label>
+          <label className="block text-xs text-[var(--color-ink-muted)]">
+            SQL
+            <textarea
+              value={vqSql}
+              onChange={(e) => setVqSql(e.target.value)}
+              rows={3}
+              className="mt-1 w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 font-mono text-sm text-[var(--color-ink)]"
+              placeholder="SELECT name, capacity_kg FROM locations WHERE location_id = 'WH-A'"
+            />
+          </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={vqBusy || !vqQuestion.trim() || !vqSql.trim()}
+            onClick={() => void registerCertified()}
+            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {vqBusy ? "Registering…" : "Register for this Space"}
+          </button>
+          {vqOk && <span className="text-xs text-[var(--color-ink)]">{vqOk}</span>}
+          {vqErr && <span className="text-xs text-[var(--color-danger)]">{vqErr}</span>}
+        </div>
+        {vqAssets.length > 0 && (
+          <ul className="mt-4 space-y-2 text-xs">
+            {vqAssets.map((a) => (
+              <li key={a.asset_id} className="border-t border-[var(--color-line)]/70 pt-2">
+                <p className="font-medium text-[var(--color-ink)]">{a.question}</p>
+                <p className="mt-1 truncate font-mono text-[var(--color-ink-muted)]">{a.sql}</p>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {receipt && (

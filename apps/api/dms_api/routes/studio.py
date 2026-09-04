@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
@@ -14,6 +14,8 @@ from dms_api.wiring import (
     batch_ingest,
     bronze_list,
     list_document_chunks,
+    list_verified_queries,
+    register_verified_query,
     sql_source_describe,
     sql_source_ingest,
     xlsx_orch_crosscheck,
@@ -295,3 +297,59 @@ def sql_source_ingest_route(
         encrypt=body.encrypt,
         trust_server_certificate=body.trust_server_certificate,
     )
+
+
+class VerifiedQueryIn(BaseModel):
+    space_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    sql: str = Field(min_length=1, max_length=8000)
+    synonyms: list[str] = Field(default_factory=list, max_length=32)
+
+
+@router.post("/verified-queries")
+def register_verified_query_route(
+    body: VerifiedQueryIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Steward-register a Space-scoped question→SQL asset (VQ-02)."""
+    decision = compliance_gate(
+        action="studio.verified_query",
+        actor=settings.dms_actor_user_id,
+        metadata={
+            "task_id": "studio.verified_query",
+            "space_id": body.space_id,
+        },
+        client=cortex,
+    )
+    enforce(decision)
+    try:
+        return register_verified_query(
+            space_id=body.space_id,
+            question=body.question,
+            sql=body.sql,
+            synonyms=body.synonyms,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/verified-queries")
+def list_verified_queries_route(
+    cortex: CortexDep,
+    settings: SettingsDep,
+    space_id: str = Query(..., description="Space that owns the verified assets"),
+) -> list[dict[str, Any]]:
+    """List verified Q→SQL assets for one Space. Never crosses space_id."""
+    decision = compliance_gate(
+        action="studio.list_verified_queries",
+        actor=settings.dms_actor_user_id,
+        metadata={
+            "task_id": "studio.list_verified_queries",
+            "space_id": space_id,
+        },
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
+    return list_verified_queries(space_id=space_id)
+
