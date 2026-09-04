@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-04 - VQ-01 envelope pins corrected categoty ranks (dms#39)
+
+- **Oracle.** `POST /v1/chat/ask` tests assert `L0_CERTIFIED` / `L1_GOVERNED_METRIC`
+  plus ELECTRONICS 8,953,922.60 / CHEMICALS 8,799,446.70 / FOOD_COLD 8,754,427.11
+  for `show top 3 categoty sales` and seeded pack paraphrases. Fan-out 133M
+  totals and Wide_Fill-class numbers fail the envelope helper. DMS does not
+  upgrade L2 `query_skill` to L0.
+- **Match.** Exact + `synonyms:` live on Cortex pack `cq_top3_category_sales`
+  (Cortex#125). No product intent regex. Live stack assert skips when DMS HTTP
+  is down (CI has no engine). #128 mapped certified->L0 with invented ranks;
+  this pins the conservation oracle.
+- dms#39. Do not close until independent verify. VQ-02 Studio is out of scope.
+
 ## 2026-09-03 - Promote receipts persist and are readable (EPIC-024 ticket 1)
 
 - **Store.** Each silver/gold promote writes `main._promote_receipts` on the

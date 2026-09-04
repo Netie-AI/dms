@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-09-03  
+**Last updated:** 2026-09-04  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -23,7 +23,7 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Result |
 |----|--------|
 | Demo | `verify_demo_live.py` **31/31** live on a cold stack. Bounds error at ~3/31, not zero (R-0010) |
-| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104) - all asserted on the customer envelope. E12 does not treat `total ... by <dim>` as one-number (live Finance spend was eating cq_spend_by_country) |
+| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104), **VQ-01** categoty L0/L1 + corrected warehouse ranks (dms#39; Cortex#125 pack, fan-out JOIN still on Cortex YAML) |
 | **A-0005 CLOSED** (#70) | The ledger actor is resolved server-side. `sign_gold_metric` requires it, with no fallback to caller data, so `/gold/sign` and `/run` both close at the binding (R-0004) |
 | **DR-0004 accepted** (#71) | **Option A** - identity from config, never a request. `x-dms-*` headers are **refused** with 400, not ignored. 7 invariants; 4 go red against a pass-through (R-0007) |
 | Predictive (#67) | A literal-list guard certified 4 forecast asks with historical numbers under `L2_VALIDATED`. Now intent-based. KB **F-0021** |
@@ -49,11 +49,11 @@ AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | EPIC-024 LINEAGE-01 (#113): persist receipts + GET /v1/pipelines/receipts. Off main `25d3b612`. Do not merge park/epic-020. |
+| **This tick** | VQ-01 (dms#39): envelope oracle for `categoty` ask. Cortex#125 on main; DISTINCT SQL still pending on pack. Do not merge parks. |
 | **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
 | Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)** - DR-0005 pair. #112 CLOSED. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). EPIC-003 (#6) + EPIC-017 (#33) QUEUED. #59 CLOSED. EPIC-018 QUEUED |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | LINEAGE-01 on `cursor/lineage-01-promote-receipts-3103`. Parks stay parked. Floor: Cortex#44. |
+| CI / PRs | VQ-01 envelope oracle on `cursor/vq-01-oracle-envelope-8293`. Parks stay parked. Floor: Cortex#44. |
 
 ## Agent models
 

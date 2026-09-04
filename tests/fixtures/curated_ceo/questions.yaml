@@ -75,7 +75,8 @@ questions:
 
   - id: trap_categoty
     space: finance
-    expect: abstain
+    expect: l0
+    min_rows: 3
     question: Show top 3 categoty sales
 
   - id: trap_last_month
