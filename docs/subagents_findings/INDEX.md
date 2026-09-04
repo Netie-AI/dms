@@ -1,10 +1,11 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (cca-01 + vq-01 oracle).
+PREFLIGHT for this goal: PARTIAL (cca-01 + cca-02 sense + vq-01 oracle).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
-| 2026-09-04 | cca-01-constraint-schema | CCA-01, cascade, constraint_trace, CERTIFIED, ABSTAIN, dms#133 | Typed constraints + envelope stage trace. Later CERTIFIED after ABSTAIN is illegal. Missing schema refuses before L0. | `2026-09-04_cca-01-constraint-schema.md` |
+| 2026-09-04 | cca-02-sense-binder | CCA-02, lease, buy, housing-rent, bind_sense, ambiguous, dms#134 | Closed synonym pack. CERTIFY one sense or ABSTAIN. cascade_path will not ship L0 on uncertified sense. | `2026-09-04_cca-02-sense-binder.md` |
+| 2026-09-04 | cca-01-constraint-schema | CCA-01, cascade, constraint_trace, CERTIFIED, ABSTAIN, dms#133 | Typed constraints + envelope stage trace. Later CERTIFIED after ABSTAIN is illegal. Missing schema refuses before L0. Rename require_certified_priors: def gate_* is banned outside cortex_client. | `2026-09-04_cca-01-constraint-schema.md` |
 | 2026-09-04 | vq-01-oracle-ranks | VQ-01, categoty, ELECTRONICS, DISTINCT, fan-out, dms#39 | Envelope pins conservation ranks; 133M JOIN and Wide_Fill fail. Cortex DISTINCT sku SQL is on main. | `2026-09-04_vq-01-oracle-ranks.md` |
 | 2026-09-04 | vq-02-studio-register | VQ-02, Studio, verified-queries, L0, space isolation | Space-scoped DuckDB `_verified_queries`; Studio POST gated; ask in-space L0, foreign miss. | `2026-09-04_vq-02-studio-register.md` |
 | 2026-09-04 | f46-promote-on-truth | F46, bakeoff, precision-on-answered, coverage, badge, latency, EPIC-018 | Bakeoff will not pin on L2_VALIDATED or ms. Oracle wrong==0 + precision then coverage, or no pin. | `2026-09-04_f46-promote-on-truth.md` |
