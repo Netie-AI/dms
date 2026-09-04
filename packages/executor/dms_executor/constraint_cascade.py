@@ -80,11 +80,11 @@ def parse_trace(raw: Any) -> list[dict[str, Any]]:
         if item["type"] in seen:
             raise ConstraintSchemaError(f"duplicate stage {item['type']}")
         seen.add(item["type"])
-    gate_trace(out)
+    require_certified_priors(out)
     return out
 
 
-def gate_trace(trace: list[dict[str, Any]]) -> None:
+def require_certified_priors(trace: list[dict[str, Any]]) -> None:
     """Later stages cannot be CERTIFIED unless every prior stage is CERTIFIED."""
     by_stage = {c["type"]: c for c in trace}
     blocked = False

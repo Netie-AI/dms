@@ -10,4 +10,6 @@ Main idea: Typed constraint objects (`constraint_id`, `type`, `candidate`, `bind
 |---------|--------|
 | `pytest tests/test_constraint_cascade.py -q` | schema + gating + envelope refuse |
 
+`require_certified_priors` is the stage-order check. Do not name it `gate_trace`: `tests/invariants/test_boundaries.py` bans `def gate_*` outside `packages/cortex_client`.
+
 Does not prove: sense/geo binders (CCA-02..04), live cascade before L0 (CCA-05), eval corpus (CCA-06).
