@@ -52,8 +52,69 @@ def test_surface_forms_map_to_one_canonical_segment() -> None:
     assert propose_segment("top sales in agricultural") == "agriculture"
     assert propose_segment("agri portfolio by state") == "agriculture"
     assert propose_segment("which F&B tenants pay the most") == "food_and_beverage"
-    assert propose_segment("manufacturing revenue 2024") == "manufacturing"
+    # "manufacturing" is strict, so it names the segment next to a cue. This
+    # used to read "manufacturing revenue 2024", which no longer proposes:
+    # "rank manufacturing suppliers by risk score" is the same shape and is a
+    # supplier question, and one rule has to decide both.
+    assert propose_segment("revenue by manufacturing segment") == "manufacturing"
     assert propose_segment("top sales last quarter") is None
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("top sales in agricultural across SEA", "agriculture"),
+        ("SEA countries top sales in agricultural", "agriculture"),
+        ("revenue by manufacturing segment", "manufacturing"),
+    ],
+)
+def test_segment_asks_still_propose(question: str, expected: str) -> None:
+    """The buyer's own sentences, in both word orders, plus a cued strict term.
+
+    The first two are the epic's headline ask: "agricultural" is plain, so it
+    proposes wherever it sits in the sentence. The third is the strict path -
+    "segment" one token after "manufacturing" is what makes it a filter.
+    """
+    assert propose_segment(question) == expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Which farms are late on delivery?",
+        "Rank manufacturing suppliers by risk score",
+        "How many factories do we ship to?",
+        "Who is the manufacturer of SKU-BETA?",
+    ],
+)
+def test_counterparty_and_site_nouns_are_not_a_segment_ask(question: str) -> None:
+    """A delivery question, a supplier ranking, a site count and a lookup.
+
+    None of these asks for an industry slice of the book; each merely contains a
+    word that can name one, and a verification run watched all four engage the
+    cascade and abstain. Refusing work the product answers today is a failure
+    of the control, not a demonstration of it (R-0005).
+    """
+    assert propose_segment(question) is None
+
+
+@pytest.mark.parametrize(
+    ("singular", "plural"),
+    [
+        ("sales in farm only", "sales in farms only"),
+        ("sales in factory only", "sales in factories only"),
+        ("revenue by manufacturer segment", "revenue by manufacturers segment"),
+        ("sales in plantation only", "sales in plantations only"),
+    ],
+)
+def test_singular_and_plural_read_the_same(singular: str, plural: str) -> None:
+    """The list carried "farms" and "factories" without their singulars.
+
+    A lexicon that recognises one number and not the other is unaudited rather
+    than deliberate, and the buyer sees it as the same question working or not
+    working depending on how they wrote the noun.
+    """
+    assert propose_segment(singular) == propose_segment(plural) is not None
 
 
 def test_agriculture_binds_plants_and_animals_together(lake: Path) -> None:
@@ -89,7 +150,10 @@ def test_partial_coverage_is_disclosed_not_hidden(lake: Path) -> None:
     assert "accounts.business_type" in note
     for member in ("Oil Palm", "Poultry", "Aquaculture", "Logging and Timber"):
         assert member in note
-    assert "Not present in this data" in note
+    # binder.coverage_note now says "Not matched", not "Not present": a column
+    # carrying "Myanmar (Burma)" was reporting Myanmar as absent when it was
+    # there and merely unrecognised. The disclosure still has to name it.
+    assert "Not matched in this data" in note
     assert "Rubber" in note
     # What the column carried but the segment excluded is stated too.
     assert "Software Development" in note

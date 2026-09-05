@@ -269,12 +269,12 @@
     {
       "id": "segment_manufacturing_certified",
       "class": "segment certified",
-      "question": "manufacturing revenue by client",
+      "question": "revenue in manufacturing by client",
       "warehouse": "manufacturing_mixed",
       "expect": "CERTIFIED",
       "expect_members": ["Electronics", "Automotive"],
       "must_not_bind": ["Agricultural Bank Loans"],
-      "why": "A third pack over a sector column proves the segment machinery is not agriculture-specific, and that a loan product does not join a manufacturing total."
+      "why": "A third pack over a sector column proves the segment machinery is not agriculture-specific, and that a loan product does not join a manufacturing total. The question carries a cue because manufacturing is a strict term: bare 'manufacturing revenue' is the same shape as 'rank manufacturing suppliers by risk score', which must not engage, and one rule decides both."
     },
     {
       "id": "segment_abstain_false_agriculture",

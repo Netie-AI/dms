@@ -24,6 +24,14 @@ landed is ambiguous, and this module refuses to pick: it abstains with a hint
 naming the candidate senses and the landed spellings that would separate them.
 Picking one silently is how a confident L0 number gets attached to the wrong
 half of a book.
+
+The question-side lexicon is split plain/strict (``dms_executor.cca.intent``).
+"rent", "purchase", "tenant" and "sale price" are ordinary nouns of this
+product's own domain before they are tenure words, so they name a sense only
+next to a cue that makes them a filter; "lease", "rental" and the housing
+spellings cannot mean anything else and stay bare. Verification found the
+unsplit list abstaining on "total purchases from SUP-02" and "revenue per
+tenant", both of which the product answers today.
 """
 
 from __future__ import annotations
@@ -32,7 +40,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from dms_executor.cca.binder import BinderResult, TermPack, certify_pack, norm_value
+from dms_executor.cca import intent
+from dms_executor.cca.binder import BinderResult, TermPack, certify_pack
 
 #: The tenure/rental sense family. One pack, three canonical senses, because a
 #: reviewer has to be able to read the whole proposal in one screen. Aliases are
@@ -72,24 +81,6 @@ SENSE_PACKS: tuple[TermPack, ...] = (TENURE,)
 STAGE = "sense"
 
 
-def _phrase_at(tokens: Sequence[str], phrase: Sequence[str], start: int) -> bool:
-    return tuple(tokens[start : start + len(phrase)]) == tuple(phrase)
-
-
-def _mentions(tokens: Sequence[str], alias: str) -> bool:
-    """Whole-token phrase match, never substring.
-
-    Substring matching is the same mistake ``binder`` refuses on values: "let"
-    inside "letter" and "rent" inside "current" are not tenure words. Multi-word
-    aliases match as a contiguous run so "housing rent" is one phrase, not two
-    accidental hits.
-    """
-    phrase = norm_value(alias).split()
-    if not phrase:
-        return False
-    return any(_phrase_at(tokens, phrase, i) for i in range(len(tokens) - len(phrase) + 1))
-
-
 #: What counts as a tenure word *in a question*, which is not the same list as
 #: what counts as one *in a column*.
 #:
@@ -101,8 +92,9 @@ def _mentions(tokens: Sequence[str], alias: str) -> bool:
 #: correct work is a failure, not a win (R-0005).
 #:
 #: So the sales-volume words (sale, sold) are here only in tenure-shaped forms,
-#: and "let" only as "to let". The words that unambiguously name a tenure in a
-#: question stay bare.
+#: and "let" only as "to let". Every form is listed in both numbers: an alias
+#: list where "tenant" fires and "tenants" does not is unaudited, not careful,
+#: and the singular/plural split it produces is invisible to a reader.
 QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
     "Lease": (
         "lease",
@@ -111,20 +103,25 @@ QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
         "leased",
         "rental",
         "rentals",
-        "rent",
         "renting",
+        "rent",
+        "rents",
         "tenancy",
+        "tenancies",
         "tenant",
+        "tenants",
         "to let",
         "for lease",
     ),
     "Buy": (
         "buy",
         "buying",
+        "bought",
         "purchase",
         "purchases",
         "freehold",
         "acquisition",
+        "acquisitions",
         "for sale",
         "sale price",
         "sold price",
@@ -133,10 +130,43 @@ QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
         "housing rent",
         "residential rent",
         "home rental",
+        "home rentals",
         "hdb rent",
         "tenancy residential",
     ),
 }
+
+#: Aliases that name a tenure only next to a cue (``intent.is_filter_shaped``).
+#:
+#: Every word here is an ordinary noun of this product's own domain before it is
+#: a tenure word, and each was observed costing a real answer: "total purchases
+#: from SUP-02" is a supplier question, "revenue per tenant this quarter" is a
+#: per-customer metric, "what is our monthly rent bill" is an expense line, and
+#: "the average sale price per SKU" is a price. Reading any of them as a tenure
+#: filter abstains on work the product answers today (R-0005).
+#:
+#: The rest of the list stays bare because it cannot mean anything else here:
+#: "lease", "leasing", "rental", "tenancy", "freehold", "to let" and the
+#: multi-word housing spellings are tenure words wherever they appear. The
+#: gerunds go with them: "renting" names the activity, while "rent" is also the
+#: monthly cost line every business has.
+STRICT_ALIASES = intent.strict_set(
+    (
+        "rent",
+        "rents",
+        "tenant",
+        "tenants",
+        "buy",
+        "buying",
+        "bought",
+        "purchase",
+        "purchases",
+        "acquisition",
+        "acquisitions",
+        "sale price",
+        "sold price",
+    )
+)
 
 
 def propose_senses(question: str) -> tuple[str, ...]:
@@ -148,7 +178,7 @@ def propose_senses(question: str) -> tuple[str, ...]:
     points at Lease - because resolving that overlap is the data's job, not a
     precedence rule invented here.
     """
-    tokens = norm_value(question).split()
+    tokens = intent.tokens_of(question)
     if not tokens:
         return ()
     out: list[str] = []
@@ -157,7 +187,10 @@ def propose_senses(question: str) -> tuple[str, ...]:
             if canonical in out:
                 continue
             aliases = QUESTION_ALIASES.get(canonical, ())
-            if any(_mentions(tokens, alias) for alias in aliases):
+            if any(
+                intent.mentions(tokens, alias, strict_aliases=STRICT_ALIASES)
+                for alias in aliases
+            ):
                 out.append(canonical)
     return tuple(out)
 
@@ -313,4 +346,12 @@ def bind_sense(
     )
 
 
-__all__ = ["SENSE_PACKS", "STAGE", "TENURE", "bind_sense", "propose_senses"]
+__all__ = [
+    "QUESTION_ALIASES",
+    "SENSE_PACKS",
+    "STAGE",
+    "STRICT_ALIASES",
+    "TENURE",
+    "bind_sense",
+    "propose_senses",
+]

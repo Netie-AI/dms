@@ -46,15 +46,21 @@ def test_parse_reads_the_epics_phrasings_without_a_regex_cascade() -> None:
     assert parse_class_intent("ignore residential") == ((), ("Residential",))
     assert parse_class_intent("exclude residential") == ((), ("Residential",))
     assert parse_class_intent("total sales excluding housing") == ((), ("Residential",))
-    assert parse_class_intent("commercial revenue, ignore residential") == (
+    assert parse_class_intent("lease revenue for commercial property, ignore residential") == (
         ("Commercial",),
         ("Residential",),
     )
-    # A cue that governs something else does not reach across the sentence.
-    assert parse_class_intent("ignore stale rows and total commercial sales") == (
-        ("Commercial",),
+    # Bare "commercial" is strict now (see STRICT_ALIASES): it names a class
+    # only next to a cue, so the exclusion still binds and the include side
+    # does not. "commercial revenue" is the same shape as "commercial
+    # performance versus target", which must not engage at all.
+    assert parse_class_intent("commercial revenue, ignore residential") == (
         (),
+        ("Residential",),
     )
+    # A cue that governs something else does not reach across the sentence, and
+    # bare "commercial" in the middle of a sentence is not a class term.
+    assert parse_class_intent("ignore stale rows and total commercial sales") == ((), ())
     assert parse_class_intent("revenue last quarter") == ((), ())
 
 
@@ -155,3 +161,165 @@ def test_constraint_parses_under_cca_01_behind_a_certified_sense(lake: Path) -> 
     # asset_class is stage 1: it cannot be certified over an unresolved sense.
     with pytest.raises(ConstraintSchemaError, match="must not be CERTIFIED"):
         parse_trace([{**sense, "status": "ABSTAIN"}, res.to_constraint()])
+
+
+# ---------------------------------------------------------------------------
+# The negation rule must not invert the ask (verified defect D1)
+# ---------------------------------------------------------------------------
+
+
+def test_a_cue_two_tokens_ahead_of_a_class_word_does_not_negate_it() -> None:
+    """"no matter if commercial or residential" asks for both, not for one.
+
+    A three-token backward reach let ``no`` in "no matter if" exclude
+    ``commercial``, and the remaining ``residential`` certified as the include
+    side, so the ask that said "everything" bound ``asset_class IN ('RES')`` -
+    the answer inverted from the question, under a green badge.
+    """
+    assert parse_class_intent("everything, no matter if commercial or residential") == ((), ())
+    # The reach is what changed, not the cue: one token nearer and it negates.
+    assert parse_class_intent("no commercial") == ((), ("Commercial",))
+
+
+def test_a_negation_after_the_word_negates_that_word_and_not_the_next_one() -> None:
+    """"residential excluded, commercial included" is one of each, not the reverse.
+
+    Searching backward only read ``excluded`` as governing ``commercial``,
+    which put Residential in the include set and Commercial in the exclude set:
+    both members on the wrong side of the same sentence.
+    """
+    assert parse_class_intent("residential excluded, commercial included") == (
+        ("Commercial",),
+        ("Residential",),
+    )
+    assert parse_class_intent("residential omitted") == ((), ("Residential",))
+    assert parse_class_intent("residential removed, commercial only") == (
+        ("Commercial",),
+        ("Residential",),
+    )
+
+
+def test_a_negation_carries_across_a_conjunction_to_the_class_beside_it() -> None:
+    """"excluding commercial and residential" excludes both.
+
+    ``residential`` sits three tokens after the cue, so nothing states its
+    polarity; the conjunction is the only evidence there is, and reading it as
+    an inclusion inverts half the ask exactly as the two cases above did.
+    """
+    assert parse_class_intent("excluding commercial and residential") == (
+        (),
+        ("Commercial", "Residential"),
+    )
+
+
+def test_the_inverted_ask_now_binds_the_class_the_caller_asked_for(lake: Path) -> None:
+    """Rule 10: assert the binding a caller would execute, not only the parse."""
+    res = bind_asset_class(
+        "residential excluded, commercial included", warehouse=lake, tables=["assets"]
+    )
+    assert res.status == "CERTIFIED"
+    assert res.binding_text() == "assets.asset_class IN ('COM')"
+
+    # And the ask that filters on nothing binds nothing rather than binding RES.
+    everything = bind_asset_class(
+        "everything, no matter if commercial or residential",
+        warehouse=lake,
+        tables=["assets"],
+    )
+    assert everything.status == "ABSTAIN"
+    assert everything.binding_text() is None
+    assert "names no asset class" in everything.reasons[0]
+
+
+# ---------------------------------------------------------------------------
+# A loose column name is not a cheap extra chance to bind (verified defect D2)
+# ---------------------------------------------------------------------------
+
+
+def test_a_customer_segment_column_cannot_certify_an_asset_class(tmp_path: Path) -> None:
+    """``segment_class`` holds customer segments, and Retail there is not a class.
+
+    The observed failure certified ``deals.segment_class IN ('Retail')`` for
+    "total value for commercial property" over ('Retail','Enterprise',
+    'Wholesale') and reported "Commercial covered 1 of 1 members". Every step
+    of that is plausible and the answer is about the wrong column, so the fix
+    is to not scan the column rather than to disclose the residual afterwards.
+    """
+    db = tmp_path / "segments.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE deals (segment_class VARCHAR, amount DOUBLE)")
+    con.executemany(
+        "INSERT INTO deals VALUES (?, ?)",
+        [("Retail", 10.0), ("Enterprise", 20.0), ("Wholesale", 5.0)],
+    )
+    con.close()
+
+    res = bind_asset_class("total value for commercial property", warehouse=db, tables=["deals"])
+    assert res.status == "ABSTAIN"
+    assert res.binding_text() is None
+    assert "segment_class" not in res.coverage_note()
+    assert "no asset class encoding" in res.reasons[0]
+
+
+# ---------------------------------------------------------------------------
+# Ordinary product questions must not engage the stage (verified defect D3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is commercial performance versus target?",
+        "Show commercial vehicles in the fleet",
+        "How much warehouse space is free?",
+        "Total housing allowance paid last year",
+        "Who is the manufacturer of SKU-BETA?",
+        "How many factories do we ship to?",
+        "commercial team headcount by region",
+        "office space utilisation this quarter",
+    ],
+)
+def test_ordinary_business_nouns_do_not_engage_the_class_stage(question: str) -> None:
+    """Each of these answers today and none names a property class.
+
+    They engaged the stage on a bare "commercial", "housing" or "warehouse
+    space" and then abstained, costing an answer that worked. A control that
+    refuses correct work is a failure, not a win (R-0005).
+    """
+    assert parse_class_intent(question) == ((), ())
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("rental across SEA, commercial only", (("Commercial",), ())),
+        (
+            "lease revenue for commercial property, ignore residential",
+            (("Commercial",), ("Residential",)),
+        ),
+        ("commercial only", (("Commercial",), ())),
+        ("residential only", (("Residential",), ())),
+        ("excluding residential", ((), ("Residential",))),
+        ("total value for commercial property", (("Commercial",), ())),
+        ("across all housing stock", (("Residential",), ())),
+    ],
+)
+def test_the_epics_class_asks_still_parse(
+    question: str, expected: tuple[tuple[str, ...], tuple[str, ...]]
+) -> None:
+    """The strict split costs coverage on bare nouns, never on a cued ask."""
+    assert parse_class_intent(question) == expected
+
+
+def test_a_bare_noun_ask_abstains_instead_of_binding_a_class(lake: Path) -> None:
+    """Rule 10 again: the caller-visible effect of the strict split.
+
+    "commercial vehicles" now leaves asset_class unbound, which lets the
+    question be answered elsewhere, rather than binding COM over a fleet.
+    """
+    res = bind_asset_class(
+        "show commercial vehicles in the fleet", warehouse=lake, tables=["assets"]
+    )
+    assert res.status == "ABSTAIN"
+    assert res.binding_text() is None
+    assert "names no asset class" in res.reasons[0]

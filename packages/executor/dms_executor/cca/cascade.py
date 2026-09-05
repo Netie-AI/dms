@@ -39,7 +39,7 @@ from typing import Any
 
 from dms_executor.cca.asset_class import bind_asset_class, parse_class_intent
 from dms_executor.cca.binder import BinderResult
-from dms_executor.cca.geo import bind_geo, propose_region
+from dms_executor.cca.geo import bind_geo, propose_countries, propose_region
 from dms_executor.cca.segment import bind_segment, propose_segment
 from dms_executor.cca.sense import bind_sense, propose_senses
 from dms_executor.constraint_cascade import ConstraintSchemaError, parse_trace
@@ -50,21 +50,31 @@ from dms_executor.constraint_cascade import ConstraintSchemaError, parse_trace
 _CASCADE_STAGES = ("sense", "asset_class", "geo")
 
 
-def _unconstrained(stage: str) -> dict[str, Any]:
-    """A stage the ask places no constraint on.
+def _unrecognised(stage: str) -> dict[str, Any]:
+    """A stage whose proposer found no term it knows in this ask.
 
-    CERTIFIED here is not invent-green. It is the checkable claim that this ask
-    asked nothing of this stage, so this stage cannot have filtered wrongly.
-    The alternative - leaving the stage out - would make CCA-01 block every
-    later stage, which would abstain on "top sales across SEA" for the sole
-    reason that it did not also name an asset class.
+    The evidence line says what actually happened, not what the ask did. It used
+    to read "the ask places no geo constraint", which is a claim about the
+    question, and it was false whenever the question named something the
+    proposer does not recognise. "rental in Malaysia, commercial only" printed
+    exactly that line while naming a country, beside a fully green trace.
+
+    CERTIFIED here still has to earn itself: it says only that no filter was
+    derived at this stage, so no filter at this stage can be wrong. What it
+    cannot say, and no longer says, is that the customer asked for none. Leaving
+    the stage out instead is worse - CCA-01 would then block every later stage,
+    and "top sales across SEA" would abstain for the sole reason that it named
+    no asset class.
     """
     return {
         "constraint_id": f"{stage}-none",
         "type": stage,
-        "candidate": "(unconstrained)",
+        "candidate": "(no recognised term)",
         "binding": None,
-        "evidence": [f"the ask places no {stage} constraint"],
+        "evidence": [
+            f"no {stage} term this cascade recognises appears as a filter in the ask; "
+            "no filter was derived and none is claimed"
+        ],
         "status": "CERTIFIED",
         "reasons": [],
     }
@@ -127,7 +137,12 @@ def _proposals(question: str) -> dict[str, bool]:
         "sense": bool(propose_senses(question)),
         "class": bool(include or exclude),
         "segment": propose_segment(question) is not None,
-        "geo": propose_region(question) is not None,
+        # A named country is a geo constraint. Gating this stage on a region
+        # alone meant "rental in Malaysia, commercial only" derived no geo
+        # filter and then recorded that no geo term was recognised, beside a
+        # fully green trace, while Cortex filtered on the literal 'Malaysia'
+        # against a column encoded 'MY'.
+        "geo": propose_region(question) is not None or bool(propose_countries(question)),
     }
 
 
@@ -168,6 +183,12 @@ def _merge_class(
         unmatched_sample=first.unmatched_sample,
         reasons=(),
         polarity=first.polarity,
+        # Both halves keep their own column. Composing them into one predicate
+        # over columns[0] would list the segment column's values against the
+        # class column's name.
+        binding_override=" AND ".join(
+            b for b in (first.binding_text(), second.binding_text()) if b
+        ),
     )
 
 
@@ -219,7 +240,7 @@ def run_cascade(
             )
 
         if res is None:
-            trace.append(_unconstrained(stage))
+            trace.append(_unrecognised(stage))
             continue
         results.append(res)
         trace.append(res.to_constraint())

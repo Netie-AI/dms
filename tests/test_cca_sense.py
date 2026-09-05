@@ -16,9 +16,15 @@ import duckdb
 import pytest
 from dms_executor.cca.sense import bind_sense, propose_senses
 
-# The word "rent" points at Lease, the phrase "housing rent" at HousingRent.
+# The word "rental" points at Lease, the phrase "housing rent" at HousingRent.
 # One question, two readings - which is exactly the ask the data must resolve.
-AMBIGUOUS = "what was total rent on our housing rent units last quarter"
+#
+# It used to read "total rent on our housing rent units". Bare "rent" is now a
+# strict alias, because "what is our monthly rent bill" is an expense question
+# this product answers; the ambiguity being tested is between two tenure words,
+# not a property of that one spelling, so the case is written with a word that
+# still engages bare.
+AMBIGUOUS = "what was total rental income on our housing rent units last quarter"
 
 
 def _build(db: Path, rows: list[tuple[str, float]]) -> Path:
@@ -132,6 +138,70 @@ def test_question_naming_no_sense_at_all_abstains(lake: Path) -> None:
     assert res.status == "ABSTAIN"
     assert res.binding_text() is None
     assert "names no lease, buy or housing-rent sense" in res.reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("rental across SEA, commercial only", ("Lease",)),
+        ("lease revenue for commercial property", ("Lease",)),
+        ("home rental totals", ("Lease", "HousingRent")),
+    ],
+)
+def test_plain_tenure_words_engage_on_the_word_alone(
+    question: str, expected: tuple[str, ...]
+) -> None:
+    """A word that can only be a tenure needs no cue to be read as one.
+
+    These three are the shipped headline asks. If the strict split ever reaches
+    "lease" or "rental", the epic's own demo stops engaging and the failure
+    looks like a missing feature rather than an over-tight control.
+    """
+    assert propose_senses(question) == expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the average sale price per SKU?",
+        "Total purchases from SUP-02",
+        "Show purchase orders raised this week",
+        "What is our customer acquisition cost?",
+        "Revenue per tenant this quarter",
+        "What is our monthly rent bill?",
+        "How many tenants are on the platform?",
+    ],
+)
+def test_ordinary_domain_nouns_are_not_a_tenure_ask(question: str) -> None:
+    """Every one of these is answered today, and none names a tenure filter.
+
+    A verification run watched all seven engage stage 0 and then abstain,
+    because "rent", "purchase", "tenant" and "sale price" were read as tenure
+    words wherever they appeared. An abstention here costs a working answer and
+    buys no safety: none of these questions could bind a tenure column anyway.
+    """
+    assert propose_senses(question) == ()
+
+
+@pytest.mark.parametrize(
+    ("singular", "plural"),
+    [
+        ("lease revenue", "leases revenue"),
+        ("rental totals", "rentals totals"),
+        ("value across tenant contracts", "value across tenants contracts"),
+        ("spend on purchase only", "spend on purchases only"),
+        ("cost in acquisition only", "cost in acquisitions only"),
+    ],
+)
+def test_singular_and_plural_read_the_same(singular: str, plural: str) -> None:
+    """The list is audited, not just long.
+
+    Before this, "tenant" was an alias and "tenants" was not, so "revenue per
+    tenant" engaged and "how many tenants are on the platform" did not. That
+    asymmetry is invisible to a reader and unexplainable to a buyer: the same
+    question works or fails on how they pluralised a noun.
+    """
+    assert propose_senses(singular) == propose_senses(plural) != ()
 
 
 def test_substring_lookalikes_are_not_a_sense(lake: Path) -> None:

@@ -36,11 +36,19 @@ could not be shown to remove anything.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
-from dataclasses import replace
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from dms_executor.cca.binder import BinderResult, TermPack, certify_pack, norm_value
+from dms_executor.cca.binder import BinderResult, TermPack, certify_pack
+from dms_executor.cca.intent import (
+    POSTFIX_REACH,
+    PREFIX_REACH,
+    mentions,
+    phrase_positions,
+    strict_set,
+    tokens_of,
+)
 
 #: Canonical classes and the spellings that mean them. Declared, not learned:
 #: a reviewer has to be able to read this and say "yes, a shoplot is
@@ -49,14 +57,19 @@ from dms_executor.cca.binder import BinderResult, TermPack, certify_pack, norm_v
 ASSET_CLASS_PACK = TermPack(
     name="asset_class_members",
     kind="asset class",
+    # Only column names that mean an asset class specifically. A loose name is
+    # not a cheap extra chance to bind; it is a chance to bind the wrong thing.
+    # ``segment_class`` holding ('Retail','Enterprise','Wholesale') certified
+    # "commercial property" as ``segment_class IN ('Retail')`` - a customer
+    # segment answering a property question, under a green badge. ``class`` and
+    # ``category_class`` are the same shape of name (fare class, risk class,
+    # ticket class, product category) and carry no claim about property at all.
+    # Scanning them was dropped rather than left for coverage_note to disclose.
     column_names=(
         "asset_class",
         "property_type",
         "asset_type",
-        "class",
-        "segment_class",
         "building_type",
-        "category_class",
     ),
     members={
         "Commercial": (
@@ -86,11 +99,13 @@ ASSET_CLASS_PACK = TermPack(
     note="Class membership is proposed here and decided by the column's landed values.",
 )
 
-#: The whole negation rule. A closed set of cue words, not a regex cascade that
-#: grows a branch per customer phrasing. Anything not on this list reads as an
-#: inclusion, which is the safe direction: an unrecognised negation lands the
-#: member in the include set, where the conflict check or the binder can still
-#: catch it, rather than quietly widening a filter.
+#: The negation rule, kept private rather than reusing ``intent.PREFIX_CUES``,
+#: because negation is narrower than "this word makes the next one a filter":
+#: ``across``, ``in``, ``only`` and ``all`` are filter cues and say nothing
+#: about polarity, so borrowing that set whole would turn "across all
+#: commercial" into an exclusion. It stays a closed list, not a regex cascade
+#: that grows a branch per customer phrasing. Anything not on it reads as an
+#: inclusion, where the conflict check or the binder can still catch it.
 NEGATION_CUES = frozenset(
     {
         "exclude",
@@ -116,11 +131,27 @@ NEGATION_CUES = frozenset(
     }
 )
 
-#: How many tokens back a cue reaches. Three covers "excluding housing",
-#: "ignore all residential" and "not any commercial" while keeping "ignore
-#: stale rows and total commercial sales" an inclusion, which it is.
-CUE_REACH = 3
+# Reach comes from intent.py, so "is this word a filter" and "is this filter
+# negated" answer over the same window. A cue two tokens ahead of the member is
+# governing something else: "no matter if commercial" is not an exclusion of
+# commercial, and a three-token reach certified exactly that inversion.
 
+#: Negations that follow the member instead of leading it. English puts these
+#: after the noun ("residential excluded"), and searching backward only read
+#: that as an inclusion of Residential while the ask says the opposite - an
+#: answer inverted from the question, under a green badge.
+POSTFIX_NEGATIONS = frozenset({"excluded", "omitted", "removed"})
+
+#: The other half of the same phrase shape. In "residential excluded,
+#: commercial included" the negation belongs to residential, and reading it
+#: forward onto commercial inverts the ask a second time, so a marker sitting
+#: on the member itself outranks a cue that governs an earlier one.
+POSTFIX_INCLUSIONS = frozenset({"included", "only", "exclusively"})
+
+#: Words that join two class terms into one phrase about the same thing. Not a
+#: third cue list about polarity: these carry none of their own, they only say
+#: that whatever holds for one term holds for the other.
+COORDINATORS = frozenset({"and", "or", "nor"})
 
 #: What counts as a class term *in a question*, which is not the same list as
 #: what counts as one *in a column*.
@@ -133,9 +164,9 @@ CUE_REACH = 3
 #: that refuses correct work is a failure, not a win (R-0005).
 #:
 #: So the bare common nouns (warehouse, office, retail, shop, industrial,
-#: landed, mixed) are here only in their property-shaped forms. The words that
-#: unambiguously name a class in a question - commercial, residential, housing,
-#: condo, hdb - stay bare, because those are the epic's driving phrasings.
+#: landed, mixed) are here only in their property-shaped forms, and the ones
+#: that are still ordinary business nouns in that form are declared strict
+#: below rather than dropped.
 QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
     "Commercial": (
         "commercial",
@@ -169,6 +200,26 @@ QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
     "MixedUse": ("mixed use", "mixed development", "mixed use property"),
 }
 
+#: Aliases that name a class only next to a filter cue (``intent.mentions``).
+#: Every one of these was observed costing an answer that works today: "What is
+#: commercial performance versus target?", "Show commercial vehicles in the
+#: fleet", "How much warehouse space is free?", "Total housing allowance paid
+#: last year". In this product's domain they are ordinary business nouns first
+#: and asset classes second, so "commercial only" and "across all housing"
+#: engage while a bare mention does not. The rest of the lexicon stays plain:
+#: nobody writes "residential", "condominium" or "shoplot" about something that
+#: is not a property class.
+STRICT_ALIASES = strict_set(
+    (
+        "commercial",
+        "housing",
+        "warehouse space",
+        "office space",
+        "industrial space",
+        "retail space",
+    )
+)
+
 _QUESTION_PACK = TermPack(
     name=f"{ASSET_CLASS_PACK.name}.question",
     kind=ASSET_CLASS_PACK.kind,
@@ -178,45 +229,113 @@ _QUESTION_PACK = TermPack(
 )
 
 
-def _alias_hits(tokens: list[str]) -> Iterator[tuple[int, str]]:
-    """Yield (token index, canonical member) for every class term in the question.
+@dataclass(frozen=True)
+class _Term:
+    """One class word in the question, with what the sentence does to it."""
 
-    Longest alias wins at each position so "mixed use" is one hit and not a
-    "mixed" hit followed by a stray word. Matching is on whole tokens, never on
-    substrings: "commercial" must not be found inside "noncommercial-adjacent"
-    prose, and a substring rule cannot tell those apart.
+    start: int
+    end: int
+    member: str
+    #: ``intent.mentions``: is this word being used as a filter here at all.
+    used: bool
+    #: Polarity stated by a cue on this term itself, or None if unstated.
+    stated: str | None
+
+
+def _stated_polarity(tokens: Sequence[str], start: int, end: int) -> str | None:
+    """The polarity a cue puts on this term, or None when nothing states one.
+
+    Order matters. A marker on the term itself is read before a cue in front of
+    it, because that cue may belong to the previous term: "residential
+    excluded, commercial included" is one exclusion and one inclusion, and
+    reading the exclusion forward inverts half the ask.
     """
-    index = _QUESTION_PACK.alias_index()
-    longest = max((len(key.split()) for key in index), default=1)
-    i = 0
-    while i < len(tokens):
-        for size in range(min(longest, len(tokens) - i), 0, -1):
-            canonical = index.get(" ".join(tokens[i : i + size]))
-            if canonical is not None:
-                yield i, canonical
-                i += size
-                break
+    after = tokens[end : end + POSTFIX_REACH]
+    if any(token in POSTFIX_INCLUSIONS for token in after):
+        return "include"
+    if any(token in POSTFIX_NEGATIONS for token in after):
+        return "exclude"
+    before = tokens[max(0, start - PREFIX_REACH) : start]
+    if any(token in NEGATION_CUES for token in before):
+        return "exclude"
+    return None
+
+
+def _class_terms(tokens: Sequence[str]) -> list[_Term]:
+    """Every class word in the question, filter or not, left to right.
+
+    ``intent.mentions`` decides ``used``; this only locates the words and
+    resolves overlaps, longest alias first, so "commercial property" is one
+    term and not "commercial" plus a stray noun. Matching is on whole tokens,
+    never substrings: "commercial" must not be found inside "noncommercial".
+
+    Words that are *not* filters are kept rather than dropped because a
+    coordination is evidence about all of its members - see ``_coordinations``.
+    """
+    terms: list[_Term] = []
+    for alias, member in _QUESTION_PACK.alias_index().items():
+        used = mentions(tokens, alias, strict_aliases=STRICT_ALIASES)
+        size = len(alias.split())
+        terms += [
+            _Term(at, at + size, member, used, _stated_polarity(tokens, at, at + size))
+            for at in phrase_positions(tokens, alias)
+        ]
+    terms.sort(key=lambda term: (term.start, term.start - term.end))
+    kept: list[_Term] = []
+    consumed = 0
+    for term in terms:
+        if term.start >= consumed:
+            kept.append(term)
+            consumed = term.end
+    return kept
+
+
+def _coordinations(tokens: Sequence[str], terms: Sequence[_Term]) -> list[list[_Term]]:
+    """Group class words that a conjunction joins into one phrase.
+
+    Two class words joined by "and" or "or" are being used the same way, and
+    that is the only evidence available for either of them: "excluding
+    commercial and residential" states one polarity for both, and "no matter if
+    commercial or residential" states that neither is a filter. A cue sitting
+    between two terms is not a join - "for commercial property, ignore
+    residential" carries opposite polarities - so the gap has to be empty or a
+    conjunction, not merely short.
+    """
+    groups: list[list[_Term]] = []
+    for term in terms:
+        gap = tokens[groups[-1][-1].end : term.start] if groups else None
+        if gap is not None and (not gap or (len(gap) == 1 and gap[0] in COORDINATORS)):
+            groups[-1].append(term)
         else:
-            i += 1
+            groups.append([term])
+    return groups
 
 
 def parse_class_intent(question: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Split the class terms in a question into (included, excluded) members.
 
-    A member named within ``CUE_REACH`` tokens after a negation cue is excluded;
-    every other named member is included. The same member can land on both sides
-    ("commercial only, excluding commercial") and that contradiction is kept, not
-    resolved here - ``bind_asset_class`` REFUSES it, because picking a winner
-    would answer a question nobody asked.
+    The same member can land on both sides ("commercial only, excluding
+    commercial") and that contradiction is kept, not resolved here -
+    ``bind_asset_class`` REFUSES it, because picking a winner would answer a
+    question nobody asked.
     """
-    tokens = norm_value(question).split()
+    tokens = tokens_of(question)
     include: list[str] = []
     exclude: list[str] = []
-    for start, canonical in _alias_hits(tokens):
-        window = tokens[max(0, start - CUE_REACH) : start]
-        bucket = exclude if any(token in NEGATION_CUES for token in window) else include
-        if canonical not in bucket:
-            bucket.append(canonical)
+    for group in _coordinations(tokens, _class_terms(tokens)):
+        shared = next((term.stated for term in group if term.stated), None)
+        if shared is None and any(not term.used for term in group):
+            # "no matter if commercial or residential": commercial is not a
+            # filter here, nothing states a polarity, and residential is joined
+            # to it. Reading residential alone bound the answer to the one
+            # class the ask was explicitly indifferent about.
+            continue
+        for term in group:
+            if not term.used:
+                continue
+            bucket = exclude if (term.stated or shared) == "exclude" else include
+            if term.member not in bucket:
+                bucket.append(term.member)
     return tuple(include), tuple(exclude)
 
 
@@ -333,8 +452,11 @@ def bind_asset_class(
 
 __all__ = [
     "ASSET_CLASS_PACK",
-    "CUE_REACH",
+    "COORDINATORS",
     "NEGATION_CUES",
+    "POSTFIX_INCLUSIONS",
+    "POSTFIX_NEGATIONS",
+    "STRICT_ALIASES",
     "bind_asset_class",
     "parse_class_intent",
 ]

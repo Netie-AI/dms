@@ -240,3 +240,67 @@ def test_coverage_sentence_trims_the_list_but_never_the_count() -> None:
     assert "1 of 20" in note
     assert "and 13 more" in note
     assert "M19" not in note
+
+
+def test_two_granted_columns_abstain_rather_than_naming_one_and_listing_both(
+    tmp_path: Path,
+) -> None:
+    """The multi-column lie, found by an independent run.
+
+    ``deals.country`` held MY and ``leads.nation`` held Singapore and Thailand.
+    binding_text() names columns[0] and lists the union, so the predicate read
+    ``deals.country IN ('MY', 'Thailand', 'Singapore')`` - it parses, it
+    executes, and it matches a third of what it claims. Refusing costs an
+    answer; certifying costs a plausible wrong number under a green badge.
+    """
+    db = tmp_path / "two.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE deals (country VARCHAR)")
+    con.execute("INSERT INTO deals VALUES ('MY')")
+    con.execute("CREATE TABLE leads (country VARCHAR)")
+    con.execute("INSERT INTO leads VALUES ('Singapore'), ('Thailand')")
+    con.close()
+
+    res = certify_pack(
+        stage="geo",
+        constraint_id="c1",
+        candidate="SEA",
+        pack=SEA,
+        warehouse=db,
+        tables=["deals", "leads"],
+    )
+    assert res.status == "ABSTAIN"
+    assert res.binding_text() is None
+    assert "not decidable" in res.reasons[0]
+    assert "deals.country" in res.reasons[0]
+    assert "leads.country" in res.reasons[0]
+
+
+def test_absent_says_not_matched_because_that_is_what_it_knows(tmp_path: Path) -> None:
+    """A spelling the pack does not know is present, not absent.
+
+    The sentence read "Not present in this data: Myanmar" over a column holding
+    'Myanmar (Burma)'. Myanmar was present. This sentence can only speak for
+    what the pack recognised, so it now says so, and it names the landed values
+    the filter left out rather than reporting a clean cover over them.
+    """
+    db = tmp_path / "burma.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE sales (country VARCHAR)")
+    con.execute("INSERT INTO sales VALUES ('MY'), ('Myanmar (Burma)')")
+    con.close()
+
+    res = certify_pack(
+        stage="geo",
+        constraint_id="c1",
+        candidate="SEA",
+        pack=SEA,
+        warehouse=db,
+        tables=["sales"],
+    )
+    note = res.coverage_note()
+    assert "Not matched in this data" in note
+    assert "Not present in this data" not in note
+    # The other half: the reader is told which landed value this filter drops.
+    assert "left out of this filter" in note
+    assert "Myanmar (Burma)" in note

@@ -127,6 +127,11 @@ class BinderResult:
     unmatched_sample: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
     polarity: str = "include"
+    #: Set only when a caller composes two certified results into one stage
+    #: (cascade._merge_class). Without it the composed result would print
+    #: ``columns[0] IN (union of both columns' values)``, which is the same
+    #: multi-column lie certify_pack now abstains on.
+    binding_override: str | None = None
 
     @property
     def certified(self) -> bool:
@@ -143,8 +148,16 @@ class BinderResult:
         return tuple(out)
 
     def binding_text(self) -> str | None:
+        # One column, or nothing. A certified result never carries two, because
+        # certify_pack abstains on that case: writing column[0] beside the union
+        # of every column's values produced
+        # `deals.country IN ('MY', 'Thailand', 'Singapore')` where Thailand and
+        # Singapore live in leads.nation. That predicate parses, executes and
+        # matches a third of what it claims, which is hard rule 12 exactly.
         if not self.certified or not self.columns:
             return None
+        if self.binding_override is not None:
+            return self.binding_override
         op = "NOT IN" if self.polarity == "exclude" else "IN"
         listed = ", ".join(repr(v) for v in self.values)
         return f"{self.columns[0]} {op} ({listed})"
@@ -178,7 +191,20 @@ class BinderResult:
             f"members via {where}: {included}"
         )
         if self.absent:
-            note += f". Not present in this data: {_listed(self.absent)}"
+            # "Not matched", not "not present". The two differ, and the
+            # difference was shipping as a lie: a column carrying
+            # "Myanmar (Burma)" produced "Not present in this data: Myanmar".
+            # Myanmar was present; the pack did not know that spelling. This
+            # sentence can only speak for what the pack recognised.
+            note += f". Not matched in this data: {_listed(self.absent)}"
+        if self.unmatched_sample:
+            # The other half of the same honesty: values the column does carry
+            # and this filter left out. Without it a narrowed pack reports a
+            # clean "1 of 1 members" over a column holding two other values.
+            note += (
+                f". Values in {self.columns[0]} left out of this filter: "
+                f"{_listed(self.unmatched_sample)}"
+            )
         return note
 
     def to_constraint(self) -> dict[str, Any]:
@@ -338,6 +364,29 @@ def certify_pack(
             reasons=(
                 f"{scanned} carries no value matching any {pack.name} member; "
                 "membership was proposed, never landed",
+            ),
+            polarity=polarity,
+        )
+
+    if len(used_columns) > 1:
+        # Two granted columns carry this encoding and nothing here can say which
+        # one a filter would apply to. The old behaviour named the first column
+        # and listed the union of both columns' values, so the predicate matched
+        # a fraction of what it claimed. Refusing costs an answer; the other
+        # branch costs a plausible wrong number under a green badge.
+        return BinderResult(
+            stage=stage,
+            constraint_id=constraint_id,
+            candidate=candidate,
+            pack=pack.name,
+            status="ABSTAIN",
+            matched={k: tuple(v) for k, v in matched.items()},
+            columns=tuple(used_columns),
+            tables=table_list,
+            unmatched_sample=tuple(unmatched[:UNMATCHED_SAMPLE]),
+            reasons=(
+                f"{' and '.join(used_columns)} both carry {pack.name} values; "
+                "which column the filter applies to is not decidable here",
             ),
             polarity=polarity,
         )

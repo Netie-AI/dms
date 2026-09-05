@@ -253,7 +253,7 @@ def _unconstrained_stages(outcome: CascadeOutcome) -> set[str]:
     return {
         str(entry["type"])
         for entry in outcome.trace
-        if entry.get("candidate") == "(unconstrained)"
+        if entry.get("candidate") == "(no recognised term)"
     }
 
 

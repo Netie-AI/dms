@@ -25,6 +25,13 @@ that ought to count but does not match lands in ``unmatched_sample`` for a
 steward to add on purpose. Widening the pack is a reviewed edit; loosening the
 matcher would be a silent licence to guess.
 
+The question side is split plain/strict (``dms_executor.cca.intent``). A word
+that can only be a segment ("agricultural", "food and beverage") proposes
+wherever it appears; a word that is usually a counterparty or a site ("farms",
+"factories", "manufacturer") proposes only next to a cue that makes it a
+filter, because "which farms are late on delivery" is a delivery question and
+answering it is not optional.
+
 Stage choice: an industry segment answers "what class of thing is this row",
 which is the ``asset_class`` stage. The CCA-01 stage list is fixed (sense,
 asset_class, geo, grain, ontology, sql, envelope), so segment rides on
@@ -33,10 +40,11 @@ asset_class rather than adding an eighth stage.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 
-from dms_executor.cca.binder import BinderResult, TermPack, certify_pack, norm_value
+from dms_executor.cca import intent
+from dms_executor.cca.binder import BinderResult, TermPack, certify_pack
 
 #: The cascade stage a segment verdict occupies. See the module docstring.
 STAGE = "asset_class"
@@ -243,6 +251,10 @@ _PACKS_BY_NAME = {pack.name: pack for pack in SEGMENT_PACKS.values()}
 # ways a person writes "agriculture" is small and finite, and a rule that turned
 # "agricultural" into "agricultur" would also turn "agricultural bank" into a
 # match. Listing the forms keeps every recognition auditable.
+#
+# Both numbers of every noun are listed. "farms" recognised and "farm" not is an
+# accident of who wrote the line, and it shows up to a buyer as the same
+# question working or not working depending on how they pluralised it.
 SEGMENT_TERMS: dict[str, str] = {
     "agriculture": "agriculture",
     "agricultural": "agriculture",
@@ -251,52 +263,72 @@ SEGMENT_TERMS: dict[str, str] = {
     "agrifood": "agriculture",
     "agro": "agriculture",
     "farming": "agriculture",
+    "farm": "agriculture",
     "farms": "agriculture",
     "plantation": "agriculture",
     "plantations": "agriculture",
     "manufacturing": "manufacturing",
     "manufacturer": "manufacturing",
     "manufacturers": "manufacturing",
+    "factory": "manufacturing",
     "factories": "manufacturing",
     "F&B": "food_and_beverage",
     "FNB": "food_and_beverage",
     "food and beverage": "food_and_beverage",
     "food and beverages": "food_and_beverage",
     "food service": "food_and_beverage",
+    "food services": "food_and_beverage",
 }
 
-
-def _phrase_index(tokens: Sequence[str], phrase: Sequence[str]) -> int | None:
-    """Position of ``phrase`` in ``tokens`` as whole words, or None."""
-    span = len(phrase)
-    if span == 0 or span > len(tokens):
-        return None
-    for start in range(len(tokens) - span + 1):
-        if list(tokens[start : start + span]) == list(phrase):
-            return start
-    return None
+#: Terms that name a segment only next to a cue (``intent.is_filter_shaped``).
+#:
+#: Every one of these names a thing a business talks about as a counterparty, a
+#: site or a person, not as a slice of its own book. Verification watched four
+#: questions abstain on them, all of which the product answers today: "which
+#: farms are late on delivery", "how many factories do we ship to", "who is the
+#: manufacturer of SKU-BETA" and "rank manufacturing suppliers by risk score".
+#: None of those asks for a segment; each merely contains a word that can name
+#: one.
+#:
+#: "agriculture", "agricultural", "agri" and "food and beverage" stay bare
+#: because nobody writes them about anything else, so those asks engage on the
+#: word alone.
+STRICT_TERMS = intent.strict_set(
+    (
+        "farm",
+        "farms",
+        "plantation",
+        "plantations",
+        "manufacturing",
+        "manufacturer",
+        "manufacturers",
+        "factory",
+        "factories",
+    )
+)
 
 
 def propose_segment(question: str) -> str | None:
     """The broad segment a question names, or None when it names none.
 
     Whole-word only, so "agri" does not fire on "agriculture" twice and does not
-    fire on a word that merely contains it. When two terms both appear, the one
-    written first wins, and a longer phrase beats a shorter one starting at the
-    same place ("food and beverage" over a bare "food").
+    fire on a word that merely contains it. A term in ``STRICT_TERMS`` counts
+    only where a cue makes it a filter, so "revenue by manufacturing segment"
+    proposes and "rank manufacturing suppliers by risk score" does not. When two
+    terms both appear, the one written first wins, and a longer phrase beats a
+    shorter one starting at the same place ("food and beverage" over "food").
     """
-    tokens = norm_value(question).split()
+    tokens = intent.tokens_of(question)
     if not tokens:
         return None
     best: tuple[int, int, str] | None = None
     for surface, canonical in SEGMENT_TERMS.items():
-        phrase = norm_value(surface).split()
-        at = _phrase_index(tokens, phrase)
-        if at is None:
+        if not intent.mentions(tokens, surface, strict_aliases=STRICT_TERMS):
             continue
-        rank = (at, -len(phrase))
+        positions = intent.phrase_positions(tokens, surface)
+        rank = (positions[0], -len(intent.tokens_of(surface)))
         if best is None or rank < (best[0], best[1]):
-            best = (at, -len(phrase), canonical)
+            best = (rank[0], rank[1], canonical)
     return None if best is None else best[2]
 
 
@@ -383,6 +415,7 @@ __all__ = [
     "SEGMENT_PACKS",
     "SEGMENT_TERMS",
     "STAGE",
+    "STRICT_TERMS",
     "bind_segment",
     "disclosure",
     "included_business_types",

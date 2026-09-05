@@ -114,7 +114,13 @@ def test_a_stage_the_ask_does_not_constrain_is_marked_unconstrained(
     # Not left out: leaving it out would make CCA-01 block geo, and abstaining
     # on an ask for the sole reason that it named no asset class is the
     # refuses-correct-work failure.
-    assert by_stage["asset_class"]["candidate"] == "(unconstrained)"
+    #
+    # The label says what the cascade knows, not what the customer asked. It
+    # read "(unconstrained)" until an independent run showed "rental in
+    # Malaysia, commercial only" printing "the ask places no geo constraint"
+    # over an ask that named a country.
+    assert by_stage["asset_class"]["candidate"] == "(no recognised term)"
+    assert "recognises" in by_stage["asset_class"]["evidence"][0]
     assert by_stage["asset_class"]["binding"] is None
     assert by_stage["geo"]["status"] == "CERTIFIED"
 
