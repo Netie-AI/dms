@@ -42,7 +42,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
 | **#25 SPACE-UI (#90)** | Runs/Amend send `space_id`; Library/Studio clear on Space switch |
 | **#23 RAG-04 (#94)** | Customer envelope asserts text, rows, sources on `POST /v1/chat/ask` |
-| **EPIC-CCA** engagement | Independent log now n=1284 (Spider, WikiSQL, KaggleDBQA, text2sql-data, distil + the 77 product asks), blind-labelled by 43 labellers, **kappa 0.831** on a 196 double-labelled sample. **false-engage 0.08 pct (1/1237)** - the 46/106 refusal failure does not reproduce outside property vocabulary. **miss rate undefined**: all 47 filter-positives are geo and 46 name places the SEA pack never claimed, so `MIN_IN_SCOPE_FILTER=8` now gates the flag and today reads 0. `python scripts/cca_engagement.py`. **DMS_CCA_CASCADE stays 0**; lexicon untouched (F-2026-09-05 benchmarks) |
+| **EPIC-CCA** engagement | Independent log n=1284, blind-labelled, kappa 0.831. Word list: **false-engage 0.08 pct**, miss undefined (0 in-scope positives). **The recogniser now has a model behind it** (`cca/proposer.py`, `DMS_CCA_PROPOSER=lexicon|anthropic|cortex`, default lexicon): on 545 labelled asks a model takes **miss 78 pct -> 0 pct** for one extra false engage in 357. Model proposes, pack certifies, so a hallucinated span abstains and never reaches SQL. **Flag still 0**: `MIN_IN_SCOPE_FILTER=8` reads 0, a recogniser cannot fix a corpus. `scripts/cca_proposer_bench.py` (needs ANTHROPIC_API_KEY) (F-2026-09-05 model-recogniser) |
 
 ## Open next
 

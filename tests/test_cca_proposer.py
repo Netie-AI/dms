@@ -353,3 +353,106 @@ def test_usage_is_recorded_so_a_run_can_price_itself() -> None:
         "cache_read": 1600,
         "cache_write": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# The recorded trial. 545 labelled questions put through the shipped prompt by
+# a model, saved so the claim "a model recogniser fixes the miss rate" is
+# checkable by anyone, for free, without a credential.
+# ---------------------------------------------------------------------------
+
+TRIAL = Path(__file__).resolve().parents[1] / "tests/fixtures/cca_eval/proposer_trial_model.jsonl"
+
+
+def _trial_rows() -> dict[str, dict[str, Any]]:
+    import json
+
+    rows: dict[str, dict[str, Any]] = {}
+    for line in TRIAL.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            r = json.loads(line)
+            rows[r["id"]] = r
+    return rows
+
+
+def test_recorded_trial_parses_into_proposals() -> None:
+    from dms_executor.cca.proposer import _proposal_from_payload
+
+    rows = _trial_rows()
+    assert len(rows) == 545
+    parsed = [_proposal_from_payload(r, source="trial") for r in rows.values()]
+    assert all(set(p.spans) <= set(KINDS) for p in parsed)
+    # Every span the model returned survives as a claim, and none of them is a
+    # filter value. That is the invariant, restated over real model output.
+    assert any(p.kinds for p in parsed)
+    assert all(not p.degraded for p in parsed)
+
+
+def test_recorded_trial_beats_the_word_list_on_recognition() -> None:
+    """The measured reason to put a model here at all.
+
+    Same questions, same labels, same judge. If this ever regresses, either the
+    proposal parser changed meaning or the labels moved, and both are worth
+    stopping for.
+    """
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "scripts"))
+    import cca_engagement as ce
+    from dms_executor.cca.proposer import LexiconProposer, Proposal, _proposal_from_payload
+
+    rows = _trial_rows()
+    cases = []
+    for path in ce.discover_corpora():
+        corpus = ce.load_labels(path)
+        for case in ce.labelled_questions(corpus):
+            if case["id"] in rows:
+                cases.append(case)
+    assert len(cases) == 545
+
+    by_q = {ce._norm_q(str(c["question"])): rows[c["id"]] for c in cases}
+
+    class _Recorded:
+        name = "trial"
+        last_usage: dict[str, int] = {}
+
+        def propose(self, question: str) -> Proposal:
+            raw = by_q.get(ce._norm_q(question))
+            if raw is None:
+                return Proposal(degraded=True, degraded_reason="not in trial")
+            return _proposal_from_payload(raw, source="trial")
+
+    _engages, polarity, _props = ce._cascade()
+    geo_index = ce._geo_pack_index()
+
+    def judge(proposer: Any) -> ce.Summary:
+        cache: dict[str, Proposal] = {}
+
+        def prop(q: str) -> Proposal:
+            if q not in cache:
+                cache[q] = proposer.propose(q)
+            return cache[q]
+
+        return ce.score(
+            [
+                ce.judge_case(
+                    c,
+                    engages=lambda q: prop(q).engages,
+                    polarity_is_unsettled=polarity,
+                    proposals_of=lambda q: prop(q).as_proposal_flags(),
+                    geo_index=geo_index,
+                )
+                for c in cases
+            ]
+        )
+
+    model = judge(_Recorded())
+    lexicon = judge(LexiconProposer())
+
+    # Recognition: the word list misses most named filters, the model misses none.
+    assert lexicon.false_miss_rate is not None and lexicon.false_miss_rate > 0.5
+    assert model.false_miss == 0, f"model missed {model.false_miss} of {model.filter_positive}"
+    # And it does not buy that by refusing ordinary work.
+    assert model.false_engage <= lexicon.false_engage + 1
+    assert model.false_engage_rate is not None and model.false_engage_rate < 0.01

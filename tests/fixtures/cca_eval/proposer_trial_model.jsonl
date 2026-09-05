@@ -1,0 +1,545 @@
+{"id": "emea-manufacturing_054", "constraints": [{"kind": "sense", "span": "rent"}, {"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "mixed-use"}], "polarity": "mixed", "why": "Restricted to rented sites, and to the two named property classes set against each other."}
+{"id": "distil_001", "constraints": [], "polarity": "none", "why": "Nike is a brand, which is not one of the four kinds."}
+{"id": "t2sd-academic-001", "constraints": [], "polarity": "none", "why": "Only a venue name and a date range, neither of which counts."}
+{"id": "kaggledbqa-0262", "constraints": [{"kind": "geo", "span": "Spain"}], "polarity": "include", "why": "Restricted to matches in the named country Spain."}
+{"id": "spider_dev_0101", "constraints": [], "polarity": "none", "why": "Asks for a cost with only a recency ordering, no constraint of the four kinds."}
+{"id": "wikisql_0007", "constraints": [], "polarity": "none", "why": "Filters on a score value only."}
+{"id": "wikisql_0058", "constraints": [{"kind": "geo", "span": "Iceland"}], "polarity": "include", "why": "Restricted to the row for the named country Iceland."}
+{"id": "sea-plantation_043", "constraints": [], "polarity": "none", "why": "Estates and a date window are not among the four kinds."}
+{"id": "apac-property_019", "constraints": [{"kind": "geo", "span": "Singapore"}, {"kind": "geo", "span": "Hong Kong"}], "polarity": "comparison", "why": "Two named territories set head to head."}
+{"id": "wikisql_0292", "constraints": [], "polarity": "none", "why": "Filters on an attendance figure only."}
+{"id": "hostile-paraphrase_045", "constraints": [{"kind": "sense", "span": "rent out"}, {"kind": "asset_class", "span": "residential"}, {"kind": "geo", "span": "UAE"}], "polarity": "include", "why": "Restricted to residential stock we rent out, in a named country."}
+{"id": "wikisql_0296", "constraints": [], "polarity": "none", "why": "Filters on candidate names only."}
+{"id": "apac-property_046", "constraints": [], "polarity": "none", "why": "A month and a grouping by property manager, neither of which counts."}
+{"id": "kaggledbqa-0233", "constraints": [], "polarity": "none", "why": "Houston is a city, which is explicitly excluded."}
+{"id": "wikisql_0316", "constraints": [], "polarity": "none", "why": "No constraint of the four kinds."}
+{"id": "global-finance_056", "constraints": [{"kind": "sense", "span": "rental"}, {"kind": "geo", "span": "Malaysian"}, {"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "residential"}], "polarity": "mixed", "why": "Rental income in a named country, with two property classes compared."}
+{"id": "spider_dev_0023", "constraints": [], "polarity": "none", "why": "A person's surname is not one of the four kinds."}
+{"id": "wikisql_0176", "constraints": [], "polarity": "none", "why": "A tournament name and surface, neither of which counts."}
+{"id": "emea-manufacturing_047", "constraints": [{"kind": "geo", "span": "UK"}], "polarity": "exclude", "why": "Restricted away from the named country."}
+{"id": "apac-property_055", "constraints": [], "polarity": "none", "why": "A metric and a period only."}
+{"id": "spider_dev_0166", "constraints": [], "polarity": "none", "why": "Numeric weight thresholds only."}
+{"id": "spider_dev_0227", "constraints": [{"kind": "geo", "span": "Anguilla"}], "polarity": "include", "why": "Restricted to the named country whose continent is asked for."}
+{"id": "wikisql_0103", "constraints": [], "polarity": "none", "why": "A product name and a month, neither of which counts."}
+{"id": "kaggledbqa-0219", "constraints": [], "polarity": "none", "why": "Asks for an album type as the answer, no restriction."}
+{"id": "kaggledbqa-0017", "constraints": [{"kind": "geo", "span": "France"}], "polarity": "include", "why": "Restricted to stations in the named country."}
+{"id": "global-finance_034", "constraints": [{"kind": "segment", "span": "construction"}, {"kind": "segment", "span": "FMCG"}], "polarity": "comparison", "why": "Two industry sectors set head to head."}
+{"id": "wikisql_0124", "constraints": [], "polarity": "none", "why": "Filters on people's names only."}
+{"id": "wikisql_0283", "constraints": [{"kind": "geo", "span": "Russia"}], "polarity": "include", "why": "Restricted to the named country Russia."}
+{"id": "spider_dev_0066", "constraints": [{"kind": "geo", "span": "Asia"}, {"kind": "geo", "span": "Europe"}], "polarity": "include", "why": "Restricted to two named multi-country regions, both included."}
+{"id": "africa-india-energy_038", "constraints": [], "polarity": "none", "why": "A currency and a date range are explicitly not among the four kinds."}
+{"id": "wikisql_0137", "constraints": [], "polarity": "none", "why": "Numeric thresholds only."}
+{"id": "spider_dev_0086", "constraints": [], "polarity": "none", "why": "A plain count with no restriction."}
+{"id": "sea-plantation_037", "constraints": [], "polarity": "none", "why": "A yield threshold and a time span, neither of which counts."}
+{"id": "kaggledbqa-0198", "constraints": [], "polarity": "none", "why": "County is a sub-national area and the year is a date."}
+{"id": "kaggledbqa-0160", "constraints": [], "polarity": "none", "why": "Asks for an award as the answer, no restriction."}
+{"id": "kaggledbqa-0271", "constraints": [{"kind": "geo", "span": "Scotland"}, {"kind": "geo", "span": "England"}], "polarity": "exclude", "why": "Restricted away from two named countries."}
+{"id": "L5_steward_automation", "constraints": [], "polarity": "none", "why": "KL is a city and Electronics reads as a product category, neither of which counts."}
+{"id": "t2sd-imdb-018", "constraints": [], "polarity": "none", "why": "A film title is not one of the four kinds."}
+{"id": "sea-plantation_018", "constraints": [], "polarity": "none", "why": "Groups by scheme and season, no restriction of the four kinds."}
+{"id": "wikisql_0158", "constraints": [], "polarity": "none", "why": "Filters on a person's name only."}
+{"id": "kaggledbqa-0026", "constraints": [], "polarity": "none", "why": "Asks for a nation as the answer, which selects rather than restricts."}
+{"id": "global-finance_022", "constraints": [{"kind": "geo", "span": "eurozone"}], "polarity": "include", "why": "Restricts to a named multi-country region."}
+{"id": "spider_dev_0017", "constraints": [], "polarity": "none", "why": "Country code is a returned column, not a restriction."}
+{"id": "spider_dev_0090", "constraints": [{"kind": "geo", "span": "Afghanistan"}], "polarity": "include", "why": "Restricts to a named country."}
+{"id": "spider_dev_0065", "constraints": [{"kind": "geo", "span": "North America"}], "polarity": "include", "why": "Restricts to a named region spanning several countries; the surface-area cutoff is a threshold."}
+{"id": "kaggledbqa-0142", "constraints": [], "polarity": "none", "why": "Hall-of-fame status is not one of the four kinds."}
+{"id": "distil_063", "constraints": [], "polarity": "none", "why": "Groups by product category with a rating threshold."}
+{"id": "global-finance_042", "constraints": [{"kind": "geo", "span": "Greater China"}], "polarity": "exclude", "why": "Restricts away from a named multi-country region."}
+{"id": "americas-retail_017", "constraints": [{"kind": "geo", "span": "Canada"}, {"kind": "geo", "span": "US"}], "polarity": "comparison", "why": "Two named countries set head to head."}
+{"id": "sea-logistics_042", "constraints": [{"kind": "segment", "span": "automotive"}, {"kind": "segment", "span": "pharma"}], "polarity": "comparison", "why": "Two industry sectors set head to head."}
+{"id": "sea-logistics_002", "constraints": [{"kind": "geo", "span": "Vietnam"}], "polarity": "include", "why": "Restricts to a named country; the year-on-year part is a date comparison."}
+{"id": "t2sd-restaurants-010", "constraints": [], "polarity": "none", "why": "A city and a food category, neither of which is one of the four kinds."}
+{"id": "kaggledbqa-0228", "constraints": [], "polarity": "none", "why": "Groups by artist, no restricting constraint."}
+{"id": "emea-manufacturing_035", "constraints": [], "polarity": "none", "why": "Only a date range, which is not one of the four kinds."}
+{"id": "kaggledbqa-0200", "constraints": [], "polarity": "none", "why": "A state and a year, neither of which is one of the four kinds."}
+{"id": "kaggledbqa-0194", "constraints": [], "polarity": "none", "why": "Only a date range."}
+{"id": "wikisql_0276", "constraints": [], "polarity": "none", "why": "Result codes and years only."}
+{"id": "spider_dev_0134", "constraints": [], "polarity": "none", "why": "Groups by hometown rather than restricting."}
+{"id": "sea-plantation_022", "constraints": [], "polarity": "none", "why": "A rate threshold on contractors, not one of the four kinds."}
+{"id": "distil_034", "constraints": [], "polarity": "none", "why": "Groups by region and applies a revenue threshold; no named country or multi-country region."}
+{"id": "wikisql_0228", "constraints": [], "polarity": "none", "why": "A production code, which is excluded."}
+{"id": "t2sd-geography-018", "constraints": [], "polarity": "none", "why": "Cities, states and a river, none of which are one of the four kinds."}
+{"id": "americas-retail_019", "constraints": [], "polarity": "none", "why": "A store-tenure threshold and a date range only."}
+{"id": "africa-india-energy_021", "constraints": [], "polarity": "none", "why": "A top-N and an amount threshold only."}
+{"id": "wikisql_0312", "constraints": [], "polarity": "none", "why": "Restricts by a player name, which is excluded."}
+{"id": "t2sd-restaurants-013", "constraints": [], "polarity": "none", "why": "A street, a city and a food category, none of the four kinds."}
+{"id": "global-finance_019", "constraints": [], "polarity": "none", "why": "A date range and a realised/unrealised split only."}
+{"id": "apac-property_041", "constraints": [{"kind": "asset_class", "span": "residential"}, {"kind": "geo", "span": "Malaysia"}], "polarity": "include", "why": "Restricts to residential property in a named country."}
+{"id": "sea-plantation_050", "constraints": [{"kind": "geo", "span": "Thailand"}], "polarity": "exclude", "why": "Restricts away from a named country while grouping by the rest."}
+{"id": "emea-manufacturing_018", "constraints": [], "polarity": "none", "why": "Shift comparison, not one of the four kinds."}
+{"id": "global-finance_057", "constraints": [], "polarity": "none", "why": "An ageing threshold and dispute status only."}
+{"id": "t2sd-yelp-013", "constraints": [], "polarity": "none", "why": "A directory business category and a review-count threshold, not an industry segment of the business."}
+{"id": "t2sd-imdb-026", "constraints": [{"kind": "geo", "span": "Canada"}], "polarity": "include", "why": "Restricts to actors from a named country."}
+{"id": "sea-plantation_056", "constraints": [{"kind": "geo", "span": "Indonesia"}], "polarity": "include", "why": "Restricts to a named country."}
+{"id": "spider_dev_0108", "constraints": [], "polarity": "none", "why": "Listing and ordering only."}
+{"id": "wikisql_0325", "constraints": [], "polarity": "none", "why": "A team name and a numeric threshold."}
+{"id": "spider_dev_0217", "constraints": [], "polarity": "none", "why": "A plain average over all rows."}
+{"id": "africa-india-energy_046", "constraints": [{"kind": "geo", "span": "South African"}], "polarity": "exclude", "why": "Restricts away from a named country."}
+{"id": "t2sd-academic-007", "constraints": [], "polarity": "none", "why": "Restricts by a paper title, not one of the four kinds."}
+{"id": "kaggledbqa-0072", "constraints": [], "polarity": "none", "why": "Asks for a state as the answer, which selects rather than restricts."}
+{"id": "wikisql_0152", "constraints": [], "polarity": "none", "why": "Writer names are person names, not one of the four kinds."}
+{"id": "africa-india-energy_056", "constraints": [{"kind": "asset_class", "span": "residential"}], "polarity": "exclude", "why": "Restricts away from residential premises."}
+{"id": "americas-retail_029", "constraints": [], "polarity": "none", "why": "Only a money threshold and a date range."}
+{"id": "apac-property_028", "constraints": [], "polarity": "none", "why": "Lift and escalator upgrades is a spend category, plus a date."}
+{"id": "spider_dev_0073", "constraints": [], "polarity": "none", "why": "Only a status condition on contestants."}
+{"id": "africa-india-energy_012", "constraints": [], "polarity": "none", "why": "Only a date period."}
+{"id": "global-finance_018", "constraints": [{"kind": "segment", "span": "government and public sector"}], "polarity": "exclude", "why": "Excludes a named sector of customers."}
+{"id": "emea-manufacturing_049", "constraints": [{"kind": "segment", "span": "automotive"}], "polarity": "include", "why": "Restricts to customers in the automotive sector."}
+{"id": "africa-india-energy_059", "constraints": [{"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "residential"}, {"kind": "geo", "span": "Indian"}], "polarity": "mixed", "why": "Two classes head to head and restricted to a named country."}
+{"id": "wikisql_0210", "constraints": [], "polarity": "none", "why": "Only a monetary value condition."}
+{"id": "wikisql_0118", "constraints": [{"kind": "geo", "span": "France"}], "polarity": "include", "why": "Restricts to a named country."}
+{"id": "africa-india-energy_055", "constraints": [{"kind": "asset_class", "span": "mixed-use"}], "polarity": "include", "why": "Restricts to mixed-use premises."}
+{"id": "wikisql_0310", "constraints": [], "polarity": "none", "why": "Only a numeric threshold."}
+{"id": "spider_dev_0190", "constraints": [], "polarity": "none", "why": "Director is a person name."}
+{"id": "wikisql_0094", "constraints": [], "polarity": "none", "why": "Opponent and record are not one of the four kinds."}
+{"id": "spider_dev_0168", "constraints": [], "polarity": "none", "why": "States are not countries or multi-country regions."}
+{"id": "kaggledbqa-0209", "constraints": [], "polarity": "none", "why": "Asks for a cause as the answer, no restriction."}
+{"id": "ff_leadtime_by_country", "constraints": [], "polarity": "none", "why": "Asks for countries as the answer rather than restricting to one."}
+{"id": "spider_dev_0103", "constraints": [], "polarity": "none", "why": "Only weight thresholds."}
+{"id": "sea-plantation_021", "constraints": [{"kind": "sense", "span": "leasehold"}, {"kind": "sense", "span": "freehold"}], "polarity": "comparison", "why": "Leasing tenure set against owning tenure."}
+{"id": "africa-india-energy_047", "constraints": [{"kind": "geo", "span": "Kenya"}, {"kind": "geo", "span": "Tanzania"}], "polarity": "comparison", "why": "Two named countries set head to head."}
+{"id": "americas-retail_010", "constraints": [], "polarity": "none", "why": "Only a time window."}
+{"id": "global-finance_046", "constraints": [{"kind": "sense", "span": "leased"}], "polarity": "exclude", "why": "Excludes leased premises from the register."}
+{"id": "americas-retail_005", "constraints": [], "polarity": "none", "why": "Date period, grouping and a flag threshold only."}
+{"id": "t2sd-restaurants-011", "constraints": [], "polarity": "none", "why": "Cuisine is a product category and the bay area is a sub-national area."}
+{"id": "ff_net_movement_writeoff_ambiguous", "constraints": [], "polarity": "none", "why": "Warehouses are sites, and top-N is not a constraint kind."}
+{"id": "apac-property_004", "constraints": [{"kind": "asset_class", "span": "commercial"}], "polarity": "include", "why": "Restricts to commercial assets; city is only a grouping."}
+{"id": "apac-property_001", "constraints": [{"kind": "geo", "span": "Malaysian"}], "polarity": "include", "why": "Restricts to assets in a named country."}
+{"id": "americas-retail_007", "constraints": [{"kind": "sense", "span": "Leased"}, {"kind": "sense", "span": "own"}], "polarity": "comparison", "why": "Leased stores set head to head against owned stores."}
+{"id": "global-finance_021", "constraints": [], "polarity": "none", "why": "Currency grouping and a time window only."}
+{"id": "ff_cheapest_carriers", "constraints": [], "polarity": "none", "why": "Carriers are suppliers and top-N plus currency are not constraint kinds."}
+{"id": "t2sd-yelp-003", "constraints": [], "polarity": "none", "why": "Bars is a venue category and Patrick is a person."}
+{"id": "ff_category_sales", "constraints": [], "polarity": "none", "why": "Inventory category is a product category, grouped not restricted."}
+{"id": "spider_dev_0179", "constraints": [], "polarity": "none", "why": "Record format is a product category used as a grouping."}
+{"id": "global-finance_052", "constraints": [], "polarity": "none", "why": "Entity is a grouping and terms is a threshold."}
+{"id": "sea-plantation_053", "constraints": [{"kind": "segment", "span": "oil palm"}, {"kind": "segment", "span": "timber"}], "polarity": "comparison", "why": "Two lines of business set head to head."}
+{"id": "spider_dev_0007", "constraints": [], "polarity": "none", "why": "Record format is a product category."}
+{"id": "emea-manufacturing_030", "constraints": [], "polarity": "none", "why": "Only a month."}
+{"id": "global-finance_026", "constraints": [{"kind": "sense", "span": "lease"}], "polarity": "include", "why": "Restricts to leased offices, a leasing deal type."}
+{"id": "t2sd-academic-009", "constraints": [], "polarity": "none", "why": "Research area is a topic category and citations are a threshold."}
+{"id": "wikisql_0123", "constraints": [], "polarity": "none", "why": "Event name and season/date only; no sense, asset class, country or sector."}
+{"id": "wikisql_0088", "constraints": [], "polarity": "none", "why": "A height threshold, which is not one of the four kinds."}
+{"id": "wikisql_0171", "constraints": [], "polarity": "none", "why": "Episode, animal name and season number carry none of the four kinds."}
+{"id": "apac-property_024", "constraints": [{"kind": "geo", "span": "Japan"}], "polarity": "exclude", "why": "Japan is a named country and rows are restricted away from it."}
+{"id": "sea-logistics_021", "constraints": [], "polarity": "none", "why": "Pasir Gudang is a port/site and CNY peak is a date range, neither of which counts."}
+{"id": "sales01_widefill_top3", "constraints": [], "polarity": "none", "why": "File/sheet name, product categories and a top-N are all excluded kinds."}
+{"id": "spider_dev_0150", "constraints": [], "polarity": "none", "why": "Country is the requested answer, not a restriction."}
+{"id": "africa-india-energy_022", "constraints": [], "polarity": "none", "why": "Divisions are internal units, and the question groups rather than restricts."}
+{"id": "wikisql_0258", "constraints": [], "polarity": "none", "why": "An index code filter is not one of the four kinds."}
+{"id": "spider_dev_0112", "constraints": [], "polarity": "none", "why": "Poker player is a role, not an industry sector or line of business."}
+{"id": "wikisql_0275", "constraints": [], "polarity": "none", "why": "Villages are localities, not countries or multi-country regions."}
+{"id": "spider_dev_0186", "constraints": [], "polarity": "none", "why": "A count threshold on models carries no constraint of these kinds."}
+{"id": "kaggledbqa-0201", "constraints": [], "polarity": "none", "why": "Utah is a state and 1997 a date, both explicitly excluded."}
+{"id": "spider_dev_0154", "constraints": [], "polarity": "none", "why": "An airport code is a site, not a geo constraint."}
+{"id": "spider_dev_0182", "constraints": [{"kind": "geo", "span": "Asian"}], "polarity": "include", "why": "Asian names a region spanning several countries and restricts the rows."}
+{"id": "distil_032", "constraints": [], "polarity": "none", "why": "Brand is a grouping dimension and brands are excluded anyway."}
+{"id": "sea-logistics_035", "constraints": [], "polarity": "none", "why": "Grouping by prime mover carries none of the four kinds."}
+{"id": "t2sd-advising-013", "constraints": [], "polarity": "none", "why": "Italian Through Opera is a course title, not a geography."}
+{"id": "sea-logistics_032", "constraints": [{"kind": "geo", "span": "Philippines"}], "polarity": "include", "why": "Philippines is a named country restricting the shipments counted."}
+{"id": "spider_dev_0291", "constraints": [], "polarity": "none", "why": "Countries are grouped and counted, not restricted to one."}
+{"id": "hostile-paraphrase_021", "constraints": [{"kind": "geo", "span": "southeast asia"}], "polarity": "include", "why": "Southeast asia is a named multi-country region restricting the bookings."}
+{"id": "wikisql_0202", "constraints": [], "polarity": "none", "why": "A match score filter is not one of the four kinds."}
+{"id": "wikisql_0135", "constraints": [], "polarity": "none", "why": "County is the requested answer and a household count is a threshold."}
+{"id": "spider_dev_0231", "constraints": [], "polarity": "none", "why": "Pet ownership carries no sense, asset class, geo or segment."}
+{"id": "spider_dev_0019", "constraints": [{"kind": "geo", "span": "Haiti"}], "polarity": "include", "why": "Haiti is a named country restricting which students count."}
+{"id": "sea-logistics_022", "constraints": [{"kind": "segment", "span": "oil and gas"}], "polarity": "exclude", "why": "Oil and gas is an industry sector and rows are restricted away from it."}
+{"id": "kaggledbqa-0192", "constraints": [], "polarity": "none", "why": "Cause and year filters are not among the four kinds."}
+{"id": "emea-manufacturing_016", "constraints": [], "polarity": "none", "why": "Plant is a site and since January is a date range."}
+{"id": "wikisql_0093", "constraints": [], "polarity": "none", "why": "A person name filter with a place as the answer."}
+{"id": "kaggledbqa-0153", "constraints": [], "polarity": "none", "why": "A date range and a max, neither of which is one of the four kinds."}
+{"id": "wikisql_0182", "constraints": [], "polarity": "none", "why": "A date filter only."}
+{"id": "africa-india-energy_027", "constraints": [], "polarity": "none", "why": "A consumption threshold and a time range, with customers as the answer."}
+{"id": "spider_dev_0185", "constraints": [], "polarity": "none", "why": "A count threshold on sections carries none of the four kinds."}
+{"id": "africa-india-energy_057", "constraints": [{"kind": "sense", "span": "leased"}, {"kind": "sense", "span": "own"}], "polarity": "comparison", "why": "Leased sites are set head to head against owned ones, a leasing versus buying split."}
+{"id": "apac-property_045", "constraints": [], "polarity": "none", "why": "Buildings are the answer and the next 12 months is a date range."}
+{"id": "americas-retail_021", "constraints": [{"kind": "sense", "span": "lease"}], "polarity": "include", "why": "Rows are restricted to sites held on a lease."}
+{"id": "t2sd-yelp-004", "constraints": [], "polarity": "none", "why": "Los Angeles is a city and Patrick a person name; restaurant is a listing category."}
+{"id": "t2sd-advising-022", "constraints": [], "polarity": "none", "why": "MDE is a course code, not an industry sector."}
+{"id": "wikisql_0251", "constraints": [], "polarity": "none", "why": "An opponent team name is not one of the four kinds."}
+{"id": "t2sd-geography-020", "constraints": [{"kind": "geo", "span": "america"}], "polarity": "include", "why": "America names a country and restricts which rivers count."}
+{"id": "hostile-paraphrase_030", "constraints": [{"kind": "asset_class", "span": "mixed use"}], "polarity": "comparison", "why": "Mixed use asset class set head to head with retail, which is only a product category."}
+{"id": "wikisql_0170", "constraints": [], "polarity": "none", "why": "Rank threshold and a time value only; nationality is the requested output."}
+{"id": "americas-retail_035", "constraints": [], "polarity": "none", "why": "Mixed-use developments here name the buildings the stores sit in, a location not an asset class."}
+{"id": "wikisql_0063", "constraints": [], "polarity": "none", "why": "A driver name and a points threshold, neither of the four kinds."}
+{"id": "kaggledbqa-0197", "constraints": [], "polarity": "none", "why": "Counts missing owner names; no restricting constraint."}
+{"id": "kaggledbqa-0005", "constraints": [], "polarity": "none", "why": "PHWR is a reactor type, not a sense, asset class, geo or segment."}
+{"id": "t2sd-imdb-027", "constraints": [], "polarity": "none", "why": "Milan is a city, which is explicitly excluded."}
+{"id": "How many units?", "constraints": [], "polarity": "none", "why": "A bare count with no qualifier."}
+{"id": "t2sd-academic-003", "constraints": [], "polarity": "none", "why": "A venue, a year and an institution name, none of the four kinds."}
+{"id": "apac-property_058", "constraints": [], "polarity": "none", "why": "Across all estates managed; nothing narrows the rows."}
+{"id": "kaggledbqa-0046", "constraints": [], "polarity": "none", "why": "A plain count of crimes."}
+{"id": "kaggledbqa-0079", "constraints": [{"kind": "geo", "span": "US"}], "polarity": "exclude", "why": "Restricts to commodities not found in the named country."}
+{"id": "t2sd-restaurants-001", "constraints": [], "polarity": "none", "why": "American is a cuisine category and the bay area is a sub-country region."}
+{"id": "sea-plantation_012", "constraints": [], "polarity": "none", "why": "Actual versus budget on fertiliser, no row-restricting constraint."}
+{"id": "sea-logistics_018", "constraints": [{"kind": "geo", "span": "Malaysia"}, {"kind": "geo", "span": "Thailand"}], "polarity": "comparison", "why": "Two named countries set head to head."}
+{"id": "t2sd-advising-015", "constraints": [], "polarity": "none", "why": "A course number and a weekly count only."}
+{"id": "t2sd-geography-009", "constraints": [{"kind": "geo", "span": "usa"}], "polarity": "include", "why": "Restricts the states counted to one named country."}
+{"id": "sea-logistics_046", "constraints": [{"kind": "geo", "span": "intra-Asia"}, {"kind": "geo", "span": "Greater China"}], "polarity": "mixed", "why": "Restricts to a multi-country region while excluding another."}
+{"id": "hostile-paraphrase_002", "constraints": [{"kind": "geo", "span": "malaysia"}], "polarity": "include", "why": "Restricts the aging report to one named country entity."}
+{"id": "wikisql_0256", "constraints": [], "polarity": "none", "why": "A person name lookup only."}
+{"id": "sea-plantation_046", "constraints": [{"kind": "geo", "span": "Indonesia"}, {"kind": "sense", "span": "lease"}], "polarity": "mixed", "why": "Restricted to one country and setting leased tenure against owned freehold."}
+{"id": "sea-plantation_058", "constraints": [], "polarity": "none", "why": "Grouped by month; nothing restricts the rows."}
+{"id": "spider_dev_0067", "constraints": [], "polarity": "none", "why": "English is a broadcast language, not a geography."}
+{"id": "kaggledbqa-0059", "constraints": [], "polarity": "none", "why": "A device identifier lookup only."}
+{"id": "emea-manufacturing_026", "constraints": [], "polarity": "none", "why": "Grouped by quarter, a date grouping only."}
+{"id": "africa-india-energy_026", "constraints": [], "polarity": "none", "why": "A time window only; no constraint of the four kinds."}
+{"id": "wikisql_0099", "constraints": [], "polarity": "none", "why": "An episode number lookup only."}
+{"id": "kaggledbqa-0024", "constraints": [{"kind": "geo", "span": "United States"}], "polarity": "include", "why": "Restricts the plants considered to one named country."}
+{"id": "global-finance_014", "constraints": [{"kind": "geo", "span": "Indonesian"}, {"kind": "geo", "span": "Thai"}], "polarity": "comparison", "why": "Two country entities compared head to head."}
+{"id": "emea-manufacturing_043", "constraints": [], "polarity": "none", "why": "A date window only."}
+{"id": "sea-plantation_017", "constraints": [{"kind": "sense", "span": "rented"}], "polarity": "exclude", "why": "Restricts away from rented land, keeping only owned land."}
+{"id": "wikisql_0011", "constraints": [], "polarity": "none", "why": "An opponent name lookup only."}
+{"id": "spider_dev_0281", "constraints": [], "polarity": "none", "why": "A count threshold with grouping by grade."}
+{"id": "spider_dev_0205", "constraints": [{"kind": "geo", "span": "Brazil"}], "polarity": "include", "why": "Restricts to one named country."}
+{"id": "wikisql_0044", "constraints": [{"kind": "geo", "span": "england"}], "polarity": "include", "why": "Restricts rows to a named country alongside a score threshold."}
+{"id": "americas-retail_044", "constraints": [], "polarity": "none", "why": "CDMX is a city and the quarter is a date range."}
+{"id": "wikisql_0290", "constraints": [], "polarity": "none", "why": "An engine name and a laps threshold, neither of the four kinds."}
+{"id": "americas-retail_031", "constraints": [{"kind": "segment", "span": "hospitality"}], "polarity": "comparison", "why": "One industry sector set against all other industries."}
+{"id": "wikisql_0165", "constraints": [], "polarity": "none", "why": "A stadium is a site, explicitly excluded."}
+{"id": "spider_dev_0125", "constraints": [], "polarity": "none", "why": "An ordering request with no restricting constraint."}
+{"id": "kaggledbqa-0083", "constraints": [], "polarity": "none", "why": "Top-N over labs; no sense, class, region or sector."}
+{"id": "sea-logistics_007", "constraints": [], "polarity": "none", "why": "Only a date range, which is not one of the four kinds."}
+{"id": "sea-logistics_036", "constraints": [{"kind": "sense", "span": "rental"}, {"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "mixed-use"}], "polarity": "mixed", "why": "Rental cost restricts to renting while two property classes are set head to head; KL is a city and ignored."}
+{"id": "kaggledbqa-0108", "constraints": [], "polarity": "none", "why": "Asks for a food category as the answer, not a restriction."}
+{"id": "americas-retail_046", "constraints": [{"kind": "sense", "span": "leases"}], "polarity": "include", "why": "Restricted to leases; market grouping and renewal window are not the four kinds."}
+{"id": "spider_dev_0289", "constraints": [{"kind": "geo", "span": "Asian"}], "polarity": "include", "why": "Restricted to Asian countries, a region spanning several countries."}
+{"id": "t2sd-restaurants-021", "constraints": [], "polarity": "none", "why": "A city and a food category, neither of which counts."}
+{"id": "t2sd-yelp-022", "constraints": [], "polarity": "none", "why": "A rating threshold only."}
+{"id": "wikisql_0101", "constraints": [{"kind": "geo", "span": "Italy"}], "polarity": "include", "why": "Restricted to the team from a named country."}
+{"id": "sea-logistics_040", "constraints": [], "polarity": "none", "why": "Weight threshold, date and airline are not the four kinds."}
+{"id": "africa-india-energy_020", "constraints": [], "polarity": "none", "why": "A year-on-year cost comparison with no row-restricting kind."}
+{"id": "hostile-paraphrase_033", "constraints": [{"kind": "segment", "span": "manufacturing"}, {"kind": "segment", "span": "F&B"}], "polarity": "comparison", "why": "Two industry sectors set head to head."}
+{"id": "africa-india-energy_049", "constraints": [{"kind": "geo", "span": "Sub-Saharan Africa"}], "polarity": "include", "why": "Restricted to a named multi-country region; currency and top-N do not count."}
+{"id": "spider_dev_0028", "constraints": [], "polarity": "none", "why": "No sense, class, region or sector."}
+{"id": "global-finance_047", "constraints": [], "polarity": "none", "why": "FX rates and a period only."}
+{"id": "kaggledbqa-0098", "constraints": [], "polarity": "none", "why": "A single sample identifier, not one of the four kinds."}
+{"id": "spider_dev_0075", "constraints": [], "polarity": "none", "why": "Counts countries rather than restricting to one."}
+{"id": "hostile-paraphrase_012", "constraints": [{"kind": "sense", "span": "leasehold"}], "polarity": "include", "why": "Restricted to leasehold units, a leasing tenure."}
+{"id": "hostile-paraphrase_018", "constraints": [{"kind": "asset_class", "span": "commercial"}], "polarity": "include", "why": "Restricted to commercial properties."}
+{"id": "americas-retail_052", "constraints": [{"kind": "segment", "span": "grocery"}], "polarity": "exclude", "why": "Restricts away from the grocery sector; the quarter grouping does not count."}
+{"id": "spider_dev_0169", "constraints": [], "polarity": "none", "why": "Tournament names and country codes returned, nothing restricted by the four kinds."}
+{"id": "africa-india-energy_058", "constraints": [{"kind": "sense", "span": "rented"}], "polarity": "include", "why": "Restricted to rented units on hire rather than owned or sold ones."}
+{"id": "kaggledbqa-0158", "constraints": [], "polarity": "none", "why": "Asks for a birth place as the answer, not a restriction."}
+{"id": "emea-manufacturing_059", "constraints": [{"kind": "geo", "span": "Benelux"}, {"kind": "geo", "span": "Nordics"}], "polarity": "comparison", "why": "Two multi-country regions set head to head."}
+{"id": "t2sd-yelp-011", "constraints": [], "polarity": "none", "why": "A business category, a reviewer name and a star threshold."}
+{"id": "emea-manufacturing_056", "constraints": [{"kind": "geo", "span": "EMEA"}], "polarity": "include", "why": "Restricted to the EMEA region; product families are a product category."}
+{"id": "t2sd-atis-014", "constraints": [], "polarity": "none", "why": "Cities and a fare class only."}
+{"id": "ff_unresolved_alerts_by_severity", "constraints": [], "polarity": "none", "why": "A status and a grouping by severity."}
+{"id": "spider_dev_0121", "constraints": [], "polarity": "none", "why": "Top-1 template lookup with no constraint of the four kinds."}
+{"id": "spider_dev_0211", "constraints": [], "polarity": "none", "why": "Aggregate over all rows."}
+{"id": "t2sd-yelp-005", "constraints": [], "polarity": "none", "why": "Brazil appears inside a business name; Dallas Texas is a city and state."}
+{"id": "distil_012", "constraints": [], "polarity": "none", "why": "Grouped by team, nothing restricted."}
+{"id": "wikisql_0069", "constraints": [{"kind": "geo", "span": "russia"}], "polarity": "include", "why": "Restricted to a named country; family, failure and launch counts do not qualify."}
+{"id": "t2sd-advising-018", "constraints": [], "polarity": "none", "why": "Course level and credit count only."}
+{"id": "wikisql_0289", "constraints": [], "polarity": "none", "why": "A single catalogue identifier."}
+{"id": "sea-logistics_039", "constraints": [{"kind": "geo", "span": "ASEAN"}], "polarity": "include", "why": "Restricted to the ASEAN region; service line is a grouping and FY25 a date."}
+{"id": "apac-property_036", "constraints": [{"kind": "sense", "span": "rent roll"}, {"kind": "segment", "span": "F&B"}], "polarity": "include", "why": "Restricted to the rental book and to tenants in the F&B sector."}
+{"id": "americas-retail_043", "constraints": [{"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "residential"}], "polarity": "mixed", "why": "Restricted to commercial property and away from residential; sales here is just a number to total."}
+{"id": "global-finance_050", "constraints": [{"kind": "geo", "span": "ASEAN"}], "polarity": "include", "why": "Restricted to ASEAN subsidiaries; the half-million figure is a threshold."}
+{"id": "spider_dev_0234", "constraints": [], "polarity": "none", "why": "Top-1 template lookup with no constraint of the four kinds."}
+{"id": "wikisql_0336", "constraints": [], "polarity": "none", "why": "Attendance threshold and an opponent name are not among the four kinds."}
+{"id": "emea-manufacturing_051", "constraints": [{"kind": "segment", "span": "pharma"}, {"kind": "geo", "span": "Ireland"}], "polarity": "include", "why": "Restricts to the pharma sector and to a named country."}
+{"id": "sea-plantation_030", "constraints": [{"kind": "segment", "span": "rubber"}], "polarity": "include", "why": "Restricts revenue to the named business segment."}
+{"id": "hostile-paraphrase_042", "constraints": [{"kind": "sense", "span": "renting"}, {"kind": "sense", "span": "buying"}], "polarity": "comparison", "why": "Sets renting and buying head to head."}
+{"id": "hostile-paraphrase_014", "constraints": [], "polarity": "none", "why": "SKU movement and a time period carry none of the four kinds."}
+{"id": "t2sd-scholar-024", "constraints": [], "polarity": "none", "why": "A person name is not one of the four kinds."}
+{"id": "kaggledbqa-0135", "constraints": [], "polarity": "none", "why": "States and a grade level are not countries or regions."}
+{"id": "spider_dev_0183", "constraints": [], "polarity": "none", "why": "Country is the requested answer plus a top-N, not a restriction."}
+{"id": "spider_dev_0155", "constraints": [{"kind": "geo", "span": "African"}, {"kind": "geo", "span": "Asia"}], "polarity": "comparison", "why": "Restricts to African countries measured against Asian ones."}
+{"id": "global-finance_030", "constraints": [{"kind": "geo", "span": "Malaysia"}], "polarity": "include", "why": "Restricts to the Malaysian entity only."}
+{"id": "wikisql_0206", "constraints": [{"kind": "geo", "span": "Portugal"}, {"kind": "geo", "span": "Italy"}], "polarity": "include", "why": "Rows are restricted to two named countries."}
+{"id": "africa-india-energy_013", "constraints": [], "polarity": "none", "why": "Only a date range is given."}
+{"id": "sea-logistics_011", "constraints": [{"kind": "geo", "span": "Indonesia"}], "polarity": "exclude", "why": "Restricts away from a named country."}
+{"id": "americas-retail_041", "constraints": [], "polarity": "none", "why": "A promotion and a holiday weekend are not among the four kinds."}
+{"id": "hostile-paraphrase_036", "constraints": [{"kind": "geo", "span": "indonesian"}, {"kind": "segment", "span": "mining"}], "polarity": "include", "why": "Restricts to mining-sector customers in a named country."}
+{"id": "wikisql_0019", "constraints": [], "polarity": "none", "why": "Only an airdate is given."}
+{"id": "spider_dev_0110", "constraints": [{"kind": "geo", "span": "France"}], "polarity": "exclude", "why": "Restricts away from a named country."}
+{"id": "americas-retail_039", "constraints": [{"kind": "geo", "span": "Brazil"}, {"kind": "sense", "span": "leased"}, {"kind": "sense", "span": "owned"}], "polarity": "mixed", "why": "Restricts to one country while comparing leased against owned."}
+{"id": "sea-plantation_019", "constraints": [], "polarity": "none", "why": "Grouping by estate is a site breakdown, not a restriction."}
+{"id": "apac-property_048", "constraints": [{"kind": "segment", "span": "logistics and warehousing"}, {"kind": "geo", "span": "Australia"}], "polarity": "include", "why": "Restricts to one sector of tenants in a named country."}
+{"id": "hostile-paraphrase_026", "constraints": [], "polarity": "none", "why": "Spend class is the requested answer, not a restriction."}
+{"id": "wikisql_0075", "constraints": [{"kind": "geo", "span": "denmark"}], "polarity": "include", "why": "Restricts rows to a named country."}
+{"id": "africa-india-energy_045", "constraints": [{"kind": "geo", "span": "Nigerian"}], "polarity": "include", "why": "Restricts to operations in a named country."}
+{"id": "kaggledbqa-0080", "constraints": [{"kind": "geo", "span": "US"}], "polarity": "include", "why": "Restricts to a named country while grouping by state."}
+{"id": "t2sd-advising-010", "constraints": [], "polarity": "none", "why": "A course code and credit count are not among the four kinds."}
+{"id": "wikisql_0057", "constraints": [], "polarity": "none", "why": "Only city names appear."}
+{"id": "kaggledbqa-0213", "constraints": [{"kind": "geo", "span": "USA"}], "polarity": "include", "why": "Restricts wildfires to a named country."}
+{"id": "l4_trusted_asset_hope", "constraints": [], "polarity": "none", "why": "Electronics is a product category, city is a grouping, Space is a workspace name."}
+{"id": "spider_dev_0047", "constraints": [], "polarity": "none", "why": "Citizenship is grouped, not restricted."}
+{"id": "kaggledbqa-0067", "constraints": [], "polarity": "none", "why": "Country is the requested answer and detection is a status."}
+{"id": "distil_016", "constraints": [], "polarity": "none", "why": "A plain total with no restriction."}
+{"id": "t2sd-academic-012", "constraints": [], "polarity": "none", "why": "A paper title is not among the four kinds."}
+{"id": "wikisql_0148", "constraints": [], "polarity": "none", "why": "A lap count is not among the four kinds."}
+{"id": "sea-plantation_059", "constraints": [{"kind": "geo", "span": "ASEAN"}], "polarity": "include", "why": "Restricts markets to a named multi-country region."}
+{"id": "distil_057", "constraints": [], "polarity": "none", "why": "A plain average with no restriction."}
+{"id": "global-finance_010", "constraints": [{"kind": "segment", "span": "oil and gas"}], "polarity": "include", "why": "Restricts to clients in one industry sector."}
+{"id": "spider_dev_0171", "constraints": [], "polarity": "none", "why": "Only a sort order is specified."}
+{"id": "wikisql_0079", "constraints": [], "polarity": "none", "why": "Only a year is given."}
+{"id": "wikisql_0208", "constraints": [], "polarity": "none", "why": "A person name and week number are not among the four kinds."}
+{"id": "kaggledbqa-0263", "constraints": [], "polarity": "none", "why": "A max over odds carries none of the four kinds."}
+{"id": "apac-property_053", "constraints": [{"kind": "segment", "span": "banking and insurance"}], "polarity": "comparison", "why": "Banking and insurance is an industry sector, set head to head against everyone else."}
+{"id": "emea-manufacturing_058", "constraints": [{"kind": "geo", "span": "Turkey"}], "polarity": "include", "why": "Restricts to lead time from the country Turkey; vendor and customs are groupings."}
+{"id": "hostile-paraphrase_039", "constraints": [{"kind": "asset_class", "span": "residential"}], "polarity": "exclude", "why": "Removes residential property from the portfolio yield."}
+{"id": "hostile-paraphrase_008", "constraints": [], "polarity": "none", "why": "Only a date range, which is not one of the four kinds."}
+{"id": "distil_005", "constraints": [], "polarity": "none", "why": "A plain max over payments with no restricting constraint."}
+{"id": "kaggledbqa-0244", "constraints": [], "polarity": "none", "why": "Asks for a year as the answer; no constraint of the four kinds."}
+{"id": "spider_dev_0262", "constraints": [{"kind": "geo", "span": "North America"}], "polarity": "include", "why": "Restricts to countries in the multi-country region North America; the area threshold does not count."}
+{"id": "spider_dev_0222", "constraints": [], "polarity": "none", "why": "Cylinder count is a product attribute, not one of the four kinds."}
+{"id": "spider_dev_0267", "constraints": [{"kind": "geo", "span": "Angola"}], "polarity": "include", "why": "Restricts rows to the named country Angola."}
+{"id": "spider_dev_0142", "constraints": [], "polarity": "none", "why": "A person name filter, which is not one of the four kinds."}
+{"id": "sea-plantation_034", "constraints": [{"kind": "segment", "span": "poultry"}], "polarity": "exclude", "why": "Excludes the poultry line of business; division is a grouping."}
+{"id": "kaggledbqa-0242", "constraints": [], "polarity": "none", "why": "Asks for an artist as the answer; no restricting constraint."}
+{"id": "spider_dev_0277", "constraints": [], "polarity": "none", "why": "A maker name and a weight threshold, neither of which is one of the four kinds."}
+{"id": "t2sd-scholar-019", "constraints": [], "polarity": "none", "why": "A research topic and an author name, not one of the four kinds."}
+{"id": "t2sd-atis-019", "constraints": [], "polarity": "none", "why": "A city airport is a location, not a country or region."}
+{"id": "kaggledbqa-0256", "constraints": [{"kind": "geo", "span": "Spain"}], "polarity": "include", "why": "Restricts matches to the named country Spain."}
+{"id": "emea-manufacturing_050", "constraints": [{"kind": "segment", "span": "defence and aerospace"}], "polarity": "exclude", "why": "Excludes an industry sector; quarter is a grouping."}
+{"id": "spider_dev_0129", "constraints": [], "polarity": "none", "why": "A document name filter, not one of the four kinds."}
+{"id": "spider_dev_0206", "constraints": [], "polarity": "none", "why": "A plain listing with no restricting constraint."}
+{"id": "t2sd-geography-022", "constraints": [], "polarity": "none", "why": "A named river is not a country or multi-country region."}
+{"id": "kaggledbqa-0107", "constraints": [{"kind": "geo", "span": "US"}], "polarity": "include", "why": "Restricts to imports by the named country US; the answer sought is a source, not the filter."}
+{"id": "kaggledbqa-0240", "constraints": [], "polarity": "none", "why": "A grouping of tags to release titles with no restriction."}
+{"id": "wikisql_0085", "constraints": [], "polarity": "none", "why": "Score and par values are thresholds, not one of the four kinds."}
+{"id": "spider_dev_0118", "constraints": [{"kind": "geo", "span": "Asia"}], "polarity": "include", "why": "Restricts to the multi-country region Asia; official language is not one of the four kinds."}
+{"id": "hostile-paraphrase_038", "constraints": [], "polarity": "none", "why": "Only a date condition, which is not one of the four kinds."}
+{"id": "kaggledbqa-0238", "constraints": [], "polarity": "none", "why": "Asks for a release as the answer; no restricting constraint."}
+{"id": "kaggledbqa-0009", "constraints": [], "polarity": "none", "why": "Asks for a country as the answer rather than restricting to one."}
+{"id": "wikisql_0136", "constraints": [], "polarity": "none", "why": "A district and date conditions, none of which are the four kinds."}
+{"id": "apac-property_016", "constraints": [], "polarity": "none", "why": "KL is a city, MYR a currency, and gross rent is a figure to total, not a deal-nature restriction."}
+{"id": "spider_dev_0242", "constraints": [], "polarity": "none", "why": "A date threshold and a top-N, not one of the four kinds."}
+{"id": "wikisql_0243", "constraints": [{"kind": "geo", "span": "Canada"}], "polarity": "include", "why": "Restricts entries to the named country Canada."}
+{"id": "t2sd-yelp-015", "constraints": [], "polarity": "none", "why": "A business name filter, not one of the four kinds."}
+{"id": "sea-logistics_044", "constraints": [], "polarity": "none", "why": "Branches are locations and ranking is not a restriction."}
+{"id": "spider_dev_0208", "constraints": [], "polarity": "none", "why": "A sorted listing with no restricting constraint."}
+{"id": "spider_dev_0116", "constraints": [], "polarity": "none", "why": "An average across all rows with no restriction."}
+{"id": "sea-logistics_008", "constraints": [{"kind": "segment", "span": "electronics manufacturing"}], "polarity": "include", "why": "Restricts to clients in an industry sector; Q1 is a date."}
+{"id": "t2sd-imdb-022", "constraints": [], "polarity": "none", "why": "Iraq war names a film subject, not a geographic restriction on rows."}
+{"id": "wikisql_0177", "constraints": [], "polarity": "none", "why": "A product model code, not one of the four kinds."}
+{"id": "wikisql_0324", "constraints": [{"kind": "geo", "span": "india"}], "polarity": "include", "why": "Restricts the rank sum to the named country india."}
+{"id": "americas-retail_026", "constraints": [], "polarity": "none", "why": "Store is a location grouping, not one of the four kinds."}
+{"id": "exact_sku_beta_total", "constraints": [], "polarity": "none", "why": "A file/sheet name and a SKU are not among the four kinds; sales is just the number totalled."}
+{"id": "spider_dev_0181", "constraints": [], "polarity": "none", "why": "Aggregate over all shops with no restricting condition."}
+{"id": "kaggledbqa-0133", "constraints": [], "polarity": "none", "why": "Colorado is a state and the funding programmes are not an industry sector."}
+{"id": "kaggledbqa-0237", "constraints": [], "polarity": "none", "why": "Asks which year, a grouping and selection, not a restriction."}
+{"id": "sea-plantation_003", "constraints": [{"kind": "geo", "span": "Indonesian"}], "polarity": "include", "why": "Restricted to Indonesian operations; mill is a site and the period is a date."}
+{"id": "distil_048", "constraints": [], "polarity": "none", "why": "Inactive is a status, not one of the four kinds."}
+{"id": "spider_dev_0156", "constraints": [], "polarity": "none", "why": "A series name is a name, not one of the four kinds."}
+{"id": "global-finance_012", "constraints": [], "polarity": "none", "why": "Only a date range between two quarters."}
+{"id": "apac-property_051", "constraints": [], "polarity": "none", "why": "Rent psf is the number measured and compared, and building is a location."}
+{"id": "kaggledbqa-0202", "constraints": [], "polarity": "none", "why": "A county and an acreage threshold are excluded kinds."}
+{"id": "americas-retail_011", "constraints": [{"kind": "geo", "span": "Mexican"}], "polarity": "exclude", "why": "Restricts away from the Mexican stores."}
+{"id": "wikisql_0282", "constraints": [], "polarity": "none", "why": "A rank and a games threshold only."}
+{"id": "spider_dev_0196", "constraints": [], "polarity": "none", "why": "No constraint of the four kinds."}
+{"id": "wikisql_0166", "constraints": [], "polarity": "none", "why": "A score value is not one of the four kinds."}
+{"id": "spider_dev_0018", "constraints": [], "polarity": "none", "why": "Pet types are not one of the four kinds."}
+{"id": "spider_dev_0274", "constraints": [{"kind": "geo", "span": "europe"}], "polarity": "include", "why": "Restricted to countries in europe, a region spanning several countries."}
+{"id": "spider_dev_0215", "constraints": [], "polarity": "none", "why": "No constraint of the four kinds."}
+{"id": "t2sd-restaurants-019", "constraints": [], "polarity": "none", "why": "A sub-national area and a food category are not geo or segment."}
+{"id": "hostile-paraphrase_052", "constraints": [], "polarity": "none", "why": "A churn period and a spend threshold only."}
+{"id": "apac-property_030", "constraints": [{"kind": "sense", "span": "lease"}], "polarity": "include", "why": "Restricts to leasing deals by measuring days to lease a unit."}
+{"id": "emea-manufacturing_014", "constraints": [], "polarity": "none", "why": "A document field mismatch, none of the four kinds."}
+{"id": "kaggledbqa-0186", "constraints": [], "polarity": "none", "why": "States are grouped and a year is a date."}
+{"id": "kaggledbqa-0023", "constraints": [{"kind": "geo", "span": "Japan"}], "polarity": "include", "why": "Restricted to Japan; in preparation is a status."}
+{"id": "hostile-paraphrase_024", "constraints": [], "polarity": "none", "why": "In construction is a pipeline stage or status, not a segment."}
+{"id": "americas-retail_002", "constraints": [{"kind": "geo", "span": "Brazil"}], "polarity": "include", "why": "Restricted to the Brazil stores; the month split is grouping."}
+{"id": "global-finance_002", "constraints": [{"kind": "geo", "span": "Vietnam"}], "polarity": "include", "why": "Restricted to Vietnam."}
+{"id": "kaggledbqa-0121", "constraints": [], "polarity": "none", "why": "Top-N over states, a threshold and a grouping."}
+{"id": "spider_dev_0189", "constraints": [{"kind": "geo", "span": "European"}], "polarity": "include", "why": "Restricted to European countries, a region spanning several countries."}
+{"id": "t2sd-academic-008", "constraints": [], "polarity": "none", "why": "An institution name and a research area are not geo or segment."}
+{"id": "t2sd-atis-002", "constraints": [], "polarity": "none", "why": "Both endpoints are cities."}
+{"id": "sea-logistics_059", "constraints": [], "polarity": "none", "why": "A currency, a top-N and a payment status only."}
+{"id": "americas-retail_049", "constraints": [{"kind": "geo", "span": "Mexican"}, {"kind": "asset_class", "span": "mixed-use"}], "polarity": "exclude", "why": "Restricts away from both the Mexican geography and the mixed-use class."}
+{"id": "spider_dev_0223", "constraints": [], "polarity": "none", "why": "A plain average with no restriction."}
+{"id": "kaggledbqa-0123", "constraints": [], "polarity": "none", "why": "Asks for a state as the answer, which is selection not restriction."}
+{"id": "wikisql_0106", "constraints": [{"kind": "geo", "span": "Hong Kong"}], "polarity": "include", "why": "Restricted to the Hong Kong row; the year is a date."}
+{"id": "wikisql_0027", "constraints": [], "polarity": "none", "why": "A viewership value is not one of the four kinds."}
+{"id": "hostile-paraphrase_019", "constraints": [], "polarity": "none", "why": "Residential here types a customer address field, not a property asset class."}
+{"id": "africa-india-energy_054", "constraints": [{"kind": "asset_class", "span": "residential"}, {"kind": "asset_class", "span": "commercial"}], "polarity": "comparison", "why": "Two property classes set head to head."}
+{"id": "kaggledbqa-0060", "constraints": [], "polarity": "none", "why": "A product attribute, not one of the four kinds."}
+{"id": "sea-logistics_030", "constraints": [], "polarity": "none", "why": "Bukit Raja is a site and the buckets are date ranges."}
+{"id": "distil_006", "constraints": [], "polarity": "none", "why": "Threshold on views only; no sense, asset class, country/region or sector."}
+{"id": "apac-property_000", "constraints": [{"kind": "sense", "span": "leases"}], "polarity": "include", "why": "Restricts rows to leases; the date is not a reportable kind."}
+{"id": "emea-manufacturing_009", "constraints": [], "polarity": "none", "why": "Grouping by root cause code and a month; no constraint of the four kinds."}
+{"id": "sea-logistics_005", "constraints": [{"kind": "sense", "span": "lease"}], "polarity": "include", "why": "Restricts to leased space; warehouse is a site, not an asset class."}
+{"id": "wikisql_0009", "constraints": [], "polarity": "none", "why": "Filters on a team name only."}
+{"id": "africa-india-energy_050", "constraints": [{"kind": "segment", "span": "mining sector"}], "polarity": "include", "why": "Restricts customers to the mining industry sector."}
+{"id": "wikisql_0149", "constraints": [], "polarity": "none", "why": "Numeric threshold on place only."}
+{"id": "apac-property_025", "constraints": [{"kind": "geo", "span": "Greater China"}], "polarity": "exclude", "why": "Restricts away from a named multi-country region; markets are the grouping."}
+{"id": "apac-property_042", "constraints": [], "polarity": "none", "why": "Named building is a site and rent roll is the report, not a row-narrowing kind."}
+{"id": "sea-logistics_001", "constraints": [], "polarity": "none", "why": "Amount threshold, ageing and currency only."}
+{"id": "sea-logistics_029", "constraints": [{"kind": "sense", "span": "owned"}, {"kind": "sense", "span": "rent"}], "polarity": "comparison", "why": "Sets owned warehouses head to head against rented ones."}
+{"id": "emea-manufacturing_052", "constraints": [{"kind": "geo", "span": "Gulf"}, {"kind": "segment", "span": "petrochemical sector"}], "polarity": "include", "why": "Restricts to a named multi-country region and to an industry sector."}
+{"id": "apac-property_054", "constraints": [], "polarity": "none", "why": "Ageing threshold grouped by tenant; no sense, asset class, geo or sector restriction."}
+{"id": "kaggledbqa-0243", "constraints": [], "polarity": "none", "why": "Asks for an artist as the answer; nothing restricts rows."}
+{"id": "kaggledbqa-0090", "constraints": [], "polarity": "none", "why": "Product class is a product category, not a segment."}
+{"id": "t2sd-imdb-023", "constraints": [], "polarity": "none", "why": "Gender and a city; a city is not geo."}
+{"id": "emea-manufacturing_042", "constraints": [], "polarity": "none", "why": "A plot of two measures across suppliers; no restriction of the four kinds."}
+{"id": "emea-manufacturing_055", "constraints": [{"kind": "geo", "span": "France"}], "polarity": "exclude", "why": "Restricts away from entities registered in a named country."}
+{"id": "t2sd-imdb-019", "constraints": [], "polarity": "none", "why": "Filters on person names only."}
+{"id": "wikisql_0190", "constraints": [], "polarity": "none", "why": "A line name and a station threshold; neither is a reportable kind."}
+{"id": "kaggledbqa-0143", "constraints": [], "polarity": "none", "why": "Compares leagues as the answer; no constraint of the four kinds."}
+{"id": "kaggledbqa-0105", "constraints": [], "polarity": "none", "why": "Food kind is a product category and the result is the answer sought."}
+{"id": "americas-retail_000", "constraints": [], "polarity": "none", "why": "Grouped by store and compared across dates; stores and dates are excluded kinds."}
+{"id": "spider_dev_0263", "constraints": [], "polarity": "none", "why": "A district is a sub-country area, not a country or multi-country region."}
+{"id": "spider_dev_0253", "constraints": [], "polarity": "none", "why": "Asks which semester; nothing restricts rows."}
+{"id": "kaggledbqa-0044", "constraints": [], "polarity": "none", "why": "Salford is a city, and crime type is the answer sought."}
+{"id": "kaggledbqa-0077", "constraints": [], "polarity": "none", "why": "Unknown country of origin is a data status, not a named country."}
+{"id": "spider_dev_0204", "constraints": [], "polarity": "none", "why": "Filters on a director name and cartoon content; no kind of the four."}
+{"id": "wikisql_0215", "constraints": [], "polarity": "none", "why": "Filters on a tree species mix string only."}
+{"id": "spider_dev_0045", "constraints": [], "polarity": "none", "why": "Aggregation grouped per player; no restriction."}
+{"id": "hostile-paraphrase_015", "constraints": [{"kind": "geo", "span": "vietnam"}, {"kind": "geo", "span": "thailand"}], "polarity": "comparison", "why": "Two named countries set head to head."}
+{"id": "apac-property_049", "constraints": [{"kind": "sense", "span": "leases"}], "polarity": "include", "why": "Restricts rows to leases; the 18-month window is a date range."}
+{"id": "emea-manufacturing_031", "constraints": [], "polarity": "none", "why": "Grouping by vendor only."}
+{"id": "kaggledbqa-0134", "constraints": [], "polarity": "none", "why": "A named school district is a local area, not a country or region."}
+{"id": "sea-logistics_010", "constraints": [], "polarity": "none", "why": "Top-N ranking of hauliers; top-N is not a reportable kind."}
+{"id": "kaggledbqa-0136", "constraints": [], "polarity": "none", "why": "NC and NY are states, not countries or multi-country regions."}
+{"id": "wikisql_0105", "constraints": [], "polarity": "none", "why": "Filters on a player name and a max; no kind of the four."}
+{"id": "emea-manufacturing_011", "constraints": [], "polarity": "none", "why": "Filters on a substance list in BOMs; a material is not a segment."}
+{"id": "emea-manufacturing_033", "constraints": [], "polarity": "none", "why": "A currency and an ageing threshold, both excluded kinds."}
+{"id": "wikisql_0319", "constraints": [], "polarity": "none", "why": "Filters on an episode name only."}
+{"id": "kaggledbqa-0177", "constraints": [], "polarity": "none", "why": "Asks for a year as the answer; no sense, asset class, geo or segment restriction."}
+{"id": "kaggledbqa-0214", "constraints": [], "polarity": "none", "why": "Top-N ranking only, which is not one of the four kinds."}
+{"id": "hostile-paraphrase_004", "constraints": [], "polarity": "none", "why": "Top-N plus a date range; neither is a reportable kind."}
+{"id": "distil_053", "constraints": [], "polarity": "none", "why": "Order status is explicitly not one of the four kinds."}
+{"id": "sea-logistics_004", "constraints": [], "polarity": "none", "why": "Top-N and a numeric threshold only."}
+{"id": "t2sd-academic-023", "constraints": [], "polarity": "none", "why": "An author name and a date cutoff, neither reportable."}
+{"id": "kaggledbqa-0028", "constraints": [], "polarity": "none", "why": "Asks where a plant is located; a plant type is not an asset class or segment."}
+{"id": "apac-property_032", "constraints": [{"kind": "asset_class", "span": "mixed use"}], "polarity": "include", "why": "Restricts rows to mixed use developments."}
+{"id": "spider_dev_0095", "constraints": [], "polarity": "none", "why": "A status value only."}
+{"id": "t2sd-imdb-003", "constraints": [], "polarity": "none", "why": "A named movie title, not one of the four kinds."}
+{"id": "distil_024", "constraints": [], "polarity": "none", "why": "Grouping by sender only."}
+{"id": "global-finance_006", "constraints": [{"kind": "geo", "span": "Singapore"}], "polarity": "exclude", "why": "Restricts away from the Singapore entities, a named country."}
+{"id": "emea-manufacturing_046", "constraints": [{"kind": "geo", "span": "DACH"}], "polarity": "comparison", "why": "DACH, a multi-country region, is set head to head against the rest of the group."}
+{"id": "t2sd-geography-026", "constraints": [{"kind": "geo", "span": "usa"}], "polarity": "include", "why": "Restricts rows to the named country usa."}
+{"id": "distil_091", "constraints": [], "polarity": "none", "why": "Product category is explicitly not a segment."}
+{"id": "global-finance_038", "constraints": [{"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "residential"}], "polarity": "comparison", "why": "Splits the portfolio between two property classes head to head."}
+{"id": "spider_dev_0037", "constraints": [], "polarity": "none", "why": "An event name and handedness attribute, neither reportable."}
+{"id": "africa-india-energy_007", "constraints": [], "polarity": "none", "why": "Grouping by a sub-national circle only."}
+{"id": "kaggledbqa-0056", "constraints": [], "polarity": "none", "why": "Asks for a place as the answer; no restriction of the four kinds."}
+{"id": "t2sd-restaurants-005", "constraints": [], "polarity": "none", "why": "Alameda is a city, explicitly not a geo of the reportable kind."}
+{"id": "l2_wrong_sheet_trap", "constraints": [], "polarity": "none", "why": "File and sheet names plus top-N and product categories, none reportable."}
+{"id": "sea-logistics_015", "constraints": [{"kind": "sense", "span": "leased"}, {"kind": "asset_class", "span": "commercial"}], "polarity": "include", "why": "Restricts to leased deals and to commercial property."}
+{"id": "kaggledbqa-0182", "constraints": [], "polarity": "none", "why": "Asks for a state as the answer; a state is not a reportable geo."}
+{"id": "spider_dev_0010", "constraints": [], "polarity": "none", "why": "No constraint of the four kinds."}
+{"id": "apac-property_026", "constraints": [{"kind": "sense", "span": "for sale"}, {"kind": "sense", "span": "letting"}], "polarity": "mixed", "why": "Excludes sale listings and restricts to units being let."}
+{"id": "kaggledbqa-0195", "constraints": [], "polarity": "none", "why": "Asks for the most common cause code; no reportable restriction."}
+{"id": "africa-india-energy_029", "constraints": [], "polarity": "none", "why": "An age threshold and grouping by section office only."}
+{"id": "spider_dev_0138", "constraints": [{"kind": "geo", "span": "Russia"}], "polarity": "exclude", "why": "Restricts away from the named country Russia."}
+{"id": "africa-india-energy_052", "constraints": [{"kind": "segment", "span": "manufacturing"}], "polarity": "exclude", "why": "Removes the manufacturing sector accounts from the rows."}
+{"id": "emea-manufacturing_057", "constraints": [{"kind": "segment", "span": "food and beverage"}], "polarity": "include", "why": "Restricts to accounts in the food and beverage sector."}
+{"id": "sea-plantation_038", "constraints": [{"kind": "asset_class", "span": "commercial"}, {"kind": "asset_class", "span": "mixed-use"}], "polarity": "mixed", "why": "Restricts to commercial units while excluding mixed-use blocks."}
+{"id": "apac-property_015", "constraints": [{"kind": "geo", "span": "Southeast Asia"}], "polarity": "include", "why": "Restricts to a named region spanning several countries."}
+{"id": "spider_dev_0120", "constraints": [], "polarity": "none", "why": "Asks for a grade as the answer; no reportable restriction."}
+{"id": "sea-plantation_042", "constraints": [{"kind": "sense", "span": "rent out"}, {"kind": "asset_class", "span": "residential"}], "polarity": "include", "why": "Restricts to residential stock that is rented out."}
+{"id": "t2sd-academic-013", "constraints": [], "polarity": "none", "why": "An organisation name, not a geo or segment."}
+{"id": "wikisql_0279", "constraints": [{"kind": "geo", "span": "United States"}], "polarity": "include", "why": "Restricts rows to the named country United States; position and round are not reportable."}
+{"id": "spider_dev_0265", "constraints": [], "polarity": "none", "why": "No constraint of the four kinds."}
+{"id": "kaggledbqa-0029", "constraints": [], "polarity": "none", "why": "Asks for a country as the answer rather than restricting to one."}
+{"id": "wikisql_0102", "constraints": [{"kind": "geo", "span": "denmark"}], "polarity": "include", "why": "Restricts to the named country denmark; technology here is a ranking category, not a business sector."}
+{"id": "kaggledbqa-0221", "constraints": [], "polarity": "none", "why": "Grouping by release year only."}
+{"id": "hostile-paraphrase_053", "constraints": [], "polarity": "none", "why": "A time window only; no sense, asset class, country or sector."}
+{"id": "wikisql_0138", "constraints": [], "polarity": "none", "why": "Filters on an institution name and a championship count, none of the four kinds."}
+{"id": "spider_dev_0266", "constraints": [], "polarity": "none", "why": "Ordering request with no row-restricting constraint."}
+{"id": "spider_dev_0241", "constraints": [], "polarity": "none", "why": "Asks for a citizenship as the answer rather than restricting to one."}
+{"id": "apac-property_014", "constraints": [{"kind": "sense", "span": "sale"}, {"kind": "sense", "span": "rent"}], "polarity": "comparison", "why": "Sets selling and renting head to head; building is a location, not a constraint."}
+{"id": "sea-logistics_025", "constraints": [{"kind": "segment", "span": "FMCG"}, {"kind": "geo", "span": "Singapore"}], "polarity": "include", "why": "Restricts to an industry sector and a named country."}
+{"id": "wikisql_0131", "constraints": [{"kind": "geo", "span": "United States"}], "polarity": "include", "why": "Restricts to a named country; the player name is not one of the four kinds."}
+{"id": "kaggledbqa-0139", "constraints": [], "polarity": "none", "why": "Top-N over leagues; no constraint of the four kinds."}
+{"id": "spider_dev_0174", "constraints": [{"kind": "geo", "span": "Brazil"}, {"kind": "geo", "span": "Ireland"}], "polarity": "include", "why": "Rows are narrowed to those naming two countries."}
+{"id": "emea-manufacturing_048", "constraints": [{"kind": "geo", "span": "Poland"}, {"kind": "geo", "span": "Czechia"}], "polarity": "comparison", "why": "Two named countries set head to head."}
+{"id": "spider_dev_0228", "constraints": [], "polarity": "none", "why": "A min-count lookup with no constraint of the four kinds."}
+{"id": "hostile-paraphrase_027", "constraints": [{"kind": "sense", "span": "rent"}], "polarity": "exclude", "why": "Restricts away from rented facilities."}
+{"id": "kaggledbqa-0043", "constraints": [], "polarity": "none", "why": "Filters on a crime location type, not any of the four kinds."}
+{"id": "wikisql_0048", "constraints": [], "polarity": "none", "why": "Filters on an episode code only."}
+{"id": "ff_hazardous_value", "constraints": [], "polarity": "none", "why": "A currency and a product/hazard category, neither of which counts."}
+{"id": "t2sd-scholar-023", "constraints": [], "polarity": "none", "why": "A research topic, not an industry sector."}
+{"id": "americas-retail_027", "constraints": [{"kind": "geo", "span": "LatAm"}, {"kind": "geo", "span": "North America"}], "polarity": "comparison", "why": "Two multi-country regions compared head to head."}
+{"id": "global-finance_040", "constraints": [], "polarity": "none", "why": "Date, status and preparer name only."}
+{"id": "spider_dev_0068", "constraints": [], "polarity": "none", "why": "An airline name and a city, neither of which counts."}
+{"id": "distil_049", "constraints": [], "polarity": "none", "why": "Cities and a distance threshold only."}
+{"id": "kaggledbqa-0085", "constraints": [{"kind": "geo", "span": "US"}], "polarity": "include", "why": "Restricts to a named country while asking for a state as the answer."}
+{"id": "wikisql_0333", "constraints": [], "polarity": "none", "why": "Asks for a nation as the answer; medal counts are thresholds."}
+{"id": "africa-india-energy_044", "constraints": [], "polarity": "none", "why": "Monthly breakdown after a tariff hike; no country or sector named."}
+{"id": "africa-india-energy_053", "constraints": [{"kind": "segment", "span": "hospitality"}, {"kind": "geo", "span": "Kenya"}], "polarity": "include", "why": "Restricts to a sector and a named country; evening peak is a time window."}
+{"id": "t2sd-restaurants-023", "constraints": [], "polarity": "none", "why": "A sub-national area only, which does not count."}
+{"id": "t2sd-atis-022", "constraints": [], "polarity": "none", "why": "Cities and a time of day only."}
+{"id": "spider_dev_0273", "constraints": [{"kind": "geo", "span": "Europe"}], "polarity": "include", "why": "Restricts the compared set to a multi-country region."}
+{"id": "sea-logistics_023", "constraints": [], "polarity": "none", "why": "Grouping by month only."}
+{"id": "t2sd-atis-005", "constraints": [], "polarity": "none", "why": "City-to-city flights only."}
+{"id": "wikisql_0266", "constraints": [], "polarity": "none", "why": "Filters on a release date only."}
+{"id": "wikisql_0250", "constraints": [], "polarity": "none", "why": "A date filter only."}
+{"id": "kaggledbqa-0018", "constraints": [], "polarity": "none", "why": "A status filter on stations, not any of the four kinds."}
+{"id": "distil_008", "constraints": [], "polarity": "none", "why": "A numeric threshold only."}
+{"id": "apac-property_018", "constraints": [{"kind": "sense", "span": "lease"}], "polarity": "include", "why": "Restricts to leasing deals; the years are date ranges, not constraints."}
+{"id": "americas-retail_056", "constraints": [{"kind": "geo", "span": "Canada"}], "polarity": "exclude", "why": "Restricts away from a named country."}
+{"id": "wikisql_0151", "constraints": [{"kind": "geo", "span": "Spain"}], "polarity": "include", "why": "Restricts to athletes from a named country."}
+{"id": "kaggledbqa-0264", "constraints": [], "polarity": "none", "why": "Asks for a year as the answer."}
+{"id": "emea-manufacturing_045", "constraints": [{"kind": "geo", "span": "German"}], "polarity": "include", "why": "Restricts to a named country; plants are locations used for grouping."}
+{"id": "spider_dev_0029", "constraints": [], "polarity": "none", "why": "A membership threshold and sort order only."}
+{"id": "spider_dev_0210", "constraints": [], "polarity": "none", "why": "Filters on an episode title only."}
+{"id": "wikisql_0092", "constraints": [], "polarity": "none", "why": "A person name is not one of the four kinds."}
+{"id": "spider_dev_0296", "constraints": [], "polarity": "none", "why": "A language filter and nation as an output column are not geo restrictions."}
+{"id": "t2sd-yelp-019", "constraints": [], "polarity": "none", "why": "Los Angeles is a city and a cuisine category is a product category, not a sector."}
+{"id": "SCALAR_Q", "constraints": [], "polarity": "none", "why": "No restricting terms at all."}
+{"id": "africa-india-energy_041", "constraints": [], "polarity": "none", "why": "Generation type and a date range are not among the four kinds."}
+{"id": "kaggledbqa-0057", "constraints": [], "polarity": "none", "why": "Crime type is a category being grouped, not one of the four."}
+{"id": "kaggledbqa-0021", "constraints": [{"kind": "geo", "span": "Japan"}], "polarity": "include", "why": "Restricts rows to plants in the named country Japan."}
+{"id": "sea-logistics_056", "constraints": [], "polarity": "none", "why": "Grouping by picker over a date range carries no constraint of the four kinds."}
+{"id": "africa-india-energy_051", "constraints": [{"kind": "segment", "span": "industrial"}, {"kind": "segment", "span": "agricultural"}], "polarity": "comparison", "why": "Two customer sectors set head to head."}
+{"id": "wikisql_0087", "constraints": [], "polarity": "none", "why": "Birmingham City is a club/city name, not a country or region."}
+{"id": "kaggledbqa-0062", "constraints": [], "polarity": "none", "why": "Method comparison carries none of the four kinds."}
+{"id": "americas-retail_040", "constraints": [], "polarity": "none", "why": "SKUs and a date window are excluded kinds."}
+{"id": "sea-plantation_008", "constraints": [{"kind": "geo", "span": "Malaysia"}, {"kind": "geo", "span": "Indonesia"}], "polarity": "comparison", "why": "Two named countries set head to head."}
+{"id": "apac-property_039", "constraints": [], "polarity": "none", "why": "Buildings are locations, not an asset class or other constraint."}
+{"id": "kaggledbqa-0138", "constraints": [], "polarity": "none", "why": "States are asked for as the answer, and a state is not geo anyway."}
+{"id": "distil_015", "constraints": [], "polarity": "none", "why": "A party-size threshold and a status are excluded kinds."}
+{"id": "wikisql_0015", "constraints": [], "polarity": "none", "why": "Team name and week are not among the four kinds."}
+{"id": "distil_065", "constraints": [], "polarity": "none", "why": "A date filter only."}
+{"id": "distil_002", "constraints": [{"kind": "geo", "span": "Canada"}], "polarity": "include", "why": "Restricts customers to the named country Canada."}
+{"id": "emea-manufacturing_053", "constraints": [{"kind": "sense", "span": "leased"}], "polarity": "include", "why": "Restricts warehouses to those held on lease rather than owned."}
+{"id": "apac-property_005", "constraints": [], "polarity": "none", "why": "Leasehold versus freehold is a title tenure attribute, not the lease-versus-buy deal sense."}
+{"id": "kaggledbqa-0265", "constraints": [], "polarity": "none", "why": "A company name is not one of the four kinds."}
+{"id": "spider_dev_0141", "constraints": [], "polarity": "none", "why": "Relationship conditions only."}
+{"id": "wikisql_0214", "constraints": [], "polarity": "none", "why": "A name and a date range are excluded kinds."}
+{"id": "spider_dev_0235", "constraints": [], "polarity": "none", "why": "No constraint of the four kinds."}
+{"id": "hostile-paraphrase_009", "constraints": [{"kind": "geo", "span": "singapore"}], "polarity": "exclude", "why": "Restricts away from the named country Singapore."}
+{"id": "kaggledbqa-0217", "constraints": [], "polarity": "none", "why": "A music genre is a product category and top-N is excluded."}
+{"id": "L4_multi_step", "constraints": [], "polarity": "none", "why": "Kuala Lumpur is a city, and categories, SKUs and delay status are excluded kinds."}
+{"id": "hostile-paraphrase_037", "constraints": [], "polarity": "none", "why": "A date reference and a price list are not among the four kinds."}
+{"id": "t2sd-atis-027", "constraints": [], "polarity": "none", "why": "An airline code and a city are excluded kinds."}
+{"id": "kaggledbqa-0100", "constraints": [], "polarity": "none", "why": "A product code is an excluded kind."}
+{"id": "apac-property_027", "constraints": [{"kind": "asset_class", "span": "residential"}], "polarity": "exclude", "why": "Restricts away from residential property."}
+{"id": "africa-india-energy_048", "constraints": [{"kind": "geo", "span": "West Africa"}], "polarity": "include", "why": "Restricts the summary to a named multi-country region."}
+{"id": "apac-property_006", "constraints": [], "polarity": "none", "why": "Buildings are locations and the window is a date range."}
+{"id": "global-finance_053", "constraints": [{"kind": "segment", "span": "retail"}, {"kind": "asset_class", "span": "commercial"}], "polarity": "include", "why": "Restricts to retail-sector tenants within commercial property."}
+{"id": "emea-manufacturing_027", "constraints": [], "polarity": "none", "why": "Part numbers and top-N are excluded kinds."}
+{"id": "americas-retail_028", "constraints": [], "polarity": "none", "why": "Stores are locations and ten worst is a top-N."}
+{"id": "t2sd-geography-010", "constraints": [{"kind": "geo", "span": "usa"}], "polarity": "include", "why": "Restricts states to the named country."}
+{"id": "hostile-paraphrase_040", "constraints": [], "polarity": "none", "why": "An inventory threshold comparison carries none of the four kinds."}
+{"id": "distil_077", "constraints": [], "polarity": "none", "why": "Grouping by student only."}
+{"id": "kaggledbqa-0148", "constraints": [{"kind": "geo", "span": "USA"}], "polarity": "include", "why": "Restricts players to the named country USA."}
+{"id": "ff_outbound_by_supplier_country", "constraints": [{"kind": "geo", "span": "Malaysian"}], "polarity": "include", "why": "Restricts to suppliers of the named country; MYR is a currency, not a constraint."}
+{"id": "t2sd-academic-015", "constraints": [], "polarity": "none", "why": "Only a date and a citation threshold, neither of the four kinds."}
+{"id": "sea-logistics_050", "constraints": [{"kind": "sense", "span": "rent"}], "polarity": "include", "why": "Restricts to warehouses we rent, a renting deal; the RM threshold and warehouse site are not constraints."}
+{"id": "spider_dev_0214", "constraints": [], "polarity": "none", "why": "Country is asked for as the answer, not restricted to."}
+{"id": "kaggledbqa-0166", "constraints": [], "polarity": "none", "why": "Hall of fame status is not one of the four kinds."}
+{"id": "t2sd-atis-009", "constraints": [], "polarity": "none", "why": "Boston and Pittsburgh are cities, not countries or multi-country regions."}
+{"id": "t2sd-academic-005", "constraints": [], "polarity": "none", "why": "A venue name and a date carry none of the four kinds."}
+{"id": "constructor_locations", "constraints": [], "polarity": "none", "why": "A warehouse is a site, not an asset class."}
+{"id": "hostile-paraphrase_010", "constraints": [], "polarity": "none", "why": "Country is a field being checked for nulls, not a named country restriction."}
+{"id": "spider_dev_0048", "constraints": [], "polarity": "none", "why": "Groups by continent rather than restricting to one."}
+{"id": "distil_069", "constraints": [], "polarity": "none", "why": "Asks which countries qualify; country is the answer, not a filter."}
+{"id": "sea-plantation_026", "constraints": [{"kind": "geo", "span": "Southeast Asia"}], "polarity": "exclude", "why": "Restricts away from the named multi-country region; CPO is a product."}
+{"id": "t2sd-advising-019", "constraints": [], "polarity": "none", "why": "A credit-count threshold is not one of the four kinds."}
+{"id": "sea-plantation_013", "constraints": [{"kind": "sense", "span": "leasehold"}], "polarity": "include", "why": "Restricts to leased (leasehold) land, a leasing deal nature."}
+{"id": "wikisql_0320", "constraints": [{"kind": "geo", "span": "switzerland"}], "polarity": "include", "why": "Restricts to the named country switzerland."}
+{"id": "wikisql_0198", "constraints": [], "polarity": "none", "why": "Numeric wins and position values only."}
+{"id": "spider_dev_0261", "constraints": [{"kind": "geo", "span": "Aruba"}], "polarity": "include", "why": "Restricts to the named country Aruba."}
+{"id": "hostile-paraphrase_005", "constraints": [{"kind": "segment", "span": "oil and gas"}], "polarity": "include", "why": "Restricts receivables to the oil and gas industry sector."}
+{"id": "kaggledbqa-0215", "constraints": [], "polarity": "none", "why": "A top-N request carries none of the four kinds."}
+{"id": "wikisql_0134", "constraints": [], "polarity": "none", "why": "Real Sociedad is a club name, not a country or sector."}
+{"id": "global-finance_007", "constraints": [], "polarity": "none", "why": "Accounting bridge and fiscal year only."}
+{"id": "kaggledbqa-0210", "constraints": [], "polarity": "none", "why": "No row-restricting constraint of the four kinds."}
+{"id": "kaggledbqa-0266", "constraints": [], "polarity": "none", "why": "Bookmaker names are companies, not any of the four kinds."}
+{"id": "spider_dev_0243", "constraints": [], "polarity": "none", "why": "Ordering by air date is not a constraint of the four kinds."}
