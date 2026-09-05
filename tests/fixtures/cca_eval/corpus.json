@@ -14,59 +14,245 @@
     "the only checkable form of 'this stage did not invent a filter'."
   ],
   "warehouses": {
-    "sea_iso2": {"deals": {"country": ["MY", "SG", "JP"], "amount": ["100", "250", "900"]}},
-    "sea_names": {"deals": {"country": ["Malaysia", "Singapore", "Viet Nam", "Japan"]}},
-    "sea_mixed": {"deals": {"country": ["MY", "Singapore", "VN", "Thailand", "United States"]}},
-    "sea_partial": {"deals": {"country": ["MY", "SG", "TH"]}},
-    "no_country_column": {"deals": {"city": ["Kuala Lumpur", "Singapore"], "amount": ["100", "250"]}},
-    "europe_only": {"deals": {"country": ["France", "Germany", "Japan"]}},
-    "class_codes": {"deals": {"asset_class": ["COM", "RES"]}},
-    "class_words": {"deals": {"property_type": ["Office", "Condo", "Warehouse"]}},
-    "class_res_only": {"deals": {"asset_class": ["RES", "HDB"]}},
-    "class_com_only": {"deals": {"asset_class": ["COM", "Office"]}},
-    "bare_amounts": {"deals": {"deal_id": ["D1", "D2"], "amount": ["100", "250"]}},
-    "tenure_lease_sale": {"deals": {"tenure": ["LEASE", "SALE"]}},
-    "tenure_both_senses": {"deals": {"transaction_type": ["LEASE", "HOUSING_RENT"]}},
+    "sea_iso2": {
+      "deals": {
+        "country": [
+          "MY",
+          "SG",
+          "JP"
+        ],
+        "amount": [
+          "100",
+          "250",
+          "900"
+        ]
+      }
+    },
+    "sea_names": {
+      "deals": {
+        "country": [
+          "Malaysia",
+          "Singapore",
+          "Viet Nam",
+          "Japan"
+        ]
+      }
+    },
+    "sea_mixed": {
+      "deals": {
+        "country": [
+          "MY",
+          "Singapore",
+          "VN",
+          "Thailand",
+          "United States"
+        ]
+      }
+    },
+    "sea_partial": {
+      "deals": {
+        "country": [
+          "MY",
+          "SG",
+          "TH"
+        ]
+      }
+    },
+    "no_country_column": {
+      "deals": {
+        "city": [
+          "Kuala Lumpur",
+          "Singapore"
+        ],
+        "amount": [
+          "100",
+          "250"
+        ]
+      }
+    },
+    "europe_only": {
+      "deals": {
+        "country": [
+          "France",
+          "Germany",
+          "Japan"
+        ]
+      }
+    },
+    "class_codes": {
+      "deals": {
+        "asset_class": [
+          "COM",
+          "RES"
+        ]
+      }
+    },
+    "class_words": {
+      "deals": {
+        "property_type": [
+          "Office",
+          "Condo",
+          "Warehouse"
+        ]
+      }
+    },
+    "class_res_only": {
+      "deals": {
+        "asset_class": [
+          "RES",
+          "HDB"
+        ]
+      }
+    },
+    "class_com_only": {
+      "deals": {
+        "asset_class": [
+          "COM",
+          "Office"
+        ]
+      }
+    },
+    "bare_amounts": {
+      "deals": {
+        "deal_id": [
+          "D1",
+          "D2"
+        ],
+        "amount": [
+          "100",
+          "250"
+        ]
+      }
+    },
+    "tenure_lease_sale": {
+      "deals": {
+        "tenure": [
+          "LEASE",
+          "SALE"
+        ]
+      }
+    },
+    "tenure_both_senses": {
+      "deals": {
+        "transaction_type": [
+          "LEASE",
+          "HOUSING_RENT"
+        ]
+      }
+    },
     "class_and_both_senses": {
-      "deals": {"asset_class": ["COM", "RES"], "transaction_type": ["LEASE", "HOUSING_RENT"]}
+      "deals": {
+        "asset_class": [
+          "COM",
+          "RES"
+        ],
+        "transaction_type": [
+          "LEASE",
+          "HOUSING_RENT"
+        ]
+      }
     },
     "agri_mixed": {
       "deals": {
-        "industry": ["Oil Palm Plantation", "Poultry Farming", "Crop Insurance Services", "Logistics"]
+        "industry": [
+          "Oil Palm Plantation",
+          "Poultry Farming",
+          "Crop Insurance Services",
+          "Logistics"
+        ]
       }
     },
-    "fnb_mixed": {"deals": {"industry": ["Kopitiam", "QSR", "Crop Insurance Services"]}},
+    "fnb_mixed": {
+      "deals": {
+        "industry": [
+          "Kopitiam",
+          "QSR",
+          "Crop Insurance Services"
+        ]
+      }
+    },
     "manufacturing_mixed": {
-      "deals": {"sector": ["Semiconductor", "Auto Parts", "Agricultural Bank Loans"]}
+      "deals": {
+        "sector": [
+          "Semiconductor",
+          "Auto Parts",
+          "Agricultural Bank Loans"
+        ]
+      }
     },
     "false_agriculture": {
-      "deals": {"industry": ["Crop Insurance Services", "Agricultural Bank Loans"]}
+      "deals": {
+        "industry": [
+          "Crop Insurance Services",
+          "Agricultural Bank Loans"
+        ]
+      }
     },
     "class_and_agri": {
       "deals": {
-        "asset_class": ["COM", "RES"],
-        "industry": ["Oil Palm Plantation", "Crop Insurance Services"]
+        "asset_class": [
+          "COM",
+          "RES"
+        ],
+        "industry": [
+          "Oil Palm Plantation",
+          "Crop Insurance Services"
+        ]
       }
     },
     "class_and_false_agri": {
-      "deals": {"asset_class": ["COM"], "industry": ["Crop Insurance Services"]}
+      "deals": {
+        "asset_class": [
+          "COM"
+        ],
+        "industry": [
+          "Crop Insurance Services"
+        ]
+      }
     },
     "full_bound": {
       "deals": {
-        "country": ["MY", "SG", "JP"],
-        "asset_class": ["COM", "RES"],
-        "transaction_type": ["LEASE", "SALE"]
+        "country": [
+          "MY",
+          "SG",
+          "JP"
+        ],
+        "asset_class": [
+          "COM",
+          "RES"
+        ],
+        "transaction_type": [
+          "LEASE",
+          "SALE"
+        ]
       }
     },
     "tenure_and_class_no_country": {
       "deals": {
-        "transaction_type": ["LEASE", "SALE"],
-        "asset_class": ["COM", "RES"],
-        "city": ["Kuala Lumpur"]
+        "transaction_type": [
+          "LEASE",
+          "SALE"
+        ],
+        "asset_class": [
+          "COM",
+          "RES"
+        ],
+        "city": [
+          "Kuala Lumpur"
+        ]
       }
     },
     "sea_freight": {
-      "deals": {"transaction_type": ["LEASE", "SALE"], "country": ["France", "Germany"]}
+      "deals": {
+        "transaction_type": [
+          "LEASE",
+          "SALE"
+        ],
+        "country": [
+          "France",
+          "Germany"
+        ]
+      }
     }
   },
   "cases": [
@@ -76,8 +262,14 @@
       "question": "total sales across SEA",
       "warehouse": "sea_iso2",
       "expect": "CERTIFIED",
-      "expect_members": ["Malaysia", "Singapore"],
-      "must_not_bind": ["JP", "Japan"],
+      "expect_members": [
+        "Malaysia",
+        "Singapore"
+      ],
+      "must_not_bind": [
+        "JP",
+        "Japan"
+      ],
       "why": "An ISO2 column must bind as MY and SG, never as the country names the question used; a name filter over a code column matches nothing and returns a real-looking zero."
     },
     {
@@ -86,8 +278,15 @@
       "question": "total sales across SEA",
       "warehouse": "sea_names",
       "expect": "CERTIFIED",
-      "expect_members": ["Malaysia", "Singapore", "Vietnam"],
-      "must_not_bind": ["Japan", "JP"],
+      "expect_members": [
+        "Malaysia",
+        "Singapore",
+        "Vietnam"
+      ],
+      "must_not_bind": [
+        "Japan",
+        "JP"
+      ],
       "why": "Name-encoded countries must bind, including the Viet Nam spelling, while a non-SEA country sitting in the same column stays out of the filter."
     },
     {
@@ -96,8 +295,16 @@
       "question": "total sales across SEA",
       "warehouse": "sea_mixed",
       "expect": "CERTIFIED",
-      "expect_members": ["Malaysia", "Singapore", "Vietnam", "Thailand"],
-      "must_not_bind": ["United States", "Indonesia"],
+      "expect_members": [
+        "Malaysia",
+        "Singapore",
+        "Vietnam",
+        "Thailand"
+      ],
+      "must_not_bind": [
+        "United States",
+        "Indonesia"
+      ],
       "why": "One column carrying both codes and names must bind both encodings; a binder that picked one encoding would silently drop half the region."
     },
     {
@@ -106,8 +313,17 @@
       "question": "total sales across SEA",
       "warehouse": "sea_partial",
       "expect": "CERTIFIED",
-      "expect_members": ["Malaysia", "Singapore", "Thailand"],
-      "must_not_bind": ["Indonesia", "Philippines", "Vietnam", "Brunei"],
+      "expect_members": [
+        "Malaysia",
+        "Singapore",
+        "Thailand"
+      ],
+      "must_not_bind": [
+        "Indonesia",
+        "Philippines",
+        "Vietnam",
+        "Brunei"
+      ],
       "why": "Three of eleven members landed, so only those three may be bound; binding the eight the data never carried is the answer that calls a third of a region SEA."
     },
     {
@@ -134,9 +350,17 @@
       "question": "lease revenue for sea freight shipments",
       "warehouse": "sea_freight",
       "expect": "CERTIFIED",
-      "expect_members": ["Lease"],
-      "expect_unconstrained": ["asset_class", "geo"],
-      "must_not_bind": ["France", "Germany"],
+      "expect_members": [
+        "Lease"
+      ],
+      "expect_unconstrained": [
+        "asset_class",
+        "geo"
+      ],
+      "must_not_bind": [
+        "France",
+        "Germany"
+      ],
       "why": "Lowercase sea is the ocean, so the ask names no region and geo must stay unconstrained; run_cascade never reaches bind_geo's own no-region abstain, so the checkable claim is that nothing geographic was bound."
     },
     {
@@ -145,29 +369,38 @@
       "question": "total value for commercial property",
       "warehouse": "class_codes",
       "expect": "CERTIFIED",
-      "expect_members": ["Commercial"],
-      "must_not_bind": ["RES", "Residential"],
+      "expect_members": [
+        "Commercial"
+      ],
+      "must_not_bind": [
+        "RES",
+        "Residential"
+      ],
       "why": "A COM/RES coded column must bind COM only; binding the word commercial matches nothing and binding RES too puts residential rows in a commercial total."
     },
     {
       "id": "class_word_encoded_certified",
       "class": "asset class certified",
-      "question": "commercial only",
+      "question": "commercial property revenue",
       "warehouse": "class_words",
       "expect": "CERTIFIED",
-      "expect_members": ["Commercial"],
-      "must_not_bind": ["Condo", "Residential"],
-      "why": "Office and Warehouse are commercial spellings and Condo is not, so a word-encoded column must bind the first two and leave the third out."
+      "expect_members": [
+        "Commercial"
+      ],
+      "must_not_bind": [
+        "Condo",
+        "Residential"
+      ],
+      "why": "Office and Warehouse are commercial spellings and Condo is not, so a word-encoded column must bind the first two and leave the third out. The question carries no polarity cue: since an independent run measured this cascade reading polarity wrongly in 11 of 25 phrasings, a negated ask abstains rather than certifying an inclusive filter, and the polarity_* cases below pin that trade."
     },
     {
-      "id": "class_exclude_landed_certified",
-      "class": "asset class certified",
+      "id": "class_exclude_landed_abstains_on_polarity",
+      "class": "polarity abstain",
       "question": "total value excluding residential",
       "warehouse": "class_codes",
-      "expect": "CERTIFIED",
-      "expect_members": ["Residential"],
-      "must_not_bind": ["COM", "Commercial"],
-      "why": "An exclusion certifies only because RES is landed, so the NOT IN removes rows that exist; the excluded member is what must be bound, not the member left behind."
+      "expect": "ABSTAIN",
+      "why": "An exclusion whose member IS landed used to certify with polarity exclude. It no longer does, because the same rule that derives that polarity also derived exclude(Commercial) for 'excluding tax, commercial property revenue' where the cue belongs to tax. A polarity this stage cannot read is unreliable in both directions, so both abstain.",
+      "expect_stage": "asset_class"
     },
     {
       "id": "class_abstain_no_class_column",
@@ -202,8 +435,13 @@
       "question": "rental revenue by month",
       "warehouse": "tenure_lease_sale",
       "expect": "CERTIFIED",
-      "expect_members": ["Lease"],
-      "must_not_bind": ["SALE", "Buy"],
+      "expect_members": [
+        "Lease"
+      ],
+      "must_not_bind": [
+        "SALE",
+        "Buy"
+      ],
       "why": "One tenure sense landed, so the ask is answerable and must bind LEASE alone; binding SALE as well would sum the wrong half of the book."
     },
     {
@@ -212,9 +450,17 @@
       "question": "home rental totals",
       "warehouse": "tenure_lease_sale",
       "expect": "CERTIFIED",
-      "expect_members": ["Lease"],
-      "expect_unconstrained": ["asset_class", "geo"],
-      "must_not_bind": ["HousingRent", "SALE"],
+      "expect_members": [
+        "Lease"
+      ],
+      "expect_unconstrained": [
+        "asset_class",
+        "geo"
+      ],
+      "must_not_bind": [
+        "HousingRent",
+        "SALE"
+      ],
       "why": "The words propose Lease and HousingRent but only Lease is landed, which is answerable rather than ambiguous; abstaining here would refuse work the data can do."
     },
     {
@@ -238,13 +484,21 @@
     {
       "id": "sense_not_in_ask_binds_nothing",
       "class": "sense precision",
-      "question": "commercial only",
+      "question": "commercial property revenue",
       "warehouse": "class_and_both_senses",
       "expect": "CERTIFIED",
-      "expect_members": ["Commercial"],
-      "expect_unconstrained": ["sense", "geo"],
-      "must_not_bind": ["LEASE", "HOUSING_RENT"],
-      "why": "The ask names no tenure, so sense must stay unconstrained even though the column carries two senses; inventing a tenure filter would narrow a total nobody asked to narrow."
+      "expect_members": [
+        "Commercial"
+      ],
+      "expect_unconstrained": [
+        "sense",
+        "geo"
+      ],
+      "must_not_bind": [
+        "LEASE",
+        "HOUSING_RENT"
+      ],
+      "why": "The ask names no tenure, so sense must stay unconstrained even though the column carries two senses; inventing a tenure filter would narrow a total nobody asked to narrow. The question carries no polarity cue: since an independent run measured this cascade reading polarity wrongly in 11 of 25 phrasings, a negated ask abstains rather than certifying an inclusive filter, and the polarity_* cases below pin that trade."
     },
     {
       "id": "segment_agriculture_plant_and_animal_certified",
@@ -252,8 +506,14 @@
       "question": "top sales in agriculture",
       "warehouse": "agri_mixed",
       "expect": "CERTIFIED",
-      "expect_members": ["Oil Palm", "Poultry"],
-      "must_not_bind": ["Crop Insurance Services", "Logistics"],
+      "expect_members": [
+        "Oil Palm",
+        "Poultry"
+      ],
+      "must_not_bind": [
+        "Crop Insurance Services",
+        "Logistics"
+      ],
       "why": "Agriculture must reach a plant sub-segment and an animal one, and must not reach a financial product whose name contains the word crop."
     },
     {
@@ -262,8 +522,13 @@
       "question": "revenue from food and beverage clients",
       "warehouse": "fnb_mixed",
       "expect": "CERTIFIED",
-      "expect_members": ["Cafe", "Quick Service Restaurant"],
-      "must_not_bind": ["Crop Insurance Services"],
+      "expect_members": [
+        "Cafe",
+        "Quick Service Restaurant"
+      ],
+      "must_not_bind": [
+        "Crop Insurance Services"
+      ],
       "why": "A second broad segment must behave like the first: local spellings such as Kopitiam and QSR bind, and an unrelated value in the same column does not."
     },
     {
@@ -272,8 +537,13 @@
       "question": "revenue in manufacturing by client",
       "warehouse": "manufacturing_mixed",
       "expect": "CERTIFIED",
-      "expect_members": ["Electronics", "Automotive"],
-      "must_not_bind": ["Agricultural Bank Loans"],
+      "expect_members": [
+        "Electronics",
+        "Automotive"
+      ],
+      "must_not_bind": [
+        "Agricultural Bank Loans"
+      ],
       "why": "A third pack over a sector column proves the segment machinery is not agriculture-specific, and that a loan product does not join a manufacturing total. The question carries a cue because manufacturing is a strict term: bare 'manufacturing revenue' is the same shape as 'rank manufacturing suppliers by risk score', which must not engage, and one rule decides both."
     },
     {
@@ -297,21 +567,31 @@
     {
       "id": "cascade_all_stages_certified",
       "class": "multi stage",
-      "question": "rental across SEA, commercial only",
+      "question": "lease revenue across SEA for commercial property",
       "warehouse": "full_bound",
       "expect": "CERTIFIED",
-      "expect_members": ["Lease", "Commercial", "Malaysia", "Singapore"],
-      "must_not_bind": ["SALE", "RES", "JP", "Japan"],
-      "why": "The epic's headline ask, fully landed: all three stages must bind in the column's own spellings at once, and none of the three may drag in the value next to it."
+      "expect_members": [
+        "Lease",
+        "Commercial",
+        "Malaysia",
+        "Singapore"
+      ],
+      "must_not_bind": [
+        "SALE",
+        "RES",
+        "JP",
+        "Japan"
+      ],
+      "why": "The epic's headline ask, fully landed: all three stages must bind in the column's own spellings at once, and none of the three may drag in the value next to it. The question carries no polarity cue: since an independent run measured this cascade reading polarity wrongly in 11 of 25 phrasings, a negated ask abstains rather than certifying an inclusive filter, and the polarity_* cases below pin that trade."
     },
     {
       "id": "cascade_blocked_at_geo",
       "class": "multi stage",
-      "question": "rental across SEA, commercial only",
+      "question": "lease revenue across SEA for commercial property",
       "warehouse": "tenure_and_class_no_country",
       "expect": "ABSTAIN",
       "expect_stage": "geo",
-      "why": "Two stages certifying does not buy the third: with tenure and class landed but no country column, the ask must stop at geo rather than answer two thirds of the question."
+      "why": "Two stages certifying does not buy the third: with tenure and class landed but no country column, the ask must stop at geo rather than answer two thirds of the question. The question carries no polarity cue: since an independent run measured this cascade reading polarity wrongly in 11 of 25 phrasings, a negated ask abstains rather than certifying an inclusive filter, and the polarity_* cases below pin that trade."
     },
     {
       "id": "class_and_segment_merged_certified",
@@ -319,8 +599,14 @@
       "question": "commercial property revenue in agriculture",
       "warehouse": "class_and_agri",
       "expect": "CERTIFIED",
-      "expect_members": ["Commercial", "Oil Palm"],
-      "must_not_bind": ["RES", "Crop Insurance Services"],
+      "expect_members": [
+        "Commercial",
+        "Oil Palm"
+      ],
+      "must_not_bind": [
+        "RES",
+        "Crop Insurance Services"
+      ],
       "why": "An ask naming a class and a segment merges into one asset_class constraint, and both halves must survive the merge with their own landed spellings."
     },
     {
@@ -355,6 +641,42 @@
       "warehouse": "full_bound",
       "expect": "NOT_ENGAGED",
       "why": "Location is not a named region, so no geo constraint exists to certify and the cascade must stay out of the way."
+    },
+    {
+      "id": "polarity_only_abstains",
+      "class": "polarity abstain",
+      "question": "commercial only",
+      "warehouse": "class_words",
+      "expect": "ABSTAIN",
+      "expect_stage": "asset_class",
+      "why": "The epic's own phrasing. 'only' puts a polarity on the filter and this cascade cannot read polarity reliably, so it abstains rather than certifying. The coverage this costs is real and is the price of not shipping an inverted filter."
+    },
+    {
+      "id": "polarity_exclusion_abstains",
+      "class": "polarity abstain",
+      "question": "commercial property revenue, residential is excluded",
+      "warehouse": "class_words",
+      "expect": "ABSTAIN",
+      "expect_stage": "asset_class",
+      "why": "The plainest exclusion in English certified IN ('RES') before the guard, which is a confident answer to the opposite question."
+    },
+    {
+      "id": "polarity_comparison_abstains",
+      "class": "polarity abstain",
+      "question": "residential versus commercial property revenue",
+      "warehouse": "class_words",
+      "expect": "ABSTAIN",
+      "expect_stage": "asset_class",
+      "why": "A comparison is not a filter, and it certified a residential-only filter before the guard."
+    },
+    {
+      "id": "polarity_cross_clause_abstains",
+      "class": "polarity abstain",
+      "question": "excluding tax, commercial property revenue by month",
+      "warehouse": "class_words",
+      "expect": "ABSTAIN",
+      "expect_stage": "asset_class",
+      "why": "The negation belongs to tax, not to the class. A cue window that ignores clause boundaries read it as NOT IN ('COM'), so any polarity cue anywhere now blocks an inclusive certification."
     }
   ]
 }

@@ -50,12 +50,50 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dms_executor.cca import intent
 from dms_executor.cca.asset_class import bind_asset_class, parse_class_intent
 from dms_executor.cca.binder import BinderResult
 from dms_executor.cca.geo import bind_geo, propose_countries, propose_region
 from dms_executor.cca.segment import bind_segment, propose_segment
 from dms_executor.cca.sense import bind_sense, propose_senses
 from dms_executor.constraint_cascade import ConstraintSchemaError, parse_trace
+
+#: Env flag for the ask-path hook. Default OFF, and that is the honest setting
+#: today rather than a placeholder.
+#:
+#: The binders are sound: a pack proposes, landed values decide, matching is
+#: exact on a normalised form, and everything about that half is measured by
+#: scripts/cca_eval.py. What is not sound is deciding *from free text* whether a
+#: question carries a filter at all. An independent run measured the engagement
+#: rule in both directions against this product's own vocabulary:
+#:
+#:   * 46 of 106 ordinary questions engaged the cascade and then abstained,
+#:     refusing an answer the product gives today ("Show all purchases from
+#:     SUP-02", "What is the commercial class of each vehicle?"). The cue words
+#:     that make a term filter-shaped - all, any, no, in, only, class, market,
+#:     segment, country - are among the commonest words in a business question.
+#:   * 35 of 37 asks that plainly name a filter were not recognised, so the
+#:     stage recorded "(no recognised term)" as CERTIFIED and the trace went
+#:     green over an unconstrained filter. "Commercial lease revenue for the
+#:     year" against a warehouse holding COM and RES certifies with the class
+#:     never bound, which is the exact failure asset_class.py exists to prevent.
+#:
+#: A control that refuses 43% of ordinary work and silently passes 95% of the
+#: work it exists for makes the product worse in both directions, so it does not
+#: go on the customer path by default. Trunk-based with a feature flag is this
+#: repo's stated way to land incomplete work, and the flag is the honest state
+#: of this one: everything is built, tested and reviewable, and the engagement
+#: rule needs to be measured rather than asserted before it decides a customer's
+#: answer. Turn it on with DMS_CCA_CASCADE=1 to evaluate it.
+_ENABLE_ENV = "DMS_CCA_CASCADE"
+
+
+def cascade_enabled() -> bool:
+    """Is the ask-path hook on? Read per call so a test can flip it."""
+    import os
+
+    return os.environ.get(_ENABLE_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
+
 
 #: Stages this module settles, in cascade order. ``segment`` and ``asset_class``
 #: both answer "what class of thing", so they share a stage and are merged into
@@ -142,6 +180,98 @@ class CascadeOutcome:
             "Land that encoding, or register a verified query for this ask, and "
             "I can answer it."
         )
+
+
+#: Cue words that put a polarity on a filter term. Their presence anywhere in a
+#: question is enough to stop this cascade certifying an inclusive filter.
+#:
+#: Reading polarity is not solved here and two rounds of trying made it worse.
+#: A window that ignores clause boundaries pulled a cue across a comma
+#: ("Excluding tax, commercial revenue by month" -> NOT IN ('COM')); a one-token
+#: postfix reach missed the plainest exclusion in English ("residential is
+#: excluded" -> IN ('RES'), the exact inverse of the ask); and a geo exclusion
+#: nobody recognised certified the excluded country as the only included one
+#: ("all of SEA other than Singapore" -> country IN ('SG')).
+#:
+#: An inverted filter is the worst outcome this epic has: it is a confident
+#: answer to the opposite question. So a negated ask does not get a
+#: certification from here at all, in either direction. It abstains and says
+#: polarity is why. That
+#: costs coverage on "commercial only, ignore residential", which is the epic's
+#: own phrasing, and coverage is the thing this repo measures separately and can
+#: recover with a registered verified query. Precision is not recoverable.
+_POLARITY_CUES = frozenset(
+    {
+        "apart",
+        "aside",
+        "bar",
+        "barring",
+        "besides",
+        "but",
+        "drop",
+        "dropping",
+        "drops",
+        "except",
+        "excepting",
+        "exclude",
+        "excluded",
+        "excludes",
+        "excluding",
+        "ignore",
+        "ignored",
+        "ignores",
+        "ignoring",
+        "leave",
+        "less",
+        "minus",
+        "neither",
+        "no",
+        "non",
+        "nor",
+        "not",
+        "omit",
+        "omits",
+        "omitted",
+        "omitting",
+        "only",
+        "other",
+        "outside",
+        "removed",
+        "save",
+        "skip",
+        "versus",
+        "vs",
+        "without",
+    }
+)
+
+
+def polarity_is_unsettled(question: str) -> bool:
+    """Does this ask put a polarity on its filters that we cannot read reliably?"""
+    return bool(set(intent.tokens_of(question)) & _POLARITY_CUES)
+
+
+def _polarity_abstain(res: BinderResult) -> BinderResult:
+    """Demote an inclusive certification on a negated ask. Fail closed."""
+    return BinderResult(
+        stage=res.stage,
+        constraint_id=res.constraint_id,
+        candidate=res.candidate,
+        pack=res.pack,
+        status="ABSTAIN",
+        matched=res.matched,
+        absent=res.absent,
+        columns=res.columns,
+        tables=res.tables,
+        unmatched_sample=res.unmatched_sample,
+        reasons=(
+            *res.reasons,
+            "the ask puts a polarity on this filter (an exclusion, an exception "
+            "or a comparison) and this stage cannot read polarity reliably, so it "
+            "will not certify an inclusive filter over it",
+        ),
+        polarity=res.polarity,
+    )
 
 
 def _proposals(question: str) -> dict[str, bool]:
@@ -255,6 +385,13 @@ def run_cascade(
         if res is None:
             trace.append(_unrecognised(stage))
             continue
+        # No carve-out for a result that already reads as an exclusion. The
+        # eval gate caught that exemption immediately: "excluding tax,
+        # commercial property revenue by month" derives exclude(Commercial),
+        # because the cue belongs to tax and the window does not see the comma.
+        # A polarity this stage cannot read is unreliable in both directions.
+        if res.certified and polarity_is_unsettled(question):
+            res = _polarity_abstain(res)
         results.append(res)
         trace.append(res.to_constraint())
         if not res.certified:
@@ -349,6 +486,8 @@ def attach_cascade(env: dict[str, Any], outcome: CascadeOutcome) -> dict[str, An
 
 __all__ = [
     "CascadeOutcome",
+    "cascade_enabled",
+    "polarity_is_unsettled",
     "attach_cascade",
     "cascade_abstain_envelope",
     "engages",

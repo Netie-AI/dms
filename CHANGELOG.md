@@ -31,6 +31,31 @@ Append-only. Never edited, only added to. Newest first.
   word for a location. Seven of the product's own questions are held to no
   engagement by test. Steward-registered verified queries run before the
   cascade and are not gated.
+- **The ask-path hook ships OFF (`DMS_CCA_CASCADE=0`).** A second independent
+  run measured the engagement rule in both directions against this product's
+  own vocabulary: 46 of 106 ordinary questions engaged the cascade and then
+  abstained, refusing answers the product gives today, and 35 of 37 asks that
+  plainly name a filter were not recognised, so the stage recorded
+  "(no recognised term)" as CERTIFIED and the trace went green over an
+  unconstrained filter. Binding a term to landed values is solved; deciding
+  from free text whether a question carries a filter is not, and a control that
+  refuses 43 pct of ordinary work while silently passing 95 pct of the work it
+  exists for makes the product worse in both directions. Everything is built,
+  tested and reviewable behind the flag.
+- **Polarity fails closed, in both directions.** Any polarity cue anywhere in a
+  question stops a stage certifying. There is no carve-out for a result that
+  already reads as an exclusion: the eval gate caught that exemption at once,
+  because "excluding tax, commercial property revenue" derives
+  exclude(Commercial) from a cue belonging to tax. Before this, "residential is
+  excluded" certified `IN ('RES')` and "all of SEA other than Singapore"
+  certified `country IN ('SG')` - confident answers to the opposite question.
+- **Boundary fix.** The cascade read `tables or grantable_tables(...)` where
+  `tables` is the request body's `grounded_tables`, unvalidated. The grant check
+  caught it on the answering path, but a blocked cascade returns 200 before that
+  check and its evidence carries up to twelve distinct values per scanned
+  column. The grant now decides what may be opened; the request may narrow it
+  and may never widen it, and `grounded_tables` on the envelope reports what was
+  actually read.
 - **Claim, narrowed after an independent run (R-0003).** The cascade certifies
   that an encoding exists and how the column spells it. It does **not** check
   that the executed query used that spelling, because DMS passes the question

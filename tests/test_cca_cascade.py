@@ -37,7 +37,15 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
+#: The epic's own phrasing. It carries a polarity cue ("only"), so since the
+#: polarity guard landed it ABSTAINS rather than certifying: this cascade cannot
+#: read polarity reliably and an inverted filter is a confident answer to the
+#: opposite question. That trade is deliberate and is asserted below.
 ASK = "rental across SEA, commercial only"
+
+#: The same ask with no polarity on it, which is what a certified run looks like
+#: now.
+PLAIN_ASK = "lease revenue across SEA for commercial property"
 
 
 @pytest.fixture()
@@ -73,7 +81,7 @@ def unbound_lake(tmp_path: Path) -> Path:
 
 
 def test_certifies_every_stage_when_every_encoding_is_landed(bound_lake: Path) -> None:
-    out = run_cascade(ASK, warehouse=bound_lake, tables=["deals"])
+    out = run_cascade(PLAIN_ASK, warehouse=bound_lake, tables=["deals"])
     assert out.engaged is True
     assert out.blocked_at is None
     assert [c["type"] for c in out.trace] == ["sense", "asset_class", "geo"]
@@ -100,7 +108,7 @@ def test_geo_blocks_when_only_the_country_encoding_is_missing(tmp_path: Path) ->
     con.execute("CREATE TABLE deals (asset_class VARCHAR, transaction_type VARCHAR)")
     con.execute("INSERT INTO deals VALUES ('COM', 'LEASE')")
     con.close()
-    out = run_cascade(ASK, warehouse=db, tables=["deals"])
+    out = run_cascade(PLAIN_ASK, warehouse=db, tables=["deals"])
     assert out.blocked_at == "geo"
     assert [c["status"] for c in out.trace] == ["CERTIFIED", "CERTIFIED", "ABSTAIN"]
 
@@ -258,6 +266,7 @@ def test_unbindable_ask_abstains_on_the_envelope_and_never_reaches_the_engine(
     tenure column. The wrong outcome is a green badge over a real total for a
     filter that never applied.
     """
+    monkeypatch.setenv("DMS_CCA_CASCADE", "1")
     warehouse = _seeded_warehouse(tmp_path, monkeypatch)
     cortex = _MarkerCortex()
     client = _client(warehouse, minter, monkeypatch, cortex)
@@ -289,6 +298,7 @@ def test_certified_cascade_rides_along_on_the_answer(
     tmp_path: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When every encoding is landed, the ask proceeds and the trace is on the answer."""
+    monkeypatch.setenv("DMS_CCA_CASCADE", "1")
     warehouse = _seeded_warehouse(tmp_path, monkeypatch)
     con = duckdb.connect(str(warehouse))
     con.execute("ALTER TABLE transactions ADD COLUMN country VARCHAR")
@@ -299,7 +309,9 @@ def test_certified_cascade_rides_along_on_the_answer(
 
     cortex = _MarkerCortex()
     client = _client(warehouse, minter, monkeypatch, cortex)
-    r = client.post("/v1/chat/ask", json={"question": ASK, "session_id": "ses_cca_2"})
+    r = client.post(
+        "/v1/chat/ask", json={"question": PLAIN_ASK, "session_id": "ses_cca_2"}
+    )
     assert r.status_code == 200, r.text
     env = r.json()
     assert_envelope_valid(env)
@@ -330,6 +342,7 @@ def test_verified_query_is_not_gated_by_the_cascade(
 
     monkeypatch.setattr("dms_api.routes.studio.compliance_gate", allow)
 
+    monkeypatch.setenv("DMS_CCA_CASCADE", "1")
     space = "cccccccc-cccc-cccc-cccc-cccccccccccc"
     question = "lease revenue for commercial property in SEA"
     reg = client.post(
@@ -352,3 +365,110 @@ def test_verified_query_is_not_gated_by_the_cascade(
     assert env["abstained"] is False
     assert env["badge"] == "L0_CERTIFIED"
     assert "total_kg" in (env.get("sql_used") or "")
+
+
+# ---------------------------------------------------------------------------
+# What a second independent run forced (R-0003, round two)
+# ---------------------------------------------------------------------------
+
+
+def test_the_ask_path_hook_is_off_by_default(
+    tmp_path: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engagement rule is not measured well enough to gate a customer's ask.
+
+    46 of 106 ordinary questions engaged and abstained; 35 of 37 asks that
+    plainly name a filter were not recognised and certified anyway. Both
+    directions are wrong, so the hook ships off and the flag is the honest
+    state of it.
+    """
+    from dms_executor.cca.cascade import cascade_enabled
+
+    monkeypatch.delenv("DMS_CCA_CASCADE", raising=False)
+    assert cascade_enabled() is False
+
+    warehouse = _seeded_warehouse(tmp_path, monkeypatch)
+    cortex = _MarkerCortex()
+    client = _client(warehouse, minter, monkeypatch, cortex)
+    r = client.post("/v1/chat/ask", json={"question": ASK, "session_id": "ses_off"})
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    # Off means the ask takes the path it always took, not a silent abstention.
+    assert "constraint_trace" not in env
+    assert cortex.asks, "with the hook off the engine answers as it always did"
+
+    monkeypatch.setenv("DMS_CCA_CASCADE", "1")
+    assert cascade_enabled() is True
+
+
+def test_a_negated_ask_never_gets_an_inclusive_certification(bound_lake: Path) -> None:
+    """An inverted filter is a confident answer to the opposite question.
+
+    "residential is excluded" certified `asset_class IN ('RES')`, and "all of
+    SEA other than Singapore" certified `country IN ('SG')`. Polarity is not
+    read reliably here, so a negated ask does not get an inclusive
+    certification at all.
+    """
+    from dms_executor.cca.cascade import polarity_is_unsettled
+
+    for question in (
+        "rental across SEA, commercial only",
+        "residential is excluded",
+        "all of SEA other than Singapore",
+        "residential versus commercial revenue",
+        "excluding tax, commercial revenue by month",
+        "anything but residential",
+    ):
+        assert polarity_is_unsettled(question) is True, question
+    assert polarity_is_unsettled("commercial property revenue in Malaysia") is False
+
+    out = run_cascade(
+        "lease across SEA, residential is excluded",
+        warehouse=bound_lake,
+        tables=["deals"],
+    )
+    assert out.blocked_at is not None
+    blocked = [c for c in out.trace if c["status"] != "CERTIFIED"]
+    assert blocked, "a negated ask must not certify its way through"
+    assert "polarity" in " ".join(blocked[0]["reasons"])
+
+
+def test_the_cascade_cannot_read_a_table_the_space_does_not_grant(
+    tmp_path: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """grounded_tables is a request, not a grant.
+
+    The hook read `tables or grantable_tables(...)` with the request body's
+    grounded_tables unvalidated. On the answering path demo_acl caught it; on
+    the abstain path the envelope came back 200 carrying up to twelve distinct
+    values per scanned column from a table the same endpoint answers 403 for.
+    """
+    monkeypatch.setenv("DMS_CCA_CASCADE", "1")
+    warehouse = _seeded_warehouse(tmp_path, monkeypatch)
+    con = duckdb.connect(str(warehouse))
+    con.execute("CREATE TABLE hr_confidential (country VARCHAR, salary DOUBLE)")
+    con.execute("INSERT INTO hr_confidential VALUES ('Switzerland', 1.0), ('Monaco', 2.0)")
+    con.close()
+
+    cortex = _MarkerCortex()
+    client = _client(warehouse, minter, monkeypatch, cortex)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": ASK,
+            "session_id": "ses_leak",
+            "grounded_tables": ["hr_confidential"],
+        },
+    )
+    assert r.status_code in (200, 403), r.text
+    env = r.json()
+    # No value from the ungranted table reaches the caller, and the envelope
+    # does not claim to have been grounded on it either.
+    blob = r.text
+    assert "Switzerland" not in blob
+    assert "Monaco" not in blob
+    assert "hr_confidential" not in str(env.get("grounded_tables") or [])
+    for entry in env.get("constraint_trace") or []:
+        assert "hr_confidential" not in " ".join(entry.get("evidence") or [])
+        assert "hr_confidential" not in " ".join(entry.get("reasons") or [])

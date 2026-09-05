@@ -363,8 +363,10 @@ class Executor:
         # path. Gating it would let a term the cascade cannot bind override a
         # person who already decided.
         from dms_executor.cca.cascade import (
+            CascadeOutcome,
             attach_cascade,
             cascade_abstain_envelope,
+            cascade_enabled,
             run_cascade,
         )
 
@@ -379,10 +381,27 @@ class Executor:
         if verified_env is not None:
             return verified_env
 
-        cascade = run_cascade(
-            question,
-            warehouse=ensure_demo_warehouse(self._warehouse),
-            tables=tables or self.grantable_tables(space_id=space_id),
+        # The grant decides what the cascade may open, never the request.
+        #
+        # This read ``tables or grantable_tables(...)`` and ``tables`` is the
+        # request body's grounded_tables, unvalidated at this point. The later
+        # grant check in demo_acl caught it on the answering path, but a blocked
+        # cascade returns 200 before ever reaching that check, and the abstain
+        # envelope carries up to twelve distinct values per scanned column in
+        # its evidence. A caller naming a table this Space cannot read got its
+        # column values back from an endpoint that answers 403 for the same
+        # table one line later. Intersecting here is the fix; the request may
+        # narrow the grant and may never widen it.
+        granted = self.grantable_tables(space_id=space_id)
+        requested = [t for t in (tables or []) if t in set(granted)]
+        cascade = (
+            run_cascade(
+                question,
+                warehouse=ensure_demo_warehouse(self._warehouse),
+                tables=requested or granted,
+            )
+            if cascade_enabled()
+            else CascadeOutcome(engaged=False)
         )
         if cascade.blocked_at is not None:
             return cascade_abstain_envelope(
@@ -390,7 +409,10 @@ class Executor:
                 question=question,
                 space_id=space_id,
                 session_id=session_id,
-                grounded_tables=list(tables or []),
+                # What was actually read, not what was asked for. Echoing the
+                # request's own list put an ungranted table name on the envelope
+                # as though the answer had been grounded on it.
+                grounded_tables=requested,
             )
 
         question = with_grounded_scope(question, tables)

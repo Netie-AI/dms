@@ -33,13 +33,20 @@ import cca_eval  # noqa: E402
 REQUIRED_CLASSES: dict[str, int] = {
     "geo certified": 4,
     "geo abstain": 2,
-    "asset class certified": 3,
+    "asset class certified": 2,
     "asset class abstain": 3,
     "sense certified": 2,
     "sense abstain": 2,
     "segment certified": 2,
     "segment abstain": 2,
     "non-engagement": 3,
+    # Round two of R-0003 measured this cascade reading polarity wrongly in 11
+    # of 25 phrasings, including the plain "residential is excluded" certifying
+    # IN ('RES'). A negated ask now abstains in both directions, and the class
+    # exists so a later edit cannot quietly restore the certification without
+    # facing the count. One case moved here from "asset class certified" for
+    # exactly that reason.
+    "polarity abstain": 5,
 }
 
 
