@@ -2,6 +2,40 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
+
+- **Binder.** One matching rule for every cascade stage
+  (`dms_executor/cca/binder.py`). A pack proposes canonical members and their
+  spellings; a granted column's distinct landed values decide which exist.
+  Matching is exact on a normalised form, never substring, so `MY` binds to
+  Malaysia and `Crop Insurance Services` does not bind to agriculture. Members
+  the data lacks are disclosed; values that match nothing come back as
+  `unmatched_sample` for a steward to add on purpose.
+- **Stages.** Sense lease/buy/housing-rent (CCA-02 #134), asset class
+  commercial/residential (CCA-03 #135), the eleven Southeast Asian states with
+  ISO-2/ISO-3 and alternate spellings (CCA-04 #136), and a 31-member industry
+  segment taxonomy reaching plantations, crops, livestock, aquaculture and
+  forestry (CCA-08).
+- **Orchestrator.** The cascade runs on the ask path before L0 (CCA-05 #137).
+  A stage that does not certify stops it: the ask returns ABSTAIN naming the
+  missing binding and the engine is never asked. A certified prefix rides along
+  on the answer with its coverage sentences in `assumptions`. `grain`,
+  `ontology` and `sql` stay absent from the trace rather than claiming a
+  certification the cascade did not earn.
+- **Surface.** Audit paints CERTIFIED / ABSTAIN / REFUSE per stage with the
+  candidate, binding, evidence and blocking reason (CCA-07 #139). An empty
+  trace renders "no cascade ran", never an all-clear.
+- **Guards against the opposite failure.** A question-side lexicon is now
+  separate from the value-side pack: "capacity of warehouse A" abstained
+  because a warehouse is both a commercial property type and this product's
+  word for a location. Seven of the product's own questions are held to no
+  engagement by test. Steward-registered verified queries run before the
+  cascade and are not gated.
+- **RSF-02 (#140).** Typed research/segment/classify/filter artifact schema in
+  `dms_core`, beside the CCA schemas, carrying `chosen_option` and a route
+  decision trace. DMS half only; the Cortex consumer types are not in this repo
+  and acceptance 3 stays open.
+
 ## 2026-09-04 - Studio register of Space-scoped verified Q→SQL (VQ-02)
 
 - **Store.** Steward-certified question→SQL pairs persist in DuckDB

@@ -25,3 +25,18 @@ EPIC-019 VQ-02: steward-registered Q→SQL assets live in DuckDB
 (required). `live_ask` hits the Space's assets before Cortex pack match.
 Studio register control: `apps/ui/src/pages/StudioPage.tsx`.
 Regression: `tests/test_vq02_verified_register.py`.
+
+EPIC-CCA constraint cascade: `packages/executor/dms_executor/cca/`. One
+matching rule in `binder.py` (pack proposes, landed values decide, exact match
+on a normalised form). Stage binders `sense.py`, `asset_class.py`, `geo.py`,
+`segment.py`; each carries a `QUESTION_ALIASES`-style question lexicon that is
+deliberately narrower than its value pack. `cascade.py` runs them on the ask
+path before L0 from `Executor.live_ask`, after the verified-query hook and
+before bronze-sheet and Cortex. The trace shape is CCA-01
+(`constraint_cascade.py`); the envelope carries it as `constraint_trace`.
+Regression: `tests/test_cca_*.py`. Surface: `apps/ui/src/lib/constraintTrace.ts`
+plus `components/ConstraintTracePanel.tsx` on AuditPage.
+
+RSF-02 typed artifacts: `packages/core/dms_core/rsf.py` (beside CCA, not inside
+it; dms_core may not import dms_executor). Regression:
+`tests/test_rsf_artifact.py`.

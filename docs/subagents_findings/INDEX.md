@@ -4,6 +4,7 @@ PREFLIGHT for this goal: PARTIAL (cca-01 + vq-01 oracle).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-05 | cca-question-lexicon-vs-value-pack | EPIC-CCA, CCA-05, binder, false engage, R-0005, dms#137 | A term pack cannot be both the question lexicon and the value lexicon. "capacity of warehouse A" abstained; "units sold" would have. Split them; verified queries run before the cascade. | `2026-09-05_cca-question-lexicon-vs-value-pack.md` |
 | 2026-09-04 | cca-01-constraint-schema | CCA-01, cascade, constraint_trace, CERTIFIED, ABSTAIN, dms#133 | Typed constraints + envelope stage trace. Later CERTIFIED after ABSTAIN is illegal. Missing schema refuses before L0. | `2026-09-04_cca-01-constraint-schema.md` |
 | 2026-09-04 | vq-01-oracle-ranks | VQ-01, categoty, ELECTRONICS, DISTINCT, fan-out, dms#39 | Envelope pins conservation ranks; 133M JOIN and Wide_Fill fail. Cortex DISTINCT sku SQL is on main. | `2026-09-04_vq-01-oracle-ranks.md` |
 | 2026-09-04 | vq-02-studio-register | VQ-02, Studio, verified-queries, L0, space isolation | Space-scoped DuckDB `_verified_queries`; Studio POST gated; ask in-space L0, foreign miss. | `2026-09-04_vq-02-studio-register.md` |
