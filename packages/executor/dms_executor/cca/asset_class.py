@@ -122,6 +122,62 @@ NEGATION_CUES = frozenset(
 CUE_REACH = 3
 
 
+#: What counts as a class term *in a question*, which is not the same list as
+#: what counts as one *in a column*.
+#:
+#: The pack above must know that a column spells Commercial as ``COM`` and that
+#: a warehouse is a commercial property, because those are the encodings it
+#: certifies against. Reading a question with that same list is how "capacity of
+#: warehouse A" - a location in a logistics product - became an asset-class
+#: filter and abstained on an ask that had answered fine for months. A control
+#: that refuses correct work is a failure, not a win (R-0005).
+#:
+#: So the bare common nouns (warehouse, office, retail, shop, industrial,
+#: landed, mixed) are here only in their property-shaped forms. The words that
+#: unambiguously name a class in a question - commercial, residential, housing,
+#: condo, hdb - stay bare, because those are the epic's driving phrasings.
+QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "Commercial": (
+        "commercial",
+        "commercial property",
+        "commercial space",
+        "commercial unit",
+        "office space",
+        "office property",
+        "office unit",
+        "retail space",
+        "retail property",
+        "retail lot",
+        "shoplot",
+        "shop lot",
+        "warehouse property",
+        "warehouse space",
+        "industrial property",
+        "industrial space",
+    ),
+    "Residential": (
+        "residential",
+        "residential property",
+        "housing",
+        "apartment",
+        "condo",
+        "condominium",
+        "hdb",
+        "landed property",
+        "terrace house",
+    ),
+    "MixedUse": ("mixed use", "mixed development", "mixed use property"),
+}
+
+_QUESTION_PACK = TermPack(
+    name=f"{ASSET_CLASS_PACK.name}.question",
+    kind=ASSET_CLASS_PACK.kind,
+    column_names=ASSET_CLASS_PACK.column_names,
+    members=QUESTION_ALIASES,
+    note="Question-side lexicon only. Value matching uses ASSET_CLASS_PACK.",
+)
+
+
 def _alias_hits(tokens: list[str]) -> Iterator[tuple[int, str]]:
     """Yield (token index, canonical member) for every class term in the question.
 
@@ -130,7 +186,7 @@ def _alias_hits(tokens: list[str]) -> Iterator[tuple[int, str]]:
     substrings: "commercial" must not be found inside "noncommercial-adjacent"
     prose, and a substring rule cannot tell those apart.
     """
-    index = ASSET_CLASS_PACK.alias_index()
+    index = _QUESTION_PACK.alias_index()
     longest = max((len(key.split()) for key in index), default=1)
     i = 0
     while i < len(tokens):

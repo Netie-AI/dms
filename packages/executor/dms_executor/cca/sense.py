@@ -90,6 +90,55 @@ def _mentions(tokens: Sequence[str], alias: str) -> bool:
     return any(_phrase_at(tokens, phrase, i) for i in range(len(tokens) - len(phrase) + 1))
 
 
+#: What counts as a tenure word *in a question*, which is not the same list as
+#: what counts as one *in a column*.
+#:
+#: The pack has to know that a deal_type column spells Buy as ``sale`` or
+#: ``sold``, because that is the encoding it certifies against. Reading a
+#: question with that same list makes "how many units sold last month" a tenure
+#: ask in a logistics product, which then abstains because txn_type carries
+#: inbound and outbound rather than lease and sale. A control that refuses
+#: correct work is a failure, not a win (R-0005).
+#:
+#: So the sales-volume words (sale, sold) are here only in tenure-shaped forms,
+#: and "let" only as "to let". The words that unambiguously name a tenure in a
+#: question stay bare.
+QUESTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "Lease": (
+        "lease",
+        "leases",
+        "leasing",
+        "leased",
+        "rental",
+        "rentals",
+        "rent",
+        "renting",
+        "tenancy",
+        "tenant",
+        "to let",
+        "for lease",
+    ),
+    "Buy": (
+        "buy",
+        "buying",
+        "purchase",
+        "purchases",
+        "freehold",
+        "acquisition",
+        "for sale",
+        "sale price",
+        "sold price",
+    ),
+    "HousingRent": (
+        "housing rent",
+        "residential rent",
+        "home rental",
+        "hdb rent",
+        "tenancy residential",
+    ),
+}
+
+
 def propose_senses(question: str) -> tuple[str, ...]:
     """Which canonical senses the question's own words point at.
 
@@ -104,10 +153,11 @@ def propose_senses(question: str) -> tuple[str, ...]:
         return ()
     out: list[str] = []
     for pack in SENSE_PACKS:
-        for canonical, aliases in pack.members.items():
+        for canonical in pack.members:
             if canonical in out:
                 continue
-            if any(_mentions(tokens, alias) for alias in (canonical, *aliases)):
+            aliases = QUESTION_ALIASES.get(canonical, ())
+            if any(_mentions(tokens, alias) for alias in aliases):
                 out.append(canonical)
     return tuple(out)
 
