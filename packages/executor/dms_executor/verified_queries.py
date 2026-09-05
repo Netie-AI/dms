@@ -11,6 +11,7 @@ import json
 import re
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -210,20 +211,15 @@ def _hit(question: str, row: tuple[Any, ...]) -> bool:
     return qn in syn if isinstance(syn, list) else False
 
 
-def maybe_verified_ask(
+def lookup_verified_query(
     question: str,
     *,
     space_id: str | None = None,
-    session_id: str | None = None,
     warehouse: Path | None = None,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
-) -> dict[str, Any] | None:
-    """L0 envelope when this Space has a matching registered asset; else None.
-
-    Grounded-file asks skip this path — the steward asset is Space-scoped, not a
-    file pin. Foreign Spaces miss because the scan is ``WHERE space_id = ?``.
-    """
+) -> dict[str, str] | None:
+    """Return ``{asset_id, sql}`` for a Space hit. Never executes SQL."""
     if tables:
         return None
     sid = scope_key(space_id)
@@ -252,29 +248,123 @@ def maybe_verified_ask(
         reject_hostile_chat_sql(sql_text)
     except SecurityEvent:
         return None
-    from dms_executor.demo_warehouse import execute_sql
+    return {"asset_id": str(match[0]), "sql": sql_text}
 
-    raw = execute_sql(sql_text, path=db)
-    out_rows = _json_rows(raw)
+
+def rows_from_submit_result(result: Any) -> list[dict[str, Any]]:
+    """Pull row dicts from a Cortex submit QueryResult. Empty if unreadable."""
+    out = getattr(result, "output", None)
+    if out is None and isinstance(result, dict):
+        out = result.get("output")
+    if isinstance(out, list):
+        return _json_rows([r for r in out if isinstance(r, dict)])
+    if isinstance(out, dict):
+        raw = out.get("rows")
+        if raw is None:
+            raw = out.get("data")
+        if isinstance(raw, list):
+            return _json_rows([r for r in raw if isinstance(r, dict)])
+    extra = getattr(result, "additional_properties", None)
+    if isinstance(extra, dict):
+        raw = extra.get("rows")
+        if isinstance(raw, list):
+            return _json_rows([r for r in raw if isinstance(r, dict)])
+    return []
+
+
+def envelope_from_verified_submit(
+    *,
+    asset_id: str,
+    sql_text: str,
+    result: Any,
+    question: str,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    audit_id: str | None = None,
+) -> dict[str, Any]:
+    """L0 envelope from Cortex-executed steward SQL. Caller must have submitted."""
+    out_rows = rows_from_submit_result(result)
+    run_id = getattr(result, "run_id", None) or ""
+    receipt = (audit_id or "").strip() or (str(run_id).strip() if run_id else "")
+    if not receipt:
+        receipt = f"cortex_submit_{asset_id}"
     text = f"Found {len(out_rows)} row(s)."
     if out_rows:
         text += "\n" + "\n".join(
             "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
         )
     env = build_answer_envelope(
-        answer_id=f"ans_{match[0]}",
+        answer_id=f"ans_{asset_id}",
         text=text,
         badge="L0_CERTIFIED",
         abstained=False,
         rows=out_rows,
         sql_used=sql_text,
-        assumptions=["verified question registered in Studio for this Space"],
+        assumptions=[
+            "verified question registered in Studio for this Space",
+            "executed via Cortex submit",
+        ],
         as_of=_as_of(),
         space_id=space_id,
         session_id=session_id,
         ask_mode="live",
         route="verified_query",
         question=question,
+        audit_id=receipt,
     )
     assert_envelope_valid(env)
     return env
+
+
+def maybe_verified_ask(
+    question: str,
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    warehouse: Path | None = None,
+    grantable: set[str] | None = None,
+    tables: list[str] | None = None,
+    submit: Callable[[str], Any] | None = None,
+    ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+) -> dict[str, Any] | None:
+    """L0 envelope when this Space has a matching asset executed via Cortex.
+
+    ``submit`` must be Cortex HTTP submit of the registered SQL. ``ledger_append``
+    must be Cortex HTTP ledger. Missing either does not fall back to local DuckDB
+    (F83). Grounded-file asks skip this path. Foreign Spaces miss on ``space_id``.
+    """
+    hit = lookup_verified_query(
+        question,
+        space_id=space_id,
+        warehouse=warehouse,
+        grantable=grantable,
+        tables=tables,
+    )
+    if hit is None:
+        return None
+    if submit is None or ledger_append is None:
+        return None
+    result = submit(hit["sql"])
+    ok = getattr(result, "ok", None)
+    if ok is False:
+        return None
+    if getattr(result, "output", None) is None:
+        # Bind-shaped submit (no SQL output) must not stamp L0.
+        return None
+    run_id = str(getattr(result, "run_id", None) or "")
+    led = ledger_append({"sql": hit["sql"], "run_id": run_id})
+    entry_id = getattr(led, "entry_id", None) if led is not None else None
+    if not (isinstance(entry_id, str) and entry_id.strip()):
+        return None
+    led_hash = getattr(led, "hash", None)
+    if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
+        return None
+    return envelope_from_verified_submit(
+        asset_id=hit["asset_id"],
+        sql_text=hit["sql"],
+        result=result,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+        audit_id=entry_id.strip(),
+    )

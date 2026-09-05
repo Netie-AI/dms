@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import duckdb
 import pytest
 from cortex_client.gate import ComplianceDecision
-from cortex_client.models import AskRequest, AskResponse
+from cortex_client.models import AskRequest, AskResponse, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_api.settings import get_settings
@@ -178,9 +178,25 @@ class _MarkerCortex:
     """Records whether the engine was ever asked. A blocked ask must not reach it."""
 
     asks: list[AskRequest] = field(default_factory=list)
+    submits: list[Any] = field(default_factory=list)
+    appends: list[Any] = field(default_factory=list)
 
     def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else getattr(plan, "kind", None)
+        if kind == "sql":
+            return QueryResult(
+                ok=True,
+                status="ok",
+                run_id="run_cca_sql",
+                output={"rows": [{"total_kg": 42.0}]},
+            )
         return QueryResult(ok=True, status="bound", run_id="run_cca")
+
+    def ledger_append(self, req: Any) -> LedgerAppendResponse:
+        self.appends.append(req)
+        return LedgerAppendResponse(entry_id="led_cca_vq", hash="hash_cca_vq_not_entry")
 
     def ask(self, req: AskRequest) -> AskResponse:
         self.asks.append(req)
@@ -365,6 +381,8 @@ def test_verified_query_is_not_gated_by_the_cascade(
     assert env["abstained"] is False
     assert env["badge"] == "L0_CERTIFIED"
     assert "total_kg" in (env.get("sql_used") or "")
+    assert cortex.appends, "VQ L0 must append the Cortex ledger (F83)"
+    assert cortex.asks == []
 
 
 # ---------------------------------------------------------------------------
