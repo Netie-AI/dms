@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from cortex_client import CortexClient
-from cortex_client.models import AskRequest, AskResponse
+from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest
 from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ask import AskServiceError, GroundingRefused
 from dms_core.ports import ServingEnginePort
@@ -326,6 +326,44 @@ class Executor:
         self._bound_sessions.add(acl.session_id)
         return result
 
+    def _submit_verified_sql(
+        self,
+        sql: str,
+        *,
+        space_id: str | None,
+        session_id: str | None,
+        tables: list[str] | None,
+    ) -> Any:
+        """Bind once, then Cortex submit of steward SQL. No local DuckDB execute."""
+        acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
+        if acl.session_id not in self._bound_sessions:
+            self.bind_session(acl)
+        return self.submit_sql(sql, acl)
+
+    def _ledger_verified_query(
+        self,
+        *,
+        asset_sql: str,
+        run_id: str,
+        space_id: str | None,
+        session_id: str | None,
+    ) -> Any:
+        """Append a verified-ask receipt to the Cortex ledger. No local chain."""
+        if self._cortex is None:
+            raise RuntimeError("CortexClient required for verified ledger")
+        return self._cortex.ledger_append(
+            LedgerAppendRequest(
+                event_type="ask.verified_query",
+                payload={
+                    "sql": asset_sql,
+                    "run_id": run_id,
+                    "space_id": space_id,
+                    "session_id": session_id,
+                },
+                actor=DEMO_USER_ID,
+            )
+        )
+
     def live_ask(
         self,
         question: str,
@@ -361,7 +399,8 @@ class Executor:
         # registered that exact question against that exact SQL, which is the
         # human certification the cascade is a substitute for on the inferred
         # path. Gating it would let a term the cascade cannot bind override a
-        # person who already decided.
+        # person who already decided. F83: a hit still goes through Cortex
+        # submit + ledger inside this method — it does not mint L0 locally.
         from dms_executor.cca.cascade import (
             CascadeOutcome,
             attach_cascade,
@@ -377,6 +416,15 @@ class Executor:
             warehouse=self._warehouse,
             grantable=set(self.grantable_tables(space_id=space_id)),
             tables=tables,
+            submit=lambda sql: self._submit_verified_sql(
+                sql, space_id=space_id, session_id=session_id, tables=tables
+            ),
+            ledger_append=lambda payload: self._ledger_verified_query(
+                asset_sql=str(payload.get("sql") or ""),
+                run_id=str(payload.get("run_id") or ""),
+                space_id=space_id,
+                session_id=session_id,
+            ),
         )
         if verified_env is not None:
             return verified_env

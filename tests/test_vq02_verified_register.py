@@ -13,13 +13,19 @@ from unittest.mock import MagicMock
 
 import pytest
 from cortex_client.gate import ComplianceDecision
-from cortex_client.models import AskRequest, AskResponse
+from cortex_client.models import (
+    AskRequest,
+    AskResponse,
+    LedgerAppendRequest,
+    LedgerAppendResponse,
+)
 from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_api.settings import get_settings
 from dms_executor import Executor
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
+from dms_executor.verified_queries import maybe_verified_ask, register_verified_query
 from fastapi.testclient import TestClient
 
 FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
@@ -31,12 +37,33 @@ _CORTEX_SQL = "SELECT 1 AS cortex_marker"
 
 @dataclass
 class _MarkerCortex:
-    """If this ask is used, the Space missed the registered asset."""
+    """Hit path must submit SQL and append the ledger; miss path may ask."""
 
     asks: list[AskRequest] = field(default_factory=list)
+    submits: list[Any] = field(default_factory=list)
+    appends: list[Any] = field(default_factory=list)
+    sql_output: dict[str, Any] | None = field(
+        default_factory=lambda: {"rows": [{"name": "Warehouse A", "capacity_kg": 100000.0}]}
+    )
+    append_entry_id: str = "led_vq02"
+    append_hash: str = "hash_vq02_not_entry"
 
     def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else getattr(plan, "kind", None)
+        if kind == "sql":
+            return QueryResult(
+                ok=True,
+                status="ok",
+                run_id="run_vq02_sql",
+                output=self.sql_output,
+            )
         return QueryResult(ok=True, status="bound", run_id="run_vq02")
+
+    def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+        self.appends.append(req)
+        return LedgerAppendResponse(entry_id=self.append_entry_id, hash=self.append_hash)
 
     def ask(self, req: AskRequest) -> AskResponse:
         self.asks.append(req)
@@ -241,7 +268,20 @@ def test_ask_in_space_is_l0_foreign_space_misses(
     assert "Warehouse A" in env["text"]
     assert "100000" in env["text"] or "100,000" in env["text"] or "100000.0" in env["text"]
     assert env["values"]
+    sql_submits = [
+        s
+        for s in cortex.submits
+        if isinstance(getattr(s, "plan", None), dict) and s.plan.get("kind") == "sql"
+    ]
+    assert sql_submits, "VQ hit must Cortex-submit the registered SQL (F83)"
+    body = sql_submits[0].body
+    submitted_sql = body.get("sql") if isinstance(body, dict) else getattr(body, "sql", None)
+    assert submitted_sql == SQL
     assert cortex.asks == []
+    assert env["audit_id"] == "led_vq02"
+    assert cortex.appends
+    assert cortex.appends[0].event_type == "ask.verified_query"
+    assert any("Cortex submit" in a for a in (env.get("assumptions") or []))
 
     miss = client.post(
         "/v1/chat/ask",
@@ -262,6 +302,80 @@ def test_ask_in_space_is_l0_foreign_space_misses(
     )
     assert len(cortex.asks) == 1
 
+    get_settings.cache_clear()
+    monkeypatch.delenv("DMS_ASK_MODE", raising=False)
+    monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
+    get_settings.cache_clear()
+
+
+def test_match_without_cortex_submit_does_not_stamp_l0(warehouse: Path) -> None:
+    """Planted: restoring local execute_sql would go red if this stays None."""
+    register_verified_query(space_id=FINANCE, question=QUESTION, sql=SQL, path=warehouse)
+    env = maybe_verified_ask(
+        QUESTION, space_id=FINANCE, warehouse=warehouse, session_id="ses_vq02_nsubmit"
+    )
+    assert env is None
+
+
+def test_bind_shaped_submit_does_not_stamp_local_l0(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session-bind QueryResult has no SQL output — that must not mint VQ L0."""
+    _gate_allows(monkeypatch)
+    cortex = _MarkerCortex(sql_output=None)
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    assert (
+        client.post(
+            "/v1/studio/verified-queries",
+            json={"space_id": FINANCE, "question": QUESTION, "sql": SQL},
+        ).status_code
+        == 200
+    )
+    hit = client.post(
+        "/v1/chat/ask",
+        json={"question": QUESTION, "space_id": FINANCE, "session_id": "ses_vq02_bind"},
+    )
+    assert hit.status_code == 200, hit.text
+    env = hit.json()
+    assert_envelope_valid(env)
+    assert env.get("sql_used") != SQL
+    assert not any(
+        str(r.get("name")) == "Warehouse A" and float(r.get("capacity_kg") or 0) == 100000.0
+        for r in (env.get("rows") or [])
+        if isinstance(r, dict)
+    )
+    assert cortex.asks, "failed VQ certify must fall through to Cortex ask"
+    assert not cortex.appends
+    get_settings.cache_clear()
+    monkeypatch.delenv("DMS_ASK_MODE", raising=False)
+    monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
+    get_settings.cache_clear()
+
+
+def test_ledger_without_hash_does_not_stamp_l0(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F52(b): entry_id reused as hash is not a ledger signature."""
+    _gate_allows(monkeypatch)
+    cortex = _MarkerCortex(append_entry_id="led_vq02", append_hash="led_vq02")
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    assert (
+        client.post(
+            "/v1/studio/verified-queries",
+            json={"space_id": FINANCE, "question": QUESTION, "sql": SQL},
+        ).status_code
+        == 200
+    )
+    hit = client.post(
+        "/v1/chat/ask",
+        json={"question": QUESTION, "space_id": FINANCE, "session_id": "ses_vq02_led"},
+    )
+    assert hit.status_code == 200, hit.text
+    env = hit.json()
+    assert_envelope_valid(env)
+    assert env.get("sql_used") != SQL
+    assert env.get("audit_id") != "led_vq02"
+    assert cortex.asks
     get_settings.cache_clear()
     monkeypatch.delenv("DMS_ASK_MODE", raising=False)
     monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)

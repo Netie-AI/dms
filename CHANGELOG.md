@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-05 - Verified-query L0 requires Cortex submit + ledger (F83 / EPIC-019)
+
+- **Hole.** Studio-registered hits executed SQL in local DuckDB and stamped
+  `L0_CERTIFIED` with `cortex.asks == []`. Engine certification was forged.
+- **Fix.** A Space hit still skips the CCA cascade (steward already decided),
+  then `live_ask` submits the stored SQL through existing Cortex `submit_sql`
+  and appends `ask.verified_query` to the Cortex ledger. L0 is minted only
+  when submit returns SQL output and the ledger returns a real hash distinct
+  from `entry_id`. Missing submit/ledger does not fall back to local execute.
+- **Tests.** FakeCortex: in-space L0 asserts sql submit + ledger; bind-only
+  submit and hash==entry_id fall through to ask. No product regex for F32.
+  dms#38 residual. Live Cortex still required to close the epic.
+
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 
 - **Binder.** One matching rule for every cascade stage
