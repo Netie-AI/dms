@@ -234,7 +234,7 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 | #6 EPIC-003 | dms | OPEN | Space serving path; **memory store is intentional** |
 | #25 SPACE-UI-ALL | dms | CLOSED (#90) | Runs/Amend scoped; Library/Studio clear on switch |
 | #72 A-0007 | dms | CLOSED | Company default ACL is a real scope; missing/ungranted → 403 |
-| #19–21 MCP | dms | OPEN blocked | Parked |
+| #19–21 MCP | dms | MCP-01 flag-off | `DMS_MCP=0`; tools wrap existing HTTP |
 
 ---
 

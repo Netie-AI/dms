@@ -49,7 +49,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | EPIC-019 VQ-02 (#40): Studio register Space-scoped verified Q→SQL. Off main `cursor/vq-02-studio-register-1284`. Do not merge park/epic-020. |
+| **This tick** | MCP-01 (#20) behind `DMS_MCP=0` on `cursor/xlsx-mcp-01`. EPIC-016 #32 golden gate green; Pointer paste still P-DMS-36. |
 | **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
 | Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)** - DR-0005 pair. #112 CLOSED. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). EPIC-003 (#6) + EPIC-017 (#33) QUEUED. #59 CLOSED. EPIC-018 QUEUED |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
