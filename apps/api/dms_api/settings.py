@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # Off by default — silent success-with-demo-numbers is a lying affordance.
     # Set DMS_DEMO_FALLBACK=1 only for local bring-up; UI must show a permanent banner.
     dms_demo_fallback: bool = False
+    # EPIC-014 MCP-01. Swap: IDE MCP client on /v1/mcp/*. Off = no extra surface.
+    dms_mcp: bool = False
     # T5 lite — default tenant/user for seed until OIDC
     dms_tenant_id: str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     dms_actor_user_id: str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"

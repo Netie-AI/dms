@@ -14,6 +14,11 @@ cross-check + FRTR golden), `packages/executor/dms_executor/xlsx_orch.py`
 `POST /v1/studio/xlsx-orch/crosscheck|extract|golden`.
 Regression: `tests/test_xlsx_orch.py`. Pointer owns Copilot paste (P-DMS-36).
 
+EPIC-014 MCP-01: `apps/api/dms_api/routes/mcp.py` wraps existing
+`POST /v1/chat/ask`, `GET /v1/library/warehouse/{table}/preview`,
+`GET /v1/ontology/metrics`. Flag `DMS_MCP=0` (off). Regression:
+`tests/test_mcp_tools.py`. Not a new serving engine.
+
 EPIC-024 LINEAGE-01: promote receipts live in DuckDB `main._promote_receipts`
 (same lake file as the target; `_` prefix hides them from Library listings).
 Written at the end of `_run_silver` / `_run_gold` on the promote connection.

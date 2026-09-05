@@ -2,18 +2,30 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-05 - MCP-01 tools wrap existing HTTP (EPIC-014, flag off)
+
+- **MCP-01 (#20).** GET /v1/mcp/tools and POST /v1/mcp/call expose sk,
+  preview, and list_metrics by calling the same handlers as
+  POST /v1/chat/ask, warehouse preview, and GET /v1/ontology/metrics.
+- **Flag.** DMS_MCP=0 by default: the router is not mounted. Swap: IDE MCP
+  client. No new serving engine, no CortexOS import, no cortex-contract bump
+  (McpCallIn name+arguments already exists).
+- **Gate.** POST /v1/mcp/call calls compliance_gate; preview still refuses
+  ungranted tables. Tests assert badge/values/rows match the HTTP path.
+
 ## 2026-09-05 - Verified-query L0 requires Cortex submit + ledger (F83 / EPIC-019)
 
 - **Hole.** Studio-registered hits executed SQL in local DuckDB and stamped
-  `L0_CERTIFIED` with `cortex.asks == []`. Engine certification was forged.
+  L0_CERTIFIED with cortex.asks == []. Engine certification was forged.
 - **Fix.** A Space hit still skips the CCA cascade (steward already decided),
-  then `live_ask` submits the stored SQL through existing Cortex `submit_sql`
-  and appends `ask.verified_query` to the Cortex ledger. L0 is minted only
+  then live_ask submits the stored SQL through existing Cortex submit_sql
+  and appends sk.verified_query to the Cortex ledger. L0 is minted only
   when submit returns SQL output and the ledger returns a real hash distinct
-  from `entry_id`. Missing submit/ledger does not fall back to local execute.
+  from entry_id. Missing submit/ledger does not fall back to local execute.
 - **Tests.** FakeCortex: in-space L0 asserts sql submit + ledger; bind-only
   submit and hash==entry_id fall through to ask. No product regex for F32.
   dms#38 residual. Live Cortex still required to close the epic.
+
 
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 
