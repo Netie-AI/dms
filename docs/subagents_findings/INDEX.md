@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (vq-02-cortex-submit + F83).
+PREFLIGHT for this goal: HIT (epic-025-chain-readback).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-05 | epic-025-chain-readback | EPIC-025, ledger.verify, gold promote, is_signed, dms#87 | Verify at the gold GATE, not only at sign. Unreachable Cortex refuses. Contract 1.2.0 has no get-entry. | `2026-09-05_epic-025-chain-readback.md` |
 | 2026-09-05 | epic-019-f83-no-local-l0 | F83, EPIC-019, VQ-02, maybe_verified_ask, L0_CERTIFIED, FakeCortex, ledger, dms#38 | Space-local store may stay; L0 requires Cortex submit of stored SQL plus ledger append. No local DuckDB fallback. | `2026-09-05_epic-019-f83-no-local-l0.md` |
 | 2026-09-05 | epic-completeness-003-008-017-018 | EPIC-003, EPIC-008, EPIC-017, EPIC-018, preview leak, E9, F32, F42, F46, refused-badge, dms#6 | origin/main 46dec60f: #6 leak gone (alerts 403 company-default); #33 E9/F32/refused-badge hold; #35 CI oracle can fail + bakeoff not badge/latency; #8 live verify hung on :8090 | `2026-09-05_epic-completeness-003-008-017-018.md` |
 | 2026-09-05 | cca-engagement-rule-not-shippable | EPIC-CCA, CCA-05, intent, engagement, feature flag, R-0003 round two, dms#148 | Binding a term to landed values is solved; deciding from free text whether a question carries a filter is not. 46/106 false engage, 35/37 false miss. Ask-path hook ships OFF behind DMS_CCA_CASCADE. Polarity fails closed. Boundary leak via grounded_tables fixed. | `2026-09-05_cca-engagement-rule-not-shippable.md` |

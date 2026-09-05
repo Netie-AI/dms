@@ -2,9 +2,24 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-05 - EPIC-025: gold promote proves the ledger entry, not the claim
+
+- **Gate.** `run_promote` no longer trusts `GoldMetricDef.is_signed`. A gold
+  pipeline calls Cortex `POST /v1/contract/ledger/verify` (the contract 1.2.0
+  read-back; there is no get-entry on this pin) before it materialises. Missing
+  verify, a broken chain, or an unreachable Cortex refuses the promote and
+  treats the metric as unsigned. Construction-time verify in `sign_gold_metric`
+  stays; it is not this gate.
+- **Invariant.** `tests/invariants/test_actor_trust_boundary.py` now scans every
+  route request body, every ledger-append `actor=`, and every `GoldMetricDef`
+  built in `apps/api`. No request field or header may name the ledger actor or
+  an attestation. Guard-the-guard tests fail if those scans go empty (R-0007).
+- Re-uses existing `verify_ledger` / `/v1/audit/ledger/verify`. No local hash
+  chain, no C2 allowlist change, no CortexOS import.
+
 ## 2026-09-05 - MCP-01 tools wrap existing HTTP (EPIC-014, flag off)
 
-- **MCP-01 (#20).** GET /v1/mcp/tools and POST /v1/mcp/call expose sk,
+- **MCP-01 (#20).** GET /v1/mcp/tools and POST /v1/mcp/call expose ask,
   preview, and list_metrics by calling the same handlers as
   POST /v1/chat/ask, warehouse preview, and GET /v1/ontology/metrics.
 - **Flag.** DMS_MCP=0 by default: the router is not mounted. Swap: IDE MCP
@@ -19,13 +34,12 @@ Append-only. Never edited, only added to. Newest first.
   L0_CERTIFIED with cortex.asks == []. Engine certification was forged.
 - **Fix.** A Space hit still skips the CCA cascade (steward already decided),
   then live_ask submits the stored SQL through existing Cortex submit_sql
-  and appends sk.verified_query to the Cortex ledger. L0 is minted only
+  and appends ask.verified_query to the Cortex ledger. L0 is minted only
   when submit returns SQL output and the ledger returns a real hash distinct
   from entry_id. Missing submit/ledger does not fall back to local execute.
 - **Tests.** FakeCortex: in-space L0 asserts sql submit + ledger; bind-only
   submit and hash==entry_id fall through to ask. No product regex for F32.
   dms#38 residual. Live Cortex still required to close the epic.
-
 
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 

@@ -361,8 +361,14 @@ def run_promote(
     *,
     path: Path | None = None,
     gold_metric: GoldMetricDef | None = None,
+    cortex_verify: Any = None,
 ) -> PromoteReceipt:
-    """Execute one pipeline run. Idempotent on dedup_key for silver targets."""
+    """Execute one pipeline run. Idempotent on dedup_key for silver targets.
+
+    Gold refuses unless ``cortex_verify`` demonstrates the metric's ledger entry
+    on the Cortex chain. Construction-time verify in ``sign_gold_metric`` is not
+    this gate: a metric that merely *looks* signed must not materialise.
+    """
     run_id = str(uuid.uuid4())
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db))
@@ -372,7 +378,13 @@ def run_promote(
         con.execute("BEGIN")
         started = True
         if pipe.is_gold:
-            receipt = _run_gold(con, pipe, run_id=run_id, gold_metric=gold_metric)
+            receipt = _run_gold(
+                con,
+                pipe,
+                run_id=run_id,
+                gold_metric=gold_metric,
+                cortex_verify=cortex_verify,
+            )
         else:
             receipt = _run_silver(con, pipe, run_id=run_id)
         con.execute("COMMIT")
@@ -392,6 +404,7 @@ def _run_gold(
     *,
     run_id: str,
     gold_metric: GoldMetricDef | None,
+    cortex_verify: Any = None,
 ) -> PromoteReceipt:
     if gold_metric is None or not gold_metric.is_signed:
         raise PipelineLoadError(
@@ -400,6 +413,7 @@ def _run_gold(
         )
     if not gold_metric.ledger_entry_id:
         raise PipelineLoadError("gold metric must have ledger_entry_id from Cortex append")
+    _require_chain_readback(gold_metric, cortex_verify)
     # Called for its validation, not its return value: it raises PipelineLoadError if
     # any declared source table is missing. The gold path then materialises from the
     # signed metric SQL rather than the source relation, so the returned SQL is unused -
@@ -677,6 +691,47 @@ def _verify_ok(result: Any) -> bool:
     if ok is None and isinstance(result, dict):
         ok = result.get("ok")
     return bool(ok)
+
+
+def _require_chain_readback(gold_metric: GoldMetricDef, cortex_verify: Any) -> None:
+    """EPIC-025: demonstrate the signed metric on the Cortex chain before gold runs.
+
+    ``is_signed`` is a claim about fields we hold. The demonstration is Cortex
+    ``POST /v1/contract/ledger/verify``: it recomputes payload hashes along the
+    chain, so a silent payload edit or a broken link fails closed. Contract 1.2.0
+    has no get-entry; this is the read-back that pin offers. Given
+    ``ledger_entry_id``, we still require it (a metric with no id cannot be
+    pointed at) and we refuse when verify is missing, raises, or returns not-ok.
+    Unreachable Cortex must not proceed.
+    """
+    entry_id = gold_metric.ledger_entry_id
+    if not entry_id:
+        raise PipelineLoadError(
+            "gold promote refused: ledger_entry_id is required to demonstrate "
+            "the metric is on the Cortex chain"
+        )
+    sig = gold_metric.signature
+    if sig and sig == str(entry_id):
+        raise PipelineLoadError(
+            "gold promote refused: signature equals ledger_entry_id; that is not a hash"
+        )
+    if cortex_verify is None:
+        raise PipelineLoadError(
+            "gold promote refused: Cortex ledger verify is required; "
+            "unreachable Cortex cannot demonstrate the metric is on the chain"
+        )
+    try:
+        result = cortex_verify()
+    except Exception as exc:
+        raise PipelineLoadError(
+            "gold promote refused: Cortex ledger verify unreachable; "
+            "the metric is treated as unsigned"
+        ) from exc
+    if not _verify_ok(result):
+        raise PipelineLoadError(
+            "gold promote refused: Cortex ledger verify failed for "
+            f"ledger_entry_id={entry_id}; the metric is treated as unsigned"
+        )
 
 
 def sign_gold_metric(

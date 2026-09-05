@@ -217,7 +217,12 @@ lineage_reason: "metric aggregate — row-level _src not retained by design"
     )
     assert signed.is_signed
     assert signed.ledger_entry_id == "led_test_1"
-    receipt = run_promote(pipe, path=wh, gold_metric=signed)
+    receipt = run_promote(
+        pipe,
+        path=wh,
+        gold_metric=signed,
+        cortex_verify=lambda: type("V", (), {"ok": True})(),
+    )
     assert receipt.passed >= 1
 
 

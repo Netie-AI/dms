@@ -36,7 +36,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
 | **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
 | **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
-| **F70 CLOSED** (#76,#92) | Caller cannot assert certification; after append, `sign_gold_metric` `verify_ledger`s before signed. **F52(b)** hash not entry_id |
+| **EPIC-025 CLOSED** (#87) | Gold promote calls Cortex `ledger.verify` at the GATE, not only at sign. Unreachable Cortex refuses. Attestation/actor invariant re-derived like #74 (R-0007). F70/F52(b)/A-0005 stay closed. Contract 1.2.0 has no get-entry; chain verify is the read-back |
 | **#75 CLOSED**, ingest P0 (#103) | Three states on the sync receipt. And the `DEMO_TABLES` filter that **silently dropped** a customer table named `transactions` / `inventory` / `alerts` is gone - chat had been answering from the 15-row demo seed under a green badge. Skips are now reported; the copy swaps in a transaction |
 | **F40 DMS half (#66)** | `route=refused` does not ship as `L2_VALIDATED`. Engine half is Cortex#11 |
 | **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
