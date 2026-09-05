@@ -38,6 +38,33 @@ This is a closed cue list, deliberately. It is not a branch per customer
 phrasing, and it does not grow when a question is missed. A missed filter costs
 coverage, which is measured separately and can be recovered by a steward
 registering the question. A wrongly recognised one costs an answer that worked.
+
+How well this actually works, measured rather than asserted
+-----------------------------------------------------------
+Badly enough that the ask-path hook ships off. A second independent run took
+the rule above and measured both directions against this product's vocabulary:
+
+    false engage   46 of 106 ordinary questions engaged and then abstained.
+                   "Show all purchases from SUP-02", "What is the commercial
+                   class of each vehicle?", "Which products are in LA
+                   warehouse?". The cue words that make a term filter-shaped -
+                   all, any, no, in, only, class, market, segment, country -
+                   are among the commonest words in a business question, and
+                   they are in these very sets.
+    false miss     35 of 37 asks that plainly name a filter were not
+                   recognised, so the stage recorded "(no recognised term)" as
+                   CERTIFIED and the trace went green over an unconstrained
+                   filter.
+
+Read that before improving this file. Every previous round traded one rate for
+the other: a reach of one misses "residential is excluded", a reach of three
+lets "no matter if commercial" negate commercial, and a window has no clause
+boundaries at all, so "Excluding tax, commercial revenue by month" negates the
+class. Tuning a cue or moving an alias between plain and strict does not close
+either rate and must not be presented as doing so. See
+``docs/subagents_findings/2026-09-05_cca-engagement-rule-not-shippable.md``:
+what this needs is a question corpus labelled by someone who did not write the
+lexicon, not another entry in these sets.
 """
 
 from __future__ import annotations
