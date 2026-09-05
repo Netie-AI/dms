@@ -51,11 +51,12 @@ from pathlib import Path
 from typing import Any
 
 from dms_executor.cca import intent
-from dms_executor.cca.asset_class import bind_asset_class, parse_class_intent
+from dms_executor.cca import proposer as proposer_module
+from dms_executor.cca.asset_class import bind_asset_class
 from dms_executor.cca.binder import BinderResult
-from dms_executor.cca.geo import bind_geo, propose_countries, propose_region
-from dms_executor.cca.segment import bind_segment, propose_segment
-from dms_executor.cca.sense import bind_sense, propose_senses
+from dms_executor.cca.geo import bind_geo
+from dms_executor.cca.segment import bind_segment
+from dms_executor.cca.sense import bind_sense
 from dms_executor.constraint_cascade import ConstraintSchemaError, parse_trace
 
 #: Env flag for the ask-path hook. Default OFF, and that is the honest setting
@@ -275,18 +276,16 @@ def _polarity_abstain(res: BinderResult) -> BinderResult:
 
 
 def _proposals(question: str) -> dict[str, bool]:
-    include, exclude = parse_class_intent(question)
-    return {
-        "sense": bool(propose_senses(question)),
-        "class": bool(include or exclude),
-        "segment": propose_segment(question) is not None,
-        # A named country is a geo constraint. Gating this stage on a region
-        # alone meant "rental in Malaysia, commercial only" derived no geo
-        # filter and then recorded that no geo term was recognised, beside a
-        # fully green trace, while Cortex filtered on the literal 'Malaysia'
-        # against a column encoded 'MY'.
-        "geo": propose_region(question) is not None or bool(propose_countries(question)),
-    }
+    """Which stages this ask constrains, per the configured recogniser.
+
+    The default recogniser is the shipped word list and this returns exactly
+    what it always did. DMS_CCA_PROPOSER swaps in a model instead, which
+    changes only WHO NOTICES a filter: every value that reaches a predicate
+    still comes from a granted column through certify_pack, so a model cannot
+    invent one. See cca/proposer.py for why that split is the whole safety
+    argument.
+    """
+    return proposer_module.get_proposer().propose(question).as_proposal_flags()
 
 
 def engages(question: str) -> bool:
