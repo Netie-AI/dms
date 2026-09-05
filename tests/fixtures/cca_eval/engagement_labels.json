@@ -1,0 +1,1025 @@
+{
+  "note": [
+    "Independently labelled engagement corpus. Questions harvested from product chat surfaces that predate the cascade. Labels written without reading the cascade lexicon.",
+    "tier B_product_log: harvested from this repo's own chat surfaces. Independent of the lexicon (the labeler did not read it) but not independent of this product's domain."
+  ],
+  "labeler": {
+    "id": "independent-dms-accuracy-2026-09-05",
+    "role": "labeler, not lexicon author",
+    "did_not_read": [
+      "packages/executor/dms_executor/cca/",
+      "tests/fixtures/cca_eval/corpus.json",
+      "tests/test_cca_*.py"
+    ]
+  },
+  "cases": [
+    {
+      "id": "L2_empty_filter_beta",
+      "question": "In pg_sales.xlsx sheet Sales, total sales_value_myr for sku BETA?",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L2_empty_filter_beta"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Restricts to SKU BETA, a product-code filter, not property tenure, property class, a named country/region, or an industry sector."
+    },
+    {
+      "id": "L2_empty_filter_kl",
+      "question": "In pg_sales.xlsx sheet Sales, total sales_value_myr for city KL?",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L2_empty_filter_kl"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Restricts to city KL, which is a city not a named country or region, and no other CCA kind is present."
+    },
+    {
+      "id": "L2_malay_top3",
+      "question": "Dalam fail pg_sales.xlsx helaian Sales, apakah 3 kategori teratas mengikut sales_value_myr?",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L2_malay_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Malay paraphrase of a top-3 sales-category ranking; grouping by category is not a row restriction of any of the four kinds."
+    },
+    {
+      "id": "L2_synonym_product_family",
+      "question": "In pg_sales.xlsx sheet Sales, top 3 product families by MYR sales (cat / product line synonym for category)?",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L2_synonym_product_family"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks product families as a sales-sheet category synonym; that is a grouping, not an industry-sector row filter."
+    },
+    {
+      "id": "L2_wrong_sheet",
+      "question": "Using pg_sales.xlsx, on the Sales sheet only (ignore Wide_Fill), what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L2_wrong_sheet"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Category ranking plus a sheet-scope instruction to ignore Wide_Fill, which is not a CCA exclude."
+    },
+    {
+      "id": "L3_policy_quote",
+      "question": "What is the late-delivery penalty in the returns policy?",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L3_policy_quote"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Asks for a policy quote, with no row restriction by tenure, property class, country, or industry."
+    },
+    {
+      "id": "L3_rag_sum_trap",
+      "question": "From the documents, summarize the top 3 category sales totals without running warehouse SQL.",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L3_rag_sum_trap"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Requests a document summary of a category ranking, not a CCA row filter."
+    },
+    {
+      "id": "L4_multi_step",
+      "question": "For Kuala Lumpur only: top 2 categories by sales, then list delayed shipments for those SKUs, and cite the late-delivery penalty.",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L4_multi_step"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "City-only restriction to Kuala Lumpur plus category ranking and a policy cite; a city is not geo, and no other CCA kind is present."
+    },
+    {
+      "id": "L5_steward_automation",
+      "question": "Register this as a trusted metric: 'KL Electronics share of sales' and answer it with the verified SQL definition.",
+      "source": {
+        "path": "playground/my_questions.yaml",
+        "id": "L5_steward_automation"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Metric name uses city KL and Electronics as a sales-sheet category, neither of which is a CCA kind."
+    },
+    {
+      "id": "l0_synonym_tweak",
+      "question": "best 5 selling SKUs by revenue",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l0_synonym_tweak"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU ranking by revenue with no tenure, property-class, country, or industry restriction."
+    },
+    {
+      "id": "l2_encoding_beta",
+      "question": "In pg_sales.xlsx Sales, total sales_value_myr for sku BETA?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l2_encoding_beta"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU BETA is a product-code filter, not one of the four CCA kinds."
+    },
+    {
+      "id": "l2_encoding_kl",
+      "question": "In pg_sales.xlsx Sales, total sales_value_myr for city KL?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l2_encoding_kl"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "City KL is not a named country or region, and no other CCA kind is present."
+    },
+    {
+      "id": "l2_malay_top3",
+      "question": "Dalam pg_sales.xlsx helaian Sales, 3 kategori teratas ikut sales_value_myr?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l2_malay_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Malay paraphrase of a category ranking; language choice is not a Malaysia geo filter."
+    },
+    {
+      "id": "l2_synonym_product_family",
+      "question": "In pg_sales.xlsx Sales, top 3 product families by MYR sales?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l2_synonym_product_family"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks product families as a sales category; that is not an industry-sector row filter."
+    },
+    {
+      "id": "l2_top3_category_sales",
+      "question": "In pg_sales.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l2_top3_category_sales"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Top-3 ranking grouped by sales category, which is not a CCA row restriction."
+    },
+    {
+      "id": "l2_wrong_sheet_trap",
+      "question": "In pg_sales.xlsx on the Sales sheet only (ignore Wide_Fill), top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l2_wrong_sheet_trap"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Category ranking plus ignore Wide_Fill as sheet scope, not a CCA exclude."
+    },
+    {
+      "id": "l3_penalty_quote",
+      "question": "What is the late delivery penalty in the playground policy note?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l3_penalty_quote"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Policy-note lookup with no CCA row restriction."
+    },
+    {
+      "id": "l3_rag_sum_trap",
+      "question": "From the documents, summarize the top 3 category sales totals without running SQL.",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l3_rag_sum_trap"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Document summary of a category ranking, not a filter of any of the four kinds."
+    },
+    {
+      "id": "l4_trusted_asset_hope",
+      "question": "Show me our verified top electronics revenue by city for the playground Space.",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l4_trusted_asset_hope"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Electronics is a sales-sheet category and by city is a grouping; neither is a CCA row filter."
+    },
+    {
+      "id": "l5_multistep_hope",
+      "question": "Which delayed SKUs in pg_shipments matter most, and what is their Sales revenue in KL?",
+      "source": {
+        "path": "playground/questions.yaml",
+        "id": "l5_multistep_hope"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Delayed-SKU ranking plus revenue in city KL; a city is not geo."
+    },
+    {
+      "id": "constructor_alerts",
+      "question": "List active alerts across the warehouse network",
+      "source": {
+        "path": "scripts/constructor_source.py",
+        "id": "constructor_alerts"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Lists active alerts network-wide with no tenure, property-class, country, or industry restriction."
+    },
+    {
+      "id": "constructor_inventory",
+      "question": "What is total stock value by category?",
+      "source": {
+        "path": "scripts/constructor_source.py",
+        "id": "constructor_inventory"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Groups stock value by inventory category; grouping is not a CCA filter."
+    },
+    {
+      "id": "constructor_locations",
+      "question": "Show warehouse capacity utilisation",
+      "source": {
+        "path": "scripts/constructor_source.py",
+        "id": "constructor_locations"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Warehouse-as-logistics-location utilisation, not commercial/residential property class or any other CCA kind."
+    },
+    {
+      "id": "constructor_shipments",
+      "question": "Show shipment cost by destination",
+      "source": {
+        "path": "scripts/constructor_source.py",
+        "id": "constructor_shipments"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Groups shipment cost by destination with no named country or region as a row restriction."
+    },
+    {
+      "id": "constructor_suppliers",
+      "question": "What is our total spend by supplier country?",
+      "source": {
+        "path": "scripts/constructor_source.py",
+        "id": "constructor_suppliers"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Breakdown by supplier country with no country named, so it is grouping rather than a geo filter."
+    },
+    {
+      "id": "blank_hanging_rows_top3",
+      "question": "In blank_rows_hanging.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "blank_hanging_rows_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Top-3 ranking by sales category, not a CCA row restriction."
+    },
+    {
+      "id": "empty_filter_beta_vs_sku_beta",
+      "question": "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr for sku BETA?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "empty_filter_beta_vs_sku_beta"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU BETA is a product-code filter, not one of the four CCA kinds."
+    },
+    {
+      "id": "empty_filter_kl_vs_kuala_lumpur",
+      "question": "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city KL?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "empty_filter_kl_vs_kuala_lumpur"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "City KL is not a named country or region."
+    },
+    {
+      "id": "exact_city_kuala_lumpur_total",
+      "question": "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city Kuala Lumpur?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "exact_city_kuala_lumpur_total"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Kuala Lumpur is a city, not a country, so this is not geo and no other CCA kind is present."
+    },
+    {
+      "id": "exact_sku_beta_total",
+      "question": "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr for sku SKU-BETA?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "exact_sku_beta_total"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU-BETA is a product-code filter, not a CCA kind."
+    },
+    {
+      "id": "f32_ambiguous_categoty_top3",
+      "question": "In f32_ambiguous_scope.xlsx, show top 3 categoty sales",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "f32_ambiguous_categoty_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Category-sales ranking with a misspelled category word; still grouping, not a CCA filter."
+    },
+    {
+      "id": "inventory03_cat_top3",
+      "question": "In aa64458a_p50_03_inventory_messy.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "inventory03_cat_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Top-3 ranking by sales category, not a row restriction of the four kinds."
+    },
+    {
+      "id": "inventory03_widefill_top3",
+      "question": "In aa64458a_p50_03_inventory_messy.xlsx sheet Wide_Fill, what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "inventory03_widefill_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Names a sheet as the query scope and ranks categories; sheet choice is not a CCA filter."
+    },
+    {
+      "id": "malay_paraphrase_top3",
+      "question": "Dalam fail cf98e431_p50_01_sales_messy.xlsx helaian Sales, apakah 3 kategori teratas mengikut sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "malay_paraphrase_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Malay paraphrase of a category ranking; not a Malaysia geo filter and not an industry-sector filter."
+    },
+    {
+      "id": "rag_sum_invite_no_sql",
+      "question": "From the documents about aa64458a_p50_03_inventory_messy.xlsx Wide_Fill, summarize the top 3 category sales totals without running warehouse SQL.",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "rag_sum_invite_no_sql"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Document summary of a category ranking scoped to a named sheet, not a CCA row filter."
+    },
+    {
+      "id": "sales01_cat_top3",
+      "question": "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "sales01_cat_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Top-3 ranking by sales category, not a CCA filter."
+    },
+    {
+      "id": "sales01_widefill_top3",
+      "question": "In cf98e431_p50_01_sales_messy.xlsx sheet Wide_Fill, what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "sales01_widefill_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Category ranking on a named sheet; neither is a CCA kind."
+    },
+    {
+      "id": "synonym_product_family_top3",
+      "question": "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, top 3 product families by MYR sales (cat / product line synonym for category)?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "synonym_product_family_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks product families as a category synonym; product family as a sales-sheet column is not segment."
+    },
+    {
+      "id": "wrong_sheet_named_sales_trap",
+      "question": "Using aa64458a_p50_03_inventory_messy.xlsx, on the Sales sheet only (ignore Wide_Fill), what are the top 3 categories by sales_value_myr?",
+      "source": {
+        "path": "scripts/score_answers.py",
+        "id": "wrong_sheet_named_sales_trap"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Category ranking plus ignore Wide_Fill as sheet scope, not a CCA exclude."
+    },
+    {
+      "id": "How many units?",
+      "question": "How many units?",
+      "source": {
+        "path": "scripts/verify_demo_live.py",
+        "id": "How many units?"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Asks for a unit count (quantity sold / stock units), which is not property tenure or any other CCA kind."
+    },
+    {
+      "id": "SCALAR_Q",
+      "question": "What is our total spend?",
+      "source": {
+        "path": "scripts/verify_demo_live.py",
+        "id": "SCALAR_Q"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Unfiltered total-spend scalar with no named CCA restriction."
+    },
+    {
+      "id": "add 2000",
+      "question": "add 2000",
+      "source": {
+        "path": "scripts/verify_demo_live.py",
+        "id": "add 2000"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Follow-up arithmetic fragment with no CCA filter."
+    },
+    {
+      "id": "average of them",
+      "question": "average of them",
+      "source": {
+        "path": "scripts/verify_demo_live.py",
+        "id": "average of them"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Follow-up fragment asking for an average of prior results, with no CCA filter."
+    },
+    {
+      "id": "ff_alerts_by_severity_and_type",
+      "question": "Break our unresolved alerts down by severity and alert type together. Which 3 combinations are the most common?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_alerts_by_severity_and_type"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Groups unresolved alerts by severity and type; grouping is not a CCA row filter."
+    },
+    {
+      "id": "ff_carrier_ontime",
+      "question": "Of hazmat shipments that have been delivered, rank carriers by the percentage that arrived on or before the expected date. Top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_carrier_ontime"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Hazmat-plus-delivered is a real product filter, but hazmat is not sense, asset_class, geo, or segment."
+    },
+    {
+      "id": "ff_category_sales",
+      "question": "Valued at the unit cost recorded on each transaction, what is the total outbound value in MYR for each inventory category, counting only outbound transactions? Give me the top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_category_sales"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks outbound value by inventory category; inventory category is not industry segment."
+    },
+    {
+      "id": "ff_cheapest_carriers",
+      "question": "Which 3 carriers cost us the least in shipping, in MYR?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_cheapest_carriers"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Carrier cost ranking with no CCA row restriction."
+    },
+    {
+      "id": "ff_chemicals_freight_by_country",
+      "question": "For shipments of CHEMICALS that have already been delivered, what is the total shipping cost broken down by the supplier's country?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_chemicals_freight_by_country"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "CHEMICALS is an inventory category, not an industry sector, and supplier country is a breakdown with no country named."
+    },
+    {
+      "id": "ff_coldchain_breach_kg",
+      "question": "How many kilograms of FOOD_COLD goods have been delivered to warehouses that are not cold storage?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_coldchain_breach_kg"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "FOOD_COLD is an inventory category and not-cold-storage is a warehouse-type filter; neither is a CCA kind."
+    },
+    {
+      "id": "ff_distinct_skus_by_carrier",
+      "question": "Counting every shipment record we hold, whatever its status, how many different SKUs has each carrier shipped? Top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_distinct_skus_by_carrier"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks carriers by distinct SKU count; no CCA row restriction."
+    },
+    {
+      "id": "ff_expired_stock_value",
+      "question": "What is the total value in MYR of inventory that has already expired?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_expired_stock_value"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Filters to expired inventory, which is not tenure, property class, geo, or industry sector."
+    },
+    {
+      "id": "ff_hazardous_medical_value",
+      "question": "What is the total stock value in MYR of hazardous medical supplies?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_hazardous_medical_value"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Hazardous medical supplies names a hazmat product type in stock, not an industry-sector or other CCA row filter."
+    },
+    {
+      "id": "ff_hazardous_value",
+      "question": "what is the total stock value in MYR of hazardous inventory?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_hazardous_value"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Hazardous inventory is a hazmat product filter, not one of the four CCA kinds."
+    },
+    {
+      "id": "ff_leadtime_by_country",
+      "question": "which 3 countries have the longest average supplier lead time?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_leadtime_by_country"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks countries by lead time with no country named as a row restriction, so it is grouping not geo."
+    },
+    {
+      "id": "ff_month_over_month_outbound",
+      "question": "How did our outbound sales value change month over month?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_month_over_month_outbound"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Time-series comparison of outbound sales, not a CCA row filter."
+    },
+    {
+      "id": "ff_net_movement_writeoff_ambiguous",
+      "question": "Which 3 warehouses gained the most stock overall, in kilograms, counting everything that came in minus everything that left?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_net_movement_writeoff_ambiguous"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks warehouses by net kilogram movement; warehouse sites are not geo or asset_class."
+    },
+    {
+      "id": "ff_net_stock_movement",
+      "question": "Counting stock receipts as increases and both issues and write-offs as decreases, and ignoring inventory adjustments, rank our warehouses by net kilogram movement, highest first. Top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_net_stock_movement"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Warehouse ranking with ignore-adjustments as a movement-definition, not a CCA exclude."
+    },
+    {
+      "id": "ff_network_utilization",
+      "question": "How full is our warehouse network overall, as a percentage of capacity?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_network_utilization"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Network-wide warehouse capacity percentage, not a CCA row restriction."
+    },
+    {
+      "id": "ff_ontime_ambiguous_denominator",
+      "question": "rank carriers by on-time percentage for hazmat only",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_ontime_ambiguous_denominator"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Hazmat only is a real product filter, but it is not one of the four CCA kinds."
+    },
+    {
+      "id": "ff_outbound_by_supplier_country",
+      "question": "What was our total outbound sales value in MYR for goods from Malaysian suppliers?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_outbound_by_supplier_country"
+      },
+      "carries_filter": true,
+      "filters": [
+        {
+          "kind": "geo",
+          "term": "Malaysian suppliers",
+          "polarity": "include"
+        }
+      ],
+      "polarity": "include",
+      "uncertain": false,
+      "why": "Restricts rows to goods from Malaysian suppliers, which names Malaysia as a country include; no other CCA kind."
+    },
+    {
+      "id": "ff_over_capacity_locations",
+      "question": "Which warehouses are running above 90 percent of their capacity?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_over_capacity_locations"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Selects warehouses by utilisation threshold, a logistics-site condition not a CCA kind."
+    },
+    {
+      "id": "ff_profit_margin_by_category",
+      "question": "What is our profit margin by product category? Show me the top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_profit_margin_by_category"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Groups profit margin by product category; grouping by category is not segment."
+    },
+    {
+      "id": "ff_shipment_cost_by_carrier",
+      "question": "which 3 carriers cost us the most in shipping, in MYR?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_shipment_cost_by_carrier"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Carrier cost ranking with no CCA row restriction."
+    },
+    {
+      "id": "ff_spend_share_by_status",
+      "question": "What percentage of our shipping spend sits in each shipment status?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_spend_share_by_status"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Share-of-spend grouped by shipment status, not a CCA filter."
+    },
+    {
+      "id": "ff_stock_value_by_category",
+      "question": "what is our total stock value in MYR by category? top 3",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_stock_value_by_category"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Ranks stock value by inventory category; that grouping is not a CCA filter."
+    },
+    {
+      "id": "ff_unresolved_alerts_by_severity",
+      "question": "how many unresolved alerts do we have of each severity?",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_unresolved_alerts_by_severity"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Counts unresolved alerts grouped by severity, not a CCA row restriction."
+    },
+    {
+      "id": "ff_writeoff_kg_coldstore_by_category",
+      "question": "At our cold-storage warehouses only, how many kilograms of stock have been written off, broken down by product category? Top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_writeoff_kg_coldstore_by_category"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Cold-storage warehouses only is a logistics-site filter and by product category is grouping; neither is a CCA kind."
+    },
+    {
+      "id": "ff_writeoff_value_by_category",
+      "question": "Valued at the unit cost recorded on each write-off transaction, what is the value in MYR of stock we have written off, by category? Give me the top 3.",
+      "source": {
+        "path": "scripts/verify_freeform_demo.py",
+        "id": "ff_writeoff_value_by_category"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Write-off value ranked by category; grouping by category is not a CCA filter."
+    },
+    {
+      "id": "categoty_top3",
+      "question": "show top 3 categoty sales",
+      "source": {
+        "path": "scripts/verify_l2_vs_l1.py",
+        "id": "categoty_top3"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Misspelled category-sales ranking; still grouping, not a CCA row restriction."
+    },
+    {
+      "id": "top11_sales",
+      "question": "top 11 selling SKUs by revenue",
+      "source": {
+        "path": "scripts/verify_l2_vs_l1.py",
+        "id": "top11_sales"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU ranking by revenue with no CCA filter."
+    },
+    {
+      "id": "top5_revenue",
+      "question": "Top 5 selling SKUs by revenue",
+      "source": {
+        "path": "scripts/verify_l2_vs_l1.py",
+        "id": "top5_revenue"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU ranking by revenue with no CCA filter."
+    },
+    {
+      "id": "cq_low_stock_wh_a",
+      "question": "Which SKUs are below reorder level in warehouse A?",
+      "source": {
+        "path": "tests/fixtures/curated_ceo/questions.yaml",
+        "id": "cq_low_stock_wh_a"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Low-stock SKUs at warehouse A; a warehouse site is not geo or asset_class."
+    },
+    {
+      "id": "cq_sales_top3_volume",
+      "question": "Top 3 SKUs by quantity sold",
+      "source": {
+        "path": "tests/fixtures/curated_ceo/questions.yaml",
+        "id": "cq_sales_top3_volume"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "SKU ranking by units sold, which is not property tenure or any other CCA kind."
+    },
+    {
+      "id": "cq_sku_count",
+      "question": "How many SKUs do we have in inventory?",
+      "source": {
+        "path": "tests/fixtures/curated_ceo/questions.yaml",
+        "id": "cq_sku_count"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Unfiltered SKU count with no CCA row restriction."
+    },
+    {
+      "id": "cq_sku_count_by_category",
+      "question": "Show SKU count by category",
+      "source": {
+        "path": "tests/fixtures/curated_ceo/questions.yaml",
+        "id": "cq_sku_count_by_category"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Groups SKU count by inventory category; grouping is not a CCA filter."
+    },
+    {
+      "id": "trap_last_month",
+      "question": "Just give me last month's number",
+      "source": {
+        "path": "tests/fixtures/curated_ceo/questions.yaml",
+        "id": "trap_last_month"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Vague time-window ask with no tenure, property-class, country, or industry restriction."
+    },
+    {
+      "id": "trap_short_paraphrase",
+      "question": "Are we short on anything the warehouse should worry about?",
+      "source": {
+        "path": "tests/fixtures/curated_ceo/questions.yaml",
+        "id": "trap_short_paraphrase"
+      },
+      "carries_filter": false,
+      "filters": [],
+      "polarity": "none",
+      "uncertain": false,
+      "why": "Vague warehouse-shortage ask with no named CCA row restriction."
+    }
+  ],
+  "tier": "B_product_log"
+}
