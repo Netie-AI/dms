@@ -199,3 +199,44 @@ def test_constraint_shape_parses_under_cca_01(lake: Path) -> None:
 
     with pytest.raises(Exception, match="must not be CERTIFIED"):
         parse_trace([{**prior[0], "status": "ABSTAIN"}, prior[1], res.to_constraint()])
+
+
+def test_coverage_sentence_trims_the_list_but_never_the_count() -> None:
+    """A 31-member taxonomy must not print 27 absent names into an answer.
+
+    The count stays exact because that is the honesty-carrying part; the
+    enumeration is what gets trimmed.
+    """
+    wide = TermPack(
+        name="segment.wide",
+        kind="segment",
+        column_names=("segment",),
+        members={f"M{i:02d}": () for i in range(20)},
+    )
+    res = certify_pack(
+        stage="asset_class",
+        constraint_id="c1",
+        candidate="wide",
+        pack=wide,
+        warehouse=None,
+        tables=["t"],
+    )
+    assert res.status == "ABSTAIN"
+
+    from dms_executor.cca.binder import BinderResult
+
+    certified = BinderResult(
+        stage="asset_class",
+        constraint_id="c1",
+        candidate="wide",
+        pack=wide.name,
+        status="CERTIFIED",
+        matched={"M00": ("M00",)},
+        absent=tuple(f"M{i:02d}" for i in range(1, 20)),
+        columns=("t.segment",),
+        tables=("t",),
+    )
+    note = certified.coverage_note()
+    assert "1 of 20" in note
+    assert "and 13 more" in note
+    assert "M19" not in note

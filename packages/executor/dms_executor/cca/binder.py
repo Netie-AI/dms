@@ -42,6 +42,20 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 
 
+#: How many members a coverage sentence names before it says "and N more". The
+#: count is always exact; only the enumeration is trimmed. A 31-member taxonomy
+#: listing 27 absent sub-segments is honest and unreadable, and a sentence
+#: nobody finishes reading discloses nothing.
+LISTED_MEMBERS = 6
+
+
+def _listed(items: Sequence[str]) -> str:
+    if len(items) <= LISTED_MEMBERS:
+        return ", ".join(items)
+    shown = ", ".join(items[:LISTED_MEMBERS])
+    return f"{shown} and {len(items) - LISTED_MEMBERS} more"
+
+
 def norm_value(value: Any) -> str:
     """Fold a landed value or a pack alias onto one comparable form.
 
@@ -156,7 +170,7 @@ class BinderResult:
         """
         if not self.certified:
             return f"{self.candidate}: not bound. {'; '.join(self.reasons)}"
-        included = ", ".join(self.matched)
+        included = _listed(tuple(self.matched))
         where = ", ".join(self.columns)
         total = len(self.matched) + len(self.absent)
         note = (
@@ -164,7 +178,7 @@ class BinderResult:
             f"members via {where}: {included}"
         )
         if self.absent:
-            note += f". Not present in this data: {', '.join(self.absent)}"
+            note += f". Not present in this data: {_listed(self.absent)}"
         return note
 
     def to_constraint(self) -> dict[str, Any]:

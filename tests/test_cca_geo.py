@@ -109,9 +109,15 @@ def test_partial_coverage_is_disclosed_not_rounded_up(iso2_lake: Path) -> None:
     # is the failure this epic exists to prevent.
     assert set(res.absent) == set(ELEVEN) - {"Malaysia", "Singapore", "Thailand"}
     note = res.coverage_note()
+    # The count is the honesty-carrying part and is never trimmed. The sentence
+    # names the first few absent members and says how many more it did not list,
+    # because a reader who stops halfway through eight country names has learned
+    # nothing; res.absent stays complete for anyone who needs all of them.
     assert "3 of 11" in note
-    for missing in ("Indonesia", "Philippines", "Timor-Leste"):
-        assert missing in note
+    assert "Not present in this data:" in note
+    assert "and 2 more" in note
+    named = [m for m in res.absent if m in note]
+    assert len(named) == 6
 
 
 def test_non_member_countries_are_excluded_and_reported(iso2_lake: Path) -> None:
