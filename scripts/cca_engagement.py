@@ -86,6 +86,19 @@ SHIP_CEILING = 0.05
 MIN_ORDINARY = 40
 MIN_FILTER = 8
 
+#: Filter-positive cases the shipped packs actually claim to cover.
+#:
+#: This floor exists because the first large run met MIN_FILTER and still
+#: measured nothing. 1232 questions from five public benchmarks yielded 47
+#: filter-positives, every one of them geo, and 46 of those named the United
+#: States, Italy, Aruba, Afghanistan or Europe - places the eleven-member
+#: Southeast Asia pack never claimed. A 100 pct miss rate over that set is a
+#: statement about pack coverage against a world corpus, not about whether the
+#: cue rule can tell a filter from a grouping. Without this floor, a corpus
+#: that contains none of the product's domain would satisfy the criterion while
+#: leaving the question untouched.
+MIN_IN_SCOPE_FILTER = 8
+
 WHAT_THIS_MEASURES = """\
 === WHAT THIS MEASURES, AND WHAT IT DOES NOT ===
   It calls cascade.engages / _proposals against questions harvested from the
@@ -405,6 +418,7 @@ class Summary:
     false_miss_in_scope: int = 0
     false_miss_out_of_scope: int = 0
     false_miss_scope_unknown: int = 0
+    in_scope_positive: int = 0
     failures: tuple[str, ...] = ()
 
     @property
@@ -428,6 +442,10 @@ class Summary:
             return False
         if self.ordinary < MIN_ORDINARY or self.filter_positive < MIN_FILTER:
             return False
+        if self.in_scope_positive < MIN_IN_SCOPE_FILTER:
+            # Enough labelled filters, none of them the kind this product
+            # claims to handle. That is not a measurement of the cue rule.
+            return False
         return fe <= SHIP_CEILING and fm <= SHIP_CEILING
 
     def as_dict(self) -> dict[str, Any]:
@@ -445,6 +463,8 @@ class Summary:
             "false_miss_in_scope": self.false_miss_in_scope,
             "false_miss_out_of_scope": self.false_miss_out_of_scope,
             "false_miss_scope_unknown": self.false_miss_scope_unknown,
+            "in_scope_positive": self.in_scope_positive,
+            "min_in_scope_filter": MIN_IN_SCOPE_FILTER,
             "false_engage_rate": (
                 None if self.false_engage_rate is None else round(self.false_engage_rate, 4)
             ),
@@ -609,6 +629,15 @@ def score(results: Sequence[CaseResult]) -> Summary:
         ),
         false_miss_scope_unknown=sum(
             1 for r in results if r.outcome == FALSE_MISS and r.geo_scope == "unknown"
+        ),
+        # A positive is in scope when the packs claim its subject: any
+        # non-geo kind (the class, tenure and sector packs are not
+        # geographically bounded) or a geo whose place the pack names.
+        in_scope_positive=sum(
+            1
+            for r in results
+            if r.outcome in {OK_FILTER, FALSE_MISS}
+            and (set(r.labelled_kinds) - {"geo"} or r.geo_scope == "in_scope")
         ),
         failures=tuple(
             f"{r.case_id}: {r.outcome} - {r.detail}"
@@ -869,12 +898,26 @@ def combined_report(loaded: Sequence[tuple[str, dict, list, Summary]]) -> dict[s
         f"pack claims, {pooled.false_miss_out_of_scope} named one it never claimed, "
         f"{pooled.false_miss_scope_unknown} recorded no place"
     )
+    print(
+        f"  in-scope pos   {pooled.in_scope_positive}   of {pooled.filter_positive} "
+        f"filter-positives name something the shipped packs claim"
+    )
     print(f"  uncertain      {pooled.uncertain}   (apart from both rates)")
     print(f"  polarity       {pooled.polarity}   (fail-closed class, apart from both rates)")
     print(
         f"  shippable      {pooled.shippable}   (ceiling {SHIP_CEILING * 100:.0f} pct, "
-        f"floors n>={MIN_ORDINARY} ordinary and n>={MIN_FILTER} filter)"
+        f"floors n>={MIN_ORDINARY} ordinary, n>={MIN_FILTER} filter, "
+        f"n>={MIN_IN_SCOPE_FILTER} in-scope filter)"
     )
+    if pooled.in_scope_positive < MIN_IN_SCOPE_FILTER:
+        print()
+        print(
+            f"  NOTE  the miss rate above is not a verdict on the cue rule. Only "
+            f"{pooled.in_scope_positive} of {pooled.filter_positive} labelled filters name "
+            "something\n        the shipped packs claim; the rest name places the packs never "
+            "covered.\n        Missing Aruba is a pack-coverage fact, not a recognition failure. "
+            "The\n        question this measurement exists to answer is still unanswered."
+        )
     if stress is not None:
         print()
         print("=== AUTHORED STRESS SET (reported, never counted) ===")

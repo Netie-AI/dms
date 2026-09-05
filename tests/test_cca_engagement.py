@@ -170,3 +170,54 @@ def test_cli_reports_both_rates_and_does_not_fail_the_run_on_them(
     assert "false-miss" in out
     assert "/v1/chat/ask" in out
     assert "HOLD" in out or "SHIP" in out
+
+
+def test_in_scope_floor_blocks_a_corpus_that_measures_the_wrong_thing() -> None:
+    """A filter the packs never claimed is not evidence about the cue rule.
+
+    1232 questions from five public NL2SQL benchmarks produced 47 filter
+    positives, every one geo, and 46 of those named the United States, Aruba
+    or Europe. That clears MIN_FILTER almost six times over and says nothing
+    about whether the cascade can tell a filter from a grouping. The floor
+    exists so a corpus drawn from outside this product's domain cannot satisfy
+    the criterion while leaving the question untouched.
+    """
+    from cca_engagement import MIN_IN_SCOPE_FILTER, Summary
+
+    plenty = dict(
+        total=200,
+        ordinary=150,
+        filter_positive=40,
+        uncertain=0,
+        false_engage=0,
+        false_miss=0,
+        polarity=0,
+        ordinary_ok=150,
+        filter_ok=40,
+    )
+    # Both rates perfect, both old floors cleared, no in-scope positive.
+    assert Summary(**plenty, in_scope_positive=0).shippable is False
+    assert Summary(**plenty, in_scope_positive=MIN_IN_SCOPE_FILTER - 1).shippable is False
+    assert Summary(**plenty, in_scope_positive=MIN_IN_SCOPE_FILTER).shippable is True
+
+
+def test_the_shipped_corpora_do_not_clear_the_in_scope_floor() -> None:
+    """The live measurement, pinned. This is the sentence the flag turns on."""
+    import cca_engagement as ce
+
+    pooled_in_scope = 0
+    pooled_positive = 0
+    for path in ce.discover_corpora():
+        corpus = ce.load_labels(path)
+        if not ce.is_independent(corpus):
+            continue
+        _results, summary = ce.evaluate(corpus, corpus_id=path.name)
+        pooled_in_scope += summary.in_scope_positive
+        pooled_positive += summary.filter_positive
+
+    assert pooled_positive >= ce.MIN_FILTER, "the filter floor is met on paper"
+    assert pooled_in_scope < ce.MIN_IN_SCOPE_FILTER, (
+        "if this goes green, the corpus finally contains filters the packs claim "
+        "and the miss rate becomes a real number for the first time. Read it before "
+        "touching the flag."
+    )

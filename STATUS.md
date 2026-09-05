@@ -42,7 +42,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
 | **#25 SPACE-UI (#90)** | Runs/Amend send `space_id`; Library/Studio clear on Space switch |
 | **#23 RAG-04 (#94)** | Customer envelope asserts text, rows, sources on `POST /v1/chat/ask` |
-| **EPIC-CCA** (#148) | Binders sound (pack proposes, landed values decide, exact match); **ask-path hook ships OFF, `DMS_CCA_CASCADE=0`**. R-0003 round two measured the engagement rule at 46/106 false engage and 35/37 false miss, so it does not gate a customer ask until measured on a real question log (F-2026-09-05 engagement-rule). Polarity fails closed both ways. `grounded_tables` boundary leak fixed. Claim: abstains on a missing encoding and discloses spellings; does **not** check the executed SQL |
+| **EPIC-CCA** engagement | Independent log now n=1284 (Spider, WikiSQL, KaggleDBQA, text2sql-data, distil + the 77 product asks), blind-labelled by 43 labellers, **kappa 0.831** on a 196 double-labelled sample. **false-engage 0.08 pct (1/1237)** - the 46/106 refusal failure does not reproduce outside property vocabulary. **miss rate undefined**: all 47 filter-positives are geo and 46 name places the SEA pack never claimed, so `MIN_IN_SCOPE_FILTER=8` now gates the flag and today reads 0. `python scripts/cca_engagement.py`. **DMS_CCA_CASCADE stays 0**; lexicon untouched (F-2026-09-05 benchmarks) |
 
 ## Open next
 

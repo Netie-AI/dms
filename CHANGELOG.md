@@ -27,6 +27,43 @@ Append-only. Never edited, only added to. Newest first.
   dms#38 residual. Live Cortex still required to close the epic.
 
 
+## 2026-09-05 - CCA engagement measured on 1712 independently labelled questions
+
+- **Corpus.** 1232 questions harvested from five public NL2SQL benchmarks whose
+  authors have never heard of this system (Spider dev, 11 college annotators
+  2018; WikiSQL dev crowdworkers 2017; KaggleDBQA; text2sql-data carrying ATIS
+  real-user utterances, Mechanical Turk advising paraphrases and GeoQuery /
+  Academic / IMDB / Yelp; distil-labs seeds), plus 480 international business
+  questions authored here as a stress probe and 77 product-log asks. Spider was
+  taken from two unrelated mirrors that agree tuple for tuple.
+- **Labels.** 43 blind labellers, 40 questions each, none permitted to read the
+  lexicon and all confirming they did not. Cohen's kappa **0.831** on a 196
+  double-labelled sample scored against a re-worded rubric by a second labeller
+  who never saw the first labels. Every positive adversarially challenged (177
+  upheld, 4 overturned, 8 uncertain); 150 sampled negatives hunted for missed
+  positives, none found; a consistency pass flagged 13 same-shape groups
+  labelled against themselves. Everything an auditor could not settle was
+  marked uncertain rather than adjudicated by the people being examined.
+- **Result.** false-engage **0.08 pct (1/1237)**. The 46-of-106 refusal failure
+  that put the hook behind a flag does not reproduce outside property
+  vocabulary; the single miss is "Find suppliers with no purchase orders",
+  where a strict alias meets a cue two tokens away.
+- **The miss rate is undefined and that is the finding.** All 47 independent
+  filter-positives are geo, and 46 name the United States, Italy, Aruba,
+  Afghanistan or Europe, which the eleven-member Southeast Asia pack never
+  claimed. Zero of 1232 benchmark questions name a tenure, a property class or
+  an industry sector. A 100 pct miss over that set measures pack coverage
+  against a world corpus, not whether the cue rule can tell a filter from a
+  grouping.
+- **New floor.** `MIN_IN_SCOPE_FILTER = 8` joins the ship criterion: a
+  filter-positive counts only when the packs claim its subject. Today that
+  reads 0, so the flag cannot flip whatever the two rates say. Strictly harder
+  than what it replaces; nothing was relaxed.
+- **DMS_CCA_CASCADE stays 0** and `packages/executor/dms_executor/cca/` is
+  untouched. No alias was added for any country in these misses. Retuning the
+  lexicon against a corpus built to test it is the failure this whole exercise
+  exists to avoid.
+
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 
 - **Binder.** One matching rule for every cascade stage
