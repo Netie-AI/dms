@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (cca-01 + vq-01 oracle).
+PREFLIGHT for this goal: HIT (cca-engagement-labelled-product-log).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-05 | cca-engagement-labelled-product-log | EPIC-CCA, CCA-05, independent labels, false engage, false miss, dms#132 | 77 product questions labelled off-lexicon. False-engage 0/76, false-miss 1/1 (Malaysian suppliers). n_filter=1 so the miss rate is not a ship number. Flag stays off. | `2026-09-05_cca-engagement-labelled-product-log.md` |
 | 2026-09-05 | cca-engagement-rule-not-shippable | EPIC-CCA, CCA-05, intent, engagement, feature flag, R-0003 round two, dms#148 | Binding a term to landed values is solved; deciding from free text whether a question carries a filter is not. 46/106 false engage, 35/37 false miss. Ask-path hook ships OFF behind DMS_CCA_CASCADE. Polarity fails closed. Boundary leak via grounded_tables fixed. | `2026-09-05_cca-engagement-rule-not-shippable.md` |
 | 2026-09-05 | cca-certifies-spelling-not-sql | EPIC-CCA, CCA-05, claim narrowing, R-0003, hard rule 10, dms#148 | The cascade certifies the encoding and its spelling, never the executed SQL. "Never a confident wrong filter" is not delivered; "abstains on a missing encoding and discloses the spellings" is. Verify-after-the-fact is its own ticket. | `2026-09-05_cca-certifies-spelling-not-sql.md` |
 | 2026-09-05 | cca-question-lexicon-vs-value-pack | EPIC-CCA, CCA-05, binder, false engage, R-0005, dms#137 | A term pack cannot be both the question lexicon and the value lexicon. "capacity of warehouse A" abstained; "units sold" would have. Split them; verified queries run before the cascade. | `2026-09-05_cca-question-lexicon-vs-value-pack.md` |

@@ -36,6 +36,9 @@ before bronze-sheet and Cortex. The trace shape is CCA-01
 (`constraint_cascade.py`); the envelope carries it as `constraint_trace`.
 Regression: `tests/test_cca_*.py`. Surface: `apps/ui/src/lib/constraintTrace.ts`
 plus `components/ConstraintTracePanel.tsx` on AuditPage.
+Engagement rates live in `scripts/cca_engagement.py` over
+`tests/fixtures/cca_eval/engagement_labels.json` (product questions,
+independently labelled). That file is not the binder golden.
 
 RSF-02 typed artifacts: `packages/core/dms_core/rsf.py` (beside CCA, not inside
 it; dms_core may not import dms_executor). Regression:

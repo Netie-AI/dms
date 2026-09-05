@@ -82,9 +82,10 @@ from dms_executor.constraint_cascade import ConstraintSchemaError, parse_trace
 #: work it exists for makes the product worse in both directions, so it does not
 #: go on the customer path by default. Trunk-based with a feature flag is this
 #: repo's stated way to land incomplete work, and the flag is the honest state
-#: of this one: everything is built, tested and reviewable, and the engagement
-#: rule needs to be measured rather than asserted before it decides a customer's
-#: answer. Turn it on with DMS_CCA_CASCADE=1 to evaluate it.
+#: of this one. The criterion to flip it is ``scripts/cca_engagement.py``:
+#: independently labelled product questions, both rates at or under 5 pct, with
+#: enough cases of each class. Until that run prints SHIP, default stays 0.
+#: Turn it on with DMS_CCA_CASCADE=1 to evaluate it.
 _ENABLE_ENV = "DMS_CCA_CASCADE"
 
 

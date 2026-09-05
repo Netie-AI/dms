@@ -2,6 +2,30 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-05 - Independently labelled CCA engagement rates (product question log)
+
+- **The settlement criterion exists.** 77 unique questions harvested from
+  surfaces that predate the cascade (free-form demo, hostile pack, playground,
+  CEO walkthrough, Constructor asks, live demo, L2 bakeoff). None from
+  `cca/*.py` or the binder golden. Labelled by an independent accuracy pass
+  that was not allowed to read the lexicon: does this carry a sense / asset
+  class / geo / segment filter, and with what polarity.
+- **Both rates are numbers.** `python scripts/cca_engagement.py`. On this log:
+  false-engage 0/76 ordinary, false-miss 1/1 filter-positive (`goods from
+  Malaysian suppliers` - geo include, cascade proposed nothing). The flag
+  stays off: the miss side has n=1, below the floor of 8, so 100 pct is an
+  anecdote with a real example rather than a ship number. Ceiling to flip
+  `DMS_CCA_CASCADE` default on is 5 pct on both rates with n>=40 ordinary and
+  n>=8 filter-positive.
+- **What this is not.** It is not the 46/106 and 35/37 property-vocabulary
+  measurement from R-0003 round two. That set is not this product's chat log.
+  It is also not a reason to retune `intent.py` against the one miss: a
+  lexicon that chases its own labels is how the last round reported 100 pct
+  precision and still refused ordinary work. The ask-path hook stays off.
+- **CI.** `tests/test_cca_engagement.py` fails if a harvested question has no
+  label, if a case is sourced from the lexicon, or if the scorer cannot tell
+  the two rates apart. It does not fail on the rates themselves.
+
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 
 - **Binder.** One matching rule for every cascade stage
