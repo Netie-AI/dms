@@ -311,3 +311,150 @@ def test_append_and_verify_ok_still_signs(
     assert body["ledger_entry_id"] == "led_ok"
     assert body["signature"] == "sha256:okhash"
     assert body["signature"] != body["ledger_entry_id"]
+
+
+GOLD_YAML = (
+    "target: gold.sales_total\n"
+    "sources: [silver.sales]\n"
+    "lineage: aggregate\n"
+    "lineage_reason: metric aggregate for test\n"
+)
+
+
+def _looks_signed() -> GoldMetricDef:
+    return GoldMetricDef(
+        metric_id="m",
+        name="n",
+        sql="SELECT 1 AS total",
+        steward_id="s",
+        signed_at="2026-01-01T00:00:00Z",
+        ledger_entry_id="led_1",
+        signature="sha256:abc",
+    )
+
+
+def test_gold_promote_gate_refuses_without_chain_readback(tmp_path: Path) -> None:
+    """EPIC-025: is_signed is a claim. The gate must verify, not trust the fields."""
+    from dms_executor.pipeline_loader import PipelineLoadError, load_pipeline_yaml
+    from dms_executor.promote import run_promote
+
+    signed = _looks_signed()
+    assert signed.is_signed is True
+    with pytest.raises(PipelineLoadError, match="verify is required"):
+        run_promote(load_pipeline_yaml(GOLD_YAML), path=tmp_path / "wh.duckdb", gold_metric=signed)
+
+
+def test_gold_promote_gate_refuses_when_verify_not_ok(tmp_path: Path) -> None:
+    from dms_executor.pipeline_loader import PipelineLoadError, load_pipeline_yaml
+    from dms_executor.promote import run_promote
+
+    with pytest.raises(PipelineLoadError, match="verify failed"):
+        run_promote(
+            load_pipeline_yaml(GOLD_YAML),
+            path=tmp_path / "wh.duckdb",
+            gold_metric=_looks_signed(),
+            cortex_verify=lambda: type("V", (), {"ok": False})(),
+        )
+
+
+def test_gold_promote_gate_refuses_when_cortex_unreachable(tmp_path: Path) -> None:
+    from dms_executor.pipeline_loader import PipelineLoadError, load_pipeline_yaml
+    from dms_executor.promote import run_promote
+
+    def _boom() -> None:
+        raise RuntimeError("connection refused")
+
+    with pytest.raises(PipelineLoadError, match="unreachable"):
+        run_promote(
+            load_pipeline_yaml(GOLD_YAML),
+            path=tmp_path / "wh.duckdb",
+            gold_metric=_looks_signed(),
+            cortex_verify=_boom,
+        )
+
+
+def test_verify_fail_at_promote_gate_is_http_4xx_after_sign_succeeded(
+    client: TestClient,
+) -> None:
+    """Construction verify succeeding is not enough: the gate must read the chain back."""
+    from cortex_client.models import LedgerAppendResponse, LedgerVerifyResponse
+    from dms_api import deps
+
+    class _FakeCortex:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def ledger_append(self, req):  # noqa: ANN001
+            return LedgerAppendResponse(entry_id="led_1", hash="sha256:abc")
+
+        def verify_ledger(self):
+            self.n += 1
+            if self.n == 1:
+                return LedgerVerifyResponse(ok=True, checked=1)
+            return LedgerVerifyResponse(ok=False, first_break="led_1", checked=1)
+
+    fake = _FakeCortex()
+    app = client.app
+    app.dependency_overrides[deps.get_cortex_client] = lambda: fake
+    try:
+        resp = client.post(
+            "/v1/pipelines/run",
+            json={
+                "yaml_text": GOLD_YAML,
+                "gold_metric": {
+                    "metric_id": "m_revenue",
+                    "name": "Revenue",
+                    "sql": "SELECT 1 AS total",
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400, f"expected 4xx, got {resp.status_code} {resp.text[:300]}"
+    detail = str(resp.json().get("detail", "")).lower()
+    assert "verify" in detail or "ledger" in detail
+    assert "unsigned" in detail or "refused" in detail
+
+
+def test_unreachable_cortex_at_promote_gate_is_http_4xx(
+    client: TestClient,
+) -> None:
+    """Unreachable Cortex at the gate must refuse gold, not proceed."""
+    from cortex_client.models import LedgerAppendResponse, LedgerVerifyResponse
+    from dms_api import deps
+
+    class _FakeCortex:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def ledger_append(self, req):  # noqa: ANN001
+            return LedgerAppendResponse(entry_id="led_1", hash="sha256:abc")
+
+        def verify_ledger(self):
+            self.n += 1
+            if self.n == 1:
+                return LedgerVerifyResponse(ok=True, checked=1)
+            raise RuntimeError("connection refused")
+
+    fake = _FakeCortex()
+    app = client.app
+    app.dependency_overrides[deps.get_cortex_client] = lambda: fake
+    try:
+        resp = client.post(
+            "/v1/pipelines/run",
+            json={
+                "yaml_text": GOLD_YAML,
+                "gold_metric": {
+                    "metric_id": "m_revenue",
+                    "name": "Revenue",
+                    "sql": "SELECT 1 AS total",
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 400, f"expected 4xx, got {resp.status_code} {resp.text[:300]}"
+    detail = str(resp.json().get("detail", "")).lower()
+    assert "unreachable" in detail

@@ -285,10 +285,12 @@ def _ledger_append(cortex: CortexClient):
     return _append
 
 
-def _ledger_verify(cortex: CortexClient):
+def _ledger_verify(cortex: CortexClient | None):
     """Read the Cortex chain back — the only verify surface, no local hash chain."""
 
     def _verify():
+        if cortex is None:
+            raise RuntimeError("cortex_unavailable")
         return cortex.verify_ledger()
 
     return _verify
@@ -358,7 +360,13 @@ def pipeline_run(
         if not metric.is_signed:
             raise ValueError("gold metric is not signed after ledger append+verify")
 
-    receipt = dms_executor.run_promote(pipe, gold_metric=metric)
+    # Gold must verify at the promote GATE, not only inside sign_gold_metric.
+    # Silver does not read the chain.
+    receipt = dms_executor.run_promote(
+        pipe,
+        gold_metric=metric,
+        cortex_verify=_ledger_verify(cortex) if pipe.is_gold else None,
+    )
     return receipt.to_dict()
 
 

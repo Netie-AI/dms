@@ -162,7 +162,12 @@ def test_gold_source_rows_null_unchanged(
         cortex_verify=lambda: type("V", (), {"ok": True})(),
         actor="steward_1",
     )
-    receipt = run_promote(load_pipeline_yaml(GOLD_YAML), path=warehouse, gold_metric=signed)
+    receipt = run_promote(
+        load_pipeline_yaml(GOLD_YAML),
+        path=warehouse,
+        gold_metric=signed,
+        cortex_verify=lambda: type("V", (), {"ok": True})(),
+    )
     assert receipt.source_rows is None
     assert receipt.reconciled is False
 
