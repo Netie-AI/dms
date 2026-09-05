@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
+import { ConstraintTracePanel } from "@/components/ConstraintTracePanel";
+import { useApp } from "@/context/AppContext";
 
 type Ref = { seq: number; cortex_entry_id: string; created_at?: string | null };
 
 export function AuditPage() {
   const [rows, setRows] = useState<Ref[]>([]);
   const [verify, setVerify] = useState<string | null>(null);
+  // The trace belongs to the answer, so it is read from the envelope the app
+  // already holds. Audit does not re-ask, and there is no cascade endpoint to
+  // poll: a second read path would be a second source of truth.
+  const { latestAnswer } = useApp();
 
   useEffect(() => {
     void fetch("/api/v1/audit/ledger")
@@ -52,6 +58,7 @@ export function AuditPage() {
           </li>
         ))}
       </ul>
+      <ConstraintTracePanel trace={latestAnswer?.constraint_trace} />
     </div>
   );
 }
