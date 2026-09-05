@@ -1,5 +1,7 @@
 /** Answer envelope — architecture §4.7 */
 
+import type { ConstraintStage } from "./constraintTrace";
+
 export type BadgeKind =
   | "L0_CERTIFIED"
   | "L1_GOVERNED_METRIC"
@@ -63,6 +65,9 @@ export type AnswerEnvelope = {
   chart?: ChartSpec;
   suggestions?: string[];
   grounded_tables?: string[];
+  /** CCA-01 stage trace, when the cascade path ran. Absent means no cascade,
+   *  which is not the same as every stage passing. */
+  constraint_trace?: ConstraintStage[];
 };
 
 export type SpaceSummary = {

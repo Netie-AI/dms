@@ -19,6 +19,10 @@ import type {
   TrustSummary,
 } from "./types";
 
+/** CCA-07: the stage trace shape the answer envelope carries (CCA-01 schema).
+ *  Re-exported here so envelope consumers get it from the API surface. */
+export type { ConstraintStage } from "./constraintTrace";
+
 export type HealthBody = {
   status: string;
   product?: string;

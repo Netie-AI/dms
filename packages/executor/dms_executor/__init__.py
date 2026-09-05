@@ -343,6 +343,33 @@ class Executor:
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
+
+        # CCA-05 - settle the ambiguous filters before anything executes.
+        #
+        # "Rental across SEA, commercial only" against a warehouse with no
+        # asset-class column runs a real query over real rows and returns a real
+        # total that is not the one asked for. No check further down can tell,
+        # because nothing about the number looks wrong. So the constraints are
+        # bound to landed values first, and an ask whose binding cannot be
+        # certified never reaches L0 at all.
+        #
+        # An ask that constrains none of the cascade stages does not engage it:
+        # ``engaged`` is False, no trace is attached, and the question takes the
+        # path it always took.
+        #
+        # The verified-query hook runs FIRST and is not gated. A steward
+        # registered that exact question against that exact SQL, which is the
+        # human certification the cascade is a substitute for on the inferred
+        # path. Gating it would let a term the cascade cannot bind override a
+        # person who already decided.
+        from dms_executor.cca.cascade import (
+            CascadeOutcome,
+            attach_cascade,
+            cascade_abstain_envelope,
+            cascade_enabled,
+            run_cascade,
+        )
+
         verified_env = maybe_verified_ask(
             question,
             space_id=space_id,
@@ -353,12 +380,47 @@ class Executor:
         )
         if verified_env is not None:
             return verified_env
+
+        # The grant decides what the cascade may open, never the request.
+        #
+        # This read ``tables or grantable_tables(...)`` and ``tables`` is the
+        # request body's grounded_tables, unvalidated at this point. The later
+        # grant check in demo_acl caught it on the answering path, but a blocked
+        # cascade returns 200 before ever reaching that check, and the abstain
+        # envelope carries up to twelve distinct values per scanned column in
+        # its evidence. A caller naming a table this Space cannot read got its
+        # column values back from an endpoint that answers 403 for the same
+        # table one line later. Intersecting here is the fix; the request may
+        # narrow the grant and may never widen it.
+        granted = self.grantable_tables(space_id=space_id)
+        requested = [t for t in (tables or []) if t in set(granted)]
+        cascade = (
+            run_cascade(
+                question,
+                warehouse=ensure_demo_warehouse(self._warehouse),
+                tables=requested or granted,
+            )
+            if cascade_enabled()
+            else CascadeOutcome(engaged=False)
+        )
+        if cascade.blocked_at is not None:
+            return cascade_abstain_envelope(
+                cascade,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                # What was actually read, not what was asked for. Echoing the
+                # request's own list put an ungranted table name on the envelope
+                # as though the answer had been grounded on it.
+                grounded_tables=requested,
+            )
+
         question = with_grounded_scope(question, tables)
         bronze_env = maybe_bronze_sheet_ask(
             question, space_id=space_id, session_id=session_id
         )
         if bronze_env is not None:
-            return bronze_env
+            return attach_cascade(bronze_env, cascade)
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
@@ -384,14 +446,17 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
-        return map_ask_response_to_envelope(
-            resp,
-            space_id=space_id,
-            session_id=acl.session_id,
-            # The manifest that was actually minted, so the count the viewer
-            # reads comes from the grant and not from the request.
-            grounded_tables=sorted(acl.row_predicates),
-            question=question,
+        return attach_cascade(
+            map_ask_response_to_envelope(
+                resp,
+                space_id=space_id,
+                session_id=acl.session_id,
+                # The manifest that was actually minted, so the count the viewer
+                # reads comes from the grant and not from the request.
+                grounded_tables=sorted(acl.row_predicates),
+                question=question,
+            ),
+            cascade,
         )
 
     def submit_sql(
