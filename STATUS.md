@@ -29,7 +29,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | Ontology (#68) | `scripts/ontology.py` grain guard - refuses fan-out, ambiguous and unverified roll-ups; multi-hop; `via=`; a blocked short route refuses rather than silently taking a longer one |
 | Engine bench | 811 answerable over 494 shapes, **0 disagreements with an independent oracle**. Bound ~0.61% on shapes (R-0010) - **but the corpus is 3 variants of ONE schema family**: AdventureWorksLT2022 shares 9 of its 12 table names with AW2025, and DW2025 is the same fictional company as a star schema. Every declared key is correct **by construction** (110 PKs unique, 146 FKs no orphans), so the four failure classes that decide customer viability - FK on the wrong column, orphan rows, duplicate business key behind a clean surrogate, a column whose name lies - **cannot occur in it**. On the honest coarse unit (3 databases) the bound is 100%. Falsified: LEFT->INNER exits 1 |
 | Free-form | **Not a measurement.** Quote "no recorded green run" until Cortex#11 closes the engine half of F40 (R-0011). DMS half is closed (#66): `map_ask_response_to_envelope` demotes `route=refused` even when badge is `session`. `repro_refused_badge.py` LINK 2 is that map; exit 1 = DMS half closed. LINK 1 is Cortex#11 |
-| Bench in CI | **Fixture vs lake CLI (R-0011).** `tests/test_ontology_bench.py` (6 in-process cases, no parquet lake) is collected by `pytest tests/` and GitHub `.github/workflows/ci.yml` already runs that. Lake CLI `scripts/ontology_bench.py` (896 cases / 494 shapes) is **not** a GitHub job. F42 / #35 CI-ACCURACY queued. Local 2026-08-28: **488 passed, 31 skipped** (17m55s). `try_changes` 36/36. `score_answers --oracle-only` exit 0. `verify_freeform_demo --self-check` red: warehouse drift |
+| Bench in CI | **Fixture vs lake CLI (R-0011).** `tests/test_ontology_bench.py` is in `pytest tests/`. Lake CLI `scripts/ontology_bench.py` is **not** a GitHub job. **F42 / #35 CLOSED**: `score_answers --oracle-only` is a CI step and can fail (empty docs exit 1). `verify_freeform_demo --self-check` is still not CI (warehouse drift). Local 2026-08-28: **488 passed, 31 skipped** |
 | AW lake | 114 tables, 146 links held, 110 objects. Compiled revenue == oracle, conserves to 123.2M. **Never read by `apps/` or `packages/`** |
 | Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
 | Local CI parity | `bash scripts/ci_local.sh all`; `python scripts/try_changes.py [--live]` - 41 checks, each states what it does *not* prove |
@@ -49,9 +49,9 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | MCP-01 (#20) behind `DMS_MCP=0` on `cursor/xlsx-mcp-01`. EPIC-016 #32 golden gate green; Pointer paste still P-DMS-36. |
-| **F73** | Accuracy = 017/018/019. Surface = cream/graphite modes (queued). Delivery = 016/019/022 gated. Do not merge Constructor with `scripts/ontology.py`. |
-| Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)** - DR-0005 pair. #112 CLOSED. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). EPIC-003 (#6) + EPIC-017 (#33) QUEUED. #59 CLOSED. EPIC-018 QUEUED |
+| **This tick** | MCP-01 (#20) PR #153 behind DMS_MCP=0. EPIC-016 #32 golden gate green; Pointer paste still P-DMS-36. |
+| **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
+| Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)**. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (live /health hung). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
 | CI / PRs | LINEAGE-01 on `cursor/lineage-01-promote-receipts-3103`. Parks stay parked. Floor: Cortex#44. |
 
