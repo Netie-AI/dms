@@ -31,6 +31,23 @@ Append-only. Never edited, only added to. Newest first.
   word for a location. Seven of the product's own questions are held to no
   engagement by test. Steward-registered verified queries run before the
   cascade and are not gated.
+- **Claim, narrowed after an independent run (R-0003).** The cascade certifies
+  that an encoding exists and how the column spells it. It does **not** check
+  that the executed query used that spelling, because DMS passes the question
+  to Cortex unmodified. So the delivered guarantee is "abstains on a missing
+  encoding, and discloses the landed spellings", not "never a confident wrong
+  filter". Closing the rest is new work in its own ticket, not a widening of
+  this epic. See `docs/subagents_findings/2026-09-05_cca-certifies-spelling-not-sql.md`.
+- **Seven defects that run found, all fixed.** A `market` column of US city
+  codes certified Laos out of `LA`; negation read backward only and inverted
+  "residential excluded, commercial included"; a named-country exclusion was
+  dropped and then contradicted; two granted columns produced a predicate
+  naming one and listing both; "Not present in this data" was said of a
+  spelling the pack merely did not know; a stage with no recognised term
+  claimed the ask made no such constraint; and 25 of 36 ordinary domain
+  questions engaged the cascade and then abstained. The last one is structural:
+  `cca/intent.py` decides per alias whether a term names a filter anywhere or
+  only next to a cue, one rule for all four stages.
 - **RSF-02 (#140).** Typed research/segment/classify/filter artifact schema in
   `dms_core`, beside the CCA schemas, carrying `chosen_option` and a route
   decision trace. DMS half only; the Cortex consumer types are not in this repo

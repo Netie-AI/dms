@@ -16,14 +16,27 @@ what is missing. A stage that abstains stops the cascade: no SQL runs for that
 ask as a certified answer, and the customer is told which binding was missing
 rather than handed a confident wrong number.
 
-What this module does not do
-----------------------------
-It does not build SQL, pick a grain, or verify an ontology. Its authority ends
-at the filters it certified. Once the prefix is certified, the existing ask path
-runs unchanged and the trace rides along on the envelope, so ``grain``,
-``ontology`` and ``sql`` stay absent from the trace rather than claiming a
-certification this module did not earn (CCA-01 blocks a later CERTIFIED stage
-after a missing one, which is exactly the right reading).
+What this module does not do, stated plainly because it was overclaimed once
+---------------------------------------------------------------------------
+It does not build SQL, pick a grain, or verify an ontology, and **it does not
+check that the executed query used the spelling it certified.** ``live_ask``
+passes the question to Cortex unmodified; ``binding_text()`` reaches the trace
+and the assumptions, and nothing else. So a certified cascade and a wrong filter
+can coexist, and an independent run demonstrated it: an ask naming Malaysia
+returned L0_CERTIFIED over SQL filtering ``country = 'Malaysia'`` against a
+column encoded ``MY``.
+
+What this module therefore guarantees is narrower than "never a confident wrong
+filter". It is: an ask whose terms cannot be bound to landed values abstains
+before L0 naming the missing encoding, and an ask whose terms do bind carries a
+trace naming the table, the column, the landed spellings and what was left out.
+Closing the rest needs either typed constraints on the wire to Cortex or a
+DMS-side check of ``sql_used`` against the certified values. Both are new work,
+neither is in this epic, and neither should be smuggled in as a widening of it.
+
+``grain``, ``ontology`` and ``sql`` stay absent from the trace rather than
+claiming a certification this module did not earn (CCA-01 blocks a later
+CERTIFIED stage after a missing one, which is exactly the right reading).
 
 A question that constrains none of these stages does not engage the cascade at
 all. Not engaging is not a silent pass: ``engaged`` is False, no trace is

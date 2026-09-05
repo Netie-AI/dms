@@ -42,7 +42,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
 | **#25 SPACE-UI (#90)** | Runs/Amend send `space_id`; Library/Studio clear on Space switch |
 | **#23 RAG-04 (#94)** | Customer envelope asserts text, rows, sources on `POST /v1/chat/ask` |
-| **EPIC-CCA** (#148) | Cascade binds sense/class/segment/geo to landed values before L0. Certify or abstain naming the missing binding, never a confident wrong filter. Pack proposes, data decides, exact match on a normalised form. CCA-02/03/04/05/07/08 + RSF-02 landed; **CCA-06 eval corpus open**. Guard the other way: 7 product questions held to no engagement after "capacity of warehouse A" abstained (F-2026-09-05) |
+| **EPIC-CCA** (#148) | Cascade binds sense/class/segment/geo to landed values before L0. **Claim is narrower than the ticket wording**: it abstains on a missing encoding and discloses the landed spellings; it does **not** check the executed SQL used them (F-2026-09-05 spelling-not-sql; verify-after-the-fact is its own ticket). CCA-02..08 + RSF-02 landed, corpus 16/16 answered 100 pct precision. R-0003 found 7 defects, all fixed in `ca070af`; `cca/intent.py` is the plain/strict rule that stopped 25 of 36 product questions abstaining |
 
 ## Open next
 
