@@ -19,6 +19,7 @@ from dms_api.routes import (
     chat,
     health,
     library,
+    mcp,
     ontology,
     ping,
     pipelines,
@@ -150,6 +151,8 @@ def create_app() -> FastAPI:
     app.include_router(trust.router)
     app.include_router(runs.router)
     app.include_router(admin.router)
+    if settings.dms_mcp:
+        app.include_router(mcp.router)
     return app
 
 

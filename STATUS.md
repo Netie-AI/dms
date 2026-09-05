@@ -49,9 +49,9 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | EPIC-019 residual F83 (#38): VQ L0 needs Cortex submit+ledger. VQ-01/02 children CLOSED; epic stays INCOMPLETE without live Cortex. |
+| **This tick** | F83 on main (#152): VQ L0 needs Cortex submit+ledger. MCP-01 (#20/#153) behind `DMS_MCP=0`. EPIC-008 #8 OPEN (ask 503 OV sealed; ingest missing openpyxl). |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
-| Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)**. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (live `/health` hung). |
+| Epics | **In flight: EPIC-020 (#108)**. Open: **#116**. **#6 #33 #35 CLOSED**. |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
 | CI / PRs | LINEAGE-01 on `cursor/lineage-01-promote-receipts-3103`. Parks stay parked. Floor: Cortex#44. |
 

@@ -15,6 +15,17 @@ Append-only. Never edited, only added to. Newest first.
   submit and hash==entry_id fall through to ask. No product regex for F32.
   dms#38 residual. Live Cortex still required to close the epic.
 
+## 2026-09-05 - MCP-01 tools wrap existing HTTP (EPIC-014, flag off)
+
+- **MCP-01 (#20).** `GET /v1/mcp/tools` and `POST /v1/mcp/call` expose `ask`,
+  `preview`, and `list_metrics` by calling the same handlers as
+  `POST /v1/chat/ask`, warehouse preview, and `GET /v1/ontology/metrics`.
+- **Flag.** `DMS_MCP=0` by default: the router is not mounted. Swap: IDE MCP
+  client. No new serving engine, no CortexOS import, no cortex-contract bump
+  (`McpCallIn` name+arguments already exists).
+- **Gate.** `POST /v1/mcp/call` calls `compliance_gate`; preview still refuses
+  ungranted tables. Tests assert badge/values/rows match the HTTP path.
+
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 
 - **Binder.** One matching rule for every cascade stage
