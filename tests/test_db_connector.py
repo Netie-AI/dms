@@ -328,7 +328,7 @@ def test_declared_fk_that_the_data_violates_is_refused(
     import duckdb
 
     sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "scripts"))
-    from ontology import Refusal, from_manifest
+    from dms_executor.ontology import Refusal, from_manifest
 
     _install(monkeypatch, _fanout_source())
     extracted = dbc.ingest_source_database(_cfg(), path=wh)
@@ -415,7 +415,7 @@ def test_a_declared_fk_the_data_supports_is_compiled_not_refused(
     import duckdb
 
     sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "scripts"))
-    from ontology import Refusal, from_manifest
+    from dms_executor.ontology import Refusal, from_manifest
 
     _install(monkeypatch, _clean_source())
     extracted = dbc.ingest_source_database(_cfg(), path=wh)

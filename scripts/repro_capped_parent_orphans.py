@@ -8,14 +8,14 @@ the child rows that pointed at the cut parents become orphans **the source never
 had**. ``truncated: true`` lands on the receipt and the preview; it never
 reaches the semantic layer.
 
-``Ontology.verify()`` (``scripts/ontology.py:252``) measures three claims -
+``Ontology.verify()`` (``packages/executor/dms_executor/ontology.py``) measures three claims -
 ``key_unique``, ``key_not_null``, and parent-side ``link_cardinality``. The
 child side is read only to prove its declared columns exist
 (``SELECT {child_cols} FROM {child} LIMIT 0``, ~``:311``). **Referential
 integrity is never measured, and no Violation class for it exists.** So a
 capped parent leaves an ontology that verifies clean.
 
-The compiler then emits ``LEFT JOIN`` on purpose (``:636``) so that no fact row
+The compiler then emits ``LEFT JOIN`` on purpose (its ``_join_chain``) so that no fact row
 is dropped. That protects the grand total and makes the per-group numbers wrong:
 every orphaned order is attributed to a NULL region instead of the region the
 source actually gave it. The emitted note reads "verified many-to-one, so no
@@ -37,14 +37,9 @@ truth with nothing said). Exit 0 = something now catches it.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import duckdb
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from ontology import Ontology  # noqa: E402
+from dms_executor.ontology import Ontology
 
 CAP = 1000
 N_CUSTOMERS = 1100

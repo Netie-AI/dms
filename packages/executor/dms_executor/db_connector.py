@@ -134,7 +134,7 @@ class SourceKeys:
     A declared foreign key says a value should exist in the parent. It does not say
     the parent side is unique on those columns, and uniqueness is the only property
     that makes a join safe to group through. So these are read here and handed to
-    ``scripts/ontology.py``, which starts every link ``unverified`` and refuses to
+    ``dms_executor.ontology``, which starts every link ``unverified`` and refuses to
     use it until it has measured it against the landed rows (DR-0005, EPIC-020).
     """
 
@@ -142,7 +142,7 @@ class SourceKeys:
     foreign_keys: tuple[ForeignKey, ...]
 
     def manifest_entry(self, pulls: list[SourcePull], *, source: str) -> dict[str, Any]:
-        """The shape ``scripts/ontology.py:from_manifest`` consumes.
+        """The shape ``dms_executor.ontology.from_manifest`` consumes.
 
         ``path`` carries the bronze table name rather than a parquet path; the caller
         supplies ``relation_for`` so the compiler reads ``bronze.<table>``.
@@ -559,7 +559,7 @@ def ingest_source_database(
     never dropped in silence.
 
     What this returns is deliberately NOT an ontology. The keys are claims from the
-    source's catalog; ``scripts/ontology.py:from_manifest`` turns them into objects and
+    source's catalog; ``dms_executor.ontology.from_manifest`` turns them into objects and
     links, and ``verify()`` measures every link before ``compile()`` will use it. This
     function is the end of "collect" and the start of "understand" - it does not
     finish the second.
