@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (sqlsrc-08-bridge-landed).
+PREFLIGHT for this goal: PARTIAL (sqlsrc-08-bridge-landed; sqlsrc-09-studio-form).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-06 | sqlsrc-09-studio-form | SQLSRC-09, Studio, sql source, dms-158, empty 500, password | Form POSTs /v1/studio/sources/sql. Empty proxy 500 hid the error until describeApiError always returned a sentence. Password request-only and redacted. | `2026-09-06_sqlsrc-09-studio-form.md` |
 | 2026-09-06 | capped-parent-orphans | F-0046, SQLSRC-07, dms-157, verify, max_rows, orphan, fk_intact, EPIC-020 | `verify()` had no RI claim, so a parent cap invented orphans LEFT JOIN misattributed while the total reconciled. Claim is now `fk_intact`; truncated is threaded through the manifest, not the bronze registry. | `2026-09-06_capped-parent-orphans.md` |
 | 2026-09-06 | sqlsrc-08-bridge-landed | SQLSRC-08, dms-156, dms-157, EPIC-020, ontology, verify_source_links, extract-only, DR-0005, R-0003 | Layer moved to `dms_executor`; `POST /v1/studio/sources/sql` measures every declared link on the receipt. Bench unchanged 896/494/811/0. First draft put duckdb in `db_connector` and `test_extract_only` caught it - fix the code's location, never the gate. **Not verified by this run** (R-0003); #116 re-run is the verifying step. | `2026-09-06_sqlsrc-08-bridge-landed.md` |
 | 2026-09-05 | epic-025-chain-readback | EPIC-025, ledger.verify, gold promote, is_signed, dms#87 | Verify at the gold GATE, not only at sign. Unreachable Cortex refuses. Contract 1.2.0 has no get-entry. | `2026-09-05_epic-025-chain-readback.md` |
