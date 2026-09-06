@@ -2,6 +2,37 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-07 - a capped parent refuses the join it invented orphans in (SQLSRC-07, #157)
+
+- **`verify()` counts the child side.** It measured three claims and referential
+  integrity was not one of them - the child was touched only to prove its
+  declared columns exist. So an extract missing 100 of 1100 parent rows verified
+  clean, and the compiler's `LEFT JOIN` (correct, and written to stop a silent
+  shortfall) put every orphaned fact row in a NULL group. Each named group came
+  out understated while the grand total reconciled exactly, and the total is the
+  first number anyone checks.
+- **A capped parent refuses; a whole parent discloses.** `verify()` reads a
+  DuckDB connection and cannot tell a source that was always dirty from one we
+  cut ourselves, so the fact is passed in: `verify_source_links` fills
+  `capped_relations` from `SourcePull.truncated`. When the parent was capped the
+  link is refused by name and left unverified. When it was landed whole the
+  orphans point at members that genuinely do not exist, no named group is wrong,
+  and refusing would be a control rejecting legitimate work (R-0005) - so it is
+  disclosed on the receipt instead. Both cases report the counts.
+- **Two long-standing reds fixed at the class, neither a test problem.**
+  `SELECT DISTINCT` has no ordering guarantee - four values came back in ten
+  orders across twelve runs - and that order reached the customer through the
+  `IN (...)` predicate a steward reads, so the same question did not produce the
+  same receipt twice. `ORDER BY 1` at both sites. Separately, a spawned test
+  child was re-importing the whole application to hold a file lock, costing
+  ~2.3 s before its first statement and blowing a 10 s barrier under load; it now
+  gets only duckdb.
+- **Suite: 814 passed, 1 skipped, 0 failed** (783 plus 31 control_plane against a
+  local Postgres), and the run went from about 17 minutes to 5:09. The single
+  skip is the live ask test, which 503s naming OpenVault's sealed vault and
+  **does not fall back to demo numbers** - hard rule 11 holding on the customer
+  path, observed rather than asserted.
+
 ## 2026-09-06 - the declared join is measured against the landed rows (SQLSRC-08, #156)
 
 - **The semantic layer moved into `dms_executor`.** It lived in `scripts/`,

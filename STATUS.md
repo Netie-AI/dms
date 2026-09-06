@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-09-06  
+**Last updated:** 2026-09-07  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -49,11 +49,11 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **OpenVault is SEALED** (`/api/vault/status` -> `sealed:true` on :5000). Only your passphrase unseals it, and until it is unsealed live `/v1/chat/ask` 503s `live_ask_failed`, so **nobody can run #116's ask block** - not an agent problem. **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Cortex :8012 down, :8010 up as pack `ruma` |
-| **This tick** | **#156 SQLSRC-08 landed** on `feat/sqlsrc-08-ontology-on-the-route`: the semantic layer moved into `dms_executor` and `POST /v1/studio/sources/sql` now measures every declared link against the landed rows and names it on the receipt. It had built the manifest `from_manifest` consumes and dropped it - `verify()` had never run on a customer extract. Bench unchanged: 896 / 494 / 811 / 0. **#157 SQLSRC-07 next** - `verify()` still has no referential-integrity claim. **#116 re-run is the verifying step and is not this session's** (R-0003). |
+| **This tick** | **#156 + #157 both landed** on `feat/sqlsrc-08-ontology-on-the-route`. The layer moved into `dms_executor`; `POST /v1/studio/sources/sql` measures every declared link on the receipt; `verify()` now counts the child side and a **capped parent refuses by name** while a whole parent discloses (R-0005 - the existing LEFT JOIN tests were right, so only the cap refuses; overrule is one line). Bench unchanged 896 / 494 / 811 / 0. **#116 re-run is the verifying step and is not this session's** (R-0003). |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
-| Epics | Re-derived from `gh` 2026-09-06: **EPIC-024 (#109) CLOSED**. **EPIC-020 (#108)** open on **#116 #156 #157**; clause 2 ("refuse, naming the link") bars COMPLETE until #157. **EPIC-CCA (#132)** open, #133-#140 closed, cascade still OFF. **VQ-02 #40 CLOSED** (merged #131). EPIC-008 #8 OPEN (live `/health` hung). |
+| Epics | **EPIC-024 (#109) CLOSED**. **EPIC-020 (#108)** open on **#116** alone once #156 + #157 merge; clause 2 is now derivable AND delivered, so COMPLETE turns on #116's re-run, which needs the vault. **EPIC-CCA (#132)** open, #133-#140 closed, cascade still OFF. **VQ-02 #40 CLOSED**. EPIC-008 #8 OPEN. |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | `chore/consolidate-dms` + `feat/sqlsrc-08-...` pushed, no PR opened yet. **Two reds pre-date this work** (reproduced at `2d0455ff9`): `test_cca_geo` asserts a tuple order nothing guarantees, `test_pipeline_receipts` writer never takes the lake lock. Parks stay parked. Floor: Cortex#44. |
+| CI / PRs | `feat/sqlsrc-08-...` pushed, **no PR opened yet**. Suite **814 passed / 0 failed** (783 + 31 control_plane against a throwaway Postgres; run time 17 min -> 5:09). Both pre-existing reds fixed at the class: `SELECT DISTINCT` has no order guarantee and that order reached the customer's `IN (...)`; a spawned child re-imported the whole app to hold a file lock. Parks stay parked. Floor: Cortex#44. |
 
 ## Agent models
 
