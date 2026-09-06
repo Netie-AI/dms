@@ -101,7 +101,7 @@ def test_the_bench_reports_an_inner_join_regression(lake, monkeypatch) -> None: 
     Order 4 points at a customer that is not there. A left join keeps it under
     a NULL label; an inner join drops it and every total is short by 7.
     """
-    from ontology import Ontology
+    from dms_executor.ontology import Ontology
 
     c, manifest = lake
     real = Ontology._join_chain

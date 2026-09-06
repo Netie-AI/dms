@@ -196,7 +196,7 @@ def _candidate_objects(onto: Any, grain: str) -> list[tuple[str, dict[str, str] 
 
 
 def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
-    from ontology import CompiledQuery, Refusal, from_manifest
+    from dms_executor.ontology import CompiledQuery, Refusal, from_manifest
 
     db = str(entry["database"])
     onto = from_manifest(entry, lake_root=ROOT)

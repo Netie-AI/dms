@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from ontology import (  # noqa: E402
+from dms_executor.ontology import (  # noqa: E402
     CompiledQuery,
     Ontology,
     Refusal,
@@ -330,7 +330,7 @@ def lake(tmp_path: Path):  # noqa: ANN201
 
 
 def test_objects_and_links_are_derived_from_the_database_declarations(lake) -> None:  # noqa: ANN001
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     o = from_manifest(manifest, lake_root=root)
@@ -348,7 +348,7 @@ def test_a_derived_link_is_unusable_until_it_has_been_measured(lake) -> None:  #
     starts unverified and compile() refuses it.
     """
     import duckdb
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     o = from_manifest(manifest, lake_root=root)
@@ -378,7 +378,7 @@ def test_the_measured_hazard_blocks_the_grouping_a_declared_fk_would_have_allowe
     from 60 to 90 - and nothing about the foreign key would have warned anyone.
     """
     import duckdb
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     o = from_manifest(manifest, lake_root=root)
@@ -412,7 +412,7 @@ def test_the_measured_hazard_blocks_the_grouping_a_declared_fk_would_have_allowe
 
 def test_a_table_with_no_primary_key_becomes_no_object(lake) -> None:  # noqa: ANN001
     """A thing that cannot identify one of itself is not an object type."""
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     manifest = {**manifest, "primary_keys": {"Sales.Orders": ["order_id"]}}
@@ -620,7 +620,7 @@ def test_a_derived_ontology_emits_sql_that_actually_runs(lake) -> None:  # noqa:
     used.
     """
     import duckdb
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     # Make the parent unique so the grouping is permitted and reaches execution.
@@ -687,7 +687,7 @@ def test_two_constraints_sharing_a_name_stay_two_links(lake) -> None:  # noqa: A
     a single link holding the columns of both - which verify() then measured and
     blessed as many-to-one.
     """
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     manifest = {
