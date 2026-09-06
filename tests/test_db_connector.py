@@ -322,12 +322,8 @@ def test_declared_fk_that_the_data_violates_is_refused(
     wh: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Collect and understand: the source says the join is safe; the rows say it is not."""
-    import sys
-    from pathlib import Path as _Path
-
     import duckdb
 
-    sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "scripts"))
     from dms_executor.ontology import Refusal, from_manifest
 
     _install(monkeypatch, _fanout_source())
@@ -409,12 +405,8 @@ def test_a_declared_fk_the_data_supports_is_compiled_not_refused(
     above and read as a working guard. The guard must pass the join the data supports,
     and the number it compiles must equal the ungrouped truth.
     """
-    import sys
-    from pathlib import Path as _Path
-
     import duckdb
 
-    sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "scripts"))
     from dms_executor.ontology import Refusal, from_manifest
 
     _install(monkeypatch, _clean_source())

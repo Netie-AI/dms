@@ -38,6 +38,7 @@ from dms_executor.db_connector import (
     SourceConnectionError,
     UnknownSourceTable,
     ingest_source_database,
+    verify_source_links,
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
@@ -737,6 +738,7 @@ __all__ = [
     "UnknownSourceTable",
     "ingest_csv_bytes",
     "ingest_source_database",
+    "verify_source_links",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

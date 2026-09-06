@@ -243,6 +243,17 @@ def sql_source_ingest(
             status_code=400,
             detail={"code": "bad_request", "message": str(exc)},
         ) from None
+    # EPIC-020 clause 2's last two verbs. Before SQLSRC-08 (#156) the manifest
+    # the ontology consumes was built, put in this receipt, and dropped, so
+    # "measure every link's cardinality against the landed rows, and refuse -
+    # naming the link - any link the data violates" ran on no path a customer
+    # could reach. It runs here because this is the layer they receive from
+    # (R-0001); a refusal derivable only from a bench script is not delivered.
+    #
+    # It never raises: a link that cannot be measured is reported unverified,
+    # the same outcome as one measured and found broken. The rows landed and
+    # their provenance is real - only the join is in question.
+    links = dms_executor.verify_source_links(extract)
     return {
         "source": extract.source,
         "tables": [
@@ -258,6 +269,7 @@ def sql_source_ingest(
         "skipped": list(extract.skipped),
         "declared_primary_keys": len(extract.keys.primary_keys),
         "declared_foreign_keys": len(extract.keys.foreign_keys),
+        "links": links,
     }
 
 

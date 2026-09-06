@@ -184,3 +184,85 @@ def test_connect_failure_is_502_without_driver_text(
     assert SECRET not in r.text
     assert "reader@" not in r.text
     assert not _secret_leaked(r.text, caplog, warehouse)
+
+
+# --- SQLSRC-08 (#156): the refusal reaches the receipt ----------------------
+
+
+def test_receipt_reports_the_measured_cardinality_of_every_declared_link(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0001, on the artifact the customer receives.
+
+    EPIC-020 clause 2 promises the system will "measure every link's cardinality
+    against the landed rows, and refuse - naming the link - any link the source
+    declares that the data violates". Until #156 the manifest the ontology
+    consumes was built, put in this receipt, and dropped: ``verify()`` ran on no
+    path a customer could reach, so the promise was underivable rather than
+    merely undelivered.
+
+    The source here declares ``orders.cust_ref -> customers.cust_ref`` while
+    ``customers`` is keyed on ``(cust_ref, version)`` and carries two versions of
+    C1. The declaration is not a lie about the schema - it is a lie about what
+    the join does to a measure, inflating C1's revenue from 30 to 45. The receipt
+    has to say so at the link, by name.
+    """
+    from test_db_connector import _fanout_source
+
+    _gate_allows(monkeypatch)
+    _install(monkeypatch, _fanout_source())
+
+    r = TestClient(create_app()).post("/v1/studio/sources/sql", json=_body())
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    links = body["links"]
+    assert links["measured"] is True, links
+    by_name = {link["name"]: link for link in links["links"]}
+    assert "FK_Orders_Customers" in by_name, by_name
+
+    fk = by_name["FK_Orders_Customers"]
+    # The whole point. "many_to_one" here would be the layer certifying a join
+    # that inflates the measure, which is exactly what a declared-but-unmeasured
+    # foreign key buys you.
+    assert fk["cardinality"] == "many_to_many", fk
+    assert fk["max_fanout"] == 2, fk
+    assert fk["from"] == "dbo.orders"
+    assert fk["to"] == "dbo.customers"
+    assert fk["from_columns"] == ["cust_ref"]
+    assert fk["to_columns"] == ["cust_ref"]
+
+    # The rows still landed. A join we refuse to group through is not a reason to
+    # throw away an extract whose provenance is real.
+    assert {t["bronze_table"] for t in body["tables"]} == {
+        "bronze.dbo_orders",
+        "bronze.dbo_customers",
+    }
+    assert body["declared_foreign_keys"] == 1
+
+
+def test_a_source_declaring_no_foreign_keys_is_not_reported_as_verified(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0011: nothing to measure must not read as measured and clean.
+
+    A source with no declared foreign keys has told us nothing about its joins.
+    Returning ``verified: true`` over an empty claim set is the silent fallback
+    that rule names - a green result standing in for an absent measurement - and
+    it is the shape a steward would read as "the joins are safe".
+    """
+    _gate_allows(monkeypatch)
+    _install(
+        monkeypatch,
+        _FakeConnection([("dbo", "orders")], (["order_id", "amount"], [["A-1", "10.50"]])),
+    )
+
+    r = TestClient(create_app()).post("/v1/studio/sources/sql", json=_body())
+    assert r.status_code == 200, r.text
+    links = r.json()["links"]
+
+    assert links["measured"] is False, links
+    assert links["verified"] is False, links
+    assert "no foreign keys" in links["reason"], links
+    assert links["links"] == []
+    assert links["violations"] == []
