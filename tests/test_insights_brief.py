@@ -150,7 +150,7 @@ def test_a_non_conserving_grouping_fails_the_run_rather_than_being_dropped(
     """
     c, manifest, root = lake
     _with_measure(monkeypatch, root)
-    from ontology import CompiledQuery, Ontology
+    from dms_executor.ontology import CompiledQuery, Ontology
 
     orders = (root / "db" / "Sales.Orders.parquet").as_posix()
     real_compile = Ontology.compile

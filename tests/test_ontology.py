@@ -18,17 +18,14 @@ assertions.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-
-from ontology import (  # noqa: E402
+from dms_executor.ontology import (
     CompiledQuery,
     Ontology,
     Refusal,
+    from_manifest,
 )
 
 
@@ -258,12 +255,12 @@ def test_a_string_literal_with_a_quote_is_escaped_not_interpolated(con) -> None:
 
 
 def test_a_dimension_join_is_left_not_inner(con) -> None:  # noqa: ANN001
-    """An inner join silently drops fact rows whose key is absent from the dim.
+    """An inner join silently drops fact rows whose key is optional/NULL.
 
-    That shrinks a total with nothing looking wrong, which is the same class of
-    defect as inflating it and is far harder to notice.
+    Non-NULL dangling keys are orphans (SQLSRC-07) and refuse the link. LEFT
+    JOIN still exists so a NULL child key - an optional FK - stays in the total.
     """
-    con.execute("INSERT INTO sales VALUES ('T3','SKU-9','Nowhere',7)")
+    con.execute("INSERT INTO sales VALUES ('T3','SKU-1',NULL,7)")
     o = _ontology()
     o.verify(con)
     got = o.compile("revenue", group_by=[("region", "country")])
@@ -330,7 +327,7 @@ def lake(tmp_path: Path):  # noqa: ANN201
 
 
 def test_objects_and_links_are_derived_from_the_database_declarations(lake) -> None:  # noqa: ANN001
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     o = from_manifest(manifest, lake_root=root)
@@ -348,7 +345,7 @@ def test_a_derived_link_is_unusable_until_it_has_been_measured(lake) -> None:  #
     starts unverified and compile() refuses it.
     """
     import duckdb
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     o = from_manifest(manifest, lake_root=root)
@@ -378,7 +375,7 @@ def test_the_measured_hazard_blocks_the_grouping_a_declared_fk_would_have_allowe
     from 60 to 90 - and nothing about the foreign key would have warned anyone.
     """
     import duckdb
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     o = from_manifest(manifest, lake_root=root)
@@ -412,7 +409,7 @@ def test_the_measured_hazard_blocks_the_grouping_a_declared_fk_would_have_allowe
 
 def test_a_table_with_no_primary_key_becomes_no_object(lake) -> None:  # noqa: ANN001
     """A thing that cannot identify one of itself is not an object type."""
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     manifest = {**manifest, "primary_keys": {"Sales.Orders": ["order_id"]}}
@@ -620,7 +617,7 @@ def test_a_derived_ontology_emits_sql_that_actually_runs(lake) -> None:  # noqa:
     used.
     """
     import duckdb
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     # Make the parent unique so the grouping is permitted and reaches execution.
@@ -687,7 +684,7 @@ def test_two_constraints_sharing_a_name_stay_two_links(lake) -> None:  # noqa: A
     a single link holding the columns of both - which verify() then measured and
     blessed as many-to-one.
     """
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     manifest, root = lake
     manifest = {
@@ -1089,7 +1086,7 @@ def test_a_null_parent_key_does_not_make_a_unique_link_many_to_many() -> None:
     c = duckdb.connect(":memory:")
     try:
         c.execute("CREATE TABLE f (id INTEGER, k INTEGER, amt DOUBLE)")
-        c.execute("INSERT INTO f VALUES (1, 1, 100), (2, 2, 50), (3, 9, 25)")
+        c.execute("INSERT INTO f VALUES (1, 1, 100), (2, 2, 50), (3, NULL, 25)")
         c.execute("CREATE TABLE d (k INTEGER, name VARCHAR)")
         c.execute("INSERT INTO d VALUES (1, 'ex'), (2, 'why'), (NULL, 'ghost')")
         o = Ontology()
@@ -1177,3 +1174,148 @@ def test_an_unused_via_is_refused_not_ignored(con) -> None:  # noqa: ANN001
     assert got.reason == "unused_via"
     typo = o.compile("revenue", group_by=[("region", "country")], via={"product": "no_such"})
     assert isinstance(typo, Refusal) and typo.reason == "unknown_link"
+
+
+# --------------------------------------------------------------------------
+# SQLSRC-07 (#157): referential integrity - a cap must not invent silent orphans
+# --------------------------------------------------------------------------
+
+
+def _region_shape(con, *, truncated_parent: bool) -> Ontology:  # noqa: ANN001
+    """Four regions, half the orders on customers a cap would cut.
+
+    Source truth: each named region 400, total 1600. After a parent cap that
+    lands only C1-C4, LEFT JOIN answers 200 per named region and 800 under
+    NULL - the grand total still reconciles, which is why the first number a
+    reviewer checks hides the four that are wrong.
+    """
+    con.execute("CREATE TABLE customers (cust_ref VARCHAR, region VARCHAR)")
+    con.execute("CREATE TABLE orders (order_id VARCHAR, cust_ref VARCHAR, amount DOUBLE)")
+    con.execute(
+        "INSERT INTO customers VALUES "
+        "('C1','East'),('C2','North'),('C3','South'),('C4','West')"
+        + (
+            ""
+            if truncated_parent
+            else ",('C5','East'),('C6','North'),('C7','South'),('C8','West')"
+        )
+    )
+    con.execute(
+        "INSERT INTO orders VALUES "
+        "('O1','C1',200),('O2','C2',200),('O3','C3',200),('O4','C4',200),"
+        "('O5','C5',200),('O6','C6',200),('O7','C7',200),('O8','C8',200)"
+    )
+    o = Ontology()
+    o.add_object("customer", "customers", ["cust_ref"], truncated=truncated_parent)
+    o.add_object("order", "orders", ["order_id"])
+    o.add_link("order_customer", "order", ["cust_ref"], "customer", ["cust_ref"])
+    o.add_measure("revenue", "order", "SUM(f.amount)")
+    return o
+
+
+def test_orphans_the_source_never_had_are_a_violation() -> None:
+    """The product path: verify() names the link and leaves it unverified."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        o = _region_shape(c, truncated_parent=True)
+        # The join verify used to bless, executed by hand: named groups lie,
+        # the total does not. That is why a cap-without-a-claim is dangerous.
+        answered = dict(
+            c.execute(
+                "SELECT c.region, SUM(o.amount) FROM orders o "
+                "LEFT JOIN customers c ON o.cust_ref = c.cust_ref GROUP BY c.region"
+            ).fetchall()
+        )
+        assert answered.get("East") == 200.0
+        assert answered.get(None) == 800.0
+        assert sum(answered.values()) == 1600.0
+
+        violations = o.verify(c)
+        assert [v.check for v in violations] == ["fk_intact"]
+        v = violations[0]
+        assert v.subject == "order_customer"
+        assert "4 rows" in v.detail and "4 distinct" in v.detail
+        assert "order" in v.detail and "customer" in v.detail
+        assert "max_rows" in v.detail
+        assert "dirty" not in v.detail
+        assert o.links["order_customer"].cardinality == "unverified"
+        assert not o.verified
+        got = o.compile("revenue", group_by=[("customer", "region")])
+        assert isinstance(got, Refusal)
+        assert got.reason == "ontology_unverified"
+    finally:
+        c.close()
+
+
+def test_orphans_in_the_source_are_a_source_defect_not_a_cap() -> None:
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        o = _region_shape(c, truncated_parent=False)
+        # Drop the last four customers after landing them: dirty source, no cap.
+        c.execute("DELETE FROM customers WHERE cust_ref IN ('C5','C6','C7','C8')")
+        violations = o.verify(c)
+        assert [v.check for v in violations] == ["fk_intact"]
+        assert "max_rows" not in violations[0].detail
+        assert "dirty" in violations[0].detail
+        assert o.links["order_customer"].cardinality == "unverified"
+        assert not o.verified
+    finally:
+        c.close()
+
+
+def test_a_capped_parent_with_no_orphans_is_not_a_violation() -> None:
+    """R-0005: truncated is not itself a reason to refuse a clean join."""
+    import duckdb
+
+    c = duckdb.connect(":memory:")
+    try:
+        c.execute("CREATE TABLE customers (cust_ref VARCHAR, region VARCHAR)")
+        c.execute("CREATE TABLE orders (order_id VARCHAR, cust_ref VARCHAR, amount DOUBLE)")
+        c.execute("INSERT INTO customers VALUES ('C1','East'),('C2','West')")
+        c.execute("INSERT INTO orders VALUES ('O1','C1',10),('O2','C2',20)")
+        o = Ontology()
+        o.add_object("customer", "customers", ["cust_ref"], truncated=True)
+        o.add_object("order", "orders", ["order_id"])
+        o.add_link("order_customer", "order", ["cust_ref"], "customer", ["cust_ref"])
+        o.add_measure("revenue", "order", "SUM(f.amount)")
+        assert o.verify(c) == []
+        assert o.links["order_customer"].cardinality == "many_to_one"
+        assert o.verified
+        got = o.compile("revenue", group_by=[("customer", "region")])
+        assert isinstance(got, CompiledQuery)
+        assert dict(c.execute(got.sql).fetchall()) == {"East": 10.0, "West": 20.0}
+    finally:
+        c.close()
+
+
+def test_from_manifest_threads_truncated_without_reading_bronze(lake) -> None:  # noqa: ANN001
+    """The ontology must not grow a bronze-registry dependency (ticket split)."""
+    manifest, root = lake
+    entry = {
+        **manifest,
+        "tables": [
+            {**t, "truncated": t["table"] == "Customers"} for t in manifest["tables"]
+        ],
+    }
+    o = from_manifest(entry, lake_root=root)
+    assert o.truncated.get("Sales.Customers") is True
+    assert "Sales.Orders" not in o.truncated
+
+
+def test_the_orphan_claim_is_in_verify_and_can_fail() -> None:
+    """R-0007: delete the claim and this test goes red before any fixture runs."""
+    import inspect
+
+    from dms_executor import ontology as onto_mod
+
+    src = inspect.getsource(onto_mod.Ontology.verify)
+    helper = inspect.getsource(onto_mod._orphan_counts)
+    assert "fk_intact" in src
+    assert "_orphan_counts" in src
+    assert "NOT EXISTS" in helper
+    assert "truncated" in src
+

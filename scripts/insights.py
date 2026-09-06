@@ -52,6 +52,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "data" / "lake" / "_reports" / "extract_manifest.json"
+sys.path.insert(0, str(ROOT / "packages" / "executor"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 ABS_TOL = 0.02
@@ -196,7 +197,7 @@ def _candidate_objects(onto: Any, grain: str) -> list[tuple[str, dict[str, str] 
 
 
 def mine(con: Any, entry: dict[str, Any], *, top: int) -> dict[str, Any]:
-    from ontology import CompiledQuery, Refusal, from_manifest
+    from dms_executor.ontology import CompiledQuery, Refusal, from_manifest
 
     db = str(entry["database"])
     onto = from_manifest(entry, lake_root=ROOT)

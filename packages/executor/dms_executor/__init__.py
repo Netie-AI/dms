@@ -78,6 +78,7 @@ from dms_executor.reveal import (
     resolve_allowlisted_file,
     reveal_path,
 )
+from dms_executor.source_links import verify_source_links
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -778,6 +779,7 @@ __all__ = [
     "UnknownSourceTable",
     "ingest_csv_bytes",
     "ingest_source_database",
+    "verify_source_links",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

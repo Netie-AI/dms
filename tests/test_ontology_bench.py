@@ -34,8 +34,9 @@ import ontology_bench as bench  # noqa: E402
 def lake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     """orders -> customer -> region: one two-hop chain, every link many-to-one.
 
-    One order points at a customer that does not exist, so an inner join in
-    place of a left join loses it - the regression this bench must catch.
+    One order has a NULL customer key, so an inner join in place of a left join
+    loses it - the regression this bench must catch. A non-NULL dangling key is
+    an orphan (SQLSRC-07) and would refuse the link before conservation runs.
     """
     import duckdb
 
@@ -43,7 +44,7 @@ def lake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     c = duckdb.connect(":memory:")
     c.execute(
         "COPY (SELECT * FROM (VALUES (1, 1, 100.0), (2, 1, 50.0), (3, 2, 25.0), "
-        "(4, 99, 7.0)) AS t(order_id, cust_id, amount)) TO '"
+        "(4, NULL, 7.0)) AS t(order_id, cust_id, amount)) TO '"
         + (tmp_path / "db" / "S.Orders.parquet").as_posix() + "' (FORMAT PARQUET)"
     )
     c.execute(
@@ -98,10 +99,10 @@ def test_the_bench_generates_multi_hop_cases_and_passes_a_sound_compiler(lake) -
 def test_the_bench_reports_an_inner_join_regression(lake, monkeypatch) -> None:  # noqa: ANN001
     """The defect a conservation check alone cannot see: rows quietly lost.
 
-    Order 4 points at a customer that is not there. A left join keeps it under
-    a NULL label; an inner join drops it and every total is short by 7.
+    Order 4 has a NULL customer key. A left join keeps it under a NULL label;
+    an inner join drops it and every total is short by 7.
     """
-    from ontology import Ontology
+    from dms_executor.ontology import Ontology
 
     c, manifest = lake
     real = Ontology._join_chain

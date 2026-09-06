@@ -108,6 +108,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "data" / "lake" / "_reports" / "extract_manifest.json"
 
+sys.path.insert(0, str(ROOT / "packages" / "executor"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 INTEGER_TYPES = {"BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT",
@@ -437,7 +438,7 @@ class _Run:
     # -- the case runners --------------------------------------------------------
 
     def run_refuse(self, case: _Case, mname: str) -> None:
-        from ontology import Refusal
+        from dms_executor.ontology import Refusal
 
         self._bump(case)
         got = self.onto.compile(mname, group_by=[(case.dim, case.attr)])
@@ -459,7 +460,7 @@ class _Run:
         decides what that means - a real case records pass/fail; the corrupted-
         link self-check expects a disagreement.
         """
-        from ontology import CompiledQuery
+        from dms_executor.ontology import CompiledQuery
 
         if record:
             self._bump(case)
@@ -510,7 +511,7 @@ class _Run:
         return err if err is not None else (None if conserved else cons_err), conserved, got.sql
 
     def run_filtered(self, case: _Case, mname: str) -> None:
-        from ontology import CompiledQuery
+        from dms_executor.ontology import CompiledQuery
 
         self._bump(case)
         got = self.onto.compile(mname, filters=[(case.dim, case.attr, "=", case.value)],
@@ -543,7 +544,7 @@ class _Run:
         """A value no dimension row carries. The compiler's answer must be
         distinguishable from a matched value with zero fact rows; today it is
         a NULL SUM both ways, and that is recorded as a KNOWN GAP, not a pass."""
-        from ontology import CompiledQuery, Refusal
+        from dms_executor.ontology import CompiledQuery, Refusal
 
         self._bump(case)
         got = self.onto.compile(mname, filters=[(case.dim, case.attr, "=", case.value)],
@@ -660,7 +661,7 @@ def generate_and_run(
     max_chains_per_fact: int = 6,
     lake_root: Path | None = None,
 ) -> dict[str, Any]:
-    from ontology import from_manifest
+    from dms_executor.ontology import from_manifest
 
     root = lake_root or ROOT
     db = str(entry["database"])
@@ -905,7 +906,7 @@ def _self_check(run: _Run) -> dict[str, Any]:
     and the conservation leg alone would NOT have (every fact row still lands
     in some group), which is exactly what the docstring says it misses.
     """
-    from ontology import LinkType
+    from dms_executor.ontology import LinkType
 
     tried: list[str] = []
     for case, mname in run.passed_group_cases:
