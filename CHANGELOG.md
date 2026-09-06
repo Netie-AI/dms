@@ -2,6 +2,37 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-06 - the declared join is measured against the landed rows (SQLSRC-08, #156)
+
+- **The semantic layer moved into `dms_executor`.** It lived in `scripts/`,
+  which `packages/` cannot import, so `verify()` - the function EPIC-020
+  acceptance clause 2 promises will "refuse, naming the link, any link the data
+  violates" - was reachable only from bench scripts and had never run against a
+  customer extract. It also calls `duckdb.execute`, which hard rule 7 permits
+  only inside `packages/executor`. `scripts/ontology.py` stays as the CLI entry.
+  `ROOT` moved from `parents[1]` to `parents[3]`, which is the one thing a move
+  like this breaks silently.
+- **`POST /v1/studio/sources/sql` now measures and reports.** The connector had
+  been building `manifest_entry` - the exact shape `from_manifest` consumes,
+  documented as such in its own docstring - putting it in the receipt, and
+  dropping it. The seam was wired at one end. `verify_source_links` builds the
+  ontology over the landed bronze relations and puts the measured cardinality of
+  every declared link on the receipt, by name.
+- **A doubtful join does not fail an extract.** A link that cannot be measured is
+  reported unverified, the same outcome as one measured and found broken: the
+  compiler refuses to join through either. The rows landed and their provenance
+  is real.
+- **A source declaring no foreign keys reports `measured: false`, not
+  `verified: true`.** An empty claim set answered with a green result is R-0011's
+  silent fallback, and it is the shape a steward reads as "the joins are safe".
+- Gates are on the receipt, not the connector's return value (R-0001), and were
+  shown able to fail first (R-0007): replacing the call with a hardcoded clean
+  bill turns exactly the two new tests red. The bench corpus is unchanged - 896
+  cases over 494 shapes, 811 answerable, precision 100.00 pct, 0 wrong (R-0005).
+- **Still open, and stated rather than implied:** `verify()` has no
+  referential-integrity claim at all, so the orphans a `max_rows` cap invents are
+  still unrefused (#157, F-0046). EPIC-020 may not report COMPLETE until it lands.
+
 ## 2026-09-05 - EPIC-025: gold promote proves the ledger entry, not the claim
 
 - **Gate.** `run_promote` no longer trusts `GoldMetricDef.is_signed`. A gold
