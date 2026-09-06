@@ -38,7 +38,6 @@ from dms_executor.db_connector import (
     SourceConnectionError,
     UnknownSourceTable,
     ingest_source_database,
-    verify_source_links,
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
@@ -62,6 +61,7 @@ from dms_executor.manifest import (
     should_rement,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
+from dms_executor.source_links import verify_source_links
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
     load_pipeline_yaml,
