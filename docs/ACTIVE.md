@@ -31,6 +31,11 @@ EPIC-019 VQ-02: steward-registered Q→SQL assets live in DuckDB
 Studio register control: `apps/ui/src/pages/StudioPage.tsx`.
 Regression: `tests/test_vq02_verified_register.py`.
 
+EPIC-020 SQLSRC-09: Studio SQL Server/MySQL form posts
+`POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
+Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat
+to the ontology. #116 live certify is separate.
+
 EPIC-CCA constraint cascade: `packages/executor/dms_executor/cca/`. One
 matching rule in `binder.py` (pack proposes, landed values decide, exact match
 on a normalised form). Stage binders `sense.py`, `asset_class.py`, `geo.py`,

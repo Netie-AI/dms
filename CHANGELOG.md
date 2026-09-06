@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-06 - Studio point-UI for SQL Server/MySQL (SQLSRC-09, #158)
+
+- **Form.** Studio offers SQL Server / MySQL connection fields the route already
+  accepts and POSTs `/v1/studio/sources/sql`. The API still owns `compliance_gate`.
+- **Receipt.** 200 renders tables pulled, `extracted_at`, per-item `truncated`,
+  and #156/#157 per-link cardinality / violations in steward words. A failed
+  link is named; extract success is still shown.
+- **Password.** Uncontrolled field, cleared after the request. Error copy
+  redacts the just-submitted secret. Not stored.
+- **R-0007.** vitest goes red if the submit handler does not call
+  `POST /api/v1/studio/sources/sql`.
+- **Not this ticket:** ask/chat ontology wiring, #116 live certify,
+  EPIC-020 COMPLETE, OpenVault connection profiles, password storage.
+
 ## 2026-09-06 - verify() refuses orphans a max_rows cap invents (SQLSRC-07, #157)
 
 - **`fk_intact` is now a verify() claim.** Every non-NULL child key must exist
