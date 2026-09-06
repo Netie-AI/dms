@@ -223,11 +223,27 @@ class BinderResult:
 def _distinct_values(
     con: duckdb.DuckDBPyConnection, table: str, column: str
 ) -> tuple[str, ...] | None:
-    """Distinct non-null values of one column, or None when it is not categorical."""
+    """Distinct non-null values of one column, or None when it is not categorical.
+
+    ``ORDER BY 1`` is not cosmetic. DuckDB's ``SELECT DISTINCT`` is a hash
+    aggregate with no ordering guarantee - measured on this machine, four values
+    came back in ten different orders across twelve runs - and this order reaches
+    the customer. It fixes ``BinderResult.values``, which is what
+    ``binding_text()`` prints, so the same question produced
+    ``country IN ('MY', 'SG', 'TH')`` on one run and ``('SG', 'TH', 'MY')`` on
+    the next. In a product whose premise is a receipt you can re-derive, a
+    predicate that will not reproduce byte-for-byte is a defect, not a detail -
+    and it is the reason ``test_certifies_against_iso2_encoding`` read as flaky
+    infrastructure rather than as the report it was (R-0002).
+
+    Sorting also makes the ``by_norm`` collision in ``demo_ask`` decidable: when
+    two landed spellings normalise to one key, the winner is now the same every
+    run instead of whichever the hash table happened to yield.
+    """
     try:
         rows = con.execute(
             f'SELECT DISTINCT CAST("{column}" AS VARCHAR) FROM "{table}" '
-            f'WHERE "{column}" IS NOT NULL LIMIT {MAX_DISTINCT + 1}'
+            f'WHERE "{column}" IS NOT NULL ORDER BY 1 LIMIT {MAX_DISTINCT + 1}'
         ).fetchall()
     except Exception:  # noqa: BLE001 - a table the grant lists but the file lacks
         return None

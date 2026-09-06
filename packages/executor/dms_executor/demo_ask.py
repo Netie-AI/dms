@@ -217,7 +217,13 @@ def _resolve_exclude_skus(tokens: list[str]) -> list[str]:
     """Map bare tokens like BETA → SKU-BETA against live distinct SKUs."""
     if not tokens:
         return []
-    rows = execute_sql("SELECT DISTINCT sku FROM transactions WHERE sku IS NOT NULL")
+    # ORDER BY, because `by_norm` below collapses spellings: SKU-BETA and
+    # sku_beta both normalise to "skubeta", and without an order the one that
+    # wins is whichever DuckDB's hash aggregate happened to yield last. Same
+    # class as cca/binder.py:_distinct_values.
+    rows = execute_sql(
+        "SELECT DISTINCT sku FROM transactions WHERE sku IS NOT NULL ORDER BY 1"
+    )
     known = [str(r["sku"]) for r in rows if r.get("sku") is not None]
     by_lower = {k.lower(): k for k in known}
 

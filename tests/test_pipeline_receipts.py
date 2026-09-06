@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import multiprocessing
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -212,13 +213,29 @@ def test_gate_no_is_403_with_detail(
     assert r.json()["detail"] == "not_this_actor"
 
 
-def _hold_write_lock(path: str, ready: object, done: object) -> None:
-    con = duckdb.connect(path)
-    try:
-        ready.set()  # type: ignore[union-attr]
-        done.wait(timeout=30)  # type: ignore[union-attr]
-    finally:
-        con.close()
+#: The lock holder, as source rather than as a function reference.
+#:
+#: ``multiprocessing.Process(target=...)`` was the obvious way to write this and
+#: it made the test flaky in the full suite while passing alone. Windows spawns
+#: rather than forks, so the child re-imports the module holding the target -
+#: this one - and that pulls in ``dms_api.app``, ``dms_executor`` and FastAPI
+#: before it can execute a single statement. Measured at ~2.3 s for
+#: ``dms_executor`` alone on an idle machine; under the memory pressure of a full
+#: run (the same run that produced a DuckDB ``Out of Memory`` on an unrelated
+#: test) it went past the 10 s barrier and the assertion fired with a message
+#: about a lock, which is not where the problem was.
+#:
+#: Raising the timeout would have hidden it. The child only ever needed duckdb,
+#: so it now gets only duckdb: no test module, no app, no import of the package
+#: under test. It prints a line when the lock is held, which is a readiness
+#: signal that cannot outlive the process that sent it.
+_LOCK_HOLDER = """
+import sys, duckdb
+con = duckdb.connect(sys.argv[1])
+print("locked", flush=True)
+sys.stdin.readline()
+con.close()
+"""
 
 
 def test_writer_held_lake_is_busy_not_empty(
@@ -226,14 +243,20 @@ def test_writer_held_lake_is_busy_not_empty(
 ) -> None:
     _gate_allows(monkeypatch)
     client = _client()
-    ready = multiprocessing.Event()
-    done = multiprocessing.Event()
-    proc = multiprocessing.Process(
-        target=_hold_write_lock, args=(str(warehouse), ready, done)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _LOCK_HOLDER, str(warehouse)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
     )
-    proc.start()
     try:
-        assert ready.wait(timeout=10), "writer subprocess never took the lake lock"
+        assert proc.stdout is not None
+        # Blocks until the child has the lock, or until the child dies and the
+        # pipe closes - which returns "" and fails here rather than hanging.
+        assert proc.stdout.readline().strip() == "locked", (
+            "lock holder never reported taking the lake lock "
+            f"(exit={proc.poll()})"
+        )
         r = client.get("/v1/pipelines/receipts", params={"target": "silver.sales"})
         assert r.status_code == 503
         detail = r.json()["detail"]
@@ -241,11 +264,18 @@ def test_writer_held_lake_is_busy_not_empty(
         assert detail.get("message")
         assert r.json().get("state") != "no_receipt_yet"
     finally:
-        done.set()
-        proc.join(timeout=5)
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=2)
+        if proc.stdin is not None:
+            try:
+                proc.stdin.write("go\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
 
 
 def test_library_tree_does_not_show_promote_receipts(
