@@ -79,7 +79,14 @@ def verify_source_links(
     con = duckdb.connect(str(db))
     try:
         onto = from_manifest(entry, relation_for=_bronze)
-        violations = onto.verify(con)
+        # The one fact verify() cannot derive for itself. It reads a DuckDB
+        # connection, so a source that was always dirty and one we cut with
+        # max_rows look identical to it - and they are opposite news: "your data
+        # violates this key" versus "we did not land all of it". Not passing
+        # this is a fail-open, because a capped parent then reads as a whole one
+        # and its orphans get disclosed instead of refused.
+        capped = {p.bronze_table for p in extract.pulls if p.truncated}
+        violations = onto.verify(con, capped_relations=capped)
         links = [
             {
                 "name": link.name,
@@ -108,7 +115,13 @@ def verify_source_links(
     return {
         "verified": onto.verified,
         "measured": True,
+        "capped_tables": sorted(capped),
         "links": links,
+        # Orphans are reported whether or not they were a refusal. A capped
+        # parent refuses; a parent landed whole discloses, because those child
+        # rows point at members that genuinely do not exist and no named group
+        # is wrong. Both are news for a steward.
+        "orphans": onto.orphans,
         "violations": [
             {"check": v.check, "subject": v.subject, "detail": v.detail} for v in violations
         ],

@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -191,6 +191,10 @@ class Ontology:
     links: dict[str, LinkType] = field(default_factory=dict)
     measures: dict[str, Measure] = field(default_factory=dict)
     verified: bool = False
+    #: Link name -> what ``verify()`` counted on the child side. Present for
+    #: every link with orphans, whether or not they were a refusal: a capped
+    #: parent refuses, a whole parent discloses. Empty until verify() runs.
+    orphans: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # -- authoring -------------------------------------------------------
 
@@ -259,19 +263,33 @@ class Ontology:
             }
         return cache[obj]
 
-    def verify(self, con: Any) -> list[Violation]:
+    def verify(
+        self, con: Any, *, capped_relations: Collection[str] = ()
+    ) -> list[Violation]:
         """Execute every claim. Nothing may be used until this has passed.
 
-        Three claims are checked, in the order a wrong one would do damage:
+        Four claims are checked, in the order a wrong one would do damage:
           key_unique      an object's key really identifies one row
           key_not_null    no key column is NULL - a NULL key both passes a
                           uniqueness check and silently drops rows from a join
+          link_intact     every child row's key value has a parent row. A
+                          declared foreign key says a value *should* exist in
+                          the parent; only counting says it does.
           link_cardinality  measured, then stored on the link. A link whose
                           parent side is not unique is not broken - it is a
                           relationship a measure must aggregate across rather
                           than join through, and the compiler needs to know.
+
+        ``capped_relations`` names relations the caller knows were truncated -
+        an extractor's ``max_rows`` cap, typically. This function reads a DuckDB
+        connection and cannot tell a source that was always dirty from one we
+        cut ourselves, and those want different words: "your data violates this
+        key" and "we did not land all of it" are different news for a steward.
+        Passing the fact in is what keeps the layer from having to go looking
+        for it, which would give the ontology a dependency on bronze.
         """
         violations: list[Violation] = []
+        self.orphans = {}
         self.__dict__["_column_cache"] = {}
         for obj in self.objects.values():
             try:
@@ -353,6 +371,82 @@ class Ontology:
                     )
                 )
                 continue
+            # Referential integrity, measured. Until this existed verify()
+            # touched the child side only to prove its declared columns exist,
+            # so an extract missing 100 of 1100 parent rows verified clean and
+            # the compiler emitted a LEFT JOIN over it. That join keeps the
+            # grand total right and puts every orphaned fact row in a NULL
+            # group, so each named group is understated while the total
+            # reconciles - and the total is the first number anyone checks.
+            child_ref = ", ".join(f"c.{_ident(col)}" for col in link.from_columns)
+            child_present = " AND ".join(
+                f"c.{_ident(col)} IS NOT NULL" for col in link.from_columns
+            )
+            match_on = " AND ".join(
+                f"p.{_ident(b)} = c.{_ident(a)}"
+                for a, b in zip(link.from_columns, link.to_columns)
+            )
+            try:
+                orphan_rows, orphan_keys = con.execute(
+                    f"SELECT COUNT(*), COUNT(DISTINCT ({child_ref})) "
+                    f"FROM {child.relation} c WHERE {child_present} "
+                    f"AND NOT EXISTS (SELECT 1 FROM {parent.relation} p "
+                    f"WHERE {match_on})"
+                ).fetchone()
+            except Exception as exc:  # noqa: BLE001
+                violations.append(
+                    Violation("link_readable", name, f"{type(exc).__name__}: {exc}")
+                )
+                continue
+            if int(orphan_rows or 0):
+                capped = sorted(
+                    rel
+                    for rel in set(capped_relations)
+                    if rel in (parent.relation, parent.name)
+                )
+                self.orphans[name] = {
+                    "rows": int(orphan_rows),
+                    "distinct_keys": int(orphan_keys or 0),
+                    "child": link.from_object,
+                    "parent": link.to_object,
+                    "parent_capped": bool(capped),
+                }
+                if capped:
+                    # Our artefact, and the dangerous one. The parent is missing
+                    # rows we chose not to land, so these children belong to
+                    # dimension members that DO exist in the source. LEFT JOIN
+                    # puts them in a NULL group and every named group comes out
+                    # understated while the grand total still reconciles - and
+                    # the total is the first number anyone checks. Refuse.
+                    violations.append(
+                        Violation(
+                            "link_intact",
+                            name,
+                            f"{int(orphan_rows):,} rows of {link.from_object} "
+                            f"({int(orphan_keys or 0):,} distinct "
+                            f"{', '.join(link.from_columns)}) have no matching "
+                            f"{link.to_object} row, and {', '.join(capped)} was "
+                            "truncated - so these are orphans our own row cap "
+                            "invented, not orphans the source has. Every group "
+                            "through this link would be understated while the "
+                            "total still reconciled. Re-pull the parent whole. "
+                            "The link stays unverified until then.",
+                        )
+                    )
+                    # Left "unverified" deliberately: a cardinality measured over
+                    # a parent known to be missing rows is a verdict from
+                    # incomplete data, which is the thing this layer exists to
+                    # refuse.
+                    continue
+                # Parent landed whole. These children point at dimension members
+                # that genuinely do not exist, so no named group is wrong - the
+                # rows are honestly "no such member", the LEFT JOIN keeps them in
+                # a NULL bucket and the total is preserved. That behaviour is
+                # deliberate and tested (test_a_null_parent_key_...,
+                # test_a_dimension_join_is_left_not_inner) and refusing it here
+                # would be a control rejecting legitimate work (R-0005). It is
+                # recorded on ``orphans`` so a steward is told, and measurement
+                # continues.
             if int(pn) == int(pdistinct):
                 self.links[name] = LinkType(
                     link.name, link.from_object, link.from_columns,

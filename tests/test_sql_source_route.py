@@ -266,3 +266,82 @@ def test_a_source_declaring_no_foreign_keys_is_not_reported_as_verified(
     assert "no foreign keys" in links["reason"], links
     assert links["links"] == []
     assert links["violations"] == []
+
+
+def test_a_capped_parent_refuses_the_link_it_invented_orphans_in(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLSRC-07 (#157) on the customer artifact.
+
+    The extractor caps every table independently, so capping a parent orphans
+    the children that pointed at the rows it cut - orphans the source never had.
+    The compiler's LEFT JOIN then keeps the grand total right and puts every one
+    of them in a NULL group, so each named group is understated while the total
+    reconciles. The total is the first number anyone checks, which is what makes
+    this the worst shape rather than merely a wrong one.
+
+    ``verify()`` reads a DuckDB connection and cannot tell this from a source
+    that was always dirty. This asserts the fact is actually threaded through on
+    the real path - not passing it is a fail-open, because a capped parent would
+    then read as a whole one and its orphans would be disclosed instead of
+    refused.
+    """
+    con = _FakeConnection(
+        [("dbo", "orders"), ("dbo", "customers")],
+        {
+            "[dbo].[orders]": (
+                ["order_id", "cust_ref", "amount"],
+                [["O1", "C1", "10"], ["O2", "C3", "20"]],
+            ),
+            "[dbo].[customers]": (
+                ["cust_ref", "region"],
+                [["C1", "North"], ["C2", "South"], ["C3", "East"]],
+            ),
+        },
+        pks=[
+            ("dbo", "orders", "order_id", 1),
+            ("dbo", "customers", "cust_ref", 1),
+        ],
+        fks=[
+            ("FK_Orders_Customers", "dbo", "orders", "cust_ref", "dbo", "customers", "cust_ref", 1),
+        ],
+    )
+    _gate_allows(monkeypatch)
+    _install(monkeypatch, con)
+
+    r = TestClient(create_app()).post("/v1/studio/sources/sql", json=_body(max_rows=2))
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # The cap did land a partial parent, which is the precondition.
+    capped = {t["bronze_table"] for t in body["tables"] if t["truncated"]}
+    assert "bronze.dbo_customers" in capped, body["tables"]
+
+    links = body["links"]
+    assert links["measured"] is True, links
+    assert "bronze.dbo_customers" in links["capped_tables"], links
+
+    # Counted, and reported whether or not it was a refusal.
+    orphans = links["orphans"]["FK_Orders_Customers"]
+    assert orphans["rows"] == 1, orphans
+    assert orphans["distinct_keys"] == 1, orphans
+    assert orphans["parent_capped"] is True, orphans
+
+    # Named, and attributed to our cap rather than to the customer's data.
+    intact = [v for v in links["violations"] if v["check"] == "link_intact"]
+    assert len(intact) == 1, links["violations"]
+    assert intact[0]["subject"] == "FK_Orders_Customers"
+    assert "our own row cap invented" in intact[0]["detail"]
+    assert "bronze.dbo_customers" in intact[0]["detail"]
+
+    # And refused: no cardinality, so nothing may be grouped through it.
+    fk = {link["name"]: link for link in links["links"]}["FK_Orders_Customers"]
+    assert fk["cardinality"] == "unverified", fk
+    assert links["verified"] is False, links
+
+    # The rows still landed. A refused join is not a reason to discard an
+    # extract whose provenance is real.
+    assert {t["bronze_table"] for t in body["tables"]} == {
+        "bronze.dbo_orders",
+        "bronze.dbo_customers",
+    }
