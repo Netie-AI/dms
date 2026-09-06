@@ -4,6 +4,7 @@ PREFLIGHT for this goal: PARTIAL (cca-01 + vq-01 oracle).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-06 | capped-parent-orphans | F-0046, ontology, verify, max_rows, orphan, referential-integrity, EPIC-020, dms-116 | A `max_rows` cap on a parent invents orphans the source never had. `verify()` has no referential-integrity check at all, so the ontology verifies clean, LEFT JOIN buckets orphans under NULL, and every named group is understated while the grand total reconciles exactly. `scripts/repro_capped_parent_orphans.py` exits 1. | `2026-09-06_capped-parent-orphans.md` |
 | 2026-09-06 | dms-61-progress | dms#61, dms#57, FF-02, E11, polarity, FLEET hold stale | #61 is merged PR closing #57 (2026-08-24). E11 shipped in test_envelope.py + verify_freeform_demo. HOLD was stale. DONE. | `2026-09-06_dms-61-progress.md` |
 | 2026-09-06 | openvault-model-provider-port | ModelProviderPort, OpenVault, FreeRoute, sealed, CCA, dms-155 | First ModelProviderPort impl is OpenVault FreeRoute. Sealed = VaultSealed, no chat POST. CCA unwired. Do not dual-write #155. | `2026-09-06_openvault-model-provider-port.md` |
 | 2026-09-06 | prd-ai-semantic-mds | prd-agent, EPIC-CCA, ModelProviderPort, OpenVault, OmniRoute, constructor, palantir-parked, classify, d2b88bd, F85 | No new mega-epic. First irreversible work is DMS OpenVault ModelProviderPort + pack-certify proposer under EPIC-CCA, flag stays 0, no Cortex classify. d2b88bd not on HEAD. P1 parked. | `2026-09-06_prd-ai-semantic-mds.md` |
