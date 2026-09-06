@@ -2,6 +2,36 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-06 - Library stops racing itself; the seeded fast path stops serialising
+
+- **`ensure_lake_schemas` survives a concurrent first create.** `CREATE SCHEMA
+  IF NOT EXISTS` is not concurrency-safe in DuckDB: `IF NOT EXISTS` only skips a
+  schema that is already *committed*, so two connections on one file that start
+  the same CREATE together both write the catalog entry and DuckDB aborts the
+  loser with `Catalog write-write conflict on create with "bronze"`. Library
+  fires `/tree` twice, so the first load against a fresh warehouse raced itself
+  and one request 500ed for the customer. Fixed at the shared function, not at
+  the eight call sites that reach it (R-0004): a lock plus a postcondition
+  re-check, so losing to another process is swallowed only when the schema is in
+  fact present afterwards. It had been read as a 1-in-60 test flake for weeks -
+  the flake was the defect reporting itself (R-0002).
+- **`ensure_demo_warehouse` no longer re-serialises its readers.** It sits on
+  every Library and ingest entry point and held one global lock across a fresh
+  `duckdb.connect` plus a seven-query schema probe, so eight concurrent callers
+  of an already-seeded warehouse returned over 456 ms one after another. The
+  memo is now keyed on the file's identity `(mtime_ns, size)` rather than the
+  path alone, and the lock is per path and never held across the fast path. A
+  write costs exactly one re-probe; a read costs none. The check is not
+  weakened: the identity is read *before* the probe, so a write that lands mid
+  probe is never recorded as validated.
+- **First `ModelProviderPort` implementation** - OpenVault FreeRoute
+  (`openvault_model.py`), swap scenario OpenVault -> Azure OpenAI. A sealed
+  vault is a typed `VaultSealed`, never a chat POST. **Wired to nothing**: CCA
+  does not call it and `DMS_CCA_CASCADE` stays 0.
+- Both gates were falsified before being trusted green (R-0007): the pre-fix
+  `ensure_lake_schemas` body reproduces the conflict 40/40 at
+  `scripts/repro_lake_schema_race.py`'s shape; the fix is 0/40.
+
 ## 2026-09-05 - Constraint Cascade Ask binds ambiguous filters before L0 (EPIC-CCA)
 
 - **Binder.** One matching rule for every cascade stage

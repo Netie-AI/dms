@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-09-05  
+**Last updated:** 2026-09-06  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -48,12 +48,12 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | EPIC-019 VQ-02 (#40): Studio register Space-scoped verified Q→SQL. Off main `cursor/vq-02-studio-register-1284`. Do not merge park/epic-020. |
+| **NEEDS-YOU** | **OpenVault is SEALED** (`/api/vault/status` -> `sealed:true` on :5000). Only your passphrase unseals it, and until it is unsealed live `/v1/chat/ask` 503s `live_ask_failed`, so **nobody can run #116's ask block** - not an agent problem. **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Cortex :8012 down, :8010 up as pack `ruma` |
+| **This tick** | **#116 is EPIC-020's last ticket.** Docker `sqlsrc06-mssql` + `sqlsrc06-mysql` are up; collect / preview / tree PASS both dialects. Two blocks are not PASS: ask (sealed vault, above) and ontology, which is **silent on orphans a `max_rows` cap invented** (F-0046) - routed, not patched inside a verify run. MySQL's lying-FK shape is unbuildable on 8.4.11 (F-0050). |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
-| Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)**. Open: **#114 #116** (020), **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (live `/health` hung). |
+| Epics | Re-derived from `gh` 2026-09-06: **EPIC-024 (#109) CLOSED** (#113 #115 #117-#119 all closed). **EPIC-020 (#108)** open on **#116 alone** (#112 #114 closed). **EPIC-CCA (#132)** open, #133-#140 closed, cascade still OFF. **VQ-02 #40 CLOSED** (merged #131). EPIC-008 #8 OPEN (live `/health` hung). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | LINEAGE-01 on `cursor/lineage-01-promote-receipts-3103`. Parks stay parked. Floor: Cortex#44. |
+| CI / PRs | `chore/consolidate-dms` pushed: Library `/tree` no longer 500s racing itself, warehouse fast path unserialised, first `ModelProviderPort`. Parks stay parked. Floor: Cortex#44. |
 
 ## Agent models
 
