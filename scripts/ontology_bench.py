@@ -108,6 +108,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "data" / "lake" / "_reports" / "extract_manifest.json"
 
+sys.path.insert(0, str(ROOT / "packages" / "executor"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 INTEGER_TYPES = {"BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT",

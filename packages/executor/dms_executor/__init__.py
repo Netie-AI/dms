@@ -61,7 +61,6 @@ from dms_executor.manifest import (
     should_rement,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
-from dms_executor.source_links import verify_source_links
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
     load_pipeline_yaml,
@@ -79,6 +78,7 @@ from dms_executor.reveal import (
     resolve_allowlisted_file,
     reveal_path,
 )
+from dms_executor.source_links import verify_source_links
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
