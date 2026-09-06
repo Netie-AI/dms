@@ -110,7 +110,8 @@ export function describeApiError(body: string, secret?: string): string {
   if (reason === "gate_task_unknown") {
     return "Cortex does not know this task yet. The write is refused rather than applied ungated.";
   }
-  return redactSecret(reason, secret);
+  const cleaned = redactSecret(reason, secret);
+  return cleaned || "The write was refused. No error detail was returned.";
 }
 
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthBody | null> {
@@ -616,7 +617,8 @@ export async function postSqlSource(
     signal,
   });
   if (!res.ok) {
-    throw new Error(describeApiError(await res.text(), body.password));
+    const text = await res.text();
+    throw new Error(describeApiError(text, body.password));
   }
   return (await res.json()) as SqlSourceReceipt;
 }
