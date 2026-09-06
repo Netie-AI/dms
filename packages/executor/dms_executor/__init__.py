@@ -61,6 +61,13 @@ from dms_executor.manifest import (
     should_rement,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
+from dms_executor.openvault_model import (
+    OpenVaultCompleteFailed,
+    OpenVaultModelProvider,
+    OpenVaultUnreachable,
+    VaultSealed,
+    get_model_provider,
+)
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
     load_pipeline_yaml,
@@ -733,6 +740,11 @@ __all__ = [
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "get_model_provider",
+    "OpenVaultModelProvider",
+    "VaultSealed",
+    "OpenVaultUnreachable",
+    "OpenVaultCompleteFailed",
     "list_bronze_tables",
     "list_promote_targets",
     "list_warehouse_tables",
