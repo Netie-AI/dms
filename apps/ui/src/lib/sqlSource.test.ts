@@ -120,9 +120,28 @@ describe("postSqlSource", () => {
         password: SECRET,
       }),
     ).rejects.toThrow(/Start Cortex before writing/);
+  });
+
+  it("empty 500 body still throws a steward sentence without the password", async () => {
+    const fn = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fn);
+    await expect(
+      postSqlSource({
+        kind: "sqlserver",
+        host: "db.example.net",
+        database: "sales",
+        user: "reader",
+        password: SECRET,
+      }),
+    ).rejects.toThrow(/No error detail was returned/);
     try {
       await postSqlSource({
-        kind: "mysql",
+        kind: "sqlserver",
         host: "db.example.net",
         database: "sales",
         user: "reader",

@@ -189,7 +189,7 @@ export function SqlSourcePanel({
               value={tables}
               onChange={(e) => setTables(e.target.value)}
               className={FIELD}
-              placeholder="orders, customers — blank = all visible"
+              placeholder="orders, customers -- blank = all visible"
               data-testid="sql-source-tables"
             />
           </label>

@@ -11,4 +11,10 @@ describe("describeApiError", () => {
     const secret = "p;w}d";
     expect(describeApiError(`{"detail":"bad ${secret}"}`, secret)).toBe("bad [redacted]");
   });
+
+  it("empty fail-closed body still produces a sentence", () => {
+    expect(describeApiError("", "p;w}d")).toBe(
+      "The write was refused. No error detail was returned.",
+    );
+  });
 });
