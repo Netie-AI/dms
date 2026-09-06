@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
+import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { useApp } from "@/context/AppContext";
 import {
   describeApiError,
@@ -305,9 +306,10 @@ export function StudioPage() {
             Studio
           </h1>
           <p className="mt-3 max-w-xl text-[var(--color-ink-muted)]">
-            Your files, and what the warehouse made of them. Every sheet is classified before
-            bronze write — unstructured routes to the blob tier, never a silent partial success.
-            Tick files to ground your next question in just those.
+            Your files, and what the warehouse made of them. Point at SQL Server or MySQL
+            without a config file: rows land in bronze, truncated pulls are named, and a
+            declared join that the data violates is refused on the receipt. Tick files to
+            ground your next question in just those.
           </p>
         </div>
 
@@ -447,6 +449,8 @@ export function StudioPage() {
           )}
         </div>
       </div>
+
+      <SqlSourcePanel spaceId={activeSpaceId} onExtracted={loadTree} />
 
       <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
         <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">

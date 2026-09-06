@@ -68,12 +68,39 @@ export type HealthBody = {
   };
 };
 
+function detailReason(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail.flatMap((item) => {
+      if (item && typeof item === "object" && typeof (item as { msg?: unknown }).msg === "string") {
+        return [(item as { msg: string }).msg];
+      }
+      return [];
+    });
+    return msgs.length ? msgs.join("; ") : null;
+  }
+  if (detail && typeof detail === "object") {
+    const d = detail as { message?: unknown; code?: unknown };
+    if (typeof d.message === "string" && d.message.trim()) {
+      return typeof d.code === "string" ? `${d.code}: ${d.message}` : d.message;
+    }
+  }
+  return null;
+}
+
+/** Strip a just-submitted secret from copy that might otherwise echo it (R-0004). */
+export function redactSecret(text: string, secret?: string): string {
+  if (!secret) return text;
+  return text.split(secret).join("[redacted]");
+}
+
 /** Turn a raw API error body into a sentence a steward can act on. */
-export function describeApiError(body: string): string {
+export function describeApiError(body: string, secret?: string): string {
   let reason = body.trim();
   try {
     const parsed = JSON.parse(body) as { detail?: unknown };
-    if (typeof parsed.detail === "string") reason = parsed.detail;
+    const extracted = detailReason(parsed.detail);
+    if (extracted) reason = extracted;
   } catch {
     /* keep raw body */
   }
@@ -83,7 +110,7 @@ export function describeApiError(body: string): string {
   if (reason === "gate_task_unknown") {
     return "Cortex does not know this task yet. The write is refused rather than applied ungated.";
   }
-  return reason;
+  return redactSecret(reason, secret);
 }
 
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthBody | null> {
@@ -498,6 +525,100 @@ export async function registerVerifiedQuery(
   });
   if (!res.ok) throw new Error(describeApiError(await res.text()));
   return (await res.json()) as VerifiedQueryAsset;
+}
+
+/* ── SQL source extract (EPIC-020 SQLSRC-09 / #158) ───────────────────────
+ * POST /v1/studio/sources/sql. The gate lives on the API. The password is
+ * request-only: this client never writes it to storage, and errors pass it
+ * through describeApiError so a leaked body cannot reach a toast.
+ */
+
+export const SQL_SOURCE_PATH = "/v1/studio/sources/sql";
+
+export type SqlSourceKind = "sqlserver" | "mysql";
+
+export type SqlSourcePull = {
+  bronze_table: string;
+  source: string;
+  row_count: number;
+  truncated: boolean;
+  extracted_at: string;
+};
+
+export type SqlSourceLink = {
+  name: string;
+  from: string;
+  from_columns: string[];
+  to: string;
+  to_columns: string[];
+  cardinality: "many_to_one" | "many_to_many" | "unverified" | string;
+  max_fanout: number | null;
+};
+
+export type SqlSourceViolation = {
+  check: string;
+  subject: string;
+  detail: string;
+};
+
+export type SqlSourceLinks = {
+  verified: boolean;
+  measured: boolean;
+  reason?: string;
+  links: SqlSourceLink[];
+  violations: SqlSourceViolation[];
+};
+
+export type SqlSourceReceipt = {
+  source: string;
+  tables: SqlSourcePull[];
+  skipped: string[];
+  declared_primary_keys: number;
+  declared_foreign_keys: number;
+  links: SqlSourceLinks;
+};
+
+export type SqlSourceRequest = {
+  kind: SqlSourceKind;
+  host: string;
+  database: string;
+  user: string;
+  password: string;
+  port?: number;
+  tables?: string[];
+  max_rows?: number;
+  space_id?: string | null;
+  encrypt?: boolean;
+  trust_server_certificate?: boolean;
+};
+
+/** Studio SQL form submit. R-0007: tests pin this path. */
+export async function postSqlSource(
+  body: SqlSourceRequest,
+  signal?: AbortSignal,
+): Promise<SqlSourceReceipt> {
+  const res = await fetch(`/api${SQL_SOURCE_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      kind: body.kind,
+      host: body.host,
+      database: body.database,
+      user: body.user,
+      password: body.password,
+      port: body.port,
+      tables: body.tables?.length ? body.tables : undefined,
+      max_rows: body.max_rows,
+      space_id: body.space_id || undefined,
+      encrypt: body.encrypt ?? true,
+      trust_server_certificate: body.trust_server_certificate ?? false,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(describeApiError(await res.text(), body.password));
+  }
+  return (await res.json()) as SqlSourceReceipt;
 }
 
 export async function createSpace(
