@@ -4,6 +4,7 @@ PREFLIGHT for this goal: HIT (sqlsrc-08-bridge-landed).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-06 | capped-parent-orphans | F-0046, SQLSRC-07, dms-157, verify, max_rows, orphan, fk_intact, EPIC-020 | `verify()` had no RI claim, so a parent cap invented orphans LEFT JOIN misattributed while the total reconciled. Claim is now `fk_intact`; truncated is threaded through the manifest, not the bronze registry. | `2026-09-06_capped-parent-orphans.md` |
 | 2026-09-06 | sqlsrc-08-bridge-landed | SQLSRC-08, dms-156, dms-157, EPIC-020, ontology, verify_source_links, extract-only, DR-0005, R-0003 | Layer moved to `dms_executor`; `POST /v1/studio/sources/sql` measures every declared link on the receipt. Bench unchanged 896/494/811/0. First draft put duckdb in `db_connector` and `test_extract_only` caught it - fix the code's location, never the gate. **Not verified by this run** (R-0003); #116 re-run is the verifying step. | `2026-09-06_sqlsrc-08-bridge-landed.md` |
 | 2026-09-05 | epic-025-chain-readback | EPIC-025, ledger.verify, gold promote, is_signed, dms#87 | Verify at the gold GATE, not only at sign. Unreachable Cortex refuses. Contract 1.2.0 has no get-entry. | `2026-09-05_epic-025-chain-readback.md` |
 | 2026-09-05 | epic-019-f83-no-local-l0 | F83, EPIC-019, VQ-02, maybe_verified_ask, L0_CERTIFIED, FakeCortex, ledger, dms#38 | Space-local store may stay; L0 requires Cortex submit of stored SQL plus ledger append. No local DuckDB fallback. | `2026-09-05_epic-019-f83-no-local-l0.md` |

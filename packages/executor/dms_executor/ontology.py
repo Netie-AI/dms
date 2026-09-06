@@ -43,7 +43,8 @@ Databricks lets you declare ``rely.at_most_one_match`` and their documentation
 says plainly: "This property is not validated at runtime. If the asserted side
 produces a fan-out, measures return incorrect results." A declaration nobody
 checks is a comment. Here ``verify()`` measures key uniqueness, key nullness,
-child-side readability and parent-side uniqueness of every link, and
+child-side readability, parent-side uniqueness of every link, and
+referential integrity (every non-NULL child key exists in the parent), and
 ``compile()`` refuses to use a link whose cardinality has not been measured.
 It does not read the measure expression. An unverified ontology can describe
 the world; it cannot answer a question.
@@ -92,6 +93,29 @@ def _literal(value: Any) -> str:
     if isinstance(value, (int, float)):
         return repr(value)
     return "'" + str(value).replace("'", "''") + "'"
+
+
+def _orphan_counts(
+    con: Any,
+    *,
+    child_relation: str,
+    parent_relation: str,
+    from_columns: Sequence[str],
+    to_columns: Sequence[str],
+) -> tuple[int, int]:
+    """Non-NULL child keys with no matching parent row: (row count, distinct keys)."""
+    child_not_null = " AND ".join(f"c.{_ident(c)} IS NOT NULL" for c in from_columns)
+    on = " AND ".join(
+        f"c.{_ident(a)} = p.{_ident(b)}"
+        for a, b in zip(from_columns, to_columns, strict=True)
+    )
+    key_expr = ", ".join(f"c.{_ident(c)}" for c in from_columns)
+    rows, keys = con.execute(
+        f"SELECT COUNT(*), COUNT(DISTINCT ({key_expr})) "
+        f"FROM {child_relation} c WHERE {child_not_null} "
+        f"AND NOT EXISTS (SELECT 1 FROM {parent_relation} p WHERE {on})"
+    ).fetchone()
+    return int(rows or 0), int(keys or 0)
 
 
 # --------------------------------------------------------------------------
@@ -191,11 +215,27 @@ class Ontology:
     links: dict[str, LinkType] = field(default_factory=dict)
     measures: dict[str, Measure] = field(default_factory=dict)
     verified: bool = False
+    # Extract metadata, not a semantic claim. from_manifest copies
+    # SourcePull.truncated so verify() can tell "our cap invented this"
+    # from "the source is dirty" without reading the bronze registry
+    # (SQLSRC-07 / dms#157).
+    truncated: dict[str, bool] = field(default_factory=dict)
 
     # -- authoring -------------------------------------------------------
 
-    def add_object(self, name: str, relation: str, key: Sequence[str]) -> None:
+    def add_object(
+        self,
+        name: str,
+        relation: str,
+        key: Sequence[str],
+        *,
+        truncated: bool = False,
+    ) -> None:
         self.objects[name] = ObjectType(name, relation, tuple(key))
+        if truncated:
+            self.truncated[name] = True
+        else:
+            self.truncated.pop(name, None)
         self.verified = False
 
     def add_link(
@@ -262,14 +302,22 @@ class Ontology:
     def verify(self, con: Any) -> list[Violation]:
         """Execute every claim. Nothing may be used until this has passed.
 
-        Three claims are checked, in the order a wrong one would do damage:
+        Four claims are checked, in the order a wrong one would do damage:
           key_unique      an object's key really identifies one row
           key_not_null    no key column is NULL - a NULL key both passes a
                           uniqueness check and silently drops rows from a join
+          fk_intact       every non-NULL child key exists in the parent. A
+                          missing parent turns a LEFT JOIN into misattribution
+                          (named groups shrink, the unmatched bucket grows,
+                          the grand total still reconciles) and an INNER JOIN
+                          into a silent shortfall. NULL child keys are optional
+                          FKs, not orphans.
           link_cardinality  measured, then stored on the link. A link whose
                           parent side is not unique is not broken - it is a
                           relationship a measure must aggregate across rather
                           than join through, and the compiler needs to know.
+                          A link with orphans stays unverified rather than
+                          being blessed many-to-one.
         """
         violations: list[Violation] = []
         self.__dict__["_column_cache"] = {}
@@ -352,6 +400,47 @@ class Ontology:
                         "stays unverified rather than being assumed safe.",
                     )
                 )
+                continue
+            try:
+                orphan_rows, orphan_keys = _orphan_counts(
+                    con,
+                    child_relation=child.relation,
+                    parent_relation=parent.relation,
+                    from_columns=link.from_columns,
+                    to_columns=link.to_columns,
+                )
+            except Exception as exc:  # noqa: BLE001
+                violations.append(
+                    Violation("link_readable", name, f"{type(exc).__name__}: {exc}")
+                )
+                continue
+            if orphan_rows:
+                # Do not set cardinality. A unique parent with missing keys is
+                # not a safe many-to-one: LEFT JOIN would misattribute the
+                # orphans (named groups shrink, the unmatched bucket grows,
+                # the grand total still reconciles). NULL child keys are not
+                # counted - those are optional FKs, which LEFT JOIN exists to
+                # keep in the total.
+                capped = bool(self.truncated.get(parent.name))
+                if capped:
+                    detail = (
+                        f"{link.from_object} -> {link.to_object}: {orphan_rows:,} rows "
+                        f"({orphan_keys:,} distinct keys) on {link.from_object} "
+                        f"reference a parent that was not landed because "
+                        f"{link.to_object} was capped by max_rows. The extract "
+                        "invented these orphans; the source may be clean. The "
+                        "link stays unverified."
+                    )
+                else:
+                    detail = (
+                        f"{link.from_object} -> {link.to_object}: {orphan_rows:,} rows "
+                        f"({orphan_keys:,} distinct keys) on {link.from_object} "
+                        "reference a parent that does not exist. The source is "
+                        "dirty on this link; an inner join would drop them and "
+                        "a left join would misattribute them. The link stays "
+                        "unverified."
+                    )
+                violations.append(Violation("fk_intact", name, detail))
                 continue
             if int(pn) == int(pdistinct):
                 self.links[name] = LinkType(
@@ -1083,11 +1172,21 @@ def from_manifest(
     relation = relation_for or _parquet
     pks: dict[str, list[str]] = dict(entry.get("primary_keys") or {})
 
+    truncated_by_table = {
+        f"{t['schema']}.{t['table']}": bool(t.get("truncated"))
+        for t in entry.get("tables", [])
+    }
+
     for table, key in pks.items():
         if table not in paths:
             continue  # declared a key but was not extracted; validate_lake reports it
         schema, _, name = table.partition(".")
-        onto.add_object(table, relation(schema, name), key)
+        onto.add_object(
+            table,
+            relation(schema, name),
+            key,
+            truncated=truncated_by_table.get(table, False),
+        )
 
     # Grouped on the whole triple, not the name alone. Constraint names are
     # unique per table in SQL Server, not per database, so two tables may each

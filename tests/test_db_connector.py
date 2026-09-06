@@ -296,6 +296,33 @@ def _fanout_source() -> _FakeConnection:
     )
 
 
+def _capped_parent_source() -> _FakeConnection:
+    """Parent has 4 customers; a max_rows=2 cap lands C1,C2. Orders reference C3,C4.
+
+    The source is clean. The extract invents two orphans.
+    """
+    return _FakeConnection(
+        [("dbo", "customers"), ("dbo", "orders")],
+        {
+            "[dbo].[customers]": (
+                ["cust_ref", "region"],
+                [["C1", "East"], ["C2", "West"], ["C3", "East"], ["C4", "West"]],
+            ),
+            "[dbo].[orders]": (
+                ["order_id", "cust_ref", "amount"],
+                [["O1", "C3", "200"], ["O2", "C4", "200"]],
+            ),
+        },
+        pks=[
+            ("dbo", "customers", "cust_ref", 1),
+            ("dbo", "orders", "order_id", 1),
+        ],
+        fks=[
+            ("FK_Orders_Customers", "dbo", "orders", "cust_ref", "dbo", "customers", "cust_ref", 1),
+        ],
+    )
+
+
 def test_sql_source_is_named_on_library_preview(
     wh: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -520,3 +547,33 @@ def test_the_same_source_table_repulled_replaces_itself_not_a_neighbour(
     second = dbc.ingest_source_table(_cfg(), "orders", path=wh)
     assert first.bronze_table == second.bronze_table
     assert second.note is None
+
+
+def test_manifest_entry_carries_truncated_so_verify_can_attribute(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLSRC-07: truncated is already on SourcePull; the ontology only sees the manifest."""
+    from dms_executor.ontology import from_manifest
+    from dms_executor.source_links import verify_source_links
+
+    _install(monkeypatch, _capped_parent_source())
+    extracted = dbc.ingest_source_database(_cfg(), path=wh, max_rows=2)
+    by_table = {f"{t['schema']}.{t['table']}": t for t in extracted.manifest_entry["tables"]}
+    assert by_table["dbo.customers"]["truncated"] is True
+    assert by_table["dbo.orders"]["truncated"] is False
+
+    onto = from_manifest(
+        extracted.manifest_entry,
+        relation_for=lambda s, t: by_table[f"{s}.{t}"]["path"],
+    )
+    assert onto.truncated.get("dbo.customers") is True
+
+    report = verify_source_links(extracted, path=wh)
+    assert report["measured"] is True
+    assert report["verified"] is False
+    assert any(v["check"] == "fk_intact" for v in report["violations"]), report
+    detail = next(v["detail"] for v in report["violations"] if v["check"] == "fk_intact")
+    assert "max_rows" in detail
+    assert "dbo.customers" in detail
+    fk = next(link for link in report["links"] if link["name"] == "FK_Orders_Customers")
+    assert fk["cardinality"] == "unverified"

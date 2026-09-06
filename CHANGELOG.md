@@ -2,6 +2,26 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-06 - verify() refuses orphans a max_rows cap invents (SQLSRC-07, #157)
+
+- **`fk_intact` is now a verify() claim.** Every non-NULL child key must exist
+  in the parent. Orphan row count and distinct orphan key count go on the
+  violation; the link stays unverified so compile() refuses to join through it.
+  NULL child keys stay optional FKs - LEFT JOIN is not reverted.
+- **A cap and a dirty source produce different messages, same refusal.**
+  `truncated` is copied from `SourcePull` onto `manifest_entry` and into
+  `from_manifest`. The ontology does not read the bronze registry. A capped
+  parent names `max_rows` and the parent table; a dirty source says the source
+  is dirty.
+- **The customer artifact is the sql_source receipt.** `verify_source_links`
+  already ran on `POST /v1/studio/sources/sql` (#156); it now carries
+  `fk_intact` when the extract invented orphans. The extract still lands.
+- **R-0007.** `scripts/repro_capped_parent_orphans.py` exits 0. Deleting the
+  claim turns the new tests red. A capped parent with no orphans is still
+  many-to-one (R-0005).
+- **Not this ticket:** SQLSRC-09 #158. #116 live verify. Chat/ask consulting
+  the ontology. EPIC-020 COMPLETE.
+
 ## 2026-09-06 - the declared join is measured against the landed rows (SQLSRC-08, #156)
 
 - **The semantic layer moved into `dms_executor`.** It lived in `scripts/`,

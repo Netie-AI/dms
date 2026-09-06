@@ -151,7 +151,12 @@ class SourceKeys:
         for pull in pulls:
             qualified = pull.source.split("#", 1)[1]
             schema, _, name = qualified.partition(".")
-            tables.append({"schema": schema, "table": name, "path": pull.bronze_table})
+            tables.append({
+                "schema": schema,
+                "table": name,
+                "path": pull.bronze_table,
+                "truncated": pull.truncated,
+            })
         return {
             "source": source,
             "tables": tables,

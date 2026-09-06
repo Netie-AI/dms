@@ -266,3 +266,39 @@ def test_a_source_declaring_no_foreign_keys_is_not_reported_as_verified(
     assert "no foreign keys" in links["reason"], links
     assert links["links"] == []
     assert links["violations"] == []
+
+
+def test_capped_parent_orphans_are_named_on_the_receipt(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-0001 / SQLSRC-07: the customer artifact must refuse the invented orphans.
+
+    A max_rows cap on customers lands C1,C2 and both orders (which point at
+    C3,C4). The source never had those orphans. Until #157 verify() was silent
+    and LEFT JOIN would understate every named region while the grand total
+    still reconciled.
+    """
+    from test_db_connector import _capped_parent_source
+
+    _gate_allows(monkeypatch)
+    _install(monkeypatch, _capped_parent_source())
+
+    r = TestClient(create_app()).post(
+        "/v1/studio/sources/sql", json=_body(max_rows=2)
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    links = body["links"]
+    assert links["measured"] is True, links
+    assert links["verified"] is False, links
+    assert any(v["check"] == "fk_intact" for v in links["violations"]), links
+    detail = next(v["detail"] for v in links["violations"] if v["check"] == "fk_intact")
+    assert "max_rows" in detail
+    assert "dbo.customers" in detail
+    fk = next(link for link in links["links"] if link["name"] == "FK_Orders_Customers")
+    assert fk["cardinality"] == "unverified"
+    # Rows still landed. A refused join is not a reason to throw the extract away.
+    assert {t["bronze_table"] for t in body["tables"]} == {
+        "bronze.dbo_customers",
+        "bronze.dbo_orders",
+    }
