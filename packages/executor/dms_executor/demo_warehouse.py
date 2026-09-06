@@ -9,14 +9,38 @@ Cortex's duckdb file). Uploaded bronze is copied to the engine file by
 from __future__ import annotations
 
 import os
+import stat as stat_mod
 import threading
 from pathlib import Path
 from typing import Any
 
 import duckdb
 
-_LOCK = threading.Lock()
-_SEEDED: set[str] = set()
+#: Guards ``_PATH_LOCKS`` only. Never held across a DuckDB call.
+_REGISTRY_LOCK = threading.Lock()
+
+#: One lock per resolved warehouse path. Seeding one warehouse must not block a
+#: caller of an unrelated one - ``warehouse_identity`` works an ingest file and a
+#: serving file, and the suite drives a fresh tmp warehouse per test.
+_PATH_LOCKS: dict[str, threading.Lock] = {}
+
+#: Resolved warehouse path -> the file identity this process last validated it at.
+#:
+#: This is a memo, and ``_SEEDED.clear()`` is its invalidation - test fixtures
+#: call it to force a reseed, and that must keep working. It was a ``set`` of
+#: paths, re-probed with ``_schema_ok`` on *every* call; the probe is a fresh
+#: ``duckdb.connect`` plus seven queries (~60 ms), and it ran under one global
+#: lock held across the whole fast path, so every concurrent Library caller was
+#: re-serialised behind it. Measured: 8 barrier-released threads doing one
+#: ``ensure_demo_warehouse`` each returned over 456 ms, one after another.
+#:
+#: Keying the memo on the file's identity rather than on the path alone is what
+#: lets the fast path skip the probe without weakening it. Measured on this
+#: machine (duckdb 1.5.5): a read-only connect / select / close cycle leaves
+#: ``st_mtime_ns`` untouched, and a catalog write moves it. So any write to the
+#: file - an ingest, a lake-schema create, another process reseeding - costs
+#: exactly one re-probe, and a warehouse only being read costs none.
+_SEEDED: dict[str, tuple[int, int] | None] = {}
 
 DEFAULT_REL = Path("data") / "dms_demo.duckdb"
 SCHEMA_VERSION = 2
@@ -71,20 +95,85 @@ def _schema_ok(db: Path) -> bool:
         return False
 
 
+def _file_identity(db: Path) -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` for a regular file, or ``None`` if it is not one.
+
+    ``None`` stands in for the old ``db.is_file()`` guard: a missing path, or a
+    directory sitting where the warehouse should be, must reach the seeding path.
+    """
+    try:
+        st = db.stat()
+    except OSError:
+        return None
+    if not stat_mod.S_ISREG(st.st_mode):
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _path_lock(key: str) -> threading.Lock:
+    with _REGISTRY_LOCK:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = _PATH_LOCKS[key] = threading.Lock()
+        return lock
+
+
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
-    """Create and seed the demo DuckDB if missing / stale schema. Idempotent."""
+    """Create and seed the demo DuckDB if missing / stale schema. Idempotent.
+
+    Concurrency-safe, and - unlike the version this replaced - concurrent
+    callers of an *already seeded* warehouse do not serialise. Every Library and
+    ingest entry point goes through here (``list_bronze_tables``,
+    ``list_warehouse_tables`` twice, ``preview_warehouse_table``, bronze
+    ingest...), so a lock held across the validity check is a lock held across
+    the whole app's read path.
+
+    The three outcomes, in the order they are tried:
+
+    1. the memo says this exact file was validated -> return, no lock, no DuckDB;
+    2. the path is known but the file has changed -> re-probe under its lock,
+       and refresh the memo if the schema is still good. A write to the
+       warehouse is not a reason to drop the customer's demo tables;
+    3. the path is unknown, gone, or its schema is stale -> seed it.
+
+    Case 3 on an unknown path seeds without probing first, which is the previous
+    behaviour kept deliberately: one reseed per process per path is how a
+    ``SCHEMA_VERSION`` bump reaches a warehouse a previous build left behind.
+    """
     db = path or warehouse_path()
     key = str(db.resolve())
-    with _LOCK:
-        if key in _SEEDED and db.is_file() and _schema_ok(db):
+
+    # Fast path, deliberately lock-free. ``dict.get`` is atomic under the GIL,
+    # and reading a stale entry is safe: nothing is seeded on the strength of
+    # this check alone - it is repeated under the path lock below.
+    ident = _file_identity(db)
+    if ident is not None and _SEEDED.get(key) == ident:
+        return db
+
+    with _path_lock(key):
+        # Re-check: while we waited, another thread may have seeded or
+        # revalidated this path, and reseeding drops and recreates its tables.
+        ident = _file_identity(db)
+        if ident is not None and _SEEDED.get(key) == ident:
             return db
+
+        if ident is not None and key in _SEEDED and _schema_ok(db):
+            # Known good path whose file moved under us - an ingest wrote to it,
+            # or ``ensure_lake_schemas`` created a schema. Memoise the identity
+            # read *before* the probe, not after: a write that landed while the
+            # probe ran is a state this process has not validated, and recording
+            # it would certify a schema nobody looked at. Being wrong the
+            # conservative way costs one more probe on the next call.
+            _SEEDED[key] = ident
+            return db
+
         db.parent.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect(str(db))
         try:
             _seed(con)
         finally:
             con.close()
-        _SEEDED.add(key)
+        _SEEDED[key] = _file_identity(db)
         return db
 
 
