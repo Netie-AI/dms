@@ -19,7 +19,7 @@ _LOCK = threading.Lock()
 _SEEDED: set[str] = set()
 
 DEFAULT_REL = Path("data") / "dms_demo.duckdb"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Tables allowlisted on demo/live manifests
 DEMO_TABLES = (
@@ -72,7 +72,13 @@ def _schema_ok(db: Path) -> bool:
 
 
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
-    """Create and seed the demo DuckDB if missing / stale schema. Idempotent."""
+    """Thin-reseed the DMS local demo file. Idempotent within one process.
+
+    First call this process always ``_seed``s (DROP the six demo tables, write
+    the small fixture). That is by design: the rich founder lake lives on the
+    Cortex path (``/var/cortex/data/dms_demo.duckdb``), not here. Do not point
+    ``DMS_WAREHOUSE_DB`` at the Cortex file.
+    """
     db = path or warehouse_path()
     key = str(db.resolve())
     with _LOCK:
@@ -124,6 +130,7 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
         CREATE TABLE suppliers (
           supplier_id VARCHAR PRIMARY KEY,
           supplier_name VARCHAR,
+          country VARCHAR,
           lead_time_days INTEGER,
           risk_score DOUBLE
         )
@@ -132,10 +139,10 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
         INSERT INTO suppliers VALUES
-          ('SUP-01', 'Northshore Materials', 7, 0.22),
-          ('SUP-02', 'Peninsula Polymers', 12, 0.41),
-          ('SUP-03', 'Delta Logistics Co', 5, 0.18),
-          ('SUP-04', 'Orbit Packing', 9, 0.55)
+          ('SUP-01', 'Northshore Materials', 'MY', 7, 0.22),
+          ('SUP-02', 'Peninsula Polymers', 'SG', 12, 0.41),
+          ('SUP-03', 'Delta Logistics Co', 'MY', 5, 0.18),
+          ('SUP-04', 'Orbit Packing', 'TH', 9, 0.55)
         """
     )
 
@@ -147,20 +154,21 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
           quantity_kg DOUBLE,
           reorder_level_kg DOUBLE,
           unit_cost_myr DOUBLE,
-          supplier_id VARCHAR
+          supplier_id VARCHAR,
+          category VARCHAR
         )
         """
     )
     con.execute(
         """
         INSERT INTO inventory VALUES
-          ('RS622XK', 'WH-A', 1200, 500, 4.50, 'SUP-01'),
-          ('RS622XKR', 'WH-A', 80, 200, 5.20, 'SUP-01'),
-          ('SKU-ALPHA', 'WH-B', 3400, 1000, 2.10, 'SUP-02'),
-          ('SKU-BETA', 'WH-B', 900, 400, 8.75, 'SUP-03'),
-          ('SKU-GAMMA', 'WH-C', 150, 300, 12.00, 'SUP-04'),
-          ('SKU-DELTA', 'WH-D', 60, 250, 6.40, 'SUP-02'),
-          ('SKU-EPSILON', 'WH-E', 2100, 800, 3.25, 'SUP-03')
+          ('RS622XK', 'WH-A', 1200, 500, 4.50, 'SUP-01', 'RAW'),
+          ('RS622XKR', 'WH-A', 80, 200, 5.20, 'SUP-01', 'RAW'),
+          ('SKU-ALPHA', 'WH-B', 3400, 1000, 2.10, 'SUP-02', 'PACKAGING'),
+          ('SKU-BETA', 'WH-B', 900, 400, 8.75, 'SUP-03', 'PACKAGING'),
+          ('SKU-GAMMA', 'WH-C', 150, 300, 12.00, 'SUP-04', 'CHEMICALS'),
+          ('SKU-DELTA', 'WH-D', 60, 250, 6.40, 'SUP-02', 'PARTS'),
+          ('SKU-EPSILON', 'WH-E', 2100, 800, 3.25, 'SUP-03', 'PARTS')
         """
     )
 

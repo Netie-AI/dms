@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
+from dms_executor.demo_warehouse import DEMO_TABLES
 
 ALLOWED_BADGES = frozenset(
     {
@@ -87,6 +88,75 @@ def _bare_label(label: str) -> str:
     if name.lower().startswith("bronze."):
         name = name.split(".", 1)[-1]
     return name
+
+
+def _is_bronze_label(label: str) -> bool:
+    """True when the label is an ingest relation (schema ``bronze``), not a lake fact."""
+    n = str(label or "").strip().lower().replace("\\", "/")
+    if n.startswith("bronze.") or n.startswith("bronze/"):
+        return True
+    parts = n.replace("/", ".").split(".")
+    return any(p == "bronze" for p in parts[:-1])
+
+
+_DEMO_LAKE = frozenset(t.lower() for t in DEMO_TABLES)
+
+
+def _relation_bare(name: str) -> str:
+    n = str(name or "").strip().strip('"').strip("`").strip("[]").lower()
+    return n.rsplit(".", 1)[-1]
+
+
+def _is_demo_lake_relation(name: str) -> bool:
+    """Demo warehouse facts, including Cortex ``warehouse_<table>`` aliases.
+
+    Live leftover text named warehouse_inventory / warehouse_suppliers as
+    competing 'sheets'. They share a token prefix; they are not workbook sheets.
+    """
+    bare = _relation_bare(name)
+    if bare in _DEMO_LAKE:
+        return True
+    prefix = "warehouse_"
+    if bare.startswith(prefix) and bare[len(prefix) :] in _DEMO_LAKE:
+        return True
+    return False
+
+
+def _sql_is_demo_lake_only(sql: str | None) -> bool:
+    """True when executed SQL only reads demo warehouse facts (not bronze sheets).
+
+    cq_spend_by_country / stock-by-category are lake metrics. F32 is a workbook
+    sheet-shape conflict. A Space grant that also holds an upload, or Cortex
+    column-card ``container_member`` labels, must not demote the lake ranking.
+    """
+    cited = _sql_cited_labels(sql)
+    if not cited:
+        return False
+    for rel in cited:
+        low = str(rel).strip().strip('"').strip("`").lower()
+        if _is_bronze_label(low) or low.startswith("bronze.") or ".bronze." in low:
+            return False
+        if not _is_demo_lake_relation(low):
+            return False
+    return True
+
+
+def _f32_source_scope_labels(sources: list[dict[str, Any]]) -> list[str]:
+    """Workbook/sheet labels from provenance cards. Column cards are not sheets."""
+    out: list[str] = []
+    for src in sources:
+        container = str(src.get("container") or "").strip()
+        if container and not _is_demo_lake_relation(container):
+            out.append(container)
+        member = str(src.get("member") or "").strip()
+        if not member:
+            continue
+        combined = f"{container}_{member}" if container else member
+        # Sales / Wide_Fill members are sheet class. sku / category / country are not.
+        if _sheet_class_of(member) is None and _sheet_class_of(combined) is None:
+            continue
+        out.append(combined)
+    return out
 
 
 def _sheet_class_of(label: str) -> str | None:
@@ -167,12 +237,11 @@ def _sheet_siblings(labels: list[str]) -> list[str]:
     conflict and no demote — the defect class was only ever caught when the
     customer happened to name a sheet the way the fixture did.
 
-    ``batch_ingest`` names a multi-sheet upload ``<file_stem>_<SheetName>`` with
-    non-alphanumerics collapsed to ``_``, so two labels sharing a leading ``_``
-    token prefix and differing afterwards are two sheets of one workbook. That is
-    ambiguous on its own: the question did not say which sheet, and the engine
-    picked one. No schema knowledge is needed, and nothing outside the label set
-    is consulted — the set is its own evidence.
+    ``batch_ingest`` names a multi-sheet upload ``bronze.<file_stem>_<SheetName>``
+    with non-alphanumerics collapsed to ``_``, so two bronze labels sharing a
+    leading ``_`` token prefix and differing afterwards are two sheets of one
+    workbook. Lake facts and column cards are excluded: ``inventory_sku`` vs
+    ``inventory_category`` is not a workbook.
 
     Deliberately narrow. The caller still requires multiple ranking totals in the
     answer and that the ask did not pin the scope, so this widens *which* label
@@ -180,6 +249,10 @@ def _sheet_siblings(labels: list[str]) -> list[str]:
     """
     parts: list[tuple[str, list[str]]] = []
     for lab in labels:
+        if not _is_bronze_label(lab) or _is_demo_lake_relation(lab):
+            # Lake facts (inventory, warehouse_suppliers) and column cards
+            # share underscores. They are not workbook sheets.
+            continue
         toks = [t for t in _bare_label(lab).lower().replace("-", "_").split("_") if t]
         if len(toks) >= 2:
             parts.append((lab, toks))
@@ -282,11 +355,17 @@ def _scope_uniquely_named(
 
 
 def _sql_cited_labels(sql: str | None) -> list[str]:
-    """Relation names after FROM/JOIN. Placeholder comments yield nothing."""
+    """Relation names after FROM/JOIN. Placeholder comments yield nothing.
+
+    Strip quoting without inserting spaces. Replacing ``"`` with a space turned
+    ``FROM "warehouse"."inventory"`` into ``FROM warehouse . inventory``, so
+    F32 saw a schema token, missed the lake join, and demoted spend_by_country.
+    """
     raw = (sql or "").strip()
     if not raw or raw.startswith("--"):
         return []
     stripped = _SQL_COMMENT.sub(" ", raw)
+    stripped = stripped.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
     return list(dict.fromkeys(m.group(1) for m in _SQL_RELATION.finditer(stripped)))
 
 
@@ -325,18 +404,34 @@ def _should_demote_ambiguous_ranking(
     an ungrounded demo ACL still has to demote: ``live_ask`` forwards
     ``acl.row_predicates`` (DEMO_TABLES), which never includes the hostile
     bronze pair. Does not fix typos / intent regex.
+
+    Derived path skips when SQL only cites demo-lake facts: that is a warehouse
+    metric (spend_by_country), not a Sales vs Wide_Fill ranking. Explicit plants
+    still demote.
     """
     if competing_scopes is not None:
         competing = list(dict.fromkeys(str(x) for x in competing_scopes if x))
     else:
+        if _sql_is_demo_lake_only(sql_used):
+            return []
         cited = _sql_cited_labels(sql_used)
         labels = list(grounded_tables or []) + list(source_labels) + list(cited)
+        # warehouse_inventory / warehouse_suppliers share a token prefix. They
+        # are Cortex lake aliases, not workbook sheets (live leftover text).
+        labels = [lab for lab in labels if not _is_demo_lake_relation(lab)]
         for lab in cited:
+            if _is_demo_lake_relation(lab):
+                continue
             sib = _paired_sheet_sibling(lab)
             if sib:
                 labels.append(sib)
         competing = competing_category_scopes(labels)
     if len(competing) < 2:
+        return []
+    # Live leftover: "Scope conflict ... warehouse_inventory / warehouse_locations
+    # / warehouse_suppliers / warehouse_transactions". All four are lake facts.
+    # SQL already joined country. That is not a workbook sheet-shape conflict.
+    if all(_is_demo_lake_relation(c) for c in competing):
         return []
     if not _ranking_totals_present(text, values, rows):
         return []
@@ -1087,12 +1182,7 @@ def build_answer_envelope(
     # multi-file sales) scopes must not stay confident green. SQL-on-one-sheet
     # is not enough when the ask did not pin workbook+sheet.
     if not abstained:
-        source_labels: list[str] = []
-        for s in sources:
-            if s.get("container"):
-                source_labels.append(str(s["container"]))
-            if s.get("member"):
-                source_labels.append(f"{s.get('container') or ''}_{s['member']}")
+        source_labels = _f32_source_scope_labels(sources)
         conflict = _should_demote_ambiguous_ranking(
             question=question,
             grounded_tables=grounded_tables,

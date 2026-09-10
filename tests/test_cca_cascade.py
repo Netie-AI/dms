@@ -317,10 +317,12 @@ def test_certified_cascade_rides_along_on_the_answer(
     monkeypatch.setenv("DMS_CCA_CASCADE", "1")
     warehouse = _seeded_warehouse(tmp_path, monkeypatch)
     con = duckdb.connect(str(warehouse))
-    con.execute("ALTER TABLE transactions ADD COLUMN country VARCHAR")
+    # Geo binds to suppliers.country (SCHEMA_VERSION 3 seed: MY/SG/TH). Do not
+    # also add transactions.country — two SEA columns make geo abstain as
+    # undecidable.
     con.execute("ALTER TABLE transactions ADD COLUMN asset_class VARCHAR")
     con.execute("ALTER TABLE transactions ADD COLUMN transaction_type VARCHAR")
-    con.execute("UPDATE transactions SET country='MY', asset_class='COM', transaction_type='LEASE'")
+    con.execute("UPDATE transactions SET asset_class='COM', transaction_type='LEASE'")
     con.close()
 
     cortex = _MarkerCortex()
@@ -340,8 +342,8 @@ def test_certified_cascade_rides_along_on_the_answer(
     # The buyer's sentences: what was covered, on which column, and what the
     # data does not carry.
     assumptions = " ".join(env.get("assumptions") or [])
-    assert "transactions.country" in assumptions
-    assert "1 of 11" in assumptions
+    assert "suppliers.country" in assumptions
+    assert "3 of 11" in assumptions
     assert "Indonesia" in assumptions
 
 
