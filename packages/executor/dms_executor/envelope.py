@@ -107,6 +107,21 @@ def _relation_bare(name: str) -> str:
     return n.rsplit(".", 1)[-1]
 
 
+def _is_demo_lake_relation(name: str) -> bool:
+    """Demo warehouse facts, including Cortex ``warehouse_<table>`` aliases.
+
+    Live leftover text named warehouse_inventory / warehouse_suppliers as
+    competing 'sheets'. They share a token prefix; they are not workbook sheets.
+    """
+    bare = _relation_bare(name)
+    if bare in _DEMO_LAKE:
+        return True
+    prefix = "warehouse_"
+    if bare.startswith(prefix) and bare[len(prefix) :] in _DEMO_LAKE:
+        return True
+    return False
+
+
 def _sql_is_demo_lake_only(sql: str | None) -> bool:
     """True when executed SQL only reads demo warehouse facts (not bronze sheets).
 
@@ -121,7 +136,7 @@ def _sql_is_demo_lake_only(sql: str | None) -> bool:
         low = str(rel).strip().strip('"').strip("`").lower()
         if _is_bronze_label(low) or low.startswith("bronze.") or ".bronze." in low:
             return False
-        if _relation_bare(low) not in _DEMO_LAKE:
+        if not _is_demo_lake_relation(low):
             return False
     return True
 
@@ -234,8 +249,8 @@ def _sheet_siblings(labels: list[str]) -> list[str]:
     """
     parts: list[tuple[str, list[str]]] = []
     for lab in labels:
-        if not _is_bronze_label(lab):
-            # Lake facts (inventory, suppliers) and column cards (inventory_sku)
+        if not _is_bronze_label(lab) or _is_demo_lake_relation(lab):
+            # Lake facts (inventory, warehouse_suppliers) and column cards
             # share underscores. They are not workbook sheets.
             continue
         toks = [t for t in _bare_label(lab).lower().replace("-", "_").split("_") if t]

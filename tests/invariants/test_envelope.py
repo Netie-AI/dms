@@ -1206,6 +1206,63 @@ def test_f32_ask_path_map_keeps_spend_by_country_with_grant_soup():
     assert_envelope_valid(env)
 
 
+def test_f32_does_not_demote_warehouse_prefixed_lake_tables():
+    """Live leftover text: scope conflict across warehouse_inventory / _suppliers.
+
+    Cortex SQL already joined country. F32 treated warehouse_* as workbook
+    sheets because they share the token prefix ``warehouse``.
+    """
+    sql = (
+        "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
+        "AS total_spend_myr FROM warehouse_inventory AS i "
+        "JOIN warehouse_suppliers AS s ON i.supplier_id = s.supplier_id "
+        "GROUP BY s.country ORDER BY total_spend_myr DESC"
+    )
+    grant = [
+        "warehouse_inventory",
+        "warehouse_locations",
+        "warehouse_suppliers",
+        "warehouse_transactions",
+    ]
+    env = build_answer_envelope(
+        answer_id="a_wh_prefix",
+        text="Spend by country: MY 20,516.00, SG 7,524.00, TH 1,800.00.",
+        badge="L0_CERTIFIED",
+        values=[
+            {"id": "v0", "value": 20516.00, "label": "total_spend_myr"},
+            {"id": "v1", "value": 7524.00, "label": "total_spend_myr"},
+            {"id": "v2", "value": 1800.00, "label": "total_spend_myr"},
+        ],
+        sql_used=sql,
+        rows=_SPEND_ROWS,
+        question="What is our total spend by supplier country?",
+        grounded_tables=grant,
+        contributing_sources=[
+            {
+                "ref_id": "src_inv",
+                "container": "warehouse_inventory",
+                "kind": "sql",
+                "row_count": 3,
+                "contribution": 0.5,
+            },
+            {
+                "ref_id": "src_sup",
+                "container": "warehouse_suppliers",
+                "kind": "sql",
+                "row_count": 3,
+                "contribution": 0.5,
+            },
+        ],
+        drillthrough_token="dt_warehouse_spend",
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert "20,516.00" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert_envelope_valid(env)
+
+
 def test_f32_wide_fill_still_demotes_with_column_cards_and_demo_grant():
     """Lake-SQL skip must not swallow a real Wide_Fill ranking."""
     home, sports, misc = _WIDE_FILL_CLASS
