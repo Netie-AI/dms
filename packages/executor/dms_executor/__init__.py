@@ -465,7 +465,6 @@ class Executor:
             question,
             space_id=space_id,
             session_id=session_id,
-            warehouse=self._warehouse,
             grantable=set(self.grantable_tables(space_id=space_id)),
             tables=tables,
             submit=lambda sql: self._submit_verified_sql(

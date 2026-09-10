@@ -1,8 +1,9 @@
 """Demo warehouse governed metrics for the DR-0002 leftover asks.
 
 Exact-question match, same F83 posture as VQ-02: Cortex submit + ledger, no
-local DuckDB fallback. Missing ``suppliers.country`` / ``inventory.category``
-is a miss (honest Cortex abstain), not a guessed SQL rewrite.
+local DuckDB fallback. The rich lake is Cortex
+(``/var/cortex/data/dms_demo.duckdb``). DMS local is a thin reseed and is not
+the answer source.
 
 Not steward VQ-02: these ids are the product pack, not Studio-registered.
 """
@@ -12,11 +13,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
-from dms_executor.demo_warehouse import ensure_demo_warehouse, table_columns
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
@@ -49,7 +48,6 @@ class PackMetric:
     question: str
     sql: str
     tables: tuple[str, ...]
-    required_columns: tuple[tuple[str, str], ...]
 
 
 PACK_METRICS: tuple[PackMetric, ...] = (
@@ -58,21 +56,18 @@ PACK_METRICS: tuple[PackMetric, ...] = (
         question=SPEND_BY_COUNTRY_Q,
         sql=SPEND_BY_COUNTRY_SQL,
         tables=("inventory", "suppliers"),
-        required_columns=(("suppliers", "country"),),
     ),
     PackMetric(
         metric_id="stock_value_by_category",
         question=STOCK_BY_CATEGORY_Q,
         sql=STOCK_BY_CATEGORY_SQL,
         tables=("inventory",),
-        required_columns=(("inventory", "category"),),
     ),
     PackMetric(
         metric_id="total_spend",
         question=TOTAL_SPEND_Q,
         sql=TOTAL_SPEND_SQL,
         tables=("inventory", "suppliers"),
-        required_columns=(),
     ),
 )
 
@@ -88,14 +83,14 @@ def _as_of() -> str:
 def lookup_pack_metric(
     question: str,
     *,
-    warehouse: Path | None = None,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
 ) -> PackMetric | None:
     """Return the pack metric for this exact ask, or None.
 
-    Grounded-file asks skip. Missing required columns skip. A Space that does
-    not grant every table the SQL names skips (Warehouse Ops vs suppliers).
+    Grounded-file asks skip. A Space that does not grant every table the SQL
+    names skips (Warehouse Ops vs suppliers). Column presence is Cortex's job
+    on submit — do not probe the thin DMS local file.
     """
     if tables:
         return None
@@ -108,10 +103,6 @@ def lookup_pack_metric(
     allowed = grantable if grantable is not None else set()
     if any(t not in allowed for t in hit.tables):
         return None
-    db = ensure_demo_warehouse(warehouse)
-    for table, column in hit.required_columns:
-        if column.casefold() not in table_columns(table, path=db):
-            return None
     try:
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
@@ -167,7 +158,6 @@ def maybe_pack_ask(
     *,
     space_id: str | None = None,
     session_id: str | None = None,
-    warehouse: Path | None = None,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
@@ -180,7 +170,6 @@ def maybe_pack_ask(
     """
     hit = lookup_pack_metric(
         question,
-        warehouse=warehouse,
         grantable=grantable,
         tables=tables,
     )

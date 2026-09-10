@@ -31,30 +31,6 @@ DEMO_TABLES = (
     "alerts",
 )
 
-# Columns the EPIC-020 leftover asks need. Founder lake may already have them;
-# a v2 DMS seed does not. Never DROP a lake that already has the six tables
-# just to add these (warehouse_identity: reseeding the engine file wipes extras).
-_REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
-    "suppliers": ("country",),
-    "inventory": ("category",),
-}
-
-_SUPPLIER_COUNTRY = {
-    "SUP-01": "MY",
-    "SUP-02": "SG",
-    "SUP-03": "MY",
-    "SUP-04": "TH",
-}
-_SKU_CATEGORY = {
-    "RS622XK": "RAW",
-    "RS622XKR": "RAW",
-    "SKU-ALPHA": "PACKAGING",
-    "SKU-BETA": "PACKAGING",
-    "SKU-GAMMA": "CHEMICALS",
-    "SKU-DELTA": "PARTS",
-    "SKU-EPSILON": "PARTS",
-}
-
 _REVENUE_SQL = """
 SELECT COALESCE(SUM(quantity_kg * unit_cost_myr), 0)::DOUBLE AS revenue_myr
 FROM transactions
@@ -71,116 +47,37 @@ def warehouse_path() -> Path:
     return repo / DEFAULT_REL
 
 
-def _table_names(con: duckdb.DuckDBPyConnection) -> set[str]:
-    rows = con.execute(
-        "SELECT LOWER(table_name) FROM information_schema.tables"
-    ).fetchall()
-    return {str(r[0]) for r in rows}
-
-
-def _columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
-    rows = con.execute(
-        "SELECT LOWER(column_name) FROM information_schema.columns "
-        "WHERE LOWER(table_name) = ?",
-        [table.lower()],
-    ).fetchall()
-    return {str(r[0]) for r in rows}
-
-
-def table_columns(table: str, *, path: Path | None = None) -> frozenset[str]:
-    """Column names on a demo table. Empty if the table is missing."""
-    db = path or warehouse_path()
-    if not Path(db).is_file():
-        return frozenset()
-    con = duckdb.connect(str(db))
-    try:
-        return frozenset(_columns(con, table))
-    except Exception:  # noqa: BLE001
-        return frozenset()
-    finally:
-        con.close()
-
-
-def _demo_tables_present(con: duckdb.DuckDBPyConnection) -> bool:
-    names = _table_names(con)
-    return all(t in names for t in DEMO_TABLES)
-
-
-def _required_columns_present(con: duckdb.DuckDBPyConnection) -> bool:
-    for table, cols in _REQUIRED_COLUMNS.items():
-        have = _columns(con, table)
-        if any(c not in have for c in cols):
-            return False
-    return True
-
-
 def _schema_ok(db: Path) -> bool:
     try:
         con = duckdb.connect(str(db))
         try:
-            return _demo_tables_present(con) and _required_columns_present(con)
+            row = con.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()
+            if not row or int(row[0]) != SCHEMA_VERSION:
+                return False
+            for table in DEMO_TABLES:
+                n = con.execute(
+                    "SELECT COUNT(*) FROM information_schema.tables "
+                    "WHERE table_name = ?",
+                    [table],
+                ).fetchone()
+                if not n or int(n[0]) < 1:
+                    return False
+            return True
         finally:
             con.close()
     except Exception:  # noqa: BLE001
         return False
 
 
-def _add_column(con: duckdb.DuckDBPyConnection, table: str, column: str) -> None:
-    have = _columns(con, table)
-    if column.lower() in have:
-        return
-    con.execute(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR")
-
-
-def _backfill_nulls(
-    con: duckdb.DuckDBPyConnection,
-    table: str,
-    column: str,
-    key: str,
-    mapping: dict[str, str],
-) -> None:
-    if column.lower() not in _columns(con, table):
-        return
-    for ident, value in mapping.items():
-        con.execute(
-            f"UPDATE {table} SET {column} = ? WHERE {key} = ? AND {column} IS NULL",
-            [value, ident],
-        )
-
-
-def _stamp_schema_version(con: duckdb.DuckDBPyConnection) -> None:
-    names = _table_names(con)
-    if "meta" not in names:
-        con.execute("CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR)")
-    cols = _columns(con, "meta")
-    if "key" not in cols or "value" not in cols:
-        # Founder lake may already use `meta` for something else. Leave it.
-        return
-    con.execute("DELETE FROM meta WHERE key = 'schema_version'")
-    con.execute(
-        "INSERT INTO meta VALUES ('schema_version', ?)",
-        [str(SCHEMA_VERSION)],
-    )
-
-
-def _migrate(con: duckdb.DuckDBPyConnection) -> None:
-    """Add country/category when missing. Never DROP. Never rewrite landed rows.
-
-    A founder lake already holding those columns (and extra tables, txn_type
-    'OUT', richer grain) must survive DMS startup on the same file.
-    """
-    _add_column(con, "suppliers", "country")
-    _add_column(con, "inventory", "category")
-    _backfill_nulls(con, "suppliers", "country", "supplier_id", _SUPPLIER_COUNTRY)
-    _backfill_nulls(con, "inventory", "category", "sku", _SKU_CATEGORY)
-    _stamp_schema_version(con)
-
-
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
-    """Create and seed the demo DuckDB if missing / stale schema. Idempotent.
+    """Thin-reseed the DMS local demo file. Idempotent within one process.
 
-    If the six demo tables already exist, migrate columns in place. Reseeding
-    would drop founder extras (warehouse_identity TAS two-file).
+    First call this process always ``_seed``s (DROP the six demo tables, write
+    the small fixture). That is by design: the rich founder lake lives on the
+    Cortex path (``/var/cortex/data/dms_demo.duckdb``), not here. Do not point
+    ``DMS_WAREHOUSE_DB`` at the Cortex file.
     """
     db = path or warehouse_path()
     key = str(db.resolve())
@@ -190,13 +87,7 @@ def ensure_demo_warehouse(path: Path | None = None) -> Path:
         db.parent.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect(str(db))
         try:
-            if _demo_tables_present(con):
-                if not _required_columns_present(con):
-                    _migrate(con)
-                else:
-                    _stamp_schema_version(con)
-            else:
-                _seed(con)
+            _seed(con)
         finally:
             con.close()
         _SEEDED.add(key)

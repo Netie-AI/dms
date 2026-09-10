@@ -33,12 +33,15 @@ Regression: `tests/test_vq02_verified_register.py`.
 
 EPIC-020 leftover pack: exact-match warehouse metrics in
 `packages/executor/dms_executor/demo_pack.py` (spend_by_country,
-stock_value_by_category, total_spend). `live_ask` order: follow-up → VQ-02 →
-pack → cascade → bronze sheet → Cortex. DR-0002 follow-ups
-(`average of them`, `add N`) in `session_followup.py`. F32 derived path
-skips demo-lake SQL so cq_spend_by_country is not a sheet-scope conflict.
-Regression: `tests/test_demo_pack_followup.py`,
-`tests/invariants/test_envelope.py` (lake-SQL skip). Not #116 COMPLETE.
+stock_value_by_category, total_spend). Asks go to Cortex. DMS
+`ensure_demo_warehouse` always thin-reseeds the local file; the founder
+rich lake is Cortex `/var/cortex/data/dms_demo.duckdb`. `live_ask` order:
+follow-up → VQ-02 → pack → cascade → bronze sheet → Cortex. DR-0002
+follow-ups (`average of them`, `add N`) in `session_followup.py`. F32
+derived path skips demo-lake SQL so cq_spend_by_country is not a
+sheet-scope conflict. Regression: `tests/test_demo_pack_followup.py`,
+`tests/invariants/test_envelope.py` (lake-SQL skip),
+`tests/test_demo_warehouse_reseed.py`. Not #116 COMPLETE.
 
 EPIC-020 SQLSRC-09: Studio SQL Server/MySQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

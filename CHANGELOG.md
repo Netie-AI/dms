@@ -23,8 +23,11 @@ Append-only. Never edited, only added to. Newest first.
   answers in both Spaces.
 - **Follow-up.** Closed list: `average of them`, `add N`. Arithmetic in
   `packages/executor`. Honest ABSTAIN if the prior turn has no numbers.
-- **Warehouse.** SCHEMA_VERSION 3 adds `suppliers.country` /
-  `inventory.category` in place. Never DROP a founder lake.
+- **Warehouse.** SCHEMA_VERSION 3 thin seed includes `suppliers.country` /
+  `inventory.category`. `ensure_demo_warehouse` always reseeds the DMS
+  local file on first process call. Do not keep a rich lake on that path.
+  Founder rich file is Cortex `/var/cortex/data/dms_demo.duckdb`. Do not
+  point `DMS_WAREHOUSE_DB` at it. Pack does not probe local columns.
 - **Not this ticket:** #116 live certify, EPIC-020 COMPLETE, invent COMPLETE.
 
 ## 2026-09-06 - Studio point-UI for SQL Server/MySQL (SQLSRC-09, #158)
