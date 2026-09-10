@@ -11,12 +11,14 @@ Append-only. Never edited, only added to. Newest first.
   shape were the false-positive inputs. F32 runs before E12, so the scalar
   total-spend leftover looked the same when the parent never stored a turn.
 - **Envelope.** Derived F32 skips SQL that only cites `DEMO_TABLES` or
-  Cortex `warehouse_<table>` aliases (not `bronze.*`). Sheet-sibling fallback
-  is bronze ingest labels. Column cards are not sheets. Live leftover text
-  named `warehouse_inventory` / `warehouse_suppliers` as competing sheets;
-  they share a token prefix and are lake facts. Wide_Fill SQL and
-  Summary/Detail workbook shape still demote. Explicit `competing_scopes`
-  plants unchanged.
+  Cortex `warehouse_<table>` aliases (not `bronze.*`). Quoted
+  `"warehouse"."inventory"` stays a lake join (do not split on quote
+  characters). Sheet-sibling fallback is bronze ingest labels. Column
+  cards are not sheets. `warehouse_*` grants are not workbook sheets.
+  Live leftover text named `warehouse_inventory` / `warehouse_suppliers`
+  as competing sheets; they share a token prefix and are lake facts.
+  Wide_Fill SQL and Summary/Detail workbook shape still demote. Explicit
+  `competing_scopes` plants unchanged.
 - **Pack.** Exact-match `spend_by_country`, `stock_value_by_category`,
   `total_spend` via Cortex submit + ledger (F83, no local DuckDB fallback).
   Warehouse Ops is not granted `suppliers`, so spend misses there. Stock

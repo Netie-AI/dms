@@ -82,6 +82,31 @@ class _LakeSpendAskCortex:
 
     asks: list[AskRequest] = field(default_factory=list)
     submits: list[Any] = field(default_factory=list)
+    sql_used: str = SPEND_BY_COUNTRY_SQL
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    audit_id: str = "aud_cq_spend_http"
+    token: str = "dt_cq_http"
+
+    def __post_init__(self) -> None:
+        if not self.sources:
+            self.sources = [
+                {
+                    "ref_id": "src_inv",
+                    "container": "inventory",
+                    "member": "category",
+                    "kind": "sql",
+                    "row_count": 3,
+                    "contribution": 0.5,
+                },
+                {
+                    "ref_id": "src_sup",
+                    "container": "suppliers",
+                    "member": "country",
+                    "kind": "sql",
+                    "row_count": 3,
+                    "contribution": 0.5,
+                },
+            ]
 
     def submit(self, req: Any) -> QueryResult:
         self.submits.append(req)
@@ -99,34 +124,17 @@ class _LakeSpendAskCortex:
         return AskResponse(
             answer="MY 20,516.00; SG 7,524.00; TH 1,800.00.",
             badge="certified",
-            sql_used=SPEND_BY_COUNTRY_SQL,
+            sql_used=self.sql_used,
             rows=[
                 {"country": "MY", "total_spend_myr": 20516.00},
                 {"country": "SG", "total_spend_myr": 7524.00},
                 {"country": "TH", "total_spend_myr": 1800.00},
             ],
             assumptions="cq_spend_by_country",
-            audit_id="aud_cq_spend_http",
+            audit_id=self.audit_id,
             route="certified_metric",
-            contributing_sources=[
-                {
-                    "ref_id": "src_inv",
-                    "container": "inventory",
-                    "member": "category",
-                    "kind": "sql",
-                    "row_count": 3,
-                    "contribution": 0.5,
-                },
-                {
-                    "ref_id": "src_sup",
-                    "container": "suppliers",
-                    "member": "country",
-                    "kind": "sql",
-                    "row_count": 3,
-                    "contribution": 0.5,
-                },
-            ],
-            drillthrough_token="dt_cq_http",
+            contributing_sources=self.sources,
+            drillthrough_token=self.token,
         )
 
 
@@ -373,6 +381,56 @@ def test_cortex_fallback_spend_does_not_f32_demote(
             "question": SPEND_BY_COUNTRY_Q,
             "space_id": FINANCE,
             "session_id": "ses_cq_fallback",
+        },
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
+    assert "20,516.00" in env["text"] or "20516" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert len(cortex.asks) == 1
+
+
+def test_quoted_warehouse_schema_spend_does_not_f32_demote(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pack miss + quoted warehouse.inventory join + bronze grant soup stays certified."""
+    cortex = _LakeSpendAskCortex(
+        sql_used=(
+            'SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) '
+            'AS total_spend_myr FROM "warehouse"."inventory" AS i '
+            'JOIN "warehouse"."suppliers" AS s ON i.supplier_id = s.supplier_id '
+            "GROUP BY s.country ORDER BY total_spend_myr DESC"
+        ),
+        sources=[
+            {
+                "ref_id": "src_inv",
+                "container": "warehouse_inventory",
+                "kind": "sql",
+                "row_count": 3,
+                "contribution": 0.5,
+            },
+            {
+                "ref_id": "src_sup",
+                "container": "warehouse_suppliers",
+                "kind": "sql",
+                "row_count": 3,
+                "contribution": 0.5,
+            },
+        ],
+        audit_id="aud_cq_quoted_wh",
+        token="dt_cq_quoted_wh",
+    )
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": SPEND_BY_COUNTRY_Q,
+            "space_id": FINANCE,
+            "session_id": "ses_cq_quoted_wh",
         },
     )
     assert r.status_code == 200, r.text

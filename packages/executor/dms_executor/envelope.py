@@ -355,12 +355,17 @@ def _scope_uniquely_named(
 
 
 def _sql_cited_labels(sql: str | None) -> list[str]:
-    """Relation names after FROM/JOIN. Placeholder comments yield nothing."""
+    """Relation names after FROM/JOIN. Placeholder comments yield nothing.
+
+    Strip quoting without inserting spaces. Replacing ``"`` with a space turned
+    ``FROM "warehouse"."inventory"`` into ``FROM warehouse . inventory``, so
+    F32 saw a schema token, missed the lake join, and demoted spend_by_country.
+    """
     raw = (sql or "").strip()
     if not raw or raw.startswith("--"):
         return []
     stripped = _SQL_COMMENT.sub(" ", raw)
-    stripped = stripped.replace('"', " ").replace("`", " ").replace("[", " ").replace("]", " ")
+    stripped = stripped.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
     return list(dict.fromkeys(m.group(1) for m in _SQL_RELATION.finditer(stripped)))
 
 
@@ -411,7 +416,12 @@ def _should_demote_ambiguous_ranking(
             return []
         cited = _sql_cited_labels(sql_used)
         labels = list(grounded_tables or []) + list(source_labels) + list(cited)
+        # warehouse_inventory / warehouse_suppliers share a token prefix. They
+        # are Cortex lake aliases, not workbook sheets (live leftover text).
+        labels = [lab for lab in labels if not _is_demo_lake_relation(lab)]
         for lab in cited:
+            if _is_demo_lake_relation(lab):
+                continue
             sib = _paired_sheet_sibling(lab)
             if sib:
                 labels.append(sib)

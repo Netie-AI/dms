@@ -22,6 +22,8 @@ INVARIANT-CHANGE: xlsx-named ask answered from demo warehouse SQL demotes.
 INVARIANT-CHANGE: E9-02/F32 derived path skips SQL that only cites DEMO_TABLES
 (lake metric, not a workbook ranking). Sheet-sibling fallback is bronze ingest
 labels; Cortex column-card members are not sheets. Wide_Fill SQL still demotes.
+INVARIANT-CHANGE: E9-02/F32 quoted warehouse.inventory SQL stays a lake join;
+warehouse_* grants are not workbook sheets. spend_by_country must not ABSTAIN.
 """
 
 from __future__ import annotations
@@ -1206,24 +1208,48 @@ def test_f32_ask_path_map_keeps_spend_by_country_with_grant_soup():
     assert_envelope_valid(env)
 
 
+_WAREHOUSE_SCOPE_GRANT = [
+    "warehouse_inventory",
+    "warehouse_locations",
+    "warehouse_suppliers",
+    "warehouse_transactions",
+]
+_QUOTED_WAREHOUSE_SPEND_SQL = (
+    'SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) '
+    'AS total_spend_myr FROM "warehouse"."inventory" AS i '
+    'JOIN "warehouse"."suppliers" AS s ON i.supplier_id = s.supplier_id '
+    "GROUP BY s.country ORDER BY total_spend_myr DESC"
+)
+_WAREHOUSE_PREFIX_SPEND_SQL = (
+    "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
+    "AS total_spend_myr FROM warehouse_inventory AS i "
+    "JOIN warehouse_suppliers AS s ON i.supplier_id = s.supplier_id "
+    "GROUP BY s.country ORDER BY total_spend_myr DESC"
+)
+_WAREHOUSE_SCOPE_SOURCES = [
+    {
+        "ref_id": "src_inv",
+        "container": "warehouse_inventory",
+        "kind": "sql",
+        "row_count": 3,
+        "contribution": 0.5,
+    },
+    {
+        "ref_id": "src_sup",
+        "container": "warehouse_suppliers",
+        "kind": "sql",
+        "row_count": 3,
+        "contribution": 0.5,
+    },
+]
+
+
 def test_f32_does_not_demote_warehouse_prefixed_lake_tables():
     """Live leftover text: scope conflict across warehouse_inventory / _suppliers.
 
     Cortex SQL already joined country. F32 treated warehouse_* as workbook
     sheets because they share the token prefix ``warehouse``.
     """
-    sql = (
-        "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
-        "AS total_spend_myr FROM warehouse_inventory AS i "
-        "JOIN warehouse_suppliers AS s ON i.supplier_id = s.supplier_id "
-        "GROUP BY s.country ORDER BY total_spend_myr DESC"
-    )
-    grant = [
-        "warehouse_inventory",
-        "warehouse_locations",
-        "warehouse_suppliers",
-        "warehouse_transactions",
-    ]
     env = build_answer_envelope(
         answer_id="a_wh_prefix",
         text="Spend by country: MY 20,516.00, SG 7,524.00, TH 1,800.00.",
@@ -1233,32 +1259,78 @@ def test_f32_does_not_demote_warehouse_prefixed_lake_tables():
             {"id": "v1", "value": 7524.00, "label": "total_spend_myr"},
             {"id": "v2", "value": 1800.00, "label": "total_spend_myr"},
         ],
-        sql_used=sql,
+        sql_used=_WAREHOUSE_PREFIX_SPEND_SQL,
         rows=_SPEND_ROWS,
         question="What is our total spend by supplier country?",
-        grounded_tables=grant,
-        contributing_sources=[
-            {
-                "ref_id": "src_inv",
-                "container": "warehouse_inventory",
-                "kind": "sql",
-                "row_count": 3,
-                "contribution": 0.5,
-            },
-            {
-                "ref_id": "src_sup",
-                "container": "warehouse_suppliers",
-                "kind": "sql",
-                "row_count": 3,
-                "contribution": 0.5,
-            },
-        ],
+        grounded_tables=_WAREHOUSE_SCOPE_GRANT,
+        contributing_sources=_WAREHOUSE_SCOPE_SOURCES,
         drillthrough_token="dt_warehouse_spend",
         ask_mode="live",
     )
     assert env["abstained"] is False
     assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
     assert "20,516.00" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_f32_does_not_demote_quoted_warehouse_schema_spend_with_sheet_soup():
+    """Live Cortex SQL quotes schema.table; grant also holds a workbook.
+
+    ``FROM "warehouse"."inventory"`` used to cite only ``warehouse``, so the
+    lake-SQL skip missed and F32 demoted spend_by_country as a sheet conflict.
+    """
+    env = build_answer_envelope(
+        answer_id="a_wh_quoted",
+        text="Spend by country: MY 20,516.00, SG 7,524.00, TH 1,800.00.",
+        badge="L0_CERTIFIED",
+        values=[
+            {"id": "v0", "value": 20516.00, "label": "total_spend_myr"},
+            {"id": "v1", "value": 7524.00, "label": "total_spend_myr"},
+            {"id": "v2", "value": 1800.00, "label": "total_spend_myr"},
+        ],
+        sql_used=_QUOTED_WAREHOUSE_SPEND_SQL,
+        rows=_SPEND_ROWS,
+        question="What is our total spend by supplier country?",
+        grounded_tables=_WAREHOUSE_SCOPE_GRANT + _F32_REAL_WORKBOOK,
+        contributing_sources=_WAREHOUSE_SCOPE_SOURCES,
+        drillthrough_token="dt_warehouse_quoted",
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
+    assert "20,516.00" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_f32_ask_path_map_keeps_quoted_warehouse_spend():
+    resp = AskResponse.model_validate(
+        {
+            "answer": "MY 20,516.00; SG 7,524.00; TH 1,800.00.",
+            "audit_id": "aud_wh_quoted",
+            "route": "certified_metric",
+            "provenance": {"badge": "certified", "layer": "L0"},
+            "sql_used": _QUOTED_WAREHOUSE_SPEND_SQL,
+            "rows": _SPEND_ROWS,
+            "contributing_sources": _WAREHOUSE_SCOPE_SOURCES,
+            "drillthrough_token": "dt_wh_quoted_map",
+            "abstained": False,
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        session_id="ses_wh_quoted",
+        grounded_tables=_WAREHOUSE_SCOPE_GRANT + _F32_REAL_WORKBOOK,
+        question="What is our total spend by supplier country?",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
+    assert "20,516.00" in env["text"] or "20516" in env["text"]
     assert "scope conflict" not in env["text"].lower()
     assert_envelope_valid(env)
 
