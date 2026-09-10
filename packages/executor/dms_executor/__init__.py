@@ -45,6 +45,7 @@ from dms_executor.demo_ask import (
     with_grounded_scope,
 )
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_pack import maybe_pack_ask
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
 from dms_executor.envelope import (
     assert_envelope_valid,
@@ -78,6 +79,7 @@ from dms_executor.reveal import (
     resolve_allowlisted_file,
     reveal_path,
 )
+from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
@@ -128,6 +130,7 @@ class Executor:
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
         self._bound_sessions: set[str] = set()
+        self._turns: dict[tuple[str, str], dict[str, Any]] = {}
         # The Space boundary reads its facts from here. Defaults to the DR-0002
         # seed so the boundary holds without Postgres; swap for a Postgres-backed
         # store when P-DMS-2 lands, without touching the serving path.
@@ -168,6 +171,19 @@ class Executor:
     def close(self) -> None:
         self._minter.close()
         self._bound_sessions.clear()
+        self._turns.clear()
+
+    def _store_turn(
+        self, session_id: str | None, space_id: str | None, env: dict[str, Any]
+    ) -> None:
+        key = turn_key(session_id, space_id)
+        if key is None:
+            return
+        snap = snapshot_turn(env)
+        if snap is None:
+            self._turns.pop(key, None)
+            return
+        self._turns[key] = snap
 
     def execute(self, sql: str) -> list[dict[str, Any]]:
         reject_hostile_chat_sql(sql)
@@ -348,13 +364,14 @@ class Executor:
         run_id: str,
         space_id: str | None,
         session_id: str | None,
+        event_type: str = "ask.verified_query",
     ) -> Any:
         """Append a verified-ask receipt to the Cortex ledger. No local chain."""
         if self._cortex is None:
             raise RuntimeError("CortexClient required for verified ledger")
         return self._cortex.ledger_append(
             LedgerAppendRequest(
-                event_type="ask.verified_query",
+                event_type=event_type,
                 payload={
                     "sql": asset_sql,
                     "run_id": run_id,
@@ -410,6 +427,19 @@ class Executor:
             run_cascade,
         )
 
+        key = turn_key(session_id, space_id)
+        follow = maybe_followup(
+            question,
+            prior=self._turns.get(key) if key else None,
+            space_id=space_id,
+            session_id=session_id,
+            warehouse=self._warehouse,
+            tables=tables,
+        )
+        if follow is not None:
+            self._store_turn(session_id, space_id, follow)
+            return follow
+
         verified_env = maybe_verified_ask(
             question,
             space_id=space_id,
@@ -428,7 +458,30 @@ class Executor:
             ),
         )
         if verified_env is not None:
+            self._store_turn(session_id, space_id, verified_env)
             return verified_env
+
+        pack_env = maybe_pack_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            warehouse=self._warehouse,
+            grantable=set(self.grantable_tables(space_id=space_id)),
+            tables=tables,
+            submit=lambda sql: self._submit_verified_sql(
+                sql, space_id=space_id, session_id=session_id, tables=tables
+            ),
+            ledger_append=lambda payload: self._ledger_verified_query(
+                asset_sql=str(payload.get("sql") or ""),
+                run_id=str(payload.get("run_id") or ""),
+                space_id=space_id,
+                session_id=session_id,
+                event_type="ask.governed_metric",
+            ),
+        )
+        if pack_env is not None:
+            self._store_turn(session_id, space_id, pack_env)
+            return pack_env
 
         # The grant decides what the cascade may open, never the request.
         #
@@ -469,7 +522,9 @@ class Executor:
             question, space_id=space_id, session_id=session_id
         )
         if bronze_env is not None:
-            return attach_cascade(bronze_env, cascade)
+            env = attach_cascade(bronze_env, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
@@ -495,7 +550,7 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
-        return attach_cascade(
+        env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
                 space_id=space_id,
@@ -507,6 +562,8 @@ class Executor:
             ),
             cascade,
         )
+        self._store_turn(session_id, space_id, env)
+        return env
 
     def submit_sql(
         self,

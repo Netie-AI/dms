@@ -19,6 +19,9 @@ badge when the matched query returns a grouped ranking.
 INVARIANT-CHANGE: E9-03 — a confident badge with no executed rows and no SQL
 must demote to ABSTAIN (governed_metric empty-result shrug).
 INVARIANT-CHANGE: xlsx-named ask answered from demo warehouse SQL demotes.
+INVARIANT-CHANGE: E9-02/F32 derived path skips SQL that only cites DEMO_TABLES
+(lake metric, not a workbook ranking). Sheet-sibling fallback is bronze ingest
+labels; Cortex column-card members are not sheets. Wide_Fill SQL still demotes.
 """
 
 from __future__ import annotations
@@ -1070,4 +1073,173 @@ def test_f32_does_not_demote_a_legitimate_multi_table_grant():
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED"
     assert "383,803.56" in env["text"]
+    assert_envelope_valid(env)
+
+
+_SPEND_BY_COUNTRY_SQL = (
+    "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
+    "AS total_spend_myr FROM inventory AS i JOIN suppliers AS s "
+    "ON i.supplier_id = s.supplier_id GROUP BY s.country "
+    "ORDER BY total_spend_myr DESC, s.country ASC"
+)
+_STOCK_BY_CATEGORY_SQL = (
+    "SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr "
+    "FROM inventory GROUP BY category "
+    "ORDER BY stock_value_myr DESC, category ASC"
+)
+_SPEND_ROWS = [
+    {"country": "MY", "total_spend_myr": 20516.00},
+    {"country": "SG", "total_spend_myr": 7524.00},
+    {"country": "TH", "total_spend_myr": 1800.00},
+]
+_STOCK_ROWS = [
+    {"category": "PACKAGING", "stock_value_myr": 15015.00},
+    {"category": "PARTS", "stock_value_myr": 7210.00},
+    {"category": "RAW", "stock_value_myr": 5816.00},
+]
+_F32_SOUP_GRANT = list(DEMO_TABLES) + _F32_REAL_WORKBOOK
+_COLUMN_CARDS = [
+    {
+        "ref_id": "src_inv",
+        "container": "inventory",
+        "member": "category",
+        "kind": "sql",
+        "row_count": 3,
+        "contribution": 0.5,
+    },
+    {
+        "ref_id": "src_sup",
+        "container": "suppliers",
+        "member": "country",
+        "kind": "sql",
+        "row_count": 3,
+        "contribution": 0.5,
+    },
+]
+
+
+def test_f32_does_not_demote_spend_by_country_lake_sql_with_sheet_grant_soup():
+    """Cortex matched cq_spend_by_country; leftover ABSTAIN was E9-02/F32.
+
+    Live path: Finance grant includes DEMO_TABLES plus a customer workbook's
+    sheets, and Cortex column cards become container_member labels. Those look
+    like _sheet_siblings. The executed SQL is inventory JOIN suppliers — a lake
+    metric, not Sales vs Wide_Fill.
+    """
+    env = build_answer_envelope(
+        answer_id="a_spend_country",
+        text="Spend by country: MY 20,516.00, SG 7,524.00, TH 1,800.00.",
+        badge="L0_CERTIFIED",
+        values=[
+            {"id": "v0", "value": 20516.00, "label": "total_spend_myr"},
+            {"id": "v1", "value": 7524.00, "label": "total_spend_myr"},
+            {"id": "v2", "value": 1800.00, "label": "total_spend_myr"},
+        ],
+        sql_used=_SPEND_BY_COUNTRY_SQL,
+        rows=_SPEND_ROWS,
+        question="What is our total spend by supplier country?",
+        grounded_tables=_F32_SOUP_GRANT,
+        contributing_sources=_COLUMN_CARDS,
+        drillthrough_token="dt_spend",
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert "20,516.00" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert not any("E9-02" in a or "F32" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
+def test_f32_does_not_demote_stock_by_category_lake_sql_with_sheet_grant_soup():
+    env = build_answer_envelope(
+        answer_id="a_stock_cat",
+        text="Stock: PACKAGING 15,015.00, PARTS 7,210.00, RAW 5,816.00.",
+        badge="L1_GOVERNED_METRIC",
+        values=[
+            {"id": "v0", "value": 15015.00, "label": "stock_value_myr"},
+            {"id": "v1", "value": 7210.00, "label": "stock_value_myr"},
+            {"id": "v2", "value": 5816.00, "label": "stock_value_myr"},
+        ],
+        sql_used=_STOCK_BY_CATEGORY_SQL,
+        rows=_STOCK_ROWS,
+        question="What is total stock value by category?",
+        grounded_tables=_F32_SOUP_GRANT,
+        contributing_sources=_COLUMN_CARDS,
+        drillthrough_token="dt_stock",
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert "15,015.00" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_f32_ask_path_map_keeps_spend_by_country_with_grant_soup():
+    """live_ask map: DEMO_TABLES + bronze siblings + column cards, lake SQL."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "MY 20,516.00; SG 7,524.00; TH 1,800.00.",
+            "audit_id": "aud_cq_spend",
+            "route": "certified_metric",
+            "provenance": {"badge": "certified", "layer": "L0"},
+            "sql_used": _SPEND_BY_COUNTRY_SQL,
+            "rows": _SPEND_ROWS,
+            "contributing_sources": _COLUMN_CARDS,
+            "drillthrough_token": "dt_cq_spend",
+            "abstained": False,
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        session_id="ses_cq_spend",
+        grounded_tables=_F32_SOUP_GRANT,
+        question="What is our total spend by supplier country?",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
+    assert "20,516.00" in env["text"] or "20516" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_f32_wide_fill_still_demotes_with_column_cards_and_demo_grant():
+    """Lake-SQL skip must not swallow a real Wide_Fill ranking."""
+    home, sports, misc = _WIDE_FILL_CLASS
+    env = build_answer_envelope(
+        answer_id="a_f32_cards",
+        text=(
+            f"Top 3 category sales are Home {home:,.2f} MYR, "
+            f"Sports {sports:,.2f} MYR and Misc {misc:,.2f} MYR."
+        ),
+        badge="L2_VALIDATED",
+        values=[
+            {"id": "v0", "value": home, "label": "sales_value_myr"},
+            {"id": "v1", "value": sports, "label": "sales_value_myr"},
+            {"id": "v2", "value": misc, "label": "sales_value_myr"},
+        ],
+        sql_used=(
+            "SELECT category, SUM(sales_value_myr) AS sales_value_myr "
+            "FROM bronze.aa64458a_p50_03_inventory_messy_Wide_Fill "
+            "GROUP BY category ORDER BY 2 DESC LIMIT 3"
+        ),
+        rows=[
+            {"category": "Home", "sales_value_myr": home},
+            {"category": "Sports", "sales_value_myr": sports},
+            {"category": "Misc", "sales_value_myr": misc},
+        ],
+        question="show top 3 categoty sales",
+        grounded_tables=_F32_SOUP_GRANT,
+        contributing_sources=_COLUMN_CARDS,
+        drillthrough_token="dt_wf",
+        ask_mode="live",
+    )
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert "scope conflict" in env["text"].lower()
+    for n in ("383,803.56", "242,755.97", "228,548.84"):
+        assert n not in env["text"]
     assert_envelope_valid(env)

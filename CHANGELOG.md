@@ -2,6 +2,28 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-10 - F32 skip demo-lake SQL; pack leftover asks (EPIC-020)
+
+- **Cause.** Lake is rich after hard restart. The 7 `verify_demo_live` ABSTAINs
+  were E9-02/F32 on `cq_spend_by_country` / stock-by-category: Cortex matched
+  and returned rows; DMS demoted a lake ranking as a Sales vs Wide_Fill scope
+  conflict. Column-card `container_member` labels and bronze sheet-sibling
+  shape were the false-positive inputs. F32 runs before E12, so the scalar
+  total-spend leftover looked the same when the parent never stored a turn.
+- **Envelope.** Derived F32 skips SQL that only cites `DEMO_TABLES` (not
+  `bronze.*`). Sheet-sibling fallback is bronze ingest labels. Column cards
+  are not sheets. Wide_Fill SQL and Summary/Detail workbook shape still
+  demote. Explicit `competing_scopes` plants unchanged.
+- **Pack.** Exact-match `spend_by_country`, `stock_value_by_category`,
+  `total_spend` via Cortex submit + ledger (F83, no local DuckDB fallback).
+  Warehouse Ops is not granted `suppliers`, so spend misses there. Stock
+  answers in both Spaces.
+- **Follow-up.** Closed list: `average of them`, `add N`. Arithmetic in
+  `packages/executor`. Honest ABSTAIN if the prior turn has no numbers.
+- **Warehouse.** SCHEMA_VERSION 3 adds `suppliers.country` /
+  `inventory.category` in place. Never DROP a founder lake.
+- **Not this ticket:** #116 live certify, EPIC-020 COMPLETE, invent COMPLETE.
+
 ## 2026-09-06 - Studio point-UI for SQL Server/MySQL (SQLSRC-09, #158)
 
 - **Form.** Studio offers SQL Server / MySQL connection fields the route already
