@@ -6,9 +6,9 @@ from pathlib import Path
 
 import duckdb
 from dms_executor.demo_warehouse import (
+    _SEEDED,
     DEMO_TABLES,
     SCHEMA_VERSION,
-    _SEEDED,
     ensure_demo_warehouse,
     table_columns,
 )
