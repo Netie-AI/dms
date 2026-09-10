@@ -22,8 +22,10 @@ INVARIANT-CHANGE: xlsx-named ask answered from demo warehouse SQL demotes.
 INVARIANT-CHANGE: E9-02/F32 derived path skips SQL that only cites DEMO_TABLES
 (lake metric, not a workbook ranking). Sheet-sibling fallback is bronze ingest
 labels; Cortex column-card members are not sheets. Wide_Fill SQL still demotes.
-INVARIANT-CHANGE: E9-02/F32 quoted warehouse.inventory SQL stays a lake join;
-warehouse_* grants are not workbook sheets. spend_by_country must not ABSTAIN.
+INVARIANT-CHANGE: E9-02/F32 a competing set that is only DEMO_TABLES /
+warehouse_* lake aliases is not a workbook sheet conflict. Live leftover
+sentence named warehouse_inventory / warehouse_locations /
+warehouse_suppliers / warehouse_transactions.
 """
 
 from __future__ import annotations
@@ -1272,6 +1274,50 @@ def test_f32_does_not_demote_warehouse_prefixed_lake_tables():
     assert env["rows"]
     assert "20,516.00" in env["text"]
     assert "scope conflict" not in env["text"].lower()
+    assert_envelope_valid(env)
+
+
+def test_f32_leftover_sentence_does_not_fire_on_warehouse_lake_scopes():
+    """Cortex leftover text, exact competing labels.
+
+    'Scope conflict: category totals disagree across warehouse_inventory,
+    warehouse_locations, warehouse_suppliers, warehouse_transactions.'
+    SQL already joined country. Those four are lake aliases, not sheets.
+    """
+    env = build_answer_envelope(
+        answer_id="a_wh_leftover",
+        text="Spend by country: MY 20,516.00, SG 7,524.00, TH 1,800.00.",
+        badge="L0_CERTIFIED",
+        values=[
+            {"id": "v0", "value": 20516.00, "label": "total_spend_myr"},
+            {"id": "v1", "value": 7524.00, "label": "total_spend_myr"},
+            {"id": "v2", "value": 1800.00, "label": "total_spend_myr"},
+        ],
+        sql_used=_WAREHOUSE_PREFIX_SPEND_SQL,
+        rows=_SPEND_ROWS,
+        question="What is our total spend by supplier country?",
+        grounded_tables=_WAREHOUSE_SCOPE_GRANT,
+        contributing_sources=[
+            {
+                "ref_id": f"src_{n}",
+                "container": n,
+                "kind": "sql",
+                "row_count": 3,
+                "contribution": 0.25,
+            }
+            for n in _WAREHOUSE_SCOPE_GRANT
+        ],
+        competing_scopes=_WAREHOUSE_SCOPE_GRANT,
+        drillthrough_token="dt_wh_leftover",
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
+    assert "20,516.00" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
+    for name in _WAREHOUSE_SCOPE_GRANT:
+        assert name not in env["text"]
     assert_envelope_valid(env)
 
 

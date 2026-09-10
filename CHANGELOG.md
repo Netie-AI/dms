@@ -15,10 +15,11 @@ Append-only. Never edited, only added to. Newest first.
   `"warehouse"."inventory"` stays a lake join (do not split on quote
   characters). Sheet-sibling fallback is bronze ingest labels. Column
   cards are not sheets. `warehouse_*` grants are not workbook sheets.
-  Live leftover text named `warehouse_inventory` / `warehouse_suppliers`
-  as competing sheets; they share a token prefix and are lake facts.
-  Wide_Fill SQL and Summary/Detail workbook shape still demote. Explicit
-  `competing_scopes` plants unchanged.
+  A competing set that is only those lake aliases does not demote -- the
+  live leftover sentence named warehouse_inventory / warehouse_locations /
+  warehouse_suppliers / warehouse_transactions. Pack accepts Cortex
+  `warehouse_<table>` grant aliases. Wide_Fill SQL and Summary/Detail
+  workbook shape still demote. Explicit Sales vs Wide_Fill plants unchanged.
 - **Pack.** Exact-match `spend_by_country`, `stock_value_by_category`,
   `total_spend` via Cortex submit + ledger (F83, no local DuckDB fallback).
   Warehouse Ops is not granted `suppliers`, so spend misses there. Stock

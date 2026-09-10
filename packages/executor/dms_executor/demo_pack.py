@@ -80,6 +80,13 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _grant_covers(table: str, allowed: set[str]) -> bool:
+    """True when the Space grant names the table or its Cortex warehouse_ alias."""
+    if table in allowed:
+        return True
+    return f"warehouse_{table}" in allowed
+
+
 def lookup_pack_metric(
     question: str,
     *,
@@ -89,8 +96,9 @@ def lookup_pack_metric(
     """Return the pack metric for this exact ask, or None.
 
     Grounded-file asks skip. A Space that does not grant every table the SQL
-    names skips (Warehouse Ops vs suppliers). Column presence is Cortex's job
-    on submit — do not probe the thin DMS local file.
+    names skips (Warehouse Ops vs suppliers). Cortex ``warehouse_<table>``
+    aliases count as the same grant. Column presence is Cortex's job on
+    submit -- do not probe the thin DMS local file.
     """
     if tables:
         return None
@@ -101,7 +109,7 @@ def lookup_pack_metric(
     if hit is None:
         return None
     allowed = grantable if grantable is not None else set()
-    if any(t not in allowed for t in hit.tables):
+    if any(not _grant_covers(t, allowed) for t in hit.tables):
         return None
     try:
         reject_hostile_chat_sql(hit.sql)

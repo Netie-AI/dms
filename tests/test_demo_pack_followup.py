@@ -21,6 +21,7 @@ from dms_executor.demo_pack import (
     SPEND_BY_COUNTRY_SQL,
     STOCK_BY_CATEGORY_Q,
     TOTAL_SPEND_Q,
+    lookup_pack_metric,
 )
 from dms_executor.demo_warehouse import execute_sql
 from dms_executor.envelope import assert_envelope_valid
@@ -205,6 +206,27 @@ def _live_client(
     )
     app.state.cortex = cortex
     return TestClient(app)
+
+
+def test_pack_hits_when_space_grants_warehouse_aliases() -> None:
+    grant = {
+        "warehouse_inventory",
+        "warehouse_locations",
+        "warehouse_suppliers",
+        "warehouse_transactions",
+    }
+    hit = lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant)
+    assert hit is not None
+    assert hit.metric_id == "spend_by_country"
+    ops = {
+        "warehouse_inventory",
+        "warehouse_locations",
+        "warehouse_shipments",
+    }
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
+    stock = lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops)
+    assert stock is not None
+    assert stock.metric_id == "stock_value_by_category"
 
 
 def test_finance_spend_by_country_is_governed_metric(

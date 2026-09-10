@@ -146,7 +146,7 @@ def _f32_source_scope_labels(sources: list[dict[str, Any]]) -> list[str]:
     out: list[str] = []
     for src in sources:
         container = str(src.get("container") or "").strip()
-        if container:
+        if container and not _is_demo_lake_relation(container):
             out.append(container)
         member = str(src.get("member") or "").strip()
         if not member:
@@ -427,6 +427,11 @@ def _should_demote_ambiguous_ranking(
                 labels.append(sib)
         competing = competing_category_scopes(labels)
     if len(competing) < 2:
+        return []
+    # Live leftover: "Scope conflict ... warehouse_inventory / warehouse_locations
+    # / warehouse_suppliers / warehouse_transactions". All four are lake facts.
+    # SQL already joined country. That is not a workbook sheet-shape conflict.
+    if all(_is_demo_lake_relation(c) for c in competing):
         return []
     if not _ranking_totals_present(text, values, rows):
         return []
