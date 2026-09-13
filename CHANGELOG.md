@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-02 Distill ladder in harness (ideas only, #180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close #180 or #178. Not COMPLETE. Not 99.95%.
+- **Mapping.** Certified-first then free gen; `demo_ontology` retrieve spine + slot-name YAML `tests/fixtures/curated_ceo/ontology_spine.yaml` (no SQL, not a vendor pack); `hybrid_fuse` + CRAG grades; Cortex `POST /dms/query` + `bind_plan` (no text2sql SDK). No paste from DB-GPT / mybot / n8n / OpenWillow / guaca / rakazo.
+- **Try.** Isolated gen retrieve+bind miss is ABSTAIN after the attempt, not silent None. Product path still Cortex-asks on compute miss. Frozen prove A/B @ `a9578348`: exact 38.46 pct / gen 3.85 pct, WRONG=0. Offline `--ab` is a separate measurement.
+- **Must not:** invent live Studio coverage, green planted refuses, pack expansion as the climb, GitHub CI `--climb`, ticket close.
+
+
 ## 2026-09-13 - GEN-02 retrieve bind on Cortex compute miss (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180). Does not close #180 or #178. Not COMPLETE. Not 99.95%.

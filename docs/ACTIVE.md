@@ -57,8 +57,11 @@ Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
 (`scripts/score_climb.md`). `ask_path=exact|generative|product` on
-`POST /v1/chat/ask`. Cortex compute miss binds retrieved ontology then
-validate/CRAG. Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
+`POST /v1/chat/ask`. Isolated gen: Cortex compute miss binds retrieved
+ontology then validate/CRAG. Product path still Cortex-asks on compute
+miss. Distill ladder in `scripts/score_climb.md` (certified-first,
+ontology spine, hybrid_fuse + CRAG grades, Cortex text2sql -- no vendor
+SDK). Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
 Not a GitHub CI live job. Regression: `tests/test_score_climb.py`,
 `tests/test_gen01_generative_ask.py`, `tests/test_gen02_bind_fallback.py`.
 Not COMPLETE.

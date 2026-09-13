@@ -50,14 +50,79 @@ BASELINE_91C5CC99: dict[str, Any] = {
     "abstain": 9,
     "wrong": 0,
 }
-# Offline A/B @ a9578348 (GEN-01). Counts, not 38.5/3.8 slogans.
+# Isolated A/B @ a9578348 (GEN-01, Platform prove). Frozen, not a slogan.
+# 10/26 = 38.46 pct, 1/26 = 3.85 pct. Do not edit to invent a rise.
 BASELINE_AB_A9578348: dict[str, Any] = {
     "commit": "a9578348",
     "n": 26,
     "exact_answered": 10,
     "generative_answered": 1,
+    "exact_coverage_answered_pct": 38.46,
+    "generative_coverage_answered_pct": 3.85,
     "wrong": 0,
 }
+
+# Platform D distill -> Netie-native mapping. Ideas only; no vendor paste.
+DISTILL: dict[str, Any] = {
+    "ideas_only": True,
+    "vendors_not_pasted": (
+        "DB-GPT",
+        "mybot",
+        "n8n",
+        "OpenWillow",
+        "guaca",
+        "rakazo",
+        "Semantica",
+        "Graphiti",
+        "Mem0",
+        "DeepAgents",
+    ),
+    "ladder": (
+        "certified_first_then_generative",
+        "ontology_spine_demo_ontology",
+        "hybrid_fuse_and_crag_grades",
+        "text2sql_cortex_compute_plus_bind_plan",
+    ),
+    "ontology_spine": {
+        "kind": "demo_ontology",
+        "source": "packages/executor/dms_executor/ontology.py",
+        "yaml_pack_format": False,
+        "from_manifest": "extract path, not certified SQL",
+        "retrieve_yaml": "tests/fixtures/curated_ceo/ontology_spine.yaml",
+    },
+    "text2sql": {
+        "cortex": "POST /dms/query",
+        "slots": "bind_plan typed query_plan",
+        "vendor_sdk": False,
+    },
+    "try_harder": (
+        "isolated gen retrieve then Cortex compute then bind_plan on miss "
+        "then compile then validate; abstain after that attempt, not before"
+    ),
+}
+
+
+def distill_block() -> dict[str, Any]:
+    """Harness record of Platform D mapping. Not a coverage number."""
+    return {
+        "ideas_only": DISTILL["ideas_only"],
+        "vendors_not_pasted": list(DISTILL["vendors_not_pasted"]),
+        "ladder": list(DISTILL["ladder"]),
+        "ontology_spine": dict(DISTILL["ontology_spine"]),
+        "text2sql": dict(DISTILL["text2sql"]),
+        "try_harder": DISTILL["try_harder"],
+        "baseline_ab": {
+            "commit": BASELINE_AB_A9578348["commit"],
+            "n": BASELINE_AB_A9578348["n"],
+            "exact_coverage_answered_pct": BASELINE_AB_A9578348[
+                "exact_coverage_answered_pct"
+            ],
+            "generative_coverage_answered_pct": BASELINE_AB_A9578348[
+                "generative_coverage_answered_pct"
+            ],
+            "wrong": BASELINE_AB_A9578348["wrong"],
+        },
+    }
 
 
 def load_pack(path: Path) -> dict[str, Any]:
@@ -302,8 +367,24 @@ def self_check() -> int:
         or int(ab["n"]) != len(ids)
         or int(ab["exact_answered"]) != 10
         or int(ab["generative_answered"]) != 1
+        or float(ab["exact_coverage_answered_pct"]) != 38.46
+        or float(ab["generative_coverage_answered_pct"]) != 3.85
+        or round(100.0 * int(ab["exact_answered"]) / int(ab["n"]), 2) != 38.46
+        or round(100.0 * int(ab["generative_answered"]) / int(ab["n"]), 2) != 3.85
     ):
         print("FAIL: A/B baseline @ a9578348 drifted")
+        return 1
+    if (
+        DISTILL["ideas_only"] is not True
+        or DISTILL["text2sql"]["vendor_sdk"] is not False
+        or DISTILL["ontology_spine"]["yaml_pack_format"] is not False
+        or DISTILL["ladder"][0] != "certified_first_then_generative"
+    ):
+        print("FAIL: distill constraints drifted")
+        return 1
+    spine = ROOT / str(DISTILL["ontology_spine"]["retrieve_yaml"])
+    if not spine.is_file():
+        print("FAIL: ontology spine yaml missing")
         return 1
     if classify_crag(
         {
@@ -586,9 +667,12 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
             "commit": base["commit"],
             "exact_answered": base["exact_answered"],
             "generative_answered": base["generative_answered"],
+            "exact_coverage_answered_pct": base["exact_coverage_answered_pct"],
+            "generative_coverage_answered_pct": base["generative_coverage_answered_pct"],
             "n": base["n"],
             "wrong": base["wrong"],
         },
+        "distill": distill_block(),
         "generative_vs_baseline": answered_vs_baseline(
             gen_r["answered"], int(base["generative_answered"])
         ),
@@ -697,6 +781,7 @@ def build_climb_report(
         "answered_vs_baseline": vs,
         "wrong": wrong,
         "passed_wrong_zero": wrong == 0,
+        "distill": distill_block(),
         "cases": cases,
     }
 
@@ -845,9 +930,12 @@ def climb_ab_live(url: str, timeout: float) -> int:
             "commit": base["commit"],
             "exact_answered": base["exact_answered"],
             "generative_answered": base["generative_answered"],
+            "exact_coverage_answered_pct": base["exact_coverage_answered_pct"],
+            "generative_coverage_answered_pct": base["generative_coverage_answered_pct"],
             "n": base["n"],
             "wrong": base["wrong"],
         },
+        "distill": distill_block(),
         "exact_match": exact_r,
         "generative": gen_r,
         "crag": crag,

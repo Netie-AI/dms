@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from score_curated import (  # noqa: E402
     BASELINE_91C5CC99,
+    BASELINE_AB_A9578348,
+    DISTILL,
     EXIT_CONFIG,
     PLATFORM_API,
     answered_vs_baseline,
@@ -17,6 +19,7 @@ from score_curated import (  # noqa: E402
     build_climb_report,
     classify_path,
     climb_url,
+    distill_block,
     judge_envelope,
     main,
     self_check,
@@ -42,14 +45,71 @@ def test_climb_url_fail_closed():
 
 
 def test_ab_baseline_a9578348_counts():
-    from score_curated import BASELINE_AB_A9578348
-
     b = BASELINE_AB_A9578348
     assert b["commit"] == "a9578348"
     assert b["exact_answered"] == 10
     assert b["generative_answered"] == 1
     assert b["wrong"] == 0
     assert b["n"] == 26
+    assert b["exact_coverage_answered_pct"] == 38.46
+    assert b["generative_coverage_answered_pct"] == 3.85
+    assert round(100.0 * 10 / 26, 2) == 38.46
+    assert round(100.0 * 1 / 26, 2) == 3.85
+
+
+def test_distill_ladder_is_netie_native_not_vendor():
+    assert DISTILL["ideas_only"] is True
+    assert DISTILL["text2sql"]["vendor_sdk"] is False
+    assert DISTILL["ontology_spine"]["yaml_pack_format"] is False
+    assert list(DISTILL["ladder"]) == [
+        "certified_first_then_generative",
+        "ontology_spine_demo_ontology",
+        "hybrid_fuse_and_crag_grades",
+        "text2sql_cortex_compute_plus_bind_plan",
+    ]
+    vendors = {v.lower() for v in DISTILL["vendors_not_pasted"]}
+    for name in ("db-gpt", "mybot", "n8n", "openwillow", "guaca", "rakazo"):
+        assert name in vendors
+    block = distill_block()
+    blob = json.dumps(block)
+    assert "99.95" not in blob
+    assert "COMPLETE" not in blob
+    assert block["baseline_ab"]["exact_coverage_answered_pct"] == 38.46
+    assert block["baseline_ab"]["generative_coverage_answered_pct"] == 3.85
+    root = Path(__file__).resolve().parents[1]
+    spine = root / DISTILL["ontology_spine"]["retrieve_yaml"]
+    assert spine.is_file()
+
+
+def test_gen02_sources_do_not_import_vendor_sdks():
+    forbidden = (
+        "dbgpt",
+        "db_gpt",
+        "mybot",
+        "n8n",
+        "openwillow",
+        "guaca",
+        "rakazo",
+        "semantica",
+        "graphiti",
+        "mem0",
+        "deepagents",
+    )
+    root = Path(__file__).resolve().parents[1]
+    paths = [
+        root / "packages/executor/dms_executor/generative_ask.py",
+        root / "packages/executor/dms_executor/semantic_retrieve.py",
+        root / "packages/cortex_client/cortex_client/compute.py",
+        root / "scripts/score_curated.py",
+    ]
+    for path in paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(("import ", "from ")):
+                continue
+            lower = stripped.lower()
+            for bad in forbidden:
+                assert bad not in lower, f"{path}: {stripped}"
 
 
 def test_classify_crag_validate_or_abstain():
@@ -224,6 +284,12 @@ def test_offline_ab_wrong_zero_and_gen_not_below_baseline():
     assert report["exact_match"]["wrong"] == 0
     assert report["generative"]["wrong"] == 0
     assert report["generative"]["answered"] >= report["baseline_ab"]["generative_answered"]
+    distill = report["distill"]
+    assert distill["ideas_only"] is True
+    assert distill["text2sql"]["vendor_sdk"] is False
+    assert distill["ladder"][0] == "certified_first_then_generative"
+    assert distill["baseline_ab"]["exact_coverage_answered_pct"] == 38.46
+    assert distill["baseline_ab"]["generative_coverage_answered_pct"] == 3.85
     planted = {
         "trap_last_month",
         "trap_short_paraphrase",

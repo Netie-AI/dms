@@ -6,7 +6,22 @@
 
 Climb is measured on the **product ask path** (pack exact-match first, then GEN-01 generative on miss). Do not expand certified packs as the climb. Isolated live A/B uses `ask_path=exact|generative`. Offline dual-path remains `python scripts/score_curated.py --ab` (no keys).
 
-GEN-02 follow-on: Cortex `POST /dms/query` miss falls back to local `bind_plan` from the retrieved ontology, then the same compile → validate/CRAG → submit. Explicit Cortex `unsure` is not overridden. Planted refuses stay ABSTAIN. Ontology measures are warehouse-honest (thin reseed vs Cortex lake), not pack SQL.
+GEN-02 follow-on: isolated `ask_path=generative` Cortex `POST /dms/query` miss binds local `bind_plan` from the retrieved ontology, then the same compile → validate/CRAG → submit. Product path does **not** bind on miss (Cortex certified still runs). Explicit Cortex `unsure` is not overridden. Planted refuses stay ABSTAIN. Ontology measures are warehouse-honest (thin reseed vs Cortex lake), not pack SQL.
+
+## Distill ladder (ideas only -- no vendor paste)
+
+Netie-native mapping. Not DB-GPT / mybot / n8n / OpenWillow / guaca/rakazo code.
+
+1. **Certified-first, then free gen.** `ask_path=product` and `exact` hit VQ/pack/refuse first. `generative` skips pack, tries retrieve→plan→validate, ABSTAIN only after that attempt. WRONG=0.
+2. **Ontology as retrieve spine.** `demo_ontology` object/link/measure declarations (verified on the lake), not a new YAML pack format and not certified-query SQL. `from_manifest` remains the extract path.
+3. **Hybrid fuse + CRAG-style confidence.** Retrieve tags `hybrid_fuse` when schema+ontology both hit. Harness grades `validated` / `abstain_validate` / `abstain_gate`. Doc RAG CRAG stays parked (P-DMS-19).
+4. **Text2SQL as Cortex compute + typed slots.** `POST /dms/query` (OpenVault FreeRoute inside Cortex) then `bind_plan` on miss. No vendor text2sql SDK.
+
+Founder lock: isolated gen **tries** retrieve -> compute -> bind_plan -> compile -> validate. Untyped/list/time misses become ABSTAIN after that attempt, not a silent None. Optional ML route/train/apply is not this slice. Abstain is safety (WRONG=0), not a coverage ceiling.
+
+Ontology YAML for retrieve is slot-name dump `tests/fixtures/curated_ceo/ontology_spine.yaml` (no SQL). Compile stays verified `demo_ontology` Python. Not a new vendor pack format.
+
+Frozen live A/B @ `a9578348`: exact 10/26 (38.46 pct), gen 1/26 (3.85 pct), WRONG=0. Offline `--ab` on this branch is a separate measurement. Do not edit the frozen counts to invent a rise.
 
 ## Baseline (frozen)
 

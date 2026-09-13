@@ -50,6 +50,8 @@ def test_bind_plan_stock_value_by_category(tmp_path: Path) -> None:
         grantable={"inventory", "locations", "transactions", "suppliers"},
         ontology=onto,
     )
+    assert "hybrid_fuse" in (ctx.get("methods") or [])
+    assert "ontology" in (ctx.get("methods") or [])
     out = bind_plan("What is total stock value by category?", ctx)
     assert out is not None
     assert out.get("unsure") is not True
@@ -166,3 +168,47 @@ def test_product_path_compute_miss_does_not_bind(tmp_path: Path) -> None:
         ontology=onto,
     )
     assert env is None
+
+
+def test_isolated_gen_untyped_miss_abstains_after_retrieve(tmp_path: Path) -> None:
+    """Founder lock: try retrieve+bind, then ABSTAIN. Do not silent-None the gen lane."""
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+    env = maybe_generative_ask(
+        "Which locations are cold storage?",
+        warehouse=db,
+        grantable={"inventory", "locations", "transactions", "suppliers"},
+        compute=lambda _c: None,
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert "query_plan was not typed after retrieve" in notes
+
+
+def test_ontology_spine_yaml_is_slot_names_not_sql(tmp_path: Path) -> None:
+    import yaml
+
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+    assert onto is not None
+    root = Path(__file__).resolve().parents[1]
+    spine_path = root / "tests" / "fixtures" / "curated_ceo" / "ontology_spine.yaml"
+    blob = spine_path.read_text(encoding="utf-8")
+    assert "SUM(" not in blob.upper()
+    assert "SELECT" not in blob.upper()
+    data = yaml.safe_load(blob)
+    assert data["kind"] == "dms.ontology_spine"
+    assert data["not_certified_sql"] is True
+    assert data["source"] == "demo_ontology"
+    for name in data["objects"]:
+        assert name in onto.objects, name
+    for name in data["measures"]:
+        assert name in onto.measures, name

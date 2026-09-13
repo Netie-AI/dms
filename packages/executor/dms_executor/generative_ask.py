@@ -342,7 +342,13 @@ def maybe_generative_ask(
                 space_id=space_id, session_id=session_id,
             )
         if kind != "plan":
-            return None
+            methods = ",".join(str(m) for m in (ctx.get("methods") or []))
+            return _abstain(
+                q,
+                f"query_plan was not typed after retrieve ({methods})",
+                space_id=space_id,
+                session_id=session_id,
+            )
         fallback_note = "compute_fallback:bind_plan"
 
     assert isinstance(payload, dict)

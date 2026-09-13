@@ -354,6 +354,7 @@ def test_retrieve_short_context_is_filtered(onto: Ontology, warehouse: Path) -> 
     methods = seen.get("methods") or []
     assert "ontology" in methods
     assert "summarize" in methods
+    assert "hybrid_fuse" in methods
     ctx = retrieve_short_context(
         "What is revenue by product category?",
         warehouse=warehouse,
