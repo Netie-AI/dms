@@ -49,7 +49,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **STUDIO-MOBILE-01 #171** Sources drawer + phone chrome (not COMPLETE, not #8). **VQ-03 #170** landed on main. Host-online #164; temp CF **ROTATE RISK**. |
+| **This tick** | **VQ-04 #176:** planted refuse traps fail-closed (not COMPLETE, not #8). VQ-03 #170 LAYER lifts stay. Host-online #164; temp CF **ROTATE RISK**. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)**. Open: **#116** (020), **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |

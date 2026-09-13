@@ -19,8 +19,10 @@ from dms_executor import Executor
 from dms_executor.demo_pack import (
     CAPACITY_ABOVE_90_Q,
     CAPACITY_UTILISATION_Q,
+    CAPACITY_UTILISATION_SQL,
     CCTV_WH_A_Q,
     COLD_STORAGE_Q,
+    DELAYED_COUNT_TRAP_Q,
     EXPIRED_ITEMS_Q,
     HOW_FULL_TRAP_Q,
     LOW_STOCK_WH_A_Q,
@@ -30,6 +32,7 @@ from dms_executor.demo_pack import (
     SPEND_BY_COUNTRY_SQL,
     STOCK_BY_CATEGORY_Q,
     TOTAL_SPEND_Q,
+    is_uncertified_paraphrase,
     lookup_pack_metric,
 )
 from dms_executor.demo_warehouse import execute_sql
@@ -500,8 +503,13 @@ def test_vq03_exact_asks_hit_pack_and_traps_miss() -> None:
         assert hit is not None, question
         assert hit.metric_id == metric_id
     assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance) is None
+    assert lookup_pack_metric(DELAYED_COUNT_TRAP_Q, grantable=ops) is None
     assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance) is None
     assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
+    assert is_uncertified_paraphrase(HOW_FULL_TRAP_Q)
+    assert is_uncertified_paraphrase(DELAYED_COUNT_TRAP_Q)
+    assert not is_uncertified_paraphrase(CAPACITY_UTILISATION_Q)
+    assert not is_uncertified_paraphrase(SHIPMENT_COST_Q)
 
 
 def test_vq03_thin_seed_executes_certified_sql(warehouse: Path) -> None:
@@ -564,6 +572,44 @@ def test_vq03_finance_ops_asks_are_governed_metric(
     assert submitted == hit.sql
 
 
+@dataclass
+class _L1TrapCortex:
+    """Live post-#175: Cortex greened planted refuse as governed_metric."""
+
+    asks: list[AskRequest] = field(default_factory=list)
+    submits: list[Any] = field(default_factory=list)
+    sql_used: str = CAPACITY_UTILISATION_SQL
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    answer: str = "WH-A 91.0"
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        return QueryResult(ok=True, status="bound", run_id="run_trap_bind")
+
+    def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+        return LedgerAppendResponse(entry_id="led_trap", hash="led_trap")
+
+    def ask(self, req: AskRequest) -> AskResponse:
+        self.asks.append(req)
+        rows = self.rows or [{"location_code": "WH-A", "pct_used": 91.0}]
+        return AskResponse(
+            answer=self.answer,
+            badge="governed_metric",
+            sql_used=self.sql_used,
+            rows=rows,
+            audit_id="aud_trap_l1",
+            route="governed_metric",
+        )
+
+
+_DELAYED_DEST_SQL = (
+    "SELECT l.location_code, COUNT(*) AS shipment_count "
+    "FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id "
+    "WHERE s.status = 'DELAYED' GROUP BY l.location_code "
+    "ORDER BY shipment_count DESC"
+)
+
+
 def test_how_full_synonym_does_not_pack_hit(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -582,7 +628,54 @@ def test_how_full_synonym_does_not_pack_hit(
     assert_envelope_valid(env)
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
-    assert len(cortex.asks) == 1
+    assert env["rows"] == []
+    assert env["values"] == []
+    assert "91" not in env["text"]
+    assert cortex.asks == []
+
+
+def test_planted_refuse_stays_abstain_when_cortex_returns_l1(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VQ-04: live WRONG2 was Cortex L1 on these two phrases. Must refuse."""
+    cases = (
+        (
+            HOW_FULL_TRAP_Q,
+            FINANCE,
+            CAPACITY_UTILISATION_SQL,
+            [{"location_code": "WH-A", "pct_used": 91.0}],
+            "WH-A 91.0",
+        ),
+        (
+            DELAYED_COUNT_TRAP_Q,
+            WAREHOUSE_OPS,
+            _DELAYED_DEST_SQL,
+            [{"location_code": "WH-A", "shipment_count": 3}],
+            "WH-A 3 delayed",
+        ),
+    )
+    for question, space, sql, rows, answer in cases:
+        cortex = _L1TrapCortex(sql_used=sql, rows=rows, answer=answer)
+        client = _live_client(warehouse, minter, monkeypatch, cortex)
+        r = client.post(
+            "/v1/chat/ask",
+            json={
+                "question": question,
+                "space_id": space,
+                "session_id": "ses_vq04",
+            },
+        )
+        assert r.status_code == 200, r.text
+        env = r.json()
+        assert_envelope_valid(env)
+        assert env["abstained"] is True, question
+        assert env["badge"] == "ABSTAIN", question
+        assert env["rows"] == []
+        assert env["values"] == []
+        assert "91" not in env["text"]
+        assert "3" not in env["text"]
+        assert cortex.asks == []
+        assert cortex.submits == []
 
 
 def test_finance_does_not_answer_ops_shipment_cost(

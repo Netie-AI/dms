@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: MISS (Chat SourcePanel flex sibling + Studio stack below lg; no prior mobile-sources finding).
+PREFLIGHT for this goal: HIT (VQ-03 pack exact-match; Cortex L1 greened how-full + delayed via vocabulary/regex).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | vq-04-refuse-traps | VQ-04, trap_delayed_count, trap_how_full_synonym, L1, dms-176 | #176 planted refuse must stay ABSTAIN after #175 WRONG2. Exact-phrase refuse, not regex. Not COMPLETE. | `2026-09-13_vq-04-refuse-traps.md` |
 | 2026-09-13 | studio-mobile-01 | STUDIO-MOBILE-01, SourcePanel, AppShell, StudioPage, drawer, lg, dms-171 | #171 Chat Sources is a default-open 22rem flex sibling. Drawer closed below lg; Studio files/SQLSRC collapse. Not #8 COMPLETE. | `2026-09-13_studio-mobile-01.md` |
 | 2026-09-13 | vq-03-l0-gaps | VQ-03, curated_ceo, certified_queries, demo_pack, dms-170 | #170 recover 7 live expect=l0 ABSTAINs via pack + Cortex submit. LAYER ok. Traps stay refuse. Not COMPLETE. | `2026-09-13_vq-03-l0-gaps.md` |
 | 2026-09-13 | curated-ceo-pack-expand | curated_ceo, L0, refuse, SCORE-PACK-01, dms-168 | #168 pack 14->26. L0 only with Cortex certified SQL. Refuse otherwise. Not parented under #8. Not COMPLETE. | `2026-09-13_curated-ceo-pack-expand.md` |

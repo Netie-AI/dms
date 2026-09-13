@@ -402,3 +402,44 @@ def test_a_legitimate_session_answer_still_certifies():
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert_envelope_valid(env)
+
+
+def test_vq04_uncertified_paraphrase_demotes_cortex_l1():
+    """Planted refuse must not keep L1_GOVERNED_METRIC when Cortex greened it."""
+    from dms_executor.demo_pack import (
+        CAPACITY_UTILISATION_Q,
+        DELAYED_COUNT_TRAP_Q,
+        HOW_FULL_TRAP_Q,
+    )
+
+    resp = AskResponse.model_validate(
+        {
+            "answer": "WH-A 91.0 delayed 3",
+            "audit_id": "aud_trap_l1",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": "SELECT location_code, pct_used FROM locations",
+            "rows": [{"location_code": "WH-A", "pct_used": 91.0}],
+        }
+    )
+    for question in (HOW_FULL_TRAP_Q, DELAYED_COUNT_TRAP_Q):
+        env = map_ask_response_to_envelope(
+            resp, question=question, space_id="sp_x", session_id="ses_trap"
+        )
+        assert env["badge"] == "ABSTAIN", question
+        assert env["abstained"] is True
+        assert env["rows"] == []
+        assert env["values"] == []
+        assert "91" not in env["text"]
+        assert_envelope_valid(env)
+
+    keep = map_ask_response_to_envelope(
+        resp,
+        question=CAPACITY_UTILISATION_Q,
+        space_id="sp_x",
+        session_id="ses_cq",
+    )
+    assert keep["badge"] == "L1_GOVERNED_METRIC"
+    assert keep["abstained"] is False
+    assert keep["rows"]
+    assert_envelope_valid(keep)

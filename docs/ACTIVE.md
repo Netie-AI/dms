@@ -39,7 +39,7 @@ submit. Thin seed SCHEMA_VERSION 4 adds `location_code` /
 `is_cold_storage` / `cctv_camera_id` / `expiry_date` so pack SQL can run
 in tests. The founder rich lake is Cortex `/var/cortex/data/dms_demo.duckdb`.
 `live_ask` order:
-follow-up → VQ-02 → pack → cascade → bronze sheet → Cortex. DR-0002
+follow-up → VQ-02 → pack → uncertified planted refuse (VQ-04) → cascade → bronze sheet → Cortex. DR-0002
 follow-ups (`average of them`, `add N`) in `session_followup.py`. F32
 derived path skips demo-lake SQL so cq_spend_by_country is not a
 sheet-scope conflict. Regression: `tests/test_demo_pack_followup.py`,
