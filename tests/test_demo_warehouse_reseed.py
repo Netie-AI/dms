@@ -105,6 +105,22 @@ def test_first_ensure_this_process_reseeds_thin(tmp_path: Path) -> None:
             "SELECT value FROM meta WHERE key = 'schema_version'"
         ).fetchone()
         assert ver is not None and int(ver[0]) == SCHEMA_VERSION
+        loc_cols = {
+            str(r[0]).lower()
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) = 'locations'"
+            ).fetchall()
+        }
+        inv_cols = {
+            str(r[0]).lower()
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) = 'inventory'"
+            ).fetchall()
+        }
+        assert {"location_code", "is_cold_storage", "cctv_camera_id"} <= loc_cols
+        assert "expiry_date" in inv_cols
         keep = con.execute(
             "SELECT query_id FROM _verified_queries"
         ).fetchall()
@@ -120,7 +136,9 @@ def test_schema_ok_rich_inventory_still_reseeds_on_new_process(tmp_path: Path) -
     con = duckdb.connect(str(path))
     try:
         con.executemany(
-            "INSERT INTO inventory VALUES (?, 'WH-A', 1, 1, 1.0, 'SUP-01', 'FAT')",
+            "INSERT INTO inventory (sku, location_id, quantity_kg, "
+            "reorder_level_kg, unit_cost_myr, supplier_id, category) "
+            "VALUES (?, 'WH-A', 1, 1, 1.0, 'SUP-01', 'FAT')",
             [(f"FAT-{i}",) for i in range(50)],
         )
         n = int(con.execute("SELECT COUNT(*) FROM inventory").fetchone()[0])
@@ -144,7 +162,8 @@ def test_second_call_same_process_does_not_reseed(tmp_path: Path) -> None:
     con = duckdb.connect(str(path))
     try:
         con.execute(
-            "INSERT INTO inventory VALUES "
+            "INSERT INTO inventory (sku, location_id, quantity_kg, "
+            "reorder_level_kg, unit_cost_myr, supplier_id, category) VALUES "
             "('KEEP-ME', 'WH-A', 1, 1, 1.0, 'SUP-01', 'KEEP')"
         )
     finally:

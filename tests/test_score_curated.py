@@ -25,6 +25,26 @@ FOUNDER_L0 = (
     "cq_chemicals_list",
     "cq_supplier_ranking",
 )
+VQ03_GAPS = (
+    "cq_capacity_utilisation",
+    "cq_low_stock_wh_a",
+    "ops_shipment_cost",
+    "cq_cold_storage",
+    "cq_capacity_above_90",
+    "cq_expired_items",
+    "cq_cctv_wh_a",
+)
+PLANTED_FAIL_CLOSED = (
+    "ops_spend_boundary",
+    "trap_last_month",
+    "trap_short_paraphrase",
+    "trap_alerts_ungranted",
+    "trap_high_risk_pending",
+    "ops_supplier_rank_boundary",
+    "trap_delayed_count",
+    "trap_stock_by_bin",
+    "trap_how_full_synonym",
+)
 FOUNDER_REFUSE = (
     "trap_alerts_ungranted",
     "trap_delayed_count",
@@ -50,7 +70,7 @@ def test_pack_has_l0_hits_and_abstain_traps():
     assert "ops_spend_boundary" in ids
     assert "ops_shipment_cost" in ids
     assert "trap_categoty" in ids
-    for qid in FOUNDER_L0 + FOUNDER_REFUSE + EXISTING_TRAPS:
+    for qid in FOUNDER_L0 + FOUNDER_REFUSE + EXISTING_TRAPS + VQ03_GAPS + PLANTED_FAIL_CLOSED:
         assert qid in ids
 
 
@@ -118,3 +138,44 @@ def test_judge_l0_hit():
 
 def test_self_check_passes():
     assert self_check() == 0
+
+
+def _sql_ws(sql: str) -> str:
+    return " ".join(str(sql or "").split()).strip()
+
+
+def test_vq03_gaps_expect_l0_and_have_sql():
+    pack = load_pack(PACK)
+    oracles = load_oracles()
+    by_id = {c["id"]: c for c in pack["questions"]}
+    for qid in VQ03_GAPS:
+        assert by_id[qid]["expect"] == "l0"
+        assert _sql_ws((oracles.get(qid) or {}).get("sql") or "")
+
+
+def test_planted_traps_stay_fail_closed():
+    pack = load_pack(PACK)
+    by_id = {c["id"]: c for c in pack["questions"]}
+    for qid in PLANTED_FAIL_CLOSED:
+        assert by_id[qid]["expect"] in {"abstain", "refuse"}, qid
+
+
+def test_vq03_pack_sql_matches_oracles():
+    """Pack SQL is Cortex certified_queries.yaml, not a second dialect."""
+    from dms_executor.demo_pack import PACK_METRICS
+
+    oracles = load_oracles()
+    qid_to_metric = {
+        "cq_capacity_utilisation": "cq_capacity_utilisation",
+        "cq_low_stock_wh_a": "cq_low_stock_wh_a",
+        "ops_shipment_cost": "cq_cost_by_destination",
+        "cq_cold_storage": "cq_cold_storage",
+        "cq_capacity_above_90": "cq_capacity_above_90",
+        "cq_expired_items": "cq_expired_items",
+        "cq_cctv_wh_a": "cq_cctv_wh_a",
+    }
+    metrics = {m.metric_id: m for m in PACK_METRICS}
+    for qid, metric_id in qid_to_metric.items():
+        want = _sql_ws((oracles.get(qid) or {}).get("sql") or "")
+        got = _sql_ws(metrics[metric_id].sql)
+        assert got == want, qid
