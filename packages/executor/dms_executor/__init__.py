@@ -56,6 +56,7 @@ from dms_executor.envelope import (
     build_answer_envelope,
     normalize_contributing_sources,
 )
+from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -386,6 +387,28 @@ class Executor:
             )
         )
 
+    def _compute_query(
+        self,
+        question: str,
+        *,
+        session_id: str | None,
+        space_id: str | None,
+        ontology: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Cortex compute (POST /dms/query). Missing method or failure is a miss."""
+        fn = getattr(self._cortex, "compute_query", None)
+        if not callable(fn):
+            return None
+        try:
+            return fn(
+                question,
+                session_id=session_id,
+                space_id=space_id,
+                ontology=ontology,
+            )
+        except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
+            return None
+
     def live_ask(
         self,
         question: str,
@@ -533,6 +556,34 @@ class Executor:
         )
         if bronze_env is not None:
             env = attach_cascade(bronze_env, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
+        gen_env = maybe_generative_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            warehouse=self._warehouse,
+            grantable=set(granted),
+            tables=tables,
+            compute=lambda catalog: self._compute_query(
+                question,
+                session_id=session_id,
+                space_id=space_id,
+                ontology=catalog,
+            ),
+            submit=lambda sql: self._submit_verified_sql(
+                sql, space_id=space_id, session_id=session_id, tables=tables
+            ),
+            ledger_append=lambda payload: self._ledger_verified_query(
+                asset_sql=str(payload.get("sql") or ""),
+                run_id=str(payload.get("run_id") or ""),
+                space_id=space_id,
+                session_id=session_id,
+                event_type="ask.generated_ontology",
+            ),
+        )
+        if gen_env is not None:
+            env = attach_cascade(gen_env, cascade)
             self._store_turn(session_id, space_id, env)
             return env
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)

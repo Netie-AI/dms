@@ -12,6 +12,7 @@ from cortex_contract.execution import Manifest as ContractManifest
 from cortex_contract.execution import QueryResult as ContractQueryResult
 from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 
+from cortex_client.compute import compute_query as post_compute_query
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
     ask as ask_api,
@@ -151,6 +152,28 @@ class CortexClient:
             raise RuntimeError("tool_registry: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {"tools": []}
         return ToolRegistryResponse.model_validate(data)
+
+    def compute_query(
+        self,
+        question: str,
+        *,
+        session_id: str | None = None,
+        space_id: str | None = None,
+        ontology: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Off-contract POST /dms/query. None if the engine does not ground a plan.
+
+        OpenVault keys stay in Cortex. This client forwards ``api_key`` when
+        already configured and never invents one.
+        """
+        return post_compute_query(
+            self.base_url,
+            question=question,
+            session_id=session_id,
+            space_id=space_id,
+            ontology=ontology,
+            api_key=self.api_key,
+        )
 
     def drillthrough(self, req: DrillthroughRequest) -> DrillthroughResponse:
         body = GenDrillthroughRequest.from_dict(req.model_dump(mode="json"))
