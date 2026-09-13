@@ -2,8 +2,9 @@
 
 Append-only. Never edited, only added to. Newest first.
 
-## 2026-09-13 - curated_ceo pack 14 -> 26 (Decision GO)
+## 2026-09-13 - curated_ceo pack 14 -> 26 (SCORE-PACK-01 #168)
 
+- **Ticket.** Serves [SCORE-PACK-01 #168](https://github.com/Netie-AI/dms/issues/168). Not parented under EPIC-008 (#8). Does not close #168 or #8. Not COMPLETE.
 - **Pack.** `tests/fixtures/curated_ceo/questions.yaml` is 26 cases. New L0
   expects are Cortex `packs/dms/semantic/certified_queries.yaml` only
   (cold storage, capacity>90, expired, chemicals, supplier rank, CCTV WH-A).

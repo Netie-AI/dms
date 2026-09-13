@@ -1,7 +1,7 @@
-# 2026-09-13 curated_ceo pack expand 14 -> 26
+# 2026-09-13 curated_ceo pack expand 14 -> 26 (SCORE-PACK-01 #168)
 
-Keywords: curated_ceo, L0, certified_queries, refuse, Decision GO, EPIC-008 incomplete
-Main idea: Expand the Genie walkthrough pack to 26. L0 only where Cortex certified SQL exists. Founder topics without that SQL (delayed count, storage bin, how-full synonym) and ungranted/cross-grant Cortex assets (alerts, high-risk pending) expect refuse. Not EPIC-008 COMPLETE.
+Keywords: curated_ceo, L0, certified_queries, refuse, SCORE-PACK-01, dms-168, EPIC-008 incomplete
+Main idea: SCORE-PACK-01 #168. Expand the Genie walkthrough pack to 26. L0 only where Cortex certified SQL exists. Refuse without that SQL. Not parented under EPIC-008 (#8). Not COMPLETE. Does not close tickets.
 
 ## Source
 
