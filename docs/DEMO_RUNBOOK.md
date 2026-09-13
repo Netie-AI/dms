@@ -3,7 +3,7 @@
 **Audience:** founder / buyer laptop demo, and prove host-online via IAP/CF  
 **Honesty:** DMS = governed SQL + Space ACL (Cortex HTTP). AirGPT = freeform hybrid RAG over real files (Explorer reveal). Do not collapse them into one product pitch.
 
-**Last aligned:** 2026-09-13 (prove IAP section: DEMO-HOST-01 #163; laptop flow still 2026-08-25)
+**Last aligned:** 2026-09-13 (prove IAP: DEMO-HOST-01 #163; measured smoke: DEMO-HOST-02 #164; laptop flow still 2026-08-25)
 
 ---
 
@@ -48,7 +48,7 @@ Two consequences worth knowing before the room asks:
 | Reorder / low-stock asks | Green on envelope | ENV-E4 #28 CLOSED (#91) | Listings abstain or cite; no customer 500. Live Cortex still un-run |
 | Stack stability | Yellow | ops, not a ticket | Laptop: kill stale :8010/:8090 before show; Defender slows Python. Prove: do not kill systemd; Platform owns the host |
 | Explorer reveal on citation | Green | REVEAL-01 dms#26 CLOSED | SourcePanel **Open original** → `POST /v1/library/reveal` (allowlisted roots); AirGPT still has `reveal-path` |
-| Prove host-online | Yellow | DEMO-HOST-01 #163 (docs); DEMO-HOST-02 #164 (measure) | Platform/DevOps own the tunnel. Temp CF hostname below; `/` and `/api/health` 200 (postgres). `:8090` loopback-only. **Not** EPIC-008 COMPLETE |
+| Prove host-online | Yellow | DEMO-HOST-01 #163 (docs); DEMO-HOST-02 #164 (measure) | Platform owns the tunnel. Temp CF hostname below (ROTATE RISK until `TUNNEL_TOKEN`). Smoke: `scripts/smoke_studio_host_online.py`. `:8090` loopback-only. **Not** EPIC-008 COMPLETE |
 
 ---
 
@@ -70,7 +70,7 @@ SPA calls are same-origin `/api/...` (`apps/ui/src/lib/api.ts`). Vite `VITE_API_
 
 ### 2.1 Prove host-online (IAP/CF)
 
-**Ticket:** DEMO-HOST-01 #163 under EPIC-008 #8. **Does not** close #8. **Does not** reopen ENV-E4 #28 / CSV-01 #18 / INGEST-SYNC-01 #75 (already CLOSED). Measured tunnel smoke is DEMO-HOST-02 #164.
+**Ticket:** DEMO-HOST-01 #163 under EPIC-008 #8. **Does not** close #8. **Does not** reopen ENV-E4 #28 / CSV-01 #18 / INGEST-SYNC-01 #75 (already CLOSED). Measured tunnel smoke is DEMO-HOST-02 #164 (`scripts/smoke_studio_host_online.py`).
 
 **Honesty (DR-0004 Option A, same as section 0).** IAP or Cloudflare Access is the network door. DMS still has no per-user login. Anyone who can pass the tunnel acts as the configured steward. Identity in the ledger is the deployment, not a person. Say that before the buyer asks.
 
@@ -122,6 +122,21 @@ Laptop Act A still uses `:3000` (section 4). This walk is prove.
 
 If health hangs or ask 503s: Platform/host (Cortex/OV on prove), not a dms bind-address fix. Do not open `:8090` to the world "to debug".
 
+#### Measured smoke (DEMO-HOST-02 #164)
+
+`scripts/smoke_studio_host_online.py` + recorded walk `scripts/smoke_studio_iap.md`. Fail closed: `STUDIO_ORIGIN` / `DMS_API_BASE` / `LOCAL_TUNNEL_PORT` have no `127.0.0.1:8090` default. Unset loopback is BLOCKED (`error.type=env.unset`, owner=Platform/tunnel), not PASS. Cursor cloud is not the certifying seat for VPC loopback. Ask/upload BLOCKED prints `error.type` -- never invent PASS.
+
+```powershell
+python D:\DMS\scripts\smoke_studio_host_online.py --self-check
+$env:STUDIO_ORIGIN = "https://occurred-guest-guaranteed-practitioners.trycloudflare.com"  # may rotate
+$env:DMS_API_BASE  = "$env:STUDIO_ORIGIN/api"
+python D:\DMS\scripts\smoke_studio_host_online.py
+# On prove only:
+# $env:LOCAL_TUNNEL_PORT = "8090"
+```
+
+`verify_demo_live.py` stays the loopback 31/31 certify. This smoke does not re-run it and does not claim that floor.
+
 ---
 
 ## 3. Scripts cheat sheet (say / run)
@@ -138,6 +153,8 @@ D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -Ope
 python D:\DMS\scripts\verify_demo_live.py
 python D:\DMS\scripts\verify_l2_vs_l1.py
 python D:\DMS\scripts\smoke_live_ask.py
+# Host-online (IAP/CF). Fail closed if STUDIO_ORIGIN / DMS_API_BASE unset. See section 2.1.
+python D:\DMS\scripts\smoke_studio_host_online.py --self-check
 # S4: fail if an upload landed in DMS's DuckDB but not the file chat reads
 python D:\DMS\scripts\sync_bronze_to_serving.py --check
 
@@ -299,7 +316,7 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 | #18 CSV-01 | dms | CLOSED | Download CSV; do not reopen |
 | #75 INGEST-SYNC-01 | dms | CLOSED | Upload receipt vs serving sync -- do not reopen |
 | #163 DEMO-HOST-01 | dms | OPEN (this section) | Prove IAP/CF runbook + Studio copy check |
-| #164 DEMO-HOST-02 | dms | OPEN | Measured host-online smoke; Depends on #163 + Platform tunnel UP |
+| #164 DEMO-HOST-02 | dms | OPEN | Smoke path: `scripts/smoke_studio_host_online.py`. Depends on Platform tunnel. Hostname ROTATE RISK until `TUNNEL_TOKEN`. Not COMPLETE |
 | #8 EPIC-008 | dms | OPEN / INCOMPLETE | Core path CLOSED; host-online not COMPLETE from docs alone |
 
 ---
@@ -322,7 +339,7 @@ Prove (IAP/CF) -- do not kill prove systemd; do not open `:8090` publicly:
 - [ ] `GET /` and `/api/health` 200; health says postgres. Host API still `127.0.0.1:8090` (no `0.0.0.0/0`)
 - [ ] Open `{STUDIO_URL}/studio` (section 2.1)
 - [ ] One point-or-upload + one ask; envelope visible
-- [ ] Measured record is DEMO-HOST-02, not this checklist. **Not** EPIC-008 COMPLETE
+- [ ] `python scripts/smoke_studio_host_online.py` (env from section 2.1). Record outputs in `scripts/smoke_studio_iap.md`. **Not** EPIC-008 COMPLETE
 
 ---
 

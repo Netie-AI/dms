@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (sqlsrc-09-studio-form; epic-completeness-003-008-017-018) -> HIT after DEMO-HOST-01 write.
+PREFLIGHT for this goal: HIT (demo-host-01-iap-runbook) -> DEMO-HOST-02 smoke.
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | demo-host-02-iap-smoke | DEMO-HOST-02, EPIC-008, IAP, Cloudflare, host-online, smoke, dms-164 | Fail-closed origin smoke. Temp CF ROTATE RISK. Ask BLOCKED live_ask_failed (DuckDB lock). Not COMPLETE. | `2026-09-13_demo-host-02-iap-smoke.md` |
 | 2026-09-13 | demo-host-01-iap-runbook | DEMO-HOST-01, EPIC-008, IAP, Cloudflare, host-harden, SQLSRC-09, dms-163 | Prove host-online is Platform-owned. Temp trycloudflare Studio URL (rotate until TUNNEL_TOKEN). `/` + `/api/health` 200 postgres. `:8090` loopback. Not COMPLETE. | `2026-09-13_demo-host-01-iap-runbook.md` |
 | 2026-09-10 | epic020-f32-lake-sql | F32, E9-02, cq_spend_by_country, pack, DR-0002, follow-up, dms-116, thin-reseed, warehouse_* | 7 leftover ABSTAINs were E9-02/F32 on lake metrics. Quoted warehouse.inventory stays a lake join; warehouse_* grants are not sheets. Pack + follow-up. Not COMPLETE. | `2026-09-10_epic020-f32-lake-sql.md` |
 | 2026-09-06 | sqlsrc-09-studio-form | SQLSRC-09, Studio, sql source, dms-158, empty 500, password | Form POSTs /v1/studio/sources/sql. Empty proxy 500 hid the error until describeApiError always returned a sentence. Password request-only and redacted. | `2026-09-06_sqlsrc-09-studio-form.md` |
