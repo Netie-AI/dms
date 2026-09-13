@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (GEN-01 compile+validate landed; SoT widen adds semantic retrieve + A/B vs exact-match).
+PREFLIGHT for this goal: PARTIAL (sqlsrc-pg-01 attach GO; gen01 A/B on main @ a9578348; no prior BIRD live harness).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | score-bird-01-live-harness | SCORE-BIRD-01, bird_minidev, gender, leftover 75, batch bronze, GEN-01 A/B, dms-184 | #184 live OK/LAYER/ABSTAIN/WRONG on BIRD Space. Bronze grows in batches. leftover target 75. Not COMPLETE. | `2026-09-13_score-bird-01-live-harness.md` |
 | 2026-09-13 | gen01-ontology-generative | GEN-01, retrieve, ontology, A/B, execute-validate, abstain, dms-179 | #179 schema+ontology SQL-filter retrieve → short context → compile+validate. A/B vs exact-match WRONG=0. Not pack expansion. Not COMPLETE. | `2026-09-13_gen01-ontology-generative.md` |
 | 2026-09-13 | sqlsrc-pg-01-postgresql-kind | SQLSRC-PG-01, postgresql, SqlSourceIn, db_connector, dms-172 | #172 kind=postgresql extract. Catalog must not use MySQL database-as-schema. Platform attaches bird_minidev after merge. Not SCORE-BIRD PASS. | `2026-09-13_sqlsrc-pg-01-postgresql-kind.md` |
 | 2026-09-13 | vq-04-refuse-traps | VQ-04, trap_delayed_count, trap_how_full_synonym, L1, dms-176 | #176 planted refuse must stay ABSTAIN after #175 WRONG2. Exact-phrase refuse, not regex. Not COMPLETE. | `2026-09-13_vq-04-refuse-traps.md` |
