@@ -157,7 +157,12 @@ def test_data_map_notes_missing_database(warehouse: Path, monkeypatch: pytest.Mo
 
 
 def test_parallel_library_lists_same_file(warehouse: Path) -> None:
-    """Library fires /tree twice. RW then read_only=True 500s DuckDB."""
+    """Library fires /tree twice.
+
+    Mixed RW + read_only=True 500s DuckDB. DuckDB 1.5 also 500s a second RW
+    attach of the same file (unique file handle; alias = stem). Lists must
+    share one live attach, not skip this gate.
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     from dms_executor.bronze import list_bronze_tables

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - Library parallel list: one DuckDB attach per file
+
+- **Cause.** Push CI on `b5f02be` (run 34750069692) failed `test_parallel_library_lists_same_file`. DuckDB 1.5 unique-file-handle refuses a second RW attach of the same file (`browse.duckdb` -> alias `browse`). `ensure_demo_warehouse` probed schema with another `connect()`, caught the BinderException as "schema missing", then connected again to reseed.
+- **Fix.** Per-file attach lock. `connect_file` / `connect_readonly` hold one live RW handle until `close()`. Seeded fast path does not probe via a second connect. Library `/tree` lists serialize instead of 500.
+- **Not this ticket.** P-DMS-34 (ingest overlapping ask), lake / `LIVE_KEY_ID`, public `:8090`, ticket close.
+
+
+
 ## 2026-09-13 - DEMO-HOST-02: measured host-online smoke (#164)
 
 - **Cause.** Host-online COMPLETE needs a walked path through the Platform tunnel, not a `verify_demo_live.py` re-run and not a cloud seat pretending it can see prove `127.0.0.1:8090`.
