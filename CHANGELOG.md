@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - STUDIO-MOBILE-01: composer ink + TopBar phone labels (#171)
+
+- **Composer.** Chat textarea now sets `text` / `placeholder` / `caret` to `--color-ink` so graphite does not paint typed words as transparent UA chrome.
+- **TopBar.** Below `lg`: `New`, `Spaces`, `Operate`/`Ask`. At `lg`: `+ New`, `Manage`, `Switch to Operate/Ask`. DB Library from `sm`.
+- **Not this ticket:** EPIC-008 COMPLETE, close #171/#8.
+
+## 2026-09-13 - STUDIO-MOBILE-01: live 390px dock cannot zero chat (#171)
+
+- **Live walk.** Frontend Support: 390x844 SOURCES open = 352px flex sibling, main width 0. Collapse works; arriving answer reopens the dock. Header scrollWidth 534.
+- **Fix.** AppShell slot is `max-lg:w-0` so the dock is not a 22rem flex sibling below lg. Ask and value-trace do not expand the dock below lg. TopBar short labels (New / Operate / Ask; Manage from sm) to stop <=430 page scroll.
+- **Not this ticket:** EPIC-008 COMPLETE, close #171/#8, public `:8090`.
+
 ## 2026-09-13 - VQ-03 recover 7 live expect:l0 ABSTAIN gaps (#170)
 
 - **Ticket.** Serves [VQ-03 #170](https://github.com/Netie-AI/dms/issues/170) under EPIC-019 #38. Does not close #170 or #38. Not COMPLETE.
@@ -9,6 +21,14 @@ Append-only. Never edited, only added to. Newest first.
 - **Thin seed.** SCHEMA_VERSION 4 adds `location_code`, `is_cold_storage`, `cctv_camera_id`, `expiry_date` so pack SQL can execute in tests. Does not overwrite the prove Cortex lake.
 - **Platform recycle.** If prove Cortex lake lacks those columns, submit misses and the qid stays ABSTAIN. Recycle Cortex with the dms pack lake. Do not invent PASS.
 - **Not this ticket:** EPIC-008 COMPLETE, EPIC-019 COMPLETE, public `:8090`, lake / `LIVE_KEY_ID`, greening planted traps, ticket close.
+
+
+## 2026-09-13 - STUDIO-MOBILE-01: Sources drawer below lg (#171)
+
+- **Ticket.** Serves [STUDIO-MOBILE-01 #171](https://github.com/Netie-AI/dms/issues/171). Parent is EPIC-008 residual polish, not a reopen of COMPLETE. Does not close #171 or #8.
+- **Chat.** Real covering path was `SourcePanel` as a `shrink-0 w-[22rem]` flex sibling, default open. Below `lg` it is now a drawer, closed by default, with an explicit Sources control. After ask it does not auto-open on phone-width. Desktop `lg` dock unchanged.
+- **Studio.** Files + SQLSRC stay on `lg:grid-cols-[22rem_1fr]`. Below `lg` they start collapsed behind a Sources control so preview / certified ask is reachable.
+- **Not this ticket:** EPIC-008 COMPLETE, public `:8090`, OpenVault user key UI, LeftNav rewrite, ticket close.
 
 
 ## 2026-09-13 - curated_ceo pack 14 -> 26 (SCORE-PACK-01 #168)

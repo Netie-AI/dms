@@ -11,16 +11,23 @@ export function AppShell() {
   const onChat = pathname === "/";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden">
       <TopBar />
       <DemoFallbackBanner />
       <ApiOfflineBanner />
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1">
         <LeftNav />
         <main className="min-w-0 flex-1 overflow-hidden">
           <Outlet />
         </main>
-        {onChat ? <SourcePanel /> : null}
+        {onChat ? (
+          <div
+            data-testid="source-panel-slot"
+            className="max-lg:w-0 max-lg:min-w-0 max-lg:shrink-0 max-lg:overflow-visible lg:contents"
+          >
+            <SourcePanel />
+          </div>
+        ) : null}
       </div>
       <ActivityToast />
     </div>

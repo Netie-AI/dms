@@ -30,8 +30,10 @@ export function SourcePanel() {
     return (
       <button
         type="button"
+        data-testid="source-panel-open"
+        aria-label="Open sources"
         onClick={() => setSourcePanelOpen(true)}
-        className="flex w-9 shrink-0 items-start justify-center border-l border-[var(--color-line)] bg-[var(--color-panel)] pt-4 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] [writing-mode:vertical-rl]"
+        className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:fixed max-lg:right-3 max-lg:top-16 max-lg:z-20 max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:border max-lg:border-[var(--color-line)] max-lg:px-3 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
       >
         Sources
       </button>
@@ -60,7 +62,19 @@ export function SourcePanel() {
   }
 
   return (
-    <aside className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)]">
+    <>
+      <button
+        type="button"
+        data-testid="source-panel-backdrop"
+        aria-label="Dismiss sources"
+        className="fixed inset-0 top-12 z-30 bg-black/40 lg:hidden"
+        onClick={() => setSourcePanelOpen(false)}
+      />
+      <aside
+        data-testid="source-panel"
+        aria-label="Sources"
+        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:right-0 max-lg:bottom-0 max-lg:z-40 max-lg:w-[min(22rem,calc(100%-2.75rem))]"
+      >
       <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-3">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
@@ -73,7 +87,7 @@ export function SourcePanel() {
         <button
           type="button"
           onClick={() => setSourcePanelOpen(false)}
-          className="text-sm text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+          className="flex min-h-11 min-w-11 items-center justify-center text-sm text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
           aria-label="Collapse sources"
         >
           ⟩
@@ -100,7 +114,7 @@ export function SourcePanel() {
           <p className="px-2 py-6 text-sm text-[var(--color-ink-muted)]">
             {answer
               ? "Cortex did not attach a file card. Use SQL on the answer, or Library, to see the table."
-              : "When an answer arrives, contributing sources appear here - docked, never a modal."}
+              : "When an answer arrives, contributing sources appear here."}
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -206,5 +220,6 @@ export function SourcePanel() {
         )}
       </div>
     </aside>
+    </>
   );
 }

@@ -23,7 +23,7 @@ export function TopBar() {
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-3 backdrop-blur-sm">
+    <header className="flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-x-hidden border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm sm:gap-3 sm:px-3">
       <button
         type="button"
         onClick={toggleNav}
@@ -42,7 +42,7 @@ export function TopBar() {
         onChange={(e) =>
           setActiveSpaceId(e.target.value === "" ? null : e.target.value)
         }
-        className="h-8 max-w-[12rem] border border-[var(--color-line)] bg-transparent px-2 text-sm"
+        className="h-8 min-w-0 max-w-[7rem] border border-[var(--color-line)] bg-transparent px-2 text-sm sm:max-w-[12rem]"
       >
         <option value="">Company (default ACL)</option>
         {spaces.map((s) => (
@@ -56,9 +56,10 @@ export function TopBar() {
         <button
           type="button"
           onClick={() => setNewOpen((o) => !o)}
-          className="h-8 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-on-accent)]"
+          className="h-8 shrink-0 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-on-accent)]"
         >
-          + New
+          <span className="lg:hidden">New</span>
+          <span className="hidden lg:inline">+ New</span>
         </button>
         {newOpen && (
           <div className="absolute left-0 top-full z-20 mt-1 min-w-[11rem] border border-[var(--color-line)] bg-[var(--color-panel)] py-1 shadow-sm">
@@ -100,15 +101,17 @@ export function TopBar() {
 
       <Link
         to="/spaces"
-        className="flex h-8 items-center border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-        title="Manage Spaces — scope, sources, members"
+        className="flex h-8 shrink-0 items-center border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        title="Manage Spaces -- scope, sources, members"
+        aria-label="Manage Spaces"
       >
-        Manage
+        <span className="lg:hidden">Spaces</span>
+        <span className="hidden lg:inline">Manage</span>
       </Link>
 
       <Link
         to="/library"
-        className="flex h-8 items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        className="hidden h-8 shrink-0 items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] sm:flex"
         title="Data Map — warehouse & bronze browser"
         aria-label="Open Database Library"
       >
@@ -139,7 +142,7 @@ export function TopBar() {
       <button
         type="button"
         onClick={() => setProductMode(nextMode)}
-        className="h-8 border border-[var(--color-accent)] px-2.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+        className="h-8 shrink-0 border border-[var(--color-accent)] px-2.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
         aria-label={
           productMode === "cream" ? "Switch to operator mode" : "Switch to ask mode"
         }
@@ -149,7 +152,17 @@ export function TopBar() {
             : "Operator mode. Switch to ask / Claude-white."
         }
       >
-        {productMode === "cream" ? "Switch to Operate" : "Switch to Ask"}
+        {productMode === "cream" ? (
+          <>
+            <span className="lg:hidden">Operate</span>
+            <span className="hidden lg:inline">Switch to Operate</span>
+          </>
+        ) : (
+          <>
+            <span className="lg:hidden">Ask</span>
+            <span className="hidden lg:inline">Switch to Ask</span>
+          </>
+        )}
       </button>
 
       {productMode === "graphite" && (
