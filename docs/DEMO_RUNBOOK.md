@@ -137,6 +137,18 @@ python D:\DMS\scripts\smoke_studio_host_online.py
 
 `verify_demo_live.py` stays the loopback 31/31 certify. This smoke does not re-run it and does not claim that floor.
 
+#### SCORE-BIRD-01 (#184) -- BIRD Space live score
+
+Platform attached postgresql `bird_minidev` @ `127.0.0.1:5432` to Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` (**source_count=1**, data_source `12b6f170`, bounded `tables=[gender]` `max_rows=50`). Full **75-table** Mini-Dev extract is leftover -- do not quote Mini-Dev coverage. Do not invent 99.95% or EPIC-020b COMPLETE.
+
+```powershell
+python D:\DMS\scripts\score_bird.py --self-check
+$env:DMS_API_BASE = "http://127.0.0.1:8090"   # prove API, or $env:STUDIO_ORIGIN/api
+python D:\DMS\scripts\score_bird.py --live     # A/B exact-match vs GEN-01 product path
+```
+
+Runbook: `scripts/score_bird.md`. Keys via OpenVault only. Not GEN-02 curated climb.
+
 ---
 
 ## 3. Scripts cheat sheet (say / run)
@@ -171,6 +183,9 @@ python D:\DMS\scripts\playground_ask.py --space <space_id>
 #
 # Oracle only (no stack; openpyxl recomputes — never hand gold / never DuckDB):
 python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
+python D:\DMS\scripts\score_bird.py --self-check
+# Platform BIRD live (no default URL): scripts/score_bird.md
+$env:DMS_API_BASE = "http://127.0.0.1:8090"; python D:\DMS\scripts\score_bird.py --live
 # Live stack (ingest those xlsx into a Space first):
 #   $env:DMS_URL = "http://127.0.0.1:8090"
 python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --space <space_id>

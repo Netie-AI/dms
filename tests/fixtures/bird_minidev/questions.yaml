@@ -1,0 +1,94 @@
+# SCORE-BIRD-01 (#184) under EPIC-020b #173.
+# Platform SCORE-BIRD GO 2026-09-13. Not a gold file of invented numbers (R-0009).
+# Bounded attach is gender only. Full 75-table Mini-Dev extract is leftover.
+# expect:answered -> confident badge is OK (LAYER if we had pinned L0; we did not).
+# expect:refuse -> green badge is WRONG. Coverage may be 0. WRONG=0 is the law.
+# Do not claim a high-nines percent. Do not claim EPIC-020b / #108 COMPLETE.
+
+honesty:
+  ticket: SCORE-BIRD-01
+  issue: 184
+  parent: 173
+  space_id: f0da7dd3-58b3-4d15-84a8-a18f2853ed87
+  source_count: 1
+  data_source: 12b6f170
+  kind: postgresql
+  host: 127.0.0.1
+  port: 5432
+  database: bird_minidev
+  attached_tables:
+    - gender
+  max_rows: 50
+  leftover_full_extract_tables: 75
+  leftover: >
+    Full 75-table Mini-Dev extract is Platform leftover. Bronze on this Space
+    is bounded tables=[gender] max_rows=50. Multi-table coverage is not a
+    measurement until Platform attaches the rest.
+  not_complete:
+    - EPIC-020b
+    - EPIC-020-108
+    - SCORE-BIRD-01
+  no_claim:
+    - high-nines percent
+    - DB-GPT clone
+
+spaces:
+  bird: f0da7dd3-58b3-4d15-84a8-a18f2853ed87
+
+questions:
+  - id: gender_row_count
+    space: bird
+    expect: answered
+    min_rows: 1
+    attached: gender
+    question: How many rows are in the gender table?
+
+  - id: gender_distinct
+    space: bird
+    expect: answered
+    min_rows: 1
+    attached: gender
+    question: List the distinct values in the gender table.
+
+  - id: gender_columns
+    space: bird
+    expect: answered
+    min_rows: 1
+    attached: gender
+    question: What columns does the gender table have?
+
+  - id: trap_california_schools
+    space: bird
+    expect: refuse
+    leftover: multi_table
+    question: How many schools are in california_schools?
+
+  - id: trap_superhero_join
+    space: bird
+    expect: refuse
+    leftover: multi_table
+    question: Join gender to the superhero table and count male heroes.
+
+  - id: trap_formula1
+    space: bird
+    expect: refuse
+    leftover: multi_table
+    question: How many Formula 1 races are stored in bird_minidev?
+
+  - id: trap_75_tables
+    space: bird
+    expect: refuse
+    leftover: multi_table
+    question: Using all 75 Mini-Dev tables, what is the coverage percent?
+
+  - id: trap_demo_spend
+    space: bird
+    expect: refuse
+    leftover: demo_pack_bleed
+    question: What is our total spend by supplier country?
+
+  - id: trap_student_club
+    space: bird
+    expect: refuse
+    leftover: multi_table
+    question: What is average salary by gender across student_club?

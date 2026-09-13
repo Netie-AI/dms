@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - SCORE-BIRD-01: measured live harness on BIRD Space (#184)
+
+- **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184) under EPIC-020b #173. Does not close #184 or #173. Not COMPLETE.
+- **Harness.** `python scripts/score_bird.py --self-check` (CI). `--live` requires `DMS_API_BASE` and A/B's exact-match pack miss vs `POST /v1/chat/ask` (GEN-01 #179 @ `a9578348`). No 127.0.0.1:8090 default. WRONG=0 law. Precision `n/a` when 0 answered.
+- **Honesty.** Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` source_count=1 data_source `12b6f170` bounded `gender` max_rows=50. Full 75-table Mini-Dev extract is Platform leftover. Runbook: `scripts/score_bird.md`.
+- **Not this ticket:** EPIC-020b / #108 COMPLETE, 99.95%, DB-GPT clone, GEN-02 curated climb, live counts from a cloud seat, ticket close.
+
+
 ## 2026-09-13 - GEN-01 semantic retrieve + A/B vs exact-match (#179)
 
 - **Ticket.** Serves [GEN-01 #179](https://github.com/Netie-AI/dms/issues/179) under EPIC-INSIGHTS-UX #178 after SoT widen. Does not close tickets. Not COMPLETE.

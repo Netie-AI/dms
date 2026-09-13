@@ -215,3 +215,7 @@ jobs:
       - name: Oracle self-test (stack-free, not live ask)
         # F42 / EPIC-018: recomputes hostile-pack oracles. Does not POST /v1/chat/ask.
         run: python scripts/score_answers.py --docs tests/fixtures/hostile_score --oracle-only
+
+      - name: SCORE-BIRD self-check (stack-free, not live ask)
+        # SCORE-BIRD-01 #184. Pack honesty + judge plants. Does not POST /v1/chat/ask.
+        run: python scripts/score_bird.py --self-check

@@ -57,8 +57,11 @@ Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat
-to the ontology. #116 live certify is separate. BIRD Mini-Dev attach is
-Platform after `kind=postgresql` lands (#172); SCORE-BIRD stays HOLD.
+to the ontology. #116 live certify is separate.
+
+SCORE-BIRD-01 (#184): `scripts/score_bird.py` + `scripts/score_bird.md`.
+Live A/B on Space `f0da7dd3-...` (source_count=1, `gender` max_rows=50).
+Full 75-table extract leftover. Not EPIC-020b COMPLETE.
 
 EPIC-CCA constraint cascade: `packages/executor/dms_executor/cca/`. One
 matching rule in `binder.py` (pack proposes, landed values decide, exact match
