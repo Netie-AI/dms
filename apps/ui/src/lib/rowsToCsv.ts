@@ -77,6 +77,10 @@ export function csvDownloadName(answerId: string): string {
   return `dms_answer_${safe || "export"}.csv`;
 }
 
+export function xlsxDownloadName(answerId: string): string {
+  return csvDownloadName(answerId).replace(/\.csv$/i, ".xlsx");
+}
+
 /** One aggregate cell is a summary, not the detail table the download should offer. */
 export function isSummaryExport(rows: Record<string, unknown>[]): boolean {
   if (rows.length !== 1) return false;

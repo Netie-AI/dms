@@ -10,7 +10,12 @@ import {
 } from "@/lib/answerDelivery";
 import { ceoSafeHref } from "@/lib/productMode";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
-import { csvDownloadName, isSummaryExport, rowsToCsv } from "@/lib/rowsToCsv";
+import {
+  csvDownloadName,
+  isSummaryExport,
+  rowsToCsv,
+  xlsxDownloadName,
+} from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
 
@@ -118,6 +123,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const [drillBusy, setDrillBusy] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [shareNote, setShareNote] = useState<string | null>(null);
+  const [exportErr, setExportErr] = useState<string | null>(null);
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
   const confirmFired = useRef(false);
@@ -166,22 +172,51 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     return () => window.clearInterval(tick);
   }, [ask, envelope.answer_id, isExclusionConfirm, noChip]);
 
-  async function downloadRowsCsv() {
+  async function rowsForExport(): Promise<Record<string, unknown>[]> {
     let exportRows = drillRows ?? rows;
-    if (!exportRows.length) return;
     if (
       envelope.drillthrough_token &&
       !drillRows &&
+      exportRows.length > 0 &&
       isSummaryExport(exportRows)
     ) {
       const detail = await fetchDrillRows();
       if (detail) exportRows = detail;
     }
+    return exportRows;
+  }
+
+  async function downloadRowsCsv() {
+    const exportRows = await rowsForExport();
+    if (!exportRows.length) return;
     const blob = new Blob([rowsToCsv(exportRows)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = csvDownloadName(envelope.answer_id);
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function downloadRowsXlsx() {
+    setExportErr(null);
+    const exportRows = await rowsForExport();
+    const res = await fetch("/api/v1/chat/export.xlsx", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        envelope: { ...envelope, rows: exportRows },
+      }),
+    });
+    if (!res.ok) {
+      setExportErr(await res.text());
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = xlsxDownloadName(envelope.answer_id);
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -245,6 +280,15 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             Download CSV
           </button>
         )}
+        {envelope.answer_id ? (
+          <button
+            type="button"
+            onClick={() => void downloadRowsXlsx()}
+            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+          >
+            Download Excel
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => {
@@ -462,6 +506,9 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         <pre className="mt-3 overflow-x-auto border border-[var(--color-line)] bg-[var(--color-paper)] p-3 text-xs text-[var(--color-ink-muted)]">
           {envelope.sql_used}
         </pre>
+      )}
+      {exportErr && (
+        <p className="mt-3 text-xs text-[var(--color-danger)]">Excel export: {exportErr}</p>
       )}
       {drillErr && (
         <p className="mt-3 text-xs text-[var(--color-danger)]">Drill-through: {drillErr}</p>
