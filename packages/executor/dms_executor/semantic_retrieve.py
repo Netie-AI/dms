@@ -38,6 +38,7 @@ _STILL_UNTYPED = re.compile(
     r"\b(delayed|alerts?|storage bin|high-risk|pending shipment|risk and lead)\b",
     re.I,
 )
+_ABOVE_PCT = re.compile(r"above\s+(\d{1,2})\s+percent", re.I)
 
 
 def load_ontology_spine(path: Path | None = None) -> dict[str, Any] | None:
@@ -358,8 +359,6 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
         if not cat or not _has_col(context, obj, "category"):
             return None
         filters.append([obj, "category", "=", cat])
-    if re.search(r"above\s+90|90 percent", qn):
-        return None
     if ("cctv" in qn or "camera" in qn) and not _has_col(
         context, "location", "cctv_camera_id"
     ):
@@ -451,6 +450,8 @@ def _locked_measure(question: str) -> str | None:
     if "capacity utilisation" in qn or "capacity utilization" in qn:
         return "utilisation_pct"
     if _COLD.search(question or ""):
+        return "utilisation_pct"
+    if _ABOVE_PCT.search(question or "") or "90 percent" in qn:
         return "utilisation_pct"
     if "cctv" in qn or "camera" in qn:
         return "utilisation_pct"
@@ -585,6 +586,9 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     plan: dict[str, Any] = {"measure": measure, "group_by": group_by, "limit": limit}
     if filters:
         plan["filters"] = filters
+    above = _ABOVE_PCT.search(q)
+    if above:
+        plan["keep_gt"] = float(above.group(1))
     return {"query_plan": plan}
 
 

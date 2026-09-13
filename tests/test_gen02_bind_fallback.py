@@ -84,12 +84,28 @@ def test_bind_plan_misses_list_and_untyped_filter(tmp_path: Path) -> None:
     ensure_demo_warehouse(db)
     onto = load_verified_ontology(db, demo_ontology(db))
     grants = {"inventory", "locations", "transactions", "suppliers"}
-    for q in (
-        "Which locations are above 90 percent capacity?",
-        "Rank suppliers by combined risk and lead time score",
-    ):
-        ctx = retrieve_short_context(q, warehouse=db, grantable=grants, ontology=onto)
-        assert bind_plan(q, ctx) is None, q
+    q = "Rank suppliers by combined risk and lead time score"
+    ctx = retrieve_short_context(q, warehouse=db, grantable=grants, ontology=onto)
+    assert bind_plan(q, ctx) is None
+
+
+def test_bind_plan_above_90_keep_gt(tmp_path: Path) -> None:
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+    q = "Which locations are above 90 percent capacity?"
+    ctx = retrieve_short_context(
+        q,
+        warehouse=db,
+        grantable={"inventory", "locations", "transactions", "suppliers"},
+        ontology=onto,
+    )
+    out = bind_plan(q, ctx)
+    assert out is not None
+    plan = out["query_plan"]
+    assert plan["measure"] == "utilisation_pct"
+    assert plan["keep_gt"] == 90.0
+    assert plan["group_by"] == [["location", "location_code"]]
 
 
 def test_bind_plan_types_cold_storage_and_wh_a(tmp_path: Path) -> None:
@@ -137,6 +153,45 @@ def test_generative_cold_storage_validates(tmp_path: Path) -> None:
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert "is_cold_storage" in (env.get("sql_used") or "")
+
+
+def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
+    from dms_executor.demo_warehouse import connect_file
+
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+
+    def submit(sql: str) -> Any:
+        con = connect_file(db)
+        try:
+            cur = con.execute(sql)
+            cols = [str(c[0]) for c in (cur.description or [])]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        finally:
+            con.close()
+        return SimpleNamespace(ok=True, status="ok", run_id="run_gt", output={"rows": rows})
+
+    env = maybe_generative_ask(
+        "Which locations are above 90 percent capacity?",
+        warehouse=db,
+        grantable={"inventory", "locations", "transactions", "suppliers"},
+        compute=lambda _c: None,
+        submit=submit,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert env["rows"]
+    for row in env["rows"]:
+        nums = [v for v in row.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        assert nums and max(float(v) for v in nums) > 90
+
+
+def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:
     db = tmp_path / "thin.duckdb"
     ensure_demo_warehouse(db)
     onto = load_verified_ontology(db, demo_ontology(db))
@@ -218,7 +273,7 @@ def test_isolated_gen_untyped_miss_abstains_after_retrieve(tmp_path: Path) -> No
     ensure_demo_warehouse(db)
     onto = load_verified_ontology(db, demo_ontology(db))
     env = maybe_generative_ask(
-        "Which locations are above 90 percent capacity?",
+        "Rank suppliers by combined risk and lead time score",
         warehouse=db,
         grantable={"inventory", "locations", "transactions", "suppliers"},
         compute=lambda _c: None,

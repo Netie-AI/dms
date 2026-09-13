@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-02 founder lock: generate SQL then validate (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.
+- **Try.** Isolated gen: retrieve (schema+spine YAML+hybrid_fuse) -> ontology compile -> execute -> validate. `keep_gt` from "above N percent" filters rows after execute; empty is ABSTAIN. Offline `--ab` now runs compiled SQL on the demo lake (not dummy rows).
+- **Not.** ML route/train/apply (parked). LangChain/LangGraph. Pack SQL copy (supplier 0.65/0.35 formula stays miss). Planted refuses stay ABSTAIN.
+- **Measured (offline `--ab`, this seat):** gen 15/26 answered WRONG=0 (frozen prove live gen remains 1/26 = 3.85 pct). Exact 10/26 WRONG=0.
+
+
 ## 2026-09-13 - GEN-02 YAML retrieve pack + typed lake filters (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.

@@ -17,7 +17,15 @@ Netie-native mapping. Not DB-GPT / mybot / n8n / OpenWillow / guaca/rakazo code.
 3. **Hybrid fuse + CRAG-style confidence.** Retrieve tags `hybrid_fuse` when schema+ontology both hit. Harness grades `validated` / `abstain_validate` / `abstain_gate`. Doc RAG CRAG stays parked (P-DMS-19).
 4. **Text2SQL as Cortex compute + typed slots.** `POST /dms/query` (OpenVault FreeRoute inside Cortex) then `bind_plan` on miss. No vendor text2sql SDK.
 
-Founder lock: isolated gen **tries** retrieve -> compute -> bind_plan -> compile -> validate. Untyped/list/time misses become ABSTAIN after that attempt, not a silent None. Optional ML route/train/apply is not this slice. Abstain is safety (WRONG=0), not a coverage ceiling.
+Founder lock: abstain is safety (WRONG=0), not the ceiling. Isolated gen **tries**:
+
+1. Multi-retrieve (schema SQL + ontology spine YAML + encodings + hybrid_fuse).
+2. Ontology relations (`demo_ontology` verify + compile joins).
+3. Generate SQL from typed slots (`bind_plan` + lake filters + `keep_gt` from the question).
+4. Execute + EXPLAIN/grant validate; ABSTAIN only after that attempt fails.
+5. Optional ML route/train/apply -- **not this slice**.
+
+No LangChain/LangGraph. No vendor paste. No memorized VQ pack expansion as the climb.
 
 Ontology YAML for retrieve is slot-name pack `packages/executor/dms_executor/ontology_spine.yaml` (loaded as retrieve allowlist, no SQL). Compile stays verified `demo_ontology` Python. Not a new vendor pack format.
 

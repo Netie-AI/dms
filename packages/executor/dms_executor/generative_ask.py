@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
@@ -45,6 +46,7 @@ class QueryPlan:
     filters: tuple[tuple[str, str, str, Any], ...] = ()
     via: dict[str, str] | None = None
     limit: int | None = 50
+    keep_gt: float | None = None
 
 
 def ontology_catalog(onto: Ontology) -> dict[str, Any]:
@@ -88,6 +90,28 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     return target
 
 
+def _rows_gt(rows: list[dict[str, Any]], measure: str, keep_gt: float) -> list[dict[str, Any]]:
+    """Keep rows whose measure (or sole numeric cell) is above keep_gt."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        val: Any = row.get(measure)
+        if val is None:
+            nums = [
+                v
+                for v in row.values()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            ]
+            val = nums[0] if len(nums) == 1 else None
+        try:
+            if val is not None and float(val) > keep_gt:
+                out.append(row)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def parse_compute_plan(payload: dict[str, Any] | None) -> str:
     """Return miss | unsure | plan. Plan body is payload['query_plan'] when plan."""
     if not isinstance(payload, dict):
@@ -119,7 +143,16 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
     )
     limit = raw.get("limit", 50)
     lim = int(limit) if isinstance(limit, int) else 50
-    return QueryPlan(measure=measure, group_by=group_by, filters=filters, via=via, limit=lim)
+    keep_raw = raw.get("keep_gt")
+    keep_gt = float(keep_raw) if isinstance(keep_raw, (int, float)) else None
+    return QueryPlan(
+        measure=measure,
+        group_by=group_by,
+        filters=filters,
+        via=via,
+        limit=lim,
+        keep_gt=keep_gt,
+    )
 
 
 def _pairs(raw: Any) -> tuple[tuple[str, str], ...] | None:
@@ -388,6 +421,18 @@ def maybe_generative_ask(
         return _abstain(q, "submit_failed", space_id=space_id, session_id=session_id)
     if getattr(result, "ok", None) is False or getattr(result, "output", None) is None:
         return _abstain(q, "submit_had_no_rows", space_id=space_id, session_id=session_id)
+    if plan.keep_gt is not None:
+        kept = _rows_gt(rows_from_submit_result(result), plan.measure, plan.keep_gt)
+        if not kept:
+            return _abstain(
+                q, "validate:keep_gt_empty", space_id=space_id, session_id=session_id
+            )
+        result = SimpleNamespace(
+            ok=True,
+            status=getattr(result, "status", "ok"),
+            run_id=getattr(result, "run_id", "") or "",
+            output={"rows": kept},
+        )
     run_id = str(getattr(result, "run_id", None) or "")
     try:
         led = ledger_append({"sql": compiled.sql, "run_id": run_id})

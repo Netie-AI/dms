@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -96,8 +95,16 @@ DISTILL: dict[str, Any] = {
         "vendor_sdk": False,
     },
     "try_harder": (
-        "isolated gen retrieve then Cortex compute then bind_plan on miss "
-        "then compile then validate; abstain after that attempt, not before"
+        "retrieve then Cortex compute then bind_plan then compile then "
+        "execute-validate; abstain only after that attempt (keep_gt gate). "
+        "ML route/train/apply not this slice. No LangChain/LangGraph."
+    ),
+    "founder_lock": (
+        "semantic_retrieve",
+        "ontology_relations",
+        "generate_sql",
+        "execute_validate",
+        "ml_optional_parked",
     ),
 }
 
@@ -111,6 +118,7 @@ def distill_block() -> dict[str, Any]:
         "ontology_spine": dict(DISTILL["ontology_spine"]),
         "text2sql": dict(DISTILL["text2sql"]),
         "try_harder": DISTILL["try_harder"],
+        "founder_lock": list(DISTILL["founder_lock"]),
         "baseline_ab": {
             "commit": BASELINE_AB_A9578348["commit"],
             "n": BASELINE_AB_A9578348["n"],
@@ -379,6 +387,13 @@ def self_check() -> int:
         or DISTILL["text2sql"]["vendor_sdk"] is not False
         or DISTILL["ontology_spine"]["yaml_pack_format"] is not False
         or DISTILL["ladder"][0] != "certified_first_then_generative"
+        or list(DISTILL["founder_lock"])[:4]
+        != [
+            "semantic_retrieve",
+            "ontology_relations",
+            "generate_sql",
+            "execute_validate",
+        ]
     ):
         print("FAIL: distill constraints drifted")
         return 1
@@ -590,17 +605,17 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
     tmp = Path(tempfile.mkdtemp()) / "ab_gen01.duckdb"
     onto = _ab_seed(tmp)
     def submit(sql: str) -> Any:
-        # Shape must match the compiled SQL. A scalar COUNT with 8 dummy rows
-        # trips E12. Subquery GROUP BY (product grain view) is not the answer grain.
-        stripped = sql
-        while "(" in stripped:
-            nxt = re.sub(r"\([^()]*\)", " ", stripped)
-            if nxt == stripped:
-                break
-            stripped = nxt
-        grouped = bool(re.search(r"\bgroup\s+by\b", stripped, re.I))
-        n = 8 if grouped else 1
-        out = [{"i": i, "v": float(i)} for i in range(n)]
+        from dms_executor.demo_warehouse import connect_file
+
+        con = connect_file(tmp)
+        try:
+            cur = con.execute(sql)
+            cols = [str(c[0]) for c in (cur.description or [])]
+            out = [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception:  # noqa: BLE001 -- execute-validate fail is an abstain
+            return SimpleNamespace(ok=False, status="err", run_id="run_ab", output=None)
+        finally:
+            con.close()
         return SimpleNamespace(ok=True, status="ok", run_id="run_ab", output={"rows": out})
 
     def ledger(_payload: dict[str, Any]) -> Any:

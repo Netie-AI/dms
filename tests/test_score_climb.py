@@ -77,6 +77,13 @@ def test_distill_ladder_is_netie_native_not_vendor():
     assert block["baseline_ab"]["exact_coverage_answered_pct"] == 38.46
     assert block["baseline_ab"]["generative_coverage_answered_pct"] == 3.85
     root = Path(__file__).resolve().parents[1]
+    assert list(DISTILL["founder_lock"])[:4] == [
+        "semantic_retrieve",
+        "ontology_relations",
+        "generate_sql",
+        "execute_validate",
+    ]
+    assert DISTILL["founder_lock"][-1] == "ml_optional_parked"
     spine = root / DISTILL["ontology_spine"]["retrieve_yaml"]
     assert spine.is_file()
 
@@ -94,6 +101,8 @@ def test_gen02_sources_do_not_import_vendor_sdks():
         "graphiti",
         "mem0",
         "deepagents",
+        "langchain",
+        "langgraph",
     )
     root = Path(__file__).resolve().parents[1]
     paths = [
