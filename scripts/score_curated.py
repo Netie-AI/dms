@@ -7,6 +7,7 @@ traps that must abstain. It does not start EPIC-019 (no new VQ repo).
   python scripts/score_curated.py --self-check
   python scripts/score_curated.py --live
   python scripts/score_curated.py --ab
+  python scripts/score_curated.py --climb --url https://studio.netie.ai/api
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 DEFAULT_ORACLES = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 DEFAULT_URL = "http://127.0.0.1:8090"
+# Documented Platform target for GEN-02. Not a silent default (fail closed).
+PLATFORM_API = "https://studio.netie.ai/api"
 
 CONFIDENT = frozenset(
     {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "L2_ANOMALOUS"}
@@ -29,6 +32,22 @@ CONFIDENT = frozenset(
 REFUSE = frozenset({"abstain", "refuse", "trap"})
 # HTTP refusals from Space grants / manifest. Not a transport outage.
 GRANT_REFUSAL_STATUS = frozenset({403, 409})
+EXACT_ROUTES = frozenset({"governed_metric", "verified_query"})
+GENERATIVE_ROUTES = frozenset({"generated"})
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_CONFIG = 2
+EXIT_BLOCKED = 3
+
+# Live curated_ceo @ 91c5cc99 (VQ-04 refuse traps). Frozen measurement, not a target.
+BASELINE_91C5CC99: dict[str, Any] = {
+    "commit": "91c5cc99",
+    "n": 26,
+    "ok": 7,
+    "layer": 10,
+    "abstain": 9,
+    "wrong": 0,
+}
 
 
 def load_pack(path: Path) -> dict[str, Any]:
@@ -99,6 +118,48 @@ def judge(case: dict[str, Any], env: dict[str, Any]) -> str:
     return "OK"
 
 
+def judge_envelope(case: dict[str, Any], env: dict[str, Any]) -> str:
+    """Live judge. Silent demo fallback is WRONG (lying 200), not OK."""
+    if env.get("demo_fallback_used"):
+        return "WRONG"
+    return judge(case, env)
+
+
+def classify_path(route: Any) -> str:
+    """Attribution on the product path. Not a second pack."""
+    r = str(route or "")
+    if r in GENERATIVE_ROUTES:
+        return "generative"
+    if r in EXACT_ROUTES:
+        return "exact_match"
+    return "other"
+
+
+def answered_vs_baseline(measured: int, baseline: int) -> str:
+    if measured > baseline:
+        return "rose"
+    if measured < baseline:
+        return "fell"
+    return "flat"
+
+
+def baseline_answered() -> int:
+    return int(BASELINE_91C5CC99["ok"]) + int(BASELINE_91C5CC99["layer"])
+
+
+def climb_url(url: str | None, env: dict[str, str] | None = None) -> str | None:
+    """Fail closed: no laptop default. Platform sets --url or DMS_API_BASE."""
+    raw = (url or "").strip()
+    if raw:
+        return raw.rstrip("/")
+    bag = env if env is not None else os.environ
+    for key in ("DMS_API_BASE", "STUDIO_API_BASE", "DMS_URL"):
+        val = str(bag.get(key) or "").strip()
+        if val:
+            return val.rstrip("/")
+    return None
+
+
 def _ask(base: str, question: str, space_id: str, timeout: float) -> dict[str, Any]:
     import httpx
 
@@ -161,31 +222,115 @@ def self_check() -> int:
     ):
         print("FAIL: judge plant")
         return 1
+    planted_demo = judge_envelope(
+        {"expect": "l0", "min_rows": 1},
+        {
+            "badge": "L0_CERTIFIED",
+            "abstained": False,
+            "rows": [{"x": 1}],
+            "demo_fallback_used": True,
+        },
+    )
+    if planted_demo != "WRONG":
+        print("FAIL: demo fallback must not score OK")
+        return 1
+    b = BASELINE_91C5CC99
+    if (
+        int(b["ok"]) + int(b["layer"]) + int(b["abstain"]) + int(b["wrong"]) != int(b["n"])
+        or int(b["wrong"]) != 0
+        or int(b["n"]) != len(ids)
+    ):
+        print("FAIL: baseline @ 91c5cc99 does not match pack / WRONG=0")
+        return 1
+    if climb_url(None, {}) is not None:
+        print("FAIL: climb url must not default")
+        return 1
+    if climb_url(None, {"DMS_API_BASE": PLATFORM_API}) != PLATFORM_API:
+        print("FAIL: climb url from DMS_API_BASE")
+        return 1
+    fake_t = {"OK": 8, "LAYER": 10, "ABSTAIN": 8, "WRONG": 0}
+    fake_cases = [
+        {
+            "id": "cq_x",
+            "verdict": "LAYER",
+            "route": "generated",
+            "path": "generative",
+            "expect": "l0",
+        }
+    ]
+    report = build_climb_report(fake_t, cases=fake_cases, url=PLATFORM_API)
+    blob = json.dumps(report)
+    if "99.95" in blob or "COMPLETE" in blob:
+        print("FAIL: climb report invented COMPLETE / 99.95")
+        return 1
+    if report["answered_vs_baseline"] != "rose" or report["passed_wrong_zero"] is not True:
+        print("FAIL: climb delta plant")
+        return 1
+    if report.get("claim") not in (None, "measured"):
+        print("FAIL: climb claim must stay measured")
+        return 1
     print(f"PASS: curated pack {len(ids)} cases, judge fail-closed on green trap")
     return 0
 
 
-def live(url: str, timeout: float) -> int:
+def score_pack_live(url: str, timeout: float) -> tuple[dict[str, int], list[dict[str, Any]]]:
     pack = load_pack(DEFAULT_PACK)
-    tallies = {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0}
+    tallies = _tally()
+    cases_out: list[dict[str, Any]] = []
     for case in pack["questions"]:
-        qid = case["id"]
+        qid = str(case["id"])
         space = resolve_space(case, pack["spaces"])
+        err = ""
         try:
             env = _ask(url, str(case["question"]), space, timeout)
         except Exception as exc:  # noqa: BLE001
             env = ask_error_envelope(exc)
             if env is None:
-                print(f"{qid}\tERROR\t{type(exc).__name__}: {exc}")
+                err = f"{type(exc).__name__}: {exc}"
+                print(f"{qid}\tERROR\t{err}")
                 tallies["WRONG"] += 1
+                cases_out.append(
+                    {
+                        "id": qid,
+                        "verdict": "WRONG",
+                        "badge": None,
+                        "route": None,
+                        "path": "other",
+                        "rows": 0,
+                        "expect": case.get("expect"),
+                        "error": err,
+                    }
+                )
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
-        verdict = judge(case, env)
+        verdict = judge_envelope(case, env)
         tallies[verdict] += 1
         badge = env.get("badge")
+        route = env.get("route")
+        path = classify_path(route)
         n = len(env.get("rows") or [])
-        print(f"{qid}\t{verdict}\t{badge}\trows={n}\texpect={case['expect']}")
-    n = len(pack["questions"])
+        print(
+            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}"
+            f"\trows={n}\texpect={case['expect']}"
+        )
+        cases_out.append(
+            {
+                "id": qid,
+                "verdict": verdict,
+                "badge": badge,
+                "route": route,
+                "path": path,
+                "rows": n,
+                "expect": case.get("expect"),
+                "demo_fallback_used": bool(env.get("demo_fallback_used")),
+            }
+        )
+    return tallies, cases_out
+
+
+def live(url: str, timeout: float) -> int:
+    tallies, _cases = score_pack_live(url, timeout)
+    n = sum(tallies.values())
     wrong = tallies["WRONG"]
     answered_ok = tallies["OK"] + tallies["LAYER"]
     precision = 100.0 if answered_ok + wrong == 0 else (
@@ -219,9 +364,9 @@ def live(url: str, timeout: float) -> int:
     )
     if wrong:
         print("FAIL: confidently wrong or transport error")
-        return 1
+        return EXIT_FAIL
     print("PASS: 0 WRONG")
-    return 0
+    return EXIT_PASS
 
 
 def _ab_miss() -> dict[str, Any]:
@@ -395,22 +540,178 @@ def ab_offline() -> int:
     return 0
 
 
+def _answered_by_path(cases: list[dict[str, Any]]) -> dict[str, int]:
+    out = {"exact_match": 0, "generative": 0, "other": 0}
+    for row in cases:
+        if row.get("verdict") not in {"OK", "LAYER"}:
+            continue
+        path = str(row.get("path") or "other")
+        if path not in out:
+            path = "other"
+        out[path] += 1
+    return out
+
+
+def build_climb_report(
+    tallies: dict[str, int],
+    *,
+    cases: list[dict[str, Any]],
+    url: str,
+) -> dict[str, Any]:
+    n = sum(tallies.values())
+    wrong = tallies["WRONG"]
+    answered = tallies["OK"] + tallies["LAYER"]
+    base = BASELINE_91C5CC99
+    base_ans = baseline_answered()
+    vs = answered_vs_baseline(answered, base_ans)
+    by_path = _answered_by_path(cases)
+    return {
+        "kind": "dms.score_climb",
+        "ticket": "GEN-02",
+        "issue": 180,
+        "pack": "curated_ceo",
+        "url": url,
+        "claim": "measured",
+        "baseline": {
+            "commit": base["commit"],
+            "n": base["n"],
+            "ok": base["ok"],
+            "layer": base["layer"],
+            "abstain": base["abstain"],
+            "wrong": base["wrong"],
+            "answered": base_ans,
+        },
+        "measured": {
+            "n": n,
+            "ok": tallies["OK"],
+            "layer": tallies["LAYER"],
+            "abstain": tallies["ABSTAIN"],
+            "wrong": wrong,
+            "answered": answered,
+            "coverage_ok_pct": round(100.0 * tallies["OK"] / n, 2) if n else 0.0,
+            "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
+        },
+        "delta": {
+            "ok": tallies["OK"] - int(base["ok"]),
+            "layer": tallies["LAYER"] - int(base["layer"]),
+            "abstain": tallies["ABSTAIN"] - int(base["abstain"]),
+            "wrong": wrong - int(base["wrong"]),
+            "answered": answered - base_ans,
+        },
+        "answered_by_path": by_path,
+        "answered_vs_baseline": vs,
+        "wrong": wrong,
+        "passed_wrong_zero": wrong == 0,
+        "cases": cases,
+    }
+
+
+def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
+    """ok | blocked | fail. Health only. Does not invent a score."""
+    import httpx
+
+    health = f"{url.rstrip('/')}/health"
+    try:
+        resp = httpx.get(health, timeout=min(timeout, 15.0))
+    except httpx.HTTPError as exc:
+        return "blocked", f"{type(exc).__name__}: {exc}"
+    if resp.status_code != 200:
+        return "fail", f"health status={resp.status_code}"
+    try:
+        body = resp.json()
+    except ValueError:
+        return "fail", "health is not JSON (SPA /health? use /api)"
+    if not isinstance(body, dict):
+        return "fail", "health JSON is not an object"
+    if body.get("demo_fallback") is True:
+        return "fail", "demo_fallback=true (lying affordance)"
+    if str(body.get("ask_mode") or "") == "demo":
+        return "fail", "ask_mode=demo"
+    return "ok", f"product={body.get('product')} ask_mode={body.get('ask_mode')}"
+
+
+def climb(url: str, timeout: float) -> int:
+    kind, detail = probe_climb_host(url, timeout)
+    print(f"GEN-02 climb host {url}  [{kind}] {detail}")
+    if kind == "blocked":
+        print("BLOCKED: cannot reach host. Not a score. Not COMPLETE.")
+        return EXIT_BLOCKED
+    if kind == "fail":
+        print("FAIL: host is not a live governed ask")
+        return EXIT_FAIL
+    tallies, cases = score_pack_live(url, timeout)
+    report = build_climb_report(tallies, cases=cases, url=url)
+    measured = report["measured"]
+    base = report["baseline"]
+    delta = report["delta"]
+    by_path = report["answered_by_path"]
+    print(f"{'':<10} {'n':>3} {'ok':>3} {'layer':>5} {'abstain':>7} {'wrong':>5} {'answered':>8}")
+    print(
+        f"{'baseline':<10} {base['n']:>3} {base['ok']:>3} {base['layer']:>5} "
+        f"{base['abstain']:>7} {base['wrong']:>5} {base['answered']:>8}  @ {base['commit']}"
+    )
+    print(
+        f"{'measured':<10} {measured['n']:>3} {measured['ok']:>3} {measured['layer']:>5} "
+        f"{measured['abstain']:>7} {measured['wrong']:>5} {measured['answered']:>8}"
+    )
+    print(
+        f"{'delta':<10} {'':>3} {delta['ok']:>+3} {delta['layer']:>+5} "
+        f"{delta['abstain']:>+7} {delta['wrong']:>+5} {delta['answered']:>+8}"
+    )
+    print(
+        f"answered_by_path exact_match={by_path['exact_match']} "
+        f"generative={by_path['generative']} other={by_path['other']}"
+    )
+    print(f"answered vs baseline @ {base['commit']}: {report['answered_vs_baseline']}")
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+    art.mkdir(parents=True, exist_ok=True)
+    slim = {k: v for k, v in report.items() if k != "cases"}
+    (art / "score_climb.json").write_text(
+        json.dumps(slim, indent=2) + "\n", encoding="utf-8"
+    )
+    (art / "score_climb_cases.json").write_text(
+        json.dumps(report["cases"], indent=2) + "\n", encoding="utf-8"
+    )
+    if not report["passed_wrong_zero"]:
+        print("FAIL: WRONG>0 (law). Not COMPLETE.")
+        return EXIT_FAIL
+    print(
+        "PASS: WRONG=0 measured. Climb is the answered delta, not a 99.95% claim. "
+        "Not EPIC-019 COMPLETE."
+    )
+    return EXIT_PASS
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--self-check", action="store_true")
     p.add_argument("--live", action="store_true")
     p.add_argument("--ab", action="store_true")
-    p.add_argument("--url", default=os.environ.get("DMS_URL", DEFAULT_URL))
+    p.add_argument("--climb", action="store_true")
+    p.add_argument("--url", default=None)
     p.add_argument("--timeout", type=float, default=60.0)
     args = p.parse_args(argv)
     if args.self_check:
         return self_check()
-    if args.live:
-        return live(args.url, args.timeout)
     if args.ab:
         return ab_offline()
-    print("usage: python scripts/score_curated.py --self-check | --live | --ab")
-    return 2
+    if args.climb:
+        target = climb_url(args.url)
+        if not target:
+            print(
+                "CONFIG: --climb needs --url or DMS_API_BASE "
+                f"(Platform: {PLATFORM_API}). No laptop default."
+            )
+            return EXIT_CONFIG
+        return climb(target, args.timeout)
+    if args.live:
+        url = (args.url or os.environ.get("DMS_URL") or DEFAULT_URL).rstrip("/")
+        return live(url, args.timeout)
+    print(
+        "usage: python scripts/score_curated.py "
+        "--self-check | --live | --ab | --climb --url URL"
+    )
+    return EXIT_CONFIG
 
 
 if __name__ == "__main__":

@@ -54,6 +54,12 @@ validate then Cortex submit. Unsure or validate-fail is ABSTAIN. A/B vs
 exact-match: `python scripts/score_curated.py --ab`. Not pack expansion.
 Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
+EPIC-GEN-01 GEN-02 (#180): live coverage climb harness on the same pack.
+`python scripts/score_curated.py --climb --url https://studio.netie.ai/api`
+(see `scripts/score_climb.md`). Counts OK/LAYER/ABSTAIN/WRONG vs frozen
+baseline @ `91c5cc99`. Route split generative vs exact-match. Not a GitHub
+CI live job. Regression: `tests/test_score_climb.py`. Not COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat
