@@ -17,7 +17,7 @@ test.describe("STUDIO-MOBILE-01 phone-width", () => {
     await open.click();
     await expect(page.getByTestId("source-panel")).toBeVisible();
     await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Dismiss sources" }).click();
+    await page.getByRole("button", { name: "Collapse sources" }).click();
     await expect(page.getByTestId("source-panel")).toHaveCount(0);
   });
 

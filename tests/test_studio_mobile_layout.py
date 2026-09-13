@@ -15,7 +15,8 @@ UI = ROOT / "apps" / "ui" / "src"
 def test_chat_source_panel_is_overlay_below_lg_not_a_docked_22rem_sibling() -> None:
     src = (UI / "components" / "SourcePanel.tsx").read_text(encoding="utf-8")
     assert "max-lg:fixed" in src
-    assert 'w-[22rem]' in src
+    assert "w-[22rem]" in src
+    assert "max-lg:w-[min(22rem,calc(100%-2.75rem))]" in src
     assert 'data-testid="source-panel-open"' in src
     assert "min-h-11" in src
 

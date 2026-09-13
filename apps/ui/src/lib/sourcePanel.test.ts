@@ -67,6 +67,7 @@ describe("STUDIO-MOBILE-01 layout wiring", () => {
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
     expect(panel).toMatch(/max-lg:fixed/);
     expect(panel).toMatch(/w-\[22rem\]/);
+    expect(panel).toMatch(/max-lg:w-\[min\(22rem,calc\(100%-2\.75rem\)\)\]/);
     expect(panel).toMatch(/data-testid="source-panel-open"/);
     expect(panel).toMatch(/min-h-11/);
     const ctx = readFileSync(join(here, "../context/AppContext.tsx"), "utf8");

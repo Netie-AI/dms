@@ -73,7 +73,7 @@ export function SourcePanel() {
       <aside
         data-testid="source-panel"
         aria-label="Sources"
-        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:right-0 max-lg:bottom-0 max-lg:z-40 max-lg:w-[min(22rem,100%)]"
+        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:right-0 max-lg:bottom-0 max-lg:z-40 max-lg:w-[min(22rem,calc(100%-2.75rem))]"
       >
       <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-3">
         <div>
@@ -114,7 +114,7 @@ export function SourcePanel() {
           <p className="px-2 py-6 text-sm text-[var(--color-ink-muted)]">
             {answer
               ? "Cortex did not attach a file card. Use SQL on the answer, or Library, to see the table."
-              : "When an answer arrives, contributing sources appear here - docked, never a modal."}
+              : "When an answer arrives, contributing sources appear here."}
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
