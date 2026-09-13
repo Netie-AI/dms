@@ -29,8 +29,8 @@ test.describe("STUDIO-MOBILE-01 live 390px repro", () => {
     await expect(page.getByRole("heading", { name: /Ask (about your|your company's) data/ })).toBeVisible();
     expect(await documentOverflowX(page)).toBeLessThanOrEqual(1);
     await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Manage Spaces" })).toBeVisible();
-    await expect(page.getByText("Spaces", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("topbar-title")).toHaveText("netie");
+    await expect(page.getByRole("link", { name: "Manage Spaces" })).toBeHidden();
     await expect(page.getByText("Operate", { exact: true })).toBeVisible();
     await expect(page.getByText("Switch to Operate")).toBeHidden();
     await expect(page.getByText("+ New")).toBeHidden();
@@ -91,6 +91,55 @@ test.describe("STUDIO-MOBILE-01 phone-width", () => {
   });
 });
 
+test.describe("STUDIO-MOBILE-02 operate 390px", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("Operate LeftNav is a closed drawer; chat and TopBar stay usable", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Switch to operator mode" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+
+    await expect(page.getByTestId("left-nav")).toBeHidden();
+    const slot = page.getByTestId("left-nav-slot");
+    const slotBox = await slot.boundingBox();
+    expect(slotBox?.width ?? 0).toBeLessThan(8);
+    expect(await mainWidth(page)).toBeGreaterThan(200);
+    await expect(page.getByRole("heading", { name: "Ask about your data" })).toBeVisible();
+    expect(await documentOverflowX(page)).toBeLessThanOrEqual(1);
+
+    const headerOverflow = await page.locator("header").evaluate(
+      (el) => el.scrollWidth - el.clientWidth,
+    );
+    expect(headerOverflow).toBeLessThanOrEqual(1);
+    await expect(page.getByTestId("topbar-title")).toBeVisible();
+    await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Space", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Switch to ask mode" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Manage Spaces" })).toBeHidden();
+
+    await page.getByRole("button", { name: "Toggle sidebar" }).click();
+    await expect(page.getByTestId("left-nav")).toBeVisible();
+    await expect(page.getByTestId("left-nav-backdrop")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Studio" })).toBeVisible();
+    expect(await mainWidth(page)).toBeGreaterThan(200);
+
+    await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await expect(page.getByTestId("left-nav")).toBeHidden();
+    await expect(page.getByRole("heading", { name: "Ask about your data" })).toBeVisible();
+
+    await expect(page.getByTestId("source-panel")).toHaveCount(0);
+    await page.getByTestId("source-panel-open").click();
+    await expect(page.getByTestId("source-panel")).toBeVisible();
+    const sourceSlot = page.getByTestId("source-panel-slot");
+    const sourceBox = await sourceSlot.boundingBox();
+    expect(sourceBox?.width ?? 0).toBeLessThan(8);
+    expect(await mainWidth(page)).toBeGreaterThan(200);
+    expect(await documentOverflowX(page)).toBeLessThanOrEqual(1);
+  });
+});
+
 test.describe("STUDIO-MOBILE-01 desktop lg", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -102,6 +151,7 @@ test.describe("STUDIO-MOBILE-01 desktop lg", () => {
     await expect(page.getByRole("button", { name: "+ New" })).toBeVisible();
     await expect(page.getByText("Switch to Operate")).toBeVisible();
     await expect(page.getByText("Manage", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("topbar-title")).toBeHidden();
   });
 
   test("studio keeps the two-column files grid without a mobile toggle", async ({

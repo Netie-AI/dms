@@ -12,7 +12,13 @@ import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/ap
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
-import { LG_MIN_WIDTH_PX, shouldExpandSourcesDock, sourcesStartOpen } from "@/lib/viewport";
+import {
+  LG_MIN_WIDTH_PX,
+  isLgViewport,
+  navStartsCollapsed,
+  shouldExpandSourcesDock,
+  sourcesStartOpen,
+} from "@/lib/viewport";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
 export type ChatMessage =
@@ -79,6 +85,7 @@ type AppState = {
   setSourcePanelOpen: (open: boolean) => void;
   navCollapsed: boolean;
   toggleNav: () => void;
+  closeNavDrawer: () => void;
   productMode: ProductMode;
   setProductMode: (mode: ProductMode) => void;
 };
@@ -135,7 +142,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ),
   );
   const [productMode, setProductModeState] = useState<ProductMode>(storedProductMode);
-  const [navCollapsed, setNavCollapsed] = useState(() => storedProductMode() === "cream");
+  const [navCollapsed, setNavCollapsed] = useState(() =>
+    navStartsCollapsed(
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? (q) => window.matchMedia(q)
+        : undefined,
+      storedProductMode(),
+    ),
+  );
   const queueRef = useRef<string[]>([]);
   const drainingRef = useRef(false);
   const groundedTablesRef = useRef(groundedTables);
@@ -156,12 +170,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setProductMode = useCallback((mode: ProductMode) => {
     setProductModeState(mode);
-    setNavCollapsed(mode === "cream");
+    setNavCollapsed(
+      navStartsCollapsed(
+        typeof window !== "undefined" && typeof window.matchMedia === "function"
+          ? (q) => window.matchMedia(q)
+          : undefined,
+        mode,
+      ),
+    );
+  }, []);
+
+  const closeNavDrawer = useCallback(() => {
+    if (typeof window !== "undefined" && !isLgViewport(window.innerWidth)) {
+      setNavCollapsed(true);
+    }
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = productMode;
     window.localStorage.setItem("dms-theme", productMode);
+  }, [productMode]);
+
+  useEffect(() => {
+    const mq = window.matchMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`);
+    const onChange = () => {
+      setNavCollapsed(navStartsCollapsed((q) => window.matchMedia(q), productMode));
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
   }, [productMode]);
 
   useEffect(() => {
@@ -420,6 +456,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSourcePanelOpen,
     navCollapsed,
     toggleNav: () => setNavCollapsed((c) => !c),
+    closeNavDrawer,
     productMode,
     setProductMode,
   };

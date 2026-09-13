@@ -5,12 +5,31 @@ export function isLgViewport(widthPx: number): boolean {
   return widthPx >= LG_MIN_WIDTH_PX;
 }
 
-/** Desktop keeps the dock open; phone-width starts closed. Missing window => desktop. */
-export function sourcesStartOpen(
+function matchesLg(
   matchMedia: ((query: string) => { matches: boolean }) | undefined,
 ): boolean {
   if (!matchMedia) return true;
   return matchMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`).matches;
+}
+
+/** Desktop keeps the dock open; phone-width starts closed. Missing window => desktop. */
+export function sourcesStartOpen(
+  matchMedia: ((query: string) => { matches: boolean }) | undefined,
+): boolean {
+  return matchesLg(matchMedia);
+}
+
+/**
+ * Below lg, LeftNav is a closed drawer (Operate w-52 must not cover chat).
+ * Desktop: cream starts as the icon rail; graphite starts expanded.
+ * Missing window => desktop.
+ */
+export function navStartsCollapsed(
+  matchMedia: ((query: string) => { matches: boolean }) | undefined,
+  productMode: "cream" | "graphite",
+): boolean {
+  if (!matchesLg(matchMedia)) return true;
+  return productMode === "cream";
 }
 
 /**

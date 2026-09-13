@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LG_MIN_WIDTH_PX,
   isLgViewport,
+  navStartsCollapsed,
   shouldExpandSourcesDock,
   sourcesStartOpen,
 } from "./viewport";
@@ -27,5 +28,16 @@ describe("viewport (STUDIO-MOBILE-01)", () => {
     expect(shouldExpandSourcesDock(390)).toBe(false);
     expect(shouldExpandSourcesDock(430)).toBe(false);
     expect(shouldExpandSourcesDock(LG_MIN_WIDTH_PX)).toBe(true);
+  });
+
+  it("starts Operate nav collapsed below lg and expanded on desktop", () => {
+    const phone = () => ({ matches: false });
+    const desktop = () => ({ matches: true });
+    expect(navStartsCollapsed(phone, "graphite")).toBe(true);
+    expect(navStartsCollapsed(phone, "cream")).toBe(true);
+    expect(navStartsCollapsed(desktop, "graphite")).toBe(false);
+    expect(navStartsCollapsed(desktop, "cream")).toBe(true);
+    expect(navStartsCollapsed(undefined, "graphite")).toBe(false);
+    expect(navStartsCollapsed(undefined, "cream")).toBe(true);
   });
 });
