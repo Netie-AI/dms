@@ -1,10 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: MISS (no prior generative ontology-grounded ask finding; related VQ-04 refuse traps + F83 no local L0).
+PREFLIGHT for this goal: PARTIAL (GEN-01 compile+validate landed; SoT widen adds semantic retrieve + A/B vs exact-match).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
-| 2026-09-13 | gen01-ontology-generative | GEN-01, ontology, compute, execute-validate, abstain, dms-179 | #179 typed ontology plan + validate then Cortex submit. Unsure ABSTAIN. Not pack expansion. Not COMPLETE. | `2026-09-13_gen01-ontology-generative.md` |
+| 2026-09-13 | gen01-ontology-generative | GEN-01, retrieve, ontology, A/B, execute-validate, abstain, dms-179 | #179 schema+ontology SQL-filter retrieve → short context → compile+validate. A/B vs exact-match WRONG=0. Not pack expansion. Not COMPLETE. | `2026-09-13_gen01-ontology-generative.md` |
 | 2026-09-13 | sqlsrc-pg-01-postgresql-kind | SQLSRC-PG-01, postgresql, SqlSourceIn, db_connector, dms-172 | #172 kind=postgresql extract. Catalog must not use MySQL database-as-schema. Platform attaches bird_minidev after merge. Not SCORE-BIRD PASS. | `2026-09-13_sqlsrc-pg-01-postgresql-kind.md` |
 | 2026-09-13 | vq-04-refuse-traps | VQ-04, trap_delayed_count, trap_how_full_synonym, L1, dms-176 | #176 planted refuse must stay ABSTAIN after #175 WRONG2. Exact-phrase refuse, not regex. Not COMPLETE. | `2026-09-13_vq-04-refuse-traps.md` |
 | 2026-09-13 | studio-mobile-01 | STUDIO-MOBILE-01, SourcePanel, AppShell, StudioPage, drawer, lg, dms-171 | #171 Chat Sources is a default-open 22rem flex sibling. Drawer closed below lg; Studio files/SQLSRC collapse. Not #8 COMPLETE. | `2026-09-13_studio-mobile-01.md` |

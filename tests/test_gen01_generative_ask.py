@@ -21,6 +21,7 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import maybe_generative_ask, ontology_catalog
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.ontology import Ontology
+from dms_executor.semantic_retrieve import bind_plan, retrieve_short_context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from score_curated import judge  # noqa: E402
@@ -316,6 +317,94 @@ def test_catalog_has_no_secrets(onto: Ontology) -> None:
     assert "api_key" not in blob
     assert "password" not in blob
     assert "revenue" in cat["measures"]
+
+
+def test_retrieve_short_context_is_filtered(onto: Ontology, warehouse: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        seen.update(ctx)
+        return {
+            "query_plan": {"measure": "revenue", "group_by": [["product", "category"]]}
+        }
+
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=compute,
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    blob = str(seen).lower()
+    assert "sum(" not in blob
+    assert "sk-" not in blob
+    assert "api_key" not in blob
+    assert "revenue" in (seen.get("measures") or {})
+    methods = seen.get("methods") or []
+    assert "ontology" in methods
+    assert "summarize" in methods
+    ctx = retrieve_short_context(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        ontology=onto,
+    )
+    assert "schema_sql" in (ctx.get("methods") or [])
+    assert "sql_filter_values" in (ctx.get("methods") or [])
+    assert any("category" in k for k in (ctx.get("encodings") or {}))
+
+
+def test_bind_plan_abstains_when_by_has_no_dimension() -> None:
+    ctx = {
+        "measures": {"stock_value_myr": {"grain": "lot", "description": "carrying value"}},
+        "objects": {"lot": {"key": ["lot_id"]}},
+        "columns": {"lot": ["lot_id", "qty"]},
+    }
+    out = bind_plan("Show stock by storage bin", ctx)
+    assert out == {"unsure": True}
+
+
+def test_bind_plan_is_not_a_pack_lookup() -> None:
+    ctx = {
+        "measures": {"revenue": {"grain": "sale", "description": ""}},
+        "objects": {"product": {"key": ["sku"]}, "sale": {"key": ["txn_id"]}},
+        "columns": {"product": ["sku", "category"], "sale": ["txn_id", "sku", "amount"]},
+    }
+    out = bind_plan("Top 5 selling SKUs by revenue", ctx)
+    assert out is not None
+    assert out.get("unsure") is not True
+    plan = out["query_plan"]
+    assert plan["measure"] == "revenue"
+    assert plan["group_by"] == [["product", "sku"]]
+    assert plan["limit"] == 5
+
+
+def test_ab_curated_wrong_zero_both_paths() -> None:
+    from score_curated import run_ab_curated
+
+    report = run_ab_curated()
+    assert report["exact_match"]["wrong"] == 0
+    assert report["generative"]["wrong"] == 0
+    assert report["passed"] is True
+    assert report["exact_match"]["answered"] >= 1
+    assert report["generative"]["n"] == report["exact_match"]["n"]
+    planted = {
+        "trap_last_month",
+        "trap_short_paraphrase",
+        "trap_how_full_synonym",
+        "trap_delayed_count",
+        "trap_stock_by_bin",
+        "trap_alerts_ungranted",
+    }
+    for row in report["cases"]:
+        if row["id"] in planted:
+            assert row["generative"] != "WRONG", row
+            assert row["exact"] != "WRONG", row
+            assert row["generative_badge"] == "ABSTAIN", row
 
 
 def test_compute_http_does_not_invent_a_key() -> None:

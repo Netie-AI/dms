@@ -47,11 +47,12 @@ sheet-scope conflict. Regression: `tests/test_demo_pack_followup.py`,
 `tests/test_demo_warehouse_reseed.py`. Not #116 COMPLETE.
 
 EPIC-GEN-01 GEN-01 (#179): miss-path generative ask in
-`packages/executor/dms_executor/generative_ask.py`. Cortex compute
-`POST /dms/query` proposes a typed plan; `Ontology.compile` emits SQL;
-validate (hostile + grant + EXPLAIN) then Cortex submit. Unsure or
-validate-fail is ABSTAIN. Not pack expansion. Regression:
-`tests/test_gen01_generative_ask.py`. Not COMPLETE.
+`packages/executor/dms_executor/generative_ask.py`. Semantic retrieve
+(`semantic_retrieve.py`: schema SQL-filter + ontology + encodings → short
+context) then Cortex `POST /dms/query`; `Ontology.compile` emits SQL;
+validate then Cortex submit. Unsure or validate-fail is ABSTAIN. A/B vs
+exact-match: `python scripts/score_curated.py --ab`. Not pack expansion.
+Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

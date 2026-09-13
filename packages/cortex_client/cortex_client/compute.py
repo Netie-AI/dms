@@ -41,6 +41,7 @@ def compute_query(
         "mode": "ontology_plan",
     }
     if ontology is not None:
+        # Retrieved short context (schema + ontology slice). Not a secret bag.
         body["ontology"] = ontology
     try:
         with httpx.Client(timeout=timeout) as http:

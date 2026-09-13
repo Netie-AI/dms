@@ -1,9 +1,9 @@
 """GEN-01 — ontology-grounded generative ask + execute-validate.
 
-Exact-match VQ/pack stays first. This path fills typed ontology slots (never
-raw model SQL), compiles through the grain guard, validates, then Cortex-submits.
-Unsure or validate-fail is ABSTAIN. Missing compute client is a miss (existing
-contract ask still runs).
+Exact-match VQ/pack stays first. Retrieve a short schema/ontology context,
+send it to Cortex compute (FreeRoute stays in Cortex), fill typed slots,
+compile, validate, then Cortex-submit. Unsure or validate-fail is ABSTAIN.
+Missing compute client is a miss (existing contract ask still runs).
 
 Does not expand certified exact-match packs. Does not invent provider keys.
 """
@@ -28,6 +28,7 @@ from dms_executor.envelope import (
 )
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import CompiledQuery, Ontology, Refusal, demo_ontology
+from dms_executor.semantic_retrieve import retrieve_short_context
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -265,8 +266,9 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
 ) -> dict[str, Any] | None:
-    """L2 when a typed plan compiles and validate passes. ABSTAIN when unsure.
+    """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
+    Compute receives a short retrieved context, not the full ontology dump.
     ``None`` is a miss: no compute client, or compute did not ground a plan, so
     the existing Cortex contract ask still runs. File-grounded asks skip.
     """
@@ -291,9 +293,13 @@ def maybe_generative_ask(
         onto = load_verified_ontology(warehouse)
     elif warehouse is not None and not onto.verified:
         onto = load_verified_ontology(warehouse, onto)
-    catalog = ontology_catalog(onto) if onto is not None else {"verified": False, "measures": {}}
+    allowed = grantable if grantable is not None else set(_KNOWN)
+    # Short retrieved context only -- not the full ontology dump.
+    ctx = retrieve_short_context(
+        q, warehouse=warehouse, grantable=allowed, ontology=onto
+    )
     try:
-        payload = compute(catalog)
+        payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
         return None
 
@@ -330,7 +336,6 @@ def maybe_generative_ask(
             space_id=space_id, session_id=session_id,
         )
 
-    allowed = grantable if grantable is not None else set(_KNOWN)
     why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=warehouse)
     if why:
         return _abstain(q, f"validate:{why}", space_id=space_id, session_id=session_id)

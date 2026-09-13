@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-01 semantic retrieve + A/B vs exact-match (#179)
+
+- **Ticket.** Serves [GEN-01 #179](https://github.com/Netie-AI/dms/issues/179) under EPIC-INSIGHTS-UX #178 after SoT widen. Does not close tickets. Not COMPLETE.
+- **Retrieve.** Schema `information_schema` SQL-filter + ontology slice + DISTINCT encodings, summarized to short context. Compute gets that blob, not the full catalog. No DB-GPT clone, no extra dep, no keys.
+- **A/B.** `python scripts/score_curated.py --ab` scores exact-match pack vs retrieve+bind generative on the same curated_ceo pack. FAIL if either path WRONG>0.
+- **Not this ticket:** pack expansion, EPIC-019 COMPLETE, GEN-02 live harness, reopen #108.
+
+
 ## 2026-09-13 - GEN-01 ontology-grounded generative ask (#179)
 
 - **Ticket.** Serves [GEN-01 #179](https://github.com/Netie-AI/dms/issues/179) under EPIC-GEN-01 #178. Does not close #179 or #178. Not COMPLETE.
