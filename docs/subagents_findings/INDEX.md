@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (#171 Sources drawer; #182 Operate nav/TopBar was still w-52).
+PREFLIGHT for this goal: PARTIAL (GEN-02 climb probe used urllib; `_ask` already httpx).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | score-client-01-httpx | SCORE-CLIENT-01, score_curated, climb, httpx, urllib, CF1010, studio.netie.ai, dms-187 | #187 climb/A/B httpx not urllib. CF1010 BLOCKED not IAP. Live remeasure Platform. Not COMPLETE. | `2026-09-13_score-client-01-httpx.md` |
 | 2026-09-13 | studio-mobile-02 | STUDIO-MOBILE-02, LeftNav, TopBar, drawer, lg, dms-182 | #182 Operate w-52 covered chat; nav is a closed drawer below lg. TopBar hides secondary chrome. Not #171 DONE. Not EPIC-008 COMPLETE. | `2026-09-13_studio-mobile-02.md` |
 | 2026-09-13 | gen02-coverage-climb | GEN-02, ask_path, A/B, CRAG, distill, a9578348, 38.46, 3.85, dms-180 | #180 live A/B exact vs gen + Distill ladder (certified-first, ontology spine, hybrid_fuse+CRAG, Cortex text2sql). Frozen gen 3.85 pct WRONG=0. Not COMPLETE. | `2026-09-13_gen02-coverage-climb.md` |
 | 2026-09-13 | score-bird-01-live-harness | SCORE-BIRD-01, bird_minidev, gender, leftover 75, batch bronze, GEN-01 A/B, dms-184 | #184 live OK/LAYER/ABSTAIN/WRONG on BIRD Space. Bronze grows in batches. leftover target 75. Not COMPLETE. | `2026-09-13_score-bird-01-live-harness.md` |

@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - SCORE-CLIENT-01: climb/A/B httpx vs urllib CF1010 (#187)
+
+- **Ticket.** Serves [SCORE-CLIENT-01 #187](https://github.com/Netie-AI/dms/issues/187) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Not 99.95%.
+- **Transport.** `scripts/score_curated.py --climb` / `--climb --ab` probe `/health` and POST `/v1/chat/ask` via httpx (`score_http`). urllib CF1010s `https://studio.netie.ai`. CF1010 is BLOCKED (named, not IAP) and is not a grant-ABSTAIN. IAP 401/403 still BLOCKED.
+- **Not this ticket:** live Studio remeasure, #178 COMPLETE, greening planted refuses, GitHub CI `--climb`, ticket close.
+
 ## 2026-09-13 - STUDIO-MOBILE-02: Operate LeftNav drawer + TopBar phone (#182)
 
 - **Ticket.** Serves [STUDIO-MOBILE-02 #182](https://github.com/Netie-AI/dms/issues/182). Follow-on to #171. Does not close tickets. Not COMPLETE. Not EPIC-008 COMPLETE. Not #171 product DONE.

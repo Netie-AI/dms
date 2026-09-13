@@ -172,9 +172,47 @@ def is_confident(env: dict[str, Any]) -> bool:
     return badge in CONFIDENT
 
 
+def is_cf1010(status: int, text: str | None) -> bool:
+    """Cloudflare 1010 is a browser-signature ban, not a DMS grant 403."""
+    if int(status) != 403:
+        return False
+    blob = (text or "").lower()
+    return "error code: 1010" in blob or "error 1010" in blob
+
+
+def cf1010_blocked_detail(status: int, text: str | None) -> str | None:
+    if not is_cf1010(status, text):
+        return None
+    return (
+        "CF1010 Cloudflare browser-signature ban (not IAP). "
+        "Use httpx/curl-class fetch, not urllib. "
+        "If httpx still 1010: Platform DevOps exception on studio.netie.ai."
+    )
+
+
+def score_http(
+    method: str,
+    url: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout: float,
+) -> Any:
+    """httpx/curl-class fetch. urllib CF1010s studio.netie.ai (SCORE-CLIENT-01)."""
+    import httpx
+
+    kwargs: dict[str, Any] = {"timeout": timeout, "follow_redirects": True}
+    if json_body is not None:
+        kwargs["json"] = json_body
+    return httpx.request(method, url, **kwargs)
+
+
 def ask_error_envelope(exc: BaseException) -> dict[str, Any] | None:
     """403/409 grant/session refusal is ABSTAIN, not a scorer WRONG."""
-    status = getattr(getattr(exc, "response", None), "status_code", None)
+    resp = getattr(exc, "response", None)
+    status = getattr(resp, "status_code", None)
+    text = getattr(resp, "text", None) if resp is not None else None
+    if status is not None and is_cf1010(int(status), text):
+        return None
     if status in GRANT_REFUSAL_STATUS:
         return {"badge": "ABSTAIN", "abstained": True, "rows": []}
     return None
@@ -275,14 +313,13 @@ def _ask(
     timeout: float,
     ask_path: str | None = None,
 ) -> dict[str, Any]:
-    import httpx
-
     payload: dict[str, Any] = {"question": question, "space_id": space_id}
     if ask_path:
         payload["ask_path"] = ask_path
-    resp = httpx.post(
+    resp = score_http(
+        "POST",
         f"{base.rstrip('/')}/v1/chat/ask",
-        json=payload,
+        json_body=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -367,6 +404,12 @@ def self_check() -> int:
         return 1
     if classify_health(403, None, "text/html")[0] != "blocked":
         print("FAIL: IAP 403 must be BLOCKED, not a score")
+        return 1
+    if not is_cf1010(403, "error code: 1010"):
+        print("FAIL: CF1010 plant")
+        return 1
+    if is_cf1010(403, "Cloudflare Access login"):
+        print("FAIL: IAP HTML is not CF1010")
         return 1
     ab = BASELINE_AB_A9578348
     if (
@@ -822,24 +865,25 @@ def classify_health(
 
 
 def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
-    """ok | blocked | fail. Health only (stdlib). Does not invent a score."""
-    import urllib.error
-    import urllib.request
+    """ok | blocked | fail. Health only (httpx). Does not invent a score."""
+    try:
+        import httpx
+    except ImportError:
+        return "blocked", "httpx required (DMS .venv). Not a score."
 
     health = f"{url.rstrip('/')}/health"
-    req = urllib.request.Request(health, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=min(timeout, 15.0)) as resp:
-            raw = resp.read(8000)
-            status = int(resp.status)
-            ctype = resp.headers.get("content-type")
-    except urllib.error.HTTPError as exc:
-        ctype = exc.headers.get("content-type") if exc.headers else None
-        return classify_health(int(exc.code), None, ctype)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        resp = score_http("GET", health, timeout=min(timeout, 15.0))
+    except httpx.HTTPError as exc:
         return "blocked", f"{type(exc).__name__}: {exc}"
+    status = int(resp.status_code)
+    ctype = resp.headers.get("content-type") if resp.headers is not None else None
+    text = str(getattr(resp, "text", "") or "")[:8000]
+    cf = cf1010_blocked_detail(status, text)
+    if cf:
+        return "blocked", cf
     try:
-        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+        parsed = json.loads(text)
     except ValueError:
         return classify_health(status, None, ctype)
     body = parsed if isinstance(parsed, dict) else None

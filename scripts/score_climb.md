@@ -74,10 +74,13 @@ DMS_URL          last resort for --climb; --live still defaults to 127.0.0.1:809
 
 Unset `--url` / `DMS_API_BASE` / `DMS_URL` -> exit 2 CONFIG.
 Unreachable host or IAP **401/403** -> exit 3 BLOCKED (not a score, not PASS).
+Cloudflare **CF1010** (browser-signature ban) -> exit 3 BLOCKED, named as CF1010 not IAP.
 `demo_fallback=true` or `ask_mode=demo` on `/health` -> exit 1 FAIL.
 WRONG>0 (green planted refuse, demo fallback on an answer, transport error mid-pack) -> exit 1 FAIL.
 
-Cursor cloud / seats without Access cookies will see 403 on `studio.netie.ai`. That is BLOCKED for this seat. Platform on prove / with IAP runs the score.
+**Transport (SCORE-CLIENT-01).** `--climb` / `--climb --ab` probe `/health` and POST `/v1/chat/ask` via **httpx** (`score_http`), not `urllib.request`. Bare urllib hits Cloudflare 403 CF1010 on `https://studio.netie.ai`. Durable origin is `https://studio.netie.ai/api`. Loopback `127.0.0.1:8090` is a host workaround, not the public measurement. If httpx still CF1010s: **Platform DevOps exception** (Bot Fight / WAF allow httpx/curl-class). This seat does not invent COMPLETE.
+
+Cursor cloud / seats without Access cookies will see IAP 403 on `studio.netie.ai`. That is BLOCKED for this seat. Platform on prove / with IAP runs the score.
 
 Studio SPA `/health` is HTML. Use the **API** prefix (`/api/health`).
 
