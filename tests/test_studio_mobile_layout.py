@@ -37,3 +37,20 @@ def test_studio_keeps_desktop_two_column_and_collapses_files_and_sqlsrc() -> Non
     assert "max-lg:hidden" in page
     assert "studio-sources-toggle" in page
     assert "<SqlSourcePanel " in page
+
+
+def test_composer_sets_ink_placeholder_and_caret() -> None:
+    chat = (UI / "pages" / "ChatPage.tsx").read_text(encoding="utf-8")
+    assert "text-[var(--color-ink)]" in chat
+    assert "placeholder:text-[var(--color-ink-muted)]" in chat
+    assert "caret-[var(--color-ink)]" in chat
+
+
+def test_topbar_short_labels_below_lg_keep_desktop_wording() -> None:
+    bar = (UI / "components" / "TopBar.tsx").read_text(encoding="utf-8")
+    assert 'className="lg:hidden">New</span>' in bar
+    assert 'className="hidden lg:inline">+ New</span>' in bar
+    assert 'className="lg:hidden">Spaces</span>' in bar
+    assert 'className="hidden lg:inline">Manage</span>' in bar
+    assert 'className="lg:hidden">Operate</span>' in bar
+    assert 'className="hidden lg:inline">Switch to Operate</span>' in bar

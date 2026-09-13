@@ -28,6 +28,28 @@ test.describe("STUDIO-MOBILE-01 live 390px repro", () => {
     expect(await mainWidth(page)).toBeGreaterThan(200);
     await expect(page.getByRole("heading", { name: /Ask (about your|your company's) data/ })).toBeVisible();
     expect(await documentOverflowX(page)).toBeLessThanOrEqual(1);
+    await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Manage Spaces" })).toBeVisible();
+    await expect(page.getByText("Spaces", { exact: true })).toBeVisible();
+    await expect(page.getByText("Operate", { exact: true })).toBeVisible();
+    await expect(page.getByText("Switch to Operate")).toBeHidden();
+    await expect(page.getByText("+ New")).toBeHidden();
+  });
+
+  test("graphite composer typed text uses ink, not a transparent UA color", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Switch to operator mode" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+    const composer = page.getByPlaceholder(/Ask about your data/);
+    await composer.fill("typed");
+    const { color, caret } = await composer.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { color: s.color, caret: s.caretColor };
+    });
+    expect(color).toBe("rgb(229, 229, 229)");
+    expect(caret).toBe("rgb(229, 229, 229)");
   });
 });
 
@@ -77,6 +99,9 @@ test.describe("STUDIO-MOBILE-01 desktop lg", () => {
     await expect(page.getByTestId("source-panel")).toBeVisible();
     await expect(page.getByTestId("source-panel-open")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /Ask (about your|your company's) data/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: "+ New" })).toBeVisible();
+    await expect(page.getByText("Switch to Operate")).toBeVisible();
+    await expect(page.getByText("Manage", { exact: true })).toBeVisible();
   });
 
   test("studio keeps the two-column files grid without a mobile toggle", async ({

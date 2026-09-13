@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - STUDIO-MOBILE-01: composer ink + TopBar phone labels (#171)
+
+- **Composer.** Chat textarea now sets `text` / `placeholder` / `caret` to `--color-ink` so graphite does not paint typed words as transparent UA chrome.
+- **TopBar.** Below `lg`: `New`, `Spaces`, `Operate`/`Ask`. At `lg`: `+ New`, `Manage`, `Switch to Operate/Ask`. DB Library from `sm`.
+- **Not this ticket:** EPIC-008 COMPLETE, close #171/#8.
+
 ## 2026-09-13 - STUDIO-MOBILE-01: live 390px dock cannot zero chat (#171)
 
 - **Live walk.** Frontend Support: 390x844 SOURCES open = 352px flex sibling, main width 0. Collapse works; arriving answer reopens the dock. Header scrollWidth 534.
