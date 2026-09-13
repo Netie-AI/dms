@@ -7,7 +7,8 @@ the answer source.
 
 Not steward VQ-02: these ids are the product pack, not Studio-registered.
 VQ-03 (#170) extras are Cortex ``certified_queries.yaml`` SQL, exact phrase
-only. ``how full is each warehouse`` is not a synonym and must miss.
+only. VQ-04 (#176): planted refuse phrases are not certified synonyms and
+must not ship L1 even when Cortex ``route_to_metric`` would green them.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ CAPACITY_ABOVE_90_Q = "Which locations are above 90 percent capacity?"
 EXPIRED_ITEMS_Q = "Which items are expired?"
 CCTV_WH_A_Q = "Show the CCTV camera for warehouse A"
 HOW_FULL_TRAP_Q = "how full is each warehouse"
+DELAYED_COUNT_TRAP_Q = "How many delayed incoming shipments per warehouse?"
 
 SPEND_BY_COUNTRY_SQL = (
     "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
@@ -155,6 +157,75 @@ PACK_METRICS: tuple[PackMetric, ...] = (
 
 def _norm(question: str) -> str:
     return " ".join(normalize_ask_question(question).casefold().split())
+
+
+# Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
+# cq_capacity_utilisation has no synonym; delayed_incoming_per_wh is TARGET.
+# Live L1 leak: vocabulary "how full" -> capacity utilisation, and
+# route_to_metric delayed+per+warehouse -> count_by_destination.
+_UNCERTIFIED_PARAPHRASE = frozenset(
+    {_norm(HOW_FULL_TRAP_Q), _norm(DELAYED_COUNT_TRAP_Q)}
+)
+
+
+def is_uncertified_paraphrase(question: str | None) -> bool:
+    qn = _norm(question or "")
+    return bool(qn) and qn in _UNCERTIFIED_PARAPHRASE
+
+
+def uncertified_refuse_text(question: str | None) -> str:
+    qn = _norm(question or "")
+    if qn == _norm(HOW_FULL_TRAP_Q):
+        return (
+            "I cannot certify that phrasing. It is not a certified synonym of "
+            "warehouse capacity utilisation. Ask "
+            f"'{CAPACITY_UTILISATION_Q}'."
+        )
+    return (
+        "I cannot certify delayed-incoming counts per warehouse. That golden is "
+        "TARGET, not a Cortex certified query. A governed number here would be a guess."
+    )
+
+
+def maybe_uncertified_refuse_ask(
+    question: str,
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """ABSTAIN envelope when the ask is a planted uncertified paraphrase.
+
+    Exact phrase only, same ``_norm`` as pack match. Does not grow an intent
+    cascade. Cortex L1 must not green these to raise coverage.
+    """
+    if not is_uncertified_paraphrase(question):
+        return None
+    env = build_answer_envelope(
+        answer_id="ans_uncertified_paraphrase",
+        text=uncertified_refuse_text(question),
+        badge="ABSTAIN",
+        abstained=True,
+        values=[],
+        rows=[],
+        sql_used=None,
+        assumptions=[
+            "uncertified paraphrase: not on certified_queries.yaml",
+            "fail-closed; Cortex L1 synonym/regex is not a certify boundary",
+        ],
+        as_of=_as_of(),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="abstain",
+        question=question,
+        suggestions=(
+            [CAPACITY_UTILISATION_Q]
+            if _norm(question) == _norm(HOW_FULL_TRAP_Q)
+            else []
+        ),
+    )
+    assert_envelope_valid(env)
+    return env
 
 
 def _as_of() -> str:

@@ -45,7 +45,11 @@ from dms_executor.demo_ask import (
     with_grounded_scope,
 )
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
-from dms_executor.demo_pack import maybe_pack_ask
+from dms_executor.demo_pack import (
+    is_uncertified_paraphrase,
+    maybe_pack_ask,
+    maybe_uncertified_refuse_ask,
+)
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
 from dms_executor.envelope import (
     assert_envelope_valid,
@@ -482,6 +486,13 @@ class Executor:
             self._store_turn(session_id, space_id, pack_env)
             return pack_env
 
+        refuse_env = maybe_uncertified_refuse_ask(
+            question, space_id=space_id, session_id=session_id
+        )
+        if refuse_env is not None:
+            self._store_turn(session_id, space_id, refuse_env)
+            return refuse_env
+
         # The grant decides what the cascade may open, never the request.
         #
         # This read ``tables or grantable_tables(...)`` and ``tables`` is the
@@ -774,6 +785,15 @@ def map_ask_response_to_envelope(
             sql_out = "-- document retrieval (no SQL)"
         else:
             sql_out = "-- live ask (SQL not returned)"
+    # VQ-04: Cortex L1 on an uncertified planted paraphrase (vocabulary
+    # "how full" / delayed+per-warehouse regex) must not keep a green badge.
+    # E9: do not render the engine figures under ABSTAIN.
+    if is_uncertified_paraphrase(question) and not abstained:
+        refused_env = maybe_uncertified_refuse_ask(
+            question or "", space_id=space_id, session_id=session_id
+        )
+        if refused_env is not None:
+            return refused_env
     env = build_answer_envelope(
         answer_id=resp.receipt_id or f"ans_live_{session_id or 'x'}",
         text=text,

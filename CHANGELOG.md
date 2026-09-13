@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - VQ-04 harden planted refuse traps after #175 (WRONG2)
+
+- **Ticket.** Serves [VQ-04 #176](https://github.com/Netie-AI/dms/issues/176) under EPIC-019 #38. Does not close #176 or #38. Not COMPLETE.
+- **Cause.** Live `score_curated` after PR #175 @ `497d1901` was OK7 LAYER10 ABSTAIN7 WRONG2. The 7 L0-gap LAYER lifts stay. Cortex L1 greened planted refuse: `trap_how_full_synonym` via vocabulary `how full` -> capacity utilisation; `trap_delayed_count` via `route_to_metric` delayed+per+warehouse -> `count_by_destination`. Neither is a `certified_queries.yaml` synonym (delayed golden is TARGET).
+- **Fix.** Exact-phrase refuse on those two asks (same `_norm` as pack, not an intent regex). Intercept before `cortex.ask`. Map also fail-closes if Cortex still returns L1 (E9: no engine figures on ABSTAIN). VQ-03 exact certified phrases still pack-hit.
+- **Not this ticket:** EPIC-019 / VQ-03 COMPLETE, greening traps for coverage, weakening gates, reopening EPIC-008, ticket close.
+
+
 ## 2026-09-13 - STUDIO-MOBILE-01: composer ink + TopBar phone labels (#171)
 
 - **Composer.** Chat textarea now sets `text` / `placeholder` / `caret` to `--color-ink` so graphite does not paint typed words as transparent UA chrome.
