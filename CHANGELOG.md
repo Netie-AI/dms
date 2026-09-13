@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - DEMO-HOST-01: prove IAP/CF walk in the runbook (#163)
+
+- **Cause.** `docs/DEMO_RUNBOOK.md` only listed laptop `127.0.0.1:3000` / `Start-DMS.bat`. Prove host-harden is UP (Platform: systemd, Spaces postgres, IAP to loopback `:8090`) with no founder/buyer walk that says open Studio via IAP/CF, point or upload, ask, see the envelope -- without a public `:8090`.
+- **Docs.** Section **2.1 Prove host-online (IAP/CF)**: ownership table, tunnel start cites Platform (EPIC-008 #8 GO; recipe is not in this repo), `{STUDIO_URL}/studio`, 2-min walk (SQLSRC-09 form or file upload -> ask -> envelope). DR-0004 Option A restated. `:8090` stays `127.0.0.1`; no `0.0.0.0/0`.
+- **UI.** Re-derived `StudioPage` / `SqlSourcePanel` / `apps/ui/src/lib/api.ts`: same-origin `/api` (Vite `VITE_API_TARGET` -> host `127.0.0.1:8090`). No Studio copy claimed localhost-only; no bind-address change.
+- **Not this ticket:** stand the tunnel, public `:8090`, lake / `LIVE_KEY_ID` / OV e2-micro, EPIC-008 COMPLETE, DEMO-HOST-02 smoke, reopen ENV-E4 / CSV-01 / INGEST-SYNC.
+
+
 ## 2026-09-10 - F32 skip demo-lake SQL; pack leftover asks (EPIC-020)
 
 - **Cause.** Lake is rich after hard restart. The 7 `verify_demo_live` ABSTAINs

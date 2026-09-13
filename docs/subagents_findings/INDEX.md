@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (epic020-f32-lake-sql).
+PREFLIGHT for this goal: PARTIAL (sqlsrc-09-studio-form; epic-completeness-003-008-017-018) -> HIT after DEMO-HOST-01 write.
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | demo-host-01-iap-runbook | DEMO-HOST-01, EPIC-008, IAP, Cloudflare, host-harden, SQLSRC-09, dms-163 | Prove host-online is Platform-owned (IAP to loopback :8090). dms docs the 2-min Studio walk; tunnel recipe is outside this repo. Not COMPLETE. | `2026-09-13_demo-host-01-iap-runbook.md` |
 | 2026-09-10 | epic020-f32-lake-sql | F32, E9-02, cq_spend_by_country, pack, DR-0002, follow-up, dms-116, thin-reseed, warehouse_* | 7 leftover ABSTAINs were E9-02/F32 on lake metrics. Quoted warehouse.inventory stays a lake join; warehouse_* grants are not sheets. Pack + follow-up. Not COMPLETE. | `2026-09-10_epic020-f32-lake-sql.md` |
 | 2026-09-06 | sqlsrc-09-studio-form | SQLSRC-09, Studio, sql source, dms-158, empty 500, password | Form POSTs /v1/studio/sources/sql. Empty proxy 500 hid the error until describeApiError always returned a sentence. Password request-only and redacted. | `2026-09-06_sqlsrc-09-studio-form.md` |
 | 2026-09-06 | capped-parent-orphans | F-0046, SQLSRC-07, dms-157, verify, max_rows, orphan, fk_intact, EPIC-020 | `verify()` had no RI claim, so a parent cap invented orphans LEFT JOIN misattributed while the total reconciled. Claim is now `fk_intact`; truncated is threaded through the manifest, not the bronze registry. | `2026-09-06_capped-parent-orphans.md` |
