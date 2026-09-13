@@ -77,6 +77,39 @@ def test_demo_fallback_is_wrong_not_ok():
     )
 
 
+def test_health_iap_403_is_blocked_not_a_score():
+    from score_curated import classify_health
+
+    kind, detail = classify_health(403, None, "text/html")
+    assert kind == "blocked"
+    assert "Not a score" in detail
+    kind, _ = classify_health(401, None, "text/html")
+    assert kind == "blocked"
+
+
+def test_health_demo_fallback_fails():
+    from score_curated import classify_health
+
+    kind, detail = classify_health(
+        200,
+        {"demo_fallback": True, "ask_mode": "live", "product": "dms"},
+        "application/json",
+    )
+    assert kind == "fail"
+    assert "demo_fallback" in detail
+
+
+def test_health_live_ok():
+    from score_curated import classify_health
+
+    kind, _ = classify_health(
+        200,
+        {"demo_fallback": False, "ask_mode": "live", "product": "dms"},
+        "application/json",
+    )
+    assert kind == "ok"
+
+
 def test_green_refuse_still_wrong():
     assert (
         judge_envelope(

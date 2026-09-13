@@ -36,9 +36,11 @@ DMS_URL          last resort for --climb; --live still defaults to 127.0.0.1:809
 ```
 
 Unset `--url` / `DMS_API_BASE` / `DMS_URL` -> exit 2 CONFIG.
-Unreachable host -> exit 3 BLOCKED (not a 26-WRONG score, not PASS).
+Unreachable host or IAP **401/403** -> exit 3 BLOCKED (not a score, not PASS).
 `demo_fallback=true` or `ask_mode=demo` on `/health` -> exit 1 FAIL.
 WRONG>0 (green planted refuse, demo fallback on an answer, transport error mid-pack) -> exit 1 FAIL.
+
+Cursor cloud / seats without Access cookies will see 403 on `studio.netie.ai`. That is BLOCKED for this seat. Platform on prove / with IAP runs the score.
 
 Studio SPA `/health` is HTML. Use the **API** prefix (`/api/health`).
 

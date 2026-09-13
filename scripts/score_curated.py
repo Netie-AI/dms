@@ -248,6 +248,9 @@ def self_check() -> int:
     if climb_url(None, {"DMS_API_BASE": PLATFORM_API}) != PLATFORM_API:
         print("FAIL: climb url from DMS_API_BASE")
         return 1
+    if classify_health(403, None, "text/html")[0] != "blocked":
+        print("FAIL: IAP 403 must be BLOCKED, not a score")
+        return 1
     fake_t = {"OK": 8, "LAYER": 10, "ABSTAIN": 8, "WRONG": 0}
     fake_cases = [
         {
@@ -606,28 +609,49 @@ def build_climb_report(
     }
 
 
-def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
-    """ok | blocked | fail. Health only. Does not invent a score."""
-    import httpx
-
-    health = f"{url.rstrip('/')}/health"
-    try:
-        resp = httpx.get(health, timeout=min(timeout, 15.0))
-    except httpx.HTTPError as exc:
-        return "blocked", f"{type(exc).__name__}: {exc}"
-    if resp.status_code != 200:
-        return "fail", f"health status={resp.status_code}"
-    try:
-        body = resp.json()
-    except ValueError:
-        return "fail", "health is not JSON (SPA /health? use /api)"
-    if not isinstance(body, dict):
-        return "fail", "health JSON is not an object"
+def classify_health(
+    status: int, body: dict[str, Any] | None, ctype: str | None
+) -> tuple[str, str]:
+    """ok | blocked | fail. IAP/auth is BLOCKED, not a 26-WRONG score."""
+    if status in {401, 403}:
+        return "blocked", f"health status={status} (IAP/auth). Not a score."
+    if status != 200:
+        return "fail", f"health status={status}"
+    if body is None:
+        kind = (ctype or "").split(";")[0].strip().lower()
+        if kind == "text/html":
+            return "fail", "health is HTML (SPA /health? use /api)"
+        return "fail", "health is not JSON"
     if body.get("demo_fallback") is True:
         return "fail", "demo_fallback=true (lying affordance)"
     if str(body.get("ask_mode") or "") == "demo":
         return "fail", "ask_mode=demo"
     return "ok", f"product={body.get('product')} ask_mode={body.get('ask_mode')}"
+
+
+def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
+    """ok | blocked | fail. Health only (stdlib). Does not invent a score."""
+    import urllib.error
+    import urllib.request
+
+    health = f"{url.rstrip('/')}/health"
+    req = urllib.request.Request(health, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=min(timeout, 15.0)) as resp:
+            raw = resp.read(8000)
+            status = int(resp.status)
+            ctype = resp.headers.get("content-type")
+    except urllib.error.HTTPError as exc:
+        ctype = exc.headers.get("content-type") if exc.headers else None
+        return classify_health(int(exc.code), None, ctype)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return "blocked", f"{type(exc).__name__}: {exc}"
+    try:
+        parsed = json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return classify_health(status, None, ctype)
+    body = parsed if isinstance(parsed, dict) else None
+    return classify_health(status, body, ctype)
 
 
 def climb(url: str, timeout: float) -> int:
@@ -639,7 +663,11 @@ def climb(url: str, timeout: float) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
-    tallies, cases = score_pack_live(url, timeout)
+    try:
+        tallies, cases = score_pack_live(url, timeout)
+    except ImportError:
+        print("CONFIG: httpx required (DMS .venv). Not a score.")
+        return EXIT_CONFIG
     report = build_climb_report(tallies, cases=cases, url=url)
     measured = report["measured"]
     base = report["baseline"]

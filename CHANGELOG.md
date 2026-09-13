@@ -5,7 +5,7 @@ Append-only. Never edited, only added to. Newest first.
 ## 2026-09-13 - GEN-02 measured live coverage climb harness (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) under EPIC-GEN-01 #178 after GEN-01 @ `a9578348`. Does not close tickets. Not COMPLETE. Not 99.95%.
-- **Harness.** `python scripts/score_curated.py --climb --url https://studio.netie.ai/api` (or `DMS_API_BASE`). Reports real OK/LAYER/ABSTAIN/WRONG vs frozen baseline @ `91c5cc99` (OK7 LAYER10 ABSTAIN9 WRONG0). `answered_by_path` splits `route=generated` vs exact-match pack. WRONG=0 is FAIL if broken. Unreachable host is BLOCKED, not a fake score. `--climb` has no laptop default.
+- **Harness.** `python scripts/score_curated.py --climb --url https://studio.netie.ai/api` (or `DMS_API_BASE`). Reports real OK/LAYER/ABSTAIN/WRONG vs frozen baseline @ `91c5cc99` (OK7 LAYER10 ABSTAIN9 WRONG0). `answered_by_path` splits `route=generated` vs exact-match pack. WRONG=0 is FAIL if broken. Unreachable host or IAP 401/403 is BLOCKED, not a fake score. `--climb` has no laptop default.
 - **Not this ticket:** pack expansion, greening planted refuses, GitHub CI live ask, EPIC-019 COMPLETE, reopen #108, ticket close, keys in chat.
 
 
