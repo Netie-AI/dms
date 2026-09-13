@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - STUDIO-MOBILE-02: Operate LeftNav drawer + TopBar phone (#182)
+
+- **Ticket.** Serves [STUDIO-MOBILE-02 #182](https://github.com/Netie-AI/dms/issues/182). Follow-on to #171. Does not close tickets. Not COMPLETE. Not EPIC-008 COMPLETE. Not #171 product DONE.
+- **Nav.** Below `lg`, LeftNav is a closed drawer overlay (`left-nav-slot` is `max-lg:w-0`). Operate no longer docks `w-52` over chat. Desktop cream rail / graphite column unchanged.
+- **TopBar.** Secondary chrome (Spaces, Library, API, role) hides below `lg`. Compact `netie` title. `overflow-x-auto` instead of clip. Short labels from #171 kept.
+- **Not this ticket:** live phone walk PASS, #171 DONE, OpenVault user key UI, ticket close.
+
 ## 2026-09-13 - GEN-02 founder lock: generate SQL then validate (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.

@@ -16,7 +16,12 @@ export function AppShell() {
       <DemoFallbackBanner />
       <ApiOfflineBanner />
       <div className="flex min-h-0 min-w-0 flex-1">
-        <LeftNav />
+        <div
+          data-testid="left-nav-slot"
+          className="max-lg:w-0 max-lg:min-w-0 max-lg:shrink-0 max-lg:overflow-visible lg:contents"
+        >
+          <LeftNav />
+        </div>
         <main className="min-w-0 flex-1 overflow-hidden">
           <Outlet />
         </main>

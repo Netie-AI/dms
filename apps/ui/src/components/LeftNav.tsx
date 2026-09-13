@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
-import type { NavId } from "@/lib/types";
+import type { AppRole, NavId } from "@/lib/types";
 
 type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
 
@@ -78,6 +78,7 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
 ];
 
 const ADMIN_ONLY: NavId[] = ["admin"];
+const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 
 function linkClass(isActive: boolean): string {
   return `block px-3 py-1.5 text-sm font-medium ${
@@ -88,7 +89,7 @@ function linkClass(isActive: boolean): string {
 }
 
 export function LeftNav() {
-  const { navCollapsed, role, productMode } = useApp();
+  const { navCollapsed, role, setRole, productMode, closeNavDrawer } = useApp();
   const allowed = navIdsForMode(productMode);
   const visible = GROUPS.map((g) => ({
     ...g,
@@ -102,8 +103,10 @@ export function LeftNav() {
   if (navCollapsed) {
     return (
       <nav
+        id="primary-nav"
         aria-label="Primary"
-        className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] py-3"
+        data-testid="left-nav"
+        className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] py-3 max-lg:hidden"
       >
         {visible.map((group, gi) => (
           <div key={group.title} className="flex w-full flex-col items-center gap-1">
@@ -132,10 +135,20 @@ export function LeftNav() {
   }
 
   return (
-    <nav
-      aria-label="Primary"
-      className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)]"
-    >
+    <>
+      <button
+        type="button"
+        data-testid="left-nav-backdrop"
+        aria-label="Dismiss menu"
+        className="fixed inset-0 top-12 z-30 bg-black/40 lg:hidden"
+        onClick={closeNavDrawer}
+      />
+      <nav
+        id="primary-nav"
+        aria-label="Primary"
+        data-testid="left-nav"
+        className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:z-40"
+      >
       <div className="border-b border-[var(--color-line)] px-4 py-4">
         <p className="font-[family-name:var(--font-display)] text-xl font-semibold tracking-tight text-[var(--color-ink)]">
           netie
@@ -160,6 +173,7 @@ export function LeftNav() {
                     to={item.to}
                     end={item.to === "/"}
                     title={item.hint}
+                    onClick={closeNavDrawer}
                     className={({ isActive }) => linkClass(isActive)}
                   >
                     {item.label}
@@ -170,11 +184,37 @@ export function LeftNav() {
           </div>
         ))}
       </div>
+      {productMode === "graphite" && (
+        <div className="border-t border-[var(--color-line)] px-3 py-2 lg:hidden">
+          <label className="sr-only" htmlFor="nav-role-switcher">
+            Role
+          </label>
+          <select
+            id="nav-role-switcher"
+            aria-label="Role"
+            value={role}
+            onChange={(e) => setRole(e.target.value as AppRole)}
+            className="h-8 w-full border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
+          >
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+          {role !== "admin" && (
+            <p className="mt-2 text-[10px] leading-snug text-[var(--color-ink-muted)]">
+              Admin is hidden for the {role} role.
+            </p>
+          )}
+        </div>
+      )}
       {productMode === "graphite" && role !== "admin" && (
-        <p className="border-t border-[var(--color-line)] px-3 py-2 text-[10px] leading-snug text-[var(--color-ink-muted)]">
+        <p className="hidden border-t border-[var(--color-line)] px-3 py-2 text-[10px] leading-snug text-[var(--color-ink-muted)] lg:block">
           Admin is hidden for the {role} role.
         </p>
       )}
     </nav>
+    </>
   );
 }

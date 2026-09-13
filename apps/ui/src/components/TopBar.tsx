@@ -9,6 +9,7 @@ const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 export function TopBar() {
   const {
     toggleNav,
+    navCollapsed,
     spaces,
     activeSpaceId,
     setActiveSpaceId,
@@ -23,15 +24,24 @@ export function TopBar() {
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
-    <header className="flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-x-hidden border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm sm:gap-3 sm:px-3">
+    <header className="flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-x-auto border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
       <button
         type="button"
         onClick={toggleNav}
-        className="flex h-8 w-8 items-center justify-center border border-[var(--color-line)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+        className="flex h-8 w-8 shrink-0 items-center justify-center border border-[var(--color-line)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
         aria-label="Toggle sidebar"
+        aria-expanded={!navCollapsed}
+        aria-controls="primary-nav"
       >
         <span className="block h-3 w-3.5 border-y border-[var(--color-ink)] border-opacity-70" />
       </button>
+
+      <span
+        data-testid="topbar-title"
+        className="min-w-0 truncate font-[family-name:var(--font-display)] text-sm font-semibold tracking-tight text-[var(--color-ink)] lg:hidden"
+      >
+        netie
+      </span>
 
       <label className="sr-only" htmlFor="space-switcher">
         Space
@@ -42,7 +52,7 @@ export function TopBar() {
         onChange={(e) =>
           setActiveSpaceId(e.target.value === "" ? null : e.target.value)
         }
-        className="h-8 min-w-0 max-w-[7rem] border border-[var(--color-line)] bg-transparent px-2 text-sm sm:max-w-[12rem]"
+        className="h-8 min-w-0 max-w-[7rem] border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem]"
       >
         <option value="">Company (default ACL)</option>
         {spaces.map((s) => (
@@ -52,7 +62,7 @@ export function TopBar() {
         ))}
       </select>
 
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           onClick={() => setNewOpen((o) => !o)}
@@ -101,7 +111,7 @@ export function TopBar() {
 
       <Link
         to="/spaces"
-        className="flex h-8 shrink-0 items-center border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        className="hidden h-8 shrink-0 items-center border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] lg:flex"
         title="Manage Spaces -- scope, sources, members"
         aria-label="Manage Spaces"
       >
@@ -111,7 +121,7 @@ export function TopBar() {
 
       <Link
         to="/library"
-        className="hidden h-8 shrink-0 items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] sm:flex"
+        className="hidden h-8 shrink-0 items-center gap-1.5 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] lg:flex"
         title="Data Map — warehouse & bronze browser"
         aria-label="Open Database Library"
       >
@@ -124,7 +134,7 @@ export function TopBar() {
       <div className="mx-auto flex-1" />
 
       <span
-        className={`hidden text-xs sm:inline ${
+        className={`hidden text-xs lg:inline ${
           apiOnline === true
             ? "text-[var(--color-badge-ok)]"
             : apiOnline === false
@@ -135,7 +145,7 @@ export function TopBar() {
         {apiOnline === true ? "API · ok" : apiOnline === false ? "API · offline" : "API · …"}
       </span>
 
-      <span className="hidden text-[10px] uppercase tracking-[0.12em] text-[var(--color-ink-muted)] sm:inline">
+      <span className="hidden text-[10px] uppercase tracking-[0.12em] text-[var(--color-ink-muted)] lg:inline">
         {productMode === "cream" ? "Ask" : "Operate"}
       </span>
 
@@ -170,7 +180,7 @@ export function TopBar() {
           aria-label="Role"
           value={role}
           onChange={(e) => setRole(e.target.value as AppRole)}
-          className="h-8 border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
+          className="hidden h-8 border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize lg:inline"
         >
           {ROLES.map((r) => (
             <option key={r} value={r}>

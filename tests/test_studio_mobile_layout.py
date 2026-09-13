@@ -1,7 +1,8 @@
-"""STUDIO-MOBILE-01 (#171): Sources must not eat the ask column below lg.
+"""STUDIO-MOBILE-01 (#171) + STUDIO-MOBILE-02 (#182): phone-width chrome.
 
 CI does not run vitest. These read the Studio/Chat layout so a revert of the
-drawer/collapse shows up on the same pytest job as the rest of the suite.
+Sources drawer, Operate LeftNav drawer, or TopBar clip shows up on the same
+pytest job as the rest of the suite.
 """
 
 from __future__ import annotations
@@ -54,3 +55,34 @@ def test_topbar_short_labels_below_lg_keep_desktop_wording() -> None:
     assert 'className="hidden lg:inline">Manage</span>' in bar
     assert 'className="lg:hidden">Operate</span>' in bar
     assert 'className="hidden lg:inline">Switch to Operate</span>' in bar
+
+
+def test_leftnav_is_drawer_below_lg_not_a_permanent_w52_sibling() -> None:
+    nav = (UI / "components" / "LeftNav.tsx").read_text(encoding="utf-8")
+    assert "max-lg:fixed" in nav
+    assert "max-lg:hidden" in nav
+    assert 'data-testid="left-nav-backdrop"' in nav
+    assert "w-52" in nav
+    shell = (UI / "components" / "AppShell.tsx").read_text(encoding="utf-8")
+    assert "left-nav-slot" in shell
+    assert "max-lg:w-0" in shell
+
+
+def test_operate_nav_starts_collapsed_below_lg() -> None:
+    vp = (UI / "lib" / "viewport.ts").read_text(encoding="utf-8")
+    assert "navStartsCollapsed" in vp
+    ctx = (UI / "context" / "AppContext.tsx").read_text(encoding="utf-8")
+    assert "navStartsCollapsed" in ctx
+    assert "closeNavDrawer" in ctx
+    assert "setNavCollapsed(mode === \"cream\")" not in ctx
+
+
+def test_topbar_does_not_clip_primary_actions_below_lg() -> None:
+    bar = (UI / "components" / "TopBar.tsx").read_text(encoding="utf-8")
+    assert "overflow-x-hidden" not in bar
+    assert "overflow-x-auto" in bar
+    assert 'data-testid="topbar-title"' in bar
+    assert "hidden h-8 shrink-0" in bar
+    assert "lg:flex" in bar
+    assert "lg:inline" in bar
+

@@ -43,7 +43,7 @@ test.describe("DMS product chrome", () => {
     await waitForChrome(page);
     await toOperate(page);
     await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
-    await page.getByLabel("Role").selectOption("admin");
+    await page.getByRole("banner").getByLabel("Role").selectOption("admin");
     await expect(page.getByRole("link", { name: "Admin" })).toBeVisible();
     await page.getByRole("link", { name: "Admin" }).click();
     await expect(page.getByRole("heading", { name: "Admin", level: 1 })).toBeVisible();
