@@ -37,6 +37,7 @@ def test_demo_ontology_verifies_on_thin_reseed(tmp_path: Path) -> None:
     assert "storage_bin" not in onto.objects["lot"].key
     assert "sku_count" in onto.measures
     assert "outbound_kg" in onto.measures
+    assert "below_reorder_lots" in onto.measures
     assert "ship_from_supplier" not in onto.links
 
 
@@ -84,17 +85,58 @@ def test_bind_plan_misses_list_and_untyped_filter(tmp_path: Path) -> None:
     onto = load_verified_ontology(db, demo_ontology(db))
     grants = {"inventory", "locations", "transactions", "suppliers"}
     for q in (
-        "List chemicals in inventory",
-        "Which locations are cold storage?",
-        "Which SKUs are below reorder level in warehouse A?",
-        "Show the CCTV camera for warehouse A?",
         "Which locations are above 90 percent capacity?",
+        "Rank suppliers by combined risk and lead time score",
     ):
         ctx = retrieve_short_context(q, warehouse=db, grantable=grants, ontology=onto)
         assert bind_plan(q, ctx) is None, q
 
 
-def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:
+def test_bind_plan_types_cold_storage_and_wh_a(tmp_path: Path) -> None:
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+    grants = {"inventory", "locations", "transactions", "suppliers"}
+    ctx = retrieve_short_context(
+        "Which locations are cold storage?",
+        warehouse=db,
+        grantable=grants,
+        ontology=onto,
+    )
+    assert "spine_yaml" in (ctx.get("methods") or [])
+    out = bind_plan("Which locations are cold storage?", ctx)
+    assert out is not None
+    plan = out["query_plan"]
+    assert plan["measure"] == "utilisation_pct"
+    assert ["location", "is_cold_storage", "=", True] in plan["filters"]
+    q2 = "Show the CCTV camera for warehouse A"
+    ctx2 = retrieve_short_context(q2, warehouse=db, grantable=grants, ontology=onto)
+    out2 = bind_plan(q2, ctx2)
+    assert out2 is not None
+    assert out2["query_plan"]["group_by"] == [["location", "cctv_camera_id"]]
+    assert any(
+        f[0] == "location" and f[1] == "location_code" for f in out2["query_plan"]["filters"]
+    )
+
+
+def test_generative_cold_storage_validates(tmp_path: Path) -> None:
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+    env = maybe_generative_ask(
+        "Which locations are cold storage?",
+        warehouse=db,
+        grantable={"inventory", "locations", "transactions", "suppliers"},
+        compute=lambda _c: None,
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert "is_cold_storage" in (env.get("sql_used") or "")
     db = tmp_path / "thin.duckdb"
     ensure_demo_warehouse(db)
     onto = load_verified_ontology(db, demo_ontology(db))
@@ -176,7 +218,7 @@ def test_isolated_gen_untyped_miss_abstains_after_retrieve(tmp_path: Path) -> No
     ensure_demo_warehouse(db)
     onto = load_verified_ontology(db, demo_ontology(db))
     env = maybe_generative_ask(
-        "Which locations are cold storage?",
+        "Which locations are above 90 percent capacity?",
         warehouse=db,
         grantable={"inventory", "locations", "transactions", "suppliers"},
         compute=lambda _c: None,
@@ -200,7 +242,7 @@ def test_ontology_spine_yaml_is_slot_names_not_sql(tmp_path: Path) -> None:
     onto = load_verified_ontology(db, demo_ontology(db))
     assert onto is not None
     root = Path(__file__).resolve().parents[1]
-    spine_path = root / "tests" / "fixtures" / "curated_ceo" / "ontology_spine.yaml"
+    spine_path = root / "packages" / "executor" / "dms_executor" / "ontology_spine.yaml"
     blob = spine_path.read_text(encoding="utf-8")
     assert "SUM(" not in blob.upper()
     assert "SELECT" not in blob.upper()

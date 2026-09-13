@@ -1106,6 +1106,14 @@ def demo_ontology(warehouse: Path) -> Ontology:
                 "warehouse capacity utilisation / occupancy percent per location"
             ),
         )
+    if cortex_default or "reorder_level_kg" in inv:
+        o.add_measure(
+            "below_reorder_lots",
+            "lot",
+            "COUNT(*) FILTER (WHERE f.quantity_kg < f.reorder_level_kg "
+            "AND COALESCE(f.reorder_level_kg, 0) > 0)",
+            description="lots below reorder level; one contribution per qualifying lot",
+        )
     return o
 
 

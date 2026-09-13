@@ -10,7 +10,7 @@ Main idea: "Isolated ask_path=exact vs generative. Distill: certified-first, ont
 - Platform: `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`.
 - Distill mapping (ideas only, no vendor paste): certified-first; `demo_ontology` spine (not a new YAML pack); retrieve `hybrid_fuse` + CRAG grades; Cortex `POST /dms/query` + `bind_plan` slots (no text2sql SDK).
 - Isolated gen Cortex compute miss -> `bind_plan`, then compile/validate/submit. Bind miss is ABSTAIN after retrieve (try-harder), not silent None. Product path does not bind on miss. Explicit unsure not overridden.
-- Thin-reseed ontology verifies. Slot-name YAML `tests/fixtures/curated_ceo/ontology_spine.yaml` (no SQL). P-DMS-19 doc CRAG stays parked.
+- Thin-reseed ontology verifies. Slot-name YAML `packages/executor/dms_executor/ontology_spine.yaml` is the retrieve allowlist (no SQL). P-DMS-19 doc CRAG stays parked.
 
 ## Not this ticket
 

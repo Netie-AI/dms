@@ -31,12 +31,30 @@ _TIME = re.compile(
 )
 _NEEDS_DIM = re.compile(r"\b(by|per|each|grouped|across)\b", re.I)
 _ENTITY_PREFIX = re.compile(r"^\s*(which|list|rank)\b", re.I)
-_UNTYPED = re.compile(
-    r"\b(above\s+\d|below\s+\d|90 percent|cold[\s-]?storage|expired|expir(?:y|ed)|"
-    r"warehouse a\b|wh-a\b|cctv|camera|delayed|reorder|storage bin|"
-    r"\balerts?\b|chemicals?\b|high-risk|pending shipment|risk and lead)\b",
+_SPINE_PATH = Path(__file__).with_name("ontology_spine.yaml")
+_WH_A = re.compile(r"\b(warehouse a|wh-a)\b", re.I)
+_COLD = re.compile(r"cold[\s-]?storage", re.I)
+_STILL_UNTYPED = re.compile(
+    r"\b(delayed|alerts?|storage bin|high-risk|pending shipment|risk and lead)\b",
     re.I,
 )
+
+
+def load_ontology_spine(path: Path | None = None) -> dict[str, Any] | None:
+    """Slot-name YAML pack for retrieve. No measure SQL. None if unreadable."""
+    target = path or _SPINE_PATH
+    if not target.is_file():
+        return None
+    try:
+        import yaml
+    except ImportError:
+        return None
+    data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict) or data.get("kind") != "dms.ontology_spine":
+        return None
+    return data
+
+
 _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
@@ -196,6 +214,14 @@ def retrieve_ontology_slice(onto: Ontology | None, toks: set[str]) -> dict[str, 
             scored_m.append((sc, m.name))
     scored_m.sort(reverse=True)
     keep_m = [name for _sc, name in scored_m[:MAX_MEASURES]]
+    spine = load_ontology_spine()
+    if spine and onto is not None:
+        allowed = {str(x) for x in (spine.get("measures") or [])}
+        onto_names = set(onto.measures)
+        # Demo retrieve uses the YAML pack as allowlist. A test/custom ontology
+        # with other measure names keeps those names (spine is not a ceiling).
+        if allowed and onto_names <= allowed:
+            keep_m = [name for name in keep_m if name in allowed]
     keep_obj: set[str] = set()
     for name in keep_m:
         keep_obj.add(onto.measures[name].grain)
@@ -259,6 +285,90 @@ def summarize_context(parts: dict[str, Any]) -> dict[str, Any]:
     return trimmed
 
 
+def _one_value(warehouse: Path, sql: str) -> str | None:
+    con = connect_file(warehouse)
+    try:
+        rows = con.execute(sql).fetchall()
+    except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
+        return None
+    finally:
+        con.close()
+    vals = [str(r[0]) for r in rows if r and r[0] is not None]
+    uniq = list(dict.fromkeys(vals))
+    return uniq[0] if len(uniq) == 1 else None
+
+
+def lookup_bound_values(question: str, warehouse: Path | None) -> dict[str, str]:
+    """Lake encodings for typed filters. Not a certified-pack lookup."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return {}
+    qn = (question or "").lower()
+    path = Path(warehouse)
+    out: dict[str, str] = {}
+    if _WH_A.search(question or ""):
+        code = _one_value(
+            path,
+            "SELECT location_code FROM locations WHERE "
+            "lower(CAST(location_code AS VARCHAR)) = 'wh-a' "
+            "OR lower(CAST(name AS VARCHAR)) = 'warehouse a' LIMIT 3",
+        )
+        if code:
+            out["location.location_code"] = code
+    if "chemical" in qn:
+        cat = _one_value(
+            path,
+            "SELECT DISTINCT CAST(category AS VARCHAR) FROM inventory "
+            "WHERE lower(CAST(category AS VARCHAR)) LIKE '%chemical%' LIMIT 3",
+        )
+        if cat:
+            out["lot.category"] = cat
+            out["product.category"] = cat
+    return out
+
+
+def _has_col(context: dict[str, Any], obj: str, col: str) -> bool:
+    cols = context.get("columns") or {}
+    got = cols.get(obj) or []
+    return col in got
+
+
+def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | None:
+    """None = needs a filter we cannot type. [] = no extra filters."""
+    qn = (question or "").lower()
+    bound = context.get("bound_values") or {}
+    filters: list[list[Any]] = []
+    if _COLD.search(question or ""):
+        if not _has_col(context, "location", "is_cold_storage"):
+            return None
+        filters.append(["location", "is_cold_storage", "=", True])
+    if re.search(r"\bexpir", qn):
+        if not _has_col(context, "lot", "expiry_date"):
+            return None
+        from datetime import date
+
+        filters.append(["lot", "expiry_date", "<", date.today().isoformat()])
+    if _WH_A.search(question or ""):
+        code = bound.get("location.location_code")
+        if not code or not _has_col(context, "location", "location_code"):
+            return None
+        filters.append(["location", "location_code", "=", code])
+    if "chemical" in qn:
+        cat = bound.get("lot.category") or bound.get("product.category")
+        obj = "lot" if _has_col(context, "lot", "category") else "product"
+        if not cat or not _has_col(context, obj, "category"):
+            return None
+        filters.append([obj, "category", "=", cat])
+    if re.search(r"above\s+90|90 percent", qn):
+        return None
+    if ("cctv" in qn or "camera" in qn) and not _has_col(
+        context, "location", "cctv_camera_id"
+    ):
+        return None
+    if "reorder" in qn and "below_reorder_lots" not in (context.get("measures") or {}):
+        return None
+    return filters
+
+
 def retrieve_short_context(
     question: str,
     *,
@@ -272,12 +382,49 @@ def retrieve_short_context(
     schema = retrieve_schema_sql(warehouse, allowed, toks)
     encodings = retrieve_value_encodings(warehouse, schema, toks)
     onto_slice = retrieve_ontology_slice(ontology, toks)
+    bound = lookup_bound_values(question, warehouse)
+    lock = _locked_measure(question)
+    if lock and ontology is not None and lock in ontology.measures:
+        spec = ontology.measures[lock]
+        onto_slice.setdefault("measures", {})[lock] = {
+            "grain": spec.grain,
+            "description": spec.description,
+        }
+        grain = spec.grain
+        if grain in ontology.objects:
+            onto_slice.setdefault("objects", {}).setdefault(
+                grain, {"key": list(ontology.objects[grain].key)}
+            )
+    cache = (ontology.__dict__.get("_column_cache") or {}) if ontology else {}
+    extras = {
+        "location": ["is_cold_storage", "location_code", "cctv_camera_id", "name"],
+        "lot": ["expiry_date", "category", "reorder_level_kg", "quantity_kg"],
+        "product": ["category", "sku"],
+    }
+    cols = dict(onto_slice.get("columns") or {})
+    for obj, names in extras.items():
+        have = set(cache.get(obj) or [])
+        add = [n for n in names if n in have]
+        if not add:
+            continue
+        cur = list(cols.get(obj) or [])
+        for name in add:
+            if name not in cur:
+                cur.append(name)
+        cols[obj] = cur
+        if ontology is not None and obj in ontology.objects:
+            onto_slice.setdefault("objects", {}).setdefault(
+                obj, {"key": list(ontology.objects[obj].key)}
+            )
+    onto_slice["columns"] = cols
     methods = ["summarize"]
+    if load_ontology_spine():
+        methods.insert(0, "spine_yaml")
     if schema:
         methods.insert(0, "schema_sql")
     if onto_slice.get("measures") or onto_slice.get("objects"):
         methods.insert(0, "ontology")
-    if encodings:
+    if encodings or bound:
         methods.insert(0, "sql_filter_values")
     if schema and (onto_slice.get("measures") or onto_slice.get("objects")):
         methods.insert(0, "hybrid_fuse")
@@ -286,6 +433,7 @@ def retrieve_short_context(
         "methods": methods,
         "schema": schema,
         "encodings": encodings,
+        "bound_values": bound,
         **onto_slice,
     }
     return summarize_context(parts)
@@ -302,6 +450,14 @@ def _locked_measure(question: str) -> str | None:
         return "shipping_cost_myr"
     if "capacity utilisation" in qn or "capacity utilization" in qn:
         return "utilisation_pct"
+    if _COLD.search(question or ""):
+        return "utilisation_pct"
+    if "cctv" in qn or "camera" in qn:
+        return "utilisation_pct"
+    if "reorder" in qn:
+        return "below_reorder_lots"
+    if "expir" in qn or "chemical" in qn:
+        return "stock_value_myr"
     if "stock value" in qn:
         return "stock_value_myr"
     if "total spend" in qn or "spend by" in qn:
@@ -332,19 +488,25 @@ def _group_from_hints(question: str) -> list[list[str]] | None:
 def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] | None:
     """Typed plan from retrieved context. Not a certified-pack lookup.
 
-    Time language and untyped filters miss (contract ask may still run). Tied
-    top measures are unsure. Entity list/which/rank misses. A by/per/each or
-    top-N ask with no bound dimension misses rather than blocking Cortex.
+    Time language and leftover untyped traps miss. Typed lake filters bind.
+    Tied top measures are unsure. A by/per/each or top-N ask with no bound
+    dimension misses rather than blocking Cortex.
     """
     if not isinstance(context, dict):
         return None
     q = question or ""
-    if _TIME.search(q) or _UNTYPED.search(q) or _ENTITY_PREFIX.search(q):
+    if _TIME.search(q) or _STILL_UNTYPED.search(q):
+        return None
+    filters = typed_filters(q, context)
+    if filters is None:
         return None
     measures = context.get("measures") or {}
     if not isinstance(measures, dict) or not measures:
         return None
     lock = _locked_measure(q)
+    entity = bool(_ENTITY_PREFIX.search(q))
+    if entity and not filters and not lock:
+        return None
     toks = question_tokens(q)
     ranked = sorted(
         (
@@ -371,7 +533,16 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     top = _TOP_N.search(q)
     hinted = _group_from_hints(q)
     group_by: list[list[str]] = []
-    if hinted:
+    qn = q.lower()
+    if "cctv" in qn or "camera" in qn:
+        if _has_col(context, "location", "cctv_camera_id"):
+            group_by = [["location", "cctv_camera_id"]]
+    elif _COLD.search(q) or (entity and "location" in qn):
+        if _has_col(context, "location", "location_code"):
+            group_by = [["location", "location_code"]]
+    elif "expir" in qn or "chemical" in qn or "reorder" in qn:
+        group_by = [["product", "sku"]]
+    elif hinted:
         group_by = hinted
     else:
         objects = context.get("objects") or {}
@@ -402,15 +573,25 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
         group_by = [["location", "location_code"]]
     if (needs_dim or top) and not group_by:
         return None
-    if not needs_dim and not top and measure != "utilisation_pct":
+    if (
+        not needs_dim
+        and not top
+        and not entity
+        and not filters
+        and measure != "utilisation_pct"
+    ):
         group_by = []
     limit = int(top.group(1)) if top else 50
-    return {"query_plan": {"measure": measure, "group_by": group_by, "limit": limit}}
+    plan: dict[str, Any] = {"measure": measure, "group_by": group_by, "limit": limit}
+    if filters:
+        plan["filters"] = filters
+    return {"query_plan": plan}
 
 
 __all__ = [
     "MAX_CONTEXT_CHARS",
     "bind_plan",
+    "load_ontology_spine",
     "question_tokens",
     "retrieve_short_context",
 ]

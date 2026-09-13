@@ -60,8 +60,9 @@ EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `POST /v1/chat/ask`. Isolated gen: Cortex compute miss binds retrieved
 ontology then validate/CRAG. Product path still Cortex-asks on compute
 miss. Distill ladder in `scripts/score_climb.md` (certified-first,
-ontology spine, hybrid_fuse + CRAG grades, Cortex text2sql -- no vendor
-SDK). Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
+YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
+Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.
+Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
 Not a GitHub CI live job. Regression: `tests/test_score_climb.py`,
 `tests/test_gen01_generative_ask.py`, `tests/test_gen02_bind_fallback.py`.
 Not COMPLETE.

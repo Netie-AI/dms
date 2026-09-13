@@ -88,7 +88,7 @@ DISTILL: dict[str, Any] = {
         "source": "packages/executor/dms_executor/ontology.py",
         "yaml_pack_format": False,
         "from_manifest": "extract path, not certified SQL",
-        "retrieve_yaml": "tests/fixtures/curated_ceo/ontology_spine.yaml",
+        "retrieve_yaml": "packages/executor/dms_executor/ontology_spine.yaml",
     },
     "text2sql": {
         "cortex": "POST /dms/query",

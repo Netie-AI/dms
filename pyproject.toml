@@ -60,6 +60,9 @@ dev = [
 where = ["apps/api", "packages/core", "packages/cortex_client", "packages/executor", "packages/ledger"]
 include = ["dms_api*", "dms_core*", "cortex_client*", "dms_executor*", "dms_ledger*"]
 
+[tool.setuptools.package-data]
+dms_executor = ["ontology_spine.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [

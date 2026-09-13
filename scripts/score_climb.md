@@ -19,7 +19,7 @@ Netie-native mapping. Not DB-GPT / mybot / n8n / OpenWillow / guaca/rakazo code.
 
 Founder lock: isolated gen **tries** retrieve -> compute -> bind_plan -> compile -> validate. Untyped/list/time misses become ABSTAIN after that attempt, not a silent None. Optional ML route/train/apply is not this slice. Abstain is safety (WRONG=0), not a coverage ceiling.
 
-Ontology YAML for retrieve is slot-name dump `tests/fixtures/curated_ceo/ontology_spine.yaml` (no SQL). Compile stays verified `demo_ontology` Python. Not a new vendor pack format.
+Ontology YAML for retrieve is slot-name pack `packages/executor/dms_executor/ontology_spine.yaml` (loaded as retrieve allowlist, no SQL). Compile stays verified `demo_ontology` Python. Not a new vendor pack format.
 
 Frozen live A/B @ `a9578348`: exact 10/26 (38.46 pct), gen 1/26 (3.85 pct), WRONG=0. Offline `--ab` on this branch is a separate measurement. Do not edit the frozen counts to invent a rise.
 

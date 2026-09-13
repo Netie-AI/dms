@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-02 YAML retrieve pack + typed lake filters (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.
+- **Retrieve.** `packages/executor/dms_executor/ontology_spine.yaml` is the slot-name pack `retrieve_short_context` allowlists (no SQL). Compile stays verified `demo_ontology`. Not a vendor YAML format.
+- **Generate SQL.** Isolated gen binds typed lake filters (cold storage, expiry, WH-A, chemicals, below-reorder lots, CCTV) then compile/validate. Above-90 and supplier-rank still miss (no typed slot). Planted refuses stay ABSTAIN.
+- **Measured (offline `--ab`, this seat, not Studio):** gen 14/26 answered WRONG=0 (was 9; frozen prove live gen remains 1/26 = 3.85 pct). Exact 10/26 WRONG=0.
+- **Must not:** invent live Studio 14/26, pack-expansion-as-strategy, vendor paste, ticket close.
+
+
 ## 2026-09-13 - GEN-02 Distill ladder in harness (ideas only, #180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close #180 or #178. Not COMPLETE. Not 99.95%.

@@ -1,5 +1,4 @@
-# Retrieve spine for curated_ceo generative A/B. Slot names only.
-# Compile still uses verified demo_ontology Python on the lake.
+# Retrieve spine: slot names only. Compile stays verified demo_ontology Python.
 # Not certified_queries.yaml. Not a vendor (DB-GPT/n8n/...) pack format.
 kind: dms.ontology_spine
 source: demo_ontology
@@ -21,3 +20,4 @@ measures:
   - shipment_count
   - sku_count
   - utilisation_pct
+  - below_reorder_lots
