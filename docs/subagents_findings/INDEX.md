@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (library-tree-duckdb-config) -> HIT after parallel-browse-duckdb-attach write.
+PREFLIGHT for this goal: PARTIAL (curated pack + score_curated exist; Cortex L0 re-derived from certified_queries.yaml).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | curated-ceo-pack-expand | curated_ceo, L0, refuse, SCORE-PACK-01, dms-168 | #168 pack 14->26. L0 only with Cortex certified SQL. Refuse otherwise. Not parented under #8. Not COMPLETE. | `2026-09-13_curated-ceo-pack-expand.md` |
 | 2026-09-13 | parallel-browse-duckdb-attach | library, duckdb, unique-file-handle, browse.duckdb, parallel, CI | DuckDB 1.5 unique-file-handle 500s a second RW attach. Library lists serialize on one live attach. Do not treat attach conflict as a reseed. | `2026-09-13_parallel-browse-duckdb-attach.md` |
 | 2026-09-13 | demo-host-02-iap-smoke | DEMO-HOST-02, EPIC-008, IAP, Cloudflare, host-online, smoke, dms-164 | Fail-closed origin smoke. Temp CF ROTATE RISK. Ask BLOCKED live_ask_failed (DuckDB lock). Not COMPLETE. | `2026-09-13_demo-host-02-iap-smoke.md` |
 | 2026-09-13 | demo-host-01-iap-runbook | DEMO-HOST-01, EPIC-008, IAP, Cloudflare, host-harden, SQLSRC-09, dms-163 | Prove host-online is Platform-owned. Temp trycloudflare Studio URL (rotate until TUNNEL_TOKEN). `/` + `/api/health` 200 postgres. `:8090` loopback. Not COMPLETE. | `2026-09-13_demo-host-01-iap-runbook.md` |

@@ -1,0 +1,145 @@
+# L0 SQL backing for curated_ceo. Copied from Cortex
+# packs/dms/semantic/certified_queries.yaml (re-derived, not invented).
+# score_curated --self-check fails any expect:l0 without a sql row here.
+# Refuse/trap cases have why only -- never a PASS oracle.
+
+source: "Netie-AI/cortex packs/dms/semantic/certified_queries.yaml"
+
+oracles:
+  cq_sku_count:
+    cortex_id: cq_sku_count
+    sql: "SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory"
+
+  cq_low_stock_wh_a:
+    cortex_id: cq_low_stock_wh_a
+    sql: >
+      SELECT i.sku, i.quantity_kg FROM inventory i
+      JOIN locations l ON i.location_id = l.location_id
+      WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0
+        AND l.location_code = 'WH-A' ORDER BY i.quantity_kg ASC
+
+  cq_sales_top5_value:
+    cortex_id: cq_sales_top5_value
+    sql: >
+      SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr
+      FROM transactions WHERE txn_type = 'OUT'
+      GROUP BY sku ORDER BY sales_value_myr DESC, sku ASC LIMIT 5
+
+  cq_sales_top3_volume:
+    cortex_id: cq_sales_top3_volume
+    sql: >
+      SELECT sku, SUM(quantity_kg) AS total_sold_kg
+      FROM transactions WHERE txn_type = 'OUT'
+      GROUP BY sku ORDER BY total_sold_kg DESC, sku ASC LIMIT 3
+
+  cq_supplier_ranking:
+    cortex_id: cq_supplier_ranking
+    sql: >
+      SELECT supplier_id,
+             ROUND((risk_score * 0.65) + ((lead_time_days / 60.0) * 0.35), 3) AS ranking_score
+      FROM suppliers ORDER BY ranking_score DESC, risk_score DESC, lead_time_days DESC LIMIT 10
+
+  cq_capacity_utilisation:
+    cortex_id: cq_capacity_utilisation
+    sql: >
+      SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used
+      FROM locations
+
+  cq_capacity_above_90:
+    cortex_id: cq_capacity_above_90
+    sql: >
+      SELECT location_code FROM locations
+      WHERE 100.0 * current_load_kg / capacity_kg > 90
+
+  cq_cold_storage:
+    cortex_id: cq_cold_storage
+    sql: "SELECT location_code FROM locations WHERE is_cold_storage = true"
+
+  cq_stock_value_by_category:
+    cortex_id: cq_stock_value_by_category
+    sql: >
+      SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr
+      FROM inventory GROUP BY category
+
+  cq_sku_count_by_category:
+    cortex_id: cq_sku_count_by_category
+    sql: "SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category"
+
+  cq_spend_by_country:
+    cortex_id: cq_spend_by_country
+    sql: >
+      SELECT s.country, SUM(i.quantity_kg * i.unit_cost_myr) AS total_spend_myr
+      FROM inventory i JOIN suppliers s ON i.supplier_id = s.supplier_id
+      GROUP BY s.country
+
+  ops_stock_value:
+    cortex_id: cq_stock_value_by_category
+    sql: >
+      SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr
+      FROM inventory GROUP BY category
+
+  ops_shipment_cost:
+    cortex_id: cq_cost_by_destination
+    sql: >
+      SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr
+      FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
+      GROUP BY l.location_code
+
+  cq_expired_items:
+    cortex_id: cq_expired_items
+    sql: >
+      SELECT sku FROM inventory
+      WHERE expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE
+
+  cq_chemicals_list:
+    cortex_id: cq_chemicals_list
+    sql: "SELECT sku FROM inventory WHERE category = 'CHEMICALS' ORDER BY sku"
+
+  cq_cctv_wh_a:
+    cortex_id: cq_cctv_wh_a
+    sql: "SELECT location_code, cctv_camera_id FROM locations WHERE location_code = 'WH-A'"
+
+  trap_categoty:
+    cortex_id: cq_top3_category_sales
+    sql: >
+      SELECT c.category,
+             ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
+      FROM transactions t
+      JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+      WHERE t.txn_type = 'OUT'
+      GROUP BY c.category
+      ORDER BY sales_value_myr DESC, c.category ASC
+      LIMIT 3
+
+  # Certified SQL exists; DMS Space grants refuse the ask. Not a PASS oracle.
+  trap_alerts_ungranted:
+    cortex_id: cq_active_alerts
+    sql: "SELECT alert_id FROM alerts WHERE resolved = false"
+    expect: refuse
+    why: alerts is granted by no Space (DR-0002 / A-0007)
+
+  trap_high_risk_pending:
+    cortex_id: cq_high_risk_pending
+    sql: >
+      SELECT DISTINCT s.supplier_name, sh.shipment_id
+      FROM suppliers s JOIN shipments sh ON s.supplier_id = sh.supplier_id
+      WHERE s.risk_score > 0.7 AND sh.status IN ('PENDING', 'IN_TRANSIT')
+    expect: refuse
+    why: no Space grants both suppliers and shipments
+
+  ops_supplier_rank_boundary:
+    cortex_id: cq_supplier_ranking
+    expect: refuse
+    why: Ops is not granted suppliers
+
+  trap_delayed_count:
+    expect: refuse
+    why: Cortex golden delayed_incoming_per_wh is TARGET, not certified
+
+  trap_stock_by_bin:
+    expect: refuse
+    why: no Cortex certified query for stock by storage_bin
+
+  trap_how_full_synonym:
+    expect: refuse
+    why: paraphrase of cq_capacity_utilisation; certified asset has no synonyms

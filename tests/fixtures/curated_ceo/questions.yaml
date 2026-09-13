@@ -2,6 +2,13 @@
 # Precision-on-answered stays 100.00 pct. Coverage grows only on L0 hits.
 # Not EPIC-019 (no new verified-query repo). Measures existing L0 assets
 # through POST /v1/chat/ask.
+#
+# Decision GO / SCORE-PACK-01 #168: pack expand 14 -> 26.
+# Not parented under EPIC-008 (#8). Not COMPLETE. Does not close tickets.
+# L0 expects are Cortex packs/dms/semantic/certified_queries.yaml only.
+# No L0 without that SQL. Refuse/trap when the asset is ungranted, needs
+# two Spaces' tables, or is a golden TARGET / paraphrase with no certified
+# synonym. Never invent PASS.
 
 spaces:
   finance: cccccccc-cccc-cccc-cccc-cccccccccccc
@@ -12,79 +19,180 @@ questions:
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_spend_by_country
     question: What is our total spend by supplier country?
 
   - id: cq_stock_value_by_category
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_stock_value_by_category
     question: What is total stock value by category?
 
   - id: cq_sales_top5_value
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_sales_top5_value
     question: Top 5 selling SKUs by revenue
 
   - id: cq_sku_count
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_sku_count
     question: How many SKUs do we have in inventory?
 
   - id: cq_capacity_utilisation
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_capacity_utilisation
     question: Show warehouse capacity utilisation
 
   - id: cq_sales_top3_volume
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_sales_top3_volume
     question: Top 3 SKUs by quantity sold
 
   - id: cq_sku_count_by_category
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_sku_count_by_category
     question: Show SKU count by category
 
   - id: cq_low_stock_wh_a
     space: finance
     expect: l0
     min_rows: 1
+    cortex_id: cq_low_stock_wh_a
     question: Which SKUs are below reorder level in warehouse A?
 
   - id: ops_stock_value
     space: ops
     expect: l0
     min_rows: 1
+    cortex_id: cq_stock_value_by_category
     question: What is total stock value by category?
 
   - id: ops_shipment_cost
     space: ops
     expect: l0
     min_rows: 1
+    cortex_id: cq_cost_by_destination
     question: Show shipment cost by destination
 
   - id: ops_spend_boundary
     space: ops
     expect: abstain
+    why: Ops is not granted suppliers (DR-0002).
     question: What is our total spend by supplier country?
 
   - id: trap_categoty
     space: finance
     expect: l0
     min_rows: 3
+    cortex_id: cq_top3_category_sales
     question: Show top 3 categoty sales
 
   - id: trap_last_month
     space: finance
     expect: abstain
+    why: No certified as-of month. A green last-month figure is a fail.
     question: Just give me last month's number
 
   - id: trap_short_paraphrase
     space: finance
     expect: abstain
+    why: Vague paraphrase is not an L0 asset.
     question: Are we short on anything the warehouse should worry about?
+
+  # --- Decision GO expand: Cortex L0 not yet in this pack ---
+
+  - id: cq_cold_storage
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_cold_storage
+    question: Which locations are cold storage?
+
+  - id: cq_capacity_above_90
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_capacity_above_90
+    question: Which locations are above 90 percent capacity?
+
+  - id: cq_expired_items
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_expired_items
+    question: Which items are expired?
+
+  - id: cq_chemicals_list
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_chemicals_list
+    question: List chemicals in inventory
+
+  - id: cq_supplier_ranking
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_supplier_ranking
+    question: Rank suppliers by combined risk and lead time score
+
+  - id: cq_cctv_wh_a
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_cctv_wh_a
+    question: Show the CCTV camera for warehouse A
+
+  # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
+
+  - id: trap_alerts_ungranted
+    space: finance
+    expect: refuse
+    cortex_id: cq_active_alerts
+    why: alerts is granted by no Space (DR-0002 / A-0007). Green is a fail.
+    question: List active alerts across the warehouse network
+
+  - id: trap_high_risk_pending
+    space: finance
+    expect: refuse
+    cortex_id: cq_high_risk_pending
+    why: SQL joins suppliers+shipments. Finance has suppliers, Ops has shipments, neither has both.
+    question: Which high-risk suppliers have pending shipments?
+
+  - id: ops_supplier_rank_boundary
+    space: ops
+    expect: refuse
+    cortex_id: cq_supplier_ranking
+    why: Ops is not granted suppliers. Sibling of ops_spend_boundary.
+    question: Rank suppliers by combined risk and lead time score
+
+  # --- Honest refuse: founder coverage with no certified question/synonym ---
+
+  - id: trap_delayed_count
+    space: ops
+    expect: refuse
+    why: Cortex golden delayed_incoming_per_wh is TARGET, not certified_queries.yaml.
+    question: How many delayed incoming shipments per warehouse?
+
+  - id: trap_stock_by_bin
+    space: finance
+    expect: refuse
+    why: inventory.storage_bin exists; no Cortex certified query pins stock-by-bin SQL.
+    question: Show stock by storage bin
+
+  - id: trap_how_full_synonym
+    space: finance
+    expect: refuse
+    why: Cortex paraphrase of capacity_utilisation, not a certified synonym on cq_capacity_utilisation.
+    question: how full is each warehouse

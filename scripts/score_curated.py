@@ -19,11 +19,15 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
+DEFAULT_ORACLES = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 DEFAULT_URL = "http://127.0.0.1:8090"
 
 CONFIDENT = frozenset(
     {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "L2_ANOMALOUS"}
 )
+REFUSE = frozenset({"abstain", "refuse", "trap"})
+# HTTP refusals from Space grants / manifest. Not a transport outage.
+GRANT_REFUSAL_STATUS = frozenset({403, 409})
 
 
 def load_pack(path: Path) -> dict[str, Any]:
@@ -37,6 +41,18 @@ def load_pack(path: Path) -> dict[str, Any]:
     if not questions:
         raise SystemExit(f"no questions in {path}")
     return {"questions": questions, "spaces": spaces}
+
+
+def load_oracles(path: Path = DEFAULT_ORACLES) -> dict[str, Any]:
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover
+        raise SystemExit("PyYAML required") from exc
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    rows = data.get("oracles") or {}
+    if not isinstance(rows, dict):
+        raise SystemExit(f"oracles must be a mapping in {path}")
+    return rows
 
 
 def resolve_space(case: dict[str, Any], spaces: dict[str, Any]) -> str:
@@ -53,6 +69,14 @@ def is_confident(env: dict[str, Any]) -> bool:
     return badge in CONFIDENT
 
 
+def ask_error_envelope(exc: BaseException) -> dict[str, Any] | None:
+    """403/409 grant/session refusal is ABSTAIN, not a scorer WRONG."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in GRANT_REFUSAL_STATUS:
+        return {"badge": "ABSTAIN", "abstained": True, "rows": []}
+    return None
+
+
 def judge(case: dict[str, Any], env: dict[str, Any]) -> str:
     """OK | ABSTAIN | LAYER | WRONG. WRONG is the only P0."""
     expect = str(case.get("expect") or "l0").lower()
@@ -62,7 +86,7 @@ def judge(case: dict[str, Any], env: dict[str, Any]) -> str:
     min_rows = int(case.get("min_rows") or 0)
     confident = is_confident(env)
 
-    if expect == "abstain":
+    if expect in REFUSE:
         return "WRONG" if confident else "ABSTAIN"
 
     if not confident:
@@ -95,12 +119,22 @@ def self_check() -> int:
     if len(ids) != len(set(ids)):
         print("FAIL: duplicate ids")
         return 1
-    if len(ids) < 13:
-        print(f"FAIL: Genie walkthrough needs >= 13 cases, got {len(ids)}")
+    if len(ids) < 24:
+        print(f"FAIL: Genie walkthrough needs >= 24 cases, got {len(ids)}")
         return 1
-    expects = {c["expect"] for c in pack["questions"]}
-    if "l0" not in expects or "abstain" not in expects:
-        print("FAIL: pack must include l0 hits and abstain traps")
+    expects = {str(c.get("expect") or "").lower() for c in pack["questions"]}
+    if "l0" not in expects or not (expects & REFUSE):
+        print("FAIL: pack must include l0 hits and abstain/refuse traps")
+        return 1
+    oracles = load_oracles()
+    missing_sql = [
+        str(c["id"])
+        for c in pack["questions"]
+        if str(c.get("expect") or "").lower() == "l0"
+        and not str((oracles.get(c["id"]) or {}).get("sql") or "").strip()
+    ]
+    if missing_sql:
+        print(f"FAIL: expect:l0 without Cortex SQL in oracles.yaml: {missing_sql}")
         return 1
     planted_ok = judge(
         {"expect": "l0", "min_rows": 1},
@@ -110,11 +144,20 @@ def self_check() -> int:
         {"expect": "abstain"},
         {"badge": "L0_CERTIFIED", "abstained": False, "rows": [{"x": 1}]},
     )
+    planted_refuse = judge(
+        {"expect": "refuse"},
+        {"badge": "L0_CERTIFIED", "abstained": False, "rows": [{"x": 1}]},
+    )
     planted_abs = judge(
         {"expect": "l0"},
         {"badge": "ABSTAIN", "abstained": True, "rows": []},
     )
-    if planted_ok != "OK" or planted_wrong != "WRONG" or planted_abs != "ABSTAIN":
+    if (
+        planted_ok != "OK"
+        or planted_wrong != "WRONG"
+        or planted_refuse != "WRONG"
+        or planted_abs != "ABSTAIN"
+    ):
         print("FAIL: judge plant")
         return 1
     print(f"PASS: curated pack {len(ids)} cases, judge fail-closed on green trap")
@@ -130,9 +173,12 @@ def live(url: str, timeout: float) -> int:
         try:
             env = _ask(url, str(case["question"]), space, timeout)
         except Exception as exc:  # noqa: BLE001
-            print(f"{qid}\tERROR\t{type(exc).__name__}: {exc}")
-            tallies["WRONG"] += 1
-            continue
+            env = ask_error_envelope(exc)
+            if env is None:
+                print(f"{qid}\tERROR\t{type(exc).__name__}: {exc}")
+                tallies["WRONG"] += 1
+                continue
+            print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
         verdict = judge(case, env)
         tallies[verdict] += 1
         badge = env.get("badge")

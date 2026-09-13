@@ -2,6 +2,22 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - curated_ceo pack 14 -> 26 (SCORE-PACK-01 #168)
+
+- **Ticket.** Serves [SCORE-PACK-01 #168](https://github.com/Netie-AI/dms/issues/168). Not parented under EPIC-008 (#8). Does not close #168 or #8. Not COMPLETE.
+- **Pack.** `tests/fixtures/curated_ceo/questions.yaml` is 26 cases. New L0
+  expects are Cortex `packs/dms/semantic/certified_queries.yaml` only
+  (cold storage, capacity>90, expired, chemicals, supplier rank, CCTV WH-A).
+- **Refuse.** Alerts ungranted, high-risk pending (suppliers+shipments split
+  across Spaces), Ops supplier rank, delayed-count TARGET, stock-by-bin, and
+  "how full is each warehouse" (paraphrase, no certified synonym). Green on those
+  is WRONG. Existing traps stay fail-closed.
+- **Oracles.** `tests/fixtures/curated_ceo/oracles.yaml` holds the Cortex SQL.
+  `score_curated --self-check` fails any expect:l0 without SQL. 403/409 grant
+  refusal scores as ABSTAIN, not transport WRONG.
+- **Not this ticket:** EPIC-008 COMPLETE, EPIC-019 VQ repo, live :8090, lake /
+  `LIVE_KEY_ID`, dual-write of another pack, ticket close.
+
 ## 2026-09-13 - Library parallel list: one DuckDB attach per file
 
 - **Cause.** Push CI on `b5f02be` (run 34750069692) failed `test_parallel_library_lists_same_file`. DuckDB 1.5 unique-file-handle refuses a second RW attach of the same file (`browse.duckdb` -> alias `browse`). `ensure_demo_warehouse` probed schema with another `connect()`, caught the BinderException as "schema missing", then connected again to reseed.
