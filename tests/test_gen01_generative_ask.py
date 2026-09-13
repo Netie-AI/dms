@@ -257,6 +257,7 @@ def test_miss_when_compute_returns_no_plan(onto: Ontology, warehouse: Path) -> N
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        bind_on_miss=True,
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -558,6 +559,21 @@ def test_ask_path_generative_skips_certified_pack(minter: ManifestMinter) -> Non
     assert env["badge"] == "ABSTAIN"
     assert fake.asks == []
     assert fake.submits == []
+
+
+def test_ask_path_generative_binds_on_compute_miss(minter: ManifestMinter) -> None:
+    fake = _GenCortex(compute_payload=None)
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen02_gen_bind_miss",
+        ask_path="generative",
+    )
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert fake.asks == []
+    assert fake.submits
+    assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
 
 
 def test_ask_path_exact_still_hits_pack(minter: ManifestMinter) -> None:

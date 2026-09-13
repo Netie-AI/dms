@@ -276,13 +276,14 @@ def maybe_generative_ask(
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
+    bind_on_miss: bool = False,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
     Compute receives a short retrieved context, not the full ontology dump.
-    Cortex compute miss falls back to local bind_plan from that context.
-    Explicit compute unsure is not overridden. ``None`` is a miss so the
-    existing Cortex contract ask still runs. File-grounded asks skip.
+    Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane).
+    Product path leaves miss as None so Cortex certified ask still runs.
+    Explicit compute unsure is not overridden. File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
         return None
@@ -329,8 +330,10 @@ def maybe_generative_ask(
     if kind == "unsure":
         return _abstain(q, "compute abstained (unsure)", space_id=space_id, session_id=session_id)
     if kind != "plan":
-        # Cortex compute miss: bind from retrieved ontology (GEN-02). Do not
-        # override an explicit unsure. Product path may still Cortex-ask on None.
+        # Isolated gen (ask_path=generative): bind from retrieved ontology.
+        # Product path must miss into Cortex.ask so certified VQ/L0 still run.
+        if not bind_on_miss:
+            return None
         payload = bind_plan(q, ctx)
         kind = parse_compute_plan(payload)
         if kind == "unsure":

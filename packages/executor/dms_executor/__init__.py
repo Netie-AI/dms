@@ -608,6 +608,7 @@ class Executor:
                     session_id=session_id,
                     event_type="ask.generated_ontology",
                 ),
+                bind_on_miss=(ladder == "generative"),
             )
             if gen_env is not None:
                 env = attach_cascade(gen_env, cascade)

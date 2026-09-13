@@ -104,6 +104,7 @@ def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        bind_on_miss=True,
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -144,7 +145,24 @@ def test_ops_spend_does_not_green_ungranted_suppliers(tmp_path: Path) -> None:
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        bind_on_miss=True,
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
+
+
+def test_product_path_compute_miss_does_not_bind(tmp_path: Path) -> None:
+    db = tmp_path / "thin.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db, demo_ontology(db))
+    env = maybe_generative_ask(
+        "What is total stock value by category?",
+        warehouse=db,
+        grantable={"inventory", "locations", "transactions", "suppliers"},
+        compute=lambda _c: None,
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+    )
+    assert env is None
