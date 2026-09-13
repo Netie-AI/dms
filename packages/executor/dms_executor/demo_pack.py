@@ -35,6 +35,7 @@ EXPIRED_ITEMS_Q = "Which items are expired?"
 CCTV_WH_A_Q = "Show the CCTV camera for warehouse A"
 HOW_FULL_TRAP_Q = "how full is each warehouse"
 DELAYED_COUNT_TRAP_Q = "How many delayed incoming shipments per warehouse?"
+STOCK_BY_BIN_TRAP_Q = "Show stock by storage bin"
 
 SPEND_BY_COUNTRY_SQL = (
     "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
@@ -164,7 +165,11 @@ def _norm(question: str) -> str:
 # Live L1 leak: vocabulary "how full" -> capacity utilisation, and
 # route_to_metric delayed+per+warehouse -> count_by_destination.
 _UNCERTIFIED_PARAPHRASE = frozenset(
-    {_norm(HOW_FULL_TRAP_Q), _norm(DELAYED_COUNT_TRAP_Q)}
+    {
+        _norm(HOW_FULL_TRAP_Q),
+        _norm(DELAYED_COUNT_TRAP_Q),
+        _norm(STOCK_BY_BIN_TRAP_Q),
+    }
 )
 
 
@@ -180,6 +185,11 @@ def uncertified_refuse_text(question: str | None) -> str:
             "I cannot certify that phrasing. It is not a certified synonym of "
             "warehouse capacity utilisation. Ask "
             f"'{CAPACITY_UTILISATION_Q}'."
+        )
+    if qn == _norm(STOCK_BY_BIN_TRAP_Q):
+        return (
+            "I cannot certify stock by storage bin. No Cortex certified query "
+            "pins that grain. A governed number here would be a guess."
         )
     return (
         "I cannot certify delayed-incoming counts per warehouse. That golden is "

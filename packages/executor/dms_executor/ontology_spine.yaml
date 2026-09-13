@@ -1,0 +1,23 @@
+# Retrieve spine: slot names only. Compile stays verified demo_ontology Python.
+# Not certified_queries.yaml. Not a vendor (DB-GPT/n8n/...) pack format.
+kind: dms.ontology_spine
+source: demo_ontology
+not_certified_sql: true
+objects:
+  - transaction
+  - shipment
+  - supplier
+  - location
+  - alert
+  - lot
+  - product
+measures:
+  - outbound_value_myr
+  - outbound_kg
+  - net_movement_kg
+  - stock_value_myr
+  - shipping_cost_myr
+  - shipment_count
+  - sku_count
+  - utilisation_pct
+  - below_reorder_lots

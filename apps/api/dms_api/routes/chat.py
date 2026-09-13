@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from dms_core.ask import AskServiceError, GroundingRefused
@@ -117,6 +117,9 @@ class AskBody(BaseModel):
     #: Capped because a "scope" listing everything is not a scope, and the list
     #: reaches manifest minting.
     grounded_tables: list[str] | None = Field(default=None, max_length=32)
+    #: Isolated A/B lanes for GEN-02. Default product = certified-first then
+    #: free generative. Not an x-dms header (DR-0004).
+    ask_path: Literal["product", "exact", "generative"] | None = None
 
 
 class DrillthroughBody(BaseModel):
@@ -226,6 +229,7 @@ def chat_ask(
             space_id=body.space_id,
             session_id=body.session_id,
             tables=body.grounded_tables,
+            ask_path=body.ask_path,
         )
     except GroundingRefused as exc:
         # Refusing is the fix, not the failure: this used to widen the manifest

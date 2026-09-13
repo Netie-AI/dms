@@ -2,6 +2,39 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-02 founder lock: generate SQL then validate (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.
+- **Try.** Isolated gen: retrieve (schema+spine YAML+hybrid_fuse) -> ontology compile -> execute -> validate. `keep_gt` from "above N percent" filters rows after execute; empty is ABSTAIN. Offline `--ab` now runs compiled SQL on the demo lake (not dummy rows).
+- **Not.** ML route/train/apply (parked). LangChain/LangGraph. Pack SQL copy (supplier 0.65/0.35 formula stays miss). Planted refuses stay ABSTAIN.
+- **Measured (offline `--ab`, this seat):** gen 15/26 answered WRONG=0 (frozen prove live gen remains 1/26 = 3.85 pct). Exact 10/26 WRONG=0.
+
+
+## 2026-09-13 - GEN-02 YAML retrieve pack + typed lake filters (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.
+- **Retrieve.** `packages/executor/dms_executor/ontology_spine.yaml` is the slot-name pack `retrieve_short_context` allowlists (no SQL). Compile stays verified `demo_ontology`. Not a vendor YAML format.
+- **Generate SQL.** Isolated gen binds typed lake filters (cold storage, expiry, WH-A, chemicals, below-reorder lots, CCTV) then compile/validate. Above-90 and supplier-rank still miss (no typed slot). Planted refuses stay ABSTAIN.
+- **Measured (offline `--ab`, this seat, not Studio):** gen 14/26 answered WRONG=0 (was 9; frozen prove live gen remains 1/26 = 3.85 pct). Exact 10/26 WRONG=0.
+- **Must not:** invent live Studio 14/26, pack-expansion-as-strategy, vendor paste, ticket close.
+
+
+## 2026-09-13 - GEN-02 Distill ladder in harness (ideas only, #180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close #180 or #178. Not COMPLETE. Not 99.95%.
+- **Mapping.** Certified-first then free gen; `demo_ontology` retrieve spine + slot-name YAML `tests/fixtures/curated_ceo/ontology_spine.yaml` (no SQL, not a vendor pack); `hybrid_fuse` + CRAG grades; Cortex `POST /dms/query` + `bind_plan` (no text2sql SDK). No paste from DB-GPT / mybot / n8n / OpenWillow / guaca / rakazo.
+- **Try.** Isolated gen retrieve+bind miss is ABSTAIN after the attempt, not silent None. Product path still Cortex-asks on compute miss. Frozen prove A/B @ `a9578348`: exact 38.46 pct / gen 3.85 pct, WRONG=0. Offline `--ab` is a separate measurement.
+- **Must not:** invent live Studio coverage, green planted refuses, pack expansion as the climb, GitHub CI `--climb`, ticket close.
+
+
+## 2026-09-13 - GEN-02 retrieve bind on Cortex compute miss (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180). Does not close #180 or #178. Not COMPLETE. Not 99.95%.
+- **Climb.** Isolated gen @ `a9578348` was 1/26 with WRONG=0: Cortex `POST /dms/query` rarely returns a typed `query_plan`, so the gen lane missed. On compute **miss only** and `ask_path=generative`, bind a typed plan from retrieved ontology, then the same compile → EXPLAIN/grant validate → Cortex submit. Product path still misses into Cortex certified ask (VQ-01 / pack leftovers). Explicit Cortex `unsure` still abstains. Not pack expansion. Offline `--ab` (this seat, not Studio): gen answered **9/26** WRONG=0 (rose vs 1). Live `--climb --ab` is still Platform.
+- **Ontology.** `demo_ontology` reads columns on disk (thin reseed vs Cortex lake): no `storage_bin` / shipment `supplier_id` claims the lake does not have. Honest measures `sku_count`, `outbound_kg`, `utilisation_pct`. Bind misses list/which asks and untyped filters (WH-A, cold, expired, CCTV, above-90). Ops spend still grant-abstains.
+- **Must not:** invent live Studio coverage, green planted refuses, GitHub CI `--climb`, ticket close, keys in chat.
+
+
 ## 2026-09-13 - SCORE-BIRD-01: bronze batches, leftover trap skip (#184)
 
 - **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184). Does not close tickets. Not COMPLETE.
@@ -16,6 +49,21 @@ Append-only. Never edited, only added to. Newest first.
 - **Harness.** `python scripts/score_bird.py --self-check` (CI). `--live` requires `DMS_API_BASE` and A/B's exact-match pack miss vs `POST /v1/chat/ask` (GEN-01 #179 @ `a9578348`). No 127.0.0.1:8090 default. WRONG=0 law. Precision `n/a` when 0 answered.
 - **Honesty.** Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` source_count=1 data_source `12b6f170` bounded `gender` max_rows=50. Full 75-table Mini-Dev extract is Platform leftover. Runbook: `scripts/score_bird.md`.
 - **Not this ticket:** EPIC-020b / #108 COMPLETE, 99.95%, DB-GPT clone, GEN-02 curated climb, live counts from a cloud seat, ticket close.
+
+
+## 2026-09-13 - GEN-02 live A/B + CRAG validate-or-abstain harness (#180)
+
+- **SoT widen.** Isolated live A/B: `POST /v1/chat/ask` `ask_path=exact|generative|product` (certified-first then free gen). Platform: `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`.
+- **CRAG-style.** Harness grades gen envelopes `validated` / `abstain_validate` / `abstain_gate` (execute-validate or abstain). Ideas only; not a DB-GPT/CRAG clone. Doc RAG CRAG stays parked.
+- **Baseline.** A/B @ `a9578348` exact answered 10/26, gen 1/26, WRONG=0. Offline `--ab` uses demo ontology retrieve (not pack expand). Frozen product-path @ `91c5cc99` unchanged.
+- **Must not:** 99.95%/COMPLETE, greening planted refuses, GitHub CI live ask, ticket close, keys in chat.
+
+
+## 2026-09-13 - GEN-02 measured live coverage climb harness (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) under EPIC-GEN-01 #178 after GEN-01 @ `a9578348`. Does not close tickets. Not COMPLETE. Not 99.95%.
+- **Harness.** `python scripts/score_curated.py --climb --url https://studio.netie.ai/api` (or `DMS_API_BASE`). Reports real OK/LAYER/ABSTAIN/WRONG vs frozen baseline @ `91c5cc99` (OK7 LAYER10 ABSTAIN9 WRONG0). `answered_by_path` splits `route=generated` vs exact-match pack. WRONG=0 is FAIL if broken. Unreachable host or IAP 401/403 is BLOCKED, not a fake score. `--climb` has no laptop default.
+- **Not this ticket:** pack expansion, greening planted refuses, GitHub CI live ask, EPIC-019 COMPLETE, reopen #108, ticket close, keys in chat.
 
 
 ## 2026-09-13 - GEN-01 semantic retrieve + A/B vs exact-match (#179)

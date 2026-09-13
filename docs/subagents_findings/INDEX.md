@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (sqlsrc-pg-01 attach GO; gen01 A/B on main @ a9578348; no prior BIRD live harness).
+PREFLIGHT for this goal: HIT (GEN-02 distill: certified-first, demo_ontology spine + slot YAML, hybrid_fuse+CRAG, Cortex text2sql; bind_on_miss generative-only; live A/B still Platform vs a9578348 exact 38.46 pct / gen 3.85 pct WRONG=0).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | gen02-coverage-climb | GEN-02, ask_path, A/B, CRAG, distill, a9578348, 38.46, 3.85, dms-180 | #180 live A/B exact vs gen + Distill ladder (certified-first, ontology spine, hybrid_fuse+CRAG, Cortex text2sql). Frozen gen 3.85 pct WRONG=0. Not COMPLETE. | `2026-09-13_gen02-coverage-climb.md` |
 | 2026-09-13 | score-bird-01-live-harness | SCORE-BIRD-01, bird_minidev, gender, leftover 75, batch bronze, GEN-01 A/B, dms-184 | #184 live OK/LAYER/ABSTAIN/WRONG on BIRD Space. Bronze grows in batches. leftover target 75. Not COMPLETE. | `2026-09-13_score-bird-01-live-harness.md` |
 | 2026-09-13 | gen01-ontology-generative | GEN-01, retrieve, ontology, A/B, execute-validate, abstain, dms-179 | #179 schema+ontology SQL-filter retrieve → short context → compile+validate. A/B vs exact-match WRONG=0. Not pack expansion. Not COMPLETE. | `2026-09-13_gen01-ontology-generative.md` |
 | 2026-09-13 | sqlsrc-pg-01-postgresql-kind | SQLSRC-PG-01, postgresql, SqlSourceIn, db_connector, dms-172 | #172 kind=postgresql extract. Catalog must not use MySQL database-as-schema. Platform attaches bird_minidev after merge. Not SCORE-BIRD PASS. | `2026-09-13_sqlsrc-pg-01-postgresql-kind.md` |

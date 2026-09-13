@@ -183,14 +183,16 @@ def test_vq03_pack_sql_matches_oracles():
 
 def test_vq04_planted_l1_traps_match_pack_constants():
     """Refuse phrases stay exact-equal to curated_ceo; greening them is WRONG."""
-    from dms_executor.demo_pack import DELAYED_COUNT_TRAP_Q, HOW_FULL_TRAP_Q
+    from dms_executor.demo_pack import DELAYED_COUNT_TRAP_Q, HOW_FULL_TRAP_Q, STOCK_BY_BIN_TRAP_Q
 
     pack = load_pack(PACK)
     by_id = {c["id"]: c for c in pack["questions"]}
     assert by_id["trap_how_full_synonym"]["question"] == HOW_FULL_TRAP_Q
     assert by_id["trap_delayed_count"]["question"] == DELAYED_COUNT_TRAP_Q
+    assert by_id["trap_stock_by_bin"]["question"] == STOCK_BY_BIN_TRAP_Q
     assert by_id["trap_how_full_synonym"]["expect"] == "refuse"
     assert by_id["trap_delayed_count"]["expect"] == "refuse"
+    assert by_id["trap_stock_by_bin"]["expect"] == "refuse"
     l1 = {"badge": "L1_GOVERNED_METRIC", "abstained": False, "rows": [{"v": 1}]}
     assert judge(by_id["trap_how_full_synonym"], l1) == "WRONG"
     assert judge(by_id["trap_delayed_count"], l1) == "WRONG"

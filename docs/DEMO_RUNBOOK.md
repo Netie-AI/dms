@@ -177,6 +177,19 @@ python D:\DMS\scripts\playground_ask.py --dry
 python D:\DMS\scripts\playground_ask.py --space <space_id>
 # Edit prompts in playground/my_questions.yaml and re-run --only <id>
 
+# GEN-02 live climb (Platform; WRONG=0 law). No laptop default. See scripts/score_climb.md
+python D:\DMS\scripts\score_curated.py --self-check
+# Offline A/B (no keys). Retrieve + Cortex-miss bind_plan vs exact-match pack.
+python D:\DMS\scripts\score_curated.py --ab
+# Live isolated A/B (Platform + IAP). Certified-first vs free gen. CRAG grades.
+#   $env:DMS_API_BASE = "https://studio.netie.ai/api"
+python D:\DMS\scripts\score_curated.py --climb --ab
+#   $env:DMS_API_BASE = "https://studio.netie.ai/api"
+python D:\DMS\scripts\score_curated.py --climb
+# Reports OK/LAYER/ABSTAIN/WRONG vs baseline @ 91c5cc99 (OK7 LAYER10 ABSTAIN9 WRONG0).
+# Exit 1 = WRONG>0. Exit 2 = CONFIG (no URL). Exit 3 = BLOCKED (host unreachable).
+# Not COMPLETE. Not 99.95%. Do not add --climb to GitHub CI.
+
 # Expect live RED on synonym / empty-filter / Malay / RAG-sum until value-norm + EPIC-019.
 # Metrics: precision-on-answered (law = 100%) vs coverage (grows; never buys a WRONG).
 # Exit 1 = at least one confidently-wrong answer. DMS_URL defaults to http://127.0.0.1:8090.

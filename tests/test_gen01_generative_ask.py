@@ -257,8 +257,12 @@ def test_miss_when_compute_returns_no_plan(onto: Ontology, warehouse: Path) -> N
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        bind_on_miss=True,
     )
-    assert env is None
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
 
 
 def test_planted_traps_are_not_confident(onto: Ontology, warehouse: Path) -> None:
@@ -297,7 +301,10 @@ def test_planted_traps_without_a_plan_miss_not_green(
             ledger_append=_ledger_ok,
             ontology=onto,
         )
-        assert env is None, question
+        assert env is None or env["badge"] == "ABSTAIN", question
+        if env is not None:
+            assert env["abstained"] is True, question
+            assert judge({"expect": "refuse"}, env) != "WRONG", question
 
 
 def test_judge_green_trap_still_wrong() -> None:
@@ -347,6 +354,7 @@ def test_retrieve_short_context_is_filtered(onto: Ontology, warehouse: Path) -> 
     methods = seen.get("methods") or []
     assert "ontology" in methods
     assert "summarize" in methods
+    assert "hybrid_fuse" in methods
     ctx = retrieve_short_context(
         "What is revenue by product category?",
         warehouse=warehouse,
@@ -365,7 +373,7 @@ def test_bind_plan_abstains_when_by_has_no_dimension() -> None:
         "columns": {"lot": ["lot_id", "qty"]},
     }
     out = bind_plan("Show stock by storage bin", ctx)
-    assert out == {"unsure": True}
+    assert out is None
 
 
 def test_bind_plan_is_not_a_pack_lookup() -> None:
@@ -405,6 +413,7 @@ def test_ab_curated_wrong_zero_both_paths() -> None:
             assert row["generative"] != "WRONG", row
             assert row["exact"] != "WRONG", row
             assert row["generative_badge"] == "ABSTAIN", row
+    assert report["generative"]["answered"] >= report["baseline_ab"]["generative_answered"]
 
 
 def test_compute_http_does_not_invent_a_key() -> None:
@@ -477,7 +486,7 @@ def test_live_ask_falls_through_without_compute_query(minter: ManifestMinter) ->
 
     fake = FakeCortex(submits=[], asks=[])
     exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
-    env = exe.live_ask("Top 5 selling SKUs by revenue", session_id="ses_gen01_miss")
+    env = exe.live_ask("List chemicals in inventory", session_id="ses_gen01_miss")
     assert fake.asks, "contract ask still runs when compute is absent"
     assert env["badge"] == "L0_CERTIFIED"
 
@@ -522,3 +531,60 @@ def test_live_ask_vague_trap_does_not_execute(minter: ManifestMinter) -> None:
     assert fake.submits == []
     assert fake.asks == []
     assert judge({"expect": "refuse"}, env) != "WRONG"
+
+
+def test_ask_path_exact_miss_does_not_call_cortex(minter: ManifestMinter) -> None:
+    from tests.test_live_ask import FakeCortex
+
+    fake = FakeCortex(submits=[], asks=[])
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "Top 5 selling SKUs by revenue",
+        session_id="ses_gen02_exact_miss",
+        ask_path="exact",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert fake.asks == []
+    assert fake.submits == []
+
+
+def test_ask_path_generative_skips_certified_pack(minter: ManifestMinter) -> None:
+    fake = _GenCortex(compute_payload={"unsure": True})
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen02_gen_skip_pack",
+        ask_path="generative",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert fake.asks == []
+    assert fake.submits == []
+
+
+def test_ask_path_generative_binds_on_compute_miss(minter: ManifestMinter) -> None:
+    fake = _GenCortex(compute_payload=None)
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen02_gen_bind_miss",
+        ask_path="generative",
+    )
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert fake.asks == []
+    assert fake.submits
+    assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
+
+
+def test_ask_path_exact_still_hits_pack(minter: ManifestMinter) -> None:
+    fake = _GenCortex()
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen02_exact_pack",
+        ask_path="exact",
+    )
+    assert env["route"] == "governed_metric"
+    assert fake.asks == []
+    assert fake.submits

@@ -54,6 +54,19 @@ validate then Cortex submit. Unsure or validate-fail is ABSTAIN. A/B vs
 exact-match: `python scripts/score_curated.py --ab`. Not pack expansion.
 Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
+EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
+`python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
+(`scripts/score_climb.md`). `ask_path=exact|generative|product` on
+`POST /v1/chat/ask`. Isolated gen: Cortex compute miss binds retrieved
+ontology then validate/CRAG. Product path still Cortex-asks on compute
+miss. Distill ladder in `scripts/score_climb.md` (certified-first,
+YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
+Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.
+Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
+Not a GitHub CI live job. Regression: `tests/test_score_climb.py`,
+`tests/test_gen01_generative_ask.py`, `tests/test_gen02_bind_fallback.py`.
+Not COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

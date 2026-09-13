@@ -56,7 +56,7 @@ from dms_executor.envelope import (
     build_answer_envelope,
     normalize_contributing_sources,
 )
-from dms_executor.generative_ask import maybe_generative_ask
+from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -416,16 +416,29 @@ class Executor:
         space_id: str | None = None,
         session_id: str | None = None,
         tables: list[str] | None = None,
+        ask_path: str | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
         ``tables`` narrows the manifest to the files the user grounded the
         question in, so the scope is enforced by the engine rather than
         suggested to the model.
+
+        ``ask_path``: product (default) certified-first then generative;
+        exact = VQ/pack/refuse only; generative = retrieve+validate, skip pack.
+        Isolated lanes miss as ABSTAIN (no Cortex mix). Planted refuse always.
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
+        ladder = (ask_path or "product").strip().lower()
+        if ladder not in {"product", "exact", "generative"}:
+            ladder = "product"
+        certified_first = ladder != "generative"
+        allow_gen = ladder != "exact"
+        allow_cortex = ladder == "product"
+        allow_follow = ladder == "product"
+        allow_bronze = ladder == "product"
 
         # CCA-05 - settle the ambiguous filters before anything executes.
         #
@@ -455,59 +468,61 @@ class Executor:
         )
 
         key = turn_key(session_id, space_id)
-        follow = maybe_followup(
-            question,
-            prior=self._turns.get(key) if key else None,
-            space_id=space_id,
-            session_id=session_id,
-            warehouse=self._warehouse,
-            tables=tables,
-        )
-        if follow is not None:
-            self._store_turn(session_id, space_id, follow)
-            return follow
-
-        verified_env = maybe_verified_ask(
-            question,
-            space_id=space_id,
-            session_id=session_id,
-            warehouse=self._warehouse,
-            grantable=set(self.grantable_tables(space_id=space_id)),
-            tables=tables,
-            submit=lambda sql: self._submit_verified_sql(
-                sql, space_id=space_id, session_id=session_id, tables=tables
-            ),
-            ledger_append=lambda payload: self._ledger_verified_query(
-                asset_sql=str(payload.get("sql") or ""),
-                run_id=str(payload.get("run_id") or ""),
+        if allow_follow:
+            follow = maybe_followup(
+                question,
+                prior=self._turns.get(key) if key else None,
                 space_id=space_id,
                 session_id=session_id,
-            ),
-        )
-        if verified_env is not None:
-            self._store_turn(session_id, space_id, verified_env)
-            return verified_env
+                warehouse=self._warehouse,
+                tables=tables,
+            )
+            if follow is not None:
+                self._store_turn(session_id, space_id, follow)
+                return follow
 
-        pack_env = maybe_pack_ask(
-            question,
-            space_id=space_id,
-            session_id=session_id,
-            grantable=set(self.grantable_tables(space_id=space_id)),
-            tables=tables,
-            submit=lambda sql: self._submit_verified_sql(
-                sql, space_id=space_id, session_id=session_id, tables=tables
-            ),
-            ledger_append=lambda payload: self._ledger_verified_query(
-                asset_sql=str(payload.get("sql") or ""),
-                run_id=str(payload.get("run_id") or ""),
+        if certified_first:
+            verified_env = maybe_verified_ask(
+                question,
                 space_id=space_id,
                 session_id=session_id,
-                event_type="ask.governed_metric",
-            ),
-        )
-        if pack_env is not None:
-            self._store_turn(session_id, space_id, pack_env)
-            return pack_env
+                warehouse=self._warehouse,
+                grantable=set(self.grantable_tables(space_id=space_id)),
+                tables=tables,
+                submit=lambda sql: self._submit_verified_sql(
+                    sql, space_id=space_id, session_id=session_id, tables=tables
+                ),
+                ledger_append=lambda payload: self._ledger_verified_query(
+                    asset_sql=str(payload.get("sql") or ""),
+                    run_id=str(payload.get("run_id") or ""),
+                    space_id=space_id,
+                    session_id=session_id,
+                ),
+            )
+            if verified_env is not None:
+                self._store_turn(session_id, space_id, verified_env)
+                return verified_env
+
+            pack_env = maybe_pack_ask(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                grantable=set(self.grantable_tables(space_id=space_id)),
+                tables=tables,
+                submit=lambda sql: self._submit_verified_sql(
+                    sql, space_id=space_id, session_id=session_id, tables=tables
+                ),
+                ledger_append=lambda payload: self._ledger_verified_query(
+                    asset_sql=str(payload.get("sql") or ""),
+                    run_id=str(payload.get("run_id") or ""),
+                    space_id=space_id,
+                    session_id=session_id,
+                    event_type="ask.governed_metric",
+                ),
+            )
+            if pack_env is not None:
+                self._store_turn(session_id, space_id, pack_env)
+                return pack_env
 
         refuse_env = maybe_uncertified_refuse_ask(
             question, space_id=space_id, session_id=session_id
@@ -515,6 +530,16 @@ class Executor:
         if refuse_env is not None:
             self._store_turn(session_id, space_id, refuse_env)
             return refuse_env
+
+        if ladder == "exact":
+            env = path_miss_envelope(
+                question,
+                "exact-match miss: not a certified VQ/pack hit",
+                space_id=space_id,
+                session_id=session_id,
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
 
         # The grant decides what the cascade may open, never the request.
         #
@@ -551,39 +576,51 @@ class Executor:
             )
 
         question = with_grounded_scope(question, tables)
-        bronze_env = maybe_bronze_sheet_ask(
-            question, space_id=space_id, session_id=session_id
-        )
-        if bronze_env is not None:
-            env = attach_cascade(bronze_env, cascade)
-            self._store_turn(session_id, space_id, env)
-            return env
-        gen_env = maybe_generative_ask(
-            question,
-            space_id=space_id,
-            session_id=session_id,
-            warehouse=self._warehouse,
-            grantable=set(granted),
-            tables=tables,
-            compute=lambda catalog: self._compute_query(
+        if allow_bronze:
+            bronze_env = maybe_bronze_sheet_ask(
+                question, space_id=space_id, session_id=session_id
+            )
+            if bronze_env is not None:
+                env = attach_cascade(bronze_env, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+        if allow_gen:
+            gen_env = maybe_generative_ask(
                 question,
-                session_id=session_id,
-                space_id=space_id,
-                ontology=catalog,
-            ),
-            submit=lambda sql: self._submit_verified_sql(
-                sql, space_id=space_id, session_id=session_id, tables=tables
-            ),
-            ledger_append=lambda payload: self._ledger_verified_query(
-                asset_sql=str(payload.get("sql") or ""),
-                run_id=str(payload.get("run_id") or ""),
                 space_id=space_id,
                 session_id=session_id,
-                event_type="ask.generated_ontology",
-            ),
-        )
-        if gen_env is not None:
-            env = attach_cascade(gen_env, cascade)
+                warehouse=self._warehouse,
+                grantable=set(granted),
+                tables=tables,
+                compute=lambda catalog: self._compute_query(
+                    question,
+                    session_id=session_id,
+                    space_id=space_id,
+                    ontology=catalog,
+                ),
+                submit=lambda sql: self._submit_verified_sql(
+                    sql, space_id=space_id, session_id=session_id, tables=tables
+                ),
+                ledger_append=lambda payload: self._ledger_verified_query(
+                    asset_sql=str(payload.get("sql") or ""),
+                    run_id=str(payload.get("run_id") or ""),
+                    space_id=space_id,
+                    session_id=session_id,
+                    event_type="ask.generated_ontology",
+                ),
+                bind_on_miss=(ladder == "generative"),
+            )
+            if gen_env is not None:
+                env = attach_cascade(gen_env, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+        if not allow_cortex:
+            env = path_miss_envelope(
+                question,
+                "generative miss: retrieve/plan/validate did not certify",
+                space_id=space_id,
+                session_id=session_id,
+            )
             self._store_turn(session_id, space_id, env)
             return env
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
