@@ -12,16 +12,22 @@ from score_curated import (  # noqa: E402
     BASELINE_91C5CC99,
     BASELINE_AB_A9578348,
     DISTILL,
+    EXIT_BLOCKED,
     EXIT_CONFIG,
     PLATFORM_API,
     answered_vs_baseline,
+    ask_error_envelope,
     baseline_answered,
     build_climb_report,
+    cf1010_blocked_detail,
     classify_path,
+    climb_ab_live,
     climb_url,
     distill_block,
+    is_cf1010,
     judge_envelope,
     main,
+    probe_climb_host,
     self_check,
 )
 
@@ -204,6 +210,116 @@ def test_health_iap_403_is_blocked_not_a_score():
     assert "Not a score" in detail
     kind, _ = classify_health(401, None, "text/html")
     assert kind == "blocked"
+
+
+def test_cf1010_is_not_iap_or_grant():
+    assert is_cf1010(403, "error code: 1010")
+    assert is_cf1010(403, "<h1>Error 1010</h1>")
+    assert not is_cf1010(403, "Cloudflare Access login")
+    assert not is_cf1010(200, "error code: 1010")
+    detail = cf1010_blocked_detail(403, "error code: 1010")
+    assert detail is not None
+    assert "CF1010" in detail
+    assert "not IAP" in detail
+    assert "DevOps" in detail
+    assert cf1010_blocked_detail(403, "Cloudflare Access login") is None
+
+    class _Resp:
+        status_code = 403
+        text = "error code: 1010"
+
+    class _Exc(Exception):
+        response = _Resp()
+
+    assert ask_error_envelope(_Exc()) is None
+
+
+def test_score_curated_has_no_urllib_probe():
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "score_curated.py").read_text(
+        encoding="utf-8"
+    )
+    assert "urllib.request" not in src
+    assert "urllib.error" not in src
+    assert "urlopen" not in src
+    assert "def score_http" in src
+    assert "httpx.request" in src
+
+
+def test_probe_climb_host_uses_score_http_not_urllib(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = json.dumps(
+            {"product": "dms", "ask_mode": "live", "demo_fallback": False}
+        )
+
+    def fake_http(method: str, url: str, **_kw):
+        calls.append((method, url))
+        return _Resp()
+
+    def boom(*_a, **_k):
+        raise AssertionError("urllib must not probe studio.netie.ai")
+
+    monkeypatch.setattr("score_curated.score_http", fake_http)
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    kind, detail = probe_climb_host(PLATFORM_API, 5.0)
+    assert kind == "ok"
+    assert "dms" in detail
+    assert calls == [("GET", f"{PLATFORM_API}/health")]
+
+
+def test_probe_cf1010_is_blocked_devops_not_iap(monkeypatch):
+    class _Resp:
+        status_code = 403
+        headers = {"content-type": "text/html"}
+        text = "error code: 1010"
+
+    monkeypatch.setattr("score_curated.score_http", lambda *_a, **_k: _Resp())
+    kind, detail = probe_climb_host(PLATFORM_API, 5.0)
+    assert kind == "blocked"
+    assert "CF1010" in detail
+    assert "IAP/auth" not in detail
+    assert "DevOps" in detail
+
+
+def test_climb_ab_cf1010_is_blocked_not_a_score(monkeypatch):
+    def fake_probe(_url: str, _timeout: float) -> tuple[str, str]:
+        return "blocked", "CF1010 Cloudflare browser-signature ban (not IAP)."
+
+    monkeypatch.setattr("score_curated.probe_climb_host", fake_probe)
+    assert climb_ab_live(PLATFORM_API, 1.0) == EXIT_BLOCKED
+
+
+def test_ask_posts_via_score_http(monkeypatch):
+    from score_curated import _ask
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"badge": "ABSTAIN", "abstained": True, "rows": []}
+
+    calls: list[tuple[str, str, object]] = []
+
+    def fake(method: str, url: str, **kw):
+        calls.append((method, url, kw.get("json_body")))
+        return _Resp()
+
+    monkeypatch.setattr("score_curated.score_http", fake)
+    env = _ask(PLATFORM_API, "q", "space", 1.0, ask_path="generative")
+    assert env["badge"] == "ABSTAIN"
+    assert calls[0][0] == "POST"
+    assert calls[0][1] == f"{PLATFORM_API}/v1/chat/ask"
+    assert calls[0][2] == {
+        "question": "q",
+        "space_id": "space",
+        "ask_path": "generative",
+    }
 
 
 def test_health_demo_fallback_fails():

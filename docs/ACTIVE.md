@@ -56,7 +56,8 @@ Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
 EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
-(`scripts/score_climb.md`). `ask_path=exact|generative|product` on
+(`scripts/score_climb.md`). Probe + ask use httpx (`score_http`), not urllib
+(SCORE-CLIENT-01 / #187; urllib CF1010s the public origin). `ask_path=exact|generative|product` on
 `POST /v1/chat/ask`. Isolated gen: Cortex compute miss binds retrieved
 ontology then validate/CRAG. Product path still Cortex-asks on compute
 miss. Distill ladder in `scripts/score_climb.md` (certified-first,

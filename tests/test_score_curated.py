@@ -126,6 +126,17 @@ def test_judge_grant_refuse_is_abstain():
     )
 
 
+def test_cf1010_is_not_grant_abstain():
+    class _Resp:
+        status_code = 403
+        text = "error code: 1010"
+
+    class _Exc(Exception):
+        response = _Resp()
+
+    assert ask_error_envelope(_Exc()) is None
+
+
 def test_judge_l0_hit():
     assert (
         judge(
