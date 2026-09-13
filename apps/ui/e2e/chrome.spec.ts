@@ -59,13 +59,13 @@ test.describe("DMS product chrome", () => {
     expect(options.some((t) => t.includes("Company (default ACL)"))).toBeTruthy();
     expect(options.some((t) => t.includes("Finance") || t.includes("Warehouse"))).toBeTruthy();
 
-    await page.getByRole("button", { name: "+ New" }).click();
+    await page.getByRole("button", { name: "New", exact: true }).click();
     await page.getByRole("button", { name: "Upload source" }).click();
     await expect(page.getByRole("heading", { name: "Studio", level: 1 })).toBeVisible();
 
     await page.goto("/");
     await waitForChrome(page);
-    await page.getByRole("button", { name: "+ New" }).click();
+    await page.getByRole("button", { name: "New", exact: true }).click();
     await page.getByRole("button", { name: "New Space" }).click();
     await expect(page.getByRole("heading", { name: "Spaces", level: 1 })).toBeVisible();
   });

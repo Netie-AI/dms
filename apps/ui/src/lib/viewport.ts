@@ -13,7 +13,10 @@ export function sourcesStartOpen(
   return matchMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`).matches;
 }
 
-/** After ask, only auto-open when the dock will not cover the answer. */
-export function shouldAutoOpenSourcesAfterAsk(widthPx: number): boolean {
+/**
+ * Expand the docked 22rem Sources column (after ask, or tracing a value).
+ * False below lg so an answer cannot zero the chat column (live 390px: 352px dock -> main=0).
+ */
+export function shouldExpandSourcesDock(widthPx: number): boolean {
   return isLgViewport(widthPx);
 }

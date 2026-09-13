@@ -252,7 +252,7 @@ export function ChatPage() {
                   : "Ask about your data… (Shift+Enter for newline)"
               }
               rows={2}
-              className="min-h-[2.75rem] flex-1 resize-y border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm"
+              className="min-h-[2.75rem] flex-1 resize-y border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
             />
             <button
               type="submit"

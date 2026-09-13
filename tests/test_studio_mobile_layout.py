@@ -19,12 +19,15 @@ def test_chat_source_panel_is_overlay_below_lg_not_a_docked_22rem_sibling() -> N
     assert "max-lg:w-[min(22rem,calc(100%-2.75rem))]" in src
     assert 'data-testid="source-panel-open"' in src
     assert "min-h-11" in src
+    shell = (UI / "components" / "AppShell.tsx").read_text(encoding="utf-8")
+    assert "source-panel-slot" in shell
+    assert "max-lg:w-0" in shell
 
 
 def test_chat_sources_start_closed_below_lg_and_do_not_auto_open_after_ask() -> None:
     ctx = (UI / "context" / "AppContext.tsx").read_text(encoding="utf-8")
     assert "sourcesStartOpen" in ctx
-    assert "shouldAutoOpenSourcesAfterAsk" in ctx
+    assert "shouldExpandSourcesDock" in ctx
     assert "setSourcePanelOpen(true)" in ctx
 
 

@@ -72,7 +72,10 @@ describe("STUDIO-MOBILE-01 layout wiring", () => {
     expect(panel).toMatch(/min-h-11/);
     const ctx = readFileSync(join(here, "../context/AppContext.tsx"), "utf8");
     expect(ctx).toMatch(/sourcesStartOpen/);
-    expect(ctx).toMatch(/shouldAutoOpenSourcesAfterAsk/);
+    expect(ctx).toMatch(/shouldExpandSourcesDock/);
+    const shell = readFileSync(join(here, "../components/AppShell.tsx"), "utf8");
+    expect(shell).toMatch(/source-panel-slot/);
+    expect(shell).toMatch(/max-lg:w-0/);
   });
 
   it("Studio keeps the desktop two-column grid and hides files/SQLSRC below lg until opened", () => {

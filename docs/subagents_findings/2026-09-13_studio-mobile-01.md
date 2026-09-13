@@ -10,7 +10,10 @@ PREFLIGHT: MISS (no prior mobile-sources finding).
 
 ## Main idea
 
-The founder "SOURCES covers chat" report is the Chat `SourcePanel` flex sibling (`w-[22rem]`, default open) in `AppShell` on `/`. Studio `/studio` also stacked files + SQLSRC above preview below `lg`. Fix: drawer + closed-by-default below `lg`; keep desktop dock/grid. Not EPIC-008 COMPLETE. Not #8 close.
+The live walk (390x844) measured production: open SOURCES is a 352px flex sibling, `main` width 0. Collapse works; arriving answer reopens the dock. Header scrollWidth 534.
+
+PR follow-up: AppShell `source-panel-slot` is `max-lg:w-0` so even an open overlay cannot steal flex width. `shouldExpandSourcesDock` is false below lg for ask and value-trace. TopBar short labels. Desktop `lg` dock unchanged. Not #8 COMPLETE.
+
 
 ## Files
 

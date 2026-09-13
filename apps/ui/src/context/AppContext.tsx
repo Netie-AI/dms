@@ -12,7 +12,7 @@ import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/ap
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
-import { LG_MIN_WIDTH_PX, shouldAutoOpenSourcesAfterAsk, sourcesStartOpen } from "@/lib/viewport";
+import { LG_MIN_WIDTH_PX, shouldExpandSourcesDock, sourcesStartOpen } from "@/lib/viewport";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
 export type ChatMessage =
@@ -279,8 +279,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (id: string | null) => {
       setSelectedValueId(id);
       if (id && latestAnswer?.contributing_sources[0]) {
-        setSourcePanelOpen(true);
         setFocusedSourceId(latestAnswer.contributing_sources[0].ref_id);
+        const width = typeof window === "undefined" ? LG_MIN_WIDTH_PX : window.innerWidth;
+        if (shouldExpandSourcesDock(width)) {
+          setSourcePanelOpen(true);
+        }
       }
     },
     [latestAnswer],
@@ -310,7 +313,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         { id: envelope.answer_id || `a_${Date.now()}`, role: "assistant", envelope },
       ]);
       const width = typeof window === "undefined" ? LG_MIN_WIDTH_PX : window.innerWidth;
-      if (shouldAutoOpenSourcesAfterAsk(width)) {
+      if (shouldExpandSourcesDock(width)) {
         setSourcePanelOpen(true);
       }
     } catch (err) {
