@@ -7,9 +7,10 @@ Main idea: "--climb scores live curated_ceo against studio.netie.ai/api with rea
 ## What landed
 
 - `python scripts/score_curated.py --climb --url https://studio.netie.ai/api`
-- Fail closed: no laptop default; CONFIG/BLOCKED/FAIL distinct from a 26-WRONG invent.
+- Fail closed: no laptop default; CONFIG/BLOCKED/FAIL distinct from a 26-WRONG invent. IAP 403 is BLOCKED.
 - Baseline frozen @ `91c5cc99`. `answered_by_path` attributes LAYER/OK to `generated` vs pack routes.
 - Offline `--ab` unchanged (GEN-01). CI still `--self-check` / pytest only; `--climb` is not a GitHub job.
+- Cloud seat 2026-09-13: `https://studio.netie.ai/api/health` 403 -> `--climb` exit 3 BLOCKED. Platform with IAP is the scoring seat.
 
 ## Not this ticket
 
