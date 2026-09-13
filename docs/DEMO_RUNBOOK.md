@@ -1,9 +1,9 @@
 # DMS + AirGPT demo runbook
 
-**Audience:** founder / buyer laptop demo  
+**Audience:** founder / buyer laptop demo, and prove host-online via IAP/CF  
 **Honesty:** DMS = governed SQL + Space ACL (Cortex HTTP). AirGPT = freeform hybrid RAG over real files (Explorer reveal). Do not collapse them into one product pitch.
 
-**Last aligned:** 2026-08-25
+**Last aligned:** 2026-09-13 (prove IAP section: DEMO-HOST-01 #163; laptop flow still 2026-08-25)
 
 ---
 
@@ -20,9 +20,10 @@ buyer's IT or compliance function is in the room:
 > steward. Identity in the ledger is the identity of the deployment, not of a person.
 
 So the install is single-tenant, on the customer's own network, VPN-only or air-gapped.
-**Do not demo this on a shared or internet-reachable host**, and do not answer "yes" to
+**Do not demo this on a shared or internet-open `:8090`**, and do not answer "yes" to
 "is it access-controlled per user" - the honest answer is "not yet; that is Option B in
 `docs/decisions/0004-the-authentication-trust-boundary.md`, and it is not built."
+Prove host-online (section 2.1) is IAP/CF in front of loopback `:8090`, not a public bind.
 
 Two consequences worth knowing before the room asks:
 
@@ -43,23 +44,83 @@ Two consequences worth knowing before the room asks:
 | L0/L1/L2 ask + Spaces UI | Green | DEMO-PATH-01 #16 CLOSED; SPACE-UI #25 CLOSED (#90) | Core stranger path green; Runs/Amend pass `space_id` |
 | Doc chunks schema + ingest | Green | RAG-01 #24 CLOSED; Cortex RAG-02 #33 / RAG-03 #32 CLOSED | Chunks indexed on Space upload; L0/L1/L2 then doc-RAG on abstain |
 | RAG envelope + adversarial | Green | DMS RAG-04 #23 CLOSED; RAG-05 #22 CLOSED; Cortex EPIC-015 #34 PARTIAL | Envelope + adversarial ask green; Cortex epic still PARTIAL on older RAG-01..03 boxes |
-| Postgres Spaces | Yellow by design | EPIC-003 #6 OPEN | Founder choice B: **in-memory for demo**; never claim persisted |
+| Postgres Spaces | Yellow by design | EPIC-003 #6 OPEN | Laptop: **in-memory**; never claim persisted. Prove host-harden: Spaces postgres is Platform's unit, not this epic CLOSED |
 | Reorder / low-stock asks | Green on envelope | ENV-E4 #28 CLOSED (#91) | Listings abstain or cite; no customer 500. Live Cortex still un-run |
-| Stack stability | Yellow | ops, not a ticket | Kill stale :8010/:8090 before show; Defender slows Python |
+| Stack stability | Yellow | ops, not a ticket | Laptop: kill stale :8010/:8090 before show; Defender slows Python. Prove: do not kill systemd; Platform owns the host |
 | Explorer reveal on citation | Green | REVEAL-01 dms#26 CLOSED | SourcePanel **Open original** → `POST /v1/library/reveal` (allowlisted roots); AirGPT still has `reveal-path` |
+| Prove host-online | Yellow | DEMO-HOST-01 #163 (docs); DEMO-HOST-02 #164 (measure) | Platform/DevOps own the tunnel. Temp CF hostname below; `/` and `/api/health` 200 (postgres). `:8090` loopback-only. **Not** EPIC-008 COMPLETE |
 
 ---
 
 ## 2. Ports and open URLs
 
-| Product | Start | UI | API / health |
-|---------|-------|-----|--------------|
-| **DMS** | `D:\DMS\scripts\windows\Start-DMS.bat` | http://127.0.0.1:3000/ | http://127.0.0.1:8090/health |
-| Cortex | started by stack | — | http://127.0.0.1:8010/health |
-| OpenVault | started by stack | :3010 | http://127.0.0.1:5000/api/healthz |
-| **AirGPT** | `cd D:\AirGPT; python clipdrop.py` | http://127.0.0.1:8765 | same host |
+Laptop column is `Start-DMS.bat`. Prove column is host-harden + IAP/CF. **DMS API bind on prove stays `127.0.0.1:8090`.** The browser URL is the Platform Studio origin, never a public `:8090`.
+
+| Product | Laptop start | Laptop URL | Prove (IAP/CF) |
+|---------|--------------|------------|----------------|
+| **DMS UI** | `D:\DMS\scripts\windows\Start-DMS.bat` | http://127.0.0.1:3000/ | Temp CF: https://occurred-guest-guaranteed-practitioners.trycloudflare.com (`/studio`). Same origin as `/api`. May rotate until durable `TUNNEL_TOKEN` |
+| **DMS API** | same stack | http://127.0.0.1:8090/health | same loopback bind on prove; reach **only** via IAP/CF. Not `0.0.0.0/0` |
+| Cortex | started by stack | -- | as deployed on prove (laptop `http://127.0.0.1:8010/health`). Host-side, not a public port |
+| OpenVault | started by stack | UI :3010; `http://127.0.0.1:5000/api/healthz` | as deployed. Do not stand Next on the OV e2-micro |
+| **AirGPT** | `cd D:\AirGPT; python clipdrop.py` | http://127.0.0.1:8765 | laptop dual-demo only; not the prove 2-min walk |
 
 Full AirGPT path: `D:\AirGPT\tests\RAG\DEMO_RAG.md`
+
+SPA calls are same-origin `/api/...` (`apps/ui/src/lib/api.ts`). Vite `VITE_API_TARGET` defaults to `http://127.0.0.1:8090` **on the process that runs Vite** (host loopback, rewrite strips `/api`). Compose analogue: `deploy/compose/Caddyfile` (Caddy is the only publicly bound appliance port; `/api` -> API). Studio/SqlSourcePanel copy does not claim the API is laptop-only.
+
+### 2.1 Prove host-online (IAP/CF)
+
+**Ticket:** DEMO-HOST-01 #163 under EPIC-008 #8. **Does not** close #8. **Does not** reopen ENV-E4 #28 / CSV-01 #18 / INGEST-SYNC-01 #75 (already CLOSED). Measured tunnel smoke is DEMO-HOST-02 #164.
+
+**Honesty (DR-0004 Option A, same as section 0).** IAP or Cloudflare Access is the network door. DMS still has no per-user login. Anyone who can pass the tunnel acts as the configured steward. Identity in the ledger is the deployment, not a person. Say that before the buyer asks.
+
+#### Prerequisites (who owns what)
+
+| Owner | Must already be true | This repo does **not** |
+|-------|----------------------|-------------------------|
+| Platform / DevOps | prove host-harden UP (systemd + Spaces postgres + IAP to loopback `:8090`). Founder GO 2026-09-13: host-harden smoke PASSED | stand the host, open firewall, change bind address, touch the lake / `LIVE_KEY_ID` / OV e2-micro |
+| Platform / DevOps | Tunnel recipe + published **Studio URL** (temp quick tunnel until durable `TUNNEL_TOKEN`) | invent `cloudflared` / `gcloud` / listen-on-all-interfaces commands |
+| dms (this section) | Document the steward walk against the published origin | claim EPIC-008 COMPLETE |
+
+Prefer `DMS_DEMO_FALLBACK=0`. A silent demo-number 200 is a lying affordance.
+
+#### Tunnel start (cite Platform recipe -- do not run from dms)
+
+**Platform+DevOps own the prove host and the tunnel.** Product writers do not start it.
+
+Cite, do not duplicate:
+
+- Founder GO on EPIC-008: https://github.com/Netie-AI/dms/issues/8 (2026-09-13) -- IAP/CF to loopback `:8090`; no public `:8090`; no `0.0.0.0/0`.
+- In-repo analogue only: `deploy/compose/Caddyfile` + compose `api` `expose: ["8080"]` (API is not the public bind when Caddy is used). Prove replaces a public bind with IAP/CF in front of that loopback. **Do not** treat compose `api_dev` `ports: ["8090:8080"]` as the prove recipe -- that profile is local Vite, not host-harden.
+- Recipe location: **outside this repo.** Platform/DevOps own the tunnel process, `TUNNEL_TOKEN`, and hostname. There is no `Netie-AI/netie-platform` / `platform` / `infra` git repo in the org listing as of 2026-09-13. Do not start `cloudflared` from dms.
+
+Do **not** paste host commands here that bind `:8090` on `0.0.0.0` or add a `0.0.0.0/0` firewall rule.
+
+#### Studio URL
+
+`STUDIO_URL` (temp Cloudflare quick tunnel; **may rotate** until Platform installs a durable `TUNNEL_TOKEN`):
+
+https://occurred-guest-guaranteed-practitioners.trycloudflare.com
+
+- **Browser:** `{STUDIO_URL}/studio` -- SPA route (`StudioPage`). Same origin as `/api`.
+- **API on prove:** `http://127.0.0.1:8090` on the **host**, loopback-only. Not opened publicly. The CF origin proxies to that loopback. Same-origin `/api` is the supported shape.
+- **Platform smoke (2026-09-13):** `GET /` 200 (HTML `netie DMS`); `GET /api/health` 200, `database.backend=postgres`, `persistent=true`, `ask_mode=live`, `demo_fallback=false`. `/studio` 200.
+- Cortex / OpenVault: whatever the prove unit files already use (`CORTEX_URL` / `OPENVAULT_URL` on the host). Do not publish them. Do not retarget `LIVE_KEY_ID`.
+
+If the hostname 404s or TLS-fails, it rotated. Ask Platform for the current origin. Do not open `:8090`. Do not invent EPIC-008 COMPLETE.
+
+#### 2-minute walk (open Studio -> point SQL or upload -> ask -> envelope)
+
+Laptop Act A still uses `:3000` (section 4). This walk is prove.
+
+1. **Open Studio.** Browser to `{STUDIO_URL}/studio` (temp CF URL above). Left nav **Studio**. Space chip: Finance (or the Space Platform seeded). Do not point the buyer at `http://127.0.0.1:8090` as "the product" -- that is the API loopback on the host.
+2. **Point or upload.**
+   - **SQL (SQLSRC-09):** panel **SQL Server / MySQL** (`SqlSourcePanel`). Host / database / user / password (sent once, not stored). **Extract into bronze**. Receipt names tables landed, `extracted_at`, truncated pulls, and declared-join violations. Password field clears after the request. Route: `POST /v1/studio/sources/sql`.
+   - **File:** **+** (or Folder) -> `tests/fixtures/ingest/15_q3_sales_export.xlsx` (or the buyer's workbook). Receipt: ingested vs need-attention. Do not promise a serving sync that is still a log line.
+3. **Ask.** Tick the landed file(s) -> **Ask about these**. Chat: one grounded question (units / revenue / whatever the receipt table actually holds).
+4. **See the envelope.** Badge, answer or abstain, rows, sources. Abstain over a wrong green number. A green badge on abstention prose is a fail.
+
+If health hangs or ask 503s: Platform/host (Cortex/OV on prove), not a dms bind-address fix. Do not open `:8090` to the world "to debug".
 
 ---
 
@@ -156,7 +217,7 @@ python tests\RAG\edge_probe.py --space-id 8
 
 | # | Subtitle | Do / say | Exact prompt |
 |---|----------|----------|--------------|
-| A1 | Certified library | Chat @ `:3000`, company or any Space | `Top 5 selling SKUs by revenue` |
+| A1 | Certified library | Chat @ `:3000` (laptop) or `{STUDIO_URL}` (prove, section 2.1) | `Top 5 selling SKUs by revenue` |
 | A2 | Ops narrative | Point at Insights + chart | `Show warehouse capacity utilisation` |
 | A3 | Space Finance | Switch Space chip → Finance | `What is our total spend by supplier country?` |
 | A4 | Boundary | Switch → Warehouse Ops, same ask | Same as A3 — expect **abstain** |
@@ -171,7 +232,7 @@ python tests\RAG\edge_probe.py --space-id 8
 
 | # | Subtitle | Do |
 |---|----------|-----|
-| B1 | Upload | Studio → Finance → `15_q3_sales_export.xlsx` |
+| B1 | Upload | Studio → Finance → `15_q3_sales_export.xlsx` (prove: same, via `{STUDIO_URL}/studio`, section 2.1). SQL path: SQLSRC-09 form on that page |
 | B2 | Receipt | Show ingested=1, bronze table |
 | B3 | Serve | If chat cannot see the new table: stop Cortex, `python scripts/sync_bronze_to_serving.py`, restart. Start-DMSStack does this copy before it starts the engine. |
 | B4 | Ground | Chat grounded to that file → ask about `units_sold` |
@@ -235,10 +296,17 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 | #25 SPACE-UI-ALL | dms | CLOSED (#90) | Runs/Amend scoped; Library/Studio clear on switch |
 | #72 A-0007 | dms | CLOSED | Company default ACL is a real scope; missing/ungranted → 403 |
 | #19–21 MCP | dms | MCP-01 flag-off | `DMS_MCP=0`; tools wrap existing HTTP |
+| #18 CSV-01 | dms | CLOSED | Download CSV; do not reopen |
+| #75 INGEST-SYNC-01 | dms | CLOSED | Upload receipt vs serving sync -- do not reopen |
+| #163 DEMO-HOST-01 | dms | OPEN (this section) | Prove IAP/CF runbook + Studio copy check |
+| #164 DEMO-HOST-02 | dms | OPEN | Measured host-online smoke; Depends on #163 + Platform tunnel UP |
+| #8 EPIC-008 | dms | OPEN / INCOMPLETE | Core path CLOSED; host-online not COMPLETE from docs alone |
 
 ---
 
 ## 7. Pre-flight checklist (T-15)
+
+Laptop:
 
 - [ ] Kill stale :8010 / :8090 if health hangs
 - [ ] Start DMS stack; open `:3000`
@@ -248,10 +316,19 @@ Goal: same workbooks visible in both products; AirGPT already stores absolute pa
 - [ ] Practice Reveal on one warehouse xlsx
 - [ ] Defender exclusions optional: `D:\DMS`, `D:\Cortex`, `D:\OpenVault`, `D:\AirGPT`
 
+Prove (IAP/CF) -- do not kill prove systemd; do not open `:8090` publicly:
+
+- [ ] Platform tunnel UP (Platform/DevOps). Temp origin: https://occurred-guest-guaranteed-practitioners.trycloudflare.com -- may rotate until durable `TUNNEL_TOKEN`
+- [ ] `GET /` and `/api/health` 200; health says postgres. Host API still `127.0.0.1:8090` (no `0.0.0.0/0`)
+- [ ] Open `{STUDIO_URL}/studio` (section 2.1)
+- [ ] One point-or-upload + one ask; envelope visible
+- [ ] Measured record is DEMO-HOST-02, not this checklist. **Not** EPIC-008 COMPLETE
+
 ---
 
 ## 8. What is not demo-ready (do not promise)
 
-- Postgres-backed Spaces as default (founder: memory + honest banner)
+- Postgres-backed Spaces as the **laptop** default (founder: memory + honest banner). Prove host-harden may already run Spaces postgres -- that is Platform's unit, not EPIC-003 CLOSED
 - Object-level row ACL (predicates are still `TRUE`)
 - Treating AirGPT and DMS as one stack behind one URL
+- EPIC-008 COMPLETE / public `:8090` / a dms-owned tunnel recipe
