@@ -6,11 +6,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
 from dms_executor.bronze import list_bronze_tables
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    connect_file,
     connect_readonly,
     ensure_demo_warehouse,
     warehouse_path,
@@ -77,7 +76,7 @@ def list_promote_targets(*, path: Path | None = None) -> list[dict[str, Any]]:
 
     from dms_executor.lake_schema import ensure_lake_schemas
 
-    con = duckdb.connect(str(db))
+    con = connect_file(Path(db))
     try:
         ensure_lake_schemas(con)
         rows = con.execute(
@@ -193,10 +192,7 @@ def preview_bronze_table(
     schema, name = _parse_bronze_ref(label)
     lim = max(1, min(int(limit), 500))
     off = max(0, min(int(offset), 100_000))
-    db = ensure_demo_warehouse(path or warehouse_path())
-    import duckdb
-
-    con = duckdb.connect(str(db))
+    con = connect_readonly(path or warehouse_path())
     try:
         qual = f'"{schema}"."{name}"'
         total = scalar_int(con.execute(f"SELECT COUNT(*) FROM {qual}").fetchone())

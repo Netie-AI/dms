@@ -15,8 +15,13 @@ from typing import Any
 
 import duckdb
 
-_LOCK = threading.Lock()
+_LOCKS_GUARD = threading.Lock()
+_FILE_LOCKS: dict[str, threading.RLock] = {}
 _SEEDED: set[str] = set()
+
+# ponytail: one live RW attach per resolved path. DuckDB 1.5 unique-file-handle
+# 500s a second attach of the same file (alias = stem, so browse.duckdb -> "browse").
+# Ceiling: Library /tree lists serialize. Upgrade: RO pool if P-DMS-34 lifts.
 
 DEFAULT_REL = Path("data") / "dms_demo.duckdb"
 SCHEMA_VERSION = 3
@@ -47,28 +52,60 @@ def warehouse_path() -> Path:
     return repo / DEFAULT_REL
 
 
-def _schema_ok(db: Path) -> bool:
+def _lock_for(db: Path) -> threading.RLock:
+    key = str(Path(db).resolve())
+    with _LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _FILE_LOCKS[key] = lock
+        return lock
+
+
+class _LockedConnection:
+    """DuckDB handle that releases the per-file attach lock on close()."""
+
+    def __init__(self, con: duckdb.DuckDBPyConnection, lock: threading.RLock) -> None:
+        self._con = con
+        self._lock = lock
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._con.close()
+        finally:
+            self._lock.release()
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return self._con.execute(*args, **kwargs)
+
+    def executemany(self, *args: Any, **kwargs: Any) -> Any:
+        return self._con.executemany(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._con, name)
+
+    def __enter__(self) -> _LockedConnection:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+
+def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
+    """Write-mode attach. Caller must close(); one live attach per file until then."""
+    db = Path(path)
+    lock = _lock_for(db)
+    lock.acquire()
     try:
         con = duckdb.connect(str(db))
-        try:
-            row = con.execute(
-                "SELECT value FROM meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if not row or int(row[0]) != SCHEMA_VERSION:
-                return False
-            for table in DEMO_TABLES:
-                n = con.execute(
-                    "SELECT COUNT(*) FROM information_schema.tables "
-                    "WHERE table_name = ?",
-                    [table],
-                ).fetchone()
-                if not n or int(n[0]) < 1:
-                    return False
-            return True
-        finally:
-            con.close()
-    except Exception:  # noqa: BLE001
-        return False
+    except BaseException:
+        lock.release()
+        raise
+    return _LockedConnection(con, lock)  # type: ignore[return-value]
 
 
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
@@ -81,11 +118,16 @@ def ensure_demo_warehouse(path: Path | None = None) -> Path:
     """
     db = path or warehouse_path()
     key = str(db.resolve())
-    with _LOCK:
-        if key in _SEEDED and db.is_file() and _schema_ok(db):
+    lock = _lock_for(db)
+    with lock:
+        # Do not probe schema via a second duckdb.connect(): DuckDB 1.5 treats
+        # a second RW attach of the same file as BinderException. The old
+        # ``except Exception: return False`` then fell through to another
+        # connect() (CI 34750069692 on b5f02be, test_parallel_library_lists_same_file).
+        if key in _SEEDED and db.is_file():
             return db
         db.parent.mkdir(parents=True, exist_ok=True)
-        con = duckdb.connect(str(db))
+        con = connect_file(db)
         try:
             _seed(con)
         finally:
@@ -258,7 +300,7 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
 def connect_readonly(path: Path | None = None) -> duckdb.DuckDBPyConnection:
     db = ensure_demo_warehouse(path)
     # Same config as writers. Mixed read_only=True vs RW on one file 500s DuckDB.
-    return duckdb.connect(str(db))
+    return connect_file(db)
 
 
 def execute_sql(sql: str, *, path: Path | None = None) -> list[dict[str, Any]]:

@@ -12,7 +12,11 @@ from typing import Any
 
 import duckdb
 
-from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import (
+    connect_readonly,
+    ensure_demo_warehouse,
+    warehouse_path,
+)
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 
@@ -514,12 +518,11 @@ def list_bronze_tables(
 ) -> list[dict[str, Any]]:
     from dms_executor.demo_grants import canonical_space_id
 
-    db = ensure_demo_warehouse(path or warehouse_path())
     canon_space = canonical_space_id(space_id) if space_id else None
-    # One write-mode connection for ensure + list. A second read_only=True
-    # connect 500s while any sibling request still holds RW (Library fires
-    # /tree and /tree?space_id= in parallel).
-    con = duckdb.connect(str(db))
+    # One write-mode attach for ensure + list. DuckDB 1.5 unique-file-handle
+    # 500s a second RW attach of the same file; connect_readonly serializes.
+    # Mixed read_only=True vs RW also 500s (Library fires /tree twice).
+    con = connect_readonly(path)
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
