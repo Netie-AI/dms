@@ -10,6 +10,22 @@ Append-only. Never edited, only added to. Newest first.
 - **Must not:** invent live Studio coverage, green planted refuses, GitHub CI `--climb`, ticket close, keys in chat.
 
 
+## 2026-09-13 - SCORE-BIRD-01: bronze batches, leftover trap skip (#184)
+
+- **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184). Does not close tickets. Not COMPLETE.
+- **Grow.** Pack snapshot is not a ceiling. `--live` lists Studio bronze and prints `target=75 measured=N leftover=75-N`. First GO batch stays `gender`.
+- **Skip.** Leftover traps whose `needs_table` has landed SKIP (no invented oracle). `trap_75_tables` and demo-pack bleed stay refuse.
+- **Not this ticket:** EPIC-020b / #108 COMPLETE, Mini-Dev coverage from a partial batch, ticket close.
+
+
+## 2026-09-13 - SCORE-BIRD-01: measured live harness on BIRD Space (#184)
+
+- **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184) under EPIC-020b #173. Does not close #184 or #173. Not COMPLETE.
+- **Harness.** `python scripts/score_bird.py --self-check` (CI). `--live` requires `DMS_API_BASE` and A/B's exact-match pack miss vs `POST /v1/chat/ask` (GEN-01 #179 @ `a9578348`). No 127.0.0.1:8090 default. WRONG=0 law. Precision `n/a` when 0 answered.
+- **Honesty.** Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` source_count=1 data_source `12b6f170` bounded `gender` max_rows=50. Full 75-table Mini-Dev extract is Platform leftover. Runbook: `scripts/score_bird.md`.
+- **Not this ticket:** EPIC-020b / #108 COMPLETE, 99.95%, DB-GPT clone, GEN-02 curated climb, live counts from a cloud seat, ticket close.
+
+
 ## 2026-09-13 - GEN-02 live A/B + CRAG validate-or-abstain harness (#180)
 
 - **SoT widen.** Isolated live A/B: `POST /v1/chat/ask` `ask_path=exact|generative|product` (certified-first then free gen). Platform: `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`.
