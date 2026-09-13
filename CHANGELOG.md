@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-02 retrieve bind on Cortex compute miss (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180). Does not close #180 or #178. Not COMPLETE. Not 99.95%.
+- **Climb.** Isolated gen @ `a9578348` was 1/26 with WRONG=0: Cortex `POST /dms/query` rarely returns a typed `query_plan`, so the gen lane missed. On compute **miss only**, bind a typed plan from retrieved ontology, then the same compile → EXPLAIN/grant validate → Cortex submit. Explicit Cortex `unsure` still abstains. Not pack expansion. Offline `--ab` (this seat, not Studio): gen answered **9/26** WRONG=0 (rose vs 1). Live `--climb --ab` is still Platform.
+- **Ontology.** `demo_ontology` reads columns on disk (thin reseed vs Cortex lake): no `storage_bin` / shipment `supplier_id` claims the lake does not have. Honest measures `sku_count`, `outbound_kg`, `utilisation_pct`. Bind misses list/which asks and untyped filters (WH-A, cold, expired, CCTV, above-90). Ops spend still grant-abstains.
+- **Must not:** invent live Studio coverage, green planted refuses, GitHub CI `--climb`, ticket close, keys in chat.
+
+
 ## 2026-09-13 - GEN-02 live A/B + CRAG validate-or-abstain harness (#180)
 
 - **SoT widen.** Isolated live A/B: `POST /v1/chat/ask` `ask_path=exact|generative|product` (certified-first then free gen). Platform: `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`.

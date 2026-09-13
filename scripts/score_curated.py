@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -497,9 +498,8 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
     Fake submit/ledger so CI has no keys. Does not expand certified packs.
     """
     import tempfile
+    from types import SimpleNamespace
 
-    from cortex_client.models import LedgerAppendResponse
-    from cortex_contract.execution import QueryResult
     from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
     from dms_executor.demo_pack import maybe_pack_ask, maybe_uncertified_refuse_ask
     from dms_executor.generative_ask import maybe_generative_ask
@@ -508,13 +508,22 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
     pack = load_pack(pack_path)
     tmp = Path(tempfile.mkdtemp()) / "ab_gen01.duckdb"
     onto = _ab_seed(tmp)
-    rows = [{"i": i, "v": float(i)} for i in range(8)]
+    def submit(sql: str) -> Any:
+        # Shape must match the compiled SQL. A scalar COUNT with 8 dummy rows
+        # trips E12. Subquery GROUP BY (product grain view) is not the answer grain.
+        stripped = sql
+        while "(" in stripped:
+            nxt = re.sub(r"\([^()]*\)", " ", stripped)
+            if nxt == stripped:
+                break
+            stripped = nxt
+        grouped = bool(re.search(r"\bgroup\s+by\b", stripped, re.I))
+        n = 8 if grouped else 1
+        out = [{"i": i, "v": float(i)} for i in range(n)]
+        return SimpleNamespace(ok=True, status="ok", run_id="run_ab", output={"rows": out})
 
-    def submit(_sql: str) -> QueryResult:
-        return QueryResult(ok=True, status="ok", run_id="run_ab", output={"rows": rows})
-
-    def ledger(_payload: dict[str, Any]) -> LedgerAppendResponse:
-        return LedgerAppendResponse(entry_id="led_ab", hash="hash_ab_not_entry")
+    def ledger(_payload: dict[str, Any]) -> Any:
+        return SimpleNamespace(entry_id="led_ab", hash="hash_ab_not_entry")
 
     exact_t = _tally()
     gen_t = _tally()

@@ -19,7 +19,7 @@ from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
-from dms_executor.demo_warehouse import DEMO_TABLES, connect_file
+from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, warehouse_path
 from dms_executor.envelope import (
     _relation_bare,
     _sql_cited_labels,
@@ -28,7 +28,7 @@ from dms_executor.envelope import (
 )
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import CompiledQuery, Ontology, Refusal, demo_ontology
-from dms_executor.semantic_retrieve import retrieve_short_context
+from dms_executor.semantic_retrieve import bind_plan, retrieve_short_context
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -280,8 +280,9 @@ def maybe_generative_ask(
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
     Compute receives a short retrieved context, not the full ontology dump.
-    ``None`` is a miss: no compute client, or compute did not ground a plan, so
-    the existing Cortex contract ask still runs. File-grounded asks skip.
+    Cortex compute miss falls back to local bind_plan from that context.
+    Explicit compute unsure is not overridden. ``None`` is a miss so the
+    existing Cortex contract ask still runs. File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
         return None
@@ -299,26 +300,47 @@ def maybe_generative_ask(
             space_id=space_id, session_id=session_id,
         )
 
+    lake: Path | None
+    if warehouse is not None:
+        lake = Path(warehouse)
+    else:
+        candidate = warehouse_path()
+        lake = candidate if candidate.is_file() else None
+    if lake is not None and not lake.is_file():
+        lake = None
+
     onto = ontology
     if onto is None:
-        onto = load_verified_ontology(warehouse)
-    elif warehouse is not None and not onto.verified:
-        onto = load_verified_ontology(warehouse, onto)
+        onto = load_verified_ontology(lake)
+    elif lake is not None and not onto.verified:
+        onto = load_verified_ontology(lake, onto)
     allowed = grantable if grantable is not None else set(_KNOWN)
     # Short retrieved context only -- not the full ontology dump.
     ctx = retrieve_short_context(
-        q, warehouse=warehouse, grantable=allowed, ontology=onto
+        q, warehouse=lake, grantable=allowed, ontology=onto
     )
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
-        return None
+        payload = None
 
     kind = parse_compute_plan(payload)
-    if kind == "miss":
-        return None
+    fallback_note: str | None = None
     if kind == "unsure":
         return _abstain(q, "compute abstained (unsure)", space_id=space_id, session_id=session_id)
+    if kind != "plan":
+        # Cortex compute miss: bind from retrieved ontology (GEN-02). Do not
+        # override an explicit unsure. Product path may still Cortex-ask on None.
+        payload = bind_plan(q, ctx)
+        kind = parse_compute_plan(payload)
+        if kind == "unsure":
+            return _abstain(
+                q, "retrieve bind abstained (unsure)",
+                space_id=space_id, session_id=session_id,
+            )
+        if kind != "plan":
+            return None
+        fallback_note = "compute_fallback:bind_plan"
 
     assert isinstance(payload, dict)
     plan = plan_from_payload(payload)
@@ -347,7 +369,7 @@ def maybe_generative_ask(
             space_id=space_id, session_id=session_id,
         )
 
-    why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=warehouse)
+    why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
     if why:
         return _abstain(q, f"validate:{why}", space_id=space_id, session_id=session_id)
 
@@ -375,5 +397,5 @@ def maybe_generative_ask(
         space_id=space_id,
         session_id=session_id,
         audit_id=entry_id.strip(),
-        notes=compiled.notes,
+        notes=tuple([*compiled.notes, *([fallback_note] if fallback_note else [])]),
     )

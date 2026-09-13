@@ -167,7 +167,7 @@ python D:\DMS\scripts\playground_ask.py --space <space_id>
 
 # GEN-02 live climb (Platform; WRONG=0 law). No laptop default. See scripts/score_climb.md
 python D:\DMS\scripts\score_curated.py --self-check
-# Offline A/B (no keys). Demo ontology retrieve+bind vs exact-match pack.
+# Offline A/B (no keys). Retrieve + Cortex-miss bind_plan vs exact-match pack.
 python D:\DMS\scripts\score_curated.py --ab
 # Live isolated A/B (Platform + IAP). Certified-first vs free gen. CRAG grades.
 #   $env:DMS_API_BASE = "https://studio.netie.ai/api"

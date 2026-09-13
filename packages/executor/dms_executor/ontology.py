@@ -965,6 +965,37 @@ def _render(op: str, value: Any) -> str:
 # --------------------------------------------------------------------------
 
 
+def _table_columns(warehouse: Path) -> dict[str, set[str]]:
+    """Column names actually on disk. Empty when the file cannot be read.
+
+    demo_ontology must not assume Cortex-lake columns (storage_bin, shipment
+    supplier_id) that the thin DMS reseed does not have. Live Studio may be
+    either lake; verify() still measures the claim.
+    """
+    path = Path(warehouse)
+    if not path.is_file():
+        return {}
+    import duckdb
+
+    try:
+        con = duckdb.connect(str(path), read_only=True)
+    except Exception:  # noqa: BLE001
+        return {}
+    try:
+        rows = con.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
+    finally:
+        con.close()
+    out: dict[str, set[str]] = {}
+    for table_name, column_name in rows:
+        out.setdefault(str(table_name), set()).add(str(column_name))
+    return out
+
+
 def demo_ontology(warehouse: Path) -> Ontology:
     """The demo warehouse as an ontology, including the trap it is famous for.
 
@@ -974,7 +1005,23 @@ def demo_ontology(warehouse: Path) -> Ontology:
     inventory link is many-to-many, and the compiler will refuse to group a
     transaction measure by an inventory attribute - which is precisely the query
     that produced the ~15x inflation.
+
+    Column presence is read from ``warehouse`` when the file exists. Missing
+    inspect (no file) keeps the Cortex-lake shape. Thin DMS reseed has no
+    ``storage_bin`` and no ``shipments.supplier_id``.
     """
+    cols = _table_columns(warehouse)
+    inv = cols.get("inventory", set())
+    ship = cols.get("shipments", set())
+    loc = cols.get("locations", set())
+    # Unreadable file -> Cortex-lake default. Readable thin reseed omits extras.
+    cortex_default = not cols
+    lot_key = ["sku", "location_id"]
+    if cortex_default or "storage_bin" in inv:
+        lot_key.append("storage_bin")
+    if cortex_default or "supplier_id" in inv:
+        lot_key.append("supplier_id")
+
     o = Ontology()
     o.add_object("transaction", "transactions", ["txn_id"])
     o.add_object("shipment", "shipments", ["shipment_id"])
@@ -983,7 +1030,7 @@ def demo_ontology(warehouse: Path) -> Ontology:
     o.add_object("alert", "alerts", ["alert_id"])
     # A lot is identified by every column that varies within a sku. There is no
     # surrogate key, so the honest key is the whole natural one.
-    o.add_object("lot", "inventory", ["sku", "location_id", "storage_bin", "supplier_id"])
+    o.add_object("lot", "inventory", lot_key)
     # A sku-grain view, derived rather than asserted - this is the object a
     # category grouping is actually an attribute of.
     # Only category is an attribute of a SKU: measured, it is constant across
@@ -1000,26 +1047,37 @@ def demo_ontology(warehouse: Path) -> Ontology:
     o.add_link("txn_at_location", "transaction", ["location_id"], "location", ["location_id"])
     o.add_link("txn_of_product", "transaction", ["sku"], "product", ["sku"])
     o.add_link("txn_of_lot", "transaction", ["sku"], "lot", ["sku"])
-    o.add_link("ship_from_supplier", "shipment", ["supplier_id"], "supplier", ["supplier_id"])
+    if cortex_default or "supplier_id" in ship:
+        o.add_link("ship_from_supplier", "shipment", ["supplier_id"], "supplier", ["supplier_id"])
     o.add_link("ship_to_location", "shipment", ["destination_location_id"],
                "location", ["location_id"])
     o.add_link("ship_of_product", "shipment", ["sku"], "product", ["sku"])
     o.add_link("lot_at_location", "lot", ["location_id"], "location", ["location_id"])
-    o.add_link("lot_from_supplier", "lot", ["supplier_id"], "supplier", ["supplier_id"])
+    if cortex_default or "supplier_id" in inv:
+        o.add_link("lot_from_supplier", "lot", ["supplier_id"], "supplier", ["supplier_id"])
+    o.add_link("lot_of_product", "lot", ["sku"], "product", ["sku"])
 
+    # Thin DMS seed uses inbound/outbound; Cortex lake uses IN/OUT. Both listed.
     o.add_measure(
         "outbound_value_myr", "transaction",
-        "ROUND(SUM(CASE WHEN f.txn_type = 'OUT' THEN f.quantity_kg * f.unit_cost_myr "
-        "ELSE 0 END), 2)",
+        "ROUND(SUM(CASE WHEN f.txn_type IN ('OUT', 'outbound') "
+        "THEN f.quantity_kg * f.unit_cost_myr ELSE 0 END), 2)",
         description=(
-            "outbound issued stock value at cost (revenue-like OUT); "
+            "outbound issued stock value at cost (revenue / sales); "
             "one contribution per transaction"
         ),
     )
     o.add_measure(
+        "outbound_kg", "transaction",
+        "ROUND(SUM(CASE WHEN f.txn_type IN ('OUT', 'outbound') "
+        "THEN f.quantity_kg ELSE 0 END), 2)",
+        description="quantity sold / outbound kg; one contribution per transaction",
+    )
+    o.add_measure(
         "net_movement_kg", "transaction",
-        "ROUND(SUM(CASE WHEN f.txn_type = 'IN' THEN f.quantity_kg "
-        "WHEN f.txn_type IN ('OUT', 'WRITE_OFF') THEN -f.quantity_kg ELSE 0 END), 2)",
+        "ROUND(SUM(CASE WHEN f.txn_type IN ('IN', 'inbound') THEN f.quantity_kg "
+        "WHEN f.txn_type IN ('OUT', 'outbound', 'WRITE_OFF') THEN -f.quantity_kg "
+        "ELSE 0 END), 2)",
         description="receipts minus issues and write-offs; ADJUST is unsigned and excluded",
     )
     o.add_measure(
@@ -1035,6 +1093,19 @@ def demo_ontology(warehouse: Path) -> Ontology:
         "shipment_count", "shipment", "COUNT(*)",
         description="one contribution per shipment",
     )
+    o.add_measure(
+        "sku_count", "product", "COUNT(*)",
+        description="count of unique SKUs in inventory; one contribution per product",
+    )
+    if cortex_default or {"current_load_kg", "capacity_kg"} <= loc:
+        o.add_measure(
+            "utilisation_pct", "location",
+            "ROUND(100.0 * SUM(f.current_load_kg) / NULLIF(SUM(f.capacity_kg), 0), 1)",
+            additive=False,
+            description=(
+                "warehouse capacity utilisation / occupancy percent per location"
+            ),
+        )
     return o
 
 

@@ -1,6 +1,6 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (GEN-02 SoT widen: live A/B ask_path + CRAG grades + a9578348 10/26 vs 1/26).
+PREFLIGHT for this goal: HIT (GEN-02 compute-miss bind_plan + CRAG; live A/B still Platform vs a9578348 10/26 vs 1/26).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|

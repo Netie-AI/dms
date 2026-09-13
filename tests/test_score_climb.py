@@ -210,3 +210,29 @@ def test_climb_report_wrong_fails_law():
 
 def test_self_check_covers_climb_plants():
     assert self_check() == 0
+
+
+def test_offline_ab_wrong_zero_and_gen_not_below_baseline():
+    from score_curated import run_ab_curated
+
+    report = run_ab_curated()
+    blob = json.dumps(report)
+    assert "99.95" not in blob
+    assert "COMPLETE" not in blob
+    assert report["claim"] == "measured"
+    assert report["wrong"] == 0
+    assert report["exact_match"]["wrong"] == 0
+    assert report["generative"]["wrong"] == 0
+    assert report["generative"]["answered"] >= report["baseline_ab"]["generative_answered"]
+    planted = {
+        "trap_last_month",
+        "trap_short_paraphrase",
+        "trap_how_full_synonym",
+        "trap_delayed_count",
+        "trap_stock_by_bin",
+        "trap_alerts_ungranted",
+    }
+    for row in report["cases"]:
+        if row["id"] in planted:
+            assert row["generative"] != "WRONG", row
+            assert row["generative_badge"] == "ABSTAIN", row

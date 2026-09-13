@@ -258,7 +258,10 @@ def test_miss_when_compute_returns_no_plan(onto: Ontology, warehouse: Path) -> N
         ledger_append=_ledger_ok,
         ontology=onto,
     )
-    assert env is None
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
 
 
 def test_planted_traps_are_not_confident(onto: Ontology, warehouse: Path) -> None:
@@ -297,7 +300,10 @@ def test_planted_traps_without_a_plan_miss_not_green(
             ledger_append=_ledger_ok,
             ontology=onto,
         )
-        assert env is None, question
+        assert env is None or env["badge"] == "ABSTAIN", question
+        if env is not None:
+            assert env["abstained"] is True, question
+            assert judge({"expect": "refuse"}, env) != "WRONG", question
 
 
 def test_judge_green_trap_still_wrong() -> None:
@@ -365,7 +371,7 @@ def test_bind_plan_abstains_when_by_has_no_dimension() -> None:
         "columns": {"lot": ["lot_id", "qty"]},
     }
     out = bind_plan("Show stock by storage bin", ctx)
-    assert out == {"unsure": True}
+    assert out is None
 
 
 def test_bind_plan_is_not_a_pack_lookup() -> None:
@@ -478,7 +484,7 @@ def test_live_ask_falls_through_without_compute_query(minter: ManifestMinter) ->
 
     fake = FakeCortex(submits=[], asks=[])
     exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
-    env = exe.live_ask("Top 5 selling SKUs by revenue", session_id="ses_gen01_miss")
+    env = exe.live_ask("List chemicals in inventory", session_id="ses_gen01_miss")
     assert fake.asks, "contract ask still runs when compute is absent"
     assert env["badge"] == "L0_CERTIFIED"
 

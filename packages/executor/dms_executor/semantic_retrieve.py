@@ -21,7 +21,7 @@ from dms_executor.ontology import Ontology
 MAX_CONTEXT_CHARS = 2400
 MAX_TABLES = 6
 MAX_COLS = 8
-MAX_MEASURES = 6
+MAX_MEASURES = 10
 MAX_LINKS = 8
 MAX_SAMPLE = 6
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -30,6 +30,20 @@ _TIME = re.compile(
     re.I,
 )
 _NEEDS_DIM = re.compile(r"\b(by|per|each|grouped|across)\b", re.I)
+_ENTITY_PREFIX = re.compile(r"^\s*(which|list|rank)\b", re.I)
+_UNTYPED = re.compile(
+    r"\b(above\s+\d|below\s+\d|90 percent|cold[\s-]?storage|expired|expir(?:y|ed)|"
+    r"warehouse a\b|wh-a\b|cctv|camera|delayed|reorder|storage bin|"
+    r"\balerts?\b|chemicals?\b|high-risk|pending shipment|risk and lead)\b",
+    re.I,
+)
+_TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
+_DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("by country", "supplier country"), "supplier", "country"),
+    (("by destination", "by location"), "location", "location_code"),
+    (("by category",), "product", "category"),
+    (("by sku", "selling sku", "skus by"), "product", "sku"),
+)
 _STOP = frozenset(
     {
         "the",
@@ -277,20 +291,61 @@ def retrieve_short_context(
     return summarize_context(parts)
 
 
+def _locked_measure(question: str) -> str | None:
+    """One measure the question names, or None. Not a certified-pack lookup."""
+    qn = (question or "").lower()
+    if "quantity sold" in qn or "qty sold" in qn:
+        return "outbound_kg"
+    if "sku count" in qn or "how many sku" in qn or "how many unique sku" in qn:
+        return "sku_count"
+    if "shipment cost" in qn or "freight" in qn:
+        return "shipping_cost_myr"
+    if "capacity utilisation" in qn or "capacity utilization" in qn:
+        return "utilisation_pct"
+    if "stock value" in qn:
+        return "stock_value_myr"
+    if "total spend" in qn or "spend by" in qn:
+        return "stock_value_myr"
+    if "revenue" in qn or "selling sku" in qn:
+        return "outbound_value_myr"
+    return None
+
+
+def _group_from_hints(question: str) -> list[list[str]] | None:
+    qn = (question or "").lower()
+    hits = [
+        [obj, col]
+        for needles, obj, col in _DIM_HINTS
+        if any(n in qn for n in needles)
+    ]
+    if not hits:
+        return None
+    unique: list[list[str]] = []
+    for pair in hits:
+        if pair not in unique:
+            unique.append(pair)
+    if len(unique) > 1:
+        return None
+    return unique
+
+
 def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] | None:
     """Typed plan from retrieved context. Not a certified-pack lookup.
 
-    Time language misses (contract ask may still run). A by/per/each ask with
-    no bound dimension is unsure. Tied top measures are unsure.
+    Time language and untyped filters miss (contract ask may still run). Tied
+    top measures are unsure. Entity list/which/rank misses. A by/per/each or
+    top-N ask with no bound dimension misses rather than blocking Cortex.
     """
     if not isinstance(context, dict):
         return None
-    if _TIME.search(question or ""):
+    q = question or ""
+    if _TIME.search(q) or _UNTYPED.search(q) or _ENTITY_PREFIX.search(q):
         return None
     measures = context.get("measures") or {}
     if not isinstance(measures, dict) or not measures:
         return None
-    toks = question_tokens(question)
+    lock = _locked_measure(q)
+    toks = question_tokens(q)
     ranked = sorted(
         (
             (
@@ -304,43 +359,51 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
         reverse=True,
     )
     ranked = [(sc, name) for sc, name in ranked if sc > 0]
+    if lock and lock in measures:
+        ranked = [(sc, name) for sc, name in ranked if name == lock] or [(1, lock)]
     if not ranked:
         return None
     if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
         return {"unsure": True}
     measure = ranked[0][1]
     grain = str((measures.get(measure) or {}).get("grain") or "")
-    needs_dim = bool(_NEEDS_DIM.search(question or ""))
-    objects = context.get("objects") or {}
-    columns = context.get("columns") or {}
-    candidates: list[tuple[int, str, str]] = []
-    if isinstance(objects, dict) and isinstance(columns, dict):
-        for obj_name, spec in objects.items():
-            keys = list((spec or {}).get("key") or []) if isinstance(spec, dict) else []
-            cols = set(keys) | set(columns.get(obj_name) or [])
-            for col in cols:
-                col_s = str(col)
-                col_sc = _score(col_s, toks)
-                if col_sc <= 0:
-                    continue
-                obj_sc = _score(str(obj_name), toks)
-                candidates.append((col_sc + obj_sc, str(obj_name), col_s))
+    needs_dim = bool(_NEEDS_DIM.search(q))
+    top = _TOP_N.search(q)
+    hinted = _group_from_hints(q)
     group_by: list[list[str]] = []
-    if candidates:
-        dim_cands = [c for c in candidates if c[1] != grain] or candidates
-        dim_cands.sort(reverse=True)
-        if len(dim_cands) > 1 and dim_cands[0][0] == dim_cands[1][0] and (
-            dim_cands[0][1], dim_cands[0][2]
-        ) != (dim_cands[1][1], dim_cands[1][2]):
-            if dim_cands[0][2] != dim_cands[1][2]:
-                return {"unsure": True}
-        _sc, obj, col = dim_cands[0]
-        group_by = [[obj, col]]
-    if needs_dim and not group_by:
-        return {"unsure": True}
-    if not needs_dim:
+    if hinted:
+        group_by = hinted
+    else:
+        objects = context.get("objects") or {}
+        columns = context.get("columns") or {}
+        candidates: list[tuple[int, str, str]] = []
+        if isinstance(objects, dict) and isinstance(columns, dict):
+            for obj_name, spec in objects.items():
+                keys = list((spec or {}).get("key") or []) if isinstance(spec, dict) else []
+                cols = set(keys) | set(columns.get(obj_name) or [])
+                for col in cols:
+                    col_s = str(col)
+                    col_sc = _score(col_s, toks)
+                    if col_sc <= 0:
+                        continue
+                    obj_sc = _score(str(obj_name), toks)
+                    candidates.append((col_sc + obj_sc, str(obj_name), col_s))
+        if candidates:
+            dim_cands = [c for c in candidates if c[1] != grain] or candidates
+            dim_cands.sort(reverse=True)
+            if len(dim_cands) > 1 and dim_cands[0][0] == dim_cands[1][0] and (
+                dim_cands[0][1], dim_cands[0][2]
+            ) != (dim_cands[1][1], dim_cands[1][2]):
+                if dim_cands[0][2] != dim_cands[1][2]:
+                    return {"unsure": True}
+            _sc, obj, col = dim_cands[0]
+            group_by = [[obj, col]]
+    if measure == "utilisation_pct" and not group_by:
+        group_by = [["location", "location_code"]]
+    if (needs_dim or top) and not group_by:
+        return None
+    if not needs_dim and not top and measure != "utilisation_pct":
         group_by = []
-    top = re.search(r"\btop\s+(\d{1,2})\b", question or "", re.I)
     limit = int(top.group(1)) if top else 50
     return {"query_plan": {"measure": measure, "group_by": group_by, "limit": limit}}
 

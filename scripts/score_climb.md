@@ -4,7 +4,9 @@
 **Depends on:** GEN-01 landed @ `a9578348` (retrieve + execute-validate + offline `--ab`).
 **Does not close** #180 or #178. **Not COMPLETE.** Not 99.95%.
 
-Climb is measured on the **product ask path** (pack exact-match first, then GEN-01 generative on miss). Do not expand certified packs as the climb. Offline dual-path remains `python scripts/score_curated.py --ab` (no keys).
+Climb is measured on the **product ask path** (pack exact-match first, then GEN-01 generative on miss). Do not expand certified packs as the climb. Isolated live A/B uses `ask_path=exact|generative`. Offline dual-path remains `python scripts/score_curated.py --ab` (no keys).
+
+GEN-02 follow-on: Cortex `POST /dms/query` miss falls back to local `bind_plan` from the retrieved ontology, then the same compile → validate/CRAG → submit. Explicit Cortex `unsure` is not overridden. Planted refuses stay ABSTAIN. Ontology measures are warehouse-honest (thin reseed vs Cortex lake), not pack SQL.
 
 ## Baseline (frozen)
 
@@ -23,7 +25,7 @@ generative answered  1 / 26  (3.8 pct)
 WRONG 0 both
 ```
 
-Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Cortex compute+validate, not pack expansion.
+Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Cortex compute (bind_plan on miss)+validate, not pack expansion.
 
 ## Who runs what
 
@@ -33,7 +35,7 @@ Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Co
 | Platform product-path | `--climb --url https://studio.netie.ai/api` | host-online COMPLETE |
 | CI / any seat, no network | `--self-check` and `--ab` | a live score |
 
-`--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
+`--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + Cortex compute, bind_plan on compute miss, execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
 
 CRAG-style gates (validate-or-abstain, ideas only, not a vendor clone): each gen envelope is graded `validated` / `abstain_validate` / `abstain_gate` / `skipped`. Document RAG CRAG stays parked (P-DMS-19) until a doc index exists.
 
