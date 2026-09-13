@@ -96,6 +96,20 @@ GET 127.0.0.1:LOCAL_TUNNEL_PORT /health
   BLOCKED error.type=env.unset owner=Platform/tunnel
 ```
 
+Script run (same seat, `LOCAL_TUNNEL_PORT` unset):
+
+```
+STUDIO_ORIGIN=https://occurred-guest-guaranteed-practitioners.trycloudflare.com
+DMS_API_BASE=https://occurred-guest-guaranteed-practitioners.trycloudflare.com/api
+LOCAL_TUNNEL_PORT=(unset)
+  [PASS] GET STUDIO_ORIGIN /
+  [PASS] GET STUDIO_ORIGIN /studio
+  [PASS] GET DMS_API_BASE /health  (postgres, live, demo_fallback=false)
+  [BLOCKED] GET 127.0.0.1:LOCAL_TUNNEL_PORT /health error.type=env.unset owner=Platform/tunnel
+  [BLOCKED] POST /v1/chat/ask envelope error.type=live_ask_failed owner=Platform/tunnel
+VERDICT: BLOCKED  exit=3
+```
+
 **VERDICT from this seat: BLOCKED** (loopback unset + ask `live_ask_failed`). Origin `/` + `/studio` + `/api/health` keys measured. Not PASS. Not EPIC-008 COMPLETE.
 
 R-0003: a different run on prove with `LOCAL_TUNNEL_PORT` set, after the lake lock clears, walks the envelope. Platform owns that.
