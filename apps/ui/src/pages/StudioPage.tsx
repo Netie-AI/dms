@@ -77,6 +77,7 @@ export function StudioPage() {
   } | null>(null);
   // Files the next question should be grounded in. Empty means the whole Space.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [studioSourcesOpen, setStudioSourcesOpen] = useState(false);
 
   const fileInput = useRef<HTMLInputElement | null>(null);
   const folderInput = useRef<HTMLInputElement | null>(null);
@@ -336,6 +337,17 @@ export function StudioPage() {
         </div>
       </div>
 
+      <button
+        type="button"
+        data-testid="studio-sources-toggle"
+        aria-expanded={studioSourcesOpen}
+        aria-controls="studio-files"
+        onClick={() => setStudioSourcesOpen((o) => !o)}
+        className="mt-4 min-h-11 w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 text-sm font-medium text-[var(--color-ink)] hover:border-[var(--color-accent)] lg:hidden"
+      >
+        {studioSourcesOpen ? "Hide sources" : "Sources"}
+      </button>
+
       <input
         ref={fileInput}
         type="file"
@@ -386,7 +398,11 @@ export function StudioPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[22rem_1fr]">
         {/* Repository ------------------------------------------------------ */}
-        <div className="border border-[var(--color-line)] bg-[var(--color-surface)]/60">
+        <div
+          id="studio-files"
+          data-testid="studio-files"
+          className={`border border-[var(--color-line)] bg-[var(--color-surface)]/60 ${studioSourcesOpen ? "" : "max-lg:hidden"}`}
+        >
           <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-2">
             <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
               {tree?.space_name ? `${tree.space_name} · files` : "Files"}
@@ -422,7 +438,7 @@ export function StudioPage() {
           </div>
           {!activeId && (
             <p className="px-4 py-10 text-center text-sm text-[var(--color-ink-muted)]">
-              Pick a file on the left to see what is actually in it.
+              Pick a file in Sources to see what is actually in it.
             </p>
           )}
           {previewBusy && (
@@ -450,7 +466,9 @@ export function StudioPage() {
         </div>
       </div>
 
-      <SqlSourcePanel spaceId={activeSpaceId} onExtracted={loadTree} />
+      <div className={studioSourcesOpen ? "" : "max-lg:hidden"} data-testid="studio-sql-source">
+        <SqlSourcePanel spaceId={activeSpaceId} onExtracted={loadTree} />
+      </div>
 
       <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
         <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">

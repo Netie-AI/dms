@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (VQ-03 pack exact-match on Cortex certified SQL; planted traps stay miss).
+PREFLIGHT for this goal: MISS (Chat SourcePanel flex sibling + Studio stack below lg; no prior mobile-sources finding).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | studio-mobile-01 | STUDIO-MOBILE-01, SourcePanel, AppShell, StudioPage, drawer, lg, dms-171 | #171 Chat Sources is a default-open 22rem flex sibling. Drawer closed below lg; Studio files/SQLSRC collapse. Not #8 COMPLETE. | `2026-09-13_studio-mobile-01.md` |
 | 2026-09-13 | vq-03-l0-gaps | VQ-03, curated_ceo, certified_queries, demo_pack, dms-170 | #170 recover 7 live expect=l0 ABSTAINs via pack + Cortex submit. LAYER ok. Traps stay refuse. Not COMPLETE. | `2026-09-13_vq-03-l0-gaps.md` |
 | 2026-09-13 | curated-ceo-pack-expand | curated_ceo, L0, refuse, SCORE-PACK-01, dms-168 | #168 pack 14->26. L0 only with Cortex certified SQL. Refuse otherwise. Not parented under #8. Not COMPLETE. | `2026-09-13_curated-ceo-pack-expand.md` |
 | 2026-09-13 | parallel-browse-duckdb-attach | library, duckdb, unique-file-handle, browse.duckdb, parallel, CI | DuckDB 1.5 unique-file-handle 500s a second RW attach. Library lists serialize on one live attach. Do not treat attach conflict as a reseed. | `2026-09-13_parallel-browse-duckdb-attach.md` |

@@ -12,6 +12,7 @@ import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/ap
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
+import { LG_MIN_WIDTH_PX, shouldAutoOpenSourcesAfterAsk, sourcesStartOpen } from "@/lib/viewport";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
 export type ChatMessage =
@@ -126,7 +127,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [composerPauseReason, setComposerPauseReason] = useState<string | null>(null);
   const [activity, setActivity] = useState<ActivityState>(null);
   const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
-  const [sourcePanelOpen, setSourcePanelOpen] = useState(true);
+  const [sourcePanelOpen, setSourcePanelOpen] = useState(() =>
+    sourcesStartOpen(
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? (q) => window.matchMedia(q)
+        : undefined,
+    ),
+  );
   const [productMode, setProductModeState] = useState<ProductMode>(storedProductMode);
   const [navCollapsed, setNavCollapsed] = useState(() => storedProductMode() === "cream");
   const queueRef = useRef<string[]>([]);
@@ -302,7 +309,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...prev,
         { id: envelope.answer_id || `a_${Date.now()}`, role: "assistant", envelope },
       ]);
-      setSourcePanelOpen(true);
+      const width = typeof window === "undefined" ? LG_MIN_WIDTH_PX : window.innerWidth;
+      if (shouldAutoOpenSourcesAfterAsk(width)) {
+        setSourcePanelOpen(true);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "ask failed";
       setAskError(msg);

@@ -10,6 +10,13 @@ Append-only. Never edited, only added to. Newest first.
 - **Platform recycle.** If prove Cortex lake lacks those columns, submit misses and the qid stays ABSTAIN. Recycle Cortex with the dms pack lake. Do not invent PASS.
 - **Not this ticket:** EPIC-008 COMPLETE, EPIC-019 COMPLETE, public `:8090`, lake / `LIVE_KEY_ID`, greening planted traps, ticket close.
 
+## 2026-09-13 - STUDIO-MOBILE-01: Sources drawer below lg (#171)
+
+- **Ticket.** Serves [STUDIO-MOBILE-01 #171](https://github.com/Netie-AI/dms/issues/171). Parent is EPIC-008 residual polish, not a reopen of COMPLETE. Does not close #171 or #8.
+- **Chat.** Real covering path was `SourcePanel` as a `shrink-0 w-[22rem]` flex sibling, default open. Below `lg` it is now a drawer, closed by default, with an explicit Sources control. After ask it does not auto-open on phone-width. Desktop `lg` dock unchanged.
+- **Studio.** Files + SQLSRC stay on `lg:grid-cols-[22rem_1fr]`. Below `lg` they start collapsed behind a Sources control so preview / certified ask is reachable.
+- **Not this ticket:** EPIC-008 COMPLETE, public `:8090`, OpenVault user key UI, LeftNav rewrite, ticket close.
+
 
 ## 2026-09-13 - curated_ceo pack 14 -> 26 (SCORE-PACK-01 #168)
 
