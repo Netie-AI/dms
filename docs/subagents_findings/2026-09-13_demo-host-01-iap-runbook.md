@@ -22,8 +22,8 @@ host-harden + IAP/CF to `127.0.0.1:8090` is Platform/DevOps. This repo documents
 
 - Ports: laptop `:3000` / `:8090` vs prove Studio URL + loopback API.
 - SQLSRC-09: `SqlSourcePanel` -> `POST /api/v1/studio/sources/sql`.
-- Org listing 2026-09-13: no `Netie-AI/netie-platform` / `platform` / `infra` repo. Cite EPIC-008 #8 GO; do not invent tunnel commands.
+- Temp CF origin (Platform-owned, may rotate until durable `TUNNEL_TOKEN`): `https://occurred-guest-guaranteed-practitioners.trycloudflare.com`. `/` and `/api/health` 200 postgres. `:8090` not public.
 
 ## Does not prove
 
-Walking `{STUDIO_URL}` (DEMO-HOST-02). Tunnel UP. EPIC-008 COMPLETE.
+Walking the 2-min ask envelope (DEMO-HOST-02). Durable hostname. EPIC-008 COMPLETE.

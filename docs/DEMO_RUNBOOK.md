@@ -48,7 +48,7 @@ Two consequences worth knowing before the room asks:
 | Reorder / low-stock asks | Green on envelope | ENV-E4 #28 CLOSED (#91) | Listings abstain or cite; no customer 500. Live Cortex still un-run |
 | Stack stability | Yellow | ops, not a ticket | Laptop: kill stale :8010/:8090 before show; Defender slows Python. Prove: do not kill systemd; Platform owns the host |
 | Explorer reveal on citation | Green | REVEAL-01 dms#26 CLOSED | SourcePanel **Open original** → `POST /v1/library/reveal` (allowlisted roots); AirGPT still has `reveal-path` |
-| Prove host-online | Yellow | DEMO-HOST-01 #163 (docs); DEMO-HOST-02 #164 (measure) | host-harden + IAP/CF is Platform-owned. This repo documents the walk; it does not stand the tunnel. EPIC-008 #8 stays OPEN |
+| Prove host-online | Yellow | DEMO-HOST-01 #163 (docs); DEMO-HOST-02 #164 (measure) | Platform/DevOps own the tunnel. Temp CF hostname below; `/` and `/api/health` 200 (postgres). `:8090` loopback-only. **Not** EPIC-008 COMPLETE |
 
 ---
 
@@ -58,7 +58,7 @@ Laptop column is `Start-DMS.bat`. Prove column is host-harden + IAP/CF. **DMS AP
 
 | Product | Laptop start | Laptop URL | Prove (IAP/CF) |
 |---------|--------------|------------|----------------|
-| **DMS UI** | `D:\DMS\scripts\windows\Start-DMS.bat` | http://127.0.0.1:3000/ | Platform **Studio URL** (path `/studio`). Same origin as `/api` |
+| **DMS UI** | `D:\DMS\scripts\windows\Start-DMS.bat` | http://127.0.0.1:3000/ | Temp CF: https://occurred-guest-guaranteed-practitioners.trycloudflare.com (`/studio`). Same origin as `/api`. May rotate until durable `TUNNEL_TOKEN` |
 | **DMS API** | same stack | http://127.0.0.1:8090/health | same loopback bind on prove; reach **only** via IAP/CF. Not `0.0.0.0/0` |
 | Cortex | started by stack | -- | as deployed on prove (laptop `http://127.0.0.1:8010/health`). Host-side, not a public port |
 | OpenVault | started by stack | UI :3010; `http://127.0.0.1:5000/api/healthz` | as deployed. Do not stand Next on the OV e2-micro |
@@ -79,8 +79,8 @@ SPA calls are same-origin `/api/...` (`apps/ui/src/lib/api.ts`). Vite `VITE_API_
 | Owner | Must already be true | This repo does **not** |
 |-------|----------------------|-------------------------|
 | Platform / DevOps | prove host-harden UP (systemd + Spaces postgres + IAP to loopback `:8090`). Founder GO 2026-09-13: host-harden smoke PASSED | stand the host, open firewall, change bind address, touch the lake / `LIVE_KEY_ID` / OV e2-micro |
-| Platform / DevOps | Tunnel recipe + published **Studio URL** | invent `cloudflared` / `gcloud` / listen-on-all-interfaces commands |
-| dms (this section) | Document the steward walk once `STUDIO_URL` exists | claim EPIC-008 COMPLETE |
+| Platform / DevOps | Tunnel recipe + published **Studio URL** (temp quick tunnel until durable `TUNNEL_TOKEN`) | invent `cloudflared` / `gcloud` / listen-on-all-interfaces commands |
+| dms (this section) | Document the steward walk against the published origin | claim EPIC-008 COMPLETE |
 
 Prefer `DMS_DEMO_FALLBACK=0`. A silent demo-number 200 is a lying affordance.
 
@@ -92,23 +92,28 @@ Cite, do not duplicate:
 
 - Founder GO on EPIC-008: https://github.com/Netie-AI/dms/issues/8 (2026-09-13) -- IAP/CF to loopback `:8090`; no public `:8090`; no `0.0.0.0/0`.
 - In-repo analogue only: `deploy/compose/Caddyfile` + compose `api` `expose: ["8080"]` (API is not the public bind when Caddy is used). Prove replaces a public bind with IAP/CF in front of that loopback. **Do not** treat compose `api_dev` `ports: ["8090:8080"]` as the prove recipe -- that profile is local Vite, not host-harden.
-- Recipe location: **outside this repo.** There is no `Netie-AI/netie-platform` / `platform` / `infra` git repo in the org listing as of 2026-09-13. Ask Platform for the live runbook and for `STUDIO_URL`. If they have not published it, stop: DEMO-HOST-02 ends BLOCKED naming Platform, never invent PASS.
+- Recipe location: **outside this repo.** Platform/DevOps own the tunnel process, `TUNNEL_TOKEN`, and hostname. There is no `Netie-AI/netie-platform` / `platform` / `infra` git repo in the org listing as of 2026-09-13. Do not start `cloudflared` from dms.
 
 Do **not** paste host commands here that bind `:8090` on `0.0.0.0` or add a `0.0.0.0/0` firewall rule.
 
 #### Studio URL
 
-- **Browser:** `{STUDIO_URL}/studio` -- Platform publishes `STUDIO_URL` (IAP TCP-forward to a local client port, or Cloudflare Access hostname). Path is the SPA route `/studio` (`StudioPage`).
-- **API on prove:** `http://127.0.0.1:8090/health` on the **host**. The browser must not need a public `:8090`. Same-origin `/api` (Vite proxy or Caddy `handle_path /api/*`) is the supported shape.
+`STUDIO_URL` (temp Cloudflare quick tunnel; **may rotate** until Platform installs a durable `TUNNEL_TOKEN`):
+
+https://occurred-guest-guaranteed-practitioners.trycloudflare.com
+
+- **Browser:** `{STUDIO_URL}/studio` -- SPA route (`StudioPage`). Same origin as `/api`.
+- **API on prove:** `http://127.0.0.1:8090` on the **host**, loopback-only. Not opened publicly. The CF origin proxies to that loopback. Same-origin `/api` is the supported shape.
+- **Platform smoke (2026-09-13):** `GET /` 200 (HTML `netie DMS`); `GET /api/health` 200, `database.backend=postgres`, `persistent=true`, `ask_mode=live`, `demo_fallback=false`. `/studio` 200.
 - Cortex / OpenVault: whatever the prove unit files already use (`CORTEX_URL` / `OPENVAULT_URL` on the host). Do not publish them. Do not retarget `LIVE_KEY_ID`.
 
-If `STUDIO_URL` is unset, there is no founder/buyer walk from this repo alone.
+If the hostname 404s or TLS-fails, it rotated. Ask Platform for the current origin. Do not open `:8090`. Do not invent EPIC-008 COMPLETE.
 
 #### 2-minute walk (open Studio -> point SQL or upload -> ask -> envelope)
 
 Laptop Act A still uses `:3000` (section 4). This walk is prove.
 
-1. **Open Studio.** Browser to `{STUDIO_URL}/studio`. Left nav **Studio**. Space chip: Finance (or the Space Platform seeded). Do not point the buyer at `http://127.0.0.1:8090` as "the product" -- that is the API loopback on the host.
+1. **Open Studio.** Browser to `{STUDIO_URL}/studio` (temp CF URL above). Left nav **Studio**. Space chip: Finance (or the Space Platform seeded). Do not point the buyer at `http://127.0.0.1:8090` as "the product" -- that is the API loopback on the host.
 2. **Point or upload.**
    - **SQL (SQLSRC-09):** panel **SQL Server / MySQL** (`SqlSourcePanel`). Host / database / user / password (sent once, not stored). **Extract into bronze**. Receipt names tables landed, `extracted_at`, truncated pulls, and declared-join violations. Password field clears after the request. Route: `POST /v1/studio/sources/sql`.
    - **File:** **+** (or Folder) -> `tests/fixtures/ingest/15_q3_sales_export.xlsx` (or the buyer's workbook). Receipt: ingested vs need-attention. Do not promise a serving sync that is still a log line.
@@ -313,11 +318,11 @@ Laptop:
 
 Prove (IAP/CF) -- do not kill prove systemd; do not open `:8090` publicly:
 
-- [ ] Platform: tunnel UP; `STUDIO_URL` published (recipe is not in this repo)
-- [ ] Host API still `127.0.0.1:8090` (no `0.0.0.0/0`)
+- [ ] Platform tunnel UP (Platform/DevOps). Temp origin: https://occurred-guest-guaranteed-practitioners.trycloudflare.com -- may rotate until durable `TUNNEL_TOKEN`
+- [ ] `GET /` and `/api/health` 200; health says postgres. Host API still `127.0.0.1:8090` (no `0.0.0.0/0`)
 - [ ] Open `{STUDIO_URL}/studio` (section 2.1)
 - [ ] One point-or-upload + one ask; envelope visible
-- [ ] Measured record is DEMO-HOST-02, not this checklist
+- [ ] Measured record is DEMO-HOST-02, not this checklist. **Not** EPIC-008 COMPLETE
 
 ---
 

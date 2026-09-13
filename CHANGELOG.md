@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - DEMO-HOST-01: pin temp CF Studio hostname (#163)
+
+- **Studio URL.** Platform quick tunnel (Platform/DevOps own it): `https://occurred-guest-guaranteed-practitioners.trycloudflare.com`. May rotate until a durable `TUNNEL_TOKEN`.
+- **Smoke.** `GET /` and `/api/health` 200; health `database.backend=postgres`, `persistent=true`. DMS `:8090` stays loopback-only -- no public open.
+- **Not this ticket:** EPIC-008 COMPLETE, DEMO-HOST-02 measured walk, standing the tunnel from dms.
+
+
 ## 2026-09-13 - DEMO-HOST-01: prove IAP/CF walk in the runbook (#163)
 
 - **Cause.** `docs/DEMO_RUNBOOK.md` only listed laptop `127.0.0.1:3000` / `Start-DMS.bat`. Prove host-harden is UP (Platform: systemd, Spaces postgres, IAP to loopback `:8090`) with no founder/buyer walk that says open Studio via IAP/CF, point or upload, ask, see the envelope -- without a public `:8090`.
