@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - GEN-02 live A/B + CRAG validate-or-abstain harness (#180)
+
+- **SoT widen.** Isolated live A/B: `POST /v1/chat/ask` `ask_path=exact|generative|product` (certified-first then free gen). Platform: `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`.
+- **CRAG-style.** Harness grades gen envelopes `validated` / `abstain_validate` / `abstain_gate` (execute-validate or abstain). Ideas only; not a DB-GPT/CRAG clone. Doc RAG CRAG stays parked.
+- **Baseline.** A/B @ `a9578348` exact answered 10/26, gen 1/26, WRONG=0. Offline `--ab` uses demo ontology retrieve (not pack expand). Frozen product-path @ `91c5cc99` unchanged.
+- **Must not:** 99.95%/COMPLETE, greening planted refuses, GitHub CI live ask, ticket close, keys in chat.
+
+
 ## 2026-09-13 - GEN-02 measured live coverage climb harness (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) under EPIC-GEN-01 #178 after GEN-01 @ `a9578348`. Does not close tickets. Not COMPLETE. Not 99.95%.

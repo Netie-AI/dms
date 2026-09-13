@@ -1,10 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (GEN-01 A/B is offline `--ab`; GEN-02 is live `--climb` vs 91c5cc99).
+PREFLIGHT for this goal: HIT (GEN-02 SoT widen: live A/B ask_path + CRAG grades + a9578348 10/26 vs 1/26).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
-| 2026-09-13 | gen02-coverage-climb | GEN-02, climb, score_curated, WRONG=0, 91c5cc99, studio.netie.ai, dms-180 | #180 `--climb` live OK/LAYER/ABSTAIN/WRONG vs frozen baseline. Route split generative vs exact. Not COMPLETE. | `2026-09-13_gen02-coverage-climb.md` |
+| 2026-09-13 | gen02-coverage-climb | GEN-02, ask_path, A/B, CRAG, climb, 91c5cc99, a9578348, studio.netie.ai, dms-180 | #180 live A/B exact vs gen + CRAG validate-or-abstain. Baseline gen 1/26 WRONG=0. Not COMPLETE. | `2026-09-13_gen02-coverage-climb.md` |
 | 2026-09-13 | gen01-ontology-generative | GEN-01, retrieve, ontology, A/B, execute-validate, abstain, dms-179 | #179 schema+ontology SQL-filter retrieve → short context → compile+validate. A/B vs exact-match WRONG=0. Not pack expansion. Not COMPLETE. | `2026-09-13_gen01-ontology-generative.md` |
 | 2026-09-13 | sqlsrc-pg-01-postgresql-kind | SQLSRC-PG-01, postgresql, SqlSourceIn, db_connector, dms-172 | #172 kind=postgresql extract. Catalog must not use MySQL database-as-schema. Platform attaches bird_minidev after merge. Not SCORE-BIRD PASS. | `2026-09-13_sqlsrc-pg-01-postgresql-kind.md` |
 | 2026-09-13 | vq-04-refuse-traps | VQ-04, trap_delayed_count, trap_how_full_synonym, L1, dms-176 | #176 planted refuse must stay ABSTAIN after #175 WRONG2. Exact-phrase refuse, not regex. Not COMPLETE. | `2026-09-13_vq-04-refuse-traps.md` |

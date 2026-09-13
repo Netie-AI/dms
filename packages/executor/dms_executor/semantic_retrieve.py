@@ -265,6 +265,8 @@ def retrieve_short_context(
         methods.insert(0, "ontology")
     if encodings:
         methods.insert(0, "sql_filter_values")
+    if schema and (onto_slice.get("measures") or onto_slice.get("objects")):
+        methods.insert(0, "hybrid_fuse")
     parts: dict[str, Any] = {
         "verified": bool(ontology is not None and ontology.verified),
         "methods": methods,
@@ -292,7 +294,7 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     ranked = sorted(
         (
             (
-                _score(name, toks)
+                _score(name, toks) * 2
                 + _score(str((spec or {}).get("description") or ""), toks),
                 name,
             )

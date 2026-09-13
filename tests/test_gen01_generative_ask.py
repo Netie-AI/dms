@@ -405,6 +405,7 @@ def test_ab_curated_wrong_zero_both_paths() -> None:
             assert row["generative"] != "WRONG", row
             assert row["exact"] != "WRONG", row
             assert row["generative_badge"] == "ABSTAIN", row
+    assert report["generative"]["answered"] >= report["baseline_ab"]["generative_answered"]
 
 
 def test_compute_http_does_not_invent_a_key() -> None:
@@ -522,3 +523,45 @@ def test_live_ask_vague_trap_does_not_execute(minter: ManifestMinter) -> None:
     assert fake.submits == []
     assert fake.asks == []
     assert judge({"expect": "refuse"}, env) != "WRONG"
+
+
+def test_ask_path_exact_miss_does_not_call_cortex(minter: ManifestMinter) -> None:
+    from tests.test_live_ask import FakeCortex
+
+    fake = FakeCortex(submits=[], asks=[])
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "Top 5 selling SKUs by revenue",
+        session_id="ses_gen02_exact_miss",
+        ask_path="exact",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert fake.asks == []
+    assert fake.submits == []
+
+
+def test_ask_path_generative_skips_certified_pack(minter: ManifestMinter) -> None:
+    fake = _GenCortex(compute_payload={"unsure": True})
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen02_gen_skip_pack",
+        ask_path="generative",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert fake.asks == []
+    assert fake.submits == []
+
+
+def test_ask_path_exact_still_hits_pack(minter: ManifestMinter) -> None:
+    fake = _GenCortex()
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen02_exact_pack",
+        ask_path="exact",
+    )
+    assert env["route"] == "governed_metric"
+    assert fake.asks == []
+    assert fake.submits

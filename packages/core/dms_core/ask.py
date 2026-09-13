@@ -21,6 +21,9 @@ class AskServicePort(Protocol):
         #: grounded in chosen files is enforced by the engine rather than
         #: suggested to the model. Empty/None means the whole Space.
         tables: list[str] | None = None,
+        #: GEN-02 A/B: product = certified-first then gen; exact = pack/VQ only;
+        #: generative = ontology retrieve+validate, skip pack. None = product.
+        ask_path: str | None = None,
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...

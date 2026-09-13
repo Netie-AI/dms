@@ -253,6 +253,17 @@ def _l2_envelope(
     return env
 
 
+def path_miss_envelope(
+    question: str,
+    reason: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Isolated A/B miss: ABSTAIN, do not mix Cortex/pack into the other lane."""
+    return _abstain(question, reason, space_id=space_id, session_id=session_id)
+
+
 def maybe_generative_ask(
     question: str,
     *,

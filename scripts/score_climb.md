@@ -8,22 +8,34 @@ Climb is measured on the **product ask path** (pack exact-match first, then GEN-
 
 ## Baseline (frozen)
 
-Live `curated_ceo` @ `91c5cc99` (VQ-04 refuse traps):
+Product-path live `curated_ceo` @ `91c5cc99` (VQ-04 refuse traps):
 
 ```
 OK 7   LAYER 10   ABSTAIN 9   WRONG 0
 answered = OK+LAYER = 17 / 26
 ```
 
-Re-measure by running `--climb`. Do not edit these counts to invent a rise.
+Isolated A/B @ `a9578348` (GEN-01 offline, Platform-reported):
+
+```
+exact-match answered 10 / 26  (38.5 pct)
+generative answered  1 / 26  (3.8 pct)
+WRONG 0 both
+```
+
+Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Cortex compute+validate, not pack expansion.
 
 ## Who runs what
 
 | Seat | Command | Must not claim |
 |------|---------|----------------|
-| Platform (can reach Studio API) | `--climb --url https://studio.netie.ai/api` | COMPLETE / 99.95% / greening planted refuses |
-| Laptop loopback | `--live` (`DMS_URL` defaults `http://127.0.0.1:8090`) | host-online / Studio climb |
+| Platform (Studio API + IAP) | `--climb --ab --url https://studio.netie.ai/api` | COMPLETE / 99.95% / greening planted refuses |
+| Platform product-path | `--climb --url https://studio.netie.ai/api` | host-online COMPLETE |
 | CI / any seat, no network | `--self-check` and `--ab` | a live score |
+
+`--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
+
+CRAG-style gates (validate-or-abstain, ideas only, not a vendor clone): each gen envelope is graded `validated` / `abstain_validate` / `abstain_gate` / `skipped`. Document RAG CRAG stays parked (P-DMS-19) until a doc index exists.
 
 Keys/models stay in Cortex + OpenVault on the host. This script never sends API keys.
 

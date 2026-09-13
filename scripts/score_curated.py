@@ -8,6 +8,7 @@ traps that must abstain. It does not start EPIC-019 (no new VQ repo).
   python scripts/score_curated.py --live
   python scripts/score_curated.py --ab
   python scripts/score_curated.py --climb --url https://studio.netie.ai/api
+  python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api
 """
 
 from __future__ import annotations
@@ -46,6 +47,14 @@ BASELINE_91C5CC99: dict[str, Any] = {
     "ok": 7,
     "layer": 10,
     "abstain": 9,
+    "wrong": 0,
+}
+# Offline A/B @ a9578348 (GEN-01). Counts, not 38.5/3.8 slogans.
+BASELINE_AB_A9578348: dict[str, Any] = {
+    "commit": "a9578348",
+    "n": 26,
+    "exact_answered": 10,
+    "generative_answered": 1,
     "wrong": 0,
 }
 
@@ -135,6 +144,31 @@ def classify_path(route: Any) -> str:
     return "other"
 
 
+def classify_crag(env: dict[str, Any]) -> str:
+    """CRAG-style validate-or-abstain grade. Ideas-only; not a vendor clone.
+
+    validated = gen execute after validate. abstain_validate = EXPLAIN/grant/hostile
+    fail. abstain_gate = unsure/uncertified. skipped = exact-match or miss.
+    """
+    notes = " ".join(str(x) for x in (env.get("assumptions") or []))
+    route = str(env.get("route") or "")
+    abstained = bool(env.get("abstained") or env.get("badge") == "ABSTAIN")
+    if route == "generated" and not abstained:
+        return "validated"
+    if abstained and "validate:" in notes:
+        return "abstain_validate"
+    if abstained and (
+        "unsure" in notes
+        or "uncertified" in notes
+        or "too vague" in notes
+        or "query_plan was not typed" in notes
+    ):
+        return "abstain_gate"
+    if abstained:
+        return "abstain"
+    return "skipped"
+
+
 def answered_vs_baseline(measured: int, baseline: int) -> str:
     if measured > baseline:
         return "rose"
@@ -160,12 +194,21 @@ def climb_url(url: str | None, env: dict[str, str] | None = None) -> str | None:
     return None
 
 
-def _ask(base: str, question: str, space_id: str, timeout: float) -> dict[str, Any]:
+def _ask(
+    base: str,
+    question: str,
+    space_id: str,
+    timeout: float,
+    ask_path: str | None = None,
+) -> dict[str, Any]:
     import httpx
 
+    payload: dict[str, Any] = {"question": question, "space_id": space_id}
+    if ask_path:
+        payload["ask_path"] = ask_path
     resp = httpx.post(
         f"{base.rstrip('/')}/v1/chat/ask",
-        json={"question": question, "space_id": space_id},
+        json=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -251,6 +294,36 @@ def self_check() -> int:
     if classify_health(403, None, "text/html")[0] != "blocked":
         print("FAIL: IAP 403 must be BLOCKED, not a score")
         return 1
+    ab = BASELINE_AB_A9578348
+    if (
+        int(ab["exact_answered"]) + int(ab["generative_answered"]) < 1
+        or int(ab["wrong"]) != 0
+        or int(ab["n"]) != len(ids)
+        or int(ab["exact_answered"]) != 10
+        or int(ab["generative_answered"]) != 1
+    ):
+        print("FAIL: A/B baseline @ a9578348 drifted")
+        return 1
+    if classify_crag(
+        {
+            "route": "generated",
+            "abstained": False,
+            "badge": "L2_VALIDATED",
+            "assumptions": ["executed via Cortex submit after validate"],
+        }
+    ) != "validated":
+        print("FAIL: CRAG validated plant")
+        return 1
+    if classify_crag(
+        {
+            "route": "generated",
+            "abstained": True,
+            "badge": "ABSTAIN",
+            "assumptions": ["GEN-01: validate:explain"],
+        }
+    ) != "abstain_validate":
+        print("FAIL: CRAG validate-or-abstain plant")
+        return 1
     fake_t = {"OK": 8, "LAYER": 10, "ABSTAIN": 8, "WRONG": 0}
     fake_cases = [
         {
@@ -276,7 +349,11 @@ def self_check() -> int:
     return 0
 
 
-def score_pack_live(url: str, timeout: float) -> tuple[dict[str, int], list[dict[str, Any]]]:
+def score_pack_live(
+    url: str,
+    timeout: float,
+    ask_path: str | None = None,
+) -> tuple[dict[str, int], list[dict[str, Any]]]:
     pack = load_pack(DEFAULT_PACK)
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
@@ -285,7 +362,7 @@ def score_pack_live(url: str, timeout: float) -> tuple[dict[str, int], list[dict
         space = resolve_space(case, pack["spaces"])
         err = ""
         try:
-            env = _ask(url, str(case["question"]), space, timeout)
+            env = _ask(url, str(case["question"]), space, timeout, ask_path=ask_path)
         except Exception as exc:  # noqa: BLE001
             env = ask_error_envelope(exc)
             if env is None:
@@ -299,6 +376,7 @@ def score_pack_live(url: str, timeout: float) -> tuple[dict[str, int], list[dict
                         "badge": None,
                         "route": None,
                         "path": "other",
+                        "crag": "skipped",
                         "rows": 0,
                         "expect": case.get("expect"),
                         "error": err,
@@ -311,9 +389,10 @@ def score_pack_live(url: str, timeout: float) -> tuple[dict[str, int], list[dict
         badge = env.get("badge")
         route = env.get("route")
         path = classify_path(route)
+        crag = classify_crag(env)
         n = len(env.get("rows") or [])
         print(
-            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}"
+            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}\tcrag={crag}"
             f"\trows={n}\texpect={case['expect']}"
         )
         cases_out.append(
@@ -323,6 +402,7 @@ def score_pack_live(url: str, timeout: float) -> tuple[dict[str, int], list[dict
                 "badge": badge,
                 "route": route,
                 "path": path,
+                "crag": crag,
                 "rows": n,
                 "expect": case.get("expect"),
                 "demo_fallback_used": bool(env.get("demo_fallback_used")),
@@ -377,43 +457,18 @@ def _ab_miss() -> dict[str, Any]:
 
 
 def _ab_seed(path: Path) -> Any:
-    """Verified sales ontology for the generative A/B lane. Not a pack expand."""
-    import duckdb
-    from dms_executor.generative_ask import load_verified_ontology
-    from dms_executor.ontology import Ontology
+    """Demo warehouse + demo_ontology for the generative A/B lane.
 
-    con = duckdb.connect(str(path))
-    try:
-        con.execute("CREATE TABLE lots (lot_id VARCHAR, sku VARCHAR, category VARCHAR, qty DOUBLE)")
-        con.execute(
-            "INSERT INTO lots VALUES "
-            "('L1','SKU-1','ALPHA',10),('L2','SKU-1','ALPHA',20),"
-            "('L3','SKU-1','ALPHA',30),('L4','SKU-2','BETA',40)"
-        )
-        con.execute(
-            "CREATE TABLE sales (txn_id VARCHAR, sku VARCHAR, region VARCHAR, amount DOUBLE)"
-        )
-        con.execute("INSERT INTO sales VALUES ('T1','SKU-1','North',100),('T2','SKU-2','South',50)")
-        con.execute("CREATE TABLE regions (region VARCHAR, country VARCHAR)")
-        con.execute("INSERT INTO regions VALUES ('North','MY'),('South','MY')")
-    finally:
-        con.close()
-    o = Ontology()
-    o.add_object("sale", "sales", ["txn_id"])
-    o.add_object("lot", "lots", ["lot_id"])
-    o.add_object("region", "regions", ["region"])
-    o.add_object(
-        "product",
-        "(SELECT sku, ANY_VALUE(category) AS category FROM lots GROUP BY sku)",
-        ["sku"],
-    )
-    o.add_link("sale_of_lot", "sale", ["sku"], "lot", ["sku"])
-    o.add_link("sale_of_product", "sale", ["sku"], "product", ["sku"])
-    o.add_link("sale_in_region", "sale", ["region"], "region", ["region"])
-    o.add_measure("revenue", "sale", "SUM(f.amount)")
-    loaded = load_verified_ontology(path, o)
+    Not a certified-pack expand. Same lake the exact-match pack names.
+    """
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.generative_ask import load_verified_ontology
+    from dms_executor.ontology import demo_ontology
+
+    ensure_demo_warehouse(path)
+    loaded = load_verified_ontology(path, demo_ontology(path))
     if loaded is None:
-        raise RuntimeError("A/B sales ontology failed verify")
+        raise RuntimeError("A/B demo ontology failed verify")
     return loaded
 
 
@@ -481,7 +536,7 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
             q,
             space_id=space,
             warehouse=tmp,
-            grantable={"sales", "lots", "regions"},
+            grantable=grants,
             compute=lambda ctx, _q=q: bind_plan(_q, ctx),
             submit=submit,
             ledger_append=ledger,
@@ -500,16 +555,34 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
                 "generative": gv,
                 "exact_badge": exact_env.get("badge"),
                 "generative_badge": gen_env.get("badge"),
+                "crag": classify_crag(gen_env),
             }
         )
     n = len(pack["questions"])
     exact_r = _path_report("exact_match", exact_t, n)
     gen_r = _path_report("generative_semantic", gen_t, n)
+    crag_counts: dict[str, int] = {}
+    for row in cases_out:
+        key = str(row.get("crag") or "skipped")
+        crag_counts[key] = crag_counts.get(key, 0) + 1
+    base = BASELINE_AB_A9578348
     return {
         "kind": "dms.ab_gen01",
         "pack": "curated_ceo",
+        "claim": "measured",
         "exact_match": exact_r,
         "generative": gen_r,
+        "crag": crag_counts,
+        "baseline_ab": {
+            "commit": base["commit"],
+            "exact_answered": base["exact_answered"],
+            "generative_answered": base["generative_answered"],
+            "n": base["n"],
+            "wrong": base["wrong"],
+        },
+        "generative_vs_baseline": answered_vs_baseline(
+            gen_r["answered"], int(base["generative_answered"])
+        ),
         "wrong": exact_r["wrong"] + gen_r["wrong"],
         "passed": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
         "cases": cases_out,
@@ -520,6 +593,7 @@ def ab_offline() -> int:
     report = run_ab_curated()
     exact = report["exact_match"]
     gen = report["generative"]
+    base = report["baseline_ab"]
     print(
         f"{'path':<22} n ok layer abstain wrong answered coverage_answered"
     )
@@ -529,18 +603,27 @@ def ab_offline() -> int:
             f"{row['abstain']} {row['wrong']} {row['answered']} "
             f"{row['coverage_answered_pct']:.2f} pct"
         )
+    print(
+        f"baseline @ {base['commit']}: exact_answered={base['exact_answered']} "
+        f"generative_answered={base['generative_answered']} WRONG={base['wrong']}"
+    )
+    print(
+        f"generative vs baseline: {report['generative_vs_baseline']}  "
+        f"crag={report['crag']}"
+    )
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
-    (art / "ab_gen01.json").write_text(
-        json.dumps({k: v for k, v in report.items() if k != "cases"}, indent=2)
-        + "\n",
-        encoding="utf-8",
-    )
+    slim = {k: v for k, v in report.items() if k != "cases"}
+    blob = json.dumps(slim, indent=2)
+    if "99.95" in blob or "COMPLETE" in blob:
+        print("FAIL: A/B report invented COMPLETE / 99.95")
+        return EXIT_FAIL
+    (art / "ab_gen01.json").write_text(blob + "\n", encoding="utf-8")
     if not report["passed"]:
         print("FAIL: A/B WRONG>0")
-        return 1
+        return EXIT_FAIL
     print("PASS: A/B WRONG=0 on both paths (not EPIC-019 COMPLETE)")
-    return 0
+    return EXIT_PASS
 
 
 def _answered_by_path(cases: list[dict[str, Any]]) -> dict[str, int]:
@@ -710,6 +793,92 @@ def climb(url: str, timeout: float) -> int:
     return EXIT_PASS
 
 
+def _crag_counts(cases: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for row in cases:
+        key = str(row.get("crag") or "skipped")
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def climb_ab_live(url: str, timeout: float) -> int:
+    """Live isolated A/B: ask_path=exact vs ask_path=generative. WRONG=0 law."""
+    kind, detail = probe_climb_host(url, timeout)
+    print(f"GEN-02 live A/B host {url}  [{kind}] {detail}")
+    if kind == "blocked":
+        print("BLOCKED: cannot reach host. Not a score. Not COMPLETE.")
+        return EXIT_BLOCKED
+    if kind == "fail":
+        print("FAIL: host is not a live governed ask")
+        return EXIT_FAIL
+    print("-- ask_path=exact --")
+    try:
+        exact_t, exact_cases = score_pack_live(url, timeout, ask_path="exact")
+        print("-- ask_path=generative --")
+        gen_t, gen_cases = score_pack_live(url, timeout, ask_path="generative")
+    except ImportError:
+        print("CONFIG: httpx required (DMS .venv). Not a score.")
+        return EXIT_CONFIG
+    n = sum(exact_t.values())
+    exact_r = _path_report("exact_match", exact_t, n)
+    gen_r = _path_report("generative_semantic", gen_t, n)
+    base = BASELINE_AB_A9578348
+    crag = _crag_counts(gen_cases)
+    vs = answered_vs_baseline(gen_r["answered"], int(base["generative_answered"]))
+    report = {
+        "kind": "dms.ab_live",
+        "ticket": "GEN-02",
+        "issue": 180,
+        "pack": "curated_ceo",
+        "url": url,
+        "claim": "measured",
+        "baseline_ab": {
+            "commit": base["commit"],
+            "exact_answered": base["exact_answered"],
+            "generative_answered": base["generative_answered"],
+            "n": base["n"],
+            "wrong": base["wrong"],
+        },
+        "exact_match": exact_r,
+        "generative": gen_r,
+        "crag": crag,
+        "generative_vs_baseline": vs,
+        "wrong": exact_r["wrong"] + gen_r["wrong"],
+        "passed_wrong_zero": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
+    }
+    blob = json.dumps(report, indent=2)
+    if "99.95" in blob or "COMPLETE" in blob:
+        print("FAIL: live A/B invented COMPLETE / 99.95")
+        return EXIT_FAIL
+    print(f"{'path':<22} n ok layer abstain wrong answered coverage_answered")
+    for row in (exact_r, gen_r):
+        print(
+            f"{row['path']:<22} {row['n']} {row['ok']} {row['layer']} "
+            f"{row['abstain']} {row['wrong']} {row['answered']} "
+            f"{row['coverage_answered_pct']:.2f} pct"
+        )
+    print(
+        f"baseline @ {base['commit']}: exact_answered={base['exact_answered']} "
+        f"generative_answered={base['generative_answered']}"
+    )
+    print(f"generative vs baseline: {vs}  crag={crag}")
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+    art.mkdir(parents=True, exist_ok=True)
+    (art / "score_climb_ab.json").write_text(blob + "\n", encoding="utf-8")
+    (art / "score_climb_ab_cases.json").write_text(
+        json.dumps({"exact": exact_cases, "generative": gen_cases}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if not report["passed_wrong_zero"]:
+        print("FAIL: WRONG>0 (law). Not COMPLETE.")
+        return EXIT_FAIL
+    print(
+        "PASS: live A/B WRONG=0 measured. Climb is the gen answered delta, "
+        "not a 99.95% claim. Not EPIC-019 COMPLETE."
+    )
+    return EXIT_PASS
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--self-check", action="store_true")
@@ -721,8 +890,6 @@ def main(argv: list[str]) -> int:
     args = p.parse_args(argv)
     if args.self_check:
         return self_check()
-    if args.ab:
-        return ab_offline()
     if args.climb:
         target = climb_url(args.url)
         if not target:
@@ -731,13 +898,17 @@ def main(argv: list[str]) -> int:
                 f"(Platform: {PLATFORM_API}). No laptop default."
             )
             return EXIT_CONFIG
+        if args.ab:
+            return climb_ab_live(target, args.timeout)
         return climb(target, args.timeout)
+    if args.ab:
+        return ab_offline()
     if args.live:
         url = (args.url or os.environ.get("DMS_URL") or DEFAULT_URL).rstrip("/")
         return live(url, args.timeout)
     print(
         "usage: python scripts/score_curated.py "
-        "--self-check | --live | --ab | --climb --url URL"
+        "--self-check | --live | --ab | --climb --url URL | --climb --ab --url URL"
     )
     return EXIT_CONFIG
 

@@ -41,11 +41,61 @@ def test_climb_url_fail_closed():
     assert climb_url("https://studio.netie.ai/api/", {}) == "https://studio.netie.ai/api"
 
 
-def test_main_climb_without_url_is_config(monkeypatch):
+def test_ab_baseline_a9578348_counts():
+    from score_curated import BASELINE_AB_A9578348
+
+    b = BASELINE_AB_A9578348
+    assert b["commit"] == "a9578348"
+    assert b["exact_answered"] == 10
+    assert b["generative_answered"] == 1
+    assert b["wrong"] == 0
+    assert b["n"] == 26
+
+
+def test_classify_crag_validate_or_abstain():
+    from score_curated import classify_crag
+
+    assert (
+        classify_crag(
+            {
+                "route": "generated",
+                "abstained": False,
+                "badge": "L2_VALIDATED",
+                "assumptions": ["executed via Cortex submit after validate"],
+            }
+        )
+        == "validated"
+    )
+    assert (
+        classify_crag(
+            {
+                "route": "generated",
+                "abstained": True,
+                "badge": "ABSTAIN",
+                "assumptions": ["GEN-01: validate:explain:BinderException"],
+            }
+        )
+        == "abstain_validate"
+    )
+    assert (
+        classify_crag(
+            {
+                "route": "generated",
+                "abstained": True,
+                "badge": "ABSTAIN",
+                "assumptions": ["GEN-01: compute abstained (unsure)"],
+            }
+        )
+        == "abstain_gate"
+    )
+
+
+def test_main_climb_ab_without_url_is_config(monkeypatch):
     monkeypatch.delenv("DMS_API_BASE", raising=False)
     monkeypatch.delenv("STUDIO_API_BASE", raising=False)
     monkeypatch.delenv("DMS_URL", raising=False)
     assert main(["--climb"]) == EXIT_CONFIG
+    assert main(["--climb", "--ab"]) == EXIT_CONFIG
 
 
 def test_classify_path_splits_exact_vs_generative():

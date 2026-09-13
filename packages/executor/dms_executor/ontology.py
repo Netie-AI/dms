@@ -1011,7 +1011,10 @@ def demo_ontology(warehouse: Path) -> Ontology:
         "outbound_value_myr", "transaction",
         "ROUND(SUM(CASE WHEN f.txn_type = 'OUT' THEN f.quantity_kg * f.unit_cost_myr "
         "ELSE 0 END), 2)",
-        description="value at cost of stock issued, one contribution per transaction",
+        description=(
+            "outbound issued stock value at cost (revenue-like OUT); "
+            "one contribution per transaction"
+        ),
     )
     o.add_measure(
         "net_movement_kg", "transaction",
@@ -1022,11 +1025,11 @@ def demo_ontology(warehouse: Path) -> Ontology:
     o.add_measure(
         "stock_value_myr", "lot",
         "ROUND(SUM(f.quantity_kg * f.unit_cost_myr), 2)",
-        description="carrying value, one contribution per stock lot",
+        description="stock value / carrying value / inventory spend, one contribution per lot",
     )
     o.add_measure(
         "shipping_cost_myr", "shipment", "ROUND(SUM(f.cost_myr), 2)",
-        description="freight billed, one contribution per shipment",
+        description="shipment cost / freight billed, one contribution per shipment",
     )
     o.add_measure(
         "shipment_count", "shipment", "COUNT(*)",
