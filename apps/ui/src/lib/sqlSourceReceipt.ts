@@ -34,7 +34,9 @@ export function parseOptionalPositiveInt(raw: string, label: string): number | u
 }
 
 export function defaultPortHint(kind: SqlSourceKind): string {
-  return kind === "mysql" ? "3306" : "1433";
+  if (kind === "mysql") return "3306";
+  if (kind === "postgresql") return "5432";
+  return "1433";
 }
 
 export function truncatedLabel(pull: SqlSourcePull): string {

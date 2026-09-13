@@ -135,6 +135,9 @@ def test_password_never_appears_in_repr() -> None:
 def test_describe_is_credential_free() -> None:
     assert _cfg().describe() == "sqlserver://db.example.net:1433/sales"
     assert "p;w}d" not in _cfg().describe()
+    pg = _cfg("postgresql")
+    assert pg.describe() == "postgresql://db.example.net:5432/sales"
+    assert "p;w}d" not in pg.describe()
 
 
 def test_odbc_string_braces_values_containing_delimiters() -> None:
@@ -178,11 +181,46 @@ def test_identifier_is_quoted_per_dialect(monkeypatch: pytest.MonkeyPatch) -> No
     dbc.preview_source_table(_cfg("mysql"), "orders")
     assert "SELECT * FROM `sales`.`orders`" in con2.executed[-1]
 
+    con3 = _FakeConnection([("public", "orders")], (["id"], [["1"]]))
+    _install(monkeypatch, con3)
+    dbc.preview_source_table(_cfg("postgresql"), "orders")
+    assert 'SELECT * FROM "public"."orders"' in con3.executed[-1]
+
 
 def test_system_schemas_are_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
     con = _FakeConnection([("dbo", "orders"), ("sys", "objects")], (["id"], [["1"]]))
     _install(monkeypatch, con)
     assert [t.qualified for t in dbc.list_source_tables(_cfg())] == ["dbo.orders"]
+
+    pg = _FakeConnection(
+        [("public", "orders"), ("pg_catalog", "pg_class")], (["id"], [["1"]])
+    )
+    _install(monkeypatch, pg)
+    assert [t.qualified for t in dbc.list_source_tables(_cfg("postgresql"))] == [
+        "public.orders"
+    ]
+
+
+def test_mysql_catalog_sql_filters_database_as_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    con = _FakeConnection([("sales", "orders")], (["id"], [["1"]]))
+    _install(monkeypatch, con)
+    dbc.list_source_tables(_cfg("mysql"))
+    assert "TABLE_SCHEMA = %s" in con.executed[0]
+
+
+def test_postgresql_catalog_sql_does_not_treat_database_as_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    con = _FakeConnection([("public", "orders")], (["id"], [["1"]]))
+    _install(monkeypatch, con)
+    dbc.list_source_tables(_cfg("postgresql"))
+    assert "TABLE_SCHEMA = %s" not in con.executed[0]
+    dbc.list_source_keys(_cfg("postgresql"))
+    joined = " ".join(con.executed)
+    assert "PRIMARY KEY" in joined
+    assert "CONSTRAINT_NAME = 'PRIMARY'" not in joined
 
 
 # --- what actually lands -----------------------------------------------------
@@ -218,6 +256,22 @@ def test_ingest_lands_source_rows_in_bronze(
     # Appendix A provenance: every row carries _src and _ingest_id.
     assert all(r[-1] == pull.ingest_id for r in landed)
     assert all(r[-2][0]["ref_id"] == pull.ref_id for r in landed)
+
+
+def test_postgresql_ingest_names_public_schema_source(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    con = _FakeConnection(
+        [("public", "orders")],
+        (["order_id", "amount"], [["A-1", "10.50"]]),
+    )
+    _install(monkeypatch, con)
+    pull = dbc.ingest_source_table(_cfg("postgresql"), "orders", path=wh)
+    assert pull.bronze_table == "bronze.public_orders"
+    assert pull.source == "postgresql://db.example.net:5432/sales#public.orders"
+    assert "p;w}d" not in pull.source
+    landed = _bronze_rows(wh, pull.bronze_table)
+    assert landed[0][0] == "A-1"
 
 
 def test_null_values_survive_as_null(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,6 +316,32 @@ def test_max_rows_must_be_positive(wh: Path) -> None:
 def test_unsupported_kind_rejected() -> None:
     with pytest.raises(ValueError, match="unsupported source kind"):
         dbc.SourceConfig(kind="oracle", host="h", database="d", user="u")  # type: ignore[arg-type]
+
+
+def test_postgresql_connect_uses_psycopg_not_mysql(monkeypatch: pytest.MonkeyPatch) -> None:
+    """kind=postgresql must not fall through to the MySQL driver (SQLSRC-PG-01)."""
+    import psycopg
+
+    seen: dict[str, object] = {}
+
+    class _Fake:
+        def close(self) -> None:
+            seen["closed"] = True
+
+    def _fake_connect(**kwargs: object) -> _Fake:
+        seen.update(kwargs)
+        return _Fake()
+
+    monkeypatch.setattr(psycopg, "connect", _fake_connect)
+    with dbc.connect(_cfg("postgresql")):
+        pass
+    assert seen["host"] == "db.example.net"
+    assert seen["port"] == 5432
+    assert seen["dbname"] == "sales"
+    assert seen["user"] == "reader"
+    assert seen["password"] == "p;w}d"
+    assert seen["closed"] is True
+    assert "database" not in seen  # pymysql kwarg; psycopg uses dbname
 
 
 # --- DR-0005: source provenance + the collect/understand join ---------------

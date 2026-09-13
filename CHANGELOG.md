@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - SQLSRC-PG-01: kind=postgresql on Studio SQLSRC (#172)
+
+- **Ticket.** Serves [SQLSRC-PG-01 #172](https://github.com/Netie-AI/dms/issues/172) under EPIC-020b #173. Does not close #172 or #173. Not COMPLETE.
+- **Kind.** `SqlSourceIn`, executor `SourceConfig`, and Studio `SqlSourcePanel` accept `kind=postgresql` next to sqlserver|mysql. Default port 5432. Catalog is ANSI INFORMATION_SCHEMA (database is not a schema). Driver is process `psycopg`, lazy import.
+- **Laws.** Extract-only into bronze under the Space. Password is request-only. Receipt/verify unchanged. sqlserver|mysql behavior unchanged. `kind=postgres` stays 422.
+- **Not this ticket:** Platform attach of `bird_minidev` into BIRD Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87`, SCORE-BIRD-01 PASS, reopen EPIC-020 #108 COMPLETE, EPIC-008 COMPLETE, keys in chat.
+
+
 ## 2026-09-13 - VQ-04 harden planted refuse traps after #175 (WRONG2)
 
 - **Ticket.** Serves [VQ-04 #176](https://github.com/Netie-AI/dms/issues/176) under EPIC-019 #38. Does not close #176 or #38. Not COMPLETE.

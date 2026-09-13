@@ -95,7 +95,7 @@ export function SqlSourcePanel({
       className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4"
     >
       <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
-        SQL Server / MySQL
+        SQL Server / MySQL / PostgreSQL
       </p>
       <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
         Point this Space at a database. Rows land in bronze with the source named.
@@ -126,6 +126,17 @@ export function SqlSourcePanel({
               data-testid="sql-source-kind-mysql"
             />
             MySQL
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input
+              type="radio"
+              name="sql-kind"
+              value="postgresql"
+              checked={kind === "postgresql"}
+              onChange={() => setKind("postgresql")}
+              data-testid="sql-source-kind-postgresql"
+            />
+            PostgreSQL
           </label>
         </fieldset>
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

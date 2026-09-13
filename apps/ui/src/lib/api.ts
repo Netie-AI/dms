@@ -536,7 +536,7 @@ export async function registerVerifiedQuery(
 
 export const SQL_SOURCE_PATH = "/v1/studio/sources/sql";
 
-export type SqlSourceKind = "sqlserver" | "mysql";
+export type SqlSourceKind = "sqlserver" | "mysql" | "postgresql";
 
 export type SqlSourcePull = {
   bronze_table: string;

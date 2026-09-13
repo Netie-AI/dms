@@ -46,10 +46,11 @@ sheet-scope conflict. Regression: `tests/test_demo_pack_followup.py`,
 `tests/invariants/test_envelope.py` (lake-SQL skip),
 `tests/test_demo_warehouse_reseed.py`. Not #116 COMPLETE.
 
-EPIC-020 SQLSRC-09: Studio SQL Server/MySQL form posts
+EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat
-to the ontology. #116 live certify is separate.
+to the ontology. #116 live certify is separate. BIRD Mini-Dev attach is
+Platform after `kind=postgresql` lands (#172); SCORE-BIRD stays HOLD.
 
 EPIC-CCA constraint cascade: `packages/executor/dms_executor/cca/`. One
 matching rule in `binder.py` (pack proposes, landed values decide, exact match
