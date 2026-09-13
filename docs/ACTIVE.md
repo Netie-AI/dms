@@ -39,12 +39,20 @@ submit. Thin seed SCHEMA_VERSION 4 adds `location_code` /
 `is_cold_storage` / `cctv_camera_id` / `expiry_date` so pack SQL can run
 in tests. The founder rich lake is Cortex `/var/cortex/data/dms_demo.duckdb`.
 `live_ask` order:
-follow-up → VQ-02 → pack → uncertified planted refuse (VQ-04) → cascade → bronze sheet → Cortex. DR-0002
+follow-up → VQ-02 → pack → uncertified planted refuse (VQ-04) → cascade → bronze sheet → GEN-01 ontology compile+validate → Cortex. DR-0002
 follow-ups (`average of them`, `add N`) in `session_followup.py`. F32
 derived path skips demo-lake SQL so cq_spend_by_country is not a
 sheet-scope conflict. Regression: `tests/test_demo_pack_followup.py`,
 `tests/invariants/test_envelope.py` (lake-SQL skip),
 `tests/test_demo_warehouse_reseed.py`. Not #116 COMPLETE.
+
+EPIC-GEN-01 GEN-01 (#179): miss-path generative ask in
+`packages/executor/dms_executor/generative_ask.py`. Semantic retrieve
+(`semantic_retrieve.py`: schema SQL-filter + ontology + encodings → short
+context) then Cortex `POST /dms/query`; `Ontology.compile` emits SQL;
+validate then Cortex submit. Unsure or validate-fail is ABSTAIN. A/B vs
+exact-match: `python scripts/score_curated.py --ab`. Not pack expansion.
+Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

@@ -6,6 +6,7 @@ traps that must abstain. It does not start EPIC-019 (no new VQ repo).
 
   python scripts/score_curated.py --self-check
   python scripts/score_curated.py --live
+  python scripts/score_curated.py --ab
 """
 
 from __future__ import annotations
@@ -223,10 +224,182 @@ def live(url: str, timeout: float) -> int:
     return 0
 
 
+def _ab_miss() -> dict[str, Any]:
+    return {"badge": "ABSTAIN", "abstained": True, "rows": [], "text": "path miss"}
+
+
+def _ab_seed(path: Path) -> Any:
+    """Verified sales ontology for the generative A/B lane. Not a pack expand."""
+    import duckdb
+    from dms_executor.generative_ask import load_verified_ontology
+    from dms_executor.ontology import Ontology
+
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE lots (lot_id VARCHAR, sku VARCHAR, category VARCHAR, qty DOUBLE)")
+        con.execute(
+            "INSERT INTO lots VALUES "
+            "('L1','SKU-1','ALPHA',10),('L2','SKU-1','ALPHA',20),"
+            "('L3','SKU-1','ALPHA',30),('L4','SKU-2','BETA',40)"
+        )
+        con.execute(
+            "CREATE TABLE sales (txn_id VARCHAR, sku VARCHAR, region VARCHAR, amount DOUBLE)"
+        )
+        con.execute("INSERT INTO sales VALUES ('T1','SKU-1','North',100),('T2','SKU-2','South',50)")
+        con.execute("CREATE TABLE regions (region VARCHAR, country VARCHAR)")
+        con.execute("INSERT INTO regions VALUES ('North','MY'),('South','MY')")
+    finally:
+        con.close()
+    o = Ontology()
+    o.add_object("sale", "sales", ["txn_id"])
+    o.add_object("lot", "lots", ["lot_id"])
+    o.add_object("region", "regions", ["region"])
+    o.add_object(
+        "product",
+        "(SELECT sku, ANY_VALUE(category) AS category FROM lots GROUP BY sku)",
+        ["sku"],
+    )
+    o.add_link("sale_of_lot", "sale", ["sku"], "lot", ["sku"])
+    o.add_link("sale_of_product", "sale", ["sku"], "product", ["sku"])
+    o.add_link("sale_in_region", "sale", ["region"], "region", ["region"])
+    o.add_measure("revenue", "sale", "SUM(f.amount)")
+    loaded = load_verified_ontology(path, o)
+    if loaded is None:
+        raise RuntimeError("A/B sales ontology failed verify")
+    return loaded
+
+
+def _tally() -> dict[str, int]:
+    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0}
+
+
+def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
+    wrong = tallies["WRONG"]
+    answered = tallies["OK"] + tallies["LAYER"]
+    return {
+        "path": name,
+        "n": n,
+        "ok": tallies["OK"],
+        "layer": tallies["LAYER"],
+        "abstain": tallies["ABSTAIN"],
+        "wrong": wrong,
+        "answered": answered,
+        "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
+    }
+
+
+def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
+    """Offline A/B: exact-match pack vs retrieve+bind generative on the same pack.
+
+    Fake submit/ledger so CI has no keys. Does not expand certified packs.
+    """
+    import tempfile
+
+    from cortex_client.models import LedgerAppendResponse
+    from cortex_contract.execution import QueryResult
+    from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
+    from dms_executor.demo_pack import maybe_pack_ask, maybe_uncertified_refuse_ask
+    from dms_executor.generative_ask import maybe_generative_ask
+    from dms_executor.semantic_retrieve import bind_plan
+
+    pack = load_pack(pack_path)
+    tmp = Path(tempfile.mkdtemp()) / "ab_gen01.duckdb"
+    onto = _ab_seed(tmp)
+    rows = [{"i": i, "v": float(i)} for i in range(8)]
+
+    def submit(_sql: str) -> QueryResult:
+        return QueryResult(ok=True, status="ok", run_id="run_ab", output={"rows": rows})
+
+    def ledger(_payload: dict[str, Any]) -> LedgerAppendResponse:
+        return LedgerAppendResponse(entry_id="led_ab", hash="hash_ab_not_entry")
+
+    exact_t = _tally()
+    gen_t = _tally()
+    cases_out: list[dict[str, Any]] = []
+    for case in pack["questions"]:
+        q = str(case["question"])
+        space = resolve_space(case, pack["spaces"])
+        entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space))
+        grants = set(entry[1]) if entry else set()
+        exact_env = maybe_uncertified_refuse_ask(q, space_id=space) or maybe_pack_ask(
+            q,
+            space_id=space,
+            grantable=grants,
+            submit=submit,
+            ledger_append=ledger,
+        )
+        exact_env = exact_env if exact_env is not None else _ab_miss()
+        gen_env = maybe_generative_ask(
+            q,
+            space_id=space,
+            warehouse=tmp,
+            grantable={"sales", "lots", "regions"},
+            compute=lambda ctx, _q=q: bind_plan(_q, ctx),
+            submit=submit,
+            ledger_append=ledger,
+            ontology=onto,
+        )
+        gen_env = gen_env if gen_env is not None else _ab_miss()
+        ev = judge(case, exact_env)
+        gv = judge(case, gen_env)
+        exact_t[ev] += 1
+        gen_t[gv] += 1
+        cases_out.append(
+            {
+                "id": case["id"],
+                "expect": case.get("expect"),
+                "exact": ev,
+                "generative": gv,
+                "exact_badge": exact_env.get("badge"),
+                "generative_badge": gen_env.get("badge"),
+            }
+        )
+    n = len(pack["questions"])
+    exact_r = _path_report("exact_match", exact_t, n)
+    gen_r = _path_report("generative_semantic", gen_t, n)
+    return {
+        "kind": "dms.ab_gen01",
+        "pack": "curated_ceo",
+        "exact_match": exact_r,
+        "generative": gen_r,
+        "wrong": exact_r["wrong"] + gen_r["wrong"],
+        "passed": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
+        "cases": cases_out,
+    }
+
+
+def ab_offline() -> int:
+    report = run_ab_curated()
+    exact = report["exact_match"]
+    gen = report["generative"]
+    print(
+        f"{'path':<22} n ok layer abstain wrong answered coverage_answered"
+    )
+    for row in (exact, gen):
+        print(
+            f"{row['path']:<22} {row['n']} {row['ok']} {row['layer']} "
+            f"{row['abstain']} {row['wrong']} {row['answered']} "
+            f"{row['coverage_answered_pct']:.2f} pct"
+        )
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+    art.mkdir(parents=True, exist_ok=True)
+    (art / "ab_gen01.json").write_text(
+        json.dumps({k: v for k, v in report.items() if k != "cases"}, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    if not report["passed"]:
+        print("FAIL: A/B WRONG>0")
+        return 1
+    print("PASS: A/B WRONG=0 on both paths (not EPIC-019 COMPLETE)")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--self-check", action="store_true")
     p.add_argument("--live", action="store_true")
+    p.add_argument("--ab", action="store_true")
     p.add_argument("--url", default=os.environ.get("DMS_URL", DEFAULT_URL))
     p.add_argument("--timeout", type=float, default=60.0)
     args = p.parse_args(argv)
@@ -234,7 +407,9 @@ def main(argv: list[str]) -> int:
         return self_check()
     if args.live:
         return live(args.url, args.timeout)
-    print("usage: python scripts/score_curated.py --self-check | --live")
+    if args.ab:
+        return ab_offline()
+    print("usage: python scripts/score_curated.py --self-check | --live | --ab")
     return 2
 
 
