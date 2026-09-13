@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - DEMO-HOST-02: measured host-online smoke (#164)
+
+- **Cause.** Host-online COMPLETE needs a walked path through the Platform tunnel, not a `verify_demo_live.py` re-run and not a cloud seat pretending it can see prove `127.0.0.1:8090`.
+- **Smoke.** `scripts/smoke_studio_host_online.py` + `scripts/smoke_studio_iap.md`. Fail closed: `STUDIO_ORIGIN` / `DMS_API_BASE` / `LOCAL_TUNNEL_PORT` have no laptop default. `0.0.0.0` refused. Unset loopback is BLOCKED (`error.type=env.unset`, owner=Platform/tunnel).
+- **Honesty.** Temp CF hostname **ROTATE RISK** until founder GO durable `TUNNEL_TOKEN`. DMS `:8090` stays loopback. Cursor cloud is not the VPC certifying seat. Ask/upload BLOCKED prints `error.type` -- never invent PASS. Does not claim EPIC-008 COMPLETE.
+- **Not this ticket:** public `:8090`, lake / `LIVE_KEY_ID`, standing the tunnel, weakening `verify_demo_live` 31/31.
+
+
 ## 2026-09-13 - DEMO-HOST-01: pin temp CF Studio hostname (#163)
 
 - **Studio URL.** Platform quick tunnel (Platform/DevOps own it): `https://occurred-guest-guaranteed-practitioners.trycloudflare.com`. May rotate until a durable `TUNNEL_TOKEN`.
