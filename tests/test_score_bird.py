@@ -16,11 +16,14 @@ from score_bird import (  # noqa: E402
     EXIT_CONFIG,
     EXIT_FAIL,
     EXIT_PASS,
+    case_expect,
     exact_match_env,
     honesty_ok,
+    leftover_remaining,
     live_url,
     load_bird,
     self_check,
+    table_landed,
 )
 from score_curated import judge  # noqa: E402
 
@@ -67,7 +70,8 @@ def test_cli_self_check() -> None:
         text=True,
     )
     assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
-    assert "leftover_tables=75" in proc.stdout
+    assert "target=75" in proc.stdout
+    assert "leftover=" in proc.stdout
     assert "99.95" not in proc.stdout
     assert "not complete" in proc.stdout.lower()
 
@@ -96,22 +100,28 @@ def test_wildcard_url_is_refused() -> None:
         raise AssertionError("wildcard must CONFIG")
 
 
-def test_honesty_pins_bounded_attach() -> None:
+def test_honesty_allows_growing_bronze() -> None:
     pack = load_bird(DEFAULT_PACK)
     assert honesty_ok(pack["honesty"]) == []
     assert pack["spaces"]["bird"] == BIRD_SPACE
     assert "99.95" not in DEFAULT_PACK.read_text(encoding="utf-8")
+    growing = dict(pack["honesty"])
+    growing["attached_tables"] = ["gender", "schools", "races"]
+    assert honesty_ok(growing) == []
+    missing = dict(pack["honesty"])
+    missing["attached_tables"] = ["schools"]
+    assert honesty_ok(missing)
 
 
 def test_pack_has_gender_hits_and_leftover_traps() -> None:
     pack = load_bird()
     by_id = {c["id"]: c for c in pack["questions"]}
     assert by_id["gender_row_count"]["attached"] == "gender"
-    assert by_id["trap_75_tables"]["leftover"] == "multi_table"
+    assert by_id["trap_75_tables"]["leftover"] == "full_extract"
     assert by_id["trap_demo_spend"]["expect"] == "refuse"
-    assert by_id["trap_demo_spend"]["question"] == (
-        "What is our total spend by supplier country?"
-    )
+    assert leftover_remaining(1) == 74
+    assert leftover_remaining(75) == 0
+    assert leftover_remaining(80) == 0
 
 
 def test_green_leftover_trap_is_wrong() -> None:
@@ -158,7 +168,28 @@ def test_ab_without_live_is_blocked_not_pass() -> None:
     assert "BLOCKED" in out
     assert "VERDICT: PASS" not in out
     assert "exact_match" in out
-    assert "leftover_tables=75" in out
+    assert "target=75" in out
+    assert "leftover=" in out
+
+
+def test_landed_leftover_trap_skips_without_inventing_oracle() -> None:
+    trap = {
+        "id": "trap_california_schools",
+        "expect": "refuse",
+        "leftover": "multi_table",
+        "needs_table": "schools",
+    }
+    assert case_expect(trap, ["bronze.public_gender"]) == "refuse"
+    assert case_expect(trap, ["bronze.public_schools"]) is None
+    assert table_landed("gender", ["bronze.public_gender"])
+    assert table_landed("schools", ["bronze.public_schools"])
+    assert not table_landed("schools", ["bronze.public_gender"])
+    cover = {"expect": "refuse", "leftover": "full_extract"}
+    assert case_expect(cover, ["bronze.public_schools"]) == "refuse"
+    spend = {"expect": "refuse", "leftover": "demo_pack_bleed"}
+    assert case_expect(spend, ["bronze.public_gender", "bronze.public_schools"]) == (
+        "refuse"
+    )
 
 
 def test_no_args_is_config() -> None:

@@ -139,7 +139,7 @@ python D:\DMS\scripts\smoke_studio_host_online.py
 
 #### SCORE-BIRD-01 (#184) -- BIRD Space live score
 
-Platform attached postgresql `bird_minidev` @ `127.0.0.1:5432` to Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` (**source_count=1**, data_source `12b6f170`, bounded `tables=[gender]` `max_rows=50`). Full **75-table** Mini-Dev extract is leftover -- do not quote Mini-Dev coverage. Do not invent 99.95% or EPIC-020b COMPLETE.
+Platform attached postgresql `bird_minidev` @ `127.0.0.1:5432` to Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` (**source_count=1**, data_source `12b6f170`). First batch was `gender` `max_rows=50`; **bronze grows in batches**. Full **75-table** Mini-Dev extract is leftover until measured bronze count is 75. Do not invent 99.95% or EPIC-020b COMPLETE from a larger batch.
 
 ```powershell
 python D:\DMS\scripts\score_bird.py --self-check

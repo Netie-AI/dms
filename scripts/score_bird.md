@@ -6,26 +6,28 @@
 
 ## Honesty (read this before quoting a number)
 
-Platform SCORE-BIRD GO 2026-09-13 attached **one** table:
+Platform SCORE-BIRD GO 2026-09-13: one postgres source on Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87`. First batch was `gender` `max_rows=50`. **Bronze grows in batches.** The pack snapshot is not a ceiling.
 
 | Fact | Value |
 |------|--------|
 | Space | `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` |
-| source_count | 1 |
+| source_count | 1 (one postgres source; table count grows) |
 | data_source | `12b6f170` |
 | kind / host | postgresql `bird_minidev` @ `127.0.0.1:5432` |
-| bounded attach | `tables=[gender]` `max_rows=50` |
-| leftover | full **75-table** Mini-Dev extract |
+| baseline | `gender` (first GO batch; still required) |
+| leftover target | **75** Mini-Dev tables. `--live` prints `measured=N leftover=75-N` from Studio bronze. |
 
-A coverage claim over Mini-Dev / BIRD as a whole is leftover until Platform attaches the rest. Do not invent **99.95%**. Do not invent EPIC-020b or EPIC-020 #108 COMPLETE. Do not clone DB-GPT. Keys stay in OpenVault.
+A coverage claim over Mini-Dev / BIRD as a whole is leftover until measured bronze count reaches 75. Growing bronze is not COMPLETE. Do not invent **99.95%**. Do not invent EPIC-020b or EPIC-020 #108 COMPLETE. Do not clone DB-GPT. Keys stay in OpenVault.
 
-WRONG=0 is the law. ABSTAIN on a gender ask is a coverage cost, not a silent PASS with a made-up percent. 0 answered prints precision `n/a`, not 100.00.
+WRONG=0 is the law. ABSTAIN on a baseline ask is a coverage cost. 0 answered prints precision `n/a`, not 100.00.
+
+Leftover traps that name a Mini-Dev table **SKIP** once that table is in bronze (no invented oracle). `trap_75_tables` and demo-pack bleed stay refuse.
 
 ## Who certifies what
 
 | Seat | What it may measure | What it must not claim |
 |------|---------------------|------------------------|
-| Platform on prove / Studio origin | `--live` against `DMS_API_BASE` + BIRD Space | EPIC-020b COMPLETE; 75-table coverage |
+| Platform on prove / Studio origin | `--live` against `DMS_API_BASE` + BIRD Space | EPIC-020b COMPLETE; 75-table coverage from a partial batch |
 | Any seat | `--self-check` (CI) | live OK/LAYER/ABSTAIN/WRONG |
 | Cursor cloud | self-check + offline `--ab` | prove `127.0.0.1:5432` / VPC Studio PASS |
 
@@ -63,13 +65,14 @@ python D:\DMS\scripts\score_bird.py --live
 
 `--live` always A/B's:
 
-1. **exact_match** -- demo pack / VQ-04 with empty grants (BIRD is not Finance). Must miss. Green on a leftover trap is WRONG.
-2. **generative_live** -- `POST /v1/chat/ask` on the BIRD Space. GEN-01 (#179) already sits on that path after pack miss. Report real OK/LAYER/ABSTAIN/WRONG.
+1. **bronze list** -- `GET /v1/studio/bronze?space_id=` (fail -> pack snapshot). Prints measured/leftover. Does not invent 75.
+2. **exact_match** -- demo pack / VQ-04 with empty grants (BIRD is not Finance). Must miss. Green on a leftover trap is WRONG. Landed leftover traps SKIP.
+3. **generative_live** -- `POST /v1/chat/ask` on the BIRD Space. GEN-01 (#179) already sits on that path after pack miss. Report real OK/LAYER/ABSTAIN/WRONG.
 
 GEN-02 #180 (curated coverage climb vs baseline @ `91c5cc99`) is a different pack: `python scripts/score_curated.py --ab` / `--live`. Do not quote that baseline as a BIRD number.
 
 ## Recorded walk
 
-No live counts from this cloud seat. Prove postgres `bird_minidev` and Studio are Platform. Paste the `--live` table here when Platform runs it. Until then quote only `--self-check` and leftover=75.
+No live counts from this cloud seat. Prove postgres `bird_minidev` and Studio are Platform. Paste the `--live` table here when Platform runs it. Until then quote only `--self-check` and leftover target=75.
 
-Must not: invent PASS, open public `:8090`, put OV keys in chat, green planted leftover traps, weaken `score_answers --oracle-only`.
+Must not: invent PASS, open public `:8090`, put OV keys in chat, green planted leftover traps, weaken `score_answers --oracle-only`, claim COMPLETE because a later batch attached more than gender.

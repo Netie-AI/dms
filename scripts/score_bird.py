@@ -1,7 +1,8 @@
-"""SCORE-BIRD-01 -- measured live score on BIRD Space (bounded gender attach).
+"""SCORE-BIRD-01 -- measured live score on BIRD Space (batch bronze).
 
 Platform SCORE-BIRD GO 2026-09-13. Real OK/LAYER/ABSTAIN/WRONG only. WRONG=0
-law. Full 75-table Mini-Dev extract is leftover. Keys stay in OpenVault.
+law. First batch was gender. Bronze may grow; 75-table extract is leftover.
+Keys stay in OpenVault.
 
 GEN-01 (#179 @ a9578348) is the product path inside POST /v1/chat/ask.
 This harness A/B's exact-match pack (must miss BIRD) vs that live path.
@@ -36,11 +37,13 @@ from score_curated import (  # noqa: E402
 
 DEFAULT_PACK = ROOT / "tests" / "fixtures" / "bird_minidev" / "questions.yaml"
 BIRD_SPACE = "f0da7dd3-58b3-4d15-84a8-a18f2853ed87"
+TARGET_TABLES = 75
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_CONFIG = 2
 EXIT_BLOCKED = 3
 TRANSPORT_BLOCK = frozenset({"ConnectError", "ConnectTimeout", "ReadTimeout", "TimeoutException"})
+KEEP_REFUSE = frozenset({"demo_pack_bleed", "full_extract"})
 
 
 def load_bird(path: Path = DEFAULT_PACK) -> dict[str, Any]:
@@ -55,16 +58,63 @@ def load_bird(path: Path = DEFAULT_PACK) -> dict[str, Any]:
     return pack
 
 
+def as_tables(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    out: list[str] = []
+    for item in raw or []:
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def bronze_stems(label: str) -> set[str]:
+    s = label.lower().replace("-", "_").replace("#", ".").replace("/", ".")
+    stems: set[str] = set()
+    for chunk in s.split("."):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        stems.add(chunk)
+        if chunk.startswith("public_"):
+            stems.add(chunk[7:])
+        if chunk.startswith("bronze_"):
+            stems.add(chunk[7:])
+    return stems
+
+
+def table_landed(need: str, names: list[str]) -> bool:
+    want = need.lower().replace("-", "_")
+    if not want:
+        return False
+    for raw in names:
+        stems = bronze_stems(raw)
+        if want in stems or any(part.endswith("_" + want) for part in stems):
+            return True
+    return False
+
+
+def leftover_remaining(measured_n: int) -> int:
+    return max(TARGET_TABLES - max(measured_n, 0), 0)
+
+
 def honesty_ok(honesty: dict[str, Any]) -> list[str]:
     errs: list[str] = []
-    if list(honesty.get("attached_tables") or []) != ["gender"]:
-        errs.append("attached_tables must be [gender]")
-    if int(honesty.get("max_rows") or 0) != 50:
-        errs.append("max_rows must be 50")
-    if int(honesty.get("leftover_full_extract_tables") or 0) != 75:
-        errs.append("leftover_full_extract_tables must be 75")
+    baseline = as_tables(honesty.get("baseline_tables") or honesty.get("attached_tables"))
+    attached = as_tables(honesty.get("attached_tables"))
+    attached_l = {t.lower() for t in attached}
+    if "gender" not in {t.lower() for t in baseline}:
+        errs.append("baseline_tables must include gender (first GO batch)")
+    if not attached:
+        errs.append("attached_tables snapshot required (growth ok)")
+    missing = [t for t in baseline if t.lower() not in attached_l]
+    if missing:
+        errs.append(f"attached_tables must keep baseline {missing} (growth ok)")
+    if int(honesty.get("leftover_full_extract_tables") or 0) != TARGET_TABLES:
+        errs.append(f"leftover_full_extract_tables must be {TARGET_TABLES}")
     if int(honesty.get("source_count") or 0) != 1:
-        errs.append("source_count must be 1")
+        errs.append("source_count must be 1 (one postgres source; tables may grow)")
     if str(honesty.get("space_id") or "") != BIRD_SPACE:
         errs.append("space_id must be the Platform BIRD Space")
     if str(honesty.get("data_source") or "") != "12b6f170":
@@ -75,6 +125,21 @@ def honesty_ok(honesty: dict[str, Any]) -> list[str]:
     if "COMPLETE" in blob:
         errs.append("honesty must not claim COMPLETE")
     return errs
+
+
+def case_expect(case: dict[str, Any], bronze_names: list[str] | None) -> str | None:
+    """Yaml expect, or None to SKIP a leftover trap whose table has landed.
+
+    No invented oracle for a newly attached Mini-Dev table. Skip is not OK.
+    """
+    leftover = str(case.get("leftover") or "")
+    if leftover in KEEP_REFUSE:
+        return "refuse"
+    needs = as_tables(case.get("needs_table") or case.get("needs_tables"))
+    landed = needs and bronze_names is not None
+    if landed and all(table_landed(t, bronze_names) for t in needs):
+        return None
+    return str(case.get("expect") or "answered")
 
 
 def _tally() -> dict[str, int]:
@@ -130,14 +195,26 @@ def exact_match_env(question: str, space_id: str) -> dict[str, Any]:
     return env if env is not None else _miss()
 
 
-def print_honesty(honesty: dict[str, Any]) -> None:
-    tables = ",".join(str(t) for t in (honesty.get("attached_tables") or []))
+def print_honesty(
+    honesty: dict[str, Any],
+    *,
+    measured: list[str] | None = None,
+) -> None:
+    baseline = as_tables(honesty.get("baseline_tables") or ["gender"])
+    snapshot = as_tables(honesty.get("attached_tables"))
+    names = measured if measured is not None else snapshot
+    n = len(names)
+    left = leftover_remaining(n)
     print(
-        f"honesty attached=[{tables}] max_rows={honesty.get('max_rows')} "
+        f"honesty baseline=[{','.join(baseline)}] "
+        f"attached=[{','.join(snapshot)}] "
+        f"target={TARGET_TABLES} measured={n} leftover={left} "
         f"source_count={honesty.get('source_count')} "
-        f"leftover_tables={honesty.get('leftover_full_extract_tables')} "
         f"data_source={honesty.get('data_source')}"
     )
+    if measured is not None:
+        print(f"bronze measured=[{','.join(names)}]")
+    print("bronze grows in Platform batches; not Mini-Dev coverage; not COMPLETE")
     print("not COMPLETE: EPIC-020b #173, EPIC-020 #108, SCORE-BIRD-01")
     print("no high-nines percent claim. keys: OpenVault only. not a DB-GPT clone.")
 
@@ -152,15 +229,28 @@ def self_check(path: Path = DEFAULT_PACK) -> int:
         errs.append(f"need gender hits + leftover traps, got {len(ids)}")
     expects = {str(c.get("expect") or "").lower() for c in pack["questions"]}
     if "answered" not in expects:
-        errs.append("pack needs expect:answered gender cases")
+        errs.append("pack needs expect:answered baseline cases")
     if "refuse" not in expects:
         errs.append("pack needs expect:refuse leftover traps")
-    attached = [c["id"] for c in pack["questions"] if c.get("attached") == "gender"]
+    baseline = as_tables(
+        pack["honesty"].get("baseline_tables") or pack["honesty"].get("attached_tables")
+    )
+    attached_hits = [
+        c["id"]
+        for c in pack["questions"]
+        if str(c.get("attached") or "").lower() in {t.lower() for t in baseline}
+    ]
     leftover = [c["id"] for c in pack["questions"] if c.get("leftover")]
-    if len(attached) < 2:
-        errs.append("need >=2 gender-attached asks")
+    if len(attached_hits) < 2:
+        errs.append("need >=2 baseline-attached asks")
     if len(leftover) < 3:
         errs.append("need >=3 multi-table leftover traps")
+    if not any(str(c.get("leftover") or "") == "full_extract" for c in pack["questions"]):
+        errs.append("need leftover:full_extract trap (75-table invent)")
+    growing = dict(pack["honesty"])
+    growing["attached_tables"] = [*baseline, "schools"]
+    if honesty_ok(growing):
+        errs.append("honesty_ok must allow attached_tables to grow past baseline")
     spaces = pack["spaces"]
     if str(spaces.get("bird") or "") != BIRD_SPACE:
         errs.append("spaces.bird must pin Platform BIRD Space")
@@ -192,7 +282,7 @@ def self_check(path: Path = DEFAULT_PACK) -> int:
         return EXIT_FAIL
     print(
         f"PASS: bird pack {len(ids)} cases, leftover traps {len(leftover)}, "
-        "judge fail-closed. not a live measurement."
+        "judge fail-closed. bronze may grow. not a live measurement."
     )
     print_honesty(pack["honesty"])
     return EXIT_PASS
@@ -242,24 +332,76 @@ def _blocked_kind(exc: BaseException) -> str | None:
     return None
 
 
-def run_exact(pack: dict[str, Any], space_id: str) -> tuple[dict[str, int], list[dict[str, Any]]]:
+def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[str]]:
+    """Measured bronze names for the Space. Snapshot on failure, never invent 75."""
+    import httpx
+
+    try:
+        resp = httpx.get(
+            f"{base}/v1/studio/bronze",
+            params={"space_id": space_id},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        print(f"bronze\tBLOCKED\t{type(exc).__name__}: using pack snapshot")
+        return "snapshot", []
+    if isinstance(body, list):
+        rows = body
+    elif isinstance(body, dict):
+        rows = body.get("tables")
+    else:
+        rows = None
+    if not isinstance(rows, list):
+        print("bronze\tBLOCKED\tnot a list: using pack snapshot")
+        return "snapshot", []
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        label = ""
+        if isinstance(row, dict):
+            label = str(row.get("table") or row.get("name") or "").strip()
+        elif row:
+            label = str(row).strip()
+        key = label.lower()
+        if not label or key in seen:
+            continue
+        seen.add(key)
+        names.append(label)
+    return "ok", names
+
+
+def run_exact(
+    pack: dict[str, Any],
+    space_id: str,
+    bronze_names: list[str] | None = None,
+) -> tuple[dict[str, int], list[dict[str, Any]], int]:
     tallies = _tally()
     rows: list[dict[str, Any]] = []
+    skipped = 0
     for case in pack["questions"]:
         qid = str(case["id"])
+        expect = case_expect(case, bronze_names)
+        if expect is None:
+            skipped += 1
+            print(f"{qid}\texact\tSKIP\tlanded leftover trap (no invented oracle)")
+            rows.append({"id": qid, "exact": "SKIP"})
+            continue
+        scored = {**case, "expect": expect}
         env = exact_match_env(str(case["question"]), space_id)
-        verdict = judge(case, env)
+        verdict = judge(scored, env)
         tallies[verdict] += 1
         rows.append(
             {
                 "id": qid,
-                "expect": case.get("expect"),
+                "expect": expect,
                 "exact": verdict,
                 "exact_badge": env.get("badge"),
             }
         )
-        print(f"{qid}\texact\t{verdict}\t{env.get('badge')}\texpect={case.get('expect')}")
-    return tallies, rows
+        print(f"{qid}\texact\t{verdict}\t{env.get('badge')}\texpect={expect}")
+    return tallies, rows, skipped
 
 
 def run_live(
@@ -267,19 +409,28 @@ def run_live(
     space_id: str,
     url: str,
     timeout: float,
-) -> tuple[str, dict[str, int], list[dict[str, Any]]]:
-    """Return (ok|blocked, tallies, per-case). blocked does not invent PASS."""
+    bronze_names: list[str] | None,
+) -> tuple[str, dict[str, int], list[dict[str, Any]], int]:
+    """Return (ok|blocked, tallies, per-case, skipped). blocked does not invent PASS."""
     tallies = _tally()
     rows: list[dict[str, Any]] = []
+    skipped = 0
     for case in pack["questions"]:
         qid = str(case["id"])
+        expect = case_expect(case, bronze_names)
+        if expect is None:
+            skipped += 1
+            print(f"{qid}\tlive\tSKIP\tlanded leftover trap (no invented oracle)")
+            rows.append({"id": qid, "generative": "SKIP"})
+            continue
+        scored = {**case, "expect": expect}
         try:
             env = _ask_live(url, str(case["question"]), space_id, timeout)
         except Exception as exc:  # noqa: BLE001
             blocked = _blocked_kind(exc)
             if blocked:
                 print(f"{qid}\tlive\tBLOCKED\terror.type={blocked}\t{type(exc).__name__}")
-                return "blocked", tallies, rows
+                return "blocked", tallies, rows, skipped
             env = ask_error_envelope(exc)
             if env is None:
                 print(f"{qid}\tlive\tERROR\t{type(exc).__name__}: {exc}")
@@ -287,7 +438,7 @@ def run_live(
                 rows.append({"id": qid, "generative": "WRONG", "generative_badge": "ERROR"})
                 continue
             print(f"{qid}\tlive\tGRANT_REFUSE\t{type(exc).__name__}")
-        verdict = judge(case, env)
+        verdict = judge(scored, env)
         tallies[verdict] += 1
         n = len(env.get("rows") or env.get("values") or [])
         rows.append(
@@ -296,13 +447,14 @@ def run_live(
                 "generative": verdict,
                 "generative_badge": env.get("badge"),
                 "rows": n,
+                "expect": expect,
             }
         )
         print(
             f"{qid}\tlive\t{verdict}\t{env.get('badge')}\trows={n}\t"
-            f"expect={case.get('expect')}"
+            f"expect={expect}"
         )
-    return "ok", tallies, rows
+    return "ok", tallies, rows, skipped
 
 
 def _write_artifact(report: dict[str, Any]) -> None:
@@ -325,15 +477,23 @@ def print_paths(*rows: dict[str, Any]) -> None:
         )
 
 
+def _scored_n(pack_n: int, skipped: int) -> int:
+    return max(pack_n - skipped, 0)
+
+
 def ab_offline() -> int:
     pack = load_bird()
     space = os.environ.get("BIRD_SPACE_ID", "").strip() or BIRD_SPACE
+    snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 A/B exact-match only (no live Studio). generative=BLOCKED.")
-    print_honesty(pack["honesty"])
-    exact_t, cases = run_exact(pack, space)
-    n = len(pack["questions"])
+    print_honesty(pack["honesty"], measured=snapshot)
+    exact_t, cases, skipped = run_exact(pack, space, snapshot)
+    n = _scored_n(len(pack["questions"]), skipped)
     exact_r = _path_report("exact_match", exact_t, n)
+    exact_r["skipped"] = skipped
     print_paths(exact_r)
+    if skipped:
+        print(f"skipped {skipped} leftover traps (table now in bronze snapshot)")
     print("generative_live BLOCKED error.type=env.unset owner=Platform/studio")
     print("Run --live on prove/Studio for GEN-01 product path counts.")
     report = {
@@ -341,6 +501,9 @@ def ab_offline() -> int:
         "pack": "bird_minidev",
         "space_id": space,
         "honesty": pack["honesty"],
+        "measured_tables": snapshot,
+        "leftover_remaining": leftover_remaining(len(snapshot)),
+        "skipped": skipped,
         "exact_match": exact_r,
         "generative": {"path": "generative_live", "blocked": True},
         "wrong": exact_r["wrong"],
@@ -358,17 +521,22 @@ def ab_offline() -> int:
 
 def live(url: str, timeout: float, space_id: str) -> int:
     pack = load_bird()
+    snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 live A/B: exact-match pack vs POST /v1/chat/ask (GEN-01).")
-    print_honesty(pack["honesty"])
     print(f"space_id={space_id}")
     print(f"DMS_API_BASE={url}")
-    exact_t, exact_cases = run_exact(pack, space_id)
-    status, live_t, live_cases = run_live(pack, space_id, url, timeout)
-    n = len(pack["questions"])
-    exact_r = _path_report("exact_match", exact_t, n)
+    bronze_status, measured = fetch_bronze(url, space_id, timeout)
+    names = measured if bronze_status == "ok" and measured else snapshot
+    print_honesty(pack["honesty"], measured=names)
+    exact_t, exact_cases, skip_e = run_exact(pack, space_id, names)
+    status, live_t, live_cases, skip_g = run_live(pack, space_id, url, timeout, names)
+    pack_n = len(pack["questions"])
+    exact_r = _path_report("exact_match", exact_t, _scored_n(pack_n, skip_e))
+    exact_r["skipped"] = skip_e
     by_id = {row["id"]: dict(row) for row in exact_cases}
     for row in live_cases:
         by_id.setdefault(row["id"], {}).update(row)
+    leftover = leftover_remaining(len(names))
     if status == "blocked":
         print_paths(exact_r)
         print("generative_live BLOCKED. Do not invent OK/LAYER/ABSTAIN/WRONG.")
@@ -377,6 +545,8 @@ def live(url: str, timeout: float, space_id: str) -> int:
             "pack": "bird_minidev",
             "space_id": space_id,
             "honesty": pack["honesty"],
+            "measured_tables": names,
+            "leftover_remaining": leftover,
             "exact_match": exact_r,
             "generative": {"path": "generative_live", "blocked": True},
             "wrong": exact_r["wrong"],
@@ -385,16 +555,21 @@ def live(url: str, timeout: float, space_id: str) -> int:
             "cases": list(by_id.values()),
         }
         _write_artifact(report)
-        print("VERDICT: BLOCKED. Not COMPLETE. Not 99.95.")
+        print("VERDICT: BLOCKED. Not COMPLETE.")
         return EXIT_BLOCKED
-    gen_r = _path_report("generative_live", live_t, n)
+    gen_r = _path_report("generative_live", live_t, _scored_n(pack_n, skip_g))
+    gen_r["skipped"] = skip_g
     print_paths(exact_r, gen_r)
+    if skip_g:
+        print(f"skipped {skip_g} leftover traps (table now in bronze; no invented oracle)")
     wrong = exact_r["wrong"] + gen_r["wrong"]
     report = {
         "kind": "dms.score_bird",
         "pack": "bird_minidev",
         "space_id": space_id,
         "honesty": pack["honesty"],
+        "measured_tables": names,
+        "leftover_remaining": leftover,
         "exact_match": exact_r,
         "generative": gen_r,
         "wrong": wrong,
@@ -406,7 +581,10 @@ def live(url: str, timeout: float, space_id: str) -> int:
     if wrong:
         print("FAIL: WRONG>0 (confidently wrong or transport error)")
         return EXIT_FAIL
-    print("PASS: WRONG=0 on both paths. Not EPIC-020b COMPLETE. leftover=75 tables.")
+    print(
+        f"PASS: WRONG=0 on both paths. Not EPIC-020b COMPLETE. "
+        f"leftover={leftover}/{TARGET_TABLES} tables."
+    )
     return EXIT_PASS
 
 

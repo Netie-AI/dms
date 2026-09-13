@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - SCORE-BIRD-01: bronze batches, leftover trap skip (#184)
+
+- **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184). Does not close tickets. Not COMPLETE.
+- **Grow.** Pack snapshot is not a ceiling. `--live` lists Studio bronze and prints `target=75 measured=N leftover=75-N`. First GO batch stays `gender`.
+- **Skip.** Leftover traps whose `needs_table` has landed SKIP (no invented oracle). `trap_75_tables` and demo-pack bleed stay refuse.
+- **Not this ticket:** EPIC-020b / #108 COMPLETE, Mini-Dev coverage from a partial batch, ticket close.
+
+
 ## 2026-09-13 - SCORE-BIRD-01: measured live harness on BIRD Space (#184)
 
 - **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184) under EPIC-020b #173. Does not close #184 or #173. Not COMPLETE.
