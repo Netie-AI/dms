@@ -163,6 +163,64 @@ def test_truncated_and_skipped(
     assert not _secret_leaked(r.text, caplog, warehouse)
 
 
+def test_kind_postgresql_is_accepted_and_lands_under_space(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """SQLSRC-PG-01: kind=postgresql is not a 422. Password stays off the receipt."""
+    caplog.set_level(logging.DEBUG)
+    bird = "f0da7dd3-58b3-4d15-84a8-a18f2853ed87"
+    con = _FakeConnection(
+        [("public", "orders"), ("pg_catalog", "pg_class")],
+        (["order_id", "amount"], [["A-1", "10.50"]]),
+    )
+    _install(monkeypatch, con)
+    _gate_allows(monkeypatch)
+    client = TestClient(create_app())
+    r = client.post(
+        "/v1/studio/sources/sql",
+        json=_body(
+            kind="postgresql",
+            host="127.0.0.1",
+            database="bird_minidev",
+            port=5432,
+            tables=["orders"],
+            space_id=bird,
+        ),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert SECRET not in r.text
+    assert body["source"] == "postgresql://127.0.0.1:5432/bird_minidev"
+    assert len(body["tables"]) == 1
+    landed = body["tables"][0]
+    assert landed["bronze_table"] == "bronze.public_orders"
+    assert landed["row_count"] == 1
+    assert landed["source"] == "postgresql://127.0.0.1:5432/bird_minidev#public.orders"
+    bronze = client.get(f"/v1/studio/bronze?space_id={bird}").json()
+    names = {row["table"] for row in bronze}
+    assert landed["bronze_table"].split(".", 1)[-1] in names or landed["bronze_table"] in names
+    db = duckdb.connect(str(warehouse), read_only=True)
+    try:
+        row = db.execute(
+            "SELECT space_id, filename FROM bronze._ingest_registry "
+            "WHERE table_name = 'public_orders'"
+        ).fetchone()
+    finally:
+        db.close()
+    assert row is not None
+    assert row[0] == bird
+    assert SECRET not in str(row[1])
+    assert not _secret_leaked(r.text, caplog, warehouse)
+
+
+def test_kind_postgres_alias_is_still_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wire kind is postgresql, not postgres. Fail closed on the alias."""
+    client = TestClient(create_app())
+    r = client.post("/v1/studio/sources/sql", json=_body(kind="postgres"))
+    assert r.status_code == 422, r.text
+    assert SECRET not in r.text
+
+
 def test_connect_failure_is_502_without_driver_text(
     warehouse: Path, monkeypatch: pytest.MonkeyPatch, caplog
 ) -> None:

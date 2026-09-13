@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describeApiError, postSqlSource, SQL_SOURCE_PATH } from "./api";
 import {
   cardinalitySentence,
+  defaultPortHint,
   extractHeadline,
   fieldsFromControls,
   linksHeadline,
@@ -109,6 +110,28 @@ describe("postSqlSource", () => {
     expect(got.tables[1].truncated).toBe(true);
   });
 
+  it("POSTs kind=postgresql on the same path (SQLSRC-PG-01)", async () => {
+    const fetchMock = mockFetch(200, {
+      ...fanoutReceipt,
+      source: "postgresql://127.0.0.1:5432/bird_minidev",
+    });
+    await postSqlSource({
+      kind: "postgresql",
+      host: "127.0.0.1",
+      database: "bird_minidev",
+      user: "reader",
+      password: SECRET,
+      port: 5432,
+      space_id: "f0da7dd3-58b3-4d15-84a8-a18f2853ed87",
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.kind).toBe("postgresql");
+    expect(sent.port).toBe(5432);
+    expect(sent.database).toBe("bird_minidev");
+    expect(sent.space_id).toBe("f0da7dd3-58b3-4d15-84a8-a18f2853ed87");
+  });
+
   it("fail-closed gate shows the steward sentence and never the password", async () => {
     mockFetch(403, { detail: "gate_unavailable" });
     await expect(
@@ -191,6 +214,15 @@ describe("Studio SQL submit wiring (R-0007)", () => {
     expect(panel).not.toMatch(/fetch\(/);
     const page = readFileSync(join(here, "../pages/StudioPage.tsx"), "utf8");
     expect(page).toMatch(/<SqlSourcePanel /);
+  });
+
+  it("exposes postgresql as a kind alongside sqlserver and mysql", () => {
+    const panel = readFileSync(join(here, "../components/SqlSourcePanel.tsx"), "utf8");
+    expect(panel).toMatch(/data-testid="sql-source-kind-postgresql"/);
+    expect(panel).toMatch(/value="postgresql"/);
+    expect(defaultPortHint("postgresql")).toBe("5432");
+    expect(defaultPortHint("mysql")).toBe("3306");
+    expect(defaultPortHint("sqlserver")).toBe("1433");
   });
 });
 

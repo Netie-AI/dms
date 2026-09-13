@@ -49,9 +49,9 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **VQ-04 #176:** planted refuse traps fail-closed (not COMPLETE, not #8). VQ-03 #170 LAYER lifts stay. Host-online #164; temp CF **ROTATE RISK**. |
+| **This tick** | **SQLSRC-PG-01 #172** `kind=postgresql` on SqlSourceIn + executor + Studio (EPIC-020b #173). Not attach, not SCORE-BIRD PASS, not #108 COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
-| Epics | **In flight: EPIC-020 (#108) + EPIC-024 (#109)**. Open: **#116** (020), **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
+| Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#172** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
 | CI / PRs | main CI red on `b5f02be` (run 34750069692) parallel browse attach. Parks stay parked. Floor: Cortex#44. |
 

@@ -64,9 +64,7 @@ def mint_extracted_at() -> str:
 
 def classify_source_kind(filename: str | None) -> str:
     """SQL pulls use SourceConfig.describe() as filename; everything else is a file."""
-    if filename and (
-        filename.startswith("sqlserver://") or filename.startswith("mysql://")
-    ):
+    if filename and filename.startswith(("sqlserver://", "mysql://", "postgresql://")):
         return "sql"
     return "file"
 
@@ -221,9 +219,10 @@ def record_source_pull(
     carried row provenance (``_src``) and no source provenance - half an answer.
 
     ``filename`` holds the credential-free source string
-    (``sqlserver://host:port/db#schema.table``). ``sha256`` holds a fingerprint of the
-    pull - source, row count, truncation - so a re-pull that landed a different number
-    of rows is detectable as a different ingest rather than silently the same one.
+    (``sqlserver://`` / ``mysql://`` / ``postgresql://host:port/db#schema.table``).
+    ``sha256`` holds a fingerprint of the pull - source, row count, truncation -
+    so a re-pull that landed a different number of rows is detectable as a
+    different ingest rather than silently the same one.
     ``extracted_at`` / ``source_kind`` / ``row_count`` / ``truncated`` are real columns
     (widened, not a sidecar) because a one-way fingerprint cannot be read back.
 

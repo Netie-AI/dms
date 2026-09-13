@@ -1,4 +1,4 @@
-"""Live source-database connector - SQL Server / Azure SQL (ODBC) and MySQL.
+"""Live source-database connector - SQL Server / Azure SQL (ODBC), MySQL, PostgreSQL.
 
 Rows are pulled with the source's own driver and landed through
 ``write_bronze_rows``. Nothing here uses DuckDB's ``ATTACH``/``INSTALL``
@@ -6,7 +6,8 @@ scanners, so the hostile-SQL guard in :mod:`dms_executor.manifest` keeps
 rejecting those statements everywhere, including on this path.
 
 Drivers are imported lazily: the package must import on a machine that has
-neither ``pyodbc`` nor ``pymysql`` installed.
+neither ``pyodbc`` nor ``pymysql`` installed. PostgreSQL uses ``psycopg``
+(already required by the DMS app for the control plane) the same way.
 
 Extract-only, by decision (DR-0005). Rows come OUT of the source; queries never go
 IN. The connector holds no DuckDB handle at all - landing and provenance are
@@ -30,7 +31,7 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 
-SourceKind = Literal["sqlserver", "mysql"]
+SourceKind = Literal["sqlserver", "mysql", "postgresql"]
 
 #: Ceiling on a single pull. ``write_bronze_rows`` materialises every row in
 #: memory before the INSERT, so an unbounded pull against a production table is
@@ -38,7 +39,7 @@ SourceKind = Literal["sqlserver", "mysql"]
 DEFAULT_MAX_ROWS = 500_000
 
 DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
-_DEFAULT_PORTS: dict[str, int] = {"sqlserver": 1433, "mysql": 3306}
+_DEFAULT_PORTS: dict[str, int] = {"sqlserver": 1433, "mysql": 3306, "postgresql": 5432}
 
 
 class SourceConnectionError(RuntimeError):
@@ -229,7 +230,25 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             con = pyodbc.connect(_sqlserver_connection_string(cfg), readonly=True)
         except Exception as exc:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
-    else:
+    elif cfg.kind == "postgresql":
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - env-dependent
+            raise SourceConnectionError(
+                "psycopg is not installed; PostgreSQL sources are unavailable"
+            ) from exc
+        try:
+            con = psycopg.connect(
+                host=cfg.host,
+                port=cfg.resolved_port,
+                user=cfg.user,
+                password=cfg.password,
+                dbname=cfg.database,
+                connect_timeout=cfg.connect_timeout,
+            )
+        except Exception as exc:
+            raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+    elif cfg.kind == "mysql":
         try:
             import pymysql
         except ImportError as exc:  # pragma: no cover - env-dependent
@@ -247,6 +266,8 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             )
         except Exception as exc:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+    else:
+        raise SourceConnectionError(f"unsupported source kind: {cfg.kind!r}")
     try:
         yield con
     finally:
@@ -259,6 +280,7 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
 _SYSTEM_SCHEMAS: dict[str, set[str]] = {
     "sqlserver": {"sys", "INFORMATION_SCHEMA", "guest", "db_owner", "db_accessadmin"},
     "mysql": {"mysql", "information_schema", "performance_schema", "sys"},
+    "postgresql": {"pg_catalog", "information_schema", "pg_toast"},
 }
 
 
@@ -276,19 +298,21 @@ def _run_query(con: Any, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, .
 
 def list_source_tables(cfg: SourceConfig, *, con: Any | None = None) -> list[SourceTable]:
     """Base tables this login can see, system schemas excluded."""
-    if cfg.kind == "sqlserver":
-        sql = (
-            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
-            "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
-        )
-        params: tuple[Any, ...] = ()
-    else:
+    if cfg.kind == "mysql":
         sql = (
             "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
             "WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = %s "
             "ORDER BY TABLE_SCHEMA, TABLE_NAME"
         )
-        params = (cfg.database,)
+        params: tuple[Any, ...] = (cfg.database,)
+    else:
+        # SQL Server and PostgreSQL: database is not a schema. MySQL's filter
+        # TABLE_SCHEMA = database would find zero tables on bird_minidev/public.
+        sql = (
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
+        )
+        params = ()
 
     def _run(active: Any) -> list[SourceTable]:
         skip = _SYSTEM_SCHEMAS[cfg.kind]
@@ -359,10 +383,13 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
     what. These are handed to the ontology compiler as claims to be measured.
     """
     params: tuple[Any, ...]
-    if cfg.kind == "sqlserver":
-        pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
-    else:
+    if cfg.kind == "mysql":
         pk_sql, fk_sql, params = _PK_MYSQL, _FK_MYSQL, (cfg.database,)
+    else:
+        # PostgreSQL INFORMATION_SCHEMA matches the SQL Server shape (constraint
+        # type PRIMARY KEY + REFERENTIAL_CONSTRAINTS). Do not reuse the MySQL
+        # TABLE_SCHEMA = database filter.
+        pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
     skip = _SYSTEM_SCHEMAS[cfg.kind]
 
     def _run(active: Any) -> SourceKeys:
@@ -400,7 +427,9 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
 def _quote_ident(cfg: SourceConfig, part: str) -> str:
     if cfg.kind == "sqlserver":
         return "[" + part.replace("]", "]]") + "]"
-    return "`" + part.replace("`", "``") + "`"
+    if cfg.kind == "mysql":
+        return "`" + part.replace("`", "``") + "`"
+    return '"' + part.replace('"', '""') + '"'
 
 
 def _resolve(cfg: SourceConfig, con: Any, schema: str | None, table: str) -> SourceTable:

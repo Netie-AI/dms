@@ -254,7 +254,7 @@ def xlsx_orch_golden_route(
 
 
 class SqlSourceIn(BaseModel):
-    kind: Literal["sqlserver", "mysql"]
+    kind: Literal["sqlserver", "mysql", "postgresql"]
     host: str
     database: str
     user: str
@@ -273,7 +273,7 @@ def sql_source_ingest_route(
     cortex: CortexDep,
     settings: SettingsDep,
 ) -> dict[str, Any]:
-    """Extract a SQL Server or MySQL source into bronze. Credentials are not stored."""
+    """Extract a SQL Server, MySQL, or PostgreSQL source into bronze. Credentials are not stored."""
     label = sql_source_describe(
         kind=body.kind, host=body.host, database=body.database, port=body.port
     )
