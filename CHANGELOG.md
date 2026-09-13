@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - VQ-03 recover 7 live expect:l0 ABSTAIN gaps (#170)
+
+- **Ticket.** Serves [VQ-03 #170](https://github.com/Netie-AI/dms/issues/170) under EPIC-019 #38. Does not close #170 or #38. Not COMPLETE.
+- **Pack.** Exact-match the 7 measured gaps onto Cortex `certified_queries.yaml` SQL and Cortex-submit (F83). Layer is `L1_GOVERNED_METRIC`. `how full is each warehouse` is not a synonym.
+- **Thin seed.** SCHEMA_VERSION 4 adds `location_code`, `is_cold_storage`, `cctv_camera_id`, `expiry_date` so pack SQL can execute in tests. Does not overwrite the prove Cortex lake.
+- **Platform recycle.** If prove Cortex lake lacks those columns, submit misses and the qid stays ABSTAIN. Recycle Cortex with the dms pack lake. Do not invent PASS.
+- **Not this ticket:** EPIC-008 COMPLETE, EPIC-019 COMPLETE, public `:8090`, lake / `LIVE_KEY_ID`, greening planted traps, ticket close.
+
+
 ## 2026-09-13 - curated_ceo pack 14 -> 26 (SCORE-PACK-01 #168)
 
 - **Ticket.** Serves [SCORE-PACK-01 #168](https://github.com/Netie-AI/dms/issues/168). Not parented under EPIC-008 (#8). Does not close #168 or #8. Not COMPLETE.

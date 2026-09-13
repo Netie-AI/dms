@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (curated pack + score_curated exist; Cortex L0 re-derived from certified_queries.yaml).
+PREFLIGHT for this goal: HIT (VQ-03 pack exact-match on Cortex certified SQL; planted traps stay miss).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-13 | vq-03-l0-gaps | VQ-03, curated_ceo, certified_queries, demo_pack, dms-170 | #170 recover 7 live expect=l0 ABSTAINs via pack + Cortex submit. LAYER ok. Traps stay refuse. Not COMPLETE. | `2026-09-13_vq-03-l0-gaps.md` |
 | 2026-09-13 | curated-ceo-pack-expand | curated_ceo, L0, refuse, SCORE-PACK-01, dms-168 | #168 pack 14->26. L0 only with Cortex certified SQL. Refuse otherwise. Not parented under #8. Not COMPLETE. | `2026-09-13_curated-ceo-pack-expand.md` |
 | 2026-09-13 | parallel-browse-duckdb-attach | library, duckdb, unique-file-handle, browse.duckdb, parallel, CI | DuckDB 1.5 unique-file-handle 500s a second RW attach. Library lists serialize on one live attach. Do not treat attach conflict as a reseed. | `2026-09-13_parallel-browse-duckdb-attach.md` |
 | 2026-09-13 | demo-host-02-iap-smoke | DEMO-HOST-02, EPIC-008, IAP, Cloudflare, host-online, smoke, dms-164 | Fail-closed origin smoke. Temp CF ROTATE RISK. Ask BLOCKED live_ask_failed (DuckDB lock). Not COMPLETE. | `2026-09-13_demo-host-02-iap-smoke.md` |

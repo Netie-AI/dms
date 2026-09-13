@@ -31,11 +31,14 @@ EPIC-019 VQ-02: steward-registered Q→SQL assets live in DuckDB
 Studio register control: `apps/ui/src/pages/StudioPage.tsx`.
 Regression: `tests/test_vq02_verified_register.py`.
 
-EPIC-020 leftover pack: exact-match warehouse metrics in
-`packages/executor/dms_executor/demo_pack.py` (spend_by_country,
-stock_value_by_category, total_spend). Asks go to Cortex. DMS
-`ensure_demo_warehouse` always thin-reseeds the local file; the founder
-rich lake is Cortex `/var/cortex/data/dms_demo.duckdb`. `live_ask` order:
+EPIC-020 leftover pack + VQ-03 (#170) certified exact-matches in
+`packages/executor/dms_executor/demo_pack.py` (spend/stock/total_spend plus
+the seven live L0 gaps: capacity utilisation, low-stock WH-A, shipment
+cost, cold storage, capacity>90, expired, CCTV WH-A). Asks go to Cortex
+submit. Thin seed SCHEMA_VERSION 4 adds `location_code` /
+`is_cold_storage` / `cctv_camera_id` / `expiry_date` so pack SQL can run
+in tests. The founder rich lake is Cortex `/var/cortex/data/dms_demo.duckdb`.
+`live_ask` order:
 follow-up → VQ-02 → pack → cascade → bronze sheet → Cortex. DR-0002
 follow-ups (`average of them`, `add N`) in `session_followup.py`. F32
 derived path skips demo-lake SQL so cq_spend_by_country is not a

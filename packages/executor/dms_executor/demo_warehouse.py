@@ -24,7 +24,7 @@ _SEEDED: set[str] = set()
 # Ceiling: Library /tree lists serialize. Upgrade: RO pool if P-DMS-34 lifts.
 
 DEFAULT_REL = Path("data") / "dms_demo.duckdb"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Tables allowlisted on demo/live manifests
 DEMO_TABLES = (
@@ -152,18 +152,21 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
           location_id VARCHAR PRIMARY KEY,
           name VARCHAR,
           capacity_kg DOUBLE,
-          current_load_kg DOUBLE
+          current_load_kg DOUBLE,
+          location_code VARCHAR,
+          is_cold_storage BOOLEAN,
+          cctv_camera_id VARCHAR
         )
         """
     )
     con.execute(
         """
         INSERT INTO locations VALUES
-          ('WH-A', 'Warehouse A', 100000, 72000),
-          ('WH-B', 'Warehouse B', 80000, 45000),
-          ('WH-C', 'Warehouse C', 60000, 58000),
-          ('WH-D', 'Warehouse D', 120000, 31000),
-          ('WH-E', 'Warehouse E', 90000, 88000)
+          ('WH-A', 'Warehouse A', 100000, 72000, 'WH-A', FALSE, 'CAM-A-01'),
+          ('WH-B', 'Warehouse B', 80000, 45000, 'WH-B', FALSE, 'CAM-B-01'),
+          ('WH-C', 'Warehouse C', 60000, 58000, 'WH-C', TRUE, 'CAM-C-01'),
+          ('WH-D', 'Warehouse D', 120000, 31000, 'WH-D', FALSE, 'CAM-D-01'),
+          ('WH-E', 'Warehouse E', 90000, 88000, 'WH-E', FALSE, 'CAM-E-01')
         """
     )
 
@@ -197,20 +200,21 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
           reorder_level_kg DOUBLE,
           unit_cost_myr DOUBLE,
           supplier_id VARCHAR,
-          category VARCHAR
+          category VARCHAR,
+          expiry_date DATE
         )
         """
     )
     con.execute(
         """
         INSERT INTO inventory VALUES
-          ('RS622XK', 'WH-A', 1200, 500, 4.50, 'SUP-01', 'RAW'),
-          ('RS622XKR', 'WH-A', 80, 200, 5.20, 'SUP-01', 'RAW'),
-          ('SKU-ALPHA', 'WH-B', 3400, 1000, 2.10, 'SUP-02', 'PACKAGING'),
-          ('SKU-BETA', 'WH-B', 900, 400, 8.75, 'SUP-03', 'PACKAGING'),
-          ('SKU-GAMMA', 'WH-C', 150, 300, 12.00, 'SUP-04', 'CHEMICALS'),
-          ('SKU-DELTA', 'WH-D', 60, 250, 6.40, 'SUP-02', 'PARTS'),
-          ('SKU-EPSILON', 'WH-E', 2100, 800, 3.25, 'SUP-03', 'PARTS')
+          ('RS622XK', 'WH-A', 1200, 500, 4.50, 'SUP-01', 'RAW', NULL),
+          ('RS622XKR', 'WH-A', 80, 200, 5.20, 'SUP-01', 'RAW', NULL),
+          ('SKU-ALPHA', 'WH-B', 3400, 1000, 2.10, 'SUP-02', 'PACKAGING', NULL),
+          ('SKU-BETA', 'WH-B', 900, 400, 8.75, 'SUP-03', 'PACKAGING', NULL),
+          ('SKU-GAMMA', 'WH-C', 150, 300, 12.00, 'SUP-04', 'CHEMICALS', '2020-01-15'),
+          ('SKU-DELTA', 'WH-D', 60, 250, 6.40, 'SUP-02', 'PARTS', NULL),
+          ('SKU-EPSILON', 'WH-E', 2100, 800, 3.25, 'SUP-03', 'PARTS', NULL)
         """
     )
 

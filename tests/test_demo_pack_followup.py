@@ -17,6 +17,15 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_executor import Executor
 from dms_executor.demo_pack import (
+    CAPACITY_ABOVE_90_Q,
+    CAPACITY_UTILISATION_Q,
+    CCTV_WH_A_Q,
+    COLD_STORAGE_Q,
+    EXPIRED_ITEMS_Q,
+    HOW_FULL_TRAP_Q,
+    LOW_STOCK_WH_A_Q,
+    SHIPMENT_COST_Q,
+    SHIPMENT_COST_SQL,
     SPEND_BY_COUNTRY_Q,
     SPEND_BY_COUNTRY_SQL,
     STOCK_BY_CATEGORY_Q,
@@ -464,3 +473,135 @@ def test_quoted_warehouse_schema_spend_does_not_f32_demote(
     assert "20,516.00" in env["text"] or "20516" in env["text"]
     assert "scope conflict" not in env["text"].lower()
     assert len(cortex.asks) == 1
+
+
+_VQ03_CASES = (
+    (CAPACITY_UTILISATION_Q, FINANCE, "cq_capacity_utilisation"),
+    (LOW_STOCK_WH_A_Q, FINANCE, "cq_low_stock_wh_a"),
+    (SHIPMENT_COST_Q, WAREHOUSE_OPS, "cq_cost_by_destination"),
+    (COLD_STORAGE_Q, FINANCE, "cq_cold_storage"),
+    (CAPACITY_ABOVE_90_Q, FINANCE, "cq_capacity_above_90"),
+    (EXPIRED_ITEMS_Q, FINANCE, "cq_expired_items"),
+    (CCTV_WH_A_Q, FINANCE, "cq_cctv_wh_a"),
+)
+
+
+def test_vq03_exact_asks_hit_pack_and_traps_miss() -> None:
+    finance = {
+        "locations",
+        "inventory",
+        "transactions",
+        "suppliers",
+    }
+    ops = {"locations", "inventory", "shipments"}
+    for question, space, metric_id in _VQ03_CASES:
+        grant = finance if space == FINANCE else ops
+        hit = lookup_pack_metric(question, grantable=grant)
+        assert hit is not None, question
+        assert hit.metric_id == metric_id
+    assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance) is None
+    assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance) is None
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
+
+
+def test_vq03_thin_seed_executes_certified_sql(warehouse: Path) -> None:
+    from dms_executor.demo_pack import PACK_METRICS
+    from dms_executor.demo_warehouse import execute_sql
+
+    want = {metric_id for _, _, metric_id in _VQ03_CASES}
+    for metric in PACK_METRICS:
+        if metric.metric_id not in want:
+            continue
+        rows = execute_sql(metric.sql, path=warehouse)
+        assert rows, metric.metric_id
+
+
+@pytest.mark.parametrize("question,space,metric_id", _VQ03_CASES)
+def test_vq03_finance_ops_asks_are_governed_metric(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    space: str,
+    metric_id: str,
+) -> None:
+    cortex = _PackCortex(warehouse=warehouse)
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": question,
+            "space_id": space,
+            "session_id": f"ses_{metric_id}",
+        },
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env["text"]
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["rows"]
+    assert env["values"]
+    assert "scope conflict" not in env["text"].lower()
+    assert cortex.asks == []
+    sql_submits = [
+        s
+        for s in cortex.submits
+        if isinstance(getattr(s, "plan", None), dict) and s.plan.get("kind") == "sql"
+    ]
+    assert sql_submits, metric_id
+    body = sql_submits[0].body
+    submitted = body.get("sql") if isinstance(body, dict) else getattr(body, "sql", None)
+    hit = lookup_pack_metric(
+        question,
+        grantable=(
+            {"locations", "inventory", "transactions", "suppliers"}
+            if space == FINANCE
+            else {"locations", "inventory", "shipments"}
+        ),
+    )
+    assert hit is not None
+    assert submitted == hit.sql
+
+
+def test_how_full_synonym_does_not_pack_hit(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cortex = _PackCortex(warehouse=warehouse)
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": HOW_FULL_TRAP_Q,
+            "space_id": FINANCE,
+            "session_id": "ses_how_full",
+        },
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert len(cortex.asks) == 1
+
+
+def test_finance_does_not_answer_ops_shipment_cost(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cortex = _PackCortex(warehouse=warehouse)
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": SHIPMENT_COST_Q,
+            "space_id": FINANCE,
+            "session_id": "ses_fin_ship",
+        },
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert len(cortex.asks) == 1
+    assert SHIPMENT_COST_SQL not in str(cortex.submits)

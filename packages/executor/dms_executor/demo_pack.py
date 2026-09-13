@@ -1,4 +1,4 @@
-"""Demo warehouse governed metrics for the DR-0002 leftover asks.
+"""Demo warehouse governed metrics for leftover + VQ-03 certified asks.
 
 Exact-question match, same F83 posture as VQ-02: Cortex submit + ledger, no
 local DuckDB fallback. The rich lake is Cortex
@@ -6,6 +6,8 @@ local DuckDB fallback. The rich lake is Cortex
 the answer source.
 
 Not steward VQ-02: these ids are the product pack, not Studio-registered.
+VQ-03 (#170) extras are Cortex ``certified_queries.yaml`` SQL, exact phrase
+only. ``how full is each warehouse`` is not a synonym and must miss.
 """
 
 from __future__ import annotations
@@ -23,6 +25,14 @@ from dms_executor.verified_queries import rows_from_submit_result
 SPEND_BY_COUNTRY_Q = "What is our total spend by supplier country?"
 STOCK_BY_CATEGORY_Q = "What is total stock value by category?"
 TOTAL_SPEND_Q = "What is our total spend?"
+CAPACITY_UTILISATION_Q = "Show warehouse capacity utilisation"
+LOW_STOCK_WH_A_Q = "Which SKUs are below reorder level in warehouse A?"
+SHIPMENT_COST_Q = "Show shipment cost by destination"
+COLD_STORAGE_Q = "Which locations are cold storage?"
+CAPACITY_ABOVE_90_Q = "Which locations are above 90 percent capacity?"
+EXPIRED_ITEMS_Q = "Which items are expired?"
+CCTV_WH_A_Q = "Show the CCTV camera for warehouse A"
+HOW_FULL_TRAP_Q = "how full is each warehouse"
 
 SPEND_BY_COUNTRY_SQL = (
     "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
@@ -39,6 +49,35 @@ TOTAL_SPEND_SQL = (
     "SELECT ROUND(COALESCE(SUM(i.quantity_kg * i.unit_cost_myr), 0), 2) "
     "AS total_spend_myr FROM inventory AS i JOIN suppliers AS s "
     "ON i.supplier_id = s.supplier_id"
+)
+CAPACITY_UTILISATION_SQL = (
+    "SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) "
+    "AS pct_used FROM locations"
+)
+LOW_STOCK_WH_A_SQL = (
+    "SELECT i.sku, i.quantity_kg FROM inventory i "
+    "JOIN locations l ON i.location_id = l.location_id "
+    "WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 "
+    "AND l.location_code = 'WH-A' ORDER BY i.quantity_kg ASC"
+)
+SHIPMENT_COST_SQL = (
+    "SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr "
+    "FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id "
+    "GROUP BY l.location_code"
+)
+COLD_STORAGE_SQL = (
+    "SELECT location_code FROM locations WHERE is_cold_storage = true"
+)
+CAPACITY_ABOVE_90_SQL = (
+    "SELECT location_code FROM locations "
+    "WHERE 100.0 * current_load_kg / capacity_kg > 90"
+)
+EXPIRED_ITEMS_SQL = (
+    "SELECT sku FROM inventory "
+    "WHERE expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE"
+)
+CCTV_WH_A_SQL = (
+    "SELECT location_code, cctv_camera_id FROM locations WHERE location_code = 'WH-A'"
 )
 
 
@@ -68,6 +107,48 @@ PACK_METRICS: tuple[PackMetric, ...] = (
         question=TOTAL_SPEND_Q,
         sql=TOTAL_SPEND_SQL,
         tables=("inventory", "suppliers"),
+    ),
+    PackMetric(
+        metric_id="cq_capacity_utilisation",
+        question=CAPACITY_UTILISATION_Q,
+        sql=CAPACITY_UTILISATION_SQL,
+        tables=("locations",),
+    ),
+    PackMetric(
+        metric_id="cq_low_stock_wh_a",
+        question=LOW_STOCK_WH_A_Q,
+        sql=LOW_STOCK_WH_A_SQL,
+        tables=("inventory", "locations"),
+    ),
+    PackMetric(
+        metric_id="cq_cost_by_destination",
+        question=SHIPMENT_COST_Q,
+        sql=SHIPMENT_COST_SQL,
+        tables=("shipments", "locations"),
+    ),
+    PackMetric(
+        metric_id="cq_cold_storage",
+        question=COLD_STORAGE_Q,
+        sql=COLD_STORAGE_SQL,
+        tables=("locations",),
+    ),
+    PackMetric(
+        metric_id="cq_capacity_above_90",
+        question=CAPACITY_ABOVE_90_Q,
+        sql=CAPACITY_ABOVE_90_SQL,
+        tables=("locations",),
+    ),
+    PackMetric(
+        metric_id="cq_expired_items",
+        question=EXPIRED_ITEMS_Q,
+        sql=EXPIRED_ITEMS_SQL,
+        tables=("inventory",),
+    ),
+    PackMetric(
+        metric_id="cq_cctv_wh_a",
+        question=CCTV_WH_A_Q,
+        sql=CCTV_WH_A_SQL,
+        tables=("locations",),
     ),
 )
 
