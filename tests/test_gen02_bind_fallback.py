@@ -1,6 +1,7 @@
-"""GEN-02: Cortex compute miss binds retrieved ontology; traps stay ungreen.
+"""GEN-02: a planner miss binds retrieved ontology when asked; traps stay ungreen.
 
 Does not expand certified packs. Offline counts only. Not COMPLETE.
+Compile-path unit tests: maybe_generative_ask called directly, not the Cortex seam (GEN-03).
 """
 
 from __future__ import annotations

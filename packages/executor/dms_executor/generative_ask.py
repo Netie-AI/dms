@@ -1,9 +1,14 @@
 """GEN-01 — ontology-grounded generative ask + execute-validate.
 
 Exact-match VQ/pack stays first. Retrieve a short schema/ontology context,
-send it to Cortex compute (FreeRoute stays in Cortex), fill typed slots,
-compile, validate, then Cortex-submit. Unsure or validate-fail is ABSTAIN.
-Missing compute client is a miss (existing contract ask still runs).
+hand it to a caller-supplied ``compute`` planner, fill typed slots, compile,
+validate, then Cortex-submit. Unsure or validate-fail is ABSTAIN. A compute
+miss returns None (existing contract ask still runs).
+
+GEN-03: the live ask path has no planner. Cortex POST /dms/query ignores the
+ontology context and returns no typed plan (KB F-0055), so ``Executor.live_ask``
+passes a closed, no-network seam and ``bind_on_miss=False``. Only offline
+harnesses and compile-path tests supply a planner here.
 
 Does not expand certified exact-match packs. Does not invent provider keys.
 """
@@ -314,8 +319,9 @@ def maybe_generative_ask(
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
     Compute receives a short retrieved context, not the full ontology dump.
-    Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane).
-    Product path leaves miss as None so Cortex certified ask still runs.
+    A compute miss may bind_plan when ``bind_on_miss``; no live ask lane sets it
+    since GEN-03 (keyword binds answered green-wrong), only direct callers do.
+    Otherwise a miss is None so the Cortex certified ask still runs.
     Explicit compute unsure is not overridden. File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
@@ -363,8 +369,9 @@ def maybe_generative_ask(
     if kind == "unsure":
         return _abstain(q, "compute abstained (unsure)", space_id=space_id, session_id=session_id)
     if kind != "plan":
-        # Isolated gen (ask_path=generative): bind from retrieved ontology.
-        # Product path must miss into Cortex.ask so certified VQ/L0 still run.
+        # Bind from retrieved ontology only for a direct caller that asks for it.
+        # live_ask passes bind_on_miss=False on every lane since GEN-03, so the
+        # product path misses into Cortex.ask and the gen lane abstains.
         if not bind_on_miss:
             return None
         payload = bind_plan(q, ctx)
