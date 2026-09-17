@@ -115,6 +115,22 @@ DEMO_TENANT_ID = "tenant_demo"
 DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
+def _closed_compute_seam(_context: dict[str, Any]) -> dict[str, Any] | None:
+    """GEN-03: the ask path's plan source. Always a miss; makes no network call.
+
+    This used to POST Cortex ``/dms/query`` with ``mode=ontology_plan``. Cortex
+    does not implement that mode: it drops ``mode`` and ``ontology`` and never
+    returns ``query_plan.measure`` (KB F-0055), so every call missed. On
+    ask_path=generative the miss fell through to the DMS keyword binder, which
+    answered under L2_VALIDATED with wrong numbers; on the product lane the POST
+    (45s timeout) was made and its reply thrown away.
+
+    It stays a callable rather than ``None`` because ``maybe_generative_ask``
+    returns early on ``compute is None`` before its paraphrase and _UNSURE_ASK
+    pre-gates, and those gates must keep running where they are until GEN-07
+    moves them. Deleting the client method is CONTRACT-FAKE-01.
+    """
+    return None
 
 
 class Executor:
@@ -387,28 +403,6 @@ class Executor:
             )
         )
 
-    def _compute_query(
-        self,
-        question: str,
-        *,
-        session_id: str | None,
-        space_id: str | None,
-        ontology: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Cortex compute (POST /dms/query). Missing method or failure is a miss."""
-        fn = getattr(self._cortex, "compute_query", None)
-        if not callable(fn):
-            return None
-        try:
-            return fn(
-                question,
-                session_id=session_id,
-                space_id=space_id,
-                ontology=ontology,
-            )
-        except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
-            return None
-
     def live_ask(
         self,
         question: str,
@@ -424,9 +418,15 @@ class Executor:
         question in, so the scope is enforced by the engine rather than
         suggested to the model.
 
-        ``ask_path``: product (default) certified-first then generative;
-        exact = VQ/pack/refuse only; generative = retrieve+validate, skip pack.
-        Isolated lanes miss as ABSTAIN (no Cortex mix). Planted refuse always.
+        ``ask_path``: product (default) = certified-first (VQ, pack, planted
+        refuse), then the generative pre-gates, then the Cortex contract ask.
+        exact = VQ/pack/refuse only. generative = skip VQ/pack; past the planted
+        refuse and the pre-gates it has no plan source, so it abstains. Isolated
+        lanes miss as ABSTAIN (no Cortex mix); over HTTP they run only where the
+        server sets DMS_HARNESS_ASK_PATHS.
+
+        GEN-03: no lane POSTs Cortex ``/dms/query`` and no lane binds a keyword
+        plan (``bind_on_miss=False`` everywhere; see ``_closed_compute_seam``).
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
@@ -585,6 +585,10 @@ class Executor:
                 self._store_turn(session_id, space_id, env)
                 return env
         if allow_gen:
+            # GEN-03: the compute seam is closed and nothing binds on a miss, so
+            # this call can only return a pre-gate ABSTAIN (paraphrase, vague
+            # ask) or None. Product misses into the Cortex contract ask below;
+            # the generative lane misses into path_miss_envelope.
             gen_env = maybe_generative_ask(
                 question,
                 space_id=space_id,
@@ -592,12 +596,7 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(granted),
                 tables=tables,
-                compute=lambda catalog: self._compute_query(
-                    question,
-                    session_id=session_id,
-                    space_id=space_id,
-                    ontology=catalog,
-                ),
+                compute=_closed_compute_seam,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
@@ -608,7 +607,7 @@ class Executor:
                     session_id=session_id,
                     event_type="ask.generated_ontology",
                 ),
-                bind_on_miss=(ladder == "generative"),
+                bind_on_miss=False,
             )
             if gen_env is not None:
                 env = attach_cascade(gen_env, cascade)
@@ -617,7 +616,10 @@ class Executor:
         if not allow_cortex:
             env = path_miss_envelope(
                 question,
-                "generative miss: retrieve/plan/validate did not certify",
+                # Say what happened. "did not certify" implied a plan was tried;
+                # since GEN-03 this lane has no plan source to try (R-0011).
+                "generative miss: no plan source on this lane (GEN-03: Cortex "
+                "/dms/query does not plan, keyword bind is off)",
                 space_id=space_id,
                 session_id=session_id,
             )

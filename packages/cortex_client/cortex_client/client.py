@@ -161,7 +161,12 @@ class CortexClient:
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Off-contract POST /dms/query. None if the engine does not ground a plan.
+        """Off-contract POST /dms/query. Not a plan source; None on any failure.
+
+        Cortex origin/main ignores the ``mode`` and ``ontology`` this sends and
+        does not return a typed ``query_plan.measure``, so it is not the engine's
+        generate+validate path (KB F-0055). No ask-path caller remains after
+        GEN-03 (dms#194); deletion is tracked in CONTRACT-FAKE-01.
 
         OpenVault keys stay in Cortex. This client forwards ``api_key`` when
         already configured and never invents one.

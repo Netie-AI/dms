@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-17 - GEN-03: contain the ask path - no keyword-bound answer under a confident badge (#194)
+
+- **Ticket.** Serves [GEN-03 #194](https://github.com/Netie-AI/dms/issues/194) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. No new climb number.
+- **Refuse.** `POST /v1/chat/ask` with `ask_path` `exact` or `generative` returns 400 `ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS` (default off). Checked first: no compliance gate, Cortex call, submit or ledger append on a refused request. Server config only, never a header (DR-0004).
+- **Contain.** `live_ask` no longer POSTs Cortex `/dms/query` on any lane and passes `bind_on_miss=False` everywhere. Cortex ignores `mode`/`ontology` and returns no typed plan (KB F-0055), so the call always missed and the generative lane answered from `bind_plan` under L2_VALIDATED with wrong numbers. The paraphrase and vague-ask pre-gates still run where they were (moving them is GEN-07). `bind_plan` is kept for offline harnesses.
+- **Honest docstrings.** `cortex_client` compute no longer claims to be the engine's generate+validate path; deletion is CONTRACT-FAKE-01.
+- **Not this ticket:** Cortex changes, the seam decision, GEN-04/05a/07, `scripts/score_curated.py` live `--ab` (400s on a customer origin until run against a measurement origin), ticket close.
+
 ## 2026-09-13 - SCORE-CLIENT-01: climb/A/B httpx vs urllib CF1010 (#187)
 
 - **Ticket.** Serves [SCORE-CLIENT-01 #187](https://github.com/Netie-AI/dms/issues/187) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Not 99.95%.

@@ -43,12 +43,15 @@ class _GenCortex:
     asks: list[Any] = field(default_factory=list)
     submits: list[Any] = field(default_factory=list)
     appends: list[Any] = field(default_factory=list)
+    #: GEN-03: live_ask must never call compute_query; tests assert this stays empty.
+    computes: list[str] = field(default_factory=list)
     compute_payload: dict[str, Any] | None = None
     sql_output: dict[str, Any] | None = field(
         default_factory=lambda: {"rows": [{"product_category": "ALPHA", "revenue": 100.0}]}
     )
 
     def compute_query(self, question: str, **_: Any) -> dict[str, Any] | None:
+        self.computes.append(question)
         return self.compute_payload
 
     def submit(self, req: Any) -> QueryResult:
@@ -144,6 +147,7 @@ def _ledger_ok(_: dict[str, Any]) -> LedgerAppendResponse:
     return LedgerAppendResponse(entry_id="led_gen01", hash="hash_gen01_not_entry")
 
 
+# Compile-path unit tests: maybe_generative_ask with an injected planner, not the Cortex seam.
 def test_abstain_when_question_is_unsure(onto: Ontology, warehouse: Path) -> None:
     submits: list[str] = []
 
@@ -491,15 +495,27 @@ def test_live_ask_falls_through_without_compute_query(minter: ManifestMinter) ->
     assert env["badge"] == "L0_CERTIFIED"
 
 
-def test_live_ask_abstain_when_compute_unsure(minter: ManifestMinter) -> None:
+def test_live_ask_product_never_consults_compute(minter: ManifestMinter) -> None:
+    """GEN-03: a compute reply (here: unsure) is never requested on the product lane.
+
+    Before GEN-03 live_ask POSTed /dms/query and abstained on this payload. The
+    seam is closed now, so the question misses into the Cortex contract ask.
+    """
     fake = _GenCortex(compute_payload={"unsure": True})
     exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
     env = exe.live_ask("What is revenue by product category?", session_id="ses_gen01_unsure")
-    assert fake.asks == []
-    assert fake.submits == []
-    assert env["badge"] == "ABSTAIN"
-    assert env["abstained"] is True
+    assert fake.computes == []
+    assert len(fake.asks) == 1
+    assert env["audit_id"] == "aud_gen01_cortex"
     assert_envelope_valid(env)
+    # The fixture's scalar SELECT 1 cannot answer a by-category ask, so E10
+    # demotes it: the rendered answer is Cortex's, refused, not a GEN-01 abstain.
+    assert "live Cortex ask" in (env.get("assumptions") or [])
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env["values"] == []
+    assert "breakdown" in env["text"]
+    assert "ontology-grounded" not in env["text"]
 
 
 def test_live_ask_vq04_beats_greedy_compute(minter: ManifestMinter) -> None:
@@ -515,6 +531,7 @@ def test_live_ask_vq04_beats_greedy_compute(minter: ManifestMinter) -> None:
     assert env["abstained"] is True
     assert fake.submits == []
     assert fake.asks == []
+    assert fake.computes == []
     assert judge({"expect": "refuse"}, env) != "WRONG"
 
 
@@ -530,6 +547,7 @@ def test_live_ask_vague_trap_does_not_execute(minter: ManifestMinter) -> None:
     assert env["abstained"] is True
     assert fake.submits == []
     assert fake.asks == []
+    assert fake.computes == []
     assert judge({"expect": "refuse"}, env) != "WRONG"
 
 
@@ -560,21 +578,52 @@ def test_ask_path_generative_skips_certified_pack(minter: ManifestMinter) -> Non
     assert env["badge"] == "ABSTAIN"
     assert fake.asks == []
     assert fake.submits == []
+    assert fake.computes == []
 
 
-def test_ask_path_generative_binds_on_compute_miss(minter: ManifestMinter) -> None:
-    fake = _GenCortex(compute_payload=None)
+@pytest.mark.parametrize(
+    "compute_payload",
+    [
+        None,
+        {"query_plan": {"measure": "stock_value_myr", "group_by": [["product", "category"]]}},
+    ],
+    ids=["compute_miss", "compute_plan"],
+)
+def test_ask_path_generative_does_not_bind_or_compute(
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    compute_payload: dict[str, Any] | None,
+) -> None:
+    """GEN-03: the generative lane neither calls compute nor binds; it abstains.
+
+    Before GEN-03 a compute miss here bound a keyword plan and answered
+    L2_VALIDATED (green-wrong on the D03 probes). Neither reply is requested now.
+    """
+    binds: list[str] = []
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.bind_plan",
+        lambda q, *_a, **_k: binds.append(q),
+    )
+    fake = _GenCortex(compute_payload=compute_payload)
     exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
     env = exe.live_ask(
         "What is total stock value by category?",
         session_id="ses_gen02_gen_bind_miss",
         ask_path="generative",
     )
-    assert env["badge"] == "L2_VALIDATED"
-    assert env["abstained"] is False
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["values"] == []
+    assert env["rows"] == []
+    assert env["text"].strip()
+    assert binds == []
+    assert fake.computes == []
     assert fake.asks == []
-    assert fake.submits
-    assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert fake.submits == []
+    assert fake.appends == []
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert "compute_fallback:bind_plan" not in notes
 
 
 def test_ask_path_exact_still_hits_pack(minter: ManifestMinter) -> None:

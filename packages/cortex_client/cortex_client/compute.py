@@ -1,8 +1,16 @@
-"""Off-contract Cortex compute — POST /dms/query (same seam Crew EngineBridge uses).
+"""Off-contract Cortex POST /dms/query (same seam Crew EngineBridge uses).
 
-Contract 1.2.0 has ask/submit/ledger only. Compute is the engine's generate+validate
-path (FreeRoute via OpenVault inside Cortex). DMS never invents provider keys and
-never puts secrets in the body.
+Contract 1.2.0 has ask/submit/ledger only, and this is not a planner. It sends
+``mode="ontology_plan"`` and an ``ontology`` context, but Cortex origin/main does
+not read either: its DMSQueryRequest takes question, session_id and space_id
+only (CortexOS/api/dms_query.py @ ceb7fc2), and it does not return a typed
+``query_plan.measure``. So a caller expecting a generate+validate plan always
+misses (KB F-0055).
+
+No ask-path caller remains after GEN-03 (dms#194): ``Executor.live_ask`` passes a
+closed, no-network compute seam instead. Deleting this module and
+``CortexClient.compute_query`` is tracked in CONTRACT-FAKE-01. DMS never invents
+provider keys and never puts secrets in the body.
 """
 
 from __future__ import annotations
@@ -24,7 +32,11 @@ def compute_query(
     api_key: str | None = None,
     timeout: float = 45.0,
 ) -> dict[str, Any] | None:
-    """POST Cortex compute. None on unreachable / 4xx / 5xx — caller misses or abstains.
+    """POST /dms/query. None on unreachable / 4xx / 5xx - caller misses or abstains.
+
+    Cortex ignores ``mode`` and ``ontology`` (see module docstring), so a 200 here
+    is the engine's own /dms/query answer, not a plan built from the context sent.
+    No ask-path caller since GEN-03; deletion tracked in CONTRACT-FAKE-01.
 
     ``api_key`` is forwarded when the caller already has one (viewer/engine).
     An empty key is not replaced with a guessed secret.
