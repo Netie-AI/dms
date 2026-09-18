@@ -1126,6 +1126,17 @@ def demo_ontology(warehouse: Path) -> Ontology:
                 "one contribution per supplier"
             ),
         )
+    if cortex_default or "last_audit_date" in sup:
+        o.add_measure(
+            "audit_overdue",
+            "supplier",
+            "COUNT(*) FILTER (WHERE CAST(f.last_audit_date AS DATE) "
+            "< CURRENT_DATE - INTERVAL 90 DAY)",
+            description=(
+                "suppliers whose last audit is overdue (>90 days); "
+                "one contribution per overdue supplier"
+            ),
+        )
     return o
 
 

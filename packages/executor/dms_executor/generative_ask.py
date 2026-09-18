@@ -482,7 +482,9 @@ def maybe_generative_ask(
     Ranking walk: skip noise ids; with a retrieve prefer lock, also skip a
     resolvable-but-wrong id such as sku_count on a revenue/SKU-list ask.
     When the walk exhausts, overlay a question-matched Cortex pack id onto
-    the prefer lock (not bind_plan; not skip-to-weaker on abort).
+    the prefer lock (not bind_plan; not skip-to-weaker on abort). Leftover
+    Cortex certified ids such as ``cq_audit_overdue`` overlay onto the
+    verified ``audit_overdue`` measure. Planted refuses stay ABSTAIN.
     Invalid generate SELECT may climb via those slots; hostile SQL does not.
     Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane)
     and Insights was not reached. Product path leaves miss as None so Cortex

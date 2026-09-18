@@ -121,6 +121,14 @@ def test_first_ensure_this_process_reseeds_thin(tmp_path: Path) -> None:
         }
         assert {"location_code", "is_cold_storage", "cctv_camera_id"} <= loc_cols
         assert "expiry_date" in inv_cols
+        sup_cols = {
+            str(r[0]).lower()
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) = 'suppliers'"
+            ).fetchall()
+        }
+        assert "last_audit_date" in sup_cols
         keep = con.execute(
             "SELECT query_id FROM _verified_queries"
         ).fetchall()

@@ -396,6 +396,13 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
         if not cat or not _has_col(context, obj, "category"):
             return None
         filters.append([obj, "category", "=", cat])
+    if "audit" in qn and "overdue" in qn:
+        if not _has_col(context, "supplier", "last_audit_date"):
+            return None
+        from datetime import date, timedelta
+
+        cutoff = (date.today() - timedelta(days=90)).isoformat()
+        filters.append(["supplier", "last_audit_date", "<", cutoff])
     if ("cctv" in qn or "camera" in qn) and not _has_col(
         context, "location", "cctv_camera_id"
     ):
@@ -451,6 +458,7 @@ def retrieve_short_context(
         "location": ["is_cold_storage", "location_code", "cctv_camera_id", "name"],
         "lot": ["expiry_date", "category", "reorder_level_kg", "quantity_kg"],
         "product": ["category", "sku"],
+        "supplier": ["last_audit_date", "supplier_id", "country", "risk_score"],
     }
     cols = dict(onto_slice.get("columns") or {})
     for obj, names in extras.items():
@@ -513,6 +521,8 @@ def _locked_measure(question: str) -> str | None:
         return "below_reorder_lots"
     if re.search(r"\brank(?:ing)?\b", qn) and "supplier" in qn:
         return "supplier_rank_score"
+    if "audit" in qn and "overdue" in qn:
+        return "audit_overdue"
     if "expir" in qn or "chemical" in qn:
         return "stock_value_myr"
     if "stock value" in qn:
@@ -604,6 +614,8 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     elif _COLD.search(q) or (entity and "location" in qn):
         if _has_col(context, "location", "location_code"):
             group_by = [["location", "location_code"]]
+    elif "audit" in qn and "overdue" in qn:
+        group_by = [["supplier", "supplier_id"]]
     elif "expir" in qn or "chemical" in qn or "reorder" in qn:
         group_by = [["product", "sku"]]
     elif hinted:

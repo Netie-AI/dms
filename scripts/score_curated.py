@@ -560,6 +560,26 @@ def self_check() -> int:
     if int(climb_plant["by_plan_source"]["ontology_plan"]["answered"]) < 2:
         print("FAIL: climb plant must count ontology_plan>1")
         return 1
+    climb04_plant = build_gen_path_prove_report(
+        {"OK": 18, "LAYER": 0, "ABSTAIN": 9, "WRONG": 0},
+        cases=(
+            [
+                {"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"}
+                for i in range(18)
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(9)
+            ]
+        ),
+        mode="offline",
+    )
+    if int(climb04_plant["by_plan_source"]["ontology_plan"]["answered"]) <= 17:
+        print("FAIL: climb-04 plant must count ontology_plan>17")
+        return 1
+    if "COMPLETE" in json.dumps(climb04_plant) or "99.95" in json.dumps(climb04_plant):
+        print("FAIL: climb-04 plant invented COMPLETE / 99.95")
+        return 1
     if "COMPLETE" in json.dumps(climb_plant) or "99.95" in json.dumps(climb_plant):
         print("FAIL: climb plant invented COMPLETE / 99.95")
         return 1

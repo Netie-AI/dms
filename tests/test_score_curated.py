@@ -24,6 +24,7 @@ FOUNDER_L0 = (
     "cq_expired_items",
     "cq_chemicals_list",
     "cq_supplier_ranking",
+    "cq_audit_overdue",
 )
 VQ03_GAPS = (
     "cq_capacity_utilisation",

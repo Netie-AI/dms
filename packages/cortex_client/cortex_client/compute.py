@@ -37,6 +37,7 @@ _PACK_DIM: tuple[tuple[str, str, str], ...] = (
     ("cctv", "location", "cctv_camera_id"),
     ("supplier_rank", "supplier", "supplier_id"),
     ("low_stock", "product", "sku"),
+    ("audit_overdue", "supplier", "supplier_id"),
 )
 _RANK_STOP = frozenset(
     {
@@ -279,6 +280,9 @@ def pack_id_shape(metric_id: str) -> dict[str, Any]:
         out["limit"] = int(top.group(1))
     if "above_90" in mid or "above90" in mid:
         out["keep_gt"] = 90.0
+    if "audit_overdue" in mid:
+        # COUNT FILTER is 0 for on-time audits; drop those rows.
+        out["keep_gt"] = 0.0
     return out
 
 
