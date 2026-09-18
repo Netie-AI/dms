@@ -253,7 +253,8 @@ def generate_retry_eligible(payload: dict[str, Any] | None) -> bool:
     gen = payload.get("generative")
     gen_d = gen if isinstance(gen, dict) else {}
     climb = gen_d.get("climb") if gen_d else None
-    final = str((climb or {}).get("final") or "").upper() if isinstance(climb, dict) else ""
+    climb_d = climb if isinstance(climb, dict) else {}
+    final = str(climb_d.get("final") or "").upper()
     if final in {"UNARMED", "NO_KEY", "REFUSED_AUTH"}:
         return False
     if str(payload.get("status") or "").upper() == "REFUSE" and not gen_d:

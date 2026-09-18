@@ -726,12 +726,14 @@ def slots_for_measure(
     if not isinstance(bound, dict) or bound.get("unsure") is True:
         if needs_dim and not shape_group:
             return None
-        plan = _apply_shape({"measure": mid, "group_by": shape_group, "filters": []})
-        return {"query_plan": plan, "plan_source": "ontology_plan"}
-    plan = bound.get("query_plan")
-    if not isinstance(plan, dict):
+        fallback = _apply_shape(
+            {"measure": mid, "group_by": shape_group, "filters": []}
+        )
+        return {"query_plan": fallback, "plan_source": "ontology_plan"}
+    raw_plan = bound.get("query_plan")
+    if not isinstance(raw_plan, dict):
         return None
-    return {"query_plan": _apply_shape(plan), "plan_source": "ontology_plan"}
+    return {"query_plan": _apply_shape(raw_plan), "plan_source": "ontology_plan"}
 
 
 __all__ = [

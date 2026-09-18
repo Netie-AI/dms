@@ -24,9 +24,9 @@ from dms_executor.generative_ask import load_verified_ontology, maybe_generative
 from dms_executor.ontology import demo_ontology
 from dms_executor.semantic_retrieve import (
     load_measure_aliases,
+    retrieve_short_context,
     shape_from_metric_id,
     slots_for_measure,
-    retrieve_short_context,
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -59,7 +59,10 @@ def _rank(*metric_ids: str) -> dict[str, Any]:
         "generative": {"ok": False, "sql": None, "climb": {"final": "UNARMED"}},
         "ontology": {
             "ok": True,
-            "metrics": [{"id": mid, "importance": {"rank": i + 1}} for i, mid in enumerate(metric_ids)],
+            "metrics": [
+                {"id": mid, "importance": {"rank": i + 1}}
+                for i, mid in enumerate(metric_ids)
+            ],
         },
         "values": [],
     }
@@ -292,9 +295,14 @@ def test_freeroute_retry_sends_ranked_slots_and_sql() -> None:
         def __exit__(self, *a: Any) -> None:
             return None
 
-        def post(self, url: str, json: dict[str, Any], headers: dict[str, str] | None = None) -> Any:
+        def post(
+            self, url: str, json: dict[str, Any], headers: dict[str, str] | None = None
+        ) -> Any:
             posts.append({"url": url, "json": json, "headers": headers})
-            if len([p for p in posts if "/v1/insights" in p["url"] and "ontology" not in p["url"]]) == 1:
+            insights = [
+                p for p in posts if p["url"].endswith("/v1/insights")
+            ]
+            if len(insights) == 1:
                 return _Unarmed()
             return _Sql()
 
