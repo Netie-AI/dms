@@ -146,6 +146,16 @@ Platform leftover after deploy:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>17 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+GEN-PATH-CLIMB-05 (#214): break flat ontology_plan=17 after #212 KEEP_HOLD
+(answered=17/26). Root cause: the 17 L0s were saturated; leftover
+`cq_audit_overdue` never entered the frozen 26-pack denominator. Score Cortex
+certified synonyms of those 17 (not PACK_METRICS). Retrieve lock
+categories+sales. Harness fails if leftover L0s are not asked. Planted refuses
+stay ABSTAIN. Regression: `tests/test_gen_path_climb05.py`. Platform leftover
+after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>17 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

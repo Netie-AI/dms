@@ -77,6 +77,17 @@ QUALIFIED_GEN_COVERAGE_CLAIM: dict[str, Any] = {
     "note": "15/26 gen answered is QUALIFIED pending plan_source prove",
 }
 
+# #212 KEEP_HOLD was answered=17/26: leftover cq_audit_overdue never entered
+# the frozen 26-pack denominator. Climb-05 leftover L0s must be scored.
+# Certified synonyms are Cortex certified_queries.yaml phrases, not PACK_METRICS.
+CLIMB05_LEFTOVER_L0: tuple[str, ...] = (
+    "cq_audit_overdue",
+    "cq_sku_count_syn_short",
+    "cq_sku_count_syn_label",
+    "cq_sales_top5_syn_skus",
+    "cq_top3_category_syn_value",
+)
+
 # Platform D distill -> Netie-native mapping. Ideas only; no vendor paste.
 DISTILL: dict[str, Any] = {
     "ideas_only": True,
@@ -367,6 +378,16 @@ def self_check() -> int:
     if len(ids) < 24:
         print(f"FAIL: Genie walkthrough needs >= 24 cases, got {len(ids)}")
         return 1
+    missing_leftover = [qid for qid in CLIMB05_LEFTOVER_L0 if qid not in ids]
+    if missing_leftover:
+        print(
+            "FAIL: climb-05 leftover L0 missing from pack "
+            f"(17/26 freeze): {missing_leftover}"
+        )
+        return 1
+    if len(ids) <= int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
+        print("FAIL: pack must outgrow frozen n=26 so leftover L0s are scored")
+        return 1
     expects = {str(c.get("expect") or "").lower() for c in pack["questions"]}
     if "l0" not in expects or not (expects & REFUSE):
         print("FAIL: pack must include l0 hits and abstain/refuse traps")
@@ -580,6 +601,26 @@ def self_check() -> int:
         return 1
     if "COMPLETE" in json.dumps(climb04_plant) or "99.95" in json.dumps(climb04_plant):
         print("FAIL: climb-04 plant invented COMPLETE / 99.95")
+        return 1
+    climb05_plant = build_gen_path_prove_report(
+        {"OK": 20, "LAYER": 0, "ABSTAIN": 11, "WRONG": 0},
+        cases=(
+            [
+                {"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"}
+                for i in range(20)
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(11)
+            ]
+        ),
+        mode="offline",
+    )
+    if int(climb05_plant["by_plan_source"]["ontology_plan"]["answered"]) <= 17:
+        print("FAIL: climb-05 plant must count ontology_plan>17")
+        return 1
+    if "COMPLETE" in json.dumps(climb05_plant) or "99.95" in json.dumps(climb05_plant):
+        print("FAIL: climb-05 plant invented COMPLETE / 99.95")
         return 1
     if "COMPLETE" in json.dumps(climb_plant) or "99.95" in json.dumps(climb_plant):
         print("FAIL: climb plant invented COMPLETE / 99.95")
@@ -1199,6 +1240,15 @@ def _plan_source_bucket(cases: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
+def _leftover_l0_unscored(cases: list[dict[str, Any]]) -> list[str]:
+    """Ids from CLIMB05_LEFTOVER_L0 missing in this prove run.
+
+    #212 KEEP_HOLD answered=17/26 because cq_audit_overdue was never asked.
+    """
+    got = {str(row.get("id") or "") for row in cases}
+    return [qid for qid in CLIMB05_LEFTOVER_L0 if qid not in got]
+
+
 def decide_phase_a_hold_may_clear(
     *,
     wrong: int,
@@ -1313,6 +1363,11 @@ def _write_prove_report(report: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         f"WRONG {report['wrong']}  answered {report['answered']}/{report['n']}  "
         f"{HOLD_MAY_CLEAR_FIELD}: {report[HOLD_MAY_CLEAR_FIELD]}"
     )
+    print(
+        "leftover_l0 "
+        + ",".join(CLIMB05_LEFTOVER_L0)
+        + f"  (frozen n=26 floor; this pack n={report['n']})"
+    )
     print(f"reason: {report['phase_a_hold_may_clear_reason']}")
     print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
     if not report["passed_wrong_zero"]:
@@ -1349,6 +1404,9 @@ def prove_path_offline() -> int:
     if int(ab["wrong"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
         return EXIT_FAIL
+    if _leftover_l0_unscored(cases):
+        print("FAIL: leftover L0s not scored (frozen 17/26 pack)")
+        return EXIT_FAIL
     return code
 
 
@@ -1375,6 +1433,9 @@ def prove_path_live(url: str, timeout: float) -> int:
     code, _ = _write_prove_report(report)
     if int(exact_t["WRONG"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
+        return EXIT_FAIL
+    if _leftover_l0_unscored(gen_cases):
+        print("FAIL: leftover L0s not scored (frozen 17/26 pack)")
         return EXIT_FAIL
     return code
 

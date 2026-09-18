@@ -76,7 +76,7 @@ _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
     (("by destination", "by location"), "location", "location_code"),
-    (("by category", "categoty"), "product", "category"),
+    (("by category", "categoty", "categories by"), "product", "category"),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
 )
 _STOP = frozenset(
@@ -397,12 +397,16 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
             return None
         filters.append([obj, "category", "=", cat])
     if "audit" in qn and "overdue" in qn:
-        if not _has_col(context, "supplier", "last_audit_date"):
-            return None
-        from datetime import date, timedelta
+        measures = context.get("measures") or {}
+        if _has_col(context, "supplier", "last_audit_date"):
+            from datetime import date, timedelta
 
-        cutoff = (date.today() - timedelta(days=90)).isoformat()
-        filters.append(["supplier", "last_audit_date", "<", cutoff])
+            cutoff = (date.today() - timedelta(days=90)).isoformat()
+            filters.append(["supplier", "last_audit_date", "<", cutoff])
+        elif "audit_overdue" not in measures:
+            # Measure FILTER already encodes the 90-day cutoff. Missing retrieve
+            # column must not None-out bind when the verified measure exists.
+            return None
     if ("cctv" in qn or "camera" in qn) and not _has_col(
         context, "location", "cctv_camera_id"
     ):
@@ -531,7 +535,9 @@ def _locked_measure(question: str) -> str | None:
         return "stock_value_myr"
     if "revenue" in qn or "selling sku" in qn:
         return "outbound_value_myr"
-    if "categoty" in qn or ("sales" in qn and "category" in qn):
+    if "categoty" in qn or (
+        "sales" in qn and ("category" in qn or "categories" in qn)
+    ):
         return "outbound_value_myr"
     return None
 

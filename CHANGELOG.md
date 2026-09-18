@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-05: certified synonyms beyond flat ontology_plan=17 (#214)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-05 #214](https://github.com/Netie-AI/dms/issues/214) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #212 KEEP_HOLD @ `aa0ef108` (ontology_plan=17 bind_plan=0 WRONG=0 answered=17/26) stands as the measured floor.
+- **Diagnosis.** #212 CI GREEN left live flat because (1) all 17 frozen-pack L0s already compiled as ontology_plan and the other 9/26 are planted traps, (2) leftover `cq_audit_overdue` grew n to 27 but Platform scored **17/26** so the new ask never entered the denominator. Ranking/ask_path/retrieve on those 17 were not no-ops. `last_audit_date` on live lake remains a ceiling for that one leftover, not the 17.
+- **Climb.** Score Cortex `certified_queries.yaml` synonyms of L0s live already answers (`How many SKUs in inventory?`, `SKU count in inventory`, `Top 5 SKUs by revenue`, `top 3 categories by sales value`) as `ontology_plan`. Not PACK_METRICS. Retrieve lock `categories`+sales. Audit typed-filter no longer None-outs when the verified measure exists. Harness fails closed if leftover L0 ids are not scored. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 17 + WRONG=0 after deploy. CI green != climb PASS. A 17/26 stamp is the frozen pack, not this SHA. QUALIFIED claim stays n=26.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses.
+
 ## 2026-09-18 - GEN-PATH-CLIMB-04: leftover Cortex L0 (audit overdue) beyond ontology_plan=17 (#212)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-04 #212](https://github.com/Netie-AI/dms/issues/212) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #210 RISE_PASS @ `0a5c6a9c` (ontology_plan=17 bind_plan=0 WRONG=0) stands.

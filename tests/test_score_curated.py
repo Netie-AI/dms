@@ -25,6 +25,10 @@ FOUNDER_L0 = (
     "cq_chemicals_list",
     "cq_supplier_ranking",
     "cq_audit_overdue",
+    "cq_sku_count_syn_short",
+    "cq_sku_count_syn_label",
+    "cq_sales_top5_syn_skus",
+    "cq_top3_category_syn_value",
 )
 VQ03_GAPS = (
     "cq_capacity_utilisation",

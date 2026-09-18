@@ -227,6 +227,50 @@ Product climb acceptance is Platform measured **ontology_plan > 17 + WRONG=0**
 after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
 #212 claiming #178 COMPLETE. curated_ceo n=27; QUALIFIED claim stays n=26.
 
+## GEN-PATH-CLIMB-05 (#214) — break flat ontology_plan=17
+
+Baseline Platform live @ `aa0ef108`: **ontology_plan=17 / bind_plan=0 / WRONG=0**
+answered=**17/26**. #212 KEEP_HOLD. Epic **NOT COMPLETE**. Do not invent
+99.95% / estate CLEAR.
+
+Root cause of the flat 17 (checked, not prescribed):
+
+1. **Pack saturation (held).** All 17 curated L0s in the frozen 26 already
+   compile as `ontology_plan`. Remaining 9 are planted refuse/grant traps
+   (WRONG if greened). Ranking on those 17 is not a no-op.
+2. **Prove harness did not ask the new leftover (held).** #212 added
+   `cq_audit_overdue` (n=27) but Platform stamped **17/26**. The 27th never
+   entered the measured denominator. QUALIFIED frozen n=26 is a floor, not
+   the live pack.
+3. **Discarded:** ask_path routing miss (prove already uses
+   `ask_path=generative` and got 17 ontology_plan). Retrieve no-op on the 17
+   (those already hit). Ranking no-op on the 17 (same).
+4. **Qualified leftover:** `cq_audit_overdue` still needs live
+   `last_audit_date`. Climb-05 does not depend on that column.
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Score Cortex certified synonyms** of L0s live already answers
+   (`How many SKUs in inventory?`, `SKU count in inventory`,
+   `Top 5 SKUs by revenue`, `top 3 categories by sales value`). Same
+   `certified_queries.yaml` SQL. **Not** PACK_METRICS exact-match.
+2. Retrieve lock `categories`+sales → `outbound_value_myr`. Audit typed
+   filter no longer None-outs when the verified measure exists but retrieve
+   omitted `last_audit_date`.
+3. Harness fails closed if leftover L0 ids are not in the scored pack
+   (cannot stamp 17/26 from this SHA). QUALIFIED claim stays n=26.
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Product climb acceptance is Platform measured **ontology_plan > 17 + WRONG=0**
+after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
+#214 claiming #178 COMPLETE. A 17/26 stamp is the frozen pack, not this SHA.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`
