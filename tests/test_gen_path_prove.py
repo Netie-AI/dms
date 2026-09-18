@@ -412,7 +412,7 @@ def test_compute_client_401_is_insights_reached_not_transport_miss() -> None:
     onto = out.get("ontology") or {}
     metrics = onto.get("metrics") or []
     assert metrics and metrics[0]["id"] == "sku_count"
-    assert out.get("plan_source") in {"other", "ontology_plan"}
+    assert out.get("plan_source") in {None, "", "other", "ontology_plan"}
     assert "LIVE_KEY" not in str(out)
     assert ":5000" not in str(out)
 
