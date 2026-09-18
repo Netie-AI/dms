@@ -23,7 +23,7 @@ _LIVE_KEY_RE = re.compile(r"\bLIVE_KEY(?:_ID)?\b")
 
 
 class InsightsError(Exception):
-    """Cortex insights transport or HTTP failure. Payload is a real refuse body when Cortex sent one."""
+    """Cortex insights transport or HTTP failure. Payload is a real refuse body."""
 
     def __init__(
         self,
@@ -106,7 +106,9 @@ def _request(
         return honest_envelope(body)
     if body is not None:
         stamped = honest_envelope(body)
-        hint = body.get("refused") or body.get("answer") or body.get("error") or f"http_{res.status_code}"
+        hint = body.get("refused") or body.get("answer") or body.get("error")
+        if hint is None:
+            hint = f"http_{res.status_code}"
         raise InsightsError(
             redact_secrets(str(hint)[:400], api_key),
             status_code=res.status_code if res.status_code >= 400 else 502,

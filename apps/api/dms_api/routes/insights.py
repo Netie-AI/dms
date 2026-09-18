@@ -100,6 +100,7 @@ def insights_law(cortex: CortexDep) -> Any:
     missing = _require_cortex(cortex)
     if missing is not None:
         return missing
+    assert cortex is not None
     try:
         return honest_envelope(cortex.insights_law())
     except InsightsError as exc:
@@ -112,6 +113,7 @@ def insights_keys(cortex: CortexDep) -> Any:
     missing = _require_cortex(cortex)
     if missing is not None:
         return missing
+    assert cortex is not None
     try:
         return honest_envelope(cortex.insights_keys())
     except InsightsError as exc:
@@ -124,6 +126,7 @@ def insights_identity(cortex: CortexDep) -> Any:
     missing = _require_cortex(cortex)
     if missing is not None:
         return missing
+    assert cortex is not None
     try:
         return honest_envelope(cortex.insights_identity())
     except InsightsError as exc:
@@ -139,6 +142,7 @@ def insights_ontology(cortex: CortexDep, q: str = "") -> Any:
     missing = _require_cortex(cortex)
     if missing is not None:
         return missing
+    assert cortex is not None
     try:
         return honest_envelope(cortex.insights_ontology(intent))
     except InsightsError as exc:
@@ -156,6 +160,7 @@ def insights_ask(body: InsightsAskIn, settings: SettingsDep, cortex: CortexDep) 
     missing = _require_cortex(cortex)
     if missing is not None:
         return missing
+    assert cortex is not None
 
     decision = compliance_gate(
         action="insights.ask",

@@ -47,7 +47,12 @@ _KEYS = {
 
 
 class _Resp:
-    def __init__(self, status_code: int, body: dict[str, Any] | None = None, text: str = "") -> None:
+    def __init__(
+        self,
+        status_code: int,
+        body: dict[str, Any] | None = None,
+        text: str = "",
+    ) -> None:
         self.status_code = status_code
         self._body = body
         self.text = text
@@ -125,7 +130,9 @@ class FakeInsights:
 
 
 def _allow(**kwargs: Any) -> ComplianceDecision:
-    return ComplianceDecision(allowed=True, reason="ok", action=str(kwargs.get("action") or "insights.ask"))
+    return ComplianceDecision(
+        allowed=True, reason="ok", action=str(kwargs.get("action") or "insights.ask")
+    )
 
 
 def _app(fake: FakeInsights | None = None) -> TestClient:
