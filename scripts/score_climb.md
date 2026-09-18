@@ -81,6 +81,27 @@ python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
 
 Platform owns live counts. Need `ontology_plan >= 1` and `WRONG=0`. Majority + WRONG=0 is Phase A HOLD clear (Epic stamp, not this PR). CI green != Phase A CLEAR.
 
+## GEN-PATH-CLIMB-01 (#205) — raise ontology_plan>1 (thin coverage climb)
+
+Baseline Platform live @ `e1f729a5`: **ontology_plan=1 / bind_plan=0 / WRONG=0**. Path works; coverage thin. Phase A HOLD CLEARED. Epic NOT COMPLETE. Do not reinvent 57.69% as AI COMPLETE.
+
+Root cause of 1 hit: Cortex Insights ranking emits pack metric ids (`stock_value_by_category`) that were only accepted when the id existed verbatim on the DMS ontology (`sku_count`). Same-intent asks abstained.
+
+Climb (WRONG=0):
+
+1. Resolve top ranked id onto a DMS measure (exact, `cq_` strip, spine `measure_aliases`, >=2 token overlap on name+description). Do **not** skip a Cortex-only top id to a weaker unrelated id (`stock_value_by_category` must not become `sku_count`).
+2. Overlay retrieve-typed group/filter/limit (`slots_for_measure`) so a "by category" ask is not a scalar total.
+3. Forward retrieve `intent_slots` on Insights generate (FreeRoute **free+normal** inside Cortex). Attach YAML ranking even when generate SQL exists so a validate-fail can climb via ranked slots. Hostile SQL still abstains.
+4. Isolated gen still must not `bind_plan` over Insights reached.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Product climb acceptance is Platform measured **ontology_plan>1 + WRONG=0** after deploy — not CI. Hand merge SHA via PR. Do not close #205 claiming epic COMPLETE. #180 k-scale waits until that rise.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

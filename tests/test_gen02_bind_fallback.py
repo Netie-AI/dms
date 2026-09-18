@@ -309,3 +309,8 @@ def test_ontology_spine_yaml_is_slot_names_not_sql(tmp_path: Path) -> None:
         assert name in onto.objects, name
     for name in data["measures"]:
         assert name in onto.measures, name
+    aliases = data.get("measure_aliases") or {}
+    assert isinstance(aliases, dict)
+    for src, dest in aliases.items():
+        assert "SELECT" not in str(src).upper()
+        assert dest in onto.measures, dest

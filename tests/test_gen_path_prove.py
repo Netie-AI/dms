@@ -703,6 +703,7 @@ def test_gen_path_sources_do_not_import_vendor_sdks() -> None:
         root / "packages/cortex_client/cortex_client/compute.py",
         root / "scripts/score_curated.py",
         root / "tests/test_gen_path_prove.py",
+        root / "tests/test_gen_path_climb.py",
     ]
     for path in paths:
         for line in path.read_text(encoding="utf-8").splitlines():

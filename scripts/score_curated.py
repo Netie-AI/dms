@@ -539,6 +539,30 @@ def self_check() -> int:
     if "COMPLETE" in json.dumps(insights_plant):
         print("FAIL: insights plant invented COMPLETE")
         return 1
+    climb_plant = build_gen_path_prove_report(
+        {"OK": 2, "LAYER": 0, "ABSTAIN": 24, "WRONG": 0},
+        cases=(
+            [
+                {"id": "cq_sku_count", "verdict": "OK", "plan_source": "ontology_plan"},
+                {
+                    "id": "cq_stock_value_by_category",
+                    "verdict": "OK",
+                    "plan_source": "ontology_plan",
+                },
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(24)
+            ]
+        ),
+        mode="offline",
+    )
+    if int(climb_plant["by_plan_source"]["ontology_plan"]["answered"]) < 2:
+        print("FAIL: climb plant must count ontology_plan>1")
+        return 1
+    if "COMPLETE" in json.dumps(climb_plant) or "99.95" in json.dumps(climb_plant):
+        print("FAIL: climb plant invented COMPLETE / 99.95")
+        return 1
     yes_cases = (
         [{"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"} for i in range(14)]
         + [{"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"} for i in range(12)]

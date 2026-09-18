@@ -23,6 +23,37 @@ INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
 # FreeRoute pick stays in Cortex/OpenVault. Hint only; no provider ids or tokens.
 FREEROUTE_PREFERENCE = "free+normal"
 _SELECT_SQL = re.compile(r"(?is)^\s*(with|select)\b")
+_RANK_STOP = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "of",
+        "by",
+        "cq",
+        "per",
+        "and",
+        "or",
+        "to",
+        "for",
+        "in",
+        "on",
+        "our",
+        "we",
+        "is",
+        "are",
+        "id",
+        "wh",
+        "do",
+        "have",
+        "how",
+        "many",
+        "what",
+        "which",
+        "show",
+        "list",
+    }
+)
 
 
 def attach_compute_plan_source(payload: dict[str, Any]) -> dict[str, Any]:
@@ -101,18 +132,98 @@ def insights_was_reached(payload: dict[str, Any] | None) -> bool:
     return str(payload.get("status") or "").upper() in INSIGHTS_STATUSES
 
 
+def ranked_measure_tokens(name: str) -> set[str]:
+    """Stem tokens for Cortex pack id <-> DMS measure resolve. Not embeddings."""
+    out: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+", (name or "").lower().replace("_", " ")):
+        if raw in _RANK_STOP or len(raw) < 2:
+            continue
+        out.add(raw)
+        if len(raw) > 3 and raw.endswith("s"):
+            out.add(raw[:-1])
+    return out
+
+
+def resolve_ranked_measure(
+    metric_id: str,
+    allowed_measures: set[str] | None = None,
+    *,
+    aliases: dict[str, str] | None = None,
+    specs: dict[str, str] | None = None,
+    prefer: str | None = None,
+) -> str | None:
+    """Map a Cortex ranked pack id onto one DMS ontology measure.
+
+    Same-intent only: exact id, ``cq_`` strip, spine alias, or >=2 token
+    overlap on name+description. Do not skip a Cortex-only top id
+    (stock_value_by_category) to a weaker unrelated id (sku_count).
+    ``prefer`` is the question-locked measure; a different resolve abstains.
+    """
+    mid = str(metric_id or "").strip()
+    if not mid:
+        return None
+    allowed = {str(m) for m in (allowed_measures or ()) if str(m).strip()}
+    keys = [mid]
+    if mid.lower().startswith("cq_"):
+        keys.append(mid[3:])
+    alias_map = {
+        str(k).strip(): str(v).strip()
+        for k, v in (aliases or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    lock = str(prefer or "").strip()
+    if lock and allowed and lock not in allowed:
+        lock = ""
+    if not allowed:
+        return lock or mid
+    resolved: str | None = None
+    for key in keys:
+        mapped = alias_map.get(key)
+        if mapped and mapped in allowed:
+            resolved = mapped
+            break
+        if key in allowed:
+            resolved = key
+            break
+    if resolved is None:
+        toks = ranked_measure_tokens(mid)
+        scored: list[tuple[int, str]] = []
+        for name in sorted(allowed):
+            blob = name + " " + str((specs or {}).get(name) or "")
+            sc = len(toks & ranked_measure_tokens(blob))
+            if sc >= 2:
+                scored.append((sc, name))
+        scored.sort(key=lambda row: (-row[0], row[1]))
+        if len(scored) == 1 or (
+            len(scored) > 1 and scored[0][0] > scored[1][0]
+        ):
+            resolved = scored[0][1]
+    if lock:
+        if resolved == lock:
+            return lock
+        if len(ranked_measure_tokens(mid) & ranked_measure_tokens(lock)) >= 1:
+            return lock
+        return None
+    return resolved
+
+
 def query_plan_from_insights_ranking(
     payload: dict[str, Any] | None,
     allowed_measures: set[str] | None = None,
+    *,
+    aliases: dict[str, str] | None = None,
+    specs: dict[str, str] | None = None,
+    prefer: str | None = None,
 ) -> dict[str, Any] | None:
-    """Typed plan from Cortex Insights metric ranking. Exact top id only.
+    """Typed plan from Cortex Insights metric ranking. Top id only.
 
     Cortex retrieve_ontology ranks pack metric ids. When generate is unarmed
-    (or SQL is missing) the top ranked id that exists on the DMS ontology is
-    still Cortex ontology_plan, not local bind_plan keyword matching.
+    (or SQL is missing) the top ranked id that resolves onto the DMS ontology
+    is still Cortex ontology_plan, not local bind_plan keyword matching.
 
     Do not skip a Cortex-only top id (stock_value_by_category) to a weaker
-    DMS id (sku_count) — that answers the wrong question.
+    DMS id (sku_count) — that answers the wrong question. Same-intent alias
+    (stock_value_by_category -> stock_value_myr) is climb, not a skip.
     """
     if not isinstance(payload, dict):
         return None
@@ -126,10 +237,21 @@ def query_plan_from_insights_ranking(
         mid = str(row.get("id") or "").strip()
         if not mid:
             continue
-        if allowed and mid not in allowed:
+        resolved = resolve_ranked_measure(
+            mid,
+            allowed if allowed else None,
+            aliases=aliases,
+            specs=specs,
+            prefer=prefer,
+        )
+        if allowed and resolved is None:
             return None
         return {
-            "query_plan": {"measure": mid, "group_by": [], "filters": []},
+            "query_plan": {
+                "measure": resolved or mid,
+                "group_by": [],
+                "filters": [],
+            },
             "plan_source": ONTOLOGY_MODE,
         }
     return None
@@ -258,9 +380,11 @@ def compute_query(
     """POST Cortex ontology_plan compute. None on transport miss only.
 
     Order: ``POST /v1/insights`` generate=true ask=false (OV/FreeRoute),
-    ``GET /v1/insights/ontology`` when generate omits ranking (A-0009 401),
-    then ``POST /dms/query`` for a typed ``query_plan``. Insights 200 REFUSE
-    / 401 still count as reached so isolated gen does not bind_plan over them.
+    ``GET /v1/insights/ontology`` when ranking is omitted (A-0009 401 or
+    generate SQL without YAML metrics), then ``POST /dms/query`` for a typed
+    ``query_plan``. Ranking stays attached when generate SQL is present so a
+    validate-fail can climb via ontology_plan slots. Insights 200 REFUSE /
+    401 still count as reached so isolated gen does not bind_plan over them.
     An empty key is not replaced with a guessed secret. ``live_5000_ci`` is
     never claimed here.
     """
@@ -279,6 +403,10 @@ def compute_query(
     }
     if ontology is not None:
         insights_body["ontology"] = ontology
+        if isinstance(ontology, dict):
+            slots = ontology.get("intent_slots")
+            if isinstance(slots, dict) and slots:
+                insights_body["intent_slots"] = slots
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",
@@ -300,20 +428,18 @@ def compute_query(
             except httpx.HTTPError:
                 insights_res = None
             insights_payload = _insights_envelope(insights_res)
-            if isinstance(insights_payload, dict):
-                normalized = normalize_insights_compute(insights_payload)
-                if normalized is not None:
-                    return normalized
-            # A-0009 401 has no ranking. GET /ontology is YAML, no OV generate.
+            # YAML ranking. No FreeRoute. Attach even when generate SQL exists
+            # so validate-or-abstain can climb via ranked DMS measures.
             if not _has_ranked_metrics(insights_payload):
                 ranking = _insights_ontology_get(http, root, question, headers)
                 if ranking is not None:
                     insights_payload = _merge_ontology_ranking(
                         insights_payload, ranking
                     )
-                    normalized = normalize_insights_compute(insights_payload)
-                    if normalized is not None:
-                        return normalized
+            if isinstance(insights_payload, dict):
+                normalized = normalize_insights_compute(insights_payload)
+                if normalized is not None:
+                    return normalized
             try:
                 dms_res = http.post(
                     f"{root}{COMPUTE_PATH}",
@@ -357,5 +483,7 @@ __all__ = [
     "insights_was_reached",
     "normalize_insights_compute",
     "query_plan_from_insights_ranking",
+    "ranked_measure_tokens",
+    "resolve_ranked_measure",
     "typed_query_plan",
 ]
