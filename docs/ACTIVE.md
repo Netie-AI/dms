@@ -104,8 +104,17 @@ over Insights REFUSE/401 (unarmed / not `ov_`), so prove stayed
 ontology compiles as `ontology_plan`. Harness counts `ontology_plan>=1`
 when that path works. Platform:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`
-(timeout 120s). Live counts Platform. Not Phase A CLEAR. Regression:
-`tests/test_gen_path_prove.py`.
+(timeout 120s). Live counts Platform. Phase A HOLD CLEARED thin @
+`e1f729a5` (ontology_plan=1 / bind_plan=0 / WRONG=0). Epic NOT COMPLETE.
+
+GEN-PATH-CLIMB-01 (#205): raise measured ontology_plan above 1 with
+WRONG=0. Ranking pack ids resolve onto DMS measures (same-intent alias,
+not skip-to-weaker). Retrieve slots overlay group/filter/limit.
+`intent_slots` on Insights generate. Invalid SELECT may ranking-climb;
+hostile SQL abstains. Regression: `tests/test_gen_path_climb.py`.
+Platform re-prove after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Not COMPLETE. #180 waits on live ontology_plan rise.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: HIT (GEN-PATH-ROUTE-01 wired Insights generate then bind_on_miss hid REFUSE/401 as bind_plan=15).
+PREFLIGHT for this goal: HIT (GEN-PATH-ROUTE-02 path works; coverage thin ontology_plan=1. Climb via ranking alias+retrieve slots, not bind-dominant).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-climb-01 | GEN-PATH-CLIMB-01, ontology_plan, retrieve, ranking alias, intent_slots, dms-205 | #205 climb: resolve Cortex pack ids onto DMS measures + retrieve slots so live ontology_plan>1 WRONG=0. Not COMPLETE. Platform prove after deploy. | `2026-09-18_gen-path-climb-01.md` |
 | 2026-09-18 | gen-path-route-02 | GEN-PATH-ROUTE-02, ontology_plan, insights generate, bind_on_miss, unarmed, A-0009, dms-203 | #201 leftover: bind_on_miss swallowed Insights REFUSE/401 so prove stayed bind_plan=15. Insights reached ≠ bind. Ranked metric ids compile as ontology_plan. Live Platform. Not Phase A CLEAR. | `2026-09-18_gen-path-route-02.md` |
 | 2026-09-18 | gen-path-route-01 | GEN-PATH-ROUTE-01, ontology_plan, insights generate, FreeRoute, bind_plan, dms-201 | #201 Studio/prove gen compute POST /v1/insights generate=true (OV/FreeRoute) then /dms/query. Validate-or-abstain. Offline prove bind_plan. Live Platform. Not Phase A CLEAR. | `2026-09-18_gen-path-route-01.md` |
 | 2026-09-18 | gen-path-prove-01 | GEN-PATH-PROVE-01, plan_source, ontology_plan, bind_plan, dms-199 | #199 envelope plan_source from Cortex /dms/query vs local bind_plan. Harness YES/NO HOLD. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-prove-01.md` |

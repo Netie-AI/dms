@@ -56,6 +56,20 @@ def load_ontology_spine(path: Path | None = None) -> dict[str, Any] | None:
     return data
 
 
+def load_measure_aliases(path: Path | None = None) -> dict[str, str]:
+    """Cortex pack metric id -> DMS measure. Slot names only. No SQL."""
+    raw = (load_ontology_spine(path) or {}).get("measure_aliases") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, val in raw.items():
+        src = str(key or "").strip()
+        dest = str(val or "").strip()
+        if src and dest:
+            out[src] = dest
+    return out
+
+
 _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
@@ -203,6 +217,27 @@ def retrieve_value_encodings(
     finally:
         con.close()
     return encodings
+
+
+def intent_slots(question: str, ontology: Ontology | None = None) -> dict[str, Any]:
+    """Locked measure / group / limit / keep_gt for Cortex generate. No SQL."""
+    q = question or ""
+    lock = _locked_measure(q)
+    if lock and ontology is not None and lock not in ontology.measures:
+        lock = None
+    hinted = _group_from_hints(q)
+    top = _TOP_N.search(q)
+    above = _ABOVE_PCT.search(q)
+    out: dict[str, Any] = {}
+    if lock:
+        out["measure"] = lock
+    if hinted:
+        out["group_by"] = hinted
+    if top:
+        out["limit"] = int(top.group(1))
+    if above:
+        out["keep_gt"] = float(above.group(1))
+    return out
 
 
 def retrieve_ontology_slice(onto: Ontology | None, toks: set[str]) -> dict[str, Any]:
@@ -382,6 +417,21 @@ def retrieve_short_context(
     encodings = retrieve_value_encodings(warehouse, schema, toks)
     onto_slice = retrieve_ontology_slice(ontology, toks)
     bound = lookup_bound_values(question, warehouse)
+    aliases = load_measure_aliases()
+    if aliases and ontology is not None:
+        keep_m = onto_slice.setdefault("measures", {})
+        for alias_id, dest in aliases.items():
+            if dest not in ontology.measures:
+                continue
+            if not (_score(alias_id, toks) or _score(dest, toks)):
+                continue
+            spec = ontology.measures[dest]
+            keep_m[dest] = {"grain": spec.grain, "description": spec.description}
+            grain = spec.grain
+            if grain in ontology.objects:
+                onto_slice.setdefault("objects", {}).setdefault(
+                    grain, {"key": list(ontology.objects[grain].key)}
+                )
     lock = _locked_measure(question)
     if lock and ontology is not None and lock in ontology.measures:
         spec = ontology.measures[lock]
@@ -433,6 +483,8 @@ def retrieve_short_context(
         "schema": schema,
         "encodings": encodings,
         "bound_values": bound,
+        "intent_slots": intent_slots(question, ontology),
+        "measure_aliases": aliases,
         **onto_slice,
     }
     return summarize_context(parts)
@@ -592,10 +644,54 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     return {"query_plan": plan, "plan_source": "bind_plan"}
 
 
+def slots_for_measure(
+    question: str,
+    context: dict[str, Any] | None,
+    measure: str,
+) -> dict[str, Any] | None:
+    """Retrieve-typed group/filter/limit for a Cortex-ranked DMS measure.
+
+    plan_source stays ontology_plan. Not a bind_plan answer. A by/per/top-N
+    or which/list/rank ask with no typed dimension misses (WRONG=0).
+    """
+    mid = str(measure or "").strip()
+    if not isinstance(context, dict) or not mid:
+        return None
+    measures = context.get("measures") or {}
+    if not isinstance(measures, dict):
+        return None
+    spec = measures.get(mid)
+    if not isinstance(spec, dict):
+        spec = {"grain": "", "description": ""}
+    locked = dict(context)
+    locked["measures"] = {mid: spec}
+    bound = bind_plan(question, locked)
+    q = question or ""
+    needs_dim = bool(
+        _NEEDS_DIM.search(q) or _TOP_N.search(q) or _ENTITY_PREFIX.search(q)
+    )
+    if not isinstance(bound, dict) or bound.get("unsure") is True:
+        if needs_dim:
+            return None
+        return {
+            "query_plan": {"measure": mid, "group_by": [], "filters": []},
+            "plan_source": "ontology_plan",
+        }
+    plan = bound.get("query_plan")
+    if not isinstance(plan, dict):
+        return None
+    out = dict(plan)
+    out["measure"] = mid
+    return {"query_plan": out, "plan_source": "ontology_plan"}
+
+
 __all__ = [
     "MAX_CONTEXT_CHARS",
     "bind_plan",
+    "intent_slots",
+    "load_measure_aliases",
     "load_ontology_spine",
     "question_tokens",
     "retrieve_short_context",
+    "slots_for_measure",
 ]

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-01: raise ontology_plan coverage (WRONG=0) (#205)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-01 #205](https://github.com/Netie-AI/dms/issues/205) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 57.69% / 99.95% as AI COMPLETE. Phase A path-prove HOLD already CLEARED thin @ `e1f729a5` (ontology_plan=1).
+- **Climb.** Cortex Insights ranking pack ids resolve onto DMS measures (exact / `cq_` strip / same-intent spine alias / >=2 token overlap). Retrieve-typed group/filter/limit overlay so "by category" is not a scalar. Generate `intent_slots` forwarded. Invalid generate SELECT may climb via ranked slots; hostile SQL does not. Isolated gen still must not bind_plan over Insights reached. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent.
+- **Harness.** CI plants ontology_plan>1. Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan>1 + WRONG=0 after deploy. #180 waits on that rise.
+- **Not this ticket:** epic COMPLETE, #180 k-scale done, ticket close, estate CLEAR.
+
 ## 2026-09-18 - GEN-PATH-ROUTE-02: prove can count ontology_plan>=1 (#203)
 
 - **Ticket.** Serves [GEN-PATH-ROUTE-02 #203](https://github.com/Netie-AI/dms/issues/203) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp Phase A CLEAR / COMPLETE. Does not invent 57.69% as Cortex AI.

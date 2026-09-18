@@ -35,7 +35,13 @@ from dms_executor.envelope import (
 )
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import CompiledQuery, Ontology, Refusal, demo_ontology
-from dms_executor.semantic_retrieve import bind_plan, retrieve_short_context
+from dms_executor.semantic_retrieve import (
+    bind_plan,
+    intent_slots,
+    load_measure_aliases,
+    retrieve_short_context,
+    slots_for_measure,
+)
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -397,6 +403,41 @@ def _submit_validated(
     )
 
 
+def ontology_plan_from_ranking(
+    question: str,
+    payload: dict[str, Any] | None,
+    *,
+    onto: Ontology | None,
+    ctx: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Cortex ranked metric + retrieve slots. ontology_plan, not bind_plan."""
+    if not isinstance(payload, dict) or onto is None or not onto.measures:
+        return None
+    prefer = intent_slots(question, onto).get("measure")
+    prefer_s = str(prefer).strip() if prefer else ""
+    ranked = query_plan_from_insights_ranking(
+        payload,
+        set(onto.measures),
+        aliases=load_measure_aliases(),
+        specs={name: (m.description or "") for name, m in onto.measures.items()},
+        prefer=prefer_s or None,
+    )
+    if ranked is None:
+        return None
+    raw = ranked.get("query_plan")
+    if not isinstance(raw, dict):
+        return None
+    measure = str(raw.get("measure") or "").strip()
+    if not measure or measure not in onto.measures:
+        return None
+    spec = onto.measures[measure]
+    ctx.setdefault("measures", {})[measure] = {
+        "grain": spec.grain,
+        "description": spec.description,
+    }
+    return slots_for_measure(question, ctx, measure)
+
+
 def path_miss_envelope(
     question: str,
     reason: str,
@@ -433,8 +474,10 @@ def maybe_generative_ask(
     Compute receives a short retrieved context, not the full ontology dump.
     Cortex Insights generate (ontology_plan) may return a typed plan or SELECT
     SQL; SQL still goes through hostile/grant/EXPLAIN then Cortex submit.
-    When generate is unarmed, a Cortex-ranked metric id that exists on the
-    DMS ontology is compiled as ontology_plan (not bind_plan).
+    When generate is unarmed, a Cortex-ranked metric id that resolves onto
+    the DMS ontology (exact, cq_ strip, same-intent alias, token overlap)
+    is compiled as ontology_plan with retrieve-typed slots (not bind_plan).
+    Invalid generate SELECT may climb via those slots; hostile SQL does not.
     Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane)
     and Insights was not reached. Product path leaves miss as None so Cortex
     certified ask still runs. Explicit compute unsure is not overridden.
@@ -483,15 +526,14 @@ def maybe_generative_ask(
     kind = parse_compute_plan(payload)
     fallback_note: str | None = None
     source = plan_source_from_payload(payload)
-    if kind == "miss" and isinstance(payload, dict):
-        ranked = query_plan_from_insights_ranking(
-            payload, set(onto.measures) if onto is not None else set()
-        )
-        if ranked is not None:
-            payload = {**payload, **ranked}
-            kind = parse_compute_plan(payload)
-            source = PLAN_SOURCE_ONTOLOGY
-            fallback_note = "insights_ranking:ontology_plan"
+    ranked_slots: dict[str, Any] | None = None
+    if kind in {"miss", "sql"}:
+        ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
+    if kind == "miss" and ranked_slots is not None:
+        payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
+        kind = parse_compute_plan(payload)
+        source = PLAN_SOURCE_ONTOLOGY
+        fallback_note = "insights_ranking:ontology_plan"
     if kind == "unsure":
         return _abstain(
             q,
@@ -511,20 +553,27 @@ def maybe_generative_ask(
             )
         why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
         if why:
-            return _abstain(
-                q, f"validate:{why}",
-                space_id=space_id, session_id=session_id, plan_source=source,
+            if why.startswith("hostile_sql:") or ranked_slots is None:
+                return _abstain(
+                    q, f"validate:{why}",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                )
+            # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
+            payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
+            kind = parse_compute_plan(payload)
+            source = PLAN_SOURCE_ONTOLOGY
+            fallback_note = "insights_ranking:ontology_plan"
+        else:
+            return _submit_validated(
+                sql,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=("GEN-01 Cortex ontology_plan SQL",),
+                plan_source=source,
             )
-        return _submit_validated(
-            sql,
-            question=q,
-            space_id=space_id,
-            session_id=session_id,
-            submit=submit,
-            ledger_append=ledger_append,
-            notes=("GEN-01 Cortex ontology_plan SQL",),
-            plan_source=source,
-        )
     if kind != "plan":
         # Isolated gen (ask_path=generative): bind from retrieved ontology
         # only when Cortex Insights was not reached. An Insights REFUSE

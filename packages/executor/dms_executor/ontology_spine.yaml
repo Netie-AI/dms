@@ -21,3 +21,22 @@ measures:
   - sku_count
   - utilisation_pct
   - below_reorder_lots
+# Cortex Insights ranking uses pack metric ids. Same-intent only onto
+# verified demo_ontology measures. Not certified SQL. Not a skip to a
+# weaker unrelated measure (stock_value_* never becomes sku_count).
+measure_aliases:
+  stock_value_by_category: stock_value_myr
+  spend_by_country: stock_value_myr
+  total_spend: stock_value_myr
+  cq_capacity_utilisation: utilisation_pct
+  cq_capacity_above_90: utilisation_pct
+  cq_cold_storage: utilisation_pct
+  cq_cctv_wh_a: utilisation_pct
+  cq_cost_by_destination: shipping_cost_myr
+  cq_low_stock_wh_a: below_reorder_lots
+  cq_sku_count_by_category: sku_count
+  cq_sales_top5_value: outbound_value_myr
+  cq_sales_top3_volume: outbound_kg
+  cq_expired_items: stock_value_myr
+  cq_chemicals_list: stock_value_myr
+  cq_sku_count: sku_count
