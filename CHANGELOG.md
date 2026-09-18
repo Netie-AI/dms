@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-03: exhausted-ranking pack overlay beyond ontology_plan=13 (#210)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-03 #210](https://github.com/Netie-AI/dms/issues/210) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #208 RISE_PASS @ `b9836bfa` (ontology_plan=13 bind_plan=0 WRONG=0) stands.
+- **Climb.** When prefer-locked ranking walk exhausts (Cortex YAML never ranked the pack id), overlay a question-matched spine pack id onto the retrieve prefer lock. Remaining pack-id group/keep_gt shapes (cold / expired / chemicals / cctv / supplier_rank / low_stock). Honest `supplier_rank_score` (risk+lead formula) so finance ranking compiles as `ontology_plan`; Ops without suppliers still ABSTAIN. Planted refuses stay ABSTAIN. FreeRoute `free+normal` retry uses overlay slots. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 13 + WRONG=0 after deploy. CI green != climb PASS.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses.
+
 ## 2026-09-18 - GEN-PATH-CLIMB-02: prefer-locked ranking walk beyond ontology_plan=11 (#208)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-02 #208](https://github.com/Netie-AI/dms/issues/208) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #180 RISE_PASS @ `58d27a81` (ontology_plan=11 bind_plan=0 WRONG=0) stands.

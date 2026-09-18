@@ -511,6 +511,8 @@ def _locked_measure(question: str) -> str | None:
         return "utilisation_pct"
     if "reorder" in qn:
         return "below_reorder_lots"
+    if re.search(r"\brank(?:ing)?\b", qn) and "supplier" in qn:
+        return "supplier_rank_score"
     if "expir" in qn or "chemical" in qn:
         return "stock_value_myr"
     if "stock value" in qn:

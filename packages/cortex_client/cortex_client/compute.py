@@ -31,6 +31,12 @@ _PACK_DIM: tuple[tuple[str, str, str], ...] = (
     ("by_sku", "product", "sku"),
     ("by_location", "location", "location_code"),
     ("sales_top", "product", "sku"),
+    ("cold_storage", "location", "location_code"),
+    ("expired", "product", "sku"),
+    ("chemicals", "product", "sku"),
+    ("cctv", "location", "cctv_camera_id"),
+    ("supplier_rank", "supplier", "supplier_id"),
+    ("low_stock", "product", "sku"),
 )
 _RANK_STOP = frozenset(
     {
@@ -160,7 +166,8 @@ def insights_was_reached(payload: dict[str, Any] | None) -> bool:
 def ranked_measure_tokens(name: str) -> set[str]:
     """Stem tokens for Cortex pack id <-> DMS measure resolve. Not embeddings."""
     out: set[str] = set()
-    for raw in re.findall(r"[a-z0-9]+", (name or "").lower().replace("_", " ")):
+    blob = re.sub(r"([a-z])(\d)", r"\1 \2", (name or "").lower().replace("_", " "))
+    for raw in re.findall(r"[a-z0-9]+", blob):
         if raw in _RANK_STOP or len(raw) < 2:
             continue
         out.add(raw)
@@ -275,6 +282,51 @@ def pack_id_shape(metric_id: str) -> dict[str, Any]:
     return out
 
 
+def overlay_pack_id_from_question(
+    question: str | None,
+    *,
+    prefer: str | None,
+    aliases: dict[str, str] | None,
+    allowed: set[str] | None = None,
+    specs: dict[str, str] | None = None,
+) -> str | None:
+    """Cortex pack id when YAML ranking exhausted the prefer lock.
+
+    Prefer lock required. Alias dest must equal that lock. Score the pack-id
+    tokens, or dest name+spec when the id is opaque (``low_stock_wh_a`` vs
+    "below reorder"). Pack ids are Cortex catalog names on the spine, not a
+    local ``bind_plan``. Do not call this after a Cortex-only overlapping abort.
+    """
+    lock = str(prefer or "").strip()
+    q = str(question or "").strip()
+    if not lock or not q:
+        return None
+    allowed_m = {str(m) for m in (allowed or ()) if str(m).strip()}
+    if allowed_m and lock not in allowed_m:
+        return None
+    qtoks = ranked_measure_tokens(q)
+    if not qtoks:
+        return None
+    dest_blob = lock + " " + str((specs or {}).get(lock) or "")
+    dest_sc = len(qtoks & ranked_measure_tokens(dest_blob))
+    scored: list[tuple[int, int, str]] = []
+    for key, dest in (aliases or {}).items():
+        src = str(key or "").strip()
+        dst = str(dest or "").strip()
+        if not src or dst != lock:
+            continue
+        if allowed_m and dst not in allowed_m:
+            continue
+        key_sc = len(qtoks & ranked_measure_tokens(src))
+        if key_sc < 1 and dest_sc < 2:
+            continue
+        scored.append((key_sc, dest_sc, src))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (-row[0], -row[1], row[2]))
+    return scored[0][2]
+
+
 def ranking_is_noise(
     metric_id: str,
     *,
@@ -342,6 +394,10 @@ def query_plan_from_insights_ranking(
     With ``prefer``: walk past a resolvable-but-wrong id that does not
     overlap the locked measure (sku_count on "Top 5 selling SKUs by
     revenue"). A Cortex-only id that overlaps the lock still aborts.
+
+    After the walk exhausts (all noise, none resolved): overlay a
+    question-matched spine pack id onto the prefer lock. Not skip-to-weaker
+    on abort. Not bind_plan.
     """
     if not isinstance(payload, dict):
         return None
@@ -350,6 +406,11 @@ def query_plan_from_insights_ranking(
         return None
     allowed = {str(m) for m in (allowed_measures or ()) if str(m).strip()}
     lock = str(prefer or "").strip() or None
+    alias_map = {
+        str(k).strip(): str(v).strip()
+        for k, v in (aliases or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
     for row in onto.get("metrics") or []:
         if not isinstance(row, dict):
             continue
@@ -359,7 +420,7 @@ def query_plan_from_insights_ranking(
         resolved = resolve_ranked_measure(
             mid,
             allowed if allowed else None,
-            aliases=aliases,
+            aliases=alias_map,
             specs=specs,
             prefer=lock,
         )
@@ -376,7 +437,27 @@ def query_plan_from_insights_ranking(
             },
             "plan_source": ONTOLOGY_MODE,
         }
-    return None
+    pack_id = overlay_pack_id_from_question(
+        question,
+        prefer=lock,
+        aliases=alias_map,
+        allowed=allowed or None,
+        specs=specs,
+    )
+    if not pack_id:
+        return None
+    dest = alias_map.get(pack_id) or lock
+    if not dest or (allowed and dest not in allowed):
+        return None
+    return {
+        "query_plan": {
+            "measure": dest,
+            "group_by": [],
+            "filters": [],
+            "ranked_id": pack_id,
+        },
+        "plan_source": ONTOLOGY_MODE,
+    }
 
 
 def _ontology_rank_ctx(
@@ -733,6 +814,7 @@ __all__ = [
     "insights_query_sql",
     "insights_was_reached",
     "normalize_insights_compute",
+    "overlay_pack_id_from_question",
     "pack_id_shape",
     "query_plan_from_insights_ranking",
     "ranked_measure_tokens",

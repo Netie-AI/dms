@@ -158,6 +158,42 @@ Product climb acceptance is Platform measured **ontology_plan > 11 + WRONG=0**
 after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
 #208 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-03 (#210) — exhausted-ranking overlay beyond ontology_plan=13
+
+Baseline Platform live @ `b9836bfa`: **ontology_plan=13 / bind_plan=0 / WRONG=0**.
+#208 RISE_PASS. Epic **NOT COMPLETE**. Do not invent 99.95% / estate CLEAR.
+
+Root cause of the 13 plateau: Cortex YAML ranking is often `sku_count` (or
+sku+stock+capacity) and never includes the prefer-matching pack id, so the
+#208 walk exhausts.
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Exhausted-ranking overlay.** After prefer-locked walk finds no
+   resolvable id, pick a spine pack id whose dest equals the retrieve prefer
+   lock and whose tokens (or dest name+spec) match the ask. Cortex catalog
+   ids, not `bind_plan`. Abort still wins when a Cortex-only id overlaps the
+   ask/lock (stock_value_by_category must not become sku_count).
+2. **Remaining pack-id shapes.** `cold_storage` / `expired` / `chemicals` /
+   `cctv` / `supplier_rank` / `low_stock` encode group/keep_gt on the ranked
+   id.
+3. **Honest supplier rank.** `supplier_rank_score` is the certified risk+lead
+   formula at supplier grain. Finance compiles as `ontology_plan`. Ops
+   without `suppliers` still ABSTAIN. No alerts / delayed / storage-bin
+   aliases.
+4. Typed `/dms/query` and FreeRoute `free+normal` retry use overlay slots.
+   Isolated gen still must not `bind_plan` over Insights reached.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Product climb acceptance is Platform measured **ontology_plan > 13 + WRONG=0**
+after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
+#210 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

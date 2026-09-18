@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-02 after #180: sku_count-first ranking aborts SKU-list asks; prefer-locked walk + walked retry slots).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-03 after #208: ranking walk exhausts when YAML omits the pack id; overlay prefer-matched Cortex pack ids + supplier_rank_score).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-climb-03 | GEN-PATH-CLIMB-03, ontology_plan, ranking exhaust, pack overlay, supplier_rank_score, dms-210 | After #208 ontology_plan=13: overlay prefer-matched pack ids when ranking exhausts; honest supplier rank. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-03.md` |
 | 2026-09-18 | gen-path-climb-02 | GEN-PATH-CLIMB-02, ontology_plan, sku_count, prefer lock, FreeRoute, dms-208 | After #180 ontology_plan=11: walk sku_count noise when prefer lock differs; retry walked slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-02.md` |
 | 2026-09-18 | gen02-kscale-climb | GEN-02, k-scale, ontology_plan, FreeRoute, ranked retry, pack-id slots, dms-180 | After #205 ontology_plan=9: ranked FreeRoute retry + noise-id walk + pack-id slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen02-kscale-climb.md` |
 | 2026-09-18 | studio-mobile-03 | STUDIO-MOBILE-03, TopBar, New menu, overflow-x-auto, Sources chip, 390px, dms-192 | #192 header overflow-x-auto clips New dropdown. Drop overflow, Space flex-1, pr-32 + top-12 so Sources misses h1. Not #182 DONE. Live walk Platform. | `2026-09-18_studio-mobile-03.md` |

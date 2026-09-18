@@ -1114,6 +1114,18 @@ def demo_ontology(warehouse: Path) -> Ontology:
             "AND COALESCE(f.reorder_level_kg, 0) > 0)",
             description="lots below reorder level; one contribution per qualifying lot",
         )
+    sup = cols.get("suppliers", set())
+    if cortex_default or {"risk_score", "lead_time_days"} <= sup:
+        o.add_measure(
+            "supplier_rank_score",
+            "supplier",
+            "ROUND((MAX(f.risk_score) * 0.65) + ((MAX(f.lead_time_days) / 60.0) * 0.35), 3)",
+            additive=False,
+            description=(
+                "supplier combined risk and lead time ranking score; "
+                "one contribution per supplier"
+            ),
+        )
     return o
 
 
