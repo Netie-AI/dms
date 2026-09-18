@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-08: unused certified leftover past ontology_plan=24 (#220)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-08 #220](https://github.com/Netie-AI/dms/issues/220) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #218 RISE_PASS @ `9b73b377` (ontology_plan=24 bind_plan=0 WRONG=0 answered=24/34 on uncapped harness) stands as the measured floor.
+- **Climb.** Score leftover Cortex `certified_queries.yaml` L0s live already answers (`top 3 categoty sales`, Ops sku count, Ops sku count by category) as `ontology_plan`. Not PACK_METRICS. Retrieve/overlay aliases certified `categoty` to `category`. Harness unions the new L0s so this SHA cannot score the 24/34 pack. Live prove FAILs on ontology_plan<=24 or climb-08 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 24 + WRONG=0 after deploy. CI green != climb PASS. QUALIFIED claim stays n=26. curated_ceo n=37.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses, pack shrink to fake a higher percent.
+
 ## 2026-09-18 - GEN-PATH-CLIMB-07: unused certified synonyms past ontology_plan=21 (#218)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-07 #218](https://github.com/Netie-AI/dms/issues/218) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #216 RISE_PASS @ `41f5824f` (ontology_plan=21 bind_plan=0 WRONG=0 answered=21/31 on uncapped harness) stands as the measured floor.
