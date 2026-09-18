@@ -20,6 +20,14 @@ existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`). HTTP:
 answer_id+badge; does not re-ask or add rows. Not FRTR / #29. Regression:
 `tests/test_insights_export.py`. Not COMPLETE.
 
+INSIGHTS-HOST-01 (#196): hosted consume of Cortex `GET|POST /v1/insights`
+(Cortex #213). Client: `packages/cortex_client/cortex_client/insights.py`.
+HTTP: `apps/api/dms_api/routes/insights.py` forwards
+`settings.cortex_api_key` (OV-custodied founder key on prove/studio). Fail
+closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
+`live_5000_ci` always false. Regression: `tests/test_insights_host.py`.
+Live hosted walk = Platform after merge. Not COMPLETE.
+
 EPIC-014 MCP-01: `apps/api/dms_api/routes/mcp.py` wraps existing
 `POST /v1/chat/ask`, `GET /v1/library/warehouse/{table}/preview`,
 `GET /v1/ontology/metrics`. Flag `DMS_MCP=0` (off). Regression:

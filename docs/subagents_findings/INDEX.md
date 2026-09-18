@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (CSV-01 + stdlib OOXML fixture writer exist; no envelope-gated .xlsx export).
+PREFLIGHT for this goal: MISS (no DMS consume of Cortex GET|POST /v1/insights; compute still /dms/query).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | insights-host-01 | INSIGHTS-HOST-01, /v1/insights, OpenVault, founder key, dms-196, cortex-213 | #196 DMS GET|POST /v1/insights via configured OV key. Fail closed. No LIVE_KEY/:5000 invent. Live walk Platform. Not COMPLETE. | `2026-09-18_insights-host-01.md` |
 | 2026-09-13 | insights-export-01 | INSIGHTS-EXPORT-01, xlsx, envelope, OOXML, dms-188 | #188 Excel from real ask envelope only. POST /v1/chat/export.xlsx copies rows. Not FRTR. Not COMPLETE. | `2026-09-13_insights-export-01.md` |
 | 2026-09-13 | score-client-01-httpx | SCORE-CLIENT-01, score_curated, climb, httpx, urllib, CF1010, studio.netie.ai, dms-187 | #187 climb/A/B httpx not urllib. CF1010 BLOCKED not IAP. Live remeasure Platform. Not COMPLETE. | `2026-09-13_score-client-01-httpx.md` |
 | 2026-09-13 | studio-mobile-02 | STUDIO-MOBILE-02, LeftNav, TopBar, drawer, lg, dms-182 | #182 Operate w-52 covered chat; nav is a closed drawer below lg. TopBar hides secondary chrome. Not #171 DONE. Not EPIC-008 COMPLETE. | `2026-09-13_studio-mobile-02.md` |
