@@ -163,6 +163,39 @@ questions:
     cortex_id: cq_audit_overdue
     question: Which suppliers have an audit overdue?
 
+  # Cortex certified_queries.yaml synonyms of L0s already in the frozen 26.
+  # #212 added cq_audit_overdue (n=27) but Platform KEEP_HOLD scored 17/26 —
+  # the leftover never entered the measured set. These phrases are certified
+  # synonyms (not PACK_METRICS exact-match, not how-full paraphrase traps).
+  # Isolated gen compiles them as ontology_plan on measures live already has.
+  - id: cq_sku_count_syn_short
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count
+    question: How many SKUs in inventory?
+
+  - id: cq_sku_count_syn_label
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count
+    question: SKU count in inventory
+
+  - id: cq_sales_top5_syn_skus
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sales_top5_value
+    question: Top 5 SKUs by revenue
+
+  - id: cq_top3_category_syn_value
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_top3_category_sales
+    question: top 3 categories by sales value
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted
