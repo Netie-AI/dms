@@ -88,6 +88,53 @@ CLIMB05_LEFTOVER_L0: tuple[str, ...] = (
     "cq_top3_category_syn_value",
 )
 
+# Dual KEEP_HOLD #212+#214: Platform stamped 17/26 after both merges.
+# Remaining 9/26 are planted refuse traps (WRONG if greened). The 4 Cortex
+# synonyms below already lock measures that compiled for their parent L0s
+# at #210. Flat 17 means they were never POSTed. Union them in this script
+# so live --prove-path cannot score frozen 26. Audit overdue is asked but
+# not required for the rise (live last_audit_date ceiling).
+CLIMB06_RISE_L0: tuple[dict[str, Any], ...] = (
+    {
+        "id": "cq_sku_count_syn_short",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "How many SKUs in inventory?",
+    },
+    {
+        "id": "cq_sku_count_syn_label",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "SKU count in inventory",
+    },
+    {
+        "id": "cq_sales_top5_syn_skus",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "Top 5 SKUs by revenue",
+    },
+    {
+        "id": "cq_top3_category_syn_value",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "top 3 categories by sales value",
+    },
+)
+CLIMB06_RISE_IDS: tuple[str, ...] = tuple(str(c["id"]) for c in CLIMB06_RISE_L0)
+CLIMB06_UNION_L0: tuple[dict[str, Any], ...] = CLIMB06_RISE_L0 + (
+    {
+        "id": "cq_audit_overdue",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "Which suppliers have an audit overdue?",
+    },
+)
+
 # Platform D distill -> Netie-native mapping. Ideas only; no vendor paste.
 DISTILL: dict[str, Any] = {
     "ideas_only": True,
@@ -172,6 +219,44 @@ def load_pack(path: Path) -> dict[str, Any]:
     if not questions:
         raise SystemExit(f"no questions in {path}")
     return {"questions": questions, "spaces": spaces}
+
+
+def merge_pack_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Union climb leftover L0s. Live --prove-path cannot score frozen 26.
+
+    Studio SHA does not include questions.yaml. Dual KEEP_HOLD 17/26 was
+    this list staying at the frozen pack when the scoring checkout lagged.
+    """
+    by_id = {str(row.get("id") or ""): row for row in questions}
+    out = list(questions)
+    for case in CLIMB06_UNION_L0:
+        qid = str(case["id"])
+        if qid not in by_id:
+            out.append(dict(case))
+            by_id[qid] = case
+    return out
+
+
+def leftover_rise_not_ontology(cases: list[dict[str, Any]]) -> list[str]:
+    """Rise L0 ids that were not answered as ontology_plan.
+
+    #214 `_leftover_l0_unscored` only checked the qid was asked. Asked+ABSTAIN
+    still stamps ontology_plan=17. Climb-06 requires the 4 synonyms to be
+    ontology_plan. cq_audit_overdue is optional (live last_audit_date).
+    """
+    by_id = {str(row.get("id") or ""): row for row in cases}
+    missing: list[str] = []
+    for qid in CLIMB06_RISE_IDS:
+        row = by_id.get(qid)
+        if row is None:
+            missing.append(qid)
+            continue
+        if row.get("verdict") not in {"OK", "LAYER"}:
+            missing.append(qid)
+            continue
+        if str(row.get("plan_source") or "") != "ontology_plan":
+            missing.append(qid)
+    return missing
 
 
 def load_oracles(path: Path = DEFAULT_ORACLES) -> dict[str, Any]:
@@ -387,6 +472,28 @@ def self_check() -> int:
         return 1
     if len(ids) <= int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
         print("FAIL: pack must outgrow frozen n=26 so leftover L0s are scored")
+        return 1
+    frozen26 = [
+        {"id": f"frozen_{i}", "space": "finance", "expect": "abstain", "question": "x"}
+        for i in range(int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]))
+    ]
+    merged = merge_pack_questions(frozen26)
+    merged_ids = {str(c["id"]) for c in merged}
+    if any(qid not in merged_ids for qid in CLIMB06_RISE_IDS):
+        print("FAIL: merge_pack_questions must inject rise L0s into frozen 26")
+        return 1
+    if leftover_rise_not_ontology(
+        [{"id": qid, "verdict": "ABSTAIN", "plan_source": "other"} for qid in CLIMB06_RISE_IDS]
+    ) != list(CLIMB06_RISE_IDS):
+        print("FAIL: abstained rise L0s must fail the climb-06 gate")
+        return 1
+    if leftover_rise_not_ontology(
+        [
+            {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+            for qid in CLIMB06_RISE_IDS
+        ]
+    ):
+        print("FAIL: ontology_plan rise L0s must pass the climb-06 gate")
         return 1
     expects = {str(c.get("expect") or "").lower() for c in pack["questions"]}
     if "l0" not in expects or not (expects & REFUSE):
@@ -622,6 +729,48 @@ def self_check() -> int:
     if "COMPLETE" in json.dumps(climb05_plant) or "99.95" in json.dumps(climb05_plant):
         print("FAIL: climb-05 plant invented COMPLETE / 99.95")
         return 1
+    hold17 = build_gen_path_prove_report(
+        {"OK": 17, "LAYER": 0, "ABSTAIN": 14, "WRONG": 0},
+        cases=(
+            [
+                {"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"}
+                for i in range(17)
+            ]
+            + [
+                {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+                for qid in CLIMB06_RISE_IDS
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(10)
+            ]
+        ),
+        mode="live",
+    )
+    if live_climb_gate(hold17) is None:
+        print("FAIL: live climb-06 must fail flat ontology_plan=17")
+        return 1
+    rise21 = build_gen_path_prove_report(
+        {"OK": 21, "LAYER": 0, "ABSTAIN": 10, "WRONG": 0},
+        cases=(
+            [
+                {"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"}
+                for i in range(17)
+            ]
+            + [
+                {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+                for qid in CLIMB06_RISE_IDS
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(10)
+            ]
+        ),
+        mode="live",
+    )
+    if live_climb_gate(rise21) is not None:
+        print("FAIL: live climb-06 must pass ontology_plan>17 with rise L0s")
+        return 1
     if "COMPLETE" in json.dumps(climb_plant) or "99.95" in json.dumps(climb_plant):
         print("FAIL: climb plant invented COMPLETE / 99.95")
         return 1
@@ -683,6 +832,7 @@ def score_pack_live(
     ask_path: str | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]]]:
     pack = load_pack(DEFAULT_PACK)
+    pack["questions"] = merge_pack_questions(list(pack["questions"]))
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
     for case in pack["questions"]:
@@ -1054,33 +1204,47 @@ def classify_health(
         return "fail", "demo_fallback=true (lying affordance)"
     if str(body.get("ask_mode") or "") == "demo":
         return "fail", "ask_mode=demo"
-    return "ok", f"product={body.get('product')} ask_mode={body.get('ask_mode')}"
+    climb = body.get("gen_path_climb")
+    extra = ""
+    if isinstance(climb, dict) and climb.get("n") is not None:
+        extra = f" climb_n={climb.get('n')} frozen_n={climb.get('frozen_n')}"
+    return "ok", f"product={body.get('product')} ask_mode={body.get('ask_mode')}{extra}"
 
 
-def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
-    """ok | blocked | fail. Health only (httpx). Does not invent a score."""
+def probe_climb_health(
+    url: str, timeout: float
+) -> tuple[str, str, dict[str, Any] | None]:
+    """ok | blocked | fail plus /health JSON. Does not invent a score."""
     try:
         import httpx
     except ImportError:
-        return "blocked", "httpx required (DMS .venv). Not a score."
+        return "blocked", "httpx required (DMS .venv). Not a score.", None
 
     health = f"{url.rstrip('/')}/health"
     try:
         resp = score_http("GET", health, timeout=min(timeout, 15.0))
     except httpx.HTTPError as exc:
-        return "blocked", f"{type(exc).__name__}: {exc}"
+        return "blocked", f"{type(exc).__name__}: {exc}", None
     status = int(resp.status_code)
     ctype = resp.headers.get("content-type") if resp.headers is not None else None
     text = str(getattr(resp, "text", "") or "")[:8000]
     cf = cf1010_blocked_detail(status, text)
     if cf:
-        return "blocked", cf
+        return "blocked", cf, None
     try:
         parsed = json.loads(text)
     except ValueError:
-        return classify_health(status, None, ctype)
+        kind, detail = classify_health(status, None, ctype)
+        return kind, detail, None
     body = parsed if isinstance(parsed, dict) else None
-    return classify_health(status, body, ctype)
+    kind, detail = classify_health(status, body, ctype)
+    return kind, detail, body
+
+
+def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
+    """ok | blocked | fail. Health only (httpx). Does not invent a score."""
+    kind, detail, _body = probe_climb_health(url, timeout)
+    return kind, detail
 
 
 def climb(url: str, timeout: float) -> int:
@@ -1338,7 +1502,27 @@ def build_gen_path_prove_report(
     }
 
 
-def _write_prove_report(report: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+def live_climb_gate(report: dict[str, Any]) -> str | None:
+    """None = pass. Reason = FAIL. Offline --prove-path does not use this.
+
+    Dual KEEP_HOLD 17/26 is not climb PASS. Rise L0s must be ontology_plan.
+    """
+    by = report.get("by_plan_source") or {}
+    onto_row = by.get("ontology_plan") if isinstance(by, dict) else None
+    onto = int((onto_row or {}).get("answered") or 0)
+    missing = leftover_rise_not_ontology(list(report.get("cases") or []))
+    if int(report.get("n") or 0) <= int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
+        return "pack n<=26 is frozen 17/26 KEEP_HOLD, not climb-06"
+    if missing:
+        return "rise L0s not ontology_plan (dual-flat 17/26): " + ",".join(missing)
+    if onto <= 17:
+        return "ontology_plan<=17 is KEEP_HOLD, not climb PASS"
+    return None
+
+
+def _write_prove_report(
+    report: dict[str, Any], *, live_climb: bool = False
+) -> tuple[int, dict[str, Any]]:
     blob = json.dumps({k: v for k, v in report.items() if k != "cases"}, indent=2)
     if "COMPLETE" in blob or "99.95" in blob or "DB-GPT-class" in blob:
         print("FAIL: gen-path prove invented COMPLETE / 99.95")
@@ -1368,11 +1552,17 @@ def _write_prove_report(report: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         + ",".join(CLIMB05_LEFTOVER_L0)
         + f"  (frozen n=26 floor; this pack n={report['n']})"
     )
+    print("rise_l0 " + ",".join(CLIMB06_RISE_IDS))
     print(f"reason: {report['phase_a_hold_may_clear_reason']}")
     print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
     if not report["passed_wrong_zero"]:
         print("FAIL: WRONG>0 (law).")
         return EXIT_FAIL, report
+    if live_climb:
+        why = live_climb_gate(report)
+        if why:
+            print(f"FAIL: {why}")
+            return EXIT_FAIL, report
     print("PASS: WRONG=0 measured plan_source labels.")
     return EXIT_PASS, report
 
@@ -1411,8 +1601,20 @@ def prove_path_offline() -> int:
 
 
 def prove_path_live(url: str, timeout: float) -> int:
-    kind, detail = probe_climb_host(url, timeout)
+    kind, detail, health = probe_climb_health(url, timeout)
     print(f"GEN-PATH-PROVE-01 host {url}  [{kind}] {detail}")
+    climb = health.get("gen_path_climb") if isinstance(health, dict) else None
+    if isinstance(climb, dict) and climb.get("rise_l0"):
+        print(
+            "Studio gen_path_climb "
+            f"n={climb.get('n')} frozen_n={climb.get('frozen_n')} "
+            "rise_l0=" + ",".join(str(x) for x in climb.get("rise_l0") or [])
+        )
+    else:
+        print(
+            "WARN: Studio /health missing gen_path_climb "
+            "(pre-#216 split-brain). Harness still asks rise L0s."
+        )
     if kind == "blocked":
         print("BLOCKED: cannot reach host. Not a score.")
         return EXIT_BLOCKED
@@ -1430,7 +1632,7 @@ def prove_path_live(url: str, timeout: float) -> int:
     report = build_gen_path_prove_report(
         gen_t, cases=gen_cases, mode="live", url=url
     )
-    code, _ = _write_prove_report(report)
+    code, _ = _write_prove_report(report, live_climb=True)
     if int(exact_t["WRONG"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
         return EXIT_FAIL

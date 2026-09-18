@@ -271,6 +271,58 @@ Product climb acceptance is Platform measured **ontology_plan > 17 + WRONG=0**
 after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
 #214 claiming #178 COMPLETE. A 17/26 stamp is the frozen pack, not this SHA.
 
+## GEN-PATH-CLIMB-06 (#216) — dual-flat 17/26 root-cause then rise
+
+Baseline Platform live @ `683827ed`: **ontology_plan=17 / bind_plan=0 / WRONG=0**
+answered=**17/26**. Same stamp as #212 @ `aa0ef108` and #210 @ `0a5c6a9c`.
+Epic **NOT COMPLETE**. Do not invent 99.95% / estate CLEAR.
+
+Root cause of the dual flat (checked, not prescribed):
+
+1. **Frozen 26 saturates at 17 (held).** 17 L0s already compile as
+   `ontology_plan`. Remaining 9 are planted refuse/grant traps (WRONG if
+   greened). Cannot exceed 17 on n=26 without WRONG.
+2. **Prove pack is local, not Studio (held).** `--prove-path --url`
+   `score_pack_live` loads `tests/fixtures/curated_ceo/questions.yaml` from
+   the scoring checkout (`scripts/score_curated.py` `DEFAULT_PACK`). Studio
+   SHA identification does not change which questions are POSTed. A live
+   Studio @ `683827ed` with a frozen-26 harness still stamps **17/26**.
+3. **#214 fail-closed was ids-asked, not ontology_plan (held).**
+   `_leftover_l0_unscored` only checks leftover qids appear in cases.
+   Asked + ABSTAIN still PASSes WRONG=0 at ontology_plan=17.
+4. **Synonyms were reachable on #210 code if asked (held).**
+   `_locked_measure` already maps `how many sku` / `sku count` / `revenue`.
+   If those phrases had been POSTed, ontology_plan would be >17. Flat 17
+   means they were not in the scored pack.
+5. **Discarded:** ranking no-op on the 17; ask_path miss (`ask_path=generative`
+   already counted 17 `ontology_plan`); greening the remaining 9.
+6. **Qualified leftover:** `cq_audit_overdue` still needs live
+   `last_audit_date`. Rise does not depend on that column.
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Union rise L0s in the harness** so this SHA cannot score frozen 26
+   even if local yaml lags. Four Cortex certified synonyms of L0s live
+   already answers. Not PACK_METRICS.
+2. **Live prove FAILs** on pack n<=26, rise L0s not `ontology_plan`, or
+   ontology_plan<=17. Offline `--prove-path` stays bind_plan (no Cortex).
+3. **`GET /health` `gen_path_climb`** advertises frozen_n / n / rise_l0 so
+   Studio SHA and pack identity are coupled. Missing field is WARN (old
+   Studio can still compile the 3 sku/revenue synonyms if the new harness
+   asks them).
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Need **this SHA's harness** (not a frozen-26 checkout) against Studio >= this
+merge. Product climb acceptance is Platform measured **ontology_plan > 17 +
+WRONG=0**. A **17/26** stamp is FAIL on this SHA, not PASS. CI green !=
+climb PASS. Do not close #216 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

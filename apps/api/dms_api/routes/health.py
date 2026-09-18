@@ -17,6 +17,24 @@ router = APIRouter()
 #: Python 3.12 (PEP 701) and this package targets 3.11.
 _OPENVAULT_DEFAULT_ROOT = "D:\\\\OpenVault"
 
+# GEN-PATH-CLIMB-06: pack identity on the live host. Dual KEEP_HOLD 17/26
+# (#212 then #214) was local questions.yaml vs Studio SHA split-brain —
+# Studio never loads the curated pack. /health advertises the harness
+# identity this SHA must score. Not a sixth port. Not COMPLETE.
+GEN_PATH_CLIMB: dict[str, Any] = {
+    "ticket": "GEN-PATH-CLIMB-06",
+    "issue": 216,
+    "pack": "curated_ceo",
+    "frozen_n": 26,
+    "n": 31,
+    "rise_l0": [
+        "cq_sku_count_syn_short",
+        "cq_sku_count_syn_label",
+        "cq_sales_top5_syn_skus",
+        "cq_top3_category_syn_value",
+    ],
+}
+
 
 def _probe(url: str, path: str = "/health", timeout: float = 1.2) -> dict[str, Any]:
     base = url.rstrip("/")
@@ -202,6 +220,7 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
         "contract": settings.cortex_contract_version,
         "ask_mode": settings.dms_ask_mode,
         "demo_fallback": settings.dms_demo_fallback,
+        "gen_path_climb": dict(GEN_PATH_CLIMB),
         "backend": binding.backend,
         # The control plane is "configured" when it is actually serving, not when
         # a URL is present. A DATABASE_URL pointing at a Postgres that is down
