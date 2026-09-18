@@ -16,7 +16,9 @@ from cortex_client.compute import (
     FREEROUTE_PREFERENCE,
     attach_compute_plan_source,
     compute_query,
+    insights_was_reached,
     normalize_insights_compute,
+    query_plan_from_insights_ranking,
 )
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
@@ -50,6 +52,7 @@ def _ontology() -> Ontology:
     o.add_link("sale_of_product", "sale", ["sku"], "product", ["sku"])
     o.add_link("sale_in_region", "sale", ["region"], "region", ["region"])
     o.add_measure("revenue", "sale", "SUM(f.amount)")
+    o.add_measure("sku_count", "product", "COUNT(*)")
     return o
 
 
@@ -184,6 +187,15 @@ def test_compute_client_posts_insights_generate_before_dms_query() -> None:
             posts.append({"url": url, "json": json, "headers": headers})
             return _Resp()
 
+        def get(
+            self,
+            url: str,
+            params: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> _Resp:
+            posts.append({"url": url, "json": params or {}, "headers": headers})
+            return _Resp()
+
     with patch("cortex_client.compute.httpx.Client", _Client):
         out = compute_query(
             "http://127.0.0.1:8010",
@@ -193,6 +205,7 @@ def test_compute_client_posts_insights_generate_before_dms_query() -> None:
     assert out is None
     assert [p["url"] for p in posts] == [
         "http://127.0.0.1:8010/v1/insights",
+        "http://127.0.0.1:8010/v1/insights/ontology",
         "http://127.0.0.1:8010/dms/query",
     ]
     gen = posts[0]["json"]
@@ -251,6 +264,176 @@ def test_insights_refuse_without_sql_is_miss_not_green_bind(
         bind_on_miss=False,
     )
     assert env is None
+
+
+def test_insights_unarmed_ranked_metric_is_ontology_plan_not_bind(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "How many SKUs do we have in inventory?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {
+            "ok": False,
+            "status": "REFUSE",
+            "phase": "generate",
+            "generative": {"ok": False, "sql": None, "climb": {"final": "UNARMED"}},
+            "ontology": {
+                "ok": True,
+                "metrics": [{"id": "sku_count", "importance": {"rank": 1}}],
+            },
+            "values": [],
+            "live_5000_ci": True,
+        },
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env.get("plan_source") == "ontology_plan"
+    assert not any("bind_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert any("insights_ranking:ontology_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert_envelope_valid(env)
+    report = build_gen_path_prove_report(
+        {"OK": 1, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0},
+        cases=[{"id": "cq_sku_count", "verdict": "OK", "plan_source": classify_plan_source(env)}],
+        mode="offline",
+    )
+    assert report["by_plan_source"]["ontology_plan"]["answered"] >= 1
+    assert "COMPLETE" not in json.dumps(report)
+
+
+def test_insights_unarmed_without_ranked_measure_does_not_bind(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {
+            "ok": False,
+            "status": "REFUSE",
+            "phase": "generate",
+            "generative": {"ok": False, "climb": {"final": "UNARMED"}},
+            "ontology": {"ok": True, "metrics": [{"id": "stock_value_by_category"}]},
+            "values": [],
+        },
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env.get("plan_source") != "bind_plan"
+    assert not any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
+
+
+def test_insights_refused_generate_sql_is_not_executed(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {
+            "ok": False,
+            "status": "REFUSE",
+            "phase": "generate",
+            "generative": {
+                "ok": False,
+                "valid": False,
+                "sql": "SELECT secret FROM payroll",
+            },
+            "values": [],
+        },
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("sql_used") is None
+
+
+def test_compute_client_401_is_insights_reached_not_transport_miss() -> None:
+    class _Resp:
+        status_code = 401
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "ok": False,
+                "status": "REFUSE",
+                "refused": "needs its own OpenVault ov_ key",
+                "values": [],
+            }
+
+    class _Onto:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "phase": "ontology",
+                "ontology": {
+                    "ok": True,
+                    "metrics": [{"id": "sku_count", "importance": {"rank": 1}}],
+                },
+            }
+
+    class _Client:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *a: Any) -> None:
+            return None
+
+        def post(self, *_a: Any, **_k: Any) -> _Resp:
+            return _Resp()
+
+        def get(self, *_a: Any, **_k: Any) -> _Onto:
+            return _Onto()
+
+    with patch("cortex_client.compute.httpx.Client", _Client):
+        out = compute_query(
+            "http://127.0.0.1:8010",
+            question="how many skus?",
+            api_key="dms-demo-viewer-key",
+        )
+    assert out is not None
+    assert insights_was_reached(out)
+    onto = out.get("ontology") or {}
+    metrics = onto.get("metrics") or []
+    assert metrics and metrics[0]["id"] == "sku_count"
+    assert out.get("plan_source") in {None, "", "other", "ontology_plan"}
+    assert "LIVE_KEY" not in str(out)
+    assert ":5000" not in str(out)
+
+
+def test_ranking_requires_exact_measure_id() -> None:
+    payload = {
+        "status": "REFUSE",
+        "ontology": {"metrics": [{"id": "sku_count"}]},
+    }
+    assert query_plan_from_insights_ranking(payload, {"sku_count"}) is not None
+    assert query_plan_from_insights_ranking(payload, {"stock_value_myr"}) is None
+    assert query_plan_from_insights_ranking(payload, set()) is not None
+    skipped = {
+        "ontology": {
+            "metrics": [
+                {"id": "stock_value_by_category"},
+                {"id": "sku_count"},
+            ]
+        }
+    }
+    assert query_plan_from_insights_ranking(skipped, {"sku_count"}) is None
 
 
 def test_hostile_insights_sql_abstains_not_l2(

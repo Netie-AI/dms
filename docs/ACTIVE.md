@@ -94,12 +94,17 @@ per-qid `ontology_plan|bind_plan|other` from the envelope field only
 pickup: `GET /v1/trust/summary` `gen_path_prove`.
 
 GEN-PATH-ROUTE-01 (#201): Studio/prove generative compute calls Cortex
-`POST /v1/insights` `generate=true ask=false` (OV/FreeRoute free+normal
-inside Cortex) then typed `POST /dms/query`. Insights SELECT SQL is
-validate-or-abstain then Cortex submit; `plan_source=ontology_plan`.
-Isolated gen still `bind_plan` on miss. Offline `--prove-path` stays
-bind_plan (no Cortex). Platform re-runs `--prove-path --url` after
-deploy for live ontology_plan counts. Not Phase A CLEAR. Regression:
+`POST /v1/insights` `generate=true ask=false` then typed `POST /dms/query`.
+Offline `--prove-path` stays bind_plan. Not Phase A CLEAR.
+
+GEN-PATH-ROUTE-02 (#203): #201 leftover was isolated-gen `bind_on_miss`
+over Insights REFUSE/401 (unarmed / not `ov_`), so prove stayed
+`ontology_plan=0` / `bind_plan=15`. Insights reached is not a bind;
+401 then `GET /v1/insights/ontology`; top Cortex metric id on the DMS
+ontology compiles as `ontology_plan`. Harness counts `ontology_plan>=1`
+when that path works. Platform:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`
+(timeout 120s). Live counts Platform. Not Phase A CLEAR. Regression:
 `tests/test_gen_path_prove.py`.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts

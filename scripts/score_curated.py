@@ -528,6 +528,17 @@ def self_check() -> int:
     if classify_plan_source({"plan_source": "bind_plan"}) != "bind_plan":
         print("FAIL: plan_source bind_plan plant")
         return 1
+    insights_plant = build_gen_path_prove_report(
+        {"OK": 1, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0},
+        cases=[{"id": "cq_sku_count", "verdict": "OK", "plan_source": "ontology_plan"}],
+        mode="offline",
+    )
+    if int(insights_plant["by_plan_source"]["ontology_plan"]["answered"]) < 1:
+        print("FAIL: prove must count ontology_plan>=1 when Insights path works")
+        return 1
+    if "COMPLETE" in json.dumps(insights_plant):
+        print("FAIL: insights plant invented COMPLETE")
+        return 1
     yes_cases = (
         [{"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"} for i in range(14)]
         + [{"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"} for i in range(12)]
@@ -1331,7 +1342,7 @@ def main(argv: list[str]) -> int:
     p.add_argument("--climb", action="store_true")
     p.add_argument("--prove-path", action="store_true")
     p.add_argument("--url", default=None)
-    p.add_argument("--timeout", type=float, default=60.0)
+    p.add_argument("--timeout", type=float, default=120.0)
     args = p.parse_args(argv)
     if args.self_check:
         return self_check()

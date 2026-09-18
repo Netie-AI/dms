@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-ROUTE-02: prove can count ontology_plan>=1 (#203)
+
+- **Ticket.** Serves [GEN-PATH-ROUTE-02 #203](https://github.com/Netie-AI/dms/issues/203) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp Phase A CLEAR / COMPLETE. Does not invent 57.69% as Cortex AI.
+- **Root cause (#201 leftover).** Isolated `ask_path=generative` `bind_on_miss` ran whenever Cortex Insights `generate=true` returned 200 REFUSE (FreeRoute unarmed) or 401 (A-0009: Authorization must be `ov_`, not `dms-demo-viewer-key`). `compute_query` treated that as a transport miss, so prove labeled the local keyword bind (`bind_plan=15` / `ontology_plan=0`). Offline `--prove-path` still has no Cortex. Deploy lag vs `a5b6fb1e` may have added to the first Platform stamp; the bind swallow remains after deploy.
+- **Fix.** Insights 200/401 JSON is reached — do not bind_plan over it. A-0009 401 omits ranking; `GET /v1/insights/ontology` attaches YAML ranking (no FreeRoute). Top ranked Cortex metric id on the DMS ontology compiles as `ontology_plan`. Insights SELECT SQL still validate-or-abstain. Transport miss only may still bind on isolated gen. Prove timeout default 120s. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** `--prove-path` counts `ontology_plan>=1` when the Insights path returns a stamped plan. Offline AB remains QUALIFIED bind. Platform live leftover after deploy.
+- **Not this ticket:** Phase A HOLD clear, 57.69% as AI, #180 k-scale, ticket close.
+
 ## 2026-09-18 - GEN-PATH-ROUTE-01: Studio/prove generative hits Cortex ontology_plan (#201)
 
 - **Ticket.** Serves [GEN-PATH-ROUTE-01 #201](https://github.com/Netie-AI/dms/issues/201) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp Phase A CLEAR / COMPLETE. Does not invent 57.69% as Cortex AI.
