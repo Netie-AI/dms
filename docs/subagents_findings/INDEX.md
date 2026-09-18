@@ -1,9 +1,8 @@
-# Subagents findings -- DMS
-
-PREFLIGHT for this goal: HIT (#182 TopBar used overflow-x-auto; that clips the New dropdown. Sources chip still overlays Chat h1).
+PREFLIGHT for this goal: HIT (GEN-02 k-scale after #205: ranking-only coverage; FreeRoute generate unused after UNARMED; pack ids encode group/limit).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen02-kscale-climb | GEN-02, k-scale, ontology_plan, FreeRoute, ranked retry, pack-id slots, dms-180 | After #205 ontology_plan=9: ranked FreeRoute retry + noise-id walk + pack-id slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen02-kscale-climb.md` |
 | 2026-09-18 | studio-mobile-03 | STUDIO-MOBILE-03, TopBar, New menu, overflow-x-auto, Sources chip, 390px, dms-192 | #192 header overflow-x-auto clips New dropdown. Drop overflow, Space flex-1, pr-32 + top-12 so Sources misses h1. Not #182 DONE. Live walk Platform. | `2026-09-18_studio-mobile-03.md` |
 | 2026-09-18 | gen-path-climb-01 | GEN-PATH-CLIMB-01, ontology_plan, retrieve, ranking alias, intent_slots, dms-205 | #205 climb: resolve Cortex pack ids onto DMS measures + retrieve slots so live ontology_plan>1 WRONG=0. Not COMPLETE. Platform prove after deploy. | `2026-09-18_gen-path-climb-01.md` |
 | 2026-09-18 | gen-path-route-02 | GEN-PATH-ROUTE-02, ontology_plan, insights generate, bind_on_miss, unarmed, A-0009, dms-203 | #201 leftover: bind_on_miss swallowed Insights REFUSE/401 so prove stayed bind_plan=15. Insights reached ≠ bind. Ranked metric ids compile as ontology_plan. Live Platform. Not Phase A CLEAR. | `2026-09-18_gen-path-route-02.md` |

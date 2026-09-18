@@ -102,6 +102,27 @@ python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
 
 Product climb acceptance is Platform measured **ontology_plan>1 + WRONG=0** after deploy — not CI. Hand merge SHA via PR. Do not close #205 claiming epic COMPLETE. #180 k-scale waits until that rise.
 
+## GEN-02 k-scale (#180) — FreeRoute free+normal climb beyond #205
+
+Baseline Platform live @ `186f7d85`: **ontology_plan=9 / bind_plan=0 / WRONG=0**.
+Phase A CLEAR stands. Epic **NOT COMPLETE**. Do not invent 99.95% / estate CLEAR.
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **FreeRoute ranked retry.** When Insights generate ran (not `UNARMED` / 401) but emitted no SQL/plan, POST generate once more with the ranked pack id as `query_plan` + `model_preference=free+normal`. Valid SELECT still validate-or-abstain. Unarmed generate does not retry (cannot invent keys).
+2. **Same-intent ranking walk.** Default stays top-id-only (#205). With the ask text, walk past a Cortex id that shares **no** content tokens with the question (ranking noise). A Cortex-only id that overlaps the ask still aborts — do not skip intent to a weaker DMS measure.
+3. **Pack-id slot overlay.** `cq_top3_category_sales` / `_by_category` / `top5` encode group/limit on the ranked id so a typo ask (`categoty`) still compiles. No `supplier_ranking` / alerts / delayed / storage-bin aliases — planted refuses stay ABSTAIN.
+4. Typed `/dms/query` forwards `ranked_metric`. Isolated gen still must not `bind_plan` over Insights reached.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api
+```
+
+Product acceptance is Platform measured **ontology_plan > 9 and/or rising answered coverage + WRONG=0** after deploy. CI green != climb PASS. Do not close #180 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`
