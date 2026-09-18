@@ -6,7 +6,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-04 #212](https://github.com/Netie-AI/dms/issues/212) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #210 RISE_PASS @ `0a5c6a9c` (ontology_plan=17 bind_plan=0 WRONG=0) stands.
 - **Climb.** 17/26 L0s were already ontology_plan. Leftover Cortex certified `cq_audit_overdue` ("Which suppliers have an audit overdue?") was not in the score pack and not in PACK_METRICS. Honest `audit_overdue` measure (90-day last_audit FILTER at supplier grain) compiles as `ontology_plan` via exhausted-ranking overlay. Finance has rows. Ops without `suppliers` still ABSTAIN. Planted refuses stay ABSTAIN. Not exact-match pack expansion. FreeRoute `free+normal` retry uses overlay slots. No LIVE_KEY / `:5000` invent. No second vault.
-- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 17 + WRONG=0 after deploy. CI green != climb PASS. curated_ceo n=27; QUALIFIED claim stays n=26 (HOLD may read re-baselined — not COMPLETE).
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 17 + WRONG=0 after deploy. CI green != climb PASS. curated_ceo n=27; QUALIFIED claim stays n=26 (floor, not a lock). Frozen baselines are not rewritten.
 - **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses.
 
 ## 2026-09-18 - GEN-PATH-CLIMB-03: exhausted-ranking pack overlay beyond ontology_plan=13 (#210)
