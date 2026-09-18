@@ -49,6 +49,21 @@ def ask_path_scores(directory: Path | None = None) -> list[dict[str, Any]]:
     return out
 
 
+def gen_path_prove_scores(directory: Path | None = None) -> list[dict[str, Any]]:
+    """Read-only pickup of GEN-PATH-PROVE-01 artifacts. Does not invent counts."""
+    folder = directory or _score_dir()
+    path = folder / "score_gen_path_prove.json"
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict) and data.get("kind") == "dms.gen_path_prove":
+        return [data]
+    return []
+
+
 @router.get("/summary")
 def trust_summary(settings: SettingsDep) -> dict[str, Any]:
     result = cortex_get(
@@ -57,6 +72,10 @@ def trust_summary(settings: SettingsDep) -> dict[str, Any]:
         api_key=settings.cortex_api_key,
         timeout=6.0,
     )
+    extra = {
+        "ask_path": ask_path_scores(),
+        "gen_path_prove": gen_path_prove_scores(),
+    }
     if not result["ok"]:
         return {
             "ok": False,
@@ -67,9 +86,9 @@ def trust_summary(settings: SettingsDep) -> dict[str, Any]:
                 "supported": False,
                 "blockers": ["evidence unavailable — Cortex did not answer"],
             },
-            "ask_path": ask_path_scores(),
+            **extra,
         }
-    return {"ok": True, **(result["data"] or {}), "ask_path": ask_path_scores()}
+    return {"ok": True, **(result["data"] or {}), **extra}
 
 
 @router.get("/runs/{name}")

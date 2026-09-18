@@ -263,6 +263,7 @@ def test_miss_when_compute_returns_no_plan(onto: Ontology, warehouse: Path) -> N
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert env.get("plan_source") == "bind_plan"
 
 
 def test_planted_traps_are_not_confident(onto: Ontology, warehouse: Path) -> None:
@@ -575,6 +576,7 @@ def test_ask_path_generative_binds_on_compute_miss(minter: ManifestMinter) -> No
     assert fake.asks == []
     assert fake.submits
     assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert env.get("plan_source") == "bind_plan"
 
 
 def test_ask_path_exact_still_hits_pack(minter: ManifestMinter) -> None:

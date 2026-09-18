@@ -82,6 +82,17 @@ Not a GitHub CI live job. Regression: `tests/test_score_climb.py`,
 `tests/test_gen01_generative_ask.py`, `tests/test_gen02_bind_fallback.py`.
 Not COMPLETE.
 
+GEN-PATH-PROVE-01 (#199): independent `plan_source` label on gen envelopes.
+`bind_plan` stamps `bind_plan`; Cortex `POST /dms/query` stamps
+`ontology_plan` (or copies engine `mode`/`plan_source`). Harness
+`python scripts/score_curated.py --prove-path` (offline) or
+`--prove-path --url https://studio.netie.ai/api` (Platform live) reports
+per-qid `ontology_plan|bind_plan|other` from the envelope field only
+(no SQL/assumption guess), count/%, WRONG=0, and
+`Phase A HOLD may clear` YES/NO. Does not stamp COMPLETE. Live numbers
+= Platform. Regression: `tests/test_gen_path_prove.py`. Trust read-only
+pickup: `GET /v1/trust/summary` `gen_path_prove`.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

@@ -9,6 +9,8 @@ traps that must abstain. It does not start EPIC-019 (no new VQ repo).
   python scripts/score_curated.py --ab
   python scripts/score_curated.py --climb --url https://studio.netie.ai/api
   python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api
+  python scripts/score_curated.py --prove-path
+  python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ REFUSE = frozenset({"abstain", "refuse", "trap"})
 GRANT_REFUSAL_STATUS = frozenset({403, 409})
 EXACT_ROUTES = frozenset({"governed_metric", "verified_query"})
 GENERATIVE_ROUTES = frozenset({"generated"})
+PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
+HOLD_MAY_CLEAR_FIELD = "Phase A HOLD may clear"
 EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_CONFIG = 2
@@ -59,6 +63,17 @@ BASELINE_AB_A9578348: dict[str, Any] = {
     "exact_coverage_answered_pct": 38.46,
     "generative_coverage_answered_pct": 3.85,
     "wrong": 0,
+}
+
+# QUALIFIED 15/26 (57.69 pct) gen answered on this pack. Not proven ontology_plan.
+# Not COMPLETE. Prove-path labels the producer; Platform owns live counts.
+QUALIFIED_GEN_COVERAGE_CLAIM: dict[str, Any] = {
+    "pack": "curated_ceo",
+    "n": 26,
+    "status": "QUALIFIED",
+    "offline_ab_answered": 15,
+    "offline_ab_answered_pct": 57.69,
+    "note": "15/26 gen answered is QUALIFIED pending plan_source prove",
 }
 
 # Platform D distill -> Netie-native mapping. Ideas only; no vendor paste.
@@ -254,6 +269,18 @@ def classify_path(route: Any) -> str:
     if r in EXACT_ROUTES:
         return "exact_match"
     return "other"
+
+
+def classify_plan_source(env: dict[str, Any] | None) -> str:
+    """ontology_plan | bind_plan | other from envelope telemetry only.
+
+    Do not infer from SQL, question text, or assumption strings. A missing
+    field is other so an old host cannot be guessed into Cortex AI coverage.
+    """
+    if not isinstance(env, dict):
+        return "other"
+    raw = str(env.get("plan_source") or "").strip().lower()
+    return raw if raw in PLAN_SOURCES else "other"
 
 
 def classify_crag(env: dict[str, Any]) -> str:
@@ -485,6 +512,69 @@ def self_check() -> int:
     if report.get("claim") not in (None, "measured"):
         print("FAIL: climb claim must stay measured")
         return 1
+    if classify_plan_source(
+        {
+            "assumptions": ["compute_fallback:bind_plan"],
+            "route": "generated",
+            "sql_used": "SELECT 1",
+        }
+    ) != "other":
+        print("FAIL: plan_source must not be guessed from assumptions")
+        return 1
+    if classify_plan_source({"plan_source": "ontology_plan"}) != "ontology_plan":
+        print("FAIL: plan_source ontology_plan plant")
+        return 1
+    if classify_plan_source({"plan_source": "bind_plan"}) != "bind_plan":
+        print("FAIL: plan_source bind_plan plant")
+        return 1
+    yes_cases = (
+        [{"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"} for i in range(14)]
+        + [{"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"} for i in range(12)]
+    )
+    yes_t = {"OK": 14, "LAYER": 0, "ABSTAIN": 12, "WRONG": 0}
+    yes = build_gen_path_prove_report(
+        tallies=yes_t, cases=yes_cases, mode="offline"
+    )
+    yes_blob = json.dumps(yes)
+    if "COMPLETE" in yes_blob or "99.95" in yes_blob or "DB-GPT-class" in yes_blob:
+        print("FAIL: prove report invented COMPLETE / 99.95")
+        return 1
+    if yes[HOLD_MAY_CLEAR_FIELD] != "YES" or yes["phase_a_hold_may_clear"] != "YES":
+        print("FAIL: majority ontology_plan WRONG=0 should be YES")
+        return 1
+    no_bind = build_gen_path_prove_report(
+        tallies={"OK": 15, "LAYER": 0, "ABSTAIN": 11, "WRONG": 0},
+        cases=(
+            [{"id": f"q{i}", "verdict": "OK", "plan_source": "bind_plan"} for i in range(15)]
+            + [{"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"} for i in range(11)]
+        ),
+        mode="offline",
+    )
+    if no_bind[HOLD_MAY_CLEAR_FIELD] != "NO":
+        print("FAIL: bind_plan majority must be NO")
+        return 1
+    no_wrong = build_gen_path_prove_report(
+        tallies={"OK": 14, "LAYER": 0, "ABSTAIN": 11, "WRONG": 1},
+        cases=(
+            [{"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"} for i in range(14)]
+            + [{"id": "w", "verdict": "WRONG", "plan_source": "ontology_plan"}]
+            + [{"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"} for i in range(11)]
+        ),
+        mode="offline",
+    )
+    if no_wrong[HOLD_MAY_CLEAR_FIELD] != "NO":
+        print("FAIL: WRONG>0 must be NO even if ontology_plan majority")
+        return 1
+    qclaim = QUALIFIED_GEN_COVERAGE_CLAIM
+    if (
+        qclaim["status"] != "QUALIFIED"
+        or int(qclaim["n"]) != len(ids)
+        or int(qclaim["offline_ab_answered"]) != 15
+        or float(qclaim["offline_ab_answered_pct"]) != 57.69
+        or round(100.0 * 15 / 26, 2) != 57.69
+    ):
+        print("FAIL: QUALIFIED 15/26 pack identity drifted")
+        return 1
     print(f"PASS: curated pack {len(ids)} cases, judge fail-closed on green trap")
     return 0
 
@@ -517,6 +607,7 @@ def score_pack_live(
                         "route": None,
                         "path": "other",
                         "crag": "skipped",
+                        "plan_source": "other",
                         "rows": 0,
                         "expect": case.get("expect"),
                         "error": err,
@@ -530,9 +621,11 @@ def score_pack_live(
         route = env.get("route")
         path = classify_path(route)
         crag = classify_crag(env)
+        plan_source = classify_plan_source(env)
         n = len(env.get("rows") or [])
         print(
-            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}\tcrag={crag}"
+            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}\t"
+            f"plan_source={plan_source}\tcrag={crag}"
             f"\trows={n}\texpect={case['expect']}"
         )
         cases_out.append(
@@ -542,6 +635,7 @@ def score_pack_live(
                 "badge": badge,
                 "route": route,
                 "path": path,
+                "plan_source": plan_source,
                 "crag": crag,
                 "rows": n,
                 "expect": case.get("expect"),
@@ -703,6 +797,7 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
                 "generative": gv,
                 "exact_badge": exact_env.get("badge"),
                 "generative_badge": gen_env.get("badge"),
+                "plan_source": classify_plan_source(gen_env),
                 "crag": classify_crag(gen_env),
             }
         )
@@ -1035,17 +1130,224 @@ def climb_ab_live(url: str, timeout: float) -> int:
     return EXIT_PASS
 
 
+def _plan_source_bucket(cases: list[dict[str, Any]]) -> dict[str, int]:
+    out = {"ontology_plan": 0, "bind_plan": 0, "other": 0}
+    for row in cases:
+        if row.get("verdict") not in {"OK", "LAYER"}:
+            continue
+        src = str(row.get("plan_source") or "other")
+        if src not in out:
+            src = "other"
+        out[src] += 1
+    return out
+
+
+def decide_phase_a_hold_may_clear(
+    *,
+    wrong: int,
+    n: int,
+    pack: str,
+    ontology_answered: int,
+    bind_answered: int,
+    answered: int,
+) -> tuple[str, str]:
+    """YES only if majority answered path is proven Cortex ontology_plan.
+
+    Does not stamp COMPLETE. Re-baselined packs stay NO for Decision.
+    """
+    if wrong:
+        return "NO", "WRONG>0; HOLD stays"
+    if pack != "curated_ceo" or int(n) != int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
+        return "NO", "pack re-baselined; Decision must accept leftover"
+    if answered <= 0:
+        return "NO", "zero answered; no majority ontology_plan"
+    if ontology_answered * 2 <= answered:
+        return (
+            "NO",
+            f"ontology_plan is not majority of answered "
+            f"({ontology_answered}/{answered})",
+        )
+    if ontology_answered <= bind_answered:
+        return (
+            "NO",
+            f"ontology_plan ({ontology_answered}) does not exceed "
+            f"bind_plan ({bind_answered})",
+        )
+    return (
+        "YES",
+        f"majority answered path is ontology_plan "
+        f"({ontology_answered}/{answered}) WRONG=0",
+    )
+
+
+def build_gen_path_prove_report(
+    tallies: dict[str, int],
+    *,
+    cases: list[dict[str, Any]],
+    mode: str,
+    url: str | None = None,
+    pack: str = "curated_ceo",
+) -> dict[str, Any]:
+    n = sum(int(v) for v in tallies.values()) or len(cases)
+    wrong = int(tallies.get("WRONG") or 0)
+    answered = int(tallies.get("OK") or 0) + int(tallies.get("LAYER") or 0)
+    raw = _plan_source_bucket(cases)
+    by_source: dict[str, Any] = {}
+    for key, count in raw.items():
+        by_source[key] = {
+            "answered": count,
+            "answered_pct": round(100.0 * count / answered, 2) if answered else 0.0,
+            "pack_pct": round(100.0 * count / n, 2) if n else 0.0,
+        }
+    hold, reason = decide_phase_a_hold_may_clear(
+        wrong=wrong,
+        n=n,
+        pack=pack,
+        ontology_answered=raw["ontology_plan"],
+        bind_answered=raw["bind_plan"],
+        answered=answered,
+    )
+    return {
+        "kind": "dms.gen_path_prove",
+        "ticket": "GEN-PATH-PROVE-01",
+        "issue": 199,
+        "claim": "measured",
+        "pack": pack,
+        "mode": mode,
+        "url": url,
+        "qualified_claim": dict(QUALIFIED_GEN_COVERAGE_CLAIM),
+        "n": n,
+        "ok": int(tallies.get("OK") or 0),
+        "layer": int(tallies.get("LAYER") or 0),
+        "abstain": int(tallies.get("ABSTAIN") or 0),
+        "wrong": wrong,
+        "answered": answered,
+        "passed_wrong_zero": wrong == 0,
+        "by_plan_source": by_source,
+        HOLD_MAY_CLEAR_FIELD: hold,
+        "phase_a_hold_may_clear": hold,
+        "phase_a_hold_may_clear_reason": reason,
+        "cases": cases,
+    }
+
+
+def _write_prove_report(report: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    blob = json.dumps({k: v for k, v in report.items() if k != "cases"}, indent=2)
+    if "COMPLETE" in blob or "99.95" in blob or "DB-GPT-class" in blob:
+        print("FAIL: gen-path prove invented COMPLETE / 99.95")
+        return EXIT_FAIL, report
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+    art.mkdir(parents=True, exist_ok=True)
+    (art / "score_gen_path_prove.json").write_text(blob + "\n", encoding="utf-8")
+    (art / "score_gen_path_prove_cases.json").write_text(
+        json.dumps(report["cases"], indent=2) + "\n", encoding="utf-8"
+    )
+    by = report["by_plan_source"]
+    print(
+        f"{'plan_source':<16} answered answered_pct pack_pct"
+    )
+    for key in ("ontology_plan", "bind_plan", "other"):
+        row = by[key]
+        print(
+            f"{key:<16} {row['answered']} {row['answered_pct']:.2f} pct "
+            f"{row['pack_pct']:.2f} pct"
+        )
+    print(
+        f"WRONG {report['wrong']}  answered {report['answered']}/{report['n']}  "
+        f"{HOLD_MAY_CLEAR_FIELD}: {report[HOLD_MAY_CLEAR_FIELD]}"
+    )
+    print(f"reason: {report['phase_a_hold_may_clear_reason']}")
+    print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
+    if not report["passed_wrong_zero"]:
+        print("FAIL: WRONG>0 (law).")
+        return EXIT_FAIL, report
+    print("PASS: WRONG=0 measured plan_source labels.")
+    return EXIT_PASS, report
+
+
+def prove_path_offline() -> int:
+    ab = run_ab_curated()
+    cases = [
+        {
+            "id": row["id"],
+            "verdict": row["generative"],
+            "badge": row.get("generative_badge"),
+            "plan_source": row.get("plan_source") or "other",
+            "expect": row.get("expect"),
+            "crag": row.get("crag"),
+        }
+        for row in ab["cases"]
+    ]
+    gen = ab["generative"]
+    tallies = {
+        "OK": int(gen["ok"]),
+        "LAYER": int(gen["layer"]),
+        "ABSTAIN": int(gen["abstain"]),
+        "WRONG": int(gen["wrong"]),
+    }
+    report = build_gen_path_prove_report(
+        tallies, cases=cases, mode="offline", pack=str(ab.get("pack") or "curated_ceo")
+    )
+    code, _ = _write_prove_report(report)
+    if int(ab["wrong"]):
+        print("FAIL: exact-match lane WRONG>0 on same pack")
+        return EXIT_FAIL
+    return code
+
+
+def prove_path_live(url: str, timeout: float) -> int:
+    kind, detail = probe_climb_host(url, timeout)
+    print(f"GEN-PATH-PROVE-01 host {url}  [{kind}] {detail}")
+    if kind == "blocked":
+        print("BLOCKED: cannot reach host. Not a score.")
+        return EXIT_BLOCKED
+    if kind == "fail":
+        print("FAIL: host is not a live governed ask")
+        return EXIT_FAIL
+    print("-- ask_path=generative (plan_source labels) --")
+    try:
+        gen_t, gen_cases = score_pack_live(url, timeout, ask_path="generative")
+        print("-- ask_path=exact (WRONG=0 on same pack) --")
+        exact_t, _exact_cases = score_pack_live(url, timeout, ask_path="exact")
+    except ImportError:
+        print("CONFIG: httpx required (DMS .venv). Not a score.")
+        return EXIT_CONFIG
+    report = build_gen_path_prove_report(
+        gen_t, cases=gen_cases, mode="live", url=url
+    )
+    code, _ = _write_prove_report(report)
+    if int(exact_t["WRONG"]):
+        print("FAIL: exact-match lane WRONG>0 on same pack")
+        return EXIT_FAIL
+    return code
+
+
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--self-check", action="store_true")
     p.add_argument("--live", action="store_true")
     p.add_argument("--ab", action="store_true")
     p.add_argument("--climb", action="store_true")
+    p.add_argument("--prove-path", action="store_true")
     p.add_argument("--url", default=None)
     p.add_argument("--timeout", type=float, default=60.0)
     args = p.parse_args(argv)
     if args.self_check:
         return self_check()
+    if args.prove_path:
+        if args.climb:
+            target = climb_url(args.url)
+            if not target:
+                print(
+                    "CONFIG: --prove-path --climb needs --url or DMS_API_BASE "
+                    f"(Platform: {PLATFORM_API}). No laptop default."
+                )
+                return EXIT_CONFIG
+            return prove_path_live(target, args.timeout)
+        target = climb_url(args.url)
+        if target:
+            return prove_path_live(target, args.timeout)
+        return prove_path_offline()
     if args.climb:
         target = climb_url(args.url)
         if not target:
@@ -1064,7 +1366,8 @@ def main(argv: list[str]) -> int:
         return live(url, args.timeout)
     print(
         "usage: python scripts/score_curated.py "
-        "--self-check | --live | --ab | --climb --url URL | --climb --ab --url URL"
+        "--self-check | --live | --ab | --climb --url URL | --climb --ab --url URL "
+        "| --prove-path | --prove-path --url URL"
     )
     return EXIT_CONFIG
 

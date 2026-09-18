@@ -527,7 +527,7 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     if not ranked:
         return None
     if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
-        return {"unsure": True}
+        return {"unsure": True, "plan_source": "bind_plan"}
     measure = ranked[0][1]
     grain = str((measures.get(measure) or {}).get("grain") or "")
     needs_dim = bool(_NEEDS_DIM.search(q))
@@ -567,7 +567,7 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
                 dim_cands[0][1], dim_cands[0][2]
             ) != (dim_cands[1][1], dim_cands[1][2]):
                 if dim_cands[0][2] != dim_cands[1][2]:
-                    return {"unsure": True}
+                    return {"unsure": True, "plan_source": "bind_plan"}
             _sc, obj, col = dim_cands[0]
             group_by = [[obj, col]]
     if measure == "utilisation_pct" and not group_by:
@@ -589,7 +589,7 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     above = _ABOVE_PCT.search(q)
     if above:
         plan["keep_gt"] = float(above.group(1))
-    return {"query_plan": plan}
+    return {"query_plan": plan, "plan_source": "bind_plan"}
 
 
 __all__ = [

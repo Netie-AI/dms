@@ -12,6 +12,32 @@ from typing import Any
 import httpx
 
 COMPUTE_PATH = "/dms/query"
+PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
+
+
+def attach_compute_plan_source(payload: dict[str, Any]) -> dict[str, Any]:
+    """Copy Cortex /dms/query route telemetry onto ``plan_source``.
+
+    Prefer an explicit ``plan_source`` or ``mode`` from the engine. A typed
+    ``query_plan`` with neither is labeled ``ontology_plan`` because this client
+    requested ``mode=ontology_plan`` on the same POST.
+
+    ponytail: Cortex-internal keyword bind that omits mode/plan_source still
+    labels ontology_plan. Upgrade: Cortex emits plan_source on /dms/query.
+    """
+    out = dict(payload)
+    existing = str(out.get("plan_source") or "").strip().lower()
+    if existing in PLAN_SOURCES:
+        out["plan_source"] = existing
+        return out
+    mode = str(out.get("mode") or "").strip().lower()
+    if mode in PLAN_SOURCES:
+        out["plan_source"] = mode
+        return out
+    plan = out.get("query_plan")
+    if isinstance(plan, dict) and str(plan.get("measure") or "").strip():
+        out["plan_source"] = "ontology_plan"
+    return out
 
 
 def compute_query(
@@ -54,7 +80,9 @@ def compute_query(
         payload = res.json()
     except ValueError:
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    return attach_compute_plan_source(payload)
 
 
-__all__ = ["COMPUTE_PATH", "compute_query"]
+__all__ = ["COMPUTE_PATH", "PLAN_SOURCES", "attach_compute_plan_source", "compute_query"]

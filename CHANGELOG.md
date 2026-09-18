@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-PROVE-01: ontology_plan vs bind_plan labels (#199)
+
+- **Ticket.** Serves [GEN-PATH-PROVE-01 #199](https://github.com/Netie-AI/dms/issues/199) under EPIC-INSIGHTS-UX #178 Phase A HOLD. Does not close tickets. Does not stamp COMPLETE. Does not invent 57.69% as an AI-path prove.
+- **Telemetry.** `bind_plan` stamps `plan_source=bind_plan`. Cortex `POST /dms/query` stamps `ontology_plan` (or copies engine `mode`/`plan_source`). Generative envelopes copy that field. Missing field is `other` -- harness does not guess from SQL or assumption strings.
+- **Harness.** `python scripts/score_curated.py --prove-path` (offline, CI-safe) and `--prove-path --url https://studio.netie.ai/api` (Platform). Per-qid label, count/%, WRONG=0, `Phase A HOLD may clear` YES/NO. Offline `--ab` compute is local `bind_plan`, so it cannot clear HOLD. Live numbers are Platform after merge.
+- **Trust.** `GET /v1/trust/summary` forwards `score_gen_path_prove.json` when present. Read-only. No LIVE_KEY invent. `#192`/`#198` untouched.
+- **Not this ticket:** live Studio prove PASS, Phase A HOLD clear, epic COMPLETE, ticket close.
+
 ## 2026-09-18 - INSIGHTS-HOST-01: consume Cortex GET|POST /v1/insights (#196)
 
 - **Ticket.** Serves [INSIGHTS-HOST-01 #196](https://github.com/Netie-AI/dms/issues/196) under EPIC-INSIGHTS-UX #178 + Platform Track A. Does not close tickets. Not COMPLETE. Not #178 COMPLETE.

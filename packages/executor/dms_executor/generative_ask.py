@@ -37,6 +37,29 @@ _UNSURE_ASK = re.compile(
     r"\b(worry about|is this good|just give me)\b",
     re.I,
 )
+PLAN_SOURCE_ONTOLOGY = "ontology_plan"
+PLAN_SOURCE_BIND = "bind_plan"
+PLAN_SOURCE_OTHER = "other"
+PLAN_SOURCES = frozenset(
+    {PLAN_SOURCE_ONTOLOGY, PLAN_SOURCE_BIND, PLAN_SOURCE_OTHER}
+)
+
+
+def normalize_plan_source(raw: Any) -> str:
+    val = str(raw or "").strip().lower()
+    return val if val in PLAN_SOURCES else PLAN_SOURCE_OTHER
+
+
+def plan_source_from_payload(payload: dict[str, Any] | None) -> str:
+    """Producer stamp only. Missing or unknown is other — do not infer from SQL."""
+    if not isinstance(payload, dict):
+        return PLAN_SOURCE_OTHER
+    return normalize_plan_source(payload.get("plan_source"))
+
+
+def with_plan_source(env: dict[str, Any], source: str) -> dict[str, Any]:
+    env["plan_source"] = normalize_plan_source(source)
+    return env
 
 
 @dataclass(frozen=True)
@@ -222,6 +245,7 @@ def _abstain(
     *,
     space_id: str | None,
     session_id: str | None,
+    plan_source: str = PLAN_SOURCE_OTHER,
 ) -> dict[str, Any]:
     env = build_answer_envelope(
         answer_id="ans_gen01_abstain",
@@ -242,7 +266,7 @@ def _abstain(
         question=question,
     )
     assert_envelope_valid(env)
-    return env
+    return with_plan_source(env, plan_source)
 
 
 def _l2_envelope(
@@ -254,6 +278,7 @@ def _l2_envelope(
     session_id: str | None,
     audit_id: str,
     notes: Sequence[str],
+    plan_source: str = PLAN_SOURCE_OTHER,
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"Found {len(out_rows)} row(s)."
@@ -283,7 +308,7 @@ def _l2_envelope(
         grounded_tables=sorted(cited_relations(sql)),
     )
     assert_envelope_valid(env)
-    return env
+    return with_plan_source(env, plan_source)
 
 
 def path_miss_envelope(
@@ -294,7 +319,13 @@ def path_miss_envelope(
     session_id: str | None,
 ) -> dict[str, Any]:
     """Isolated A/B miss: ABSTAIN, do not mix Cortex/pack into the other lane."""
-    return _abstain(question, reason, space_id=space_id, session_id=session_id)
+    return _abstain(
+        question,
+        reason,
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_OTHER,
+    )
 
 
 def maybe_generative_ask(
@@ -360,8 +391,15 @@ def maybe_generative_ask(
 
     kind = parse_compute_plan(payload)
     fallback_note: str | None = None
+    source = plan_source_from_payload(payload)
     if kind == "unsure":
-        return _abstain(q, "compute abstained (unsure)", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q,
+            "compute abstained (unsure)",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=source,
+        )
     if kind != "plan":
         # Isolated gen (ask_path=generative): bind from retrieved ontology.
         # Product path must miss into Cortex.ask so certified VQ/L0 still run.
@@ -369,10 +407,12 @@ def maybe_generative_ask(
             return None
         payload = bind_plan(q, ctx)
         kind = parse_compute_plan(payload)
+        source = PLAN_SOURCE_BIND
         if kind == "unsure":
             return _abstain(
                 q, "retrieve bind abstained (unsure)",
                 space_id=space_id, session_id=session_id,
+                plan_source=source,
             )
         if kind != "plan":
             methods = ",".join(str(m) for m in (ctx.get("methods") or []))
@@ -381,15 +421,22 @@ def maybe_generative_ask(
                 f"query_plan was not typed after retrieve ({methods})",
                 space_id=space_id,
                 session_id=session_id,
+                plan_source=source,
             )
         fallback_note = "compute_fallback:bind_plan"
 
     assert isinstance(payload, dict)
     plan = plan_from_payload(payload)
     if plan is None:
-        return _abstain(q, "query_plan was not typed", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "query_plan was not typed",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     if onto is None or not onto.verified:
-        return _abstain(q, "ontology_unverified", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "ontology_unverified",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
 
     compiled = onto.compile(
         plan.measure,
@@ -401,31 +448,44 @@ def maybe_generative_ask(
     if isinstance(compiled, Refusal):
         return _abstain(
             q, f"{compiled.reason}: {compiled.detail}",
-            space_id=space_id, session_id=session_id,
+            space_id=space_id, session_id=session_id, plan_source=source,
         )
     if not isinstance(compiled, CompiledQuery):
-        return _abstain(q, "compile_failed", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "compile_failed",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     if compiled.existential:
         return _abstain(
             q, "existential many-to-many filter: ask path will not choose a reading",
-            space_id=space_id, session_id=session_id,
+            space_id=space_id, session_id=session_id, plan_source=source,
         )
 
     why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
     if why:
-        return _abstain(q, f"validate:{why}", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, f"validate:{why}",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
 
     try:
         result = submit(compiled.sql)
     except Exception:  # noqa: BLE001
-        return _abstain(q, "submit_failed", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "submit_failed",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     if getattr(result, "ok", None) is False or getattr(result, "output", None) is None:
-        return _abstain(q, "submit_had_no_rows", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "submit_had_no_rows",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     if plan.keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), plan.measure, plan.keep_gt)
         if not kept:
             return _abstain(
-                q, "validate:keep_gt_empty", space_id=space_id, session_id=session_id
+                q, "validate:keep_gt_empty",
+                space_id=space_id, session_id=session_id, plan_source=source,
             )
         result = SimpleNamespace(
             ok=True,
@@ -437,13 +497,22 @@ def maybe_generative_ask(
     try:
         led = ledger_append({"sql": compiled.sql, "run_id": run_id})
     except Exception:  # noqa: BLE001
-        return _abstain(q, "ledger_append_failed", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "ledger_append_failed",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     entry_id = getattr(led, "entry_id", None) if led is not None else None
     led_hash = getattr(led, "hash", None)
     if not (isinstance(entry_id, str) and entry_id.strip()):
-        return _abstain(q, "ledger_entry_missing", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "ledger_entry_missing",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
-        return _abstain(q, "ledger_hash_missing", space_id=space_id, session_id=session_id)
+        return _abstain(
+            q, "ledger_hash_missing",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     return _l2_envelope(
         sql=compiled.sql,
         result=result,
@@ -452,4 +521,5 @@ def maybe_generative_ask(
         session_id=session_id,
         audit_id=entry_id.strip(),
         notes=tuple([*compiled.notes, *([fallback_note] if fallback_note else [])]),
+        plan_source=source,
     )
