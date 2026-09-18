@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - INSIGHTS-EXPORT-01: Excel from real ask envelope (#188)
+
+- **Ticket.** Serves [INSIGHTS-EXPORT-01 #188](https://github.com/Netie-AI/dms/issues/188) under EPIC-INSIGHTS-UX #178 Phase B. Does not close tickets. Not COMPLETE. Not EPIC-019 / #108 COMPLETE. Not #29 FRTR.
+- **Export.** `POST /v1/chat/export.xlsx` serializes an existing ask envelope (gen or validated) to .xlsx via stdlib OOXML. Copies Cover + Values + Rows as received. Refuses without `answer_id` + badge. Does not re-ask Cortex or invent rows.
+- **UI.** Download Excel on the answer posts that envelope. Filename `dms_answer_<answer_id>.xlsx` (no clock).
+- **Not this ticket:** Power BI / Superset (#189), FRTR Copilot (#29), ticket close, COMPLETE.
+
 ## 2026-09-13 - SCORE-CLIENT-01: climb/A/B httpx vs urllib CF1010 (#187)
 
 - **Ticket.** Serves [SCORE-CLIENT-01 #187](https://github.com/Netie-AI/dms/issues/187) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Not 99.95%.

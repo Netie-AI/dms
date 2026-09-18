@@ -8,10 +8,13 @@ from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from dms_api.deps import AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
+from dms_api.gatekeeping import enforce
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
@@ -124,6 +127,12 @@ class AskBody(BaseModel):
 
 class DrillthroughBody(BaseModel):
     token: str = Field(min_length=1)
+
+
+class ExportXlsxBody(BaseModel):
+    """INSIGHTS-EXPORT-01 — serialize an existing ask envelope. No re-ask."""
+
+    envelope: dict[str, Any]
 
 
 def _space_refusal_envelope(
@@ -342,3 +351,36 @@ def chat_drillthrough(
             status_code=502,
             detail={"code": "drillthrough_failed", "message": str(exc)[:400]},
         ) from exc
+
+
+@router.post("/export.xlsx")
+def chat_export_xlsx(
+    body: ExportXlsxBody,
+    cortex: CortexDep,
+) -> Response:
+    """Excel from a real ask envelope. Copies rows; does not invent or re-ask."""
+    peek = body.envelope if isinstance(body.envelope, dict) else {}
+    decision = compliance_gate(
+        action="chat.export",
+        metadata={
+            "task_id": "chat.export",
+            "answer_id": str(peek.get("answer_id") or "")[:80],
+        },
+        client=cortex,
+    )
+    # Serializer of bytes the caller already holds — not a lake write.
+    enforce(decision, mutation=False)
+    try:
+        data, filename = export_envelope_xlsx(body.envelope)
+    except EnvelopeExportError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return Response(
+        content=data,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

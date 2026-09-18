@@ -14,6 +14,12 @@ cross-check + FRTR golden), `packages/executor/dms_executor/xlsx_orch.py`
 `POST /v1/studio/xlsx-orch/crosscheck|extract|golden`.
 Regression: `tests/test_xlsx_orch.py`. Pointer owns Copilot paste (P-DMS-36).
 
+INSIGHTS-EXPORT-01 (#188): `packages/core/dms_core/xlsx_export.py` copies an
+existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`). HTTP:
+`POST /v1/chat/export.xlsx`. Chat: Download Excel. Refuses without
+answer_id+badge; does not re-ask or add rows. Not FRTR / #29. Regression:
+`tests/test_insights_export.py`. Not COMPLETE.
+
 EPIC-014 MCP-01: `apps/api/dms_api/routes/mcp.py` wraps existing
 `POST /v1/chat/ask`, `GET /v1/library/warehouse/{table}/preview`,
 `GET /v1/ontology/metrics`. Flag `DMS_MCP=0` (off). Regression:

@@ -5,6 +5,7 @@ import {
   csvEscape,
   isSummaryExport,
   rowsToCsv,
+  xlsxDownloadName,
 } from "./rowsToCsv";
 
 describe("rowsToCsv", () => {
@@ -58,6 +59,13 @@ describe("csvDownloadName", () => {
     expect(csvDownloadName("ans/live\\9f3c")).toBe("dms_answer_ans_live_9f3c.csv");
     expect(csvDownloadName("")).toBe("dms_answer_export.csv");
     expect(csvDownloadName("../x")).toBe("dms_answer_x.csv");
+  });
+});
+
+describe("xlsxDownloadName", () => {
+  it("reuses the CSV stem and swaps the suffix", () => {
+    expect(xlsxDownloadName("ans_live_9f3c")).toBe("dms_answer_ans_live_9f3c.xlsx");
+    expect(xlsxDownloadName("")).toBe("dms_answer_export.xlsx");
   });
 });
 
