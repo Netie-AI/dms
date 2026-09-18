@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-06: dual-flat 17/26 root-cause + rise L0s (#216)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-06 #216](https://github.com/Netie-AI/dms/issues/216) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Dual KEEP_HOLD: #212 @ `aa0ef108` and #214 @ `683827ed` both Platform ontology_plan=17 bind_plan=0 WRONG=0 answered=17/26.
+- **Diagnosis.** Frozen 26 saturates at 17 L0s; remaining 9 are planted traps (WRONG if greened). Live `--prove-path --url` loads local `tests/fixtures/curated_ceo/questions.yaml` (`score_pack_live`); Studio SHA does not include the pack. #212's `cq_audit_overdue` and #214's four certified synonyms never entered a 17/26 stamp. #214 `_leftover_l0_unscored` only required leftover ids asked, not ontology_plan OK. 3/4 synonyms already lock #210 measures — if POSTed, ontology_plan would be >17. Ranking/ask_path on the original 17 were not no-ops.
+- **Climb.** Union rise L0s in the prove harness so this SHA cannot score frozen 26. Live prove FAILs on ontology_plan<=17 or rise L0s not `ontology_plan`. `/health` `gen_path_climb` advertises pack identity (deploy coupling). Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 17 + WRONG=0 after deploy. CI green != climb PASS. A 17/26 stamp is FAIL on this SHA. QUALIFIED claim stays n=26.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses.
+
 ## 2026-09-18 - GEN-PATH-CLIMB-05: certified synonyms beyond flat ontology_plan=17 (#214)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-05 #214](https://github.com/Netie-AI/dms/issues/214) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #212 KEEP_HOLD @ `aa0ef108` (ontology_plan=17 bind_plan=0 WRONG=0 answered=17/26) stands as the measured floor.

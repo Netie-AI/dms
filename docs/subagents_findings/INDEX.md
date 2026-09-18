@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-05 after #212 KEEP_HOLD 17/26: leftover cq_audit_overdue never entered frozen pack; score Cortex certified synonyms of the working 17).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-06 dual KEEP_HOLD 17/26: prove pack is local questions.yaml; frozen 26 saturates at 17 L0s; #214 ids-asked gate did not require ontology_plan).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-climb-06 | GEN-PATH-CLIMB-06, ontology_plan, dual-flat, 17/26, prove harness, dms-216 | #212+#214 KEEP_HOLD 17/26: live prove loads local yaml, not Studio SHA. Frozen 26 saturates at 17. Union rise L0s; FAIL flat 17. WRONG=0. Live Platform. Not COMPLETE. | `2026-09-18_gen-path-climb-06.md` |
 | 2026-09-18 | gen-path-climb-05 | GEN-PATH-CLIMB-05, ontology_plan, certified synonym, 17/26, dms-214 | After #212 KEEP_HOLD 17/26: leftover audit never scored; certified synonyms of the working 17 as ontology_plan, not PACK_METRICS. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-05.md` |
 | 2026-09-18 | gen-path-climb-04 | GEN-PATH-CLIMB-04, ontology_plan, cq_audit_overdue, last_audit_date, dms-212 | After #210 ontology_plan=17: leftover Cortex L0 audit overdue as ontology_plan, not PACK_METRICS. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-04.md` |
 | 2026-09-18 | gen-path-climb-03 | GEN-PATH-CLIMB-03, ontology_plan, ranking exhaust, pack overlay, supplier_rank_score, dms-210 | After #208 ontology_plan=13: overlay prefer-matched pack ids when ranking exhausts; honest supplier rank. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-03.md` |

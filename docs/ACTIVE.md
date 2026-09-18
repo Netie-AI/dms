@@ -156,6 +156,18 @@ after deploy:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>17 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+GEN-PATH-CLIMB-06 (#216): dual KEEP_HOLD after #212+#214 both stamped
+ontology_plan=17 answered=17/26. Root cause: `--prove-path --url`
+loads local `questions.yaml` (`score_pack_live`); Studio SHA does not
+include the pack. Frozen 26 saturates at 17 L0s; remaining 9 are planted
+traps. #214 fail-closed only required leftover ids *asked*, not
+ontology_plan. Harness unions rise L0s from the script; live prove FAILs
+on flat 17. `/health` `gen_path_climb` advertises pack identity.
+Regression: `tests/test_gen_path_climb06.py`. Platform leftover after
+deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>17 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

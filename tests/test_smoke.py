@@ -29,6 +29,9 @@ def test_health_route():
     assert "jwks_refresh" in body["dependencies"]["cortex"]
     assert "database_configured" in body
     assert "trust" in body["dependencies"]["openvault"]
+    assert body["gen_path_climb"]["frozen_n"] == 26
+    assert body["gen_path_climb"]["issue"] == 216
+    assert len(body["gen_path_climb"]["rise_l0"]) == 4
 
 
 def test_list_spaces():
