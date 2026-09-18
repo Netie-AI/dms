@@ -22,6 +22,7 @@ measures:
   - utilisation_pct
   - below_reorder_lots
   - supplier_rank_score
+  - audit_overdue
 # Cortex Insights ranking uses pack metric ids. Same-intent only onto
 # verified demo_ontology measures. Not certified SQL. Not a skip to a
 # weaker unrelated measure (stock_value_* never becomes sku_count).
@@ -59,3 +60,5 @@ measure_aliases:
   cq_sku_count: sku_count
   cq_supplier_ranking: supplier_rank_score
   supplier_ranking: supplier_rank_score
+  cq_audit_overdue: audit_overdue
+  audit_overdue: audit_overdue

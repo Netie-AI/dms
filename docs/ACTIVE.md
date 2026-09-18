@@ -49,8 +49,8 @@ EPIC-020 leftover pack + VQ-03 (#170) certified exact-matches in
 `packages/executor/dms_executor/demo_pack.py` (spend/stock/total_spend plus
 the seven live L0 gaps: capacity utilisation, low-stock WH-A, shipment
 cost, cold storage, capacity>90, expired, CCTV WH-A). Asks go to Cortex
-submit. Thin seed SCHEMA_VERSION 4 adds `location_code` /
-`is_cold_storage` / `cctv_camera_id` / `expiry_date` so pack SQL can run
+submit. Thin seed SCHEMA_VERSION 5 adds `location_code` /
+`is_cold_storage` / `cctv_camera_id` / `expiry_date` / `last_audit_date` so pack SQL can run
 in tests. The founder rich lake is Cortex `/var/cortex/data/dms_demo.duckdb`.
 `live_ask` order:
 follow-up → VQ-02 → pack → uncertified planted refuse (VQ-04) → cascade → bronze sheet → GEN-01 ontology compile+validate → Cortex. DR-0002
@@ -136,6 +136,15 @@ formula), not sku_count. Planted refuses stay ABSTAIN. Regression:
 `tests/test_gen_path_climb03.py`. Platform leftover after deploy:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>13 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
+GEN-PATH-CLIMB-04 (#212): continue live ontology_plan rise beyond 17.
+Leftover Cortex certified `cq_audit_overdue` (not PACK_METRICS). Honest
+`audit_overdue` measure (90-day last_audit FILTER). Exhausted-ranking
+overlay + FreeRoute `free+normal` retry. Ops without suppliers ABSTAIN.
+Planted refuses stay ABSTAIN. Regression: `tests/test_gen_path_climb04.py`.
+Platform leftover after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>17 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

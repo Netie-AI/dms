@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-03 after #208: ranking walk exhausts when YAML omits the pack id; overlay prefer-matched Cortex pack ids + supplier_rank_score).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-04 after #210: 17/26 L0s already ontology_plan; leftover Cortex cq_audit_overdue + honest audit_overdue measure).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-climb-04 | GEN-PATH-CLIMB-04, ontology_plan, cq_audit_overdue, last_audit_date, dms-212 | After #210 ontology_plan=17: leftover Cortex L0 audit overdue as ontology_plan, not PACK_METRICS. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-04.md` |
 | 2026-09-18 | gen-path-climb-03 | GEN-PATH-CLIMB-03, ontology_plan, ranking exhaust, pack overlay, supplier_rank_score, dms-210 | After #208 ontology_plan=13: overlay prefer-matched pack ids when ranking exhausts; honest supplier rank. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-03.md` |
 | 2026-09-18 | gen-path-climb-02 | GEN-PATH-CLIMB-02, ontology_plan, sku_count, prefer lock, FreeRoute, dms-208 | After #180 ontology_plan=11: walk sku_count noise when prefer lock differs; retry walked slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-02.md` |
 | 2026-09-18 | gen02-kscale-climb | GEN-02, k-scale, ontology_plan, FreeRoute, ranked retry, pack-id slots, dms-180 | After #205 ontology_plan=9: ranked FreeRoute retry + noise-id walk + pack-id slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen02-kscale-climb.md` |

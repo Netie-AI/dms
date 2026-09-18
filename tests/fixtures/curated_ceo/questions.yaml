@@ -154,6 +154,15 @@ questions:
     cortex_id: cq_cctv_wh_a
     question: Show the CCTV camera for warehouse A
 
+  # Leftover Cortex certified L0 (packs/dms/semantic/certified_queries.yaml).
+  # Not PACK_METRICS exact-match. Isolated gen / product miss uses ontology_plan.
+  - id: cq_audit_overdue
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_audit_overdue
+    question: Which suppliers have an audit overdue?
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

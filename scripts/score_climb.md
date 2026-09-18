@@ -194,6 +194,39 @@ Product climb acceptance is Platform measured **ontology_plan > 13 + WRONG=0**
 after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
 #210 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-04 (#212) — leftover Cortex L0 beyond ontology_plan=17
+
+Baseline Platform live @ `0a5c6a9c`: **ontology_plan=17 / bind_plan=0 / WRONG=0**.
+#210 RISE_PASS. Epic **NOT COMPLETE**. Do not invent 99.95% / estate CLEAR.
+
+Root cause of the 17 plateau: all 17 curated_ceo L0s already compile as
+ontology_plan. Remaining 9 are planted refuse/grant traps (WRONG if greened).
+Leftover Cortex certified `cq_audit_overdue` was not in the score pack and
+not in PACK_METRICS.
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Honest `audit_overdue`.** COUNT FILTER on `last_audit_date` older than
+   90 days at supplier grain. Group `supplier_id`. Thin seed SCHEMA_VERSION 5
+   adds the column. Cortex lake already has it (certified SQL).
+2. **Exhausted-ranking overlay.** Prefer lock + spine alias `cq_audit_overdue`
+   when YAML ranking is sku_count noise. Abort still wins on Cortex-only
+   overlapping ids (stock_value_by_category must not become sku_count).
+3. Finance compiles as `ontology_plan`. Ops without `suppliers` ABSTAIN.
+   Planted refuses stay ABSTAIN. Not exact-match pack expansion.
+4. Typed `/dms/query` and FreeRoute `free+normal` retry use overlay slots.
+   Isolated gen still must not `bind_plan` over Insights reached.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Product climb acceptance is Platform measured **ontology_plan > 17 + WRONG=0**
+after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
+#212 claiming #178 COMPLETE. curated_ceo n=27; QUALIFIED claim stays n=26.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

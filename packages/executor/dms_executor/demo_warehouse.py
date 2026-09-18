@@ -24,7 +24,7 @@ _SEEDED: set[str] = set()
 # Ceiling: Library /tree lists serialize. Upgrade: RO pool if P-DMS-34 lifts.
 
 DEFAULT_REL = Path("data") / "dms_demo.duckdb"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Tables allowlisted on demo/live manifests
 DEMO_TABLES = (
@@ -177,17 +177,18 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
           supplier_name VARCHAR,
           country VARCHAR,
           lead_time_days INTEGER,
-          risk_score DOUBLE
+          risk_score DOUBLE,
+          last_audit_date DATE
         )
         """
     )
     con.execute(
         """
         INSERT INTO suppliers VALUES
-          ('SUP-01', 'Northshore Materials', 'MY', 7, 0.22),
-          ('SUP-02', 'Peninsula Polymers', 'SG', 12, 0.41),
-          ('SUP-03', 'Delta Logistics Co', 'MY', 5, 0.18),
-          ('SUP-04', 'Orbit Packing', 'TH', 9, 0.55)
+          ('SUP-01', 'Northshore Materials', 'MY', 7, 0.22, '2025-01-01'),
+          ('SUP-02', 'Peninsula Polymers', 'SG', 12, 0.41, '2026-08-01'),
+          ('SUP-03', 'Delta Logistics Co', 'MY', 5, 0.18, '2024-06-01'),
+          ('SUP-04', 'Orbit Packing', 'TH', 9, 0.55, '2026-09-01')
         """
     )
 
