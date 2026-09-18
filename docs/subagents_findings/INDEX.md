@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-02 k-scale after #205: ranking-only coverage; FreeRoute generate unused after UNARMED; pack ids encode group/limit).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-02 after #180: sku_count-first ranking aborts SKU-list asks; prefer-locked walk + walked retry slots).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-climb-02 | GEN-PATH-CLIMB-02, ontology_plan, sku_count, prefer lock, FreeRoute, dms-208 | After #180 ontology_plan=11: walk sku_count noise when prefer lock differs; retry walked slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-02.md` |
 | 2026-09-18 | gen02-kscale-climb | GEN-02, k-scale, ontology_plan, FreeRoute, ranked retry, pack-id slots, dms-180 | After #205 ontology_plan=9: ranked FreeRoute retry + noise-id walk + pack-id slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen02-kscale-climb.md` |
 | 2026-09-18 | studio-mobile-03 | STUDIO-MOBILE-03, TopBar, New menu, overflow-x-auto, Sources chip, 390px, dms-192 | #192 header overflow-x-auto clips New dropdown. Drop overflow, Space flex-1, pr-32 + top-12 so Sources misses h1. Not #182 DONE. Live walk Platform. | `2026-09-18_studio-mobile-03.md` |
 | 2026-09-18 | gen-path-climb-01 | GEN-PATH-CLIMB-01, ontology_plan, retrieve, ranking alias, intent_slots, dms-205 | #205 climb: resolve Cortex pack ids onto DMS measures + retrieve slots so live ontology_plan>1 WRONG=0. Not COMPLETE. Platform prove after deploy. | `2026-09-18_gen-path-climb-01.md` |
