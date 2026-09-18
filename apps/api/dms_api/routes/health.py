@@ -17,21 +17,22 @@ router = APIRouter()
 #: Python 3.12 (PEP 701) and this package targets 3.11.
 _OPENVAULT_DEFAULT_ROOT = "D:\\\\OpenVault"
 
-# GEN-PATH-CLIMB-06: pack identity on the live host. Dual KEEP_HOLD 17/26
-# (#212 then #214) was local questions.yaml vs Studio SHA split-brain —
-# Studio never loads the curated pack. /health advertises the harness
-# identity this SHA must score. Not a sixth port. Not COMPLETE.
+# GEN-PATH-CLIMB-07: pack identity on the live host. #216 RISE_PASS was
+# ontology_plan=21 on n=31 (17 frozen L0 + 4 climb-05/06 synonyms).
+# Remaining unused Cortex certified_queries.yaml synonyms were never
+# POSTed. /health advertises the harness identity this SHA must score.
+# Not a sixth port. Not COMPLETE. Do not reintroduce frozen n=26.
 GEN_PATH_CLIMB: dict[str, Any] = {
-    "ticket": "GEN-PATH-CLIMB-06",
-    "issue": 216,
+    "ticket": "GEN-PATH-CLIMB-07",
+    "issue": 218,
     "pack": "curated_ceo",
     "frozen_n": 26,
-    "n": 31,
+    "prior_n": 31,
+    "n": 34,
     "rise_l0": [
-        "cq_sku_count_syn_short",
-        "cq_sku_count_syn_label",
-        "cq_sales_top5_syn_skus",
-        "cq_top3_category_syn_value",
+        "cq_sales_top5_syn_sales",
+        "cq_top3_category_syn_show",
+        "cq_top3_category_syn_plain",
     ],
 }
 

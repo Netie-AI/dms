@@ -168,6 +168,17 @@ deploy:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>17 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+GEN-PATH-CLIMB-07 (#218): continue live ontology_plan rise past 21 after
+#216 RISE_PASS (21/31 WRONG=0 on uncapped harness). Unused Cortex
+certified synonyms of L0s live already answers (`Top 5 selling SKUs by
+sales`, `show top 3 category sales`, `top 3 category sales`). Retrieve
+lock `category sales`. Harness unions the new L0s; live prove FAILs
+ontology_plan<=21. Frozen n=26 stays a floor. Planted refuses stay
+ABSTAIN. Regression: `tests/test_gen_path_climb07.py`. Platform leftover
+after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>21 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

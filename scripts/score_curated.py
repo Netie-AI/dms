@@ -135,6 +135,36 @@ CLIMB06_UNION_L0: tuple[dict[str, Any], ...] = CLIMB06_RISE_L0 + (
     },
 )
 
+# #216 RISE_PASS: ontology_plan=21 / n=31. The 4 climb-06 synonyms plus the
+# frozen 17 already compile. Unused Cortex certified_queries.yaml synonyms
+# below were never POSTed. Union them so live --prove-path cannot score
+# the 21/31 pack. Not PACK_METRICS. Audit overdue still optional.
+CLIMB07_RISE_L0: tuple[dict[str, Any], ...] = (
+    {
+        "id": "cq_sales_top5_syn_sales",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "Top 5 selling SKUs by sales",
+    },
+    {
+        "id": "cq_top3_category_syn_show",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "show top 3 category sales",
+    },
+    {
+        "id": "cq_top3_category_syn_plain",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "top 3 category sales",
+    },
+)
+CLIMB07_RISE_IDS: tuple[str, ...] = tuple(str(c["id"]) for c in CLIMB07_RISE_L0)
+CLIMB07_UNION_L0: tuple[dict[str, Any], ...] = CLIMB06_UNION_L0 + CLIMB07_RISE_L0
+
 # Platform D distill -> Netie-native mapping. Ideas only; no vendor paste.
 DISTILL: dict[str, Any] = {
     "ideas_only": True,
@@ -222,14 +252,15 @@ def load_pack(path: Path) -> dict[str, Any]:
 
 
 def merge_pack_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Union climb leftover L0s. Live --prove-path cannot score frozen 26.
+    """Union climb leftover L0s. Live --prove-path cannot score frozen 26
+    or the n=31 / ontology_plan=21 pack.
 
     Studio SHA does not include questions.yaml. Dual KEEP_HOLD 17/26 was
     this list staying at the frozen pack when the scoring checkout lagged.
     """
     by_id = {str(row.get("id") or ""): row for row in questions}
     out = list(questions)
-    for case in CLIMB06_UNION_L0:
+    for case in CLIMB07_UNION_L0:
         qid = str(case["id"])
         if qid not in by_id:
             out.append(dict(case))
@@ -237,16 +268,13 @@ def merge_pack_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]
     return out
 
 
-def leftover_rise_not_ontology(cases: list[dict[str, Any]]) -> list[str]:
-    """Rise L0 ids that were not answered as ontology_plan.
-
-    #214 `_leftover_l0_unscored` only checked the qid was asked. Asked+ABSTAIN
-    still stamps ontology_plan=17. Climb-06 requires the 4 synonyms to be
-    ontology_plan. cq_audit_overdue is optional (live last_audit_date).
-    """
+def leftover_ids_not_ontology(
+    cases: list[dict[str, Any]], ids: tuple[str, ...]
+) -> list[str]:
+    """Ids that were not answered as ontology_plan (asked+ABSTAIN still missing)."""
     by_id = {str(row.get("id") or ""): row for row in cases}
     missing: list[str] = []
-    for qid in CLIMB06_RISE_IDS:
+    for qid in ids:
         row = by_id.get(qid)
         if row is None:
             missing.append(qid)
@@ -257,6 +285,16 @@ def leftover_rise_not_ontology(cases: list[dict[str, Any]]) -> list[str]:
         if str(row.get("plan_source") or "") != "ontology_plan":
             missing.append(qid)
     return missing
+
+
+def leftover_rise_not_ontology(cases: list[dict[str, Any]]) -> list[str]:
+    """Climb-06 rise L0 ids that were not answered as ontology_plan.
+
+    #214 `_leftover_l0_unscored` only checked the qid was asked. Asked+ABSTAIN
+    still stamps ontology_plan=17. Climb-06 requires the 4 synonyms to be
+    ontology_plan. cq_audit_overdue is optional (live last_audit_date).
+    """
+    return leftover_ids_not_ontology(cases, CLIMB06_RISE_IDS)
 
 
 def load_oracles(path: Path = DEFAULT_ORACLES) -> dict[str, Any]:
@@ -473,13 +511,23 @@ def self_check() -> int:
     if len(ids) <= int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
         print("FAIL: pack must outgrow frozen n=26 so leftover L0s are scored")
         return 1
+    if len(ids) <= 31:
+        print("FAIL: pack must outgrow n=31 so climb-07 rise L0s are scored")
+        return 1
     frozen26 = [
         {"id": f"frozen_{i}", "space": "finance", "expect": "abstain", "question": "x"}
         for i in range(int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]))
     ]
     merged = merge_pack_questions(frozen26)
     merged_ids = {str(c["id"]) for c in merged}
-    if any(qid not in merged_ids for qid in CLIMB06_RISE_IDS):
+    missing_climb07 = [qid for qid in CLIMB07_RISE_IDS if qid not in ids]
+    if missing_climb07:
+        print(
+            "FAIL: climb-07 leftover L0 missing from pack "
+            f"(21/31 freeze): {missing_climb07}"
+        )
+        return 1
+    if any(qid not in merged_ids for qid in (*CLIMB06_RISE_IDS, *CLIMB07_RISE_IDS)):
         print("FAIL: merge_pack_questions must inject rise L0s into frozen 26")
         return 1
     if leftover_rise_not_ontology(
@@ -494,6 +542,24 @@ def self_check() -> int:
         ]
     ):
         print("FAIL: ontology_plan rise L0s must pass the climb-06 gate")
+        return 1
+    if leftover_ids_not_ontology(
+        [
+            {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+            for qid in CLIMB07_RISE_IDS
+        ],
+        CLIMB07_RISE_IDS,
+    ) != list(CLIMB07_RISE_IDS):
+        print("FAIL: abstained climb-07 rise L0s must fail the gate")
+        return 1
+    if leftover_ids_not_ontology(
+        [
+            {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+            for qid in CLIMB07_RISE_IDS
+        ],
+        CLIMB07_RISE_IDS,
+    ):
+        print("FAIL: ontology_plan climb-07 rise L0s must pass the gate")
         return 1
     expects = {str(c.get("expect") or "").lower() for c in pack["questions"]}
     if "l0" not in expects or not (expects & REFUSE):
@@ -768,8 +834,29 @@ def self_check() -> int:
         ),
         mode="live",
     )
-    if live_climb_gate(rise21) is not None:
-        print("FAIL: live climb-06 must pass ontology_plan>17 with rise L0s")
+    if live_climb_gate(rise21) is None:
+        print("FAIL: live climb-07 must fail flat ontology_plan=21")
+        return 1
+    rise24 = build_gen_path_prove_report(
+        {"OK": 24, "LAYER": 0, "ABSTAIN": 10, "WRONG": 0},
+        cases=(
+            [
+                {"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"}
+                for i in range(17)
+            ]
+            + [
+                {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+                for qid in (*CLIMB06_RISE_IDS, *CLIMB07_RISE_IDS)
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(10)
+            ]
+        ),
+        mode="live",
+    )
+    if live_climb_gate(rise24) is not None:
+        print("FAIL: live climb-07 must pass ontology_plan>21 with rise L0s")
         return 1
     if "COMPLETE" in json.dumps(climb_plant) or "99.95" in json.dumps(climb_plant):
         print("FAIL: climb plant invented COMPLETE / 99.95")
@@ -1405,12 +1492,14 @@ def _plan_source_bucket(cases: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _leftover_l0_unscored(cases: list[dict[str, Any]]) -> list[str]:
-    """Ids from CLIMB05_LEFTOVER_L0 missing in this prove run.
+    """Leftover L0 ids missing in this prove run.
 
     #212 KEEP_HOLD answered=17/26 because cq_audit_overdue was never asked.
+    #216 RISE_PASS 21/31 never asked the unused certified synonyms.
     """
     got = {str(row.get("id") or "") for row in cases}
-    return [qid for qid in CLIMB05_LEFTOVER_L0 if qid not in got]
+    required = CLIMB05_LEFTOVER_L0 + CLIMB07_RISE_IDS
+    return [qid for qid in required if qid not in got]
 
 
 def decide_phase_a_hold_may_clear(
@@ -1505,18 +1594,26 @@ def build_gen_path_prove_report(
 def live_climb_gate(report: dict[str, Any]) -> str | None:
     """None = pass. Reason = FAIL. Offline --prove-path does not use this.
 
-    Dual KEEP_HOLD 17/26 is not climb PASS. Rise L0s must be ontology_plan.
+    Dual KEEP_HOLD 17/26 is not climb PASS. #216 21/31 is not climb-07 PASS.
+    Rise L0s (climb-06 and climb-07) must be ontology_plan. Do not shrink
+    the pack to fake a higher percent. Do not reintroduce frozen n=26.
     """
     by = report.get("by_plan_source") or {}
     onto_row = by.get("ontology_plan") if isinstance(by, dict) else None
     onto = int((onto_row or {}).get("answered") or 0)
-    missing = leftover_rise_not_ontology(list(report.get("cases") or []))
+    cases = list(report.get("cases") or [])
+    missing06 = leftover_rise_not_ontology(cases)
+    missing07 = leftover_ids_not_ontology(cases, CLIMB07_RISE_IDS)
     if int(report.get("n") or 0) <= int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
         return "pack n<=26 is frozen 17/26 KEEP_HOLD, not climb-06"
-    if missing:
-        return "rise L0s not ontology_plan (dual-flat 17/26): " + ",".join(missing)
-    if onto <= 17:
-        return "ontology_plan<=17 is KEEP_HOLD, not climb PASS"
+    if missing06:
+        return "rise L0s not ontology_plan (dual-flat 17/26): " + ",".join(missing06)
+    if missing07:
+        return "climb-07 rise L0s not ontology_plan (flat 21/31): " + ",".join(
+            missing07
+        )
+    if onto <= 21:
+        return "ontology_plan<=21 is KEEP_HOLD, not climb PASS"
     return None
 
 
@@ -1553,6 +1650,7 @@ def _write_prove_report(
         + f"  (frozen n=26 floor; this pack n={report['n']})"
     )
     print("rise_l0 " + ",".join(CLIMB06_RISE_IDS))
+    print("climb07_rise_l0 " + ",".join(CLIMB07_RISE_IDS))
     print(f"reason: {report['phase_a_hold_may_clear_reason']}")
     print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
     if not report["passed_wrong_zero"]:
