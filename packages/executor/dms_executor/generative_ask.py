@@ -23,6 +23,7 @@ from cortex_client.compute import (
     insights_was_reached,
     query_plan_from_insights_ranking,
 )
+
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, warehouse_path
