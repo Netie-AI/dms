@@ -60,6 +60,27 @@ Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Co
 
 `--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + Cortex compute, bind_plan on compute miss, execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
 
+## GEN-PATH-PROVE-01 (#199) — ontology_plan vs bind_plan
+
+Independent label of whether an answered gen ask used Cortex `POST /dms/query` (`ontology_plan`) or local keyword `bind_plan`. Reads `plan_source` on the envelope. Does **not** guess from SQL or `compute_fallback:bind_plan` assumption text. Missing field = `other`.
+
+```powershell
+# Offline (CI-safe). Local --ab compute is bind_plan, so HOLD stays NO.
+python scripts/score_curated.py --prove-path
+
+# Platform live against Studio API (OV/FreeRoute already on the host):
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Report fields (Platform owns live numbers):
+
+1. Per-qid `plan_source`: `ontology_plan` | `bind_plan` | `other`
+2. Count/% answered via each
+3. WRONG=0 on curated_ceo (same pack as the QUALIFIED 15/26 claim)
+4. `Phase A HOLD may clear`: YES only if majority of answered gen is `ontology_plan` and WRONG=0. The harness never writes COMPLETE.
+
+Artifacts: `score_gen_path_prove.json`, `score_gen_path_prove_cases.json`. Trust pickup: `GET /v1/trust/summary` `gen_path_prove`.
+
 CRAG-style gates (validate-or-abstain, ideas only, not a vendor clone): each gen envelope is graded `validated` / `abstain_validate` / `abstain_gate` / `skipped`. Document RAG CRAG stays parked (P-DMS-19) until a doc index exists.
 
 Keys/models stay in Cortex + OpenVault on the host. This script never sends API keys.
