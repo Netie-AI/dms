@@ -49,11 +49,11 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **GEN-PATH-CLIMB-01 #205** raise live ontology_plan>1 WRONG=0. Platform prove after deploy. Epic NOT COMPLETE. |
+| **This tick** | **STUDIO-MOBILE-03 #192** TopBar phone clip. Live walk = Frontend/Platform after merge+redeploy. Not #182 product DONE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | main CI red on `b5f02be` (run 34750069692) parallel browse attach. Parks stay parked. Floor: Cortex#44. |
+| CI / PRs | #198 rebased onto main after #205/#206. Phone walk leftover. Floor: Cortex#44. |
 
 ## Agent models
 

@@ -86,3 +86,22 @@ describe("STUDIO-MOBILE-01 layout wiring", () => {
     expect(page).toMatch(/<SqlSourcePanel /);
   });
 });
+
+describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
+  it("header overflow stays visible so the New menu is not clipped", () => {
+    const bar = readFileSync(join(here, "../components/TopBar.tsx"), "utf8");
+    expect(bar).toMatch(/overflow-visible/);
+    expect(bar).not.toMatch(/overflow-x-auto/);
+    expect(bar).not.toMatch(/overflow-x-hidden/);
+    expect(bar).toMatch(/min-w-\[8rem\] flex-1/);
+    expect(bar).toMatch(/data-testid="topbar-new-menu"/);
+    expect(bar).not.toMatch(/topbar-title/);
+  });
+
+  it("Chat heading keeps right padding so Sources does not sit on the h1", () => {
+    const chat = readFileSync(join(here, "../pages/ChatPage.tsx"), "utf8");
+    expect(chat).toMatch(/max-lg:pr-32/);
+    const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
+    expect(panel).toMatch(/max-lg:top-12/);
+  });
+});
