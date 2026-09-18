@@ -182,15 +182,17 @@ def test_noise_then_sku_is_ontology_plan(tmp_path: Path) -> None:
     assert env.get("plan_source") == "ontology_plan"
 
 
-def test_supplier_ranking_stays_abstain(tmp_path: Path) -> None:
+def test_supplier_ranking_is_ontology_plan_not_sku(tmp_path: Path) -> None:
     env = _env(
         tmp_path,
         "Rank suppliers by combined risk and lead time score",
         "cq_supplier_ranking",
     )
     assert env is not None
-    assert env["badge"] == "ABSTAIN"
-    assert env.get("sql_used") is None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env.get("plan_source") == "ontology_plan"
+    sql = (env.get("sql_used") or "").lower()
+    assert "risk_score" in sql
     assert env.get("plan_source") != "bind_plan"
 
 

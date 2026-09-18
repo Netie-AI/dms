@@ -127,6 +127,16 @@ Regression: `tests/test_gen_path_climb02.py`. Platform leftover after
 deploy: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>11 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+GEN-PATH-CLIMB-03 (#210): continue live ontology_plan rise beyond 13.
+When prefer-locked ranking walk exhausts (YAML ranking never
+includes the pack id), overlay a question-matched Cortex pack id onto
+the prefer lock. Remaining pack-id shapes (cold/expired/chemicals/cctv/
+supplier_rank/low_stock). Honest `supplier_rank_score` measure (risk+lead
+formula), not sku_count. Planted refuses stay ABSTAIN. Regression:
+`tests/test_gen_path_climb03.py`. Platform leftover after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>13 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat
