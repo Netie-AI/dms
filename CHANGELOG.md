@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-02: prefer-locked ranking walk beyond ontology_plan=11 (#208)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-02 #208](https://github.com/Netie-AI/dms/issues/208) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #180 RISE_PASS @ `58d27a81` (ontology_plan=11 bind_plan=0 WRONG=0) stands.
+- **Climb.** Prefer-locked ranking walk past `sku_count` noise on SKU-list asks (top-5 revenue, top-3 volume, low-stock WH-A) so they compile as `ontology_plan` instead of aborting. FreeRoute `free+normal` generate retry sends the walked/resolved measure plus retrieve/pack slots, not the raw top pack id. `sales_top` pack-id overlay. Planted refuses stay ABSTAIN. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 11 + WRONG=0 after deploy. CI green != climb PASS.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses.
+
 ## 2026-09-18 - GEN-02: FreeRoute k-scale climb beyond #205 (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / 57.69% as AI COMPLETE. Phase A CLEAR stands @ `e1f729a5`. #205 climb PASS @ `186f7d85` (ontology_plan=9 bind_plan=0 WRONG=0).

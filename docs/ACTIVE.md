@@ -79,11 +79,12 @@ YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
 Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.
 Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
 Platform prove @ `186f7d85`: ontology_plan=9 bind_plan=0 WRONG=0.
-K-scale leftover: FreeRoute ranked generate retry, same-intent ranking
-walk, pack-id slot overlay (`scripts/score_climb.md` GEN-02 k-scale).
-Not a GitHub CI live job. Regression: `tests/test_score_climb.py`,
+K-scale @ `58d27a81`: ontology_plan=11 bind_plan=0 WRONG=0 (RISE_PASS).
+Continue climb: GEN-PATH-CLIMB-02 (#208). Not a GitHub CI live job.
+Regression: `tests/test_score_climb.py`,
 `tests/test_gen01_generative_ask.py`, `tests/test_gen02_bind_fallback.py`,
-`tests/test_gen_path_climb.py`, `tests/test_gen02_kscale.py`.
+`tests/test_gen_path_climb.py`, `tests/test_gen02_kscale.py`,
+`tests/test_gen_path_climb02.py`.
 Not COMPLETE. #178 NOT COMPLETE.
 
 GEN-PATH-PROVE-01 (#199): independent `plan_source` label on gen envelopes.
@@ -116,10 +117,15 @@ WRONG=0. Ranking pack ids resolve onto DMS measures (same-intent alias,
 not skip-to-weaker). Retrieve slots overlay group/filter/limit.
 `intent_slots` on Insights generate. Invalid SELECT may ranking-climb;
 hostile SQL abstains. Regression: `tests/test_gen_path_climb.py`.
-Platform re-prove after deploy:
-`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
-Not COMPLETE. #180 waits on live ontology_plan rise vs 9 after this
-k-scale merge+deploy. Epic NOT COMPLETE.
+Platform prove @ `186f7d85`: ontology_plan=9 bind_plan=0 WRONG=0.
+Not COMPLETE. Epic NOT COMPLETE.
+
+GEN-PATH-CLIMB-02 (#208): continue live ontology_plan rise beyond 11.
+Prefer-locked ranking walk past sku_count noise on SKU-list asks;
+FreeRoute retry uses walked/resolved slots; `sales_top` pack-id overlay.
+Regression: `tests/test_gen_path_climb02.py`. Platform leftover after
+deploy: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>11 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

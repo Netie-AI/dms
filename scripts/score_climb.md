@@ -123,6 +123,41 @@ python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api
 
 Product acceptance is Platform measured **ontology_plan > 9 and/or rising answered coverage + WRONG=0** after deploy. CI green != climb PASS. Do not close #180 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-02 (#208) — continue live ontology_plan rise beyond 11
+
+Baseline Platform live @ `58d27a81`: **ontology_plan=11 / bind_plan=0 / WRONG=0**.
+#180 RISE_PASS. Epic **NOT COMPLETE**. Do not invent 99.95% / estate CLEAR.
+
+Root cause of the 11 plateau: Cortex YAML ranking often puts `sku_count` first.
+Same-intent walk (#180) only skipped ids with **no** question-token overlap, so
+asks that mention SKU (`Top 5 selling SKUs`, `Top 3 SKUs by quantity`,
+`Which SKUs are below reorder`) aborted instead of walking to the locked
+measure (`outbound_value_myr` / `outbound_kg` / `below_reorder_lots`).
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Prefer-locked ranking walk.** When retrieve `intent_slots.measure` is set,
+   walk past a ranked id that does not overlap that lock (sku_count on a
+   revenue ask). A Cortex-only id that overlaps the lock still aborts. No
+   prefer: keep the #180 question-token walk (stock_value_by_category must
+   not become sku_count).
+2. **FreeRoute retry uses walked slots.** Retry `query_plan` is the resolved
+   DMS measure plus retrieve/pack group/limit/keep_gt, not the raw top pack
+   id. `model_preference=free+normal`. Skip UNARMED. Typed `/dms/query`
+   forwards the walked `ranked_metric`.
+3. **Pack-id `sales_top` overlay.** `cq_sales_top5_value` / `cq_sales_top3_volume`
+   encode product.sku + topN. Planted refuses stay ABSTAIN.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Product climb acceptance is Platform measured **ontology_plan > 11 + WRONG=0**
+after deploy. CI green != climb PASS. Hand merge SHA via PR. Do not close
+#208 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

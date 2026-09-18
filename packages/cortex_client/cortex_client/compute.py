@@ -23,6 +23,15 @@ INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
 # FreeRoute pick stays in Cortex/OpenVault. Hint only; no provider ids or tokens.
 FREEROUTE_PREFERENCE = "free+normal"
 _SELECT_SQL = re.compile(r"(?is)^\s*(with|select)\b")
+_TOP_FROM_ID = re.compile(r"(?:^|_)top(\d+)(?:_|$)", re.I)
+_PACK_DIM: tuple[tuple[str, str, str], ...] = (
+    ("by_category", "product", "category"),
+    ("by_destination", "location", "location_code"),
+    ("by_country", "supplier", "country"),
+    ("by_sku", "product", "sku"),
+    ("by_location", "location", "location_code"),
+    ("sales_top", "product", "sku"),
+)
 _RANK_STOP = frozenset(
     {
         "the",
@@ -239,6 +248,55 @@ def first_ranked_metric_id(payload: dict[str, Any] | None) -> str | None:
     return None
 
 
+def pack_id_shape(metric_id: str) -> dict[str, Any]:
+    """Group/limit/keep_gt encoded in a Cortex pack metric id. No SQL."""
+    mid = str(metric_id or "").strip().lower()
+    if mid.startswith("cq_"):
+        mid = mid[3:]
+    group_by: list[list[str]] = []
+    for needle, obj, col in _PACK_DIM:
+        if needle in mid:
+            group_by = [[obj, col]]
+            break
+    if not group_by:
+        toks = set(re.findall(r"[a-z0-9]+", mid.replace("_", " ")))
+        if "category" in toks or "categoty" in toks:
+            group_by = [["product", "category"]]
+        elif "destination" in toks:
+            group_by = [["location", "location_code"]]
+        elif "country" in toks:
+            group_by = [["supplier", "country"]]
+    out: dict[str, Any] = {"group_by": group_by}
+    top = _TOP_FROM_ID.search(mid)
+    if top:
+        out["limit"] = int(top.group(1))
+    if "above_90" in mid or "above90" in mid:
+        out["keep_gt"] = 90.0
+    return out
+
+
+def ranking_is_noise(
+    metric_id: str,
+    *,
+    question: str | None = None,
+    prefer: str | None = None,
+) -> bool:
+    """Walk past this Cortex id. False = abort (intended metric, missing on DMS).
+
+    No prefer: walk only when the id shares no content tokens with the ask.
+    With a question-locked measure: walk ids that do not overlap that lock,
+    even if they share a question token (sku_count on a revenue/SKU-list ask).
+    """
+    mid_toks = ranked_measure_tokens(metric_id)
+    lock = str(prefer or "").strip()
+    if lock:
+        return not bool(mid_toks & ranked_measure_tokens(lock))
+    qtoks = ranked_measure_tokens(question or "")
+    if not qtoks:
+        return False
+    return not bool(mid_toks & qtoks)
+
+
 def generate_retry_eligible(payload: dict[str, Any] | None) -> bool:
     """True when FreeRoute generate ran but emitted no SQL/plan, and ranking exists.
 
@@ -280,6 +338,10 @@ def query_plan_from_insights_ranking(
     With ``question``: walk past a top id that shares **no** content tokens
     with the ask (ranking noise). A Cortex-only id that overlaps the ask
     still aborts — that is the intended metric, missing on DMS.
+
+    With ``prefer``: walk past a resolvable-but-wrong id that does not
+    overlap the locked measure (sku_count on "Top 5 selling SKUs by
+    revenue"). A Cortex-only id that overlaps the lock still aborts.
     """
     if not isinstance(payload, dict):
         return None
@@ -287,7 +349,7 @@ def query_plan_from_insights_ranking(
     if not isinstance(onto, dict):
         return None
     allowed = {str(m) for m in (allowed_measures or ()) if str(m).strip()}
-    qtoks = ranked_measure_tokens(question or "")
+    lock = str(prefer or "").strip() or None
     for row in onto.get("metrics") or []:
         if not isinstance(row, dict):
             continue
@@ -299,12 +361,12 @@ def query_plan_from_insights_ranking(
             allowed if allowed else None,
             aliases=aliases,
             specs=specs,
-            prefer=prefer,
+            prefer=lock,
         )
         if allowed and resolved is None:
-            if not qtoks or (ranked_measure_tokens(mid) & qtoks):
-                return None
-            continue
+            if ranking_is_noise(mid, question=question, prefer=lock):
+                continue
+            return None
         return {
             "query_plan": {
                 "measure": resolved or mid,
@@ -315,6 +377,81 @@ def query_plan_from_insights_ranking(
             "plan_source": ONTOLOGY_MODE,
         }
     return None
+
+
+def _ontology_rank_ctx(
+    ontology: dict[str, Any] | None,
+) -> tuple[set[str], dict[str, str], dict[str, str], dict[str, Any]]:
+    onto = ontology if isinstance(ontology, dict) else {}
+    raw_measures = onto.get("measures")
+    measures: dict[str, Any] = raw_measures if isinstance(raw_measures, dict) else {}
+    allowed = {str(k) for k in measures if str(k).strip()}
+    raw_alias = onto.get("measure_aliases")
+    aliases = {
+        str(k).strip(): str(v).strip()
+        for k, v in (raw_alias.items() if isinstance(raw_alias, dict) else [])
+        if str(k).strip() and str(v).strip()
+    }
+    specs = {
+        str(k): str(v.get("description") or "") if isinstance(v, dict) else ""
+        for k, v in measures.items()
+    }
+    raw_slots = onto.get("intent_slots")
+    slots: dict[str, Any] = raw_slots if isinstance(raw_slots, dict) else {}
+    return allowed, aliases, specs, slots
+
+
+def typed_ranked_retry_plan(
+    payload: dict[str, Any] | None,
+    *,
+    ontology: dict[str, Any] | None = None,
+    question: str = "",
+) -> dict[str, Any] | None:
+    """Resolved DMS measure + retrieve/pack slots for FreeRoute generate retry.
+
+    Walks ranking the same way as ``query_plan_from_insights_ranking`` so a
+    leading sku_count does not retry as the plan for a revenue ask.
+    """
+    allowed, aliases, specs, slots = _ontology_rank_ctx(ontology)
+    prefer = str(slots.get("measure") or "").strip() or None
+    ranked = query_plan_from_insights_ranking(
+        payload,
+        allowed or None,
+        aliases=aliases,
+        specs=specs,
+        prefer=prefer,
+        question=question,
+    )
+    if ranked is None:
+        return None
+    raw = ranked.get("query_plan")
+    if not isinstance(raw, dict):
+        return None
+    measure = str(raw.get("measure") or "").strip()
+    if not measure:
+        return None
+    ranked_id = str(raw.get("ranked_id") or "").strip()
+    shape = pack_id_shape(ranked_id or measure)
+    group = slots.get("group_by") or raw.get("group_by") or shape.get("group_by") or []
+    if not isinstance(group, list):
+        group = []
+    plan: dict[str, Any] = {
+        "measure": measure,
+        "group_by": group,
+        "filters": list(slots.get("filters") or []),
+        "ranked_id": ranked_id,
+    }
+    limit = slots.get("limit")
+    if limit is None:
+        limit = shape.get("limit")
+    if isinstance(limit, int):
+        plan["limit"] = limit
+    keep = slots.get("keep_gt")
+    if keep is None:
+        keep = shape.get("keep_gt")
+    if isinstance(keep, (int, float)):
+        plan["keep_gt"] = float(keep)
+    return plan
 
 
 def normalize_insights_compute(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -460,8 +597,9 @@ def compute_query(
     Order: ``POST /v1/insights`` generate=true ask=false (OV/FreeRoute),
     ``GET /v1/insights/ontology`` when ranking is omitted (A-0009 401 or
     generate SQL without YAML metrics), one ranked-slot generate retry when
-    FreeRoute ran with no SQL/plan (not UNARMED), then ``POST /dms/query``
-    for a typed ``query_plan`` (ranked metric forwarded). Ranking stays
+    FreeRoute ran with no SQL/plan (not UNARMED) using the walked/resolved
+    measure plus retrieve/pack slots, then ``POST /dms/query`` for a typed
+    ``query_plan`` (walked ranked metric forwarded). Ranking stays
     attached when generate SQL is present so a validate-fail can climb via
     ontology_plan slots. Insights 200 REFUSE / 401 still count as reached so
     isolated gen does not bind_plan over them. An empty key is not replaced
@@ -509,33 +647,45 @@ def compute_query(
                     insights_payload = _merge_ontology_ranking(
                         insights_payload, ranking
                     )
-            # FreeRoute k-scale: one retry with the ranked pack id as slots.
+            # FreeRoute climb: one retry with walked/resolved slots, not the
+            # raw top pack id (sku_count must not retry a revenue ask).
             # Skip when climb.final is UNARMED (second shot cannot arm keys).
-            if generate_retry_eligible(insights_payload):
-                rid = first_ranked_metric_id(insights_payload)
-                if rid:
-                    retry_body = dict(insights_body)
-                    retry_body["query_plan"] = {
-                        "measure": rid,
-                        "group_by": [],
-                        "filters": [],
-                    }
-                    retry_body["ranked_metric"] = rid
-                    retry_body["generate_retry"] = "ranked_slots"
-                    retry_payload = _insights_generate_post(
-                        http, root, retry_body, headers
+            ranked_plan = typed_ranked_retry_plan(
+                insights_payload, ontology=ontology, question=question
+            )
+            if generate_retry_eligible(insights_payload) and ranked_plan:
+                retry_body = dict(insights_body)
+                retry_body["query_plan"] = {
+                    k: v for k, v in ranked_plan.items() if k != "ranked_id"
+                }
+                retry_body["ranked_metric"] = (
+                    ranked_plan.get("ranked_id") or ranked_plan["measure"]
+                )
+                retry_body["generate_retry"] = "ranked_slots"
+                retry_payload = _insights_generate_post(
+                    http, root, retry_body, headers
+                )
+                if isinstance(retry_payload, dict):
+                    insights_payload = _merge_ontology_ranking(
+                        retry_payload, insights_payload or {}
                     )
-                    if isinstance(retry_payload, dict):
-                        insights_payload = _merge_ontology_ranking(
-                            retry_payload, insights_payload or {}
-                        )
             if isinstance(insights_payload, dict):
-                rid = first_ranked_metric_id(insights_payload)
-                if rid:
+                if ranked_plan:
                     dms_body.setdefault(
-                        "query_plan", {"measure": rid, "group_by": [], "filters": []}
+                        "query_plan",
+                        {k: v for k, v in ranked_plan.items() if k != "ranked_id"},
                     )
-                    dms_body["ranked_metric"] = rid
+                    dms_body["ranked_metric"] = (
+                        ranked_plan.get("ranked_id") or ranked_plan["measure"]
+                    )
+                else:
+                    rid = first_ranked_metric_id(insights_payload)
+                    if rid:
+                        dms_body.setdefault(
+                            "query_plan",
+                            {"measure": rid, "group_by": [], "filters": []},
+                        )
+                        dms_body["ranked_metric"] = rid
                 normalized = normalize_insights_compute(insights_payload)
                 if normalized is not None:
                     return normalized
@@ -583,8 +733,11 @@ __all__ = [
     "insights_query_sql",
     "insights_was_reached",
     "normalize_insights_compute",
+    "pack_id_shape",
     "query_plan_from_insights_ranking",
     "ranked_measure_tokens",
+    "ranking_is_noise",
     "resolve_ranked_measure",
     "typed_query_plan",
+    "typed_ranked_retry_plan",
 ]

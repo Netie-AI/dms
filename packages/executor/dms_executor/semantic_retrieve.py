@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from cortex_client.compute import pack_id_shape
+
 from dms_executor.demo_warehouse import connect_file
 from dms_executor.ontology import Ontology
 
@@ -71,19 +73,11 @@ def load_measure_aliases(path: Path | None = None) -> dict[str, str]:
 
 
 _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
-_TOP_FROM_ID = re.compile(r"(?:^|_)top(\d+)(?:_|$)", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
     (("by destination", "by location"), "location", "location_code"),
     (("by category", "categoty"), "product", "category"),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
-)
-_DIM_FROM_ID: tuple[tuple[str, str, str], ...] = (
-    ("by_category", "product", "category"),
-    ("by_destination", "location", "location_code"),
-    ("by_country", "supplier", "country"),
-    ("by_sku", "product", "sku"),
-    ("by_location", "location", "location_code"),
 )
 _STOP = frozenset(
     {
@@ -550,29 +544,7 @@ def _group_from_hints(question: str) -> list[list[str]] | None:
 
 def shape_from_metric_id(metric_id: str) -> dict[str, Any]:
     """Group/limit/keep_gt encoded in a Cortex pack metric id. No SQL."""
-    mid = str(metric_id or "").strip().lower()
-    if mid.startswith("cq_"):
-        mid = mid[3:]
-    group_by: list[list[str]] = []
-    for needle, obj, col in _DIM_FROM_ID:
-        if needle in mid:
-            group_by = [[obj, col]]
-            break
-    if not group_by:
-        toks = set(re.findall(r"[a-z0-9]+", mid.replace("_", " ")))
-        if "category" in toks or "categoty" in toks:
-            group_by = [["product", "category"]]
-        elif "destination" in toks:
-            group_by = [["location", "location_code"]]
-        elif "country" in toks:
-            group_by = [["supplier", "country"]]
-    out: dict[str, Any] = {"group_by": group_by}
-    top = _TOP_FROM_ID.search(mid)
-    if top:
-        out["limit"] = int(top.group(1))
-    if "above_90" in mid or "above90" in mid:
-        out["keep_gt"] = 90.0
-    return out
+    return pack_id_shape(metric_id)
 
 
 def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] | None:
