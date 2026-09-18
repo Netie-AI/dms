@@ -1,9 +1,10 @@
 """GEN-01 — ontology-grounded generative ask + execute-validate.
 
 Exact-match VQ/pack stays first. Retrieve a short schema/ontology context,
-send it to Cortex compute (FreeRoute stays in Cortex), fill typed slots,
-compile, validate, then Cortex-submit. Unsure or validate-fail is ABSTAIN.
-Missing compute client is a miss (existing contract ask still runs).
+send it to Cortex compute (Insights generate / ontology_plan; FreeRoute stays
+in Cortex), fill typed slots or take SELECT SQL, validate, then Cortex-submit.
+Unsure or validate-fail is ABSTAIN. Missing compute client is a miss
+(existing contract ask still runs).
 
 Does not expand certified exact-match packs. Does not invent provider keys.
 """
@@ -135,8 +136,16 @@ def _rows_gt(rows: list[dict[str, Any]], measure: str, keep_gt: float) -> list[d
     return out
 
 
+def query_sql_from_payload(payload: dict[str, Any] | None) -> str | None:
+    """Cortex Insights generate SQL only (``query_sql``). Not /dms/query sql_used."""
+    if not isinstance(payload, dict):
+        return None
+    sql = str(payload.get("query_sql") or "").strip()
+    return sql or None
+
+
 def parse_compute_plan(payload: dict[str, Any] | None) -> str:
-    """Return miss | unsure | plan. Plan body is payload['query_plan'] when plan."""
+    """Return miss | unsure | plan | sql. Plan body is payload['query_plan'] when plan."""
     if not isinstance(payload, dict):
         return "miss"
     if payload.get("unsure") is True or payload.get("abstain") is True:
@@ -144,6 +153,8 @@ def parse_compute_plan(payload: dict[str, Any] | None) -> str:
     plan = payload.get("query_plan")
     if isinstance(plan, dict) and str(plan.get("measure") or "").strip():
         return "plan"
+    if query_sql_from_payload(payload):
+        return "sql"
     return "miss"
 
 
@@ -311,6 +322,76 @@ def _l2_envelope(
     return with_plan_source(env, plan_source)
 
 
+def _submit_validated(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    notes: Sequence[str],
+    plan_source: str,
+    keep_gt: float | None = None,
+    measure: str | None = None,
+) -> dict[str, Any]:
+    try:
+        result = submit(sql)
+    except Exception:  # noqa: BLE001
+        return _abstain(
+            question, "submit_failed",
+            space_id=space_id, session_id=session_id, plan_source=plan_source,
+        )
+    if getattr(result, "ok", None) is False or getattr(result, "output", None) is None:
+        return _abstain(
+            question, "submit_had_no_rows",
+            space_id=space_id, session_id=session_id, plan_source=plan_source,
+        )
+    if keep_gt is not None:
+        kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
+        if not kept:
+            return _abstain(
+                question, "validate:keep_gt_empty",
+                space_id=space_id, session_id=session_id, plan_source=plan_source,
+            )
+        result = SimpleNamespace(
+            ok=True,
+            status=getattr(result, "status", "ok"),
+            run_id=getattr(result, "run_id", "") or "",
+            output={"rows": kept},
+        )
+    run_id = str(getattr(result, "run_id", None) or "")
+    try:
+        led = ledger_append({"sql": sql, "run_id": run_id})
+    except Exception:  # noqa: BLE001
+        return _abstain(
+            question, "ledger_append_failed",
+            space_id=space_id, session_id=session_id, plan_source=plan_source,
+        )
+    entry_id = getattr(led, "entry_id", None) if led is not None else None
+    led_hash = getattr(led, "hash", None)
+    if not (isinstance(entry_id, str) and entry_id.strip()):
+        return _abstain(
+            question, "ledger_entry_missing",
+            space_id=space_id, session_id=session_id, plan_source=plan_source,
+        )
+    if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
+        return _abstain(
+            question, "ledger_hash_missing",
+            space_id=space_id, session_id=session_id, plan_source=plan_source,
+        )
+    return _l2_envelope(
+        sql=sql,
+        result=result,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+        audit_id=entry_id.strip(),
+        notes=notes,
+        plan_source=plan_source,
+    )
+
+
 def path_miss_envelope(
     question: str,
     reason: str,
@@ -345,6 +426,8 @@ def maybe_generative_ask(
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
     Compute receives a short retrieved context, not the full ontology dump.
+    Cortex Insights generate (ontology_plan) may return a typed plan or SELECT
+    SQL; SQL still goes through hostile/grant/EXPLAIN then Cortex submit.
     Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane).
     Product path leaves miss as None so Cortex certified ask still runs.
     Explicit compute unsure is not overridden. File-grounded asks skip.
@@ -398,6 +481,31 @@ def maybe_generative_ask(
             "compute abstained (unsure)",
             space_id=space_id,
             session_id=session_id,
+            plan_source=source,
+        )
+    if kind == "sql":
+        sql = query_sql_from_payload(payload)
+        if source == PLAN_SOURCE_OTHER:
+            source = PLAN_SOURCE_ONTOLOGY
+        if not sql:
+            return _abstain(
+                q, "query_sql was empty",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
+        why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        if why:
+            return _abstain(
+                q, f"validate:{why}",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
+        return _submit_validated(
+            sql,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=("GEN-01 Cortex ontology_plan SQL",),
             plan_source=source,
         )
     if kind != "plan":
@@ -467,59 +575,15 @@ def maybe_generative_ask(
             q, f"validate:{why}",
             space_id=space_id, session_id=session_id, plan_source=source,
         )
-
-    try:
-        result = submit(compiled.sql)
-    except Exception:  # noqa: BLE001
-        return _abstain(
-            q, "submit_failed",
-            space_id=space_id, session_id=session_id, plan_source=source,
-        )
-    if getattr(result, "ok", None) is False or getattr(result, "output", None) is None:
-        return _abstain(
-            q, "submit_had_no_rows",
-            space_id=space_id, session_id=session_id, plan_source=source,
-        )
-    if plan.keep_gt is not None:
-        kept = _rows_gt(rows_from_submit_result(result), plan.measure, plan.keep_gt)
-        if not kept:
-            return _abstain(
-                q, "validate:keep_gt_empty",
-                space_id=space_id, session_id=session_id, plan_source=source,
-            )
-        result = SimpleNamespace(
-            ok=True,
-            status=getattr(result, "status", "ok"),
-            run_id=getattr(result, "run_id", "") or "",
-            output={"rows": kept},
-        )
-    run_id = str(getattr(result, "run_id", None) or "")
-    try:
-        led = ledger_append({"sql": compiled.sql, "run_id": run_id})
-    except Exception:  # noqa: BLE001
-        return _abstain(
-            q, "ledger_append_failed",
-            space_id=space_id, session_id=session_id, plan_source=source,
-        )
-    entry_id = getattr(led, "entry_id", None) if led is not None else None
-    led_hash = getattr(led, "hash", None)
-    if not (isinstance(entry_id, str) and entry_id.strip()):
-        return _abstain(
-            q, "ledger_entry_missing",
-            space_id=space_id, session_id=session_id, plan_source=source,
-        )
-    if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
-        return _abstain(
-            q, "ledger_hash_missing",
-            space_id=space_id, session_id=session_id, plan_source=source,
-        )
-    return _l2_envelope(
-        sql=compiled.sql,
-        result=result,
+    return _submit_validated(
+        compiled.sql,
         question=q,
         space_id=space_id,
         session_id=session_id,
-        audit_id=entry_id.strip(),
+        submit=submit,
+        ledger_append=ledger_append,
         notes=tuple([*compiled.notes, *([fallback_note] if fallback_note else [])]),
         plan_source=source,
+        keep_gt=plan.keep_gt,
+        measure=plan.measure,
     )

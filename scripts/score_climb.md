@@ -15,7 +15,7 @@ Netie-native mapping. Not DB-GPT / mybot / n8n / OpenWillow / guaca/rakazo code.
 1. **Certified-first, then free gen.** `ask_path=product` and `exact` hit VQ/pack/refuse first. `generative` skips pack, tries retrieve→plan→validate, ABSTAIN only after that attempt. WRONG=0.
 2. **Ontology as retrieve spine.** `demo_ontology` object/link/measure declarations (verified on the lake), not a new YAML pack format and not certified-query SQL. `from_manifest` remains the extract path.
 3. **Hybrid fuse + CRAG-style confidence.** Retrieve tags `hybrid_fuse` when schema+ontology both hit. Harness grades `validated` / `abstain_validate` / `abstain_gate`. Doc RAG CRAG stays parked (P-DMS-19).
-4. **Text2SQL as Cortex compute + typed slots.** `POST /dms/query` (OpenVault FreeRoute inside Cortex) then `bind_plan` on miss. No vendor text2sql SDK.
+4. **Text2SQL as Cortex Insights generate + typed slots.** `POST /v1/insights` `generate=true` (OpenVault FreeRoute inside Cortex) then typed `POST /dms/query`; `bind_plan` on miss for isolated gen only. No vendor text2sql SDK.
 
 Founder lock: abstain is safety (WRONG=0), not the ceiling. Isolated gen **tries**:
 
@@ -60,7 +60,40 @@ Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Co
 
 `--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + Cortex compute, bind_plan on compute miss, execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
 
-## GEN-PATH-PROVE-01 (#199) — ontology_plan vs bind_plan
+## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
+
+Wire: generative compute is Cortex `POST /v1/insights` `generate=true`
+`ask=false` (OpenVault FreeRoute free+normal inside Cortex; DMS forwards the
+configured `CORTEX_API_KEY` / ov_ only, never invents LIVE_KEY). Typed
+`POST /dms/query` `mode=ontology_plan` remains fallback. Insights SELECT SQL
+is hostile/grant/EXPLAIN then Cortex submit. Isolated `ask_path=generative`
+may still `bind_plan` on miss (labeled). Product path does not bind on miss.
+
+CI / offline `--prove-path` is still local bind_plan (no Cortex). That is
+HOLD evidence, not AI coverage. Do **not** treat 57.69% as ontology_plan.
+
+### Platform re-run after this deploy
+
+On prove/studio (Cortex + OpenVault already on the host). No second vault.
+Do not paste tokens. Do not invent `:5000` green.
+
+```powershell
+# After merge is on the prove unit:
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+# or IAP loopback:
+python scripts/score_curated.py --prove-path --url http://127.0.0.1:8090
+```
+
+Report fields Platform owns:
+
+1. Per-qid `plan_source`
+2. `ontology_plan` answered count (need **>= 1** for this ticket's live leftover; majority + WRONG=0 is Phase A HOLD clear, Epic stamp)
+3. WRONG=0 on curated_ceo
+4. `Phase A HOLD may clear` YES/NO — harness never writes COMPLETE
+
+Artifacts: `score_gen_path_prove.json`. CI green != Phase A CLEAR.
+
+
 
 Independent label of whether an answered gen ask used Cortex `POST /dms/query` (`ontology_plan`) or local keyword `bind_plan`. Reads `plan_source` on the envelope. Does **not** guess from SQL or `compute_fallback:bind_plan` assumption text. Missing field = `other`.
 

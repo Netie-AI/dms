@@ -163,10 +163,10 @@ class CortexClient:
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Off-contract POST /dms/query. None if the engine does not ground a plan.
+        """Off-contract Insights generate then POST /dms/query. None on miss.
 
         OpenVault keys stay in Cortex. This client forwards ``api_key`` when
-        already configured and never invents one.
+        already configured and never invents one. FreeRoute model pick is Cortex.
         """
         return post_compute_query(
             self.base_url,
@@ -175,6 +175,7 @@ class CortexClient:
             space_id=space_id,
             ontology=ontology,
             api_key=self.api_key,
+            timeout=self.timeout,
         )
 
     def insights_law(self) -> dict[str, Any]:

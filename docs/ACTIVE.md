@@ -83,8 +83,8 @@ Not a GitHub CI live job. Regression: `tests/test_score_climb.py`,
 Not COMPLETE.
 
 GEN-PATH-PROVE-01 (#199): independent `plan_source` label on gen envelopes.
-`bind_plan` stamps `bind_plan`; Cortex `POST /dms/query` stamps
-`ontology_plan` (or copies engine `mode`/`plan_source`). Harness
+`bind_plan` stamps `bind_plan`; Cortex Insights generate / typed `/dms/query`
+stamps `ontology_plan`. Harness
 `python scripts/score_curated.py --prove-path` (offline) or
 `--prove-path --url https://studio.netie.ai/api` (Platform live) reports
 per-qid `ontology_plan|bind_plan|other` from the envelope field only
@@ -92,6 +92,15 @@ per-qid `ontology_plan|bind_plan|other` from the envelope field only
 `Phase A HOLD may clear` YES/NO. Does not stamp COMPLETE. Live numbers
 = Platform. Regression: `tests/test_gen_path_prove.py`. Trust read-only
 pickup: `GET /v1/trust/summary` `gen_path_prove`.
+
+GEN-PATH-ROUTE-01 (#201): Studio/prove generative compute calls Cortex
+`POST /v1/insights` `generate=true ask=false` (OV/FreeRoute free+normal
+inside Cortex) then typed `POST /dms/query`. Insights SELECT SQL is
+validate-or-abstain then Cortex submit; `plan_source=ontology_plan`.
+Isolated gen still `bind_plan` on miss. Offline `--prove-path` stays
+bind_plan (no Cortex). Platform re-runs `--prove-path --url` after
+deploy for live ontology_plan counts. Not Phase A CLEAR. Regression:
+`tests/test_gen_path_prove.py`.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

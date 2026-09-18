@@ -395,7 +395,7 @@ class Executor:
         space_id: str | None,
         ontology: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """Cortex compute (POST /dms/query). Missing method or failure is a miss."""
+        """Cortex compute (Insights generate, then POST /dms/query). Miss on failure."""
         fn = getattr(self._cortex, "compute_query", None)
         if not callable(fn):
             return None

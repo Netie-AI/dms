@@ -105,8 +105,9 @@ DISTILL: dict[str, Any] = {
         "retrieve_yaml": "packages/executor/dms_executor/ontology_spine.yaml",
     },
     "text2sql": {
-        "cortex": "POST /dms/query",
-        "slots": "bind_plan typed query_plan",
+        "cortex": "POST /v1/insights generate=true ask=false (ontology_plan)",
+        "fallback": "POST /dms/query typed query_plan",
+        "slots": "bind_plan typed query_plan on compute miss (isolated gen only)",
         "vendor_sdk": False,
     },
     "try_harder": (

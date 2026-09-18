@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-ROUTE-01: Studio/prove generative hits Cortex ontology_plan (#201)
+
+- **Ticket.** Serves [GEN-PATH-ROUTE-01 #201](https://github.com/Netie-AI/dms/issues/201) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp Phase A CLEAR / COMPLETE. Does not invent 57.69% as Cortex AI.
+- **Wire.** Generative compute posts Cortex `POST /v1/insights` `generate=true ask=false` (OV/FreeRoute free+normal inside Cortex) then typed `POST /dms/query`. Insights SELECT SQL is validate-or-abstain then Cortex submit. Envelope `plan_source=ontology_plan`. Isolated gen may still `bind_plan` on miss. No second vault. No LIVE_KEY / `:5000` invent.
+- **Harness.** Offline `--prove-path` remains bind_plan (no Cortex). Platform re-runs `--prove-path --url https://studio.netie.ai/api` after deploy. Recipe: `scripts/score_climb.md` GEN-PATH-ROUTE-01.
+- **Not this ticket:** live ontology_plan>0 stamp, Phase A HOLD clear, #180 k-scale, ticket close.
+
 ## 2026-09-18 - GEN-PATH-PROVE-01: ontology_plan vs bind_plan labels (#199)
 
 - **Ticket.** Serves [GEN-PATH-PROVE-01 #199](https://github.com/Netie-AI/dms/issues/199) under EPIC-INSIGHTS-UX #178 Phase A HOLD. Does not close tickets. Does not stamp COMPLETE. Does not invent 57.69% as an AI-path prove.

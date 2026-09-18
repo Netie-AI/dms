@@ -1,9 +1,10 @@
 # Subagents findings -- DMS
 
-PREFLIGHT for this goal: PARTIAL (GEN-01/02 coverage + bind_plan fallback exist; #199 needs telemetry-backed ontology_plan vs bind_plan labels).
+PREFLIGHT for this goal: PARTIAL (prove harness labels bind_plan vs ontology_plan; generative compute still needed Insights generate).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-route-01 | GEN-PATH-ROUTE-01, ontology_plan, insights generate, FreeRoute, bind_plan, dms-201 | #201 Studio/prove gen compute POST /v1/insights generate=true (OV/FreeRoute) then /dms/query. Validate-or-abstain. Offline prove bind_plan. Live Platform. Not Phase A CLEAR. | `2026-09-18_gen-path-route-01.md` |
 | 2026-09-18 | gen-path-prove-01 | GEN-PATH-PROVE-01, plan_source, ontology_plan, bind_plan, dms-199 | #199 envelope plan_source from Cortex /dms/query vs local bind_plan. Harness YES/NO HOLD. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-prove-01.md` |
 | 2026-09-18 | insights-host-01 | INSIGHTS-HOST-01, /v1/insights, OpenVault, founder key, dms-196, cortex-213 | #196 DMS GET|POST /v1/insights via configured OV key. Fail closed. No LIVE_KEY/:5000 invent. Live walk Platform. Not COMPLETE. | `2026-09-18_insights-host-01.md` |
 | 2026-09-13 | insights-export-01 | INSIGHTS-EXPORT-01, xlsx, envelope, OOXML, dms-188 | #188 Excel from real ask envelope only. POST /v1/chat/export.xlsx copies rows. Not FRTR. Not COMPLETE. | `2026-09-13_insights-export-01.md` |
