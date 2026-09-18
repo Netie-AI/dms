@@ -29,7 +29,7 @@ test.describe("STUDIO-MOBILE-01 live 390px repro", () => {
     await expect(page.getByRole("heading", { name: /Ask (about your|your company's) data/ })).toBeVisible();
     expect(await documentOverflowX(page)).toBeLessThanOrEqual(1);
     await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
-    await expect(page.getByTestId("topbar-title")).toHaveText("netie");
+    await expect(page.getByTestId("topbar-title")).toHaveCount(0);
     await expect(page.getByRole("link", { name: "Manage Spaces" })).toBeHidden();
     await expect(page.getByText("Operate", { exact: true })).toBeVisible();
     await expect(page.getByText("Switch to Operate")).toBeHidden();
@@ -113,7 +113,7 @@ test.describe("STUDIO-MOBILE-02 operate 390px", () => {
       (el) => el.scrollWidth - el.clientWidth,
     );
     expect(headerOverflow).toBeLessThanOrEqual(1);
-    await expect(page.getByTestId("topbar-title")).toBeVisible();
+    await expect(page.getByTestId("topbar-title")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
     await expect(page.getByLabel("Space", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Switch to ask mode" })).toBeVisible();
@@ -140,6 +140,80 @@ test.describe("STUDIO-MOBILE-02 operate 390px", () => {
   });
 });
 
+test.describe("STUDIO-MOBILE-03 topbar 390px", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("New menu is hit-testable; Space and Sources do not overlap the h1", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", { name: /Ask (about your|your company's) data/ }),
+    ).toBeVisible();
+
+    const headerOverflow = await page.locator("header").evaluate(
+      (el) => el.scrollWidth - el.clientWidth,
+    );
+    expect(headerOverflow).toBeLessThanOrEqual(1);
+    expect(await documentOverflowX(page)).toBeLessThanOrEqual(1);
+
+    const space = page.getByLabel("Space", { exact: true });
+    await expect(space).toBeVisible();
+    const spaceBox = await space.boundingBox();
+    expect(spaceBox?.width ?? 0).toBeGreaterThanOrEqual(128);
+
+    const newBtn = page.getByRole("button", { name: "New", exact: true });
+    await expect(newBtn).toBeVisible();
+    const newBox = await newBtn.boundingBox();
+    expect(newBox).toBeTruthy();
+    const newHit = await page.evaluate(
+      ({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return el?.closest("button")?.textContent?.trim() ?? "";
+      },
+      { x: newBox!.x + newBox!.width / 2, y: newBox!.y + newBox!.height / 2 },
+    );
+    expect(newHit).toContain("New");
+
+    await newBtn.click();
+    const menu = page.getByTestId("topbar-new-menu");
+    await expect(menu).toBeVisible();
+    const item = page.getByRole("button", { name: "New Space" });
+    await expect(item).toBeVisible();
+    const itemBox = await item.boundingBox();
+    expect(itemBox).toBeTruthy();
+    expect(itemBox!.height).toBeGreaterThan(16);
+    const itemHit = await page.evaluate(
+      ({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return el?.closest("button")?.textContent?.trim() ?? "";
+      },
+      { x: itemBox!.x + itemBox!.width / 2, y: itemBox!.y + itemBox!.height / 2 },
+    );
+    expect(itemHit).toBe("New Space");
+    await item.click();
+    await expect(page.getByRole("heading", { name: "Spaces", level: 1 })).toBeVisible();
+
+    await page.goto("/");
+    const h1 = page.getByRole("heading", { level: 1 });
+    const sources = page.getByTestId("source-panel-open");
+    await expect(h1).toBeVisible();
+    await expect(sources).toBeVisible();
+    const h1Box = await h1.boundingBox();
+    const srcBox = await sources.boundingBox();
+    expect(h1Box).toBeTruthy();
+    expect(srcBox).toBeTruthy();
+    const overlap =
+      !(
+        h1Box!.x + h1Box!.width <= srcBox!.x ||
+        srcBox!.x + srcBox!.width <= h1Box!.x ||
+        h1Box!.y + h1Box!.height <= srcBox!.y ||
+        srcBox!.y + srcBox!.height <= h1Box!.y
+      );
+    expect(overlap).toBe(false);
+  });
+});
+
 test.describe("STUDIO-MOBILE-01 desktop lg", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -151,7 +225,7 @@ test.describe("STUDIO-MOBILE-01 desktop lg", () => {
     await expect(page.getByRole("button", { name: "+ New" })).toBeVisible();
     await expect(page.getByText("Switch to Operate")).toBeVisible();
     await expect(page.getByText("Manage", { exact: true })).toBeVisible();
-    await expect(page.getByTestId("topbar-title")).toBeHidden();
+    await expect(page.getByTestId("topbar-title")).toHaveCount(0);
   });
 
   test("studio keeps the two-column files grid without a mobile toggle", async ({

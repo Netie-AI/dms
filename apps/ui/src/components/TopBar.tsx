@@ -24,7 +24,7 @@ export function TopBar() {
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
-    <header className="flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-x-auto border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
+    <header className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
       <button
         type="button"
         onClick={toggleNav}
@@ -36,13 +36,6 @@ export function TopBar() {
         <span className="block h-3 w-3.5 border-y border-[var(--color-ink)] border-opacity-70" />
       </button>
 
-      <span
-        data-testid="topbar-title"
-        className="min-w-0 truncate font-[family-name:var(--font-display)] text-sm font-semibold tracking-tight text-[var(--color-ink)] lg:hidden"
-      >
-        netie
-      </span>
-
       <label className="sr-only" htmlFor="space-switcher">
         Space
       </label>
@@ -52,7 +45,7 @@ export function TopBar() {
         onChange={(e) =>
           setActiveSpaceId(e.target.value === "" ? null : e.target.value)
         }
-        className="h-8 min-w-0 max-w-[7rem] border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem]"
+        className="h-8 min-w-[8rem] flex-1 border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem] lg:flex-none"
       >
         <option value="">Company (default ACL)</option>
         {spaces.map((s) => (
@@ -67,12 +60,17 @@ export function TopBar() {
           type="button"
           onClick={() => setNewOpen((o) => !o)}
           className="h-8 shrink-0 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-on-accent)]"
+          aria-expanded={newOpen}
+          aria-haspopup="menu"
         >
           <span className="lg:hidden">New</span>
           <span className="hidden lg:inline">+ New</span>
         </button>
         {newOpen && (
-          <div className="absolute left-0 top-full z-20 mt-1 min-w-[11rem] border border-[var(--color-line)] bg-[var(--color-panel)] py-1 shadow-sm">
+          <div
+            data-testid="topbar-new-menu"
+            className="absolute top-full z-50 mt-1 min-w-[11rem] border border-[var(--color-line)] bg-[var(--color-panel)] py-1 shadow-sm max-lg:right-0 max-lg:left-auto lg:left-0"
+          >
             <button
               type="button"
               className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
@@ -131,7 +129,7 @@ export function TopBar() {
         <span className="hidden sm:inline">Library</span>
       </Link>
 
-      <div className="mx-auto flex-1" />
+      <div className="mx-auto hidden flex-1 lg:block" />
 
       <span
         className={`hidden text-xs lg:inline ${

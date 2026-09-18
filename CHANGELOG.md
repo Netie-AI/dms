@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - STUDIO-MOBILE-03: TopBar phone clip (#192)
+
+- **Ticket.** Serves [STUDIO-MOBILE-03 #192](https://github.com/Netie-AI/dms/issues/192). Follow-on to #182. Does not close tickets. Not COMPLETE. Not #182 product DONE. Not EPIC-008 COMPLETE.
+- **TopBar.** Drop `overflow-x-auto` (it clips the New dropdown). Space takes leftover width (`min-w-[8rem] flex-1`). Compact `netie` title removed so Space/New/Operate fit 390px. New menu `z-50`, right-aligned below `lg`.
+- **Sources.** Chat heading `max-lg:pr-24` so the Sources chip does not sit on the h1. Chip sits just under the bar (`top-[3.25rem]`). Operate drawer and #171 Ask/Sources overlay unchanged.
+- **Rebase.** Rebased onto main after #199/#201/#203 and #205/#206. Does not invent product DONE. Live phone walk is Platform/Frontend leftover after merge+redeploy.
+- **Not this ticket:** live phone walk PASS, #182/#171 DONE, ticket close.
+
 ## 2026-09-18 - GEN-PATH-CLIMB-01: raise ontology_plan coverage (WRONG=0) (#205)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-01 #205](https://github.com/Netie-AI/dms/issues/205) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 57.69% / 99.95% as AI COMPLETE. Phase A path-prove HOLD already CLEARED thin @ `e1f729a5` (ontology_plan=1).

@@ -1,4 +1,4 @@
-"""STUDIO-MOBILE-01 (#171) + STUDIO-MOBILE-02 (#182): phone-width chrome.
+"""STUDIO-MOBILE-01 (#171) + STUDIO-MOBILE-02 (#182) + STUDIO-MOBILE-03 (#192).
 
 CI does not run vitest. These read the Studio/Chat layout so a revert of the
 Sources drawer, Operate LeftNav drawer, or TopBar clip shows up on the same
@@ -74,15 +74,31 @@ def test_operate_nav_starts_collapsed_below_lg() -> None:
     ctx = (UI / "context" / "AppContext.tsx").read_text(encoding="utf-8")
     assert "navStartsCollapsed" in ctx
     assert "closeNavDrawer" in ctx
-    assert "setNavCollapsed(mode === \"cream\")" not in ctx
+    assert 'setNavCollapsed(mode === "cream")' not in ctx
 
 
 def test_topbar_does_not_clip_primary_actions_below_lg() -> None:
+    """#192: overflow-x on the header clips the New dropdown (CSS overflow coupling)."""
     bar = (UI / "components" / "TopBar.tsx").read_text(encoding="utf-8")
     assert "overflow-x-hidden" not in bar
-    assert "overflow-x-auto" in bar
-    assert 'data-testid="topbar-title"' in bar
+    assert "overflow-x-auto" not in bar
+    assert "overflow-visible" in bar
+    assert "topbar-title" not in bar
+    assert "min-w-[8rem] flex-1" in bar
+    assert "hidden flex-1 lg:block" in bar
+    assert "max-lg:right-0" in bar
+    assert "z-50" in bar
+    assert 'data-testid="topbar-new-menu"' in bar
     assert "hidden h-8 shrink-0" in bar
     assert "lg:flex" in bar
     assert "lg:inline" in bar
 
+
+def test_chat_heading_clears_sources_chip_below_lg() -> None:
+    """#192: Sources chip at top-right must not sit on the Chat h1."""
+    chat = (UI / "pages" / "ChatPage.tsx").read_text(encoding="utf-8")
+    assert "max-lg:pr-24" in chat
+    src = (UI / "components" / "SourcePanel.tsx").read_text(encoding="utf-8")
+    assert "max-lg:top-[3.25rem]" in src
+    assert "max-lg:right-3" in src
+    assert "min-h-11" in src
