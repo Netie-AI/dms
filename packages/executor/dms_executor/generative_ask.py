@@ -19,6 +19,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from cortex_client.compute import (
+    insights_was_reached,
+    query_plan_from_insights_ranking,
+)
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, warehouse_path
@@ -428,9 +432,12 @@ def maybe_generative_ask(
     Compute receives a short retrieved context, not the full ontology dump.
     Cortex Insights generate (ontology_plan) may return a typed plan or SELECT
     SQL; SQL still goes through hostile/grant/EXPLAIN then Cortex submit.
-    Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane).
-    Product path leaves miss as None so Cortex certified ask still runs.
-    Explicit compute unsure is not overridden. File-grounded asks skip.
+    When generate is unarmed, a Cortex-ranked metric id that exists on the
+    DMS ontology is compiled as ontology_plan (not bind_plan).
+    Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane)
+    and Insights was not reached. Product path leaves miss as None so Cortex
+    certified ask still runs. Explicit compute unsure is not overridden.
+    File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
         return None
@@ -475,6 +482,15 @@ def maybe_generative_ask(
     kind = parse_compute_plan(payload)
     fallback_note: str | None = None
     source = plan_source_from_payload(payload)
+    if kind == "miss" and isinstance(payload, dict):
+        ranked = query_plan_from_insights_ranking(
+            payload, set(onto.measures) if onto is not None else set()
+        )
+        if ranked is not None:
+            payload = {**payload, **ranked}
+            kind = parse_compute_plan(payload)
+            source = PLAN_SOURCE_ONTOLOGY
+            fallback_note = "insights_ranking:ontology_plan"
     if kind == "unsure":
         return _abstain(
             q,
@@ -509,8 +525,21 @@ def maybe_generative_ask(
             plan_source=source,
         )
     if kind != "plan":
-        # Isolated gen (ask_path=generative): bind from retrieved ontology.
+        # Isolated gen (ask_path=generative): bind from retrieved ontology
+        # only when Cortex Insights was not reached. An Insights REFUSE
+        # (unarmed / A-0009 / no SQL) is not a transport miss — bind_plan
+        # over it is what left #201 at ontology_plan=0 / bind_plan=15.
         # Product path must miss into Cortex.ask so certified VQ/L0 still run.
+        if insights_was_reached(payload if isinstance(payload, dict) else None):
+            if bind_on_miss:
+                return _abstain(
+                    q,
+                    "insights generate did not return a typed plan or SQL",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                )
+            return None
         if not bind_on_miss:
             return None
         payload = bind_plan(q, ctx)

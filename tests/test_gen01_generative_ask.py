@@ -443,6 +443,15 @@ def test_compute_http_does_not_invent_a_key() -> None:
             seen.append({"url": url, "json": json, "headers": headers})
             return _Resp()
 
+        def get(
+            self,
+            url: str,
+            params: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+        ) -> _Resp:
+            seen.append({"url": url, "json": params, "headers": headers})
+            return _Resp()
+
     with patch("cortex_client.compute.httpx.Client", _Client):
         out = compute_query("http://127.0.0.1:8010", question="hello")
     assert out is None

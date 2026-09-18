@@ -60,6 +60,27 @@ Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Co
 
 `--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + Cortex compute, bind_plan on compute miss, execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
 
+## GEN-PATH-ROUTE-02 (#203) — measured ontology_plan>=1 (fix #201 leftover)
+
+Root cause #201 stayed `ontology_plan=0` / `bind_plan=15`:
+
+1. `--prove-path` uses `ask_path=generative` (`bind_on_miss=True`). Cortex Insights `generate=true ask=false` returned HTTP 200 REFUSE (FreeRoute `armed=false` leftover from #196) or 401 (A-0009: caller Authorization must be `Bearer ov_...`, not `dms-demo-viewer-key`). `compute_query` treated that as a transport miss.
+2. Isolated gen then local `bind_plan` (same 15/26 QUALIFIED keyword bind). Offline `--prove-path` still hardcodes bind (no Cortex) — that lane cannot increment ontology_plan.
+3. Deploy lag vs `a5b6fb1e` may have contributed to the immediate Platform stamp; even with #201 deployed, (1)+(2) still produce bind_plan=15.
+4. Cortex success envelope is `status=ABSTAIN` + `generative.sql` (validated, not CERTIFIED). That path already parsed when SQL is present.
+
+Fix: Insights 200/401 JSON counts as reached — do **not** bind_plan over it. A-0009 401 omits ranking; `GET /v1/insights/ontology` (YAML, no FreeRoute) attaches it. The **top** ranked Cortex metric id that exists on the DMS ontology compiles as `ontology_plan` (do not skip a Cortex-only top id to a weaker DMS id). Insights SELECT SQL still validate-or-abstain. Transport miss only may still bind on isolated gen.
+
+Do **not** treat 57.69% as Cortex AI. Do not invent LIVE_KEY / `:5000`. Default prove timeout is 120s (CoT climb). `CORTEX_API_KEY` on Studio must already be the OV founder `ov_` key from #196 (no rotate).
+
+### Platform re-run after this deploy
+
+```powershell
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Platform owns live counts. Need `ontology_plan >= 1` and `WRONG=0`. Majority + WRONG=0 is Phase A HOLD clear (Epic stamp, not this PR). CI green != Phase A CLEAR.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`
