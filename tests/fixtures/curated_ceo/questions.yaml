@@ -196,6 +196,30 @@ questions:
     cortex_id: cq_top3_category_sales
     question: top 3 categories by sales value
 
+  # Unused Cortex certified_queries.yaml synonyms of L0s live already
+  # answers at ontology_plan=21. #216 RISE_PASS scored 21/31; these
+  # phrases were never POSTed. Same parent SQL. Not PACK_METRICS.
+  - id: cq_sales_top5_syn_sales
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sales_top5_value
+    question: Top 5 selling SKUs by sales
+
+  - id: cq_top3_category_syn_show
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_top3_category_sales
+    question: show top 3 category sales
+
+  - id: cq_top3_category_syn_plain
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_top3_category_sales
+    question: top 3 category sales
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-PATH-CLIMB-07: unused certified synonyms past ontology_plan=21 (#218)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-07 #218](https://github.com/Netie-AI/dms/issues/218) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #216 RISE_PASS @ `41f5824f` (ontology_plan=21 bind_plan=0 WRONG=0 answered=21/31 on uncapped harness) stands as the measured floor.
+- **Climb.** Score leftover Cortex `certified_queries.yaml` synonyms of L0s live already answers (`Top 5 selling SKUs by sales`, `show top 3 category sales`, `top 3 category sales`) as `ontology_plan`. Not PACK_METRICS. Retrieve lock `category sales` group. Harness unions the new L0s so this SHA cannot score the 21/31 pack. Live prove FAILs on ontology_plan<=21 or climb-07 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 21 + WRONG=0 after deploy. CI green != climb PASS. QUALIFIED claim stays n=26. curated_ceo n=34.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses, pack shrink to fake a higher percent.
+
 ## 2026-09-18 - GEN-PATH-CLIMB-06: dual-flat 17/26 root-cause + rise L0s (#216)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-06 #216](https://github.com/Netie-AI/dms/issues/216) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Dual KEEP_HOLD: #212 @ `aa0ef108` and #214 @ `683827ed` both Platform ontology_plan=17 bind_plan=0 WRONG=0 answered=17/26.

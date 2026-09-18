@@ -133,6 +133,37 @@ oracles:
       ORDER BY sales_value_myr DESC, c.category ASC
       LIMIT 3
 
+  cq_sales_top5_syn_sales:
+    cortex_id: cq_sales_top5_value
+    sql: >
+      SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr
+      FROM transactions WHERE txn_type = 'OUT'
+      GROUP BY sku ORDER BY sales_value_myr DESC, sku ASC LIMIT 5
+
+  cq_top3_category_syn_show:
+    cortex_id: cq_top3_category_sales
+    sql: >
+      SELECT c.category,
+             ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
+      FROM transactions t
+      JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+      WHERE t.txn_type = 'OUT'
+      GROUP BY c.category
+      ORDER BY sales_value_myr DESC, c.category ASC
+      LIMIT 3
+
+  cq_top3_category_syn_plain:
+    cortex_id: cq_top3_category_sales
+    sql: >
+      SELECT c.category,
+             ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
+      FROM transactions t
+      JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+      WHERE t.txn_type = 'OUT'
+      GROUP BY c.category
+      ORDER BY sales_value_myr DESC, c.category ASC
+      LIMIT 3
+
   trap_categoty:
     cortex_id: cq_top3_category_sales
     sql: >

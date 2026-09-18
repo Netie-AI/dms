@@ -76,7 +76,7 @@ _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
     (("by destination", "by location"), "location", "location_code"),
-    (("by category", "categoty", "categories by"), "product", "category"),
+    (("by category", "categoty", "categories by", "category sales"), "product", "category"),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
 )
 _STOP = frozenset(

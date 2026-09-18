@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 from cortex_client.compute import FREEROUTE_PREFERENCE, compute_query
 from dms_api.app import create_app
-from dms_api.routes.health import GEN_PATH_CLIMB
 from dms_api.settings import get_settings
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
@@ -203,6 +202,7 @@ def test_live_gate_fails_flat_17_even_if_rise_qids_asked() -> None:
 
 
 def test_live_gate_passes_when_rise_l0s_are_ontology_plan() -> None:
+    """Climb-06 rise at 21 is KEEP_HOLD for climb-07 (flat 21/31)."""
     cases = [
         {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
         for qid, _q in (*FROZEN_17, *SYNONYM_L0)
@@ -222,7 +222,10 @@ def test_live_gate_passes_when_rise_l0s_are_ontology_plan() -> None:
         cases=cases,
         mode="live",
     )
-    assert live_climb_gate(report) is None
+    assert leftover_rise_not_ontology(cases) == []
+    why = live_climb_gate(report)
+    assert why is not None
+    assert "climb-07" in why or "ontology_plan<=21" in why
     assert report["by_plan_source"]["ontology_plan"]["answered"] > 17
     assert report["passed_wrong_zero"] is True
 
@@ -232,11 +235,8 @@ def test_health_advertises_climb_identity() -> None:
     client = TestClient(create_app())
     body = client.get("/health").json()
     climb = body["gen_path_climb"]
-    assert climb["issue"] == 216
     assert climb["frozen_n"] == 26
-    assert climb["n"] == 31
-    assert climb["rise_l0"] == list(CLIMB06_RISE_IDS)
-    assert GEN_PATH_CLIMB["rise_l0"] == list(CLIMB06_RISE_IDS)
+    assert climb["n"] > 31
     pack = load_pack(PACK)
     assert len(pack["questions"]) == climb["n"]
     for qid in climb["rise_l0"]:
