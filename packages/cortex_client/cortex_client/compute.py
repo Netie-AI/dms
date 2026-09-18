@@ -85,16 +85,32 @@ def attach_compute_plan_source(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _measure_plan(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, dict) and str(raw.get("measure") or "").strip():
+        return raw
+    return None
+
+
 def typed_query_plan(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Measure-bearing plan from Cortex. Nested Insights ``generative`` is ok."""
-    plan = payload.get("query_plan")
-    if isinstance(plan, dict) and str(plan.get("measure") or "").strip():
-        return plan
+    got = _measure_plan(payload.get("query_plan"))
+    if got is not None:
+        return got
     gen = payload.get("generative")
     if isinstance(gen, dict):
-        nested = gen.get("query_plan")
-        if isinstance(nested, dict) and str(nested.get("measure") or "").strip():
-            return nested
+        got = _measure_plan(gen.get("query_plan")) or _measure_plan(gen.get("plan"))
+        if got is not None:
+            return got
+        climb = gen.get("climb")
+        if isinstance(climb, dict):
+            got = _measure_plan(climb.get("query_plan")) or _measure_plan(
+                climb.get("plan")
+            )
+            if got is not None:
+                return got
+    climb = payload.get("climb")
+    if isinstance(climb, dict):
+        return _measure_plan(climb.get("query_plan")) or _measure_plan(climb.get("plan"))
     return None
 
 
@@ -207,6 +223,44 @@ def resolve_ranked_measure(
     return resolved
 
 
+def first_ranked_metric_id(payload: dict[str, Any] | None) -> str | None:
+    """First Cortex Insights ranked pack metric id, or None."""
+    if not isinstance(payload, dict):
+        return None
+    onto = payload.get("ontology")
+    if not isinstance(onto, dict):
+        return None
+    for row in onto.get("metrics") or []:
+        if not isinstance(row, dict):
+            continue
+        mid = str(row.get("id") or "").strip()
+        if mid:
+            return mid
+    return None
+
+
+def generate_retry_eligible(payload: dict[str, Any] | None) -> bool:
+    """True when FreeRoute generate ran but emitted no SQL/plan, and ranking exists.
+
+    UNARMED / 401 generate cannot emit SQL on a second shot — skip the retry.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if insights_query_sql(payload) or typed_query_plan(payload):
+        return False
+    if not _has_ranked_metrics(payload):
+        return False
+    gen = payload.get("generative")
+    gen_d = gen if isinstance(gen, dict) else {}
+    climb = gen_d.get("climb") if gen_d else None
+    final = str((climb or {}).get("final") or "").upper() if isinstance(climb, dict) else ""
+    if final in {"UNARMED", "NO_KEY", "REFUSED_AUTH"}:
+        return False
+    if str(payload.get("status") or "").upper() == "REFUSE" and not gen_d:
+        return False
+    return bool(gen_d) or str(payload.get("phase") or "") == "generate"
+
+
 def query_plan_from_insights_ranking(
     payload: dict[str, Any] | None,
     allowed_measures: set[str] | None = None,
@@ -214,16 +268,17 @@ def query_plan_from_insights_ranking(
     aliases: dict[str, str] | None = None,
     specs: dict[str, str] | None = None,
     prefer: str | None = None,
+    question: str | None = None,
 ) -> dict[str, Any] | None:
-    """Typed plan from Cortex Insights metric ranking. Top id only.
+    """Typed plan from Cortex Insights metric ranking.
 
-    Cortex retrieve_ontology ranks pack metric ids. When generate is unarmed
-    (or SQL is missing) the top ranked id that resolves onto the DMS ontology
-    is still Cortex ontology_plan, not local bind_plan keyword matching.
+    Default (no question): top id only. A Cortex-only top that does not
+    resolve is not skipped to a weaker DMS id (stock_value_by_category must
+    not become sku_count). Same-intent alias is climb, not a skip.
 
-    Do not skip a Cortex-only top id (stock_value_by_category) to a weaker
-    DMS id (sku_count) — that answers the wrong question. Same-intent alias
-    (stock_value_by_category -> stock_value_myr) is climb, not a skip.
+    With ``question``: walk past a top id that shares **no** content tokens
+    with the ask (ranking noise). A Cortex-only id that overlaps the ask
+    still aborts — that is the intended metric, missing on DMS.
     """
     if not isinstance(payload, dict):
         return None
@@ -231,6 +286,7 @@ def query_plan_from_insights_ranking(
     if not isinstance(onto, dict):
         return None
     allowed = {str(m) for m in (allowed_measures or ()) if str(m).strip()}
+    qtoks = ranked_measure_tokens(question or "")
     for row in onto.get("metrics") or []:
         if not isinstance(row, dict):
             continue
@@ -245,12 +301,15 @@ def query_plan_from_insights_ranking(
             prefer=prefer,
         )
         if allowed and resolved is None:
-            return None
+            if not qtoks or (ranked_measure_tokens(mid) & qtoks):
+                return None
+            continue
         return {
             "query_plan": {
                 "measure": resolved or mid,
                 "group_by": [],
                 "filters": [],
+                "ranked_id": mid,
             },
             "plan_source": ONTOLOGY_MODE,
         }
@@ -367,6 +426,24 @@ def _insights_ontology_get(
     return _insights_envelope(res)
 
 
+def _insights_generate_post(
+    http: httpx.Client,
+    root: str,
+    body: dict[str, Any],
+    headers: dict[str, str] | None,
+) -> dict[str, Any] | None:
+    """POST /v1/insights generate. None on transport miss."""
+    try:
+        res = http.post(
+            f"{root}{INSIGHTS_PATH}",
+            json=body,
+            headers=headers,
+        )
+    except httpx.HTTPError:
+        return None
+    return _insights_envelope(res)
+
+
 def compute_query(
     base_url: str,
     *,
@@ -381,12 +458,13 @@ def compute_query(
 
     Order: ``POST /v1/insights`` generate=true ask=false (OV/FreeRoute),
     ``GET /v1/insights/ontology`` when ranking is omitted (A-0009 401 or
-    generate SQL without YAML metrics), then ``POST /dms/query`` for a typed
-    ``query_plan``. Ranking stays attached when generate SQL is present so a
-    validate-fail can climb via ontology_plan slots. Insights 200 REFUSE /
-    401 still count as reached so isolated gen does not bind_plan over them.
-    An empty key is not replaced with a guessed secret. ``live_5000_ci`` is
-    never claimed here.
+    generate SQL without YAML metrics), one ranked-slot generate retry when
+    FreeRoute ran with no SQL/plan (not UNARMED), then ``POST /dms/query``
+    for a typed ``query_plan`` (ranked metric forwarded). Ranking stays
+    attached when generate SQL is present so a validate-fail can climb via
+    ontology_plan slots. Insights 200 REFUSE / 401 still count as reached so
+    isolated gen does not bind_plan over them. An empty key is not replaced
+    with a guessed secret. ``live_5000_ci`` is never claimed here.
     """
     headers = _auth_headers(api_key)
     root = base_url.rstrip("/")
@@ -419,15 +497,9 @@ def compute_query(
     dms_res: httpx.Response | None = None
     try:
         with httpx.Client(timeout=timeout) as http:
-            try:
-                insights_res = http.post(
-                    f"{root}{INSIGHTS_PATH}",
-                    json=insights_body,
-                    headers=headers,
-                )
-            except httpx.HTTPError:
-                insights_res = None
-            insights_payload = _insights_envelope(insights_res)
+            insights_payload = _insights_generate_post(
+                http, root, insights_body, headers
+            )
             # YAML ranking. No FreeRoute. Attach even when generate SQL exists
             # so validate-or-abstain can climb via ranked DMS measures.
             if not _has_ranked_metrics(insights_payload):
@@ -436,7 +508,33 @@ def compute_query(
                     insights_payload = _merge_ontology_ranking(
                         insights_payload, ranking
                     )
+            # FreeRoute k-scale: one retry with the ranked pack id as slots.
+            # Skip when climb.final is UNARMED (second shot cannot arm keys).
+            if generate_retry_eligible(insights_payload):
+                rid = first_ranked_metric_id(insights_payload)
+                if rid:
+                    retry_body = dict(insights_body)
+                    retry_body["query_plan"] = {
+                        "measure": rid,
+                        "group_by": [],
+                        "filters": [],
+                    }
+                    retry_body["ranked_metric"] = rid
+                    retry_body["generate_retry"] = "ranked_slots"
+                    retry_payload = _insights_generate_post(
+                        http, root, retry_body, headers
+                    )
+                    if isinstance(retry_payload, dict):
+                        insights_payload = _merge_ontology_ranking(
+                            retry_payload, insights_payload or {}
+                        )
             if isinstance(insights_payload, dict):
+                rid = first_ranked_metric_id(insights_payload)
+                if rid:
+                    dms_body.setdefault(
+                        "query_plan", {"measure": rid, "group_by": [], "filters": []}
+                    )
+                    dms_body["ranked_metric"] = rid
                 normalized = normalize_insights_compute(insights_payload)
                 if normalized is not None:
                     return normalized
@@ -478,6 +576,8 @@ __all__ = [
     "PLAN_SOURCES",
     "attach_compute_plan_source",
     "compute_query",
+    "first_ranked_metric_id",
+    "generate_retry_eligible",
     "insights_miss_payload",
     "insights_query_sql",
     "insights_was_reached",

@@ -421,6 +421,7 @@ def ontology_plan_from_ranking(
         aliases=load_measure_aliases(),
         specs={name: (m.description or "") for name, m in onto.measures.items()},
         prefer=prefer_s or None,
+        question=question,
     )
     if ranked is None:
         return None
@@ -435,7 +436,8 @@ def ontology_plan_from_ranking(
         "grain": spec.grain,
         "description": spec.description,
     }
-    return slots_for_measure(question, ctx, measure)
+    ranked_id = str(raw.get("ranked_id") or "").strip() or None
+    return slots_for_measure(question, ctx, measure, ranked_id=ranked_id)
 
 
 def path_miss_envelope(

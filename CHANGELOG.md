@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - GEN-02: FreeRoute k-scale climb beyond #205 (#180)
+
+- **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / 57.69% as AI COMPLETE. Phase A CLEAR stands @ `e1f729a5`. #205 climb PASS @ `186f7d85` (ontology_plan=9 bind_plan=0 WRONG=0).
+- **Climb.** FreeRoute `free+normal` ranked generate retry when generate ran but emitted no SQL (not UNARMED). Same-intent ranking walk past noise ids (not skip-to-weaker intent). Pack-id slot overlay (`_by_category` / `topN` / `categoty`). Typed `/dms/query` forwards `ranked_metric`. Planted refuses stay ABSTAIN. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api` and `--climb --ab` on the same origin. Need measured ontology_plan rise vs 9 + WRONG=0 after deploy. CI green != climb PASS.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses.
+
 ## 2026-09-18 - STUDIO-MOBILE-03: TopBar phone clip (#192)
 
 - **Ticket.** Serves [STUDIO-MOBILE-03 #192](https://github.com/Netie-AI/dms/issues/192). Follow-on to #182. Does not close tickets. Not COMPLETE. Not #182 product DONE. Not EPIC-008 COMPLETE.

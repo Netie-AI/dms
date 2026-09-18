@@ -71,11 +71,19 @@ def load_measure_aliases(path: Path | None = None) -> dict[str, str]:
 
 
 _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
+_TOP_FROM_ID = re.compile(r"(?:^|_)top(\d+)(?:_|$)", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
     (("by destination", "by location"), "location", "location_code"),
-    (("by category",), "product", "category"),
+    (("by category", "categoty"), "product", "category"),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
+)
+_DIM_FROM_ID: tuple[tuple[str, str, str], ...] = (
+    ("by_category", "product", "category"),
+    ("by_destination", "location", "location_code"),
+    ("by_country", "supplier", "country"),
+    ("by_sku", "product", "sku"),
+    ("by_location", "location", "location_code"),
 )
 _STOP = frozenset(
     {
@@ -517,6 +525,8 @@ def _locked_measure(question: str) -> str | None:
         return "stock_value_myr"
     if "revenue" in qn or "selling sku" in qn:
         return "outbound_value_myr"
+    if "categoty" in qn or ("sales" in qn and "category" in qn):
+        return "outbound_value_myr"
     return None
 
 
@@ -536,6 +546,33 @@ def _group_from_hints(question: str) -> list[list[str]] | None:
     if len(unique) > 1:
         return None
     return unique
+
+
+def shape_from_metric_id(metric_id: str) -> dict[str, Any]:
+    """Group/limit/keep_gt encoded in a Cortex pack metric id. No SQL."""
+    mid = str(metric_id or "").strip().lower()
+    if mid.startswith("cq_"):
+        mid = mid[3:]
+    group_by: list[list[str]] = []
+    for needle, obj, col in _DIM_FROM_ID:
+        if needle in mid:
+            group_by = [[obj, col]]
+            break
+    if not group_by:
+        toks = set(re.findall(r"[a-z0-9]+", mid.replace("_", " ")))
+        if "category" in toks or "categoty" in toks:
+            group_by = [["product", "category"]]
+        elif "destination" in toks:
+            group_by = [["location", "location_code"]]
+        elif "country" in toks:
+            group_by = [["supplier", "country"]]
+    out: dict[str, Any] = {"group_by": group_by}
+    top = _TOP_FROM_ID.search(mid)
+    if top:
+        out["limit"] = int(top.group(1))
+    if "above_90" in mid or "above90" in mid:
+        out["keep_gt"] = 90.0
+    return out
 
 
 def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -648,11 +685,13 @@ def slots_for_measure(
     question: str,
     context: dict[str, Any] | None,
     measure: str,
+    ranked_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Retrieve-typed group/filter/limit for a Cortex-ranked DMS measure.
 
     plan_source stays ontology_plan. Not a bind_plan answer. A by/per/top-N
-    or which/list/rank ask with no typed dimension misses (WRONG=0).
+    or which/list/rank ask with no typed dimension misses (WRONG=0) unless
+    the ranked pack id itself encodes the grain (``_by_category``, ``top5``).
     """
     mid = str(measure or "").strip()
     if not isinstance(context, dict) or not mid:
@@ -670,19 +709,29 @@ def slots_for_measure(
     needs_dim = bool(
         _NEEDS_DIM.search(q) or _TOP_N.search(q) or _ENTITY_PREFIX.search(q)
     )
+    shape = shape_from_metric_id(ranked_id or "")
+    shape_group = list(shape.get("group_by") or [])
+
+    def _apply_shape(plan: dict[str, Any]) -> dict[str, Any]:
+        out = dict(plan)
+        out["measure"] = mid
+        if not out.get("group_by") and shape_group:
+            out["group_by"] = shape_group
+        if out.get("limit") in (None, 50) and shape.get("limit") is not None:
+            out["limit"] = shape["limit"]
+        if out.get("keep_gt") is None and shape.get("keep_gt") is not None:
+            out["keep_gt"] = shape["keep_gt"]
+        return out
+
     if not isinstance(bound, dict) or bound.get("unsure") is True:
-        if needs_dim:
+        if needs_dim and not shape_group:
             return None
-        return {
-            "query_plan": {"measure": mid, "group_by": [], "filters": []},
-            "plan_source": "ontology_plan",
-        }
+        plan = _apply_shape({"measure": mid, "group_by": shape_group, "filters": []})
+        return {"query_plan": plan, "plan_source": "ontology_plan"}
     plan = bound.get("query_plan")
     if not isinstance(plan, dict):
         return None
-    out = dict(plan)
-    out["measure"] = mid
-    return {"query_plan": out, "plan_source": "ontology_plan"}
+    return {"query_plan": _apply_shape(plan), "plan_source": "ontology_plan"}
 
 
 __all__ = [
@@ -693,5 +742,6 @@ __all__ = [
     "load_ontology_spine",
     "question_tokens",
     "retrieve_short_context",
+    "shape_from_metric_id",
     "slots_for_measure",
 ]
