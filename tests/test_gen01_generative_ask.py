@@ -418,7 +418,7 @@ def test_ab_curated_wrong_zero_both_paths() -> None:
 
 
 def test_compute_http_does_not_invent_a_key() -> None:
-    seen: dict[str, Any] = {}
+    seen: list[dict[str, Any]] = []
 
     class _Resp:
         status_code = 404
@@ -440,20 +440,23 @@ def test_compute_http_does_not_invent_a_key() -> None:
         def post(
             self, url: str, json: dict[str, Any], headers: dict[str, str] | None = None
         ) -> _Resp:
-            seen["url"] = url
-            seen["json"] = json
-            seen["headers"] = headers
+            seen.append({"url": url, "json": json, "headers": headers})
             return _Resp()
 
     with patch("cortex_client.compute.httpx.Client", _Client):
         out = compute_query("http://127.0.0.1:8010", question="hello")
     assert out is None
-    assert seen["headers"] in (None, {})
-    assert "Authorization" not in (seen["headers"] or {})
-    assert "X-API-Key" not in (seen["headers"] or {})
-    body = str(seen["json"])
-    assert "sk-" not in body
-    assert "api_key" not in body.lower()
+    assert seen, "Insights generate must be attempted"
+    assert any(str(row["url"]).endswith("/v1/insights") for row in seen)
+    for row in seen:
+        headers = row["headers"] or {}
+        assert "Authorization" not in headers
+        assert "X-API-Key" not in headers
+        body = str(row["json"])
+        assert "sk-" not in body
+        assert "api_key" not in body.lower()
+        assert "LIVE_KEY" not in body
+        assert ":5000" not in body
 
 
 @pytest.fixture()
@@ -577,6 +580,30 @@ def test_ask_path_generative_binds_on_compute_miss(minter: ManifestMinter) -> No
     assert fake.submits
     assert any("compute_fallback:bind_plan" in str(a) for a in (env.get("assumptions") or []))
     assert env.get("plan_source") == "bind_plan"
+
+
+def test_ask_path_generative_ontology_plan_beats_bind(minter: ManifestMinter) -> None:
+    fake = _GenCortex(
+        compute_payload={
+            "query_plan": {
+                "measure": "stock_value_myr",
+                "group_by": [["product", "category"]],
+            },
+            "plan_source": "ontology_plan",
+        }
+    )
+    exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is total stock value by category?",
+        session_id="ses_gen_route_ontology",
+        ask_path="generative",
+    )
+    assert env["badge"] == "L2_VALIDATED"
+    assert env.get("plan_source") == "ontology_plan"
+    assert fake.asks == []
+    assert fake.submits
+    assert not any("bind_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert_envelope_valid(env)
 
 
 def test_ask_path_exact_still_hits_pack(minter: ManifestMinter) -> None:

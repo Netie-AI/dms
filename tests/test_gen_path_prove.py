@@ -12,7 +12,12 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from cortex_client.compute import attach_compute_plan_source, compute_query
+from cortex_client.compute import (
+    FREEROUTE_PREFERENCE,
+    attach_compute_plan_source,
+    compute_query,
+    normalize_insights_compute,
+)
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.ontology import Ontology
@@ -152,6 +157,178 @@ def test_compute_client_stamps_ontology_plan_on_typed_plan() -> None:
         out = compute_query("http://127.0.0.1:8010", question="revenue?")
     assert out is not None
     assert out["plan_source"] == "ontology_plan"
+
+
+def test_compute_client_posts_insights_generate_before_dms_query() -> None:
+    posts: list[dict[str, Any]] = []
+
+    class _Resp:
+        status_code = 404
+
+        def json(self) -> dict[str, Any]:
+            return {}
+
+    class _Client:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *a: Any) -> None:
+            return None
+
+        def post(
+            self, url: str, json: dict[str, Any], headers: dict[str, str] | None = None
+        ) -> _Resp:
+            posts.append({"url": url, "json": json, "headers": headers})
+            return _Resp()
+
+    with patch("cortex_client.compute.httpx.Client", _Client):
+        out = compute_query(
+            "http://127.0.0.1:8010",
+            question="revenue by category?",
+            api_key="ov_test_route_01",
+        )
+    assert out is None
+    assert [p["url"] for p in posts] == [
+        "http://127.0.0.1:8010/v1/insights",
+        "http://127.0.0.1:8010/dms/query",
+    ]
+    gen = posts[0]["json"]
+    assert gen["generate"] is True
+    assert gen["ask"] is False
+    assert gen["mode"] == "ontology_plan"
+    assert gen["model_preference"] == FREEROUTE_PREFERENCE
+    assert gen["consumer"] == "dms"
+    assert "LIVE_KEY" not in str(gen)
+    assert ":5000" not in str(gen)
+    assert "api_key" not in gen
+    headers = posts[0]["headers"] or {}
+    assert headers["Authorization"] == "Bearer ov_test_route_01"
+    assert "ov_test_route_01" not in str(gen)
+
+
+def test_insights_generate_sql_is_ontology_plan_not_bind(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {
+            "query_sql": "SELECT sku, SUM(amount) AS revenue FROM sales GROUP BY sku",
+            "plan_source": "ontology_plan",
+            "values": [{"revenue": 999999}],
+            "live_5000_ci": True,
+        },
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env.get("plan_source") == "ontology_plan"
+    assert env["rows"] == [{"product_category": "ALPHA", "revenue": 100.0}]
+    assert "999999" not in str(env.get("values") or [])
+    assert "live_5000_ci" not in env
+    assert not any("bind_plan" in str(a) for a in (env.get("assumptions") or []))
+    assert_envelope_valid(env)
+
+
+def test_insights_refuse_without_sql_is_miss_not_green_bind(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {"ok": False, "status": "REFUSE", "values": []},
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=False,
+    )
+    assert env is None
+
+
+def test_hostile_insights_sql_abstains_not_l2(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {
+            "query_sql": "INSERT INTO sales VALUES ('x')",
+            "plan_source": "ontology_plan",
+        },
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+        bind_on_miss=True,
+    )
+    assert env is not None
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env.get("plan_source") == "ontology_plan"
+
+
+def test_dms_query_sql_used_without_typed_plan_is_not_ontology_plan() -> None:
+    stamped = normalize_insights_compute(
+        {"sql_used": "SELECT 1 AS n", "answer": "one", "badge": "governed_metric"}
+    )
+    assert stamped is None
+
+
+def test_insights_generate_envelope_normalizes_to_query_sql() -> None:
+    out = normalize_insights_compute(
+        {
+            "ok": True,
+            "status": "ABSTAIN",
+            "phase": "generate",
+            "values": [{"n": 12}],
+            "live_5000_ci": True,
+            "generative": {
+                "ok": True,
+                "sql": "SELECT sku, SUM(amount) AS revenue FROM sales GROUP BY sku",
+            },
+            "sql_used": "SELECT sku, SUM(amount) AS revenue FROM sales GROUP BY sku",
+        }
+    )
+    assert out is not None
+    assert out["plan_source"] == "ontology_plan"
+    assert out["query_sql"].upper().startswith("SELECT")
+    assert out["values"] == []
+    assert out["live_5000_ci"] is False
+
+
+def test_prove_harness_counts_ontology_plan_when_cortex_path_works(
+    onto: Ontology, warehouse: Path
+) -> None:
+    env = maybe_generative_ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        grantable={"sales", "lots", "regions"},
+        compute=lambda _c: {
+            "query_plan": {"measure": "revenue", "group_by": [["product", "category"]]},
+            "plan_source": "ontology_plan",
+        },
+        submit=_submit_ok,
+        ledger_append=_ledger_ok,
+        ontology=onto,
+    )
+    assert env is not None
+    assert env.get("plan_source") == "ontology_plan"
+    report = build_gen_path_prove_report(
+        {"OK": 1, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0},
+        cases=[{"id": "q1", "verdict": "OK", "plan_source": classify_plan_source(env)}],
+        mode="offline",
+    )
+    assert report["by_plan_source"]["ontology_plan"]["answered"] >= 1
+    assert report["by_plan_source"]["bind_plan"]["answered"] == 0
+    assert "COMPLETE" not in json.dumps(report)
 
 
 def test_compute_client_keeps_cortex_bind_plan_mode() -> None:
