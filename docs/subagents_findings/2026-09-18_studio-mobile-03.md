@@ -12,7 +12,7 @@ PREFLIGHT: HIT (#182 LeftNav drawer exists; TopBar still used overflow-x-auto).
 
 `overflow-x-auto` on the header makes overflow-y compute to auto, so the New dropdown is clipped and not hit-testable. Space was `max-w-[7rem]` plus a compact `netie` title. Chat Sources chip (`fixed right-3 top-16`) sat on the h1.
 
-Fix: `overflow-visible`; drop the title; Space `min-w-[8rem] flex-1`; New menu `z-50` right-aligned below `lg`; Chat `max-lg:pr-24`. Operate drawer and #171 Sources overlay unchanged. Live phone walk is still Platform/Frontend leftover. Not #182 product DONE. Not EPIC-008 COMPLETE.
+Fix: `overflow-visible`; drop the title; Space `min-w-[8rem] flex-1`; New menu `z-50` right-aligned below `lg`; Chat `max-lg:pr-32`; Sources chip `top-12` (standard class -- arbitrary `top-[3.25rem]` did not emit). Operate drawer and #171 Sources overlay unchanged. Live phone walk is still Platform/Frontend leftover. Not #182 product DONE. Not EPIC-008 COMPLETE.
 
 ## Files
 

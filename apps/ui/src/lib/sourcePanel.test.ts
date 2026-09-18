@@ -100,8 +100,8 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
 
   it("Chat heading keeps right padding so Sources does not sit on the h1", () => {
     const chat = readFileSync(join(here, "../pages/ChatPage.tsx"), "utf8");
-    expect(chat).toMatch(/max-lg:pr-24/);
+    expect(chat).toMatch(/max-lg:pr-32/);
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
-    expect(panel).toMatch(/max-lg:top-\[3\.25rem\]/);
+    expect(panel).toMatch(/max-lg:top-12/);
   });
 });

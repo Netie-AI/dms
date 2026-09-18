@@ -97,8 +97,8 @@ def test_topbar_does_not_clip_primary_actions_below_lg() -> None:
 def test_chat_heading_clears_sources_chip_below_lg() -> None:
     """#192: Sources chip at top-right must not sit on the Chat h1."""
     chat = (UI / "pages" / "ChatPage.tsx").read_text(encoding="utf-8")
-    assert "max-lg:pr-24" in chat
+    assert "max-lg:pr-32" in chat
     src = (UI / "components" / "SourcePanel.tsx").read_text(encoding="utf-8")
-    assert "max-lg:top-[3.25rem]" in src
+    assert "max-lg:top-12" in src
     assert "max-lg:right-3" in src
     assert "min-h-11" in src

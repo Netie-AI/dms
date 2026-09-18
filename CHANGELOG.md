@@ -6,7 +6,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Ticket.** Serves [STUDIO-MOBILE-03 #192](https://github.com/Netie-AI/dms/issues/192). Follow-on to #182. Does not close tickets. Not COMPLETE. Not #182 product DONE. Not EPIC-008 COMPLETE.
 - **TopBar.** Drop `overflow-x-auto` (it clips the New dropdown). Space takes leftover width (`min-w-[8rem] flex-1`). Compact `netie` title removed so Space/New/Operate fit 390px. New menu `z-50`, right-aligned below `lg`.
-- **Sources.** Chat heading `max-lg:pr-24` so the Sources chip does not sit on the h1. Chip sits just under the bar (`top-[3.25rem]`). Operate drawer and #171 Ask/Sources overlay unchanged.
+- **Sources.** Chat heading `max-lg:pr-32` so the painted Sources chip (about 106px) does not sit on the h1. Chip docks under the 48px bar (`top-12`). Operate drawer and #171 Ask/Sources overlay unchanged.
 - **Rebase.** Rebased onto main after #199/#201/#203 and #205/#206. Does not invent product DONE. Live phone walk is Platform/Frontend leftover after merge+redeploy.
 - **Not this ticket:** live phone walk PASS, #182/#171 DONE, ticket close.
 
