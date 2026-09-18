@@ -45,6 +45,7 @@ from cortex_client.generated.models.pool_spec import PoolSpec as GenPoolSpec
 from cortex_client.generated.models.submit_request import SubmitRequest as GenSubmitRequest
 from cortex_client.generated.models.submit_request_body import SubmitRequestBody
 from cortex_client.generated.models.submit_request_plan import SubmitRequestPlan
+from cortex_client.insights import insights_get, insights_post
 from cortex_client.models import (
     AskRequest,
     AskResponse,
@@ -86,6 +87,7 @@ class CortexClient:
         self.base_url = base_url.rstrip("/")
         # Viewer/mutation key for off-contract F5. Never invent one when unset.
         self.api_key = api_key
+        self.timeout = timeout
         self._client = GeneratedClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(timeout),
@@ -173,6 +175,53 @@ class CortexClient:
             space_id=space_id,
             ontology=ontology,
             api_key=self.api_key,
+        )
+
+    def insights_law(self) -> dict[str, Any]:
+        return insights_get(self.base_url, api_key=self.api_key, timeout=min(8.0, self.timeout))
+
+    def insights_keys(self) -> dict[str, Any]:
+        return insights_get(
+            self.base_url, "/keys", api_key=self.api_key, timeout=min(8.0, self.timeout)
+        )
+
+    def insights_identity(self) -> dict[str, Any]:
+        return insights_get(
+            self.base_url, "/identity", api_key=self.api_key, timeout=min(8.0, self.timeout)
+        )
+
+    def insights_ontology(self, q: str) -> dict[str, Any]:
+        return insights_get(
+            self.base_url,
+            "/ontology",
+            api_key=self.api_key,
+            params={"q": q},
+            timeout=min(8.0, self.timeout),
+        )
+
+    def insights_ask(
+        self,
+        *,
+        intent: str = "",
+        question: str = "",
+        ask: bool = True,
+        generate: bool = False,
+        session_id: str = "demo",
+        space_id: str | None = None,
+        consumer: str = "dms",
+    ) -> dict[str, Any]:
+        """Off-contract POST /v1/insights. Fail closed — no invented values."""
+        return insights_post(
+            self.base_url,
+            intent=intent,
+            question=question,
+            ask=ask,
+            generate=generate,
+            session_id=session_id,
+            space_id=space_id,
+            consumer=consumer,
+            api_key=self.api_key,
+            timeout=self.timeout,
         )
 
     def drillthrough(self, req: DrillthroughRequest) -> DrillthroughResponse:

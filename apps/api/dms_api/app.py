@@ -18,6 +18,7 @@ from dms_api.routes import (
     audit,
     chat,
     health,
+    insights,
     library,
     mcp,
     ontology,
@@ -148,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(audit.router)
     app.include_router(library.router)
     app.include_router(ontology.router)
+    app.include_router(insights.router)
     app.include_router(trust.router)
     app.include_router(runs.router)
     app.include_router(admin.router)

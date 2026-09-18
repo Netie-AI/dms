@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-18 - INSIGHTS-HOST-01: consume Cortex GET|POST /v1/insights (#196)
+
+- **Ticket.** Serves [INSIGHTS-HOST-01 #196](https://github.com/Netie-AI/dms/issues/196) under EPIC-INSIGHTS-UX #178 + Platform Track A. Does not close tickets. Not COMPLETE. Not #178 COMPLETE.
+- **Wire.** `GET|POST /v1/insights` on the DMS API forwards Cortex #213 (`6f701e93`) using `settings.cortex_api_key` (OV-custodied founder key on prove/studio). Off-contract sibling; cortex-contract stays 1.2.0. Generate fails closed if OpenVault is unreachable. No demo-number fallback.
+- **Honesty.** Keys never logged. `live_5000_ci` forced false. Does not invent LIVE_KEY or `:5000` green. Cortex `#197`–`#200` not seated.
+- **Not this ticket:** live prove/studio walk PASS, EPIC COMPLETE, second vault, ticket close.
+
 ## 2026-09-13 - INSIGHTS-EXPORT-01: Excel from real ask envelope (#188)
 
 - **Ticket.** Serves [INSIGHTS-EXPORT-01 #188](https://github.com/Netie-AI/dms/issues/188) under EPIC-INSIGHTS-UX #178 Phase B. Does not close tickets. Not COMPLETE. Not EPIC-019 / #108 COMPLETE. Not #29 FRTR.
