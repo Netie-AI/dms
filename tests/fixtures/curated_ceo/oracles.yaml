@@ -196,6 +196,22 @@ oracles:
     cortex_id: cq_chemicals_list
     sql: "SELECT sku FROM inventory WHERE category = 'CHEMICALS' ORDER BY sku"
 
+  ops_expired_items:
+    cortex_id: cq_expired_items
+    sql: >
+      SELECT sku FROM inventory
+      WHERE expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE
+
+  ops_cold_storage:
+    cortex_id: cq_cold_storage
+    sql: "SELECT location_code FROM locations WHERE is_cold_storage = true"
+
+  ops_capacity_above_90:
+    cortex_id: cq_capacity_above_90
+    sql: >
+      SELECT location_code FROM locations
+      WHERE 100.0 * current_load_kg / capacity_kg > 90
+
   trap_categoty:
     cortex_id: cq_top3_category_sales
     sql: >

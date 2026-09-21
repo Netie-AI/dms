@@ -433,6 +433,44 @@ acceptance is Platform measured **ontology_plan > 27 + WRONG=0**. A
 **27/37** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
 #222 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-10 (#224) — continue rise past ontology_plan=30
+
+Baseline Platform live @ `1257fc3b`: **ontology_plan=30 / bind_plan=0 /
+WRONG=0** answered=**30/40** on the uncapped harness. Epic **NOT COMPLETE**.
+Do not invent 99.95% / estate CLEAR. Do not reintroduce frozen n=26,
+n=34, n=37, or n=40. Do not shrink the pack to fake a higher percent.
+
+30/40 is the frozen 17 L0s plus the thirteen climb-05/06/07/08/09 leftovers.
+Unused Cortex leftover was never POSTed:
+
+1. Ops `Which items are expired?` (`cq_expired_items` primary)
+2. Ops `Which locations are cold storage?` (`cq_cold_storage` primary)
+3. Ops `Which locations are above 90 percent capacity?` (`cq_capacity_above_90`)
+
+Same parent SQL as Finance L0s already in frozen 17. **Not** PACK_METRICS
+expansion (prove-path is generative). Ops is granted inventory+locations.
+Audit overdue still optional (`last_audit_date` ceiling).
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Score those leftover certified L0s** as `ontology_plan`.
+2. Retrieve/overlay lock expired onto `stock_value_myr` (sku_count ranking
+   is noise) and cold/capacity onto `utilisation_pct`.
+3. Harness unions the new L0s so this SHA cannot score n=40. Live prove
+   FAILs on ontology_plan<=30 or climb-10 rise L0s not `ontology_plan`.
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Need **this SHA's harness** against Studio >= this merge. Product climb
+acceptance is Platform measured **ontology_plan > 30 + WRONG=0**. A
+**30/40** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
+#224 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

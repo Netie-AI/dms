@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-09: 27/37 = frozen 17 + 10 climb-05/06/07/08 leftovers; leftover unused Cortex certified_queries.yaml Ops sku synonyms + Ops chemicals never POSTed. Audit overdue still last_audit_date ceiling).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-10: 30/40 = frozen 17 + 13 climb-05/06/07/08/09 leftovers; leftover unused Cortex certified_queries.yaml Ops expired / cold / capacity>90 never POSTed. Audit overdue still last_audit_date ceiling).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-21 | gen-path-climb-10 | GEN-PATH-CLIMB-10, ontology_plan, certified leftover, 30/40, ops expired, ops cold, dms-224 | After #222 ontology_plan=30: leftover Cortex Ops expired / cold / capacity>90. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-10.md` |
 | 2026-09-21 | gen-path-climb-09 | GEN-PATH-CLIMB-09, ontology_plan, certified leftover, 27/37, ops chemicals, dms-222 | After #220 ontology_plan=27: leftover Cortex Ops sku synonyms + Ops chemicals. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-09.md` |
 | 2026-09-18 | gen-path-climb-08 | GEN-PATH-CLIMB-08, ontology_plan, certified leftover, 24/34, categoty, dms-220 | After #218 ontology_plan=24: leftover Cortex typo synonym + Ops sku L0s. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-08.md` |
 | 2026-09-18 | gen-path-climb-07 | GEN-PATH-CLIMB-07, ontology_plan, certified synonyms, 21/31, dms-218 | After #216 ontology_plan=21: leftover Cortex synonyms of those L0s. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-07.md` |
