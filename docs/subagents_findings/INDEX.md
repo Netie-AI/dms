@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-11: 33/43 = frozen 17 + 16 climb-05/06/07/08/09/10 leftovers; leftover unused Cortex certified_queries.yaml Ops utilisation / cctv / low-stock never POSTed. Audit overdue still last_audit_date ceiling).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-12: 36/46 = frozen 17 + 19 climb-05/06/07/08/09/10/11 leftovers; leftover unused Ops parent-SQL of certified sku-by-category / stock-value / shipment-cost never POSTed. Audit overdue still last_audit_date ceiling).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-21 | gen-path-climb-12 | GEN-PATH-CLIMB-12, ontology_plan, certified leftover, 36/46, ops sku-by-category, ops stock, dms-228 | After #226 ontology_plan=36: leftover Ops parent-SQL of certified sku-by-category / stock-value / shipment-cost via spine slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-12.md` |
 | 2026-09-21 | gen-path-climb-11 | GEN-PATH-CLIMB-11, ontology_plan, certified leftover, 33/43, ops utilisation, ops cctv, dms-226 | After #224 ontology_plan=33: leftover Cortex Ops utilisation / CCTV / low-stock. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-11.md` |
 | 2026-09-21 | gen-path-climb-10 | GEN-PATH-CLIMB-10, ontology_plan, certified leftover, 30/40, ops expired, ops cold, dms-224 | After #222 ontology_plan=30: leftover Cortex Ops expired / cold / capacity>90. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-10.md` |
 | 2026-09-21 | gen-path-climb-09 | GEN-PATH-CLIMB-09, ontology_plan, certified leftover, 27/37, ops chemicals, dms-222 | After #220 ontology_plan=27: leftover Cortex Ops sku synonyms + Ops chemicals. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-09.md` |

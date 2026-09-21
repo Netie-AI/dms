@@ -230,6 +230,23 @@ oracles:
       WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0
         AND l.location_code = 'WH-A' ORDER BY i.quantity_kg ASC
 
+  ops_sku_count_by_category_syn:
+    cortex_id: cq_sku_count_by_category
+    sql: "SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category"
+
+  ops_stock_value_syn:
+    cortex_id: cq_stock_value_by_category
+    sql: >
+      SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr
+      FROM inventory GROUP BY category
+
+  ops_shipment_cost_syn:
+    cortex_id: cq_cost_by_destination
+    sql: >
+      SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr
+      FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
+      GROUP BY l.location_code
+
   trap_categoty:
     cortex_id: cq_top3_category_sales
     sql: >

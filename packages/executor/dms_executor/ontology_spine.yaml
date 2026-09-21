@@ -43,6 +43,7 @@ measure_aliases:
   cctv_wh_a: utilisation_pct
   cq_cost_by_destination: shipping_cost_myr
   cost_by_destination: shipping_cost_myr
+  shipment_cost_by_destination: shipping_cost_myr
   cq_low_stock_wh_a: below_reorder_lots
   low_stock_wh_a: below_reorder_lots
   cq_sku_count_by_category: sku_count
