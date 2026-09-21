@@ -274,6 +274,33 @@ questions:
     cortex_id: cq_chemicals_list
     question: List chemicals in inventory
 
+  # Unused Cortex certified_queries.yaml leftover after #222 RISE_PASS
+  # ontology_plan=30 / n=40. Climb-09 POSTed Ops sku synonyms + chemicals;
+  # leftover Ops inventory/location primaries Warehouse Ops is granted
+  # were never POSTed. Same parent SQL as Finance L0s already in frozen 17.
+  # Not PACK_METRICS expansion (prove-path is generative). Not last_audit_date.
+  # Isolated gen compiles as ontology_plan.
+  - id: ops_expired_items
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_expired_items
+    question: Which items are expired?
+
+  - id: ops_cold_storage
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_cold_storage
+    question: Which locations are cold storage?
+
+  - id: ops_capacity_above_90
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_capacity_above_90
+    question: Which locations are above 90 percent capacity?
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

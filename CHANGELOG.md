@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-21 - GEN-PATH-CLIMB-10: unused certified leftover past ontology_plan=30 (#224)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-10 #224](https://github.com/Netie-AI/dms/issues/224) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #222 RISE_PASS @ `1257fc3b` (ontology_plan=30 bind_plan=0 WRONG=0 answered=30/40 on uncapped harness) stands as the measured floor.
+- **Climb.** Score leftover Cortex `certified_queries.yaml` L0s live already answers (Ops `Which items are expired?`, Ops `Which locations are cold storage?`, Ops `Which locations are above 90 percent capacity?`) as `ontology_plan`. Same parent SQL as Finance L0s. Not PACK_METRICS expansion (prove-path is generative). Retrieve/overlay lock expired onto `stock_value_myr` and cold/capacity onto `utilisation_pct`. Harness unions the new L0s so this SHA cannot score the 30/40 pack. Live prove FAILs on ontology_plan<=30 or climb-10 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 30 + WRONG=0 after deploy. CI green != climb PASS. QUALIFIED claim stays n=26. curated_ceo n=43.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses, pack shrink to fake a higher percent.
+
 ## 2026-09-21 - GEN-PATH-CLIMB-09: unused certified leftover past ontology_plan=27 (#222)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-09 #222](https://github.com/Netie-AI/dms/issues/222) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #220 RISE_PASS @ `4f189f81` (ontology_plan=27 bind_plan=0 WRONG=0 answered=27/37 on uncapped harness) stands as the measured floor.
