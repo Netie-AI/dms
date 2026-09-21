@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-21 - GEN-PATH-CLIMB-12: unused Ops parent-SQL leftover past ontology_plan=36 (#228)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-12 #228](https://github.com/Netie-AI/dms/issues/228) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #226 RISE_PASS @ `6eb89562` (ontology_plan=36 bind_plan=0 WRONG=0 answered=36/46 on uncapped harness) stands as the measured floor.
+- **Climb.** Score leftover Ops parent-SQL of Cortex `certified_queries.yaml` L0s live already answers (`SKU count by category`, `stock value by category`, `shipment cost by destination`) as `ontology_plan`. Same SQL as `cq_sku_count_by_category` / `cq_stock_value_by_category` / `cq_cost_by_destination`. Not PACK_METRICS expansion (prove-path is generative). Ontology spine slot `shipment_cost_by_destination` plus retrieve/overlay lock sku-by-category onto `sku_count`, stock-value onto `stock_value_myr`, shipment-cost onto `shipping_cost_myr`. Harness unions the new L0s so this SHA cannot score the 36/46 pack. Live prove FAILs on ontology_plan<=36 or climb-12 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 36 + WRONG=0 after deploy. CI green != climb PASS. QUALIFIED claim stays n=26. curated_ceo n=49.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses, pack shrink to fake a higher percent.
+
 ## 2026-09-21 - GEN-PATH-CLIMB-11: unused certified leftover past ontology_plan=33 (#226)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-11 #226](https://github.com/Netie-AI/dms/issues/226) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #224 RISE_PASS @ `f833e567` (ontology_plan=33 bind_plan=0 WRONG=0 answered=33/43 on uncapped harness) stands as the measured floor.

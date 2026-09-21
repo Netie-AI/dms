@@ -328,6 +328,34 @@ questions:
     cortex_id: cq_low_stock_wh_a
     question: Which SKUs are below reorder level in warehouse A?
 
+  # Unused Cortex leftover after #226 RISE_PASS ontology_plan=36 / n=46.
+  # certified_queries.yaml primaries+synonyms that Ops can run are already
+  # POSTed. Remaining leftover is Ops parent-SQL of those certified L0s
+  # (same SQL as cq_sku_count_by_category / cq_stock_value_by_category /
+  # cq_cost_by_destination) via ontology spine slots, not PACK_METRICS,
+  # not last_audit_date, not golden TARGET paraphrases. Isolated gen
+  # compiles as ontology_plan.
+  - id: ops_sku_count_by_category_syn
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count_by_category
+    question: SKU count by category
+
+  - id: ops_stock_value_syn
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_stock_value_by_category
+    question: stock value by category
+
+  - id: ops_shipment_cost_syn
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_cost_by_destination
+    question: shipment cost by destination
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

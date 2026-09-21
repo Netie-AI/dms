@@ -509,6 +509,48 @@ acceptance is Platform measured **ontology_plan > 33 + WRONG=0**. A
 **33/43** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
 #226 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-12 (#228) — continue rise past ontology_plan=36
+
+Baseline Platform live @ `6eb89562`: **ontology_plan=36 / bind_plan=0 /
+WRONG=0** answered=**36/46** on the uncapped harness. Epic **NOT COMPLETE**.
+Do not invent 99.95% / estate CLEAR. Do not reintroduce frozen n=26,
+n=34, n=37, n=40, n=43, or n=46. Do not shrink the pack to fake a higher
+percent.
+
+36/46 is the frozen 17 L0s plus the nineteen climb-05/06/07/08/09/10/11
+leftovers. certified_queries.yaml primaries+synonyms Ops can run are
+already POSTed. Unused leftover is Ops parent-SQL of those certified
+L0s, compiled via ontology spine slots:
+
+1. Ops `SKU count by category` (`cq_sku_count_by_category`)
+2. Ops `stock value by category` (`cq_stock_value_by_category`)
+3. Ops `shipment cost by destination` (`cq_cost_by_destination`)
+
+Same parent SQL as Ops L0s already in the pack. **Not** PACK_METRICS
+expansion (prove-path is generative). **Not** golden TARGET paraphrases.
+Audit overdue still optional (`last_audit_date` ceiling).
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Score those leftover parent-SQL L0s** as `ontology_plan`.
+2. Retrieve/overlay lock sku-by-category onto `sku_count`, stock-value
+   onto `stock_value_myr` (sku_count ranking is noise), shipment-cost
+   onto `shipping_cost_myr`. Spine alias `shipment_cost_by_destination`.
+3. Harness unions the new L0s so this SHA cannot score n=46. Live prove
+   FAILs on ontology_plan<=36 or climb-12 rise L0s not `ontology_plan`.
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Need **this SHA's harness** against Studio >= this merge. Product climb
+acceptance is Platform measured **ontology_plan > 36 + WRONG=0**. A
+**36/46** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
+#228 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

@@ -221,6 +221,18 @@ Frozen n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>33 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+GEN-PATH-CLIMB-12 (#228): continue live ontology_plan rise past 36 after
+#226 RISE_PASS (36/46 WRONG=0 on uncapped harness). Unused leftover:
+Ops parent-SQL of certified L0s via ontology spine slots (`SKU count by
+category`, `stock value by category`, `shipment cost by destination`).
+Same SQL as cq_sku_count_by_category / cq_stock_value_by_category /
+cq_cost_by_destination. Not PACK_METRICS. Not golden TARGET paraphrases.
+Harness unions the new L0s; live prove FAILs ontology_plan<=36. Frozen
+n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
+`tests/test_gen_path_climb12.py`. Platform leftover after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>36 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat
