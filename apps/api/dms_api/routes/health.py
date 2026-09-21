@@ -17,23 +17,23 @@ router = APIRouter()
 #: Python 3.12 (PEP 701) and this package targets 3.11.
 _OPENVAULT_DEFAULT_ROOT = "D:\\\\OpenVault"
 
-# GEN-PATH-CLIMB-10: pack identity on the live host. #222 RISE_PASS was
-# ontology_plan=30 on n=40 (17 frozen L0 + 4 climb-05/06 + 3 climb-07
-# + 3 climb-08 + 3 climb-09). Remaining unused Cortex
+# GEN-PATH-CLIMB-11: pack identity on the live host. #224 RISE_PASS was
+# ontology_plan=33 on n=43 (17 frozen L0 + 4 climb-05/06 + 3 climb-07
+# + 3 climb-08 + 3 climb-09 + 3 climb-10). Remaining unused Cortex
 # certified_queries.yaml leftover was never POSTed. /health advertises
 # the harness identity this SHA must score. Not a sixth port. Not
-# COMPLETE. Do not reintroduce frozen n=26 / n=34 / n=37 / n=40.
+# COMPLETE. Do not reintroduce frozen n=26 / n=34 / n=37 / n=40 / n=43.
 GEN_PATH_CLIMB: dict[str, Any] = {
-    "ticket": "GEN-PATH-CLIMB-10",
-    "issue": 224,
+    "ticket": "GEN-PATH-CLIMB-11",
+    "issue": 226,
     "pack": "curated_ceo",
     "frozen_n": 26,
-    "prior_n": 40,
-    "n": 43,
+    "prior_n": 43,
+    "n": 46,
     "rise_l0": [
-        "ops_expired_items",
-        "ops_cold_storage",
-        "ops_capacity_above_90",
+        "ops_capacity_utilisation",
+        "ops_cctv_wh_a",
+        "ops_low_stock_wh_a",
     ],
 }
 

@@ -212,6 +212,24 @@ oracles:
       SELECT location_code FROM locations
       WHERE 100.0 * current_load_kg / capacity_kg > 90
 
+  ops_capacity_utilisation:
+    cortex_id: cq_capacity_utilisation
+    sql: >
+      SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used
+      FROM locations
+
+  ops_cctv_wh_a:
+    cortex_id: cq_cctv_wh_a
+    sql: "SELECT location_code, cctv_camera_id FROM locations WHERE location_code = 'WH-A'"
+
+  ops_low_stock_wh_a:
+    cortex_id: cq_low_stock_wh_a
+    sql: >
+      SELECT i.sku, i.quantity_kg FROM inventory i
+      JOIN locations l ON i.location_id = l.location_id
+      WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0
+        AND l.location_code = 'WH-A' ORDER BY i.quantity_kg ASC
+
   trap_categoty:
     cortex_id: cq_top3_category_sales
     sql: >

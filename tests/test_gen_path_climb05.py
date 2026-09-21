@@ -32,6 +32,7 @@ from score_curated import (  # noqa: E402
     CLIMB08_RISE_IDS,
     CLIMB09_RISE_IDS,
     CLIMB10_RISE_IDS,
+    CLIMB11_RISE_IDS,
     QUALIFIED_GEN_COVERAGE_CLAIM,
     _leftover_l0_unscored,
     build_gen_path_prove_report,
@@ -220,7 +221,7 @@ def test_leftover_ids_are_in_pack_and_not_pack_metrics() -> None:
         CLIMB05_LEFTOVER_L0
     ) + list(CLIMB07_RISE_IDS) + list(CLIMB08_RISE_IDS) + list(CLIMB09_RISE_IDS) + list(
         CLIMB10_RISE_IDS
-    )
+    ) + list(CLIMB11_RISE_IDS)
 
 
 def _norm(question: str) -> str:

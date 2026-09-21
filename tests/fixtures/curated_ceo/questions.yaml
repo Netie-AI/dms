@@ -301,6 +301,33 @@ questions:
     cortex_id: cq_capacity_above_90
     question: Which locations are above 90 percent capacity?
 
+  # Unused Cortex certified_queries.yaml leftover after #224 RISE_PASS
+  # ontology_plan=33 / n=43. Climb-10 POSTed Ops expired / cold / capacity>90;
+  # leftover Ops location/inventory primaries Warehouse Ops is granted
+  # were never POSTed. Same parent SQL as Finance L0s already in frozen 17.
+  # Not PACK_METRICS expansion (prove-path is generative). Not last_audit_date.
+  # Isolated gen compiles as ontology_plan.
+  - id: ops_capacity_utilisation
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_capacity_utilisation
+    question: Show warehouse capacity utilisation
+
+  - id: ops_cctv_wh_a
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_cctv_wh_a
+    question: Show the CCTV camera for warehouse A
+
+  - id: ops_low_stock_wh_a
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_low_stock_wh_a
+    question: Which SKUs are below reorder level in warehouse A?
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

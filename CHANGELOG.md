@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-21 - GEN-PATH-CLIMB-11: unused certified leftover past ontology_plan=33 (#226)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-11 #226](https://github.com/Netie-AI/dms/issues/226) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #224 RISE_PASS @ `f833e567` (ontology_plan=33 bind_plan=0 WRONG=0 answered=33/43 on uncapped harness) stands as the measured floor.
+- **Climb.** Score leftover Cortex `certified_queries.yaml` L0s live already answers (Ops `Show warehouse capacity utilisation`, Ops `Show the CCTV camera for warehouse A`, Ops `Which SKUs are below reorder level in warehouse A?`) as `ontology_plan`. Same parent SQL as Finance L0s. Not PACK_METRICS expansion (prove-path is generative). Retrieve/overlay lock utilisation/cctv onto `utilisation_pct` and low-stock onto `below_reorder_lots`. Harness unions the new L0s so this SHA cannot score the 33/43 pack. Live prove FAILs on ontology_plan<=33 or climb-11 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 33 + WRONG=0 after deploy. CI green != climb PASS. QUALIFIED claim stays n=26. curated_ceo n=46.
+- **Not this ticket:** #178 COMPLETE, estate CLEAR, ticket close, greening planted refuses, pack shrink to fake a higher percent.
+
 ## 2026-09-21 - GEN-PATH-CLIMB-10: unused certified leftover past ontology_plan=30 (#224)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-10 #224](https://github.com/Netie-AI/dms/issues/224) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #222 RISE_PASS @ `1257fc3b` (ontology_plan=30 bind_plan=0 WRONG=0 answered=30/40 on uncapped harness) stands as the measured floor.
