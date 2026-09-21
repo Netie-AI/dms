@@ -708,6 +708,7 @@ def test_gen_path_sources_do_not_import_vendor_sdks() -> None:
         root / "tests/test_gen_path_climb08.py",
         root / "tests/test_gen_path_climb09.py",
         root / "tests/test_gen_path_climb10.py",
+        root / "tests/test_gen_path_climb11.py",
     ]
     for path in paths:
         for line in path.read_text(encoding="utf-8").splitlines():

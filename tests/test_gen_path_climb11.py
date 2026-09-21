@@ -1,6 +1,6 @@
-"""GEN-PATH-CLIMB-10: unused certified leftover past ontology_plan=30, WRONG=0.
+"""GEN-PATH-CLIMB-11: unused certified leftover past ontology_plan=33, WRONG=0.
 
-Does not stamp COMPLETE. Live ontology_plan>30 is Platform after deploy.
+Does not stamp COMPLETE. Live ontology_plan>33 is Platform after deploy.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
 )
 from dms_api.app import create_app
+from dms_api.routes.health import GEN_PATH_CLIMB
 from dms_api.settings import get_settings
 from dms_executor.demo_pack import PACK_METRICS
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
@@ -35,7 +36,8 @@ from score_curated import (  # noqa: E402
     CLIMB08_RISE_IDS,
     CLIMB09_RISE_IDS,
     CLIMB10_RISE_IDS,
-    CLIMB10_RISE_L0,
+    CLIMB11_RISE_IDS,
+    CLIMB11_RISE_L0,
     QUALIFIED_GEN_COVERAGE_CLAIM,
     build_gen_path_prove_report,
     classify_plan_source,
@@ -49,14 +51,15 @@ from test_gen_path_climb05 import FROZEN_17, SYNONYM_L0  # noqa: E402
 from test_gen_path_climb07 import CLIMB07_SYNONYM_L0  # noqa: E402
 from test_gen_path_climb08 import CLIMB08_SYNONYM_L0  # noqa: E402
 from test_gen_path_climb09 import CLIMB09_SYNONYM_L0  # noqa: E402
+from test_gen_path_climb10 import CLIMB10_SYNONYM_L0  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 
-CLIMB10_SYNONYM_L0: tuple[tuple[str, str], ...] = (
-    ("ops_expired_items", "Which items are expired?"),
-    ("ops_cold_storage", "Which locations are cold storage?"),
-    ("ops_capacity_above_90", "Which locations are above 90 percent capacity?"),
+CLIMB11_SYNONYM_L0: tuple[tuple[str, str], ...] = (
+    ("ops_capacity_utilisation", "Show warehouse capacity utilisation"),
+    ("ops_cctv_wh_a", "Show the CCTV camera for warehouse A"),
+    ("ops_low_stock_wh_a", "Which SKUs are below reorder level in warehouse A?"),
 )
 
 OPS_GRANT = {"locations", "inventory", "shipments"}
@@ -77,7 +80,7 @@ def _submit_sql(warehouse: Path) -> Any:
         return SimpleNamespace(
             ok=True,
             status="ok",
-            run_id="run_climb10",
+            run_id="run_climb11",
             output={"rows": rows},
         )
 
@@ -87,7 +90,7 @@ def _submit_sql(warehouse: Path) -> Any:
 def _ledger_ok(_payload: dict[str, Any]) -> Any:
     from types import SimpleNamespace
 
-    return SimpleNamespace(entry_id="led_climb10", hash="hash_climb10_not_entry")
+    return SimpleNamespace(entry_id="led_climb11", hash="hash_climb11_not_entry")
 
 
 def _rank(*metric_ids: str) -> dict[str, Any]:
@@ -113,7 +116,7 @@ def _env(
     *metric_ids: str,
     grantable: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    db = tmp_path / "climb10.duckdb"
+    db = tmp_path / "climb11.duckdb"
     ensure_demo_warehouse(db)
     onto = load_verified_ontology(db, demo_ontology(db))
     assert onto is not None
@@ -157,8 +160,8 @@ def _hits(
     return n
 
 
-def test_n40_structurally_caps_at_30() -> None:
-    """30/40 = frozen 17 + climb-06 4 + 07 3 + 08 3 + 09 3. Rest traps+audit."""
+def test_n43_structurally_caps_at_33() -> None:
+    """33/43 = frozen 17 + climb-06 4 + 07 3 + 08 3 + 09 3 + 10 3. Rest traps+audit."""
     pack = load_pack(PACK)
     ids = [str(c["id"]) for c in pack["questions"]]
     assert len(FROZEN_17) == 17
@@ -166,25 +169,28 @@ def test_n40_structurally_caps_at_30() -> None:
     assert len(CLIMB07_SYNONYM_L0) == 3
     assert len(CLIMB08_SYNONYM_L0) == 3
     assert len(CLIMB09_SYNONYM_L0) == 3
-    assert len(ids) > 40
+    assert len(CLIMB10_SYNONYM_L0) == 3
+    assert len(ids) > 43
     assert len(ids) > int(QUALIFIED_GEN_COVERAGE_CLAIM["n"])
 
 
-def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
+def test_unused_certified_leftover_raises_above_33(tmp_path: Path) -> None:
     frozen = _hits(tmp_path, FROZEN_17)
     syn06 = _hits(tmp_path, SYNONYM_L0)
     syn07 = _hits(tmp_path, CLIMB07_SYNONYM_L0)
     syn08 = _hits(tmp_path, CLIMB08_SYNONYM_L0)
     syn09 = _hits(tmp_path, CLIMB09_SYNONYM_L0)
     syn10 = _hits(tmp_path, CLIMB10_SYNONYM_L0)
+    syn11 = _hits(tmp_path, CLIMB11_SYNONYM_L0)
     assert frozen == 17
     assert syn06 == len(SYNONYM_L0)
     assert syn07 == len(CLIMB07_SYNONYM_L0)
     assert syn08 == len(CLIMB08_SYNONYM_L0)
     assert syn09 == len(CLIMB09_SYNONYM_L0)
     assert syn10 == len(CLIMB10_SYNONYM_L0)
-    assert frozen + syn06 + syn07 + syn08 + syn09 == 30
-    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 > 30
+    assert syn11 == len(CLIMB11_SYNONYM_L0)
+    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 == 33
+    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11 > 33
     cases = [
         {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
         for qid, _q in (
@@ -194,6 +200,7 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
             *CLIMB08_SYNONYM_L0,
             *CLIMB09_SYNONYM_L0,
             *CLIMB10_SYNONYM_L0,
+            *CLIMB11_SYNONYM_L0,
         )
     ]
     n = (
@@ -203,12 +210,13 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
         + len(CLIMB08_SYNONYM_L0)
         + len(CLIMB09_SYNONYM_L0)
         + len(CLIMB10_SYNONYM_L0)
+        + len(CLIMB11_SYNONYM_L0)
     )
     report = build_gen_path_prove_report(
         {
-            "OK": frozen + syn06 + syn07 + syn08 + syn09 + syn10,
+            "OK": frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11,
             "LAYER": 0,
-            "ABSTAIN": n - (frozen + syn06 + syn07 + syn08 + syn09 + syn10),
+            "ABSTAIN": n - (frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11),
             "WRONG": 0,
         },
         cases=cases
@@ -221,7 +229,7 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 30
+    assert report["by_plan_source"]["ontology_plan"]["answered"] > 33
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True
     assert leftover_rise_not_ontology(cases) == []
@@ -229,61 +237,26 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
     assert leftover_ids_not_ontology(cases, CLIMB08_RISE_IDS) == []
     assert leftover_ids_not_ontology(cases, CLIMB09_RISE_IDS) == []
     assert leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS) == []
-    why = live_climb_gate(report)
-    assert why is not None
-    assert "climb-11" in why or "ontology_plan<=33" in why
+    assert leftover_ids_not_ontology(cases, CLIMB11_RISE_IDS) == []
+    assert live_climb_gate(report) is None
 
 
-def test_merge_injects_climb10_into_n40() -> None:
-    prior40 = [
+def test_merge_injects_climb11_into_n43() -> None:
+    prior43 = [
         {"id": f"q{i}", "space": "finance", "expect": "abstain", "question": "x"}
-        for i in range(40)
+        for i in range(43)
     ]
-    merged = merge_pack_questions(prior40)
+    merged = merge_pack_questions(prior43)
     ids = [str(c["id"]) for c in merged]
-    for qid in CLIMB10_RISE_IDS:
+    for qid in CLIMB11_RISE_IDS:
         assert qid in ids, qid
-    assert len(merged) > 40
+    assert len(merged) > 43
     assert leftover_ids_not_ontology(
-        [{"id": qid} for qid in ids], CLIMB10_RISE_IDS
-    ) == list(CLIMB10_RISE_IDS)
+        [{"id": qid} for qid in ids], CLIMB11_RISE_IDS
+    ) == list(CLIMB11_RISE_IDS)
 
 
-def test_live_gate_fails_flat_30_even_if_climb09_hits() -> None:
-    cases = [
-        {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
-        for qid, _q in (
-            *FROZEN_17,
-            *SYNONYM_L0,
-            *CLIMB07_SYNONYM_L0,
-            *CLIMB08_SYNONYM_L0,
-            *CLIMB09_SYNONYM_L0,
-        )
-    ] + [
-        {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
-        for qid in CLIMB10_RISE_IDS
-    ]
-    n = 40 + len(CLIMB10_RISE_IDS)
-    cases += [
-        {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
-        for i in range(n - len(cases))
-    ]
-    report = build_gen_path_prove_report(
-        {"OK": 30, "LAYER": 0, "ABSTAIN": n - 30, "WRONG": 0},
-        cases=cases,
-        mode="live",
-    )
-    why = live_climb_gate(report)
-    assert why is not None
-    assert "climb-10 rise L0s not ontology_plan" in why
-    assert report["by_plan_source"]["ontology_plan"]["answered"] == 30
-    blob = json.dumps(report)
-    assert "COMPLETE" not in blob
-    assert "99.95" not in blob
-
-
-def test_live_gate_passes_when_climb10_rise_is_ontology_plan() -> None:
-    """Climb-10 rise at 33 is KEEP_HOLD for climb-11 (flat 33/43)."""
+def test_live_gate_fails_flat_33_even_if_climb10_hits() -> None:
     cases = [
         {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
         for qid, _q in (
@@ -294,6 +267,41 @@ def test_live_gate_passes_when_climb10_rise_is_ontology_plan() -> None:
             *CLIMB09_SYNONYM_L0,
             *CLIMB10_SYNONYM_L0,
         )
+    ] + [
+        {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+        for qid in CLIMB11_RISE_IDS
+    ]
+    n = 43 + len(CLIMB11_RISE_IDS)
+    cases += [
+        {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+        for i in range(n - len(cases))
+    ]
+    report = build_gen_path_prove_report(
+        {"OK": 33, "LAYER": 0, "ABSTAIN": n - 33, "WRONG": 0},
+        cases=cases,
+        mode="live",
+    )
+    why = live_climb_gate(report)
+    assert why is not None
+    assert "climb-11 rise L0s not ontology_plan" in why
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == 33
+    blob = json.dumps(report)
+    assert "COMPLETE" not in blob
+    assert "99.95" not in blob
+
+
+def test_live_gate_passes_when_climb11_rise_is_ontology_plan() -> None:
+    cases = [
+        {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        for qid, _q in (
+            *FROZEN_17,
+            *SYNONYM_L0,
+            *CLIMB07_SYNONYM_L0,
+            *CLIMB08_SYNONYM_L0,
+            *CLIMB09_SYNONYM_L0,
+            *CLIMB10_SYNONYM_L0,
+            *CLIMB11_SYNONYM_L0,
+        )
     ]
     n = (
         26
@@ -302,6 +310,7 @@ def test_live_gate_passes_when_climb10_rise_is_ontology_plan() -> None:
         + len(CLIMB08_SYNONYM_L0)
         + len(CLIMB09_SYNONYM_L0)
         + len(CLIMB10_SYNONYM_L0)
+        + len(CLIMB11_SYNONYM_L0)
     )
     cases += [
         {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
@@ -314,7 +323,8 @@ def test_live_gate_passes_when_climb10_rise_is_ontology_plan() -> None:
             + len(CLIMB07_SYNONYM_L0)
             + len(CLIMB08_SYNONYM_L0)
             + len(CLIMB09_SYNONYM_L0)
-            + len(CLIMB10_SYNONYM_L0),
+            + len(CLIMB10_SYNONYM_L0)
+            + len(CLIMB11_SYNONYM_L0),
             "LAYER": 0,
             "ABSTAIN": n
             - (
@@ -324,28 +334,31 @@ def test_live_gate_passes_when_climb10_rise_is_ontology_plan() -> None:
                 + len(CLIMB08_SYNONYM_L0)
                 + len(CLIMB09_SYNONYM_L0)
                 + len(CLIMB10_SYNONYM_L0)
+                + len(CLIMB11_SYNONYM_L0)
             ),
             "WRONG": 0,
         },
         cases=cases,
         mode="live",
     )
-    assert live_climb_gate(report) is not None
-    why = live_climb_gate(report)
-    assert "climb-11" in why or "ontology_plan<=33" in why
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 30
+    assert live_climb_gate(report) is None
+    assert report["by_plan_source"]["ontology_plan"]["answered"] > 33
     assert leftover_rise_not_ontology(cases) == []
-    assert leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS) == []
+    assert leftover_ids_not_ontology(cases, CLIMB11_RISE_IDS) == []
 
 
-def test_health_advertises_climb10_identity() -> None:
+def test_health_advertises_climb11_identity() -> None:
     get_settings.cache_clear()
     client = TestClient(create_app())
     body = client.get("/health").json()
     climb = body["gen_path_climb"]
+    assert climb["issue"] == 226
+    assert climb["ticket"] == "GEN-PATH-CLIMB-11"
     assert climb["frozen_n"] == 26
-    assert climb["prior_n"] >= 40
-    assert climb["n"] > 43
+    assert climb["prior_n"] == 43
+    assert climb["n"] == 46
+    assert climb["rise_l0"] == list(CLIMB11_RISE_IDS)
+    assert GEN_PATH_CLIMB["rise_l0"] == list(CLIMB11_RISE_IDS)
     pack = load_pack(PACK)
     assert len(pack["questions"]) == climb["n"]
     for qid in (
@@ -354,6 +367,7 @@ def test_health_advertises_climb10_identity() -> None:
         *CLIMB08_RISE_IDS,
         *CLIMB09_RISE_IDS,
         *CLIMB10_RISE_IDS,
+        *CLIMB11_RISE_IDS,
     ):
         assert qid in {str(c["id"]) for c in pack["questions"]}
 
@@ -375,16 +389,13 @@ def test_rise_questions_are_not_pack_expansion() -> None:
         "cq_expired_items",
         "cq_cctv_wh_a",
     }
-    for case in CLIMB10_RISE_L0:
+    for case in CLIMB11_RISE_L0:
         assert case["expect"] == "l0"
         assert case["space"] == "ops"
         assert str(case["id"]) not in _PACK_METRIC_IDS
 
 
-def test_expired_locks_stock_not_sku() -> None:
-    q = "Which items are expired?"
-    slots = intent_slots(q, None)
-    assert slots.get("measure") == "stock_value_myr"
+def test_capacity_and_cctv_lock_utilisation_not_sku() -> None:
     aliases = load_measure_aliases()
     allowed = {
         "sku_count",
@@ -392,52 +403,15 @@ def test_expired_locks_stock_not_sku() -> None:
         "stock_value_myr",
         "utilisation_pct",
         "audit_overdue",
-    }
-    specs = {
-        "stock_value_myr": "on-hand stock value",
-        "sku_count": "count of unique SKUs",
-    }
-    pack = overlay_pack_id_from_question(
-        q,
-        prefer="stock_value_myr",
-        aliases=aliases,
-        allowed=allowed,
-        specs=specs,
-    )
-    assert pack is not None
-    assert aliases[pack] == "stock_value_myr"
-    assert "expired" in pack
-    plan = query_plan_from_insights_ranking(
-        {"ontology": {"metrics": [{"id": "sku_count"}]}},
-        allowed,
-        aliases=aliases,
-        specs=specs,
-        prefer="stock_value_myr",
-        question=q,
-    )
-    assert plan is not None
-    assert plan["query_plan"]["measure"] == "stock_value_myr"
-    assert plan["plan_source"] == "ontology_plan"
-    ranked_id = str(plan["query_plan"].get("ranked_id") or "")
-    assert "sku_count" not in ranked_id
-
-
-def test_cold_and_capacity_lock_utilisation_not_sku() -> None:
-    aliases = load_measure_aliases()
-    allowed = {
-        "sku_count",
-        "outbound_value_myr",
-        "stock_value_myr",
-        "utilisation_pct",
-        "audit_overdue",
+        "below_reorder_lots",
     }
     specs = {
         "utilisation_pct": "warehouse capacity utilisation",
         "sku_count": "count of unique SKUs",
     }
     for q, needle in (
-        ("Which locations are cold storage?", "cold"),
-        ("Which locations are above 90 percent capacity?", "capacity"),
+        ("Show warehouse capacity utilisation", "capacity"),
+        ("Show the CCTV camera for warehouse A", "cctv"),
     ):
         slots = intent_slots(q, None)
         assert slots.get("measure") == "utilisation_pct", q
@@ -466,11 +440,53 @@ def test_cold_and_capacity_lock_utilisation_not_sku() -> None:
         assert "sku_count" not in ranked_id
 
 
+def test_low_stock_locks_below_reorder_not_sku() -> None:
+    q = "Which SKUs are below reorder level in warehouse A?"
+    slots = intent_slots(q, None)
+    assert slots.get("measure") == "below_reorder_lots"
+    aliases = load_measure_aliases()
+    allowed = {
+        "sku_count",
+        "outbound_value_myr",
+        "stock_value_myr",
+        "utilisation_pct",
+        "below_reorder_lots",
+        "audit_overdue",
+    }
+    specs = {
+        "below_reorder_lots": "lots below reorder level",
+        "sku_count": "count of unique SKUs",
+    }
+    pack = overlay_pack_id_from_question(
+        q,
+        prefer="below_reorder_lots",
+        aliases=aliases,
+        allowed=allowed,
+        specs=specs,
+    )
+    assert pack is not None
+    assert aliases[pack] == "below_reorder_lots"
+    assert "low_stock" in pack
+    plan = query_plan_from_insights_ranking(
+        {"ontology": {"metrics": [{"id": "sku_count"}]}},
+        allowed,
+        aliases=aliases,
+        specs=specs,
+        prefer="below_reorder_lots",
+        question=q,
+    )
+    assert plan is not None
+    assert plan["query_plan"]["measure"] == "below_reorder_lots"
+    assert plan["plan_source"] == "ontology_plan"
+    ranked_id = str(plan["query_plan"].get("ranked_id") or "")
+    assert "sku_count" not in ranked_id
+
+
 def test_ops_leftover_l0s_compile_without_suppliers_or_txns(tmp_path: Path) -> None:
     for q in (
-        "Which items are expired?",
-        "Which locations are cold storage?",
-        "Which locations are above 90 percent capacity?",
+        "Show warehouse capacity utilisation",
+        "Show the CCTV camera for warehouse A",
+        "Which SKUs are below reorder level in warehouse A?",
     ):
         env = _env(tmp_path, q, "sku_count", grantable=OPS_GRANT)
         assert env is not None
@@ -510,7 +526,7 @@ def test_planted_refuses_stay_abstain(tmp_path: Path) -> None:
 
 def test_retry_still_free_normal_not_second_vault() -> None:
     posts: list[dict[str, Any]] = []
-    question = "Which items are expired?"
+    question = "Show warehouse capacity utilisation"
 
     class _Empty:
         status_code = 200
@@ -532,8 +548,9 @@ def test_retry_still_free_normal_not_second_vault() -> None:
                 "generative": {
                     "ok": True,
                     "sql": (
-                        "SELECT sku FROM inventory WHERE expiry_date IS NOT NULL "
-                        "AND CAST(expiry_date AS DATE) < CURRENT_DATE"
+                        "SELECT location_code, "
+                        "ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used "
+                        "FROM locations"
                     ),
                 },
             }
@@ -573,16 +590,15 @@ def test_retry_still_free_normal_not_second_vault() -> None:
     onto = {
         "measures": {
             "sku_count": {"grain": "product", "description": "count of unique SKUs"},
-            "stock_value_myr": {
-                "grain": "lot",
-                "description": "on-hand stock value",
+            "utilisation_pct": {
+                "grain": "location",
+                "description": "warehouse capacity utilisation",
             },
         },
-        "measure_aliases": {"cq_expired_items": "stock_value_myr"},
+        "measure_aliases": {"cq_capacity_utilisation": "utilisation_pct"},
         "intent_slots": {
-            "measure": "stock_value_myr",
-            "group_by": [["product", "sku"]],
-            "filters": [["product", "expiry_date", "<", "CURRENT_DATE"]],
+            "measure": "utilisation_pct",
+            "group_by": [["location", "location_code"]],
         },
     }
     with patch("cortex_client.compute.httpx.Client", _Client):
@@ -590,14 +606,14 @@ def test_retry_still_free_normal_not_second_vault() -> None:
             "http://127.0.0.1:8010",
             question=question,
             ontology=onto,
-            api_key="ov_test_climb_10",
+            api_key="ov_test_climb_11",
         )
     gens = [p for p in posts if p["url"].endswith("/v1/insights")]
     assert len(gens) == 2
     retry = gens[1]["json"]
     assert retry["model_preference"] == FREEROUTE_PREFERENCE
     assert retry["generate_retry"] == "ranked_slots"
-    assert retry["query_plan"]["measure"] == "stock_value_myr"
+    assert retry["query_plan"]["measure"] == "utilisation_pct"
     assert "LIVE_KEY" not in str(gens)
     assert ":5000" not in str(gens)
     assert out is not None

@@ -471,6 +471,44 @@ acceptance is Platform measured **ontology_plan > 30 + WRONG=0**. A
 **30/40** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
 #224 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-11 (#226) — continue rise past ontology_plan=33
+
+Baseline Platform live @ `f833e567`: **ontology_plan=33 / bind_plan=0 /
+WRONG=0** answered=**33/43** on the uncapped harness. Epic **NOT COMPLETE**.
+Do not invent 99.95% / estate CLEAR. Do not reintroduce frozen n=26,
+n=34, n=37, n=40, or n=43. Do not shrink the pack to fake a higher percent.
+
+33/43 is the frozen 17 L0s plus the sixteen climb-05/06/07/08/09/10 leftovers.
+Unused Cortex leftover was never POSTed:
+
+1. Ops `Show warehouse capacity utilisation` (`cq_capacity_utilisation`)
+2. Ops `Show the CCTV camera for warehouse A` (`cq_cctv_wh_a`)
+3. Ops `Which SKUs are below reorder level in warehouse A?` (`cq_low_stock_wh_a`)
+
+Same parent SQL as Finance L0s already in frozen 17. **Not** PACK_METRICS
+expansion (prove-path is generative). Ops is granted inventory+locations.
+Audit overdue still optional (`last_audit_date` ceiling).
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Score those leftover certified L0s** as `ontology_plan`.
+2. Retrieve/overlay lock utilisation/cctv onto `utilisation_pct` (sku_count
+   ranking is noise) and low-stock onto `below_reorder_lots`.
+3. Harness unions the new L0s so this SHA cannot score n=43. Live prove
+   FAILs on ontology_plan<=33 or climb-11 rise L0s not `ontology_plan`.
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Need **this SHA's harness** against Studio >= this merge. Product climb
+acceptance is Platform measured **ontology_plan > 33 + WRONG=0**. A
+**33/43** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
+#226 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`
