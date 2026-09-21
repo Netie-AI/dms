@@ -395,6 +395,44 @@ acceptance is Platform measured **ontology_plan > 24 + WRONG=0**. A
 **24/34** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
 #220 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-09 (#222) — continue rise past ontology_plan=27
+
+Baseline Platform live @ `4f189f81`: **ontology_plan=27 / bind_plan=0 /
+WRONG=0** answered=**27/37** on the uncapped harness. Epic **NOT COMPLETE**.
+Do not invent 99.95% / estate CLEAR. Do not reintroduce frozen n=26,
+n=34, or n=37. Do not shrink the pack to fake a higher percent.
+
+27/37 is the frozen 17 L0s plus the ten climb-05/06/07/08 leftovers.
+Unused Cortex leftover was never POSTed:
+
+1. Ops `How many SKUs in inventory?` (`cq_sku_count` synonym)
+2. Ops `SKU count in inventory` (`cq_sku_count` synonym)
+3. Ops `List chemicals in inventory` (`cq_chemicals_list` primary)
+
+Same parent SQL. **Not** PACK_METRICS. Ops is granted inventory+locations
+(ops sku primaries already live). Audit overdue still optional
+(`last_audit_date` ceiling).
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Score those leftover certified L0s** as `ontology_plan`.
+2. Retrieve/overlay lock chemicals onto `stock_value_myr` (sku_count
+   ranking is noise). Ops sku synonyms reuse the climb-08 sku lock.
+3. Harness unions the new L0s so this SHA cannot score n=37. Live prove
+   FAILs on ontology_plan<=27 or climb-09 rise L0s not `ontology_plan`.
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Need **this SHA's harness** against Studio >= this merge. Product climb
+acceptance is Platform measured **ontology_plan > 27 + WRONG=0**. A
+**27/37** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
+#222 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

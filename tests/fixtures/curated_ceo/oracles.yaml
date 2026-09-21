@@ -184,6 +184,18 @@ oracles:
     cortex_id: cq_sku_count_by_category
     sql: "SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category"
 
+  ops_sku_count_syn_short:
+    cortex_id: cq_sku_count
+    sql: "SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory"
+
+  ops_sku_count_syn_label:
+    cortex_id: cq_sku_count
+    sql: "SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory"
+
+  ops_chemicals_list:
+    cortex_id: cq_chemicals_list
+    sql: "SELECT sku FROM inventory WHERE category = 'CHEMICALS' ORDER BY sku"
+
   trap_categoty:
     cortex_id: cq_top3_category_sales
     sql: >
