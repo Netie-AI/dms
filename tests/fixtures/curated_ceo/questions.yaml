@@ -220,6 +220,33 @@ questions:
     cortex_id: cq_top3_category_sales
     question: top 3 category sales
 
+  # Unused Cortex certified_queries.yaml leftover after #218 RISE_PASS
+  # ontology_plan=24 / n=34. "top 3 categoty sales" is the last unused
+  # synonym of cq_top3_category_sales (trap_categoty is the Show form).
+  # Ops leftover certified primaries that Warehouse Ops is granted
+  # (inventory+locations, not PACK_METRICS) were never POSTed. Same
+  # parent SQL. Not last_audit_date. Isolated gen compiles as ontology_plan.
+  - id: cq_top3_category_syn_typo
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_top3_category_sales
+    question: top 3 categoty sales
+
+  - id: ops_sku_count
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count
+    question: How many SKUs do we have in inventory?
+
+  - id: ops_sku_count_by_category
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count_by_category
+    question: Show SKU count by category
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

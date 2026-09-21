@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: PARTIAL (GEN-PATH-CLIMB-06/05: 21/31 = frozen 17 + 4 synonyms; leftover unused Cortex certified_queries.yaml synonyms never POSTed. Audit overdue still last_audit_date ceiling).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-08: 24/34 = frozen 17 + 7 climb-05/06/07 synonyms; leftover unused Cortex certified_queries.yaml `top 3 categoty sales` + Ops sku L0s never POSTed. Audit overdue still last_audit_date ceiling).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-18 | gen-path-climb-08 | GEN-PATH-CLIMB-08, ontology_plan, certified leftover, 24/34, categoty, dms-220 | After #218 ontology_plan=24: leftover Cortex typo synonym + Ops sku L0s. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-08.md` |
 | 2026-09-18 | gen-path-climb-07 | GEN-PATH-CLIMB-07, ontology_plan, certified synonyms, 21/31, dms-218 | After #216 ontology_plan=21: leftover Cortex synonyms of those L0s. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-07.md` |
 | 2026-09-18 | gen-path-climb-06 | GEN-PATH-CLIMB-06, ontology_plan, dual-flat, 17/26, prove harness, dms-216 | #212+#214 KEEP_HOLD 17/26: live prove loads local yaml, not Studio SHA. Frozen 26 saturates at 17. Union rise L0s; FAIL flat 17. WRONG=0. Live Platform. Not COMPLETE. | `2026-09-18_gen-path-climb-06.md` |
 | 2026-09-18 | gen-path-climb-05 | GEN-PATH-CLIMB-05, ontology_plan, certified synonym, 17/26, dms-214 | After #212 KEEP_HOLD 17/26: leftover audit never scored; certified synonyms of the working 17 as ontology_plan, not PACK_METRICS. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-18_gen-path-climb-05.md` |

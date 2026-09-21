@@ -30,8 +30,8 @@ def test_health_route():
     assert "database_configured" in body
     assert "trust" in body["dependencies"]["openvault"]
     assert body["gen_path_climb"]["frozen_n"] == 26
-    assert body["gen_path_climb"]["issue"] == 218
-    assert body["gen_path_climb"]["n"] == 34
+    assert body["gen_path_climb"]["issue"] == 220
+    assert body["gen_path_climb"]["n"] == 37
     assert len(body["gen_path_climb"]["rise_l0"]) == 3
 
 

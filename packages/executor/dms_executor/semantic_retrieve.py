@@ -122,6 +122,10 @@ def question_tokens(question: str) -> set[str]:
         out.add(raw)
         if len(raw) > 3 and raw.endswith("s"):
             out.add(raw[:-1])
+    # Certified VQ-01 typo synonym of category. Overlay/retrieve must
+    # group product.category on "top 3 categoty sales", not sku.
+    if "categoty" in out:
+        out.add("category")
     return out
 
 

@@ -174,6 +174,11 @@ def ranked_measure_tokens(name: str) -> set[str]:
         out.add(raw)
         if len(raw) > 3 and raw.endswith("s"):
             out.add(raw[:-1])
+    # Certified VQ-01 typo synonym of category (cq_top3_category_sales).
+    # Without this, overlay ties sales_top5 vs top3_category on
+    # "top 3 categoty sales" (top+sales only).
+    if "categoty" in out:
+        out.add("category")
     return out
 
 
