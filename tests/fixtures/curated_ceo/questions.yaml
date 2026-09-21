@@ -247,6 +247,33 @@ questions:
     cortex_id: cq_sku_count_by_category
     question: Show SKU count by category
 
+  # Unused Cortex certified_queries.yaml leftover after #220 RISE_PASS
+  # ontology_plan=27 / n=37. Climb-08 POSTed Ops sku primaries; the
+  # certified synonyms of those L0s were never POSTed in Ops. Ops
+  # chemicals is a leftover certified primary Warehouse Ops is granted
+  # (inventory, not PACK_METRICS, not last_audit_date). Same parent SQL.
+  # Isolated gen compiles as ontology_plan.
+  - id: ops_sku_count_syn_short
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count
+    question: How many SKUs in inventory?
+
+  - id: ops_sku_count_syn_label
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count
+    question: SKU count in inventory
+
+  - id: ops_chemicals_list
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_chemicals_list
+    question: List chemicals in inventory
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted
