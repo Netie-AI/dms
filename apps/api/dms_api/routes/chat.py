@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.bi_export import export_envelope_bi
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -140,6 +141,13 @@ class ExportXlsxBody(BaseModel):
     """INSIGHTS-EXPORT-01 — serialize an existing ask envelope. No re-ask."""
 
     envelope: dict[str, Any]
+
+
+class ExportBiBody(BaseModel):
+    """INSIGHTS-EXPORT-02 — Power BI / Superset from an existing ask envelope."""
+
+    envelope: dict[str, Any]
+    target: Literal["powerbi", "superset"] | None = None
 
 
 def _space_refusal_envelope(
@@ -410,3 +418,30 @@ def chat_export_xlsx(
         ),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/export.bi")
+def chat_export_bi(
+    body: ExportBiBody,
+    cortex: CortexDep,
+) -> dict[str, Any]:
+    """Power BI / Superset stubs from a real ask envelope. No invented metrics."""
+    peek = body.envelope if isinstance(body.envelope, dict) else {}
+    decision = compliance_gate(
+        action="chat.export",
+        metadata={
+            "task_id": "chat.export",
+            "answer_id": str(peek.get("answer_id") or "")[:80],
+            "target": body.target or "powerbi,superset",
+        },
+        client=cortex,
+    )
+    # Serializer of the caller envelope — not a lake write or live BI connector.
+    enforce(decision, mutation=False)
+    try:
+        return export_envelope_bi(body.envelope, target=body.target)
+    except EnvelopeExportError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc

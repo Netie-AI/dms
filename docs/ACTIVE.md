@@ -20,6 +20,13 @@ existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`). HTTP:
 answer_id+badge; does not re-ask or add rows. Not FRTR / #29. Regression:
 `tests/test_insights_export.py`. Not COMPLETE.
 
+INSIGHTS-EXPORT-02 (#189): `packages/core/dms_core/bi_export.py` copies an
+existing ask envelope into Power Query M and a Superset dataset JSON (URI
+omitted). HTTP: `POST /v1/chat/export.bi`. Chat: Power BI / Superset.
+Refuses without answer_id+badge; does not re-ask, invent metrics, or stamp
+COMPLETE. Live ODBC / Desktop / steward Superset = NEEDS-YOU. Regression:
+`tests/test_insights_export_bi.py`. Not COMPLETE. Does not reopen #108.
+
 INSIGHTS-HOST-01 (#196): hosted consume of Cortex `GET|POST /v1/insights`
 (Cortex #213). Client: `packages/cortex_client/cortex_client/insights.py`.
 HTTP: `apps/api/dms_api/routes/insights.py` forwards
