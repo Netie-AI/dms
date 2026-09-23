@@ -273,6 +273,15 @@ non-confident. Coverage from #232 still stamps include/exclude/unsure.
 Regression: `tests/test_ontology_compile.py` KEEP_HOLD cases. CI !=
 Platform live. Not COMPLETE. #178 NOT COMPLETE.
 
+ONTOLOGY-MULTIGRAIN-02 (#254): grant-aware multi-grain compile. SKU+plant
+either emits a Space-granted plant join path or ABSTAINS `missing_join`
+naming `plant` -- never bare `validate:ungranted:shipments`. Live leftover
+after #249: Finance shipping-cost cited ungranted `shipments`. where_paths
+/ WRONG=0 / #238 refuse stand. Regression:
+`tests/test_ontology_compile.py` mg_sku_plant. CI != Platform live re-prove.
+Bar (1) KEEP_HOLD. Rebased onto GEN-03 #194 @ `9b29c565`. Not COMPLETE.
+#178 NOT COMPLETE.
+
 AGI-BUYER-WALK-01 (#236): steward Studio buyer walk for the 5-day
 supply-chain AGI-for-DB demo. Pack
 `tests/fixtures/buyer_walk/questions.yaml`. Script

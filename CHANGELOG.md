@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - ONTOLOGY-MULTIGRAIN-02: mg_sku_plant named missing_join/plant or granted path (#254)
+
+- **Ticket.** Serves [ONTOLOGY-MULTIGRAIN-02 #254](https://github.com/Netie-AI/dms/issues/254) under EPIC-INSIGHTS-UX #178. Follow-up to #249 KEEP_HOLD (3/4): live `mg_sku_plant` died as bare `validate:ungranted:shipments`. Rebased onto GEN-03 #194 @ `9b29c565`. Does not stamp epic COMPLETE. Does not invent bar (1) PASS / 1PB LIVE.
+- **Ask path.** Multi-grain compile is grant-aware. A SKU+plant ask either emits a join path whose tables the Space may read (Ops `shipments`+`locations`, or Finance `stock_value` via inventory+locations) or ABSTAINS `missing_join` naming `plant` -- never `validate:ungranted:shipments`. where_paths / WRONG=0 / refuse discipline from #238 stand. `bind_plan` stays non-confident. GEN-03 `ask_path` 400 + `bind_on_miss=False` on live_ask are unchanged.
+- **Tests.** `tests/test_ontology_compile.py` mg_sku_plant: Finance shipping-cost named ABSTAIN; Ops shipping-cost granted path; Finance stock-value granted plant path. CI green != Platform live re-prove.
+- **Not this ticket:** #178 COMPLETE, bar (1) PASS, 1PB LIVE, second vault / LIVE_KEY, reseating #194/#189/#231/#237/#238.
+
 ## 2026-09-23 - GEN-03: contain the ask path - no keyword-bound answer under a confident badge (#194)
 
 - **Ticket.** Serves [GEN-03 #194](https://github.com/Netie-AI/dms/issues/194) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. No new climb number.
