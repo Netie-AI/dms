@@ -28,6 +28,14 @@ closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
 `live_5000_ci` always false. Regression: `tests/test_insights_host.py`.
 Live hosted walk = Platform after merge. Not COMPLETE.
 
+SCALE-FREE-AI-01 (#233): FreeRoute free+normal providers resolve through
+OpenVault API only (`dms_core.freeroute`, `GET /v1/freeroute/providers`).
+Duplicate labels skipped. No chat-token discovery, no local vault scrape,
+no second vault. WRONG=0 unchanged. Harness:
+`python scripts/bakeoff_freeroute.py --self-check`. Docs:
+`docs/FREEROUTE_PROVIDERS.md`. Regression: `tests/test_scale_free_ai.py`.
+Live catalog leftover Platform. Not #178 COMPLETE.
+
 EPIC-014 MCP-01: `apps/api/dms_api/routes/mcp.py` wraps existing
 `POST /v1/chat/ask`, `GET /v1/library/warehouse/{table}/preview`,
 `GET /v1/ontology/metrics`. Flag `DMS_MCP=0` (off). Regression:

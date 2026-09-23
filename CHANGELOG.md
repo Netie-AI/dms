@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - SCALE-FREE-AI-01: FreeRoute multi-provider consume via OpenVault API (#233)
+
+- **Ticket.** Serves [SCALE-FREE-AI-01 #233](https://github.com/Netie-AI/dms/issues/233) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Platform/Free Keys owns mint; LIVE_KEY_ID is not rotated here.
+- **Consume.** Prove/ask stay on FreeRoute `free+normal`. DMS resolves which free providers that preference would attempt vs skip from OpenVault HTTP (`/api/freeroute/status`, `/api/freeroute/onboard`, `/api/tool/register`, `/api/keys`). No `POST /v1/chat/completions` for discovery. No local vault Path scrape. No second vault. Duplicate labels skipped (`dup_label`). Paid primary hops skipped. WRONG=0 unchanged -- this does not add generate retries to burn more keys.
+- **Harness.** `GET /v1/freeroute/providers` plus `python scripts/bakeoff_freeroute.py --self-check`. Docs: `docs/FREEROUTE_PROVIDERS.md`. Live catalog leftover is Platform (`OPENVAULT_URL` already on the host). CI green != climb PASS.
+- **Not this ticket:** #178 COMPLETE, LIVE_KEY rotate, mass fake accounts, ticket close, climb/ontology/export edits.
+
 ## 2026-09-23 - AGI-BUYER-WALK-01: Studio buyer walk (ask + refuse) (#236)
 
 - **Ticket.** Serves [AGI-BUYER-WALK-01 #236](https://github.com/Netie-AI/dms/issues/236) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent logos / ARR / dashboard screenshots.
@@ -10,6 +17,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Not this ticket:** #178 COMPLETE, ontology compile, FreeRoute, fake buyer logos, ARR.
 
 ## 2026-09-21 - GEN-PATH-CLIMB-12: unused Ops parent-SQL leftover past ontology_plan=36 (#228)
+
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-12 #228](https://github.com/Netie-AI/dms/issues/228) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #226 RISE_PASS @ `6eb89562` (ontology_plan=36 bind_plan=0 WRONG=0 answered=36/46 on uncapped harness) stands as the measured floor.
 - **Climb.** Score leftover Ops parent-SQL of Cortex `certified_queries.yaml` L0s live already answers (`SKU count by category`, `stock value by category`, `shipment cost by destination`) as `ontology_plan`. Same SQL as `cq_sku_count_by_category` / `cq_stock_value_by_category` / `cq_cost_by_destination`. Not PACK_METRICS expansion (prove-path is generative). Ontology spine slot `shipment_cost_by_destination` plus retrieve/overlay lock sku-by-category onto `sku_count`, stock-value onto `stock_value_myr`, shipment-cost onto `shipping_cost_myr`. Harness unions the new L0s so this SHA cannot score the 36/46 pack. Live prove FAILs on ontology_plan<=36 or climb-12 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
