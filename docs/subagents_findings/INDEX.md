@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: PARTIAL (SCALE-FREE-AI-01: FreeRoute consume via OV API + dup-label skip; climb leftover still #228 floor. Not COMPLETE).
+PREFLIGHT for this goal: HIT (ONTOLOGY-COMPILE-01 ranked where-paths; SCALE-FREE-AI-01 + AGI-BUYER-WALK-01 on main).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | ontology-compile-01 | ONTOLOGY-COMPILE-01, where-paths, importance, multi-join, missing_join, bind_plan, dms-234 | >=2 supply-chain grains: ranked where-paths + importance or ABSTAIN naming missing join/metric. bind_plan not confident path. Not COMPLETE. | `2026-09-23_ontology-compile-01.md` |
 | 2026-09-23 | scale-free-ai-01 | SCALE-FREE-AI-01, FreeRoute, OpenVault, dup_label, free+normal, dms-233 | Prove/ask keep free+normal. DMS names attempted vs skipped providers from OV HTTP only. Dup labels skipped. No chat discovery, no vault scrape, no second vault. WRONG=0. Not COMPLETE. | `2026-09-23_scale-free-ai-01.md` |
 | 2026-09-23 | agi-buyer-walk-01 | AGI-BUYER-WALK-01, Studio, supply-chain, abstain, dms-236 | Walk script + Studio copy. 5 asks ontology_plan or honest ABSTAIN; 1 refuse demo; cite receipt/ask/export. No logos/ARR/COMPLETE. Live Platform. | `2026-09-23_agi-buyer-walk-01.md` |
 | 2026-09-21 | gen-path-climb-12 | GEN-PATH-CLIMB-12, ontology_plan, certified leftover, 36/46, ops sku-by-category, ops stock, dms-228 | After #226 ontology_plan=36: leftover Ops parent-SQL of certified sku-by-category / stock-value / shipment-cost via spine slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-12.md` |

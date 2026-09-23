@@ -241,6 +241,14 @@ n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>36 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+ONTOLOGY-COMPILE-01 (#234): ranked where-paths + importance when an ask
+spans >=2 supply-chain grains (sku/supplier/plant/lane/day).
+`Ontology.compile_grains` / `try_compile_multi_grain` locate then compile,
+or Refusal `missing_join` / `missing_metric` naming the gap. bind_plan is
+not the confident path. Plant aliases to location until #232. Day without
+a calendar object abstains. Regression: `tests/test_ontology_compile.py`.
+CI != Platform live. Not COMPLETE. #178 NOT COMPLETE.
+
 AGI-BUYER-WALK-01 (#236): steward Studio buyer walk for the 5-day
 supply-chain AGI-for-DB demo. Pack
 `tests/fixtures/buyer_walk/questions.yaml`. Script
