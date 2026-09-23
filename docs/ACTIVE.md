@@ -80,9 +80,13 @@ EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
 (`scripts/score_climb.md`). Probe + ask use httpx (`score_http`), not urllib
 (SCORE-CLIENT-01 / #187; urllib CF1010s the public origin). `ask_path=exact|generative|product` on
-`POST /v1/chat/ask`. Isolated gen: Cortex compute miss binds retrieved
-ontology then validate/CRAG. Product path still Cortex-asks on compute
-miss. Distill ladder in `scripts/score_climb.md` (certified-first,
+`POST /v1/chat/ask`. GEN-03 (#194): `exact|generative` return 400
+`ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS`; no lane
+POSTs Cortex `/dms/query` or binds a keyword plan, so isolated gen abstains
+past the pre-gates and the product path goes to the Cortex contract ask
+(`tests/test_gen03_contain_ask_path.py`). Isolated gen (offline only): Cortex
+compute miss may still bind retrieved ontology then validate/CRAG. Product path
+still Cortex-asks on compute miss. Distill ladder in `scripts/score_climb.md` (certified-first,
 YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
 Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.
 Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - GEN-03: contain the ask path - no keyword-bound answer under a confident badge (#194)
+
+- **Ticket.** Serves [GEN-03 #194](https://github.com/Netie-AI/dms/issues/194) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. No new climb number.
+- **Refuse.** `POST /v1/chat/ask` with `ask_path` `exact` or `generative` returns 400 `ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS` (default off). Checked first: no compliance gate, Cortex call, submit or ledger append on a refused request. Server config only, never a header (DR-0004).
+- **Contain.** `live_ask` no longer POSTs Cortex `/dms/query` on any lane and passes `bind_on_miss=False` everywhere. Cortex ignores `mode`/`ontology` and returns no typed plan (KB F-0055), so the call always missed and the generative lane answered from `bind_plan` under L2_VALIDATED with wrong numbers. The paraphrase and vague-ask pre-gates still run where they were (moving them is GEN-07). `bind_plan` is kept for offline harnesses. Tip `f9cad233` multi-grain compile and GEN-PATH-REFUSE-01 named ABSTAIN stay `ontology_plan`, not bind_plan. WRONG=0 not weakened.
+- **Honest docstrings.** `cortex_client` compute no longer claims to be the engine's generate+validate path; deletion is CONTRACT-FAKE-01.
+- **Not this ticket:** Cortex changes, the seam decision, GEN-04/05a/07, `scripts/score_curated.py` live `--ab` (400s on a customer origin until run against a measurement origin), ticket close.
+
 ## 2026-09-23 - GEN-PATH-REFUSE-01: named ABSTAIN when ontology path / metric missing (#238)
 
 - **Ticket.** Serves [GEN-PATH-REFUSE-01 #238](https://github.com/Netie-AI/dms/issues/238) under EPIC-INSIGHTS-UX #178. Does not close #178. Does not stamp COMPLETE. Does not reseat GEN-03 `#194` ask_path 400 containment.
@@ -36,7 +44,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Grains.** Named `sku` (alias of `product`), `supplier`, `plant` (alias of `location`), `day` (CAST `transactions.ts` when present), `lane` (origin->destination on shipments when origin column exists). Thin demo has dest-only shipments: lane is `missing_join` naming `origin_location_id`, not a padded route. Join `importance` 1/2/3 from a measure grain; grouping through M2M is filter-only.
 - **Coverage.** Every compiled number carries include/exclude/unsure. Exclude always names `missing groups not zero-padded`. Ask path stamps `coverage` on ontology_plan envelopes. Missing metric/join ABSTAINS with the reason in assumptions/text. FreeRoute stays Cortex/OV `free+normal`. No LIVE_KEY / second vault. No pack shrink. GEN-03 containment untouched.
 - **Regression.** `tests/test_sc_ontology.py`. CI green != Platform steward walk. #178 stays OPEN.
-
 ## 2026-09-23 - ONTOLOGY-COMPILE-01: ranked where-paths + importance for multi-join grains (#234)
 
 - **Ticket.** Serves [ONTOLOGY-COMPILE-01 #234](https://github.com/Netie-AI/dms/issues/234) under EPIC-INSIGHTS-UX #178. Does not stamp epic COMPLETE. Does not invent 1PB LIVE. Parallel with #232 grains / #235 audit / #238 refuse / #194 GEN-03 -- this seat is compile, not ask_path containment or FreeRoute.
