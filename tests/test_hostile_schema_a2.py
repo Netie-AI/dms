@@ -154,7 +154,9 @@ DEFECT_WORDS: dict[str, tuple[str, ...]] = {
 
 # Measured on main @ 3c3b621 (2026-09-23). (case, qid, mode) -> verdict.
 # WRONG rows name the ticket that owns the fix. Improving a row is editing it.
-_GAP_ORPHAN_SQL = "WRONG"  # dms#258 A2-02: generated SQL ships over an ontology that failed verify
+# dms#258 A2-02 closed: a declared ontology that failed verify now refuses SQL
+# joining the broken link and names it (check, link, orphan count) on both paths.
+_FIXED_ORPHAN = "ABSTAIN"
 _GAP_WRONG_FK = "WRONG"  # dms#259 A2-03: FK on a wrong column with coincident values passes verify
 _GAP_DUP_KEY = "WRONG"  # dms#260 A2-04: duplicate business key behind a unique surrogate
 _GAP_CURRENCY = "WRONG"  # dms#261 A2-05: unit/currency in the question vs the data is never checked
@@ -167,8 +169,11 @@ for _case in CASES:
     for _mode in ("plan", "sql"):
         MEASURED[(_case, "revenue_usd", _mode)] = _GAP_CURRENCY
 for _qid in QUESTIONS:
-    MEASURED[("orphan", _qid, "plan")] = "ABSTAIN_UNNAMED"
-MEASURED[("orphan", "revenue_by_region", "sql")] = _GAP_ORPHAN_SQL
+    MEASURED[("orphan", _qid, "plan")] = _FIXED_ORPHAN
+MEASURED[("orphan", "revenue_by_region", "sql")] = _FIXED_ORPHAN
+# Coverage cost: the units SQL joins through order_customer too. Its rows would
+# be right (order 14 has no lines) but the join is over a failed link.
+MEASURED[("orphan", "units_by_region", "sql")] = _FIXED_ORPHAN
 MEASURED[("fk_wrong_col", "units_by_region", "plan")] = _GAP_WRONG_FK
 MEASURED[("fk_wrong_col", "units_by_region", "sql")] = _GAP_WRONG_FK
 MEASURED[("dup_business_key", "customer_count", "plan")] = _GAP_DUP_KEY
