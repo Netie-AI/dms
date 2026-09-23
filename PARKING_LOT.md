@@ -273,6 +273,17 @@ FRTR 00027-class workbook, then POSTs the resulting xlsx to
 live golden can run on that artifact (avg ~300.27, ~184005/200000, Export row
 count agrees). Until then: `awaiting_pointer_receipt` is the honest status.
 
+## P-DMS-37 - Petabyte warehouse LIVE claim
+
+SCALE-WAREHOUSE-01 (#237) landed a TB->PB **design pack** (`docs/SCALE_WAREHOUSE.md`,
+`docs/schemas/scale_warehouse.yaml`). It is `ROADMAP_NOT_LIVE`. Product still
+serves 91 rows under one DuckDB writer (P-DMS-34). The pack must not be quoted
+as 1PB production or as #178 COMPLETE.
+**Condition:** Platform GO **and** P-DMS-34 lifted **and** partition + Space ACL
+implemented on a measured TB lake **and** an explicit founder-lake remount GO.
+Until then: `petabyte_live` / `live_1pb` stay false; do not remount
+`/var/cortex/data/dms_demo.duckdb`.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

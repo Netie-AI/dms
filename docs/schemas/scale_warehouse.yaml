@@ -1,0 +1,287 @@
+# SCALE-WAREHOUSE-01 (#237) under EPIC-INSIGHTS-UX #178
+# TB design toward a PB roadmap. Machine-readable layout only.
+# NOT LIVE 1PB. No production claim. Not #178 COMPLETE.
+# Do not remount the founder Cortex lake without Platform GO.
+
+id: SCALE-WAREHOUSE-01
+ticket: 237
+parent_epic: 178
+maps_grains_from: 232
+status: ROADMAP_NOT_LIVE
+completeness: NOT_COMPLETE
+live_claim: false
+petabyte_live: false
+live_1pb: false
+# Explicit acceptance stamp. Tests fail if this flips true.
+not_live_1pb: true
+
+honest_today:
+  serving_engine: duckdb_single_writer
+  product_row_ceiling: 91
+  parked_scale: P-DMS-34
+  thin_seed_tables:
+    - transactions
+    - locations
+    - inventory
+    - suppliers
+    - shipments
+    - alerts
+  founder_lake_path: /var/cortex/data/dms_demo.duckdb
+  founder_lake_role: cortex_serving_file_not_this_pack
+
+founder_lake_remount:
+  required: false
+  requires_platform_go: true
+  reason: Ticket forbids remount without Platform GO. Design pack is docs/schemas only.
+
+design_horizon: TB
+roadmap_horizon: PB
+engine_at_design: duckdb_hive_parquet
+engine_at_roadmap: iceberg_postgres_catalog_then_trino
+trino_after_tib: 20
+
+# ---------------------------------------------------------------------------
+# #232 grains mapped into warehouse layout
+# plant/lane/day are design objects. Do not invent them on the live seed.
+# ---------------------------------------------------------------------------
+grains:
+  sku:
+    object: product
+    issue_232_name: SKU
+    live_relation: inventory
+    live_shape: derived_group_by_sku
+    warehouse_relation: dim.product
+    grain_key: [sku]
+    cardinality:
+      grain: one_row_per_sku
+      live_demo: thin_seed_seven_skus
+      tb_design_envelope: 1000000
+      pb_roadmap_envelope: 100000000
+      pb_roadmap_envelope_live: false
+    partition:
+      dim_tb: none
+      fact_tb: not_a_fact_partition
+      fact_pb_roadmap: sku_hash_bucket
+    space_acl:
+      inherits: DR-0002
+      table_scope: company
+      via_live_table: inventory
+      row_predicate_tb: optional_category_or_plant
+    join_from_facts:
+      transaction: many_to_one
+      lot: many_to_one
+      shipment: many_to_one
+    notes: >
+      sku->supplier is many_to_many through lots. Do not declare many_to_one.
+
+  supplier:
+    object: supplier
+    issue_232_name: supplier
+    live_relation: suppliers
+    live_shape: table
+    warehouse_relation: dim.supplier
+    grain_key: [supplier_id]
+    cardinality:
+      grain: one_row_per_supplier
+      live_demo: thin_seed_four_suppliers
+      tb_design_envelope: 100000
+      pb_roadmap_envelope: 10000000
+      pb_roadmap_envelope_live: false
+    partition:
+      dim_tb: none
+      fact_tb: not_a_fact_partition
+      fact_pb_roadmap: none
+    space_acl:
+      inherits: DR-0002
+      table_scope: space
+      via_live_table: suppliers
+      granted_spaces: [Finance]
+      row_predicate_tb: optional_country
+    join_from_facts:
+      lot: many_to_one
+      shipment: many_to_one_when_supplier_id_present
+    notes: >
+      Thin seed shipments have no supplier_id. Cortex lake may. Do not remount
+      to invent the column.
+
+  plant:
+    object: plant
+    issue_232_name: plant
+    live_relation: null
+    live_shape: missing
+    warehouse_relation: dim.plant
+    grain_key: [plant_id]
+    cardinality:
+      grain: one_row_per_plant
+      live_demo: zero_not_in_seed
+      tb_design_envelope: 1000
+      pb_roadmap_envelope: 10000
+      pb_roadmap_envelope_live: false
+    partition:
+      dim_tb: none
+      fact_tb: plant_id
+      fact_pb_roadmap: plant_id
+    space_acl:
+      inherits: DR-0002
+      table_scope: company
+      via_live_table: null
+      row_predicate_tb: optional_site_sandbox
+    join_from_facts:
+      transaction: many_to_one_when_plant_id_present
+      shipment: many_to_one_from_origin_plant
+    notes: >
+      locations (WH-A) are warehouses, not plants. Do not alias plant=location.
+
+  lane:
+    object: lane
+    issue_232_name: lane
+    live_relation: shipments
+    live_shape: dest_only_no_lane_key
+    warehouse_relation: dim.lane
+    grain_key: [origin_node_id, dest_node_id]
+    cardinality:
+      grain: one_row_per_origin_dest_pair
+      live_demo: five_shipments_dest_only
+      tb_design_envelope: 100000
+      pb_roadmap_envelope: 10000000
+      pb_roadmap_envelope_live: false
+    partition:
+      dim_tb: none
+      fact_tb: not_required
+      fact_pb_roadmap: lane_id_optional
+    space_acl:
+      inherits: DR-0002
+      table_scope: space
+      via_live_table: shipments
+      granted_spaces: ["Warehouse Ops"]
+      row_predicate_tb: optional_lane_or_origin_plant
+    join_from_facts:
+      shipment: many_to_one_when_lane_id_present
+    notes: >
+      Thin seed has destination_location_id only. Lane is a design dim.
+
+  day:
+    object: day
+    issue_232_name: day
+    live_relation: transactions
+    live_shape: timestamp_column_ts
+    warehouse_relation: dim.day
+    grain_key: [day]
+    cardinality:
+      grain: one_row_per_calendar_date
+      live_demo: june_july_2026_txn_ts
+      tb_design_envelope: 3650
+      pb_roadmap_envelope: 36500
+      pb_roadmap_envelope_live: false
+    partition:
+      dim_tb: none
+      fact_tb: day
+      fact_pb_roadmap: day
+    space_acl:
+      inherits: DR-0002
+      table_scope: follows_fact_table
+      via_live_table: transactions
+      row_predicate_tb: none
+    join_from_facts:
+      transaction: many_to_one_via_cast_ts
+      shipment: many_to_one_when_ship_date_present
+    notes: >
+      Shipments have no date in the thin seed. Do not invent ship_date live.
+
+# ---------------------------------------------------------------------------
+# Fact partition keys (TB design). Space id is never a storage partition.
+# ---------------------------------------------------------------------------
+facts:
+  fact_movement:
+    live_relation: transactions
+    grain_of_row: transaction
+    partition_keys_live: []
+    partition_keys_tb: [day, plant_id]
+    partition_keys_pb_roadmap: [day, plant_id, sku_hash_bucket]
+    hive_path_tb: gold/fact_movement/day={day}/plant={plant_id}/
+    space_acl:
+      table_scope: space
+      via_live_table: transactions
+      granted_spaces: [Finance]
+    notes: unit_cost_myr is commercially sensitive (DR-0002).
+
+  fact_shipment:
+    live_relation: shipments
+    grain_of_row: shipment
+    partition_keys_live: []
+    partition_keys_tb: [day, plant_id]
+    partition_keys_pb_roadmap: [day, plant_id, lane_id]
+    hive_path_tb: gold/fact_shipment/day={day}/plant={origin_plant_id}/
+    space_acl:
+      table_scope: space
+      via_live_table: shipments
+      granted_spaces: ["Warehouse Ops"]
+    notes: Thin seed has no ship_date and no origin plant.
+
+  fact_lot:
+    live_relation: inventory
+    grain_of_row: lot
+    partition_keys_live: []
+    partition_keys_tb: [plant_id]
+    partition_keys_pb_roadmap: [plant_id, sku_hash_bucket]
+    hive_path_tb: gold/fact_lot/plant={plant_id}/
+    space_acl:
+      table_scope: company
+      via_live_table: inventory
+      granted_spaces: [Finance, "Warehouse Ops"]
+
+# ---------------------------------------------------------------------------
+# Space ACL at TB. Query-time predicates. Not a lake fork.
+# ---------------------------------------------------------------------------
+space_acl:
+  law: DR-0002
+  enforcement: session_manifest_predicates
+  storage_partition_by_space_id: false
+  company_default: union_of_space_grants
+  ungranted_stays_ungranted:
+    - alerts
+  demo_spaces:
+    Finance:
+      tables: [locations, inventory, transactions, suppliers]
+      grains_readable: [sku, supplier, plant, day]
+    Warehouse Ops:
+      tables: [locations, inventory, shipments]
+      grains_readable: [sku, plant, lane, day]
+  tb_row_predicates:
+    - grain: plant
+      sql: plant_id IN (:space_plants)
+      when: space_is_site_sandbox
+    - grain: lane
+      sql: lane_id IN (:space_lanes)
+      when: space_is_lane_sandbox
+  parquet_glob_may_include_partition_prefix: true
+  do_not:
+    - copy_lake_per_space
+    - grant_alerts_on_company_default
+    - treat_missing_space_as_unscoped
+    - remount_founder_lake_to_seed_grants
+
+# ---------------------------------------------------------------------------
+# Cardinality summary (design envelopes, not measured production)
+# ---------------------------------------------------------------------------
+cardinality_summary:
+  measured_live: false
+  unit: design_envelope_rows
+  grains:
+    sku: {tb: 1000000, pb_roadmap: 100000000}
+    supplier: {tb: 100000, pb_roadmap: 10000000}
+    plant: {tb: 1000, pb_roadmap: 10000}
+    lane: {tb: 100000, pb_roadmap: 10000000}
+    day: {tb: 3650, pb_roadmap: 36500}
+  facts:
+    fact_movement: {tb: 10000000000, pb_roadmap: 1000000000000}
+    fact_shipment: {tb: 1000000000, pb_roadmap: 100000000000}
+    fact_lot: {tb: 10000000, pb_roadmap: 1000000000}
+
+must_not:
+  - claim_1pb_live
+  - invent_complete
+  - remount_founder_lake_without_platform_go
+  - alias_plant_to_location
+  - partition_storage_by_space_id
+  - open_scale_epic_to_lift_P-DMS-34

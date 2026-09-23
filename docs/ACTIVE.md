@@ -8,6 +8,12 @@ copies Studio bronze from `DMS_WAREHOUSE_DB` into `CORTEX_WAREHOUSE_DB`.
 CLI + check: `scripts/sync_bronze_to_serving.py`. Regression:
 `tests/test_warehouse_identity.py`.
 
+SCALE-WAREHOUSE-01 (#237): TB->PB design pack (roadmap, **NOT LIVE 1PB**).
+Layout: `docs/SCALE_WAREHOUSE.md` + `docs/schemas/scale_warehouse.yaml`
+(partition keys, Space ACL, grain cardinality; maps #232 SKU/supplier/plant/lane/day).
+Does not remount the founder lake. Regression:
+`tests/test_scale_warehouse_pack.py`. Not COMPLETE.
+
 EPIC-016 xlsx orch (DMS half): `packages/core/dms_core/xlsx_orch.py` (pack
 cross-check + FRTR golden), `packages/executor/dms_executor/xlsx_orch.py`
 (read-only openpyxl + space_docs store). HTTP:
