@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-03 #194 @ 9b29c565 + ONTOLOGY-MULTIGRAIN-01 #249 Formal GREEN; live leftover mg_sku_plant validate:ungranted:shipments).
+PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-13: 39/49 = frozen 17 + 22 climb leftovers; leftover unused Cortex metrics.yaml parent-SQL of certified sku-by-category / stock-value / shipment-cost never POSTed. Audit overdue still last_audit_date ceiling).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | gen-path-climb-13 | GEN-PATH-CLIMB-13, ontology_plan, certified leftover, 39/49, per category, inventory worth, freight spend, dms-231 | After #228 ontology_plan=39: leftover Cortex metrics.yaml parent-SQL of certified sku-by-category / stock-value / shipment-cost via retrieve slots. WRONG=0. Not climb PASS. Live prove Platform. | `2026-09-23_gen-path-climb-13.md` |
 | 2026-09-23 | insights-export-02 | INSIGHTS-EXPORT-02, powerbi, superset, envelope, NEEDS-YOU, dms-189 | #189 PBI/Superset from real ask envelope only. POST /v1/chat/export.bi copies rows. Honest stubs. Not COMPLETE. Not #108. | `2026-09-23_insights-export-02.md` |
 | 2026-09-23 | ontology-multigrain-02 | ONTOLOGY-MULTIGRAIN-02, mg_sku_plant, missing_join, plant, ungranted shipments, grantable, dms-254 | Grant-aware compile_grains: SKU+plant is a granted plant join or named ABSTAIN missing_join/plant, never validate:ungranted:shipments. Rebased onto GEN-03 #194. Bar (1) KEEP_HOLD. Not COMPLETE. | `2026-09-23_ontology-multigrain-02.md` |
 | 2026-09-23 | gen-03-contain-ask-path | GEN-03, ask_path, DMS_HARNESS_ASK_PATHS, bind_plan, /dms/query, ask_path_not_allowed, DR-0004, dms-194 | POST /v1/chat/ask refuses exact|generative unless server config. live_ask never bind_plan or POST /dms/query. D03 not confident. Product 26/26 identical, compute 14->0. Not COMPLETE. | `2026-09-23_gen-03-contain-ask-path.md` |

@@ -566,6 +566,51 @@ acceptance is Platform measured **ontology_plan > 36 + WRONG=0**. A
 **36/46** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
 #228 claiming #178 COMPLETE.
 
+## GEN-PATH-CLIMB-13 (#231) — continue rise past ontology_plan=39
+
+Baseline Platform live @ `dff2a6ea`: **ontology_plan=39 / bind_plan=0 /
+WRONG=0** answered=**39/49** on the uncapped harness. Epic **NOT COMPLETE**.
+Do not invent 99.95% / estate CLEAR. Do not reintroduce frozen n=26,
+n=34, n=37, n=40, n=43, n=46, or n=49. Do not shrink the pack to fake a
+higher percent.
+
+39/49 is the frozen 17 L0s plus the twenty-two
+climb-05/06/07/08/09/10/11/12 leftovers. certified_queries.yaml
+primaries+synonyms and climb-12 Ops parent-SQL are already POSTed.
+Unused leftover is Cortex metrics.yaml parent-SQL of those certified
+L0s, compiled via retrieve slots:
+
+1. Finance `how many SKUs per category` (`cq_sku_count_by_category`)
+2. Finance `what is our inventory worth per category`
+   (`cq_stock_value_by_category`)
+3. Ops `freight spend per destination` (`cq_cost_by_destination`)
+
+Same parent SQL as L0s already in the pack. **Not** PACK_METRICS
+expansion (prove-path is generative). **Not** golden TARGET paraphrases.
+Audit overdue still optional (`last_audit_date` ceiling).
+
+Climb (WRONG=0, ontology_plan over bind_plan):
+
+1. **Score those leftover parent-SQL L0s** as `ontology_plan`.
+2. Retrieve lock `per category` / `per destination` group, `inventory
+   worth` onto `stock_value_myr` (sku_count ranking is noise). Spine
+   aliases `sku_count_per_category` / `inventory_worth_by_category` /
+   `freight_spend_per_destination`.
+3. Harness unions the new L0s so this SHA cannot score n=49. Live prove
+   FAILs on ontology_plan<=39 or climb-13 rise L0s not `ontology_plan`.
+4. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only.
+
+### Platform re-run after this deploy
+
+```
+python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+```
+
+Need **this SHA's harness** against Studio >= this merge. Product climb
+acceptance is Platform measured **ontology_plan > 39 + WRONG=0**. A
+**39/49** stamp is FAIL on this SHA. CI green != climb PASS. Do not close
+#231 claiming #178 COMPLETE.
+
 ## GEN-PATH-ROUTE-01 (#201) — Studio/prove hits Cortex ontology_plan
 
 Wire: generative compute is Cortex `POST /v1/insights` `generate=true`

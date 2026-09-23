@@ -80,9 +80,24 @@ def load_measure_aliases(path: Path | None = None) -> dict[str, str]:
 _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
-    (("by destination", "by location"), "location", "location_code"),
+    (
+        ("by destination", "per destination", "by location"),
+        "location",
+        "location_code",
+    ),
     (("by plant", "by warehouse"), "location", "location_code"),
-    (("by category", "categoty", "categories by", "category sales"), "product", "category"),
+    (
+        (
+            "by category",
+            "per category",
+            "in each category",
+            "categoty",
+            "categories by",
+            "category sales",
+        ),
+        "product",
+        "category",
+    ),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
     (("by supplier",), "supplier", "supplier_id"),
     (("by lane", "per lane"), "lane", "origin_plant_id"),
@@ -135,6 +150,8 @@ def question_tokens(question: str) -> set[str]:
     # group product.category on "top 3 categoty sales", not sku.
     if "categoty" in out:
         out.add("category")
+    if "worth" in out:
+        out.add("value")
     return out
 
 
@@ -547,7 +564,12 @@ def _locked_measure(question: str) -> str | None:
         return "audit_overdue"
     if "expir" in qn or "chemical" in qn:
         return "stock_value_myr"
-    if "stock value" in qn:
+    if (
+        "stock value" in qn
+        or "inventory worth" in qn
+        or "value of stock" in qn
+        or "worth per category" in qn
+    ):
         return "stock_value_myr"
     if "total spend" in qn or "spend by" in qn:
         return "stock_value_myr"

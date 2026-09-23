@@ -247,6 +247,23 @@ oracles:
       FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
       GROUP BY l.location_code
 
+  cq_sku_count_by_category_per:
+    cortex_id: cq_sku_count_by_category
+    sql: "SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category"
+
+  cq_stock_value_worth:
+    cortex_id: cq_stock_value_by_category
+    sql: >
+      SELECT category, SUM(quantity_kg * unit_cost_myr) AS total_value_myr
+      FROM inventory GROUP BY category
+
+  ops_freight_spend_destination:
+    cortex_id: cq_cost_by_destination
+    sql: >
+      SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr
+      FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
+      GROUP BY l.location_code
+
   trap_categoty:
     cortex_id: cq_top3_category_sales
     sql: >

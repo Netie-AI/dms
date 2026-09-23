@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - GEN-PATH-CLIMB-13: unused parent-SQL leftover past ontology_plan=39 (#231)
+
+- **Ticket.** Serves [GEN-PATH-CLIMB-13 #231](https://github.com/Netie-AI/dms/issues/231) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Does not reopen #178. #228 RISE_PASS @ `dff2a6ea` (ontology_plan=39 bind_plan=0 WRONG=0 answered=39/49 on uncapped harness) stands as the measured floor.
+- **Climb.** Score leftover Cortex metrics.yaml parent-SQL of `certified_queries.yaml` L0s live already answers (`how many SKUs per category`, `what is our inventory worth per category`, Ops `freight spend per destination`) as `ontology_plan`. Same SQL as `cq_sku_count_by_category` / `cq_stock_value_by_category` / `cq_cost_by_destination`. Not PACK_METRICS expansion (prove-path is generative). Retrieve locks `per category` / `per destination` group plus `inventory worth` onto `stock_value_myr`; overlay spine slots `sku_count_per_category` / `inventory_worth_by_category` / `freight_spend_per_destination`. Harness unions the new L0s so this SHA cannot score the 39/49 pack. Live prove FAILs on ontology_plan<=39 or climb-13 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.
+- **Harness.** Live leftover is Platform: `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`. Need measured ontology_plan > 39 + WRONG=0 after deploy. CI green != climb PASS. QUALIFIED claim stays n=26. curated_ceo n=52.
+- **Not this ticket:** climb PASS, #178 reopen, estate CLEAR, ticket close, greening planted refuses, pack shrink to fake a higher percent, reseating #237.
+
 ## 2026-09-23 - INSIGHTS-EXPORT-02: Power BI + Superset stubs from ask envelope (#189)
 
 - **Ticket.** Serves [INSIGHTS-EXPORT-02 #189](https://github.com/Netie-AI/dms/issues/189) under EPIC-INSIGHTS-UX #178 Phase B. Does not stamp epic COMPLETE. Does not invent 99.95%. Does not reopen #108. Does not invent bar (4) PASS. Does not reseat #231/#237.
