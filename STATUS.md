@@ -49,11 +49,11 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **AGI-BUYER-WALK-01 #236** walk script + Studio copy shipped. Live leftover Platform (`walk_buyer_studio.py`). Not #178 COMPLETE. |
+| **This tick** | **SCALE-FREE-AI-01 #233** OV-only FreeRoute consume. Buyer-walk #236 on main. Not #178 COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | #228 climb vs #226 ontology_plan=36. Floor: Cortex#44. |
+| CI / PRs | #233 vs main `e1db83a` (#242). Climb floor #228. Not epic COMPLETE. |
 
 ## Agent models
 

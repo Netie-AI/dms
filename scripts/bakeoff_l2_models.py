@@ -22,17 +22,14 @@ OUT = REPO / "docs" / "L2_MODEL_BAKEOFF.md"
 Q = "rank carriers by on-time percentage for hazmat only"
 CONTROL = "Top 5 selling SKUs by revenue"
 
-# Free / freemium ids that FreeRoute may accept (probe first).
-CANDIDATES = [
-    "auto",
-    "mistral-small-latest",
-    "ministral-8b-latest",
-    "gemini-flash-latest",
-    "gemini-2.5-flash",
-    "google/gemini-2.5-flash",
-    "llama-3.3-70b-versatile",
-    "openai/gpt-oss-20b",
-]
+
+def candidates_from_openvault(base: str) -> list[str]:
+    """Model ids from OpenVault API free+normal plan. Not a hardcoded chat list."""
+    from dms_api.freeroute_client import consume_freeroute_plan
+    from dms_core.freeroute import candidate_models
+
+    plan = consume_freeroute_plan(base)
+    return candidate_models(plan)
 
 
 def select_promote_winner(results: list[dict]) -> str | None:
@@ -140,8 +137,12 @@ def main() -> int:
 
     rows_probe: list[dict] = []
     live: list[str] = []
+    models = candidates_from_openvault(ov())
+    if not models:
+        print("No free+normal providers from OpenVault API — abort (no hardcoded list)")
+        return 1
     with httpx.Client() as client:
-        for m in CANDIDATES:
+        for m in models:
             p = probe_model(client, m)
             rows_probe.append(p)
             print(f"PROBE {m}: http={p['http']} upstream={p.get('upstream')} ms={p['ms']}")
