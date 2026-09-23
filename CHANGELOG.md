@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - A1-01: scorers print n and the rule-of-three bound beside WRONG=0 (EPIC-A1 #257, #263)
+
+- **Ticket.** First ticket of [EPIC-A1 #257](https://github.com/Netie-AI/dms/issues/257). Reporting only; no verdict logic touched. Built in its own worktree and accepted by an independent adversarial verifier on the first round.
+- **Change.** `scripts/score_bound.py` (shared helper: `bound_pct = 300/answered` or None, a checker that rejects any `WRONG=0` / `0 confidently wrong` line without `answered=` and a bound on it or the next line). `score_bird.py` and `score_answers.py` print `answered=<n> bound about X pct (rule of three, 95 pct)`, or `bound n/a (nothing answered)`, and stamp `answered` / `bound_pct` (null when unanswered) into their JSON artifacts. Both `--self-check` / `--oracle-only` CI steps now fail if the line regresses to a bare zero.
+- **Why.** NETIE.md rule 7: below n=300 a printed 0 invites reading 0 percent. `ontology_bench.py` already did this; the other two did not.
+- **Not this ticket:** `scripts/score_curated.py` (CLIMB-13 PR #240 owns it); any coverage target; any BIRD number as a claim.
+
 ## 2026-09-23 - A2-02/03/04: schema-defect refusals (EPIC-A2 #256)
 
 - **Tickets.** #258 A2-02, #259 A2-03, #260 A2-04. Each built in its own worktree and accepted by an independent adversarial verifier (#259 after one repair round). #261 A2-05 (currency) not in this entry: its verifier rejected round 2.
