@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (ONTOLOGY-AUDIT-01-FLOOR #252: declare E13 audit_receipt with INVARIANT-CHANGE trailer after #235 squash dc752563).
+PREFLIGHT for this goal: PARTIAL (GEN-PATH-REFUSE-01 rebase onto #252/#253 ONTOLOGY-AUDIT-01-FLOOR @ a633fb2).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | gen-path-refuse-01 | GEN-PATH-REFUSE-01, ABSTAIN, named gap, unknown_measure, no_path, ranking abort, dms-238 | Fail-closed named ABSTAIN when Cortex ranks a metric DMS cannot compile, or compile no_path / unknown_measure. No bind_plan guess. No Cortex.ask fallthrough. WRONG=0. Not GEN-03 400. Not COMPLETE. | `2026-09-23_gen-path-refuse-01.md` |
 | 2026-09-23 | ontology-audit-01-floor | ONTOLOGY-AUDIT-01-FLOOR, INVARIANT-CHANGE, protected-paths, audit_receipt, E13, dms-252 | #235 squash missed trailer. Declare include/exclude/unsure E13 on a new commit. Ticket squash must keep INVARIANT-CHANGE. Not COMPLETE. | `2026-09-23_ontology-audit-01-floor.md` |
 | 2026-09-23 | ontology-audit-01 | ONTOLOGY-AUDIT-01, audit_receipt, E13, include, exclude, unsure, dms-235 | Every ask envelope stamps include/exclude/unsure (or N/A with why). Invented totals demote. COMPLETE illegal. Not #178 COMPLETE. | `2026-09-23_ontology-audit-01.md` |
 | 2026-09-23 | ontology-multigrain-01 | ONTOLOGY-MULTIGRAIN-01, where-paths, generative_ask, kind=plan, missing_join, bind_plan, dms-249 | try_compile_multi_grain before one-grain GEN-01 plan; expose where_paths; stamp where+importance; bind_plan non-confident. Not COMPLETE. | `2026-09-23_ontology-multigrain-01.md` |

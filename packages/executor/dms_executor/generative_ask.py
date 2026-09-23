@@ -33,6 +33,10 @@ from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
 )
+from dms_executor.gen_path_refuse import (
+    customer_abstain_text,
+    ranking_missing_metric_gap,
+)
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
     CompiledQuery,
@@ -314,18 +318,7 @@ def _abstain(
 ) -> dict[str, Any]:
     env = build_answer_envelope(
         answer_id="ans_gen01_abstain",
-        text=(
-            "I cannot certify an ontology-grounded query for that question, "
-            "so I am not executing one."
-            + (
-                f" {reason}."
-                if reason.startswith("missing_join")
-                or reason.startswith("unknown_measure")
-                or reason.startswith("no_path")
-                or reason.startswith("coverage_invalid")
-                else ""
-            )
-        ),
+        text=customer_abstain_text(reason),
         badge="ABSTAIN",
         abstained=True,
         rows=[],
@@ -681,6 +674,18 @@ def maybe_generative_ask(
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_ONTOLOGY
         fallback_note = "insights_ranking:ontology_plan"
+    if kind == "miss" and ranked_slots is None:
+        # GEN-PATH-REFUSE-01: Cortex ranked the intended metric, DMS cannot
+        # compile it. Named ABSTAIN — do not bind_plan or Cortex.ask a guess.
+        gap = ranking_missing_metric_gap(q, payload, onto=onto)
+        if gap:
+            return _abstain(
+                q,
+                gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+            )
     if kind == "unsure":
         return _abstain(
             q,

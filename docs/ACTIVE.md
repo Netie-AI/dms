@@ -277,6 +277,15 @@ Artifacts = receipt / ask envelope / export.xlsx. No invented charts,
 logos, ARR, or COMPLETE. Live leftover is Platform (post report on
 #178). Regression: `tests/test_walk_buyer_studio.py`. Not #178 COMPLETE.
 
+GEN-PATH-REFUSE-01 (#238): fail-closed ABSTAIN with a named gap when
+Cortex ranks a metric the verified ontology cannot compile, or
+`Ontology.compile` returns `unknown_measure` / `no_path`. Customer
+text carries `gap:`. Does not bind_plan a nearby measure. Product
+lane does not fall through to Cortex.ask on that miss. Transport
+miss + known measure still binds on isolated gen (GEN-02). Not
+GEN-03 `ask_path` 400. Regression: `tests/test_gen_path_refuse.py`.
+Not COMPLETE. #178 NOT COMPLETE.
+
 SC-ONTOLOGY-01 (#232): named supply-chain grains `sku` / `supplier` /
 `plant` / `lane` / `day` on `demo_ontology` (`grain_aliases` + `day` object
 when `transactions.ts` exists; `lane` only when origin+destination columns
