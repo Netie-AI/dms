@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - A2-02/03/04: schema-defect refusals (EPIC-A2 #256)
+
+- **Tickets.** #258 A2-02, #259 A2-03, #260 A2-04. Each built in its own worktree and accepted by an independent adversarial verifier (#259 after one repair round). #261 A2-05 (currency) not in this entry: its verifier rejected round 2.
+- **#258.** A caller-declared ontology that fails `verify` now refuses generated SQL that reads a failed link's relations, and both paths name the violation (check, link, orphan count) instead of a bare `ontology_unverified`. Lakes with no declared ontology (live product, BIRD) are unchanged; `score_bird --self-check` passes before and after.
+- **#259.** `verify` refuses a link declared on the child's own key (`fk_is_child_key`) unless `one_to_one=True`, and names a sibling column that matches the parent key.
+- **#260.** `add_object(..., business_key=[...])` is verified unique and non-null (`business_key_unique`). Declared only, no profiling.
+- **Measured.** A2 gate n=40: confident WRONG 14 -> **7** (all 7 are currency, #261). Coverage costs pinned, not hidden: when one claim fails the whole declared ontology drops, so unaffected questions on that lake abstain (named).
+- **Open, founder call.** `from_manifest` still treats a DB FK declared on the child's own PK as one-to-one (AdventureWorks shared-PK subtypes rely on it). Nothing yet produces `business_keys` from source UNIQUE constraints.
+
 ## 2026-09-23 - A2-01: hostile-schema envelope gate (EPIC-A2 #256)
 
 - **Ticket.** First ticket of [EPIC-A2 #256](https://github.com/Netie-AI/dms/issues/256) (PRD-001 amendment accepted by founder 2026-09-23). Measurement only. No product code changed. Does not stamp #256 COMPLETE.
