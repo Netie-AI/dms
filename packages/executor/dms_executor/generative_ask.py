@@ -1,10 +1,14 @@
 """GEN-01 — ontology-grounded generative ask + execute-validate.
 
 Exact-match VQ/pack stays first. Retrieve a short schema/ontology context,
-send it to Cortex compute (Insights generate / ontology_plan; FreeRoute stays
-in Cortex), fill typed slots or take SELECT SQL, validate, then Cortex-submit.
-Unsure or validate-fail is ABSTAIN. Missing compute client is a miss
-(existing contract ask still runs).
+hand it to a caller-supplied ``compute`` planner, fill typed slots, compile,
+validate, then Cortex-submit. Unsure or validate-fail is ABSTAIN. A compute
+miss returns None (existing contract ask still runs).
+
+GEN-03: the live ask path has no planner. Cortex POST /dms/query ignores the
+ontology context and returns no typed plan (KB F-0055), so ``Executor.live_ask``
+passes a closed, no-network seam and ``bind_on_miss=False``. Only offline
+harnesses and compile-path tests supply a planner here.
 
 Does not expand certified exact-match packs. Does not invent provider keys.
 """
@@ -24,12 +28,13 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
 )
 
-from dms_executor.demo_ask import normalize_ask_question
+from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, warehouse_path
 from dms_executor.envelope import (
     _relation_bare,
     _sql_cited_labels,
+    asked_calendar_years,
     assert_envelope_valid,
     build_answer_envelope,
 )
@@ -375,6 +380,9 @@ def _l2_envelope(
         audit_id=audit_id,
         grounded_tables=sorted(cited_relations(sql)),
     )
+    if env.get("abstained"):
+        assert_envelope_valid(env)
+        return with_plan_source(env, plan_source)
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -614,10 +622,13 @@ def maybe_generative_ask(
     Cortex certified ids such as ``cq_audit_overdue`` overlay onto the
     verified ``audit_overdue`` measure. Planted refuses stay ABSTAIN.
     Invalid generate SELECT may climb via those slots; hostile SQL does not.
-    Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane)
-    and Insights was not reached. Product path leaves miss as None so Cortex
+    Cortex compute miss may bind_plan when ``bind_on_miss`` (offline harness
+    only) and Insights was not reached. ``Executor.live_ask`` always passes
+    ``bind_on_miss=False`` (GEN-03). Product path leaves miss as None so Cortex
     certified ask still runs. Explicit compute unsure is not overridden.
-    When the ask names ≥2 supply-chain grains (sku/supplier/plant/lane/day),
+    Predictive asks and a named year 2099 abstain before compile (bar (2)
+    KEEP_HOLD: no all-time history under a forecast / 2099 badge).
+    When the ask names >=2 supply-chain grains (sku/supplier/plant/lane/day),
     ``try_compile_multi_grain`` runs before one-grain GEN-01 plan or SQL
     short-circuit: ranked where-paths + importance, or honest ABSTAIN naming
     the missing join/metric. bind_plan is not that confident path.
@@ -636,6 +647,16 @@ def maybe_generative_ask(
     if _UNSURE_ASK.search(q):
         return _abstain(
             q, "question is too vague or time-unbounded to ground",
+            space_id=space_id, session_id=session_id,
+        )
+    if _is_predictive(q):
+        return _abstain(
+            q, "predictive: history is not a forecast",
+            space_id=space_id, session_id=session_id,
+        )
+    if "2099" in asked_calendar_years(q):
+        return _abstain(
+            q, "year 2099 is not a certified period; all-time history is not that year",
             space_id=space_id, session_id=session_id,
         )
 
@@ -744,12 +765,13 @@ def maybe_generative_ask(
                 coverage=coverage_from_sql_path(sql=sql),
             )
     if kind != "plan":
-        # Isolated gen (ask_path=generative): bind from retrieved ontology
-        # only when Cortex Insights was not reached. An Insights REFUSE
-        # (unarmed / A-0009 / no SQL) is not a transport miss — bind_plan
+        # Offline harness only (bind_on_miss): bind from retrieved ontology
+        # when Cortex Insights was not reached. An Insights REFUSE
+        # (unarmed / A-0009 / no SQL) is not a transport miss -- bind_plan
         # over it is what left #201 at ontology_plan=0 / bind_plan=15.
         # Product path must miss into Cortex.ask so certified VQ/L0 still run.
         # Multi-grain already ran above; bind_plan stays non-confident.
+        # live_ask always passes bind_on_miss=False (GEN-03).
         if insights_was_reached(payload if isinstance(payload, dict) else None):
             if bind_on_miss:
                 return _abstain(

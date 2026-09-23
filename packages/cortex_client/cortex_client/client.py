@@ -163,10 +163,15 @@ class CortexClient:
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """Off-contract Insights generate then POST /dms/query. None on miss.
+        """Off-contract Insights generate then leftover POST /dms/query.
+
+        Not Cortex's generate+validate path (KB F-0055): ``/dms/query`` ignores
+        ``mode``/``ontology`` and does not return ``query_plan.measure``. No
+        ask-path caller remains after GEN-03 (dms#194); deletion is
+        CONTRACT-FAKE-01. None on miss.
 
         OpenVault keys stay in Cortex. This client forwards ``api_key`` when
-        already configured and never invents one. FreeRoute model pick is Cortex.
+        already configured and never invents one.
         """
         return post_compute_query(
             self.base_url,

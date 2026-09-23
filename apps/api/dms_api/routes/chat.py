@@ -120,9 +120,16 @@ class AskBody(BaseModel):
     #: Capped because a "scope" listing everything is not a scope, and the list
     #: reaches manifest minting.
     grounded_tables: list[str] | None = Field(default=None, max_length=32)
-    #: Isolated A/B lanes for GEN-02. Default product = certified-first then
-    #: free generative. Not an x-dms header (DR-0004).
+    #: Ask ladder. None or "product" is the product path (certified-first, then
+    #: the Cortex contract ask). "exact" and "generative" are the isolated GEN-02
+    #: measurement lanes: refused with 400 ask_path_not_allowed unless the server
+    #: sets DMS_HARNESS_ASK_PATHS (GEN-03). A body field, not an x-dms header
+    #: (DR-0004), and the switch that allows it is server config, not the request.
     ask_path: Literal["product", "exact", "generative"] | None = None
+
+
+#: The ask_path values only a measurement origin may run (GEN-03).
+_HARNESS_ASK_PATHS = frozenset({"exact", "generative"})
 
 
 class DrillthroughBody(BaseModel):
@@ -203,6 +210,25 @@ def chat_ask(
     cortex: CortexDep,
     ask: AskServiceDep,
 ) -> dict[str, Any]:
+    # GEN-03 (dms#194). The isolated lanes are a measurement harness, not a
+    # product surface: on ask_path=generative a keyword-bound plan answered
+    # under L2_VALIDATED with wrong numbers. A caller naming one is refused, not
+    # quietly served the product lane (DR-0004) - an A/B that silently ran the
+    # wrong ladder would score it. First check, so a refused request reaches no
+    # compliance gate, Cortex call, submit or ledger append.
+    if body.ask_path in _HARNESS_ASK_PATHS and not settings.dms_harness_ask_paths:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ask_path_not_allowed",
+                "message": (
+                    f"ask_path '{body.ask_path}' is a measurement lane and this server "
+                    "does not run it; omit ask_path for the product answer, or enable "
+                    "DMS_HARNESS_ASK_PATHS on a measurement origin."
+                ),
+            },
+        )
+
     if body.space_id and store.get(body.space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
 

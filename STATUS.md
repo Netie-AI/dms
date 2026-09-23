@@ -49,11 +49,11 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **GEN-PATH-REFUSE-01 #238** fail-closed named ABSTAIN when ontology path/metric missing. Pairs with #194, no ask_path 400. Not #178 COMPLETE. |
+| **This tick** | **GEN-03 #194** contain `ask_path`; KEEP_HOLD 2099/not-cold. Not #178 COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | #245 draft on a633fb2 (#252 FLOOR). Stay draft until Ticket merge. Not COMPLETE. |
+| CI / PRs | #246 rebase onto `f9cad233` (#238 Formal GREEN). Not COMPLETE. |
 
 ## Agent models
 
