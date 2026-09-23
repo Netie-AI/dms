@@ -241,6 +241,14 @@ n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>36 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+ONTOLOGY-AUDIT-01 (#235): `audit_receipt` on every ask envelope
+(`packages/executor/dms_executor/envelope.py`). Include = executed rows;
+exclude = SQL WHERE/HAVING/FILTER or N/A with why; unsure = ABSTAIN or none.
+Invented totals / silent zero-pad demote (E13). Chat shows the three why
+lines. Regression: `tests/test_ontology_audit.py`,
+`tests/invariants/test_envelope.py` E13. Platform leftover: steward inspect
+of >=3 Studio asks after deploy. Not COMPLETE. #178 NOT COMPLETE.
+
 ONTOLOGY-COMPILE-01 (#234): ranked where-paths + importance when an ask
 spans >=2 supply-chain grains (sku/supplier/plant/lane/day).
 `Ontology.compile_grains` / `try_compile_multi_grain` locate then compile,

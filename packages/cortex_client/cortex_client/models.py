@@ -38,6 +38,10 @@ class AskResponse(BaseModel):
     drillthrough_token: str | None = None
     #: Cortex INS-02 presentation — mapped to envelope.chart in live_ask.
     chart_spec: dict[str, Any] | None = None
+    #: Optional engine exclude list. Missing means DMS derives from SQL.
+    exclude_reasons: list[Any] | None = None
+    #: Engine unsure flag. True demotes to ABSTAIN; False/None is not a badge.
+    unsure: bool | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]
@@ -51,6 +55,12 @@ class AskResponse(BaseModel):
             assumptions = prov.get("assumptions")
             if assumptions is not None:
                 data.setdefault("assumptions", assumptions)
+            if data.get("unsure") is None and prov.get("unsure") is True:
+                data["unsure"] = True
+            if data.get("exclude_reasons") is None and isinstance(
+                prov.get("exclude_reasons"), list
+            ):
+                data["exclude_reasons"] = prov["exclude_reasons"]
         if data.get("audit_id") and not data.get("receipt_id"):
             data["receipt_id"] = data["audit_id"]
         # Flatten row items that may be {additional_properties: ...}
@@ -69,9 +79,10 @@ class AskResponse(BaseModel):
         route = data.get("route")
         badge = data.get("badge")
         badge_l = badge.lower() if isinstance(badge, str) else ""
-        if route in ("abstain", "blocked", "needs_clarification") or badge_l in (
-            "abstain",
-            "blocked",
+        if (
+            route in ("abstain", "blocked", "needs_clarification")
+            or badge_l in ("abstain", "blocked")
+            or data.get("unsure") is True
         ):
             data["abstained"] = True
         return super().model_validate(data, **kwargs)

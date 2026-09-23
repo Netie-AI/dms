@@ -32,6 +32,7 @@ _COVER_KEYS = (
     "space_id",
     "text",
     "sql_used",
+    "audit_receipt",
 )
 
 

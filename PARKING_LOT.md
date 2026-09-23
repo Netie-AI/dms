@@ -273,6 +273,14 @@ FRTR 00027-class workbook, then POSTs the resulting xlsx to
 live golden can run on that artifact (avg ~300.27, ~184005/200000, Export row
 count agrees). Until then: `awaiting_pointer_receipt` is the honest status.
 
+## ONTOLOGY-AUDIT-01 steward inspect (#235 leftover)
+
+Envelope `audit_receipt` is asserted in pytest (happy path + invent-total
+demote). Live Studio steward inspect of >=3 asks is not this seat.
+**Unlock:** Platform walk of Studio/ask after deploy of the #235 SHA, three
+asks showing include/exclude/unsure (or N/A with why). Until then: do not
+stamp #235 COMPLETE from CI green alone. #178 stays OPEN.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

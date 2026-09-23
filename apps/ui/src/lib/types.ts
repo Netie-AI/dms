@@ -43,6 +43,22 @@ export type ChartSpec = {
   label?: string;
 };
 
+export type AuditReceiptPart = {
+  status: "rows" | "filters" | "abstain" | "none" | "na";
+  why: string;
+  row_count?: number;
+  rows?: Record<string, unknown>[];
+  reasons?: { kind: string; detail: string }[];
+  abstained?: boolean;
+  badge?: string;
+};
+
+export type AuditReceipt = {
+  include: AuditReceiptPart;
+  exclude: AuditReceiptPart;
+  unsure: AuditReceiptPart;
+};
+
 export type AnswerEnvelope = {
   answer_id: string;
   text: string;
@@ -68,6 +84,8 @@ export type AnswerEnvelope = {
   /** CCA-01 stage trace, when the cascade path ran. Absent means no cascade,
    *  which is not the same as every stage passing. */
   constraint_trace?: ConstraintStage[];
+  /** ONTOLOGY-AUDIT-01 include / exclude / unsure receipt. Never COMPLETE. */
+  audit_receipt?: AuditReceipt;
 };
 
 export type SpaceSummary = {
