@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (ONTOLOGY-COMPILE-01 ranked where-paths; SCALE-FREE-AI-01 + AGI-BUYER-WALK-01 on main).
+PREFLIGHT for this goal: HIT (SC-ONTOLOGY-01 #232 grains+coverage; ONTOLOGY-COMPILE-01 where-paths on main; SCALE-FREE-AI-01 + AGI-BUYER-WALK-01).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | sc-ontology-01 | SC-ONTOLOGY-01, grains, sku, plant, lane, day, coverage, missing_join, dms-232 | Named supply-chain grains + join importance. Thin lane ABSTAINS missing origin. Numeric compile include/exclude/unsure. Not COMPLETE. | `2026-09-23_sc-ontology-01.md` |
 | 2026-09-23 | ontology-compile-01 | ONTOLOGY-COMPILE-01, where-paths, importance, multi-join, missing_join, bind_plan, dms-234 | >=2 supply-chain grains: ranked where-paths + importance or ABSTAIN naming missing join/metric. bind_plan not confident path. Not COMPLETE. | `2026-09-23_ontology-compile-01.md` |
 | 2026-09-23 | scale-free-ai-01 | SCALE-FREE-AI-01, FreeRoute, OpenVault, dup_label, free+normal, dms-233 | Prove/ask keep free+normal. DMS names attempted vs skipped providers from OV HTTP only. Dup labels skipped. No chat discovery, no vault scrape, no second vault. WRONG=0. Not COMPLETE. | `2026-09-23_scale-free-ai-01.md` |
 | 2026-09-23 | agi-buyer-walk-01 | AGI-BUYER-WALK-01, Studio, supply-chain, abstain, dms-236 | Walk script + Studio copy. 5 asks ontology_plan or honest ABSTAIN; 1 refuse demo; cite receipt/ask/export. No logos/ARR/COMPLETE. Live Platform. | `2026-09-23_agi-buyer-walk-01.md` |

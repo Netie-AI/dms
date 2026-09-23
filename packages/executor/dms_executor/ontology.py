@@ -81,6 +81,11 @@ ROOT = Path(__file__).resolve().parents[3]
 
 Cardinality = Literal["many_to_one", "many_to_many", "unverified"]
 
+#: Named supply-chain grains (SC-ONTOLOGY-01 / #232). Aliases resolve onto
+#: declared objects; a grain with no object or join abstains rather than pad.
+SUPPLY_CHAIN_GRAINS = ("sku", "supplier", "plant", "lane", "day")
+NO_SILENT_PAD = "missing groups not zero-padded"
+
 
 def _ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
@@ -210,6 +215,59 @@ class WherePath:
         return " -> ".join(self.steps) if self.steps else self.target
 
 
+@dataclass(frozen=True)
+class Coverage:
+    """What a number includes, excludes, and cannot certify.
+
+    Every numeric compile must carry all three lists. Empty ``unsure`` is
+    allowed; omitting a key or dropping ``NO_SILENT_PAD`` from exclude is not.
+    """
+
+    include: tuple[str, ...]
+    exclude: tuple[str, ...]
+    unsure: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, list[str]]:
+        return {
+            "include": list(self.include),
+            "exclude": list(self.exclude),
+            "unsure": list(self.unsure),
+        }
+
+    def assumption_lines(self) -> tuple[str, ...]:
+        def _join(parts: tuple[str, ...]) -> str:
+            return "; ".join(parts) if parts else "none"
+
+        return (
+            f"include: {_join(self.include)}",
+            f"exclude: {_join(self.exclude)}",
+            f"unsure: {_join(self.unsure)}",
+        )
+
+
+def coverage_valid(cov: Coverage | None) -> bool:
+    """True when include/exclude/unsure are validatable (no silent pad)."""
+    if not isinstance(cov, Coverage):
+        return False
+    if not cov.include:
+        return False
+    if NO_SILENT_PAD not in cov.exclude:
+        return False
+    for part in (*cov.include, *cov.exclude, *cov.unsure):
+        if not isinstance(part, str) or not part.strip():
+            return False
+    return True
+
+
+def coverage_from_sql_path(*, sql: str) -> Coverage:
+    """Honest coverage when Cortex query_sql was not slot-compiled."""
+    return Coverage(
+        include=(f"query_sql as submitted ({' '.join(sql.split())[:80]})",),
+        exclude=(NO_SILENT_PAD,),
+        unsure=("query_sql not slot-compiled; grain coverage unknown",),
+    )
+
+
 @dataclass
 class CompiledQuery:
     sql: str
@@ -224,19 +282,19 @@ class CompiledQuery:
     # refuse or abstain on this flag; callers that asked for the existential
     # reading get it, named.
     existential: bool = False
-    # Ranked where-paths + importance when the request spans ≥2 supply-chain
+    # Ranked where-paths + importance when the request spans >=2 supply-chain
     # grains (sku/supplier/plant/lane/day). Empty for single-grain compile.
     # This is ontology_plan material, never bind_plan.
     where_paths: tuple[WherePath, ...] = ()
+    coverage: Coverage | None = None
 
     def __bool__(self) -> bool:
         return True
 
 
-# Steward-facing supply-chain grains. Aliases map onto declared objects when
-# present (plant→location until SC-ONTOLOGY-01 lands a plant object). A name
-# with no object is a missing join, not an invented table.
-SUPPLY_CHAIN_GRAINS = ("sku", "supplier", "plant", "lane", "day")
+# Steward-facing grain -> candidate objects (first hit wins). SC-ONTOLOGY-01
+# aliases sku->product and plant->location; lane is a real object when origin
+# exists else missing_join (do not treat dest-only shipment as a lane).
 GRAIN_OBJECTS: dict[str, tuple[str, ...]] = {
     "sku": ("product", "sku"),
     "supplier": ("supplier",),
@@ -289,6 +347,12 @@ def grain_for_object(name: str) -> str | None:
 
 
 def resolve_grain_object(onto: Ontology, grain: str) -> str | None:
+    """Declared object for a grain. Honest miss beats shipment/calendar fallback."""
+    if grain in onto.missing_grains:
+        return None
+    alias = onto.grain_aliases.get(grain)
+    if alias and alias in onto.objects:
+        return alias
     for name in GRAIN_OBJECTS.get(grain, (grain,)):
         if name in onto.objects:
             return name
@@ -306,6 +370,10 @@ class Ontology:
     # from "the source is dirty" without reading the bronze registry
     # (SQLSRC-07 / dms#157).
     truncated: dict[str, bool] = field(default_factory=dict)
+    #: Named grain -> declared object (sku->product, plant->location).
+    grain_aliases: dict[str, str] = field(default_factory=dict)
+    #: Grain name -> why it is not declared (origin missing, no ts, ...).
+    missing_grains: dict[str, str] = field(default_factory=dict)
 
     # -- authoring -------------------------------------------------------
 
@@ -372,6 +440,134 @@ class Ontology:
                 "A measure with no grain cannot be protected from fan-out."
             )
         self.measures[name] = Measure(name, grain, expression, additive, description)
+
+    def resolve_object(self, name: str) -> str | Refusal:
+        """Canonical object for a named grain, or a refusal naming the gap.
+
+        Aliases (sku, plant) resolve onto declared objects. A supply-chain
+        grain with no object or join is ``missing_join``, not a guessed pad.
+        """
+        if name in self.objects:
+            return name
+        alias = self.grain_aliases.get(name)
+        if alias and alias in self.objects:
+            return alias
+        if name in SUPPLY_CHAIN_GRAINS:
+            detail = self.missing_grains.get(name) or (
+                f"missing join: {name} grain is not declared on this warehouse. "
+                "No silent pad."
+            )
+            return Refusal("missing_join", detail)
+        return Refusal("unknown_object", f"unknown object {name!r}")
+
+    def supply_chain_catalog(self) -> dict[str, Any]:
+        """SKU / supplier / plant / lane / day: present object or missing join."""
+        out: dict[str, Any] = {}
+        for name in SUPPLY_CHAIN_GRAINS:
+            resolved = self.resolve_object(name)
+            if isinstance(resolved, Refusal):
+                out[name] = {
+                    "object": None,
+                    "present": False,
+                    "missing": resolved.detail,
+                    "alias_of": self.grain_aliases.get(name),
+                }
+                continue
+            obj = self.objects[resolved]
+            out[name] = {
+                "object": resolved,
+                "present": True,
+                "missing": None,
+                "alias_of": self.grain_aliases.get(name),
+                "key": list(obj.key),
+            }
+        return out
+
+    def join_importance(self, measure: str) -> dict[str, Any]:
+        """Ranked join paths from the measure grain to each supply-chain grain.
+
+        importance 1 = same grain or one many-to-one hop; 2 = multi-hop
+        many-to-one; 3 = filter-only (many-to-many). Missing metric/join is
+        named, never ranked. Unverified ontologies cannot rank.
+        """
+        m = self.measures.get(measure)
+        if m is None:
+            return {
+                "measure": measure,
+                "missing_metric": True,
+                "detail": f"no measure named {measure!r}",
+                "grains": {},
+            }
+        if not self.verified:
+            return {
+                "measure": measure,
+                "missing_metric": False,
+                "detail": "ontology_unverified",
+                "grains": {},
+            }
+        grains: dict[str, Any] = {}
+        for name in SUPPLY_CHAIN_GRAINS:
+            resolved = self.resolve_object(name)
+            if isinstance(resolved, Refusal):
+                grains[name] = {
+                    "object": None,
+                    "importance": None,
+                    "path": [],
+                    "missing": resolved.detail,
+                }
+                continue
+            if resolved == m.grain:
+                grains[name] = {
+                    "object": resolved,
+                    "importance": 1,
+                    "path": [],
+                    "missing": None,
+                }
+                continue
+            grouped = self._resolve_path(m.grain, resolved, None)
+            if isinstance(grouped, list):
+                hops = len(grouped)
+                grains[name] = {
+                    "object": resolved,
+                    "importance": 1 if hops <= 1 else 2,
+                    "path": [link.name for link in grouped],
+                    "missing": None,
+                }
+                continue
+            filtered = self._resolve_path(m.grain, resolved, None, for_filter=True)
+            if isinstance(filtered, list) and filtered:
+                grains[name] = {
+                    "object": resolved,
+                    "importance": 3,
+                    "path": [link.name for link in filtered],
+                    "filter_only": True,
+                    "missing": (
+                        f"no many-to-one join from {m.grain} to {name}; "
+                        "grouping would fan out. Filter-only path exists."
+                    ),
+                }
+                continue
+            if isinstance(grouped, Refusal):
+                detail = grouped.detail
+            elif isinstance(filtered, Refusal):
+                detail = filtered.detail
+            else:
+                detail = (
+                    f"missing join: no chain from {m.grain} to {name}. "
+                    "No silent pad."
+                )
+            grains[name] = {
+                "object": resolved,
+                "importance": None,
+                "path": [],
+                "missing": detail,
+            }
+        return {
+            "measure": measure,
+            "grain": m.grain,
+            "missing_metric": False,
+            "grains": grains,
+        }
 
     # -- verification ----------------------------------------------------
 
@@ -1003,6 +1199,15 @@ class Ontology:
 
         cols_known = self.__dict__.get("_column_cache", {})
         for obj_name, column in group_by:
+            resolved = self.resolve_object(obj_name)
+            if isinstance(resolved, Refusal):
+                if resolved.reason == "unknown_object":
+                    return Refusal(
+                        "unknown_object",
+                        f"cannot group by unknown object {obj_name!r}",
+                    )
+                return resolved
+            obj_name = resolved
             if obj_name not in self.objects:
                 return Refusal("unknown_object", f"cannot group by unknown object {obj_name!r}")
             if obj_name in cols_known and column not in cols_known[obj_name]:
@@ -1054,6 +1259,15 @@ class Ontology:
         for obj_name, column, op, value in filters:
             if op.upper() not in {"=", "<>", "<", "<=", ">", ">=", "IN", "LIKE"}:
                 return Refusal("bad_operator", f"operator {op!r} is not allowed")
+            resolved = self.resolve_object(obj_name)
+            if isinstance(resolved, Refusal):
+                if resolved.reason == "unknown_object":
+                    return Refusal(
+                        "unknown_object",
+                        f"cannot filter on unknown object {obj_name!r}",
+                    )
+                return resolved
+            obj_name = resolved
             if obj_name not in self.objects:
                 return Refusal("unknown_object", f"cannot filter on unknown object {obj_name!r}")
             if obj_name in cols_known and column not in cols_known[obj_name]:
@@ -1140,6 +1354,21 @@ class Ontology:
                 f"where {p.grain}: {p.render()} importance={p.importance}"
                 for p in where_paths
             )
+        coverage = _query_coverage(
+            measure=m,
+            group_by=group_by,
+            filters=filters,
+            notes=notes,
+            existential=existential,
+            limit=limit,
+            sql=sql,
+        )
+        if not coverage_valid(coverage):
+            return Refusal(
+                "coverage_invalid",
+                "numeric compile missing validatable include/exclude/unsure "
+                "(no silent pad).",
+            )
         return CompiledQuery(
             sql=sql,
             measure=m.name,
@@ -1148,6 +1377,7 @@ class Ontology:
             notes=tuple(notes),
             existential=existential,
             where_paths=where_paths,
+            coverage=coverage,
         )
 
     def compile_grains(
@@ -1262,6 +1492,8 @@ class Ontology:
                          "additive": m.additive, "description": m.description}
                 for m in self.measures.values()
             },
+            "grains": self.supply_chain_catalog(),
+            "grain_aliases": dict(self.grain_aliases),
         }
 
 
@@ -1284,6 +1516,46 @@ def _render(op: str, value: Any) -> str:
         items = value if isinstance(value, (list, tuple, set)) else [value]
         return "(" + ", ".join(_literal(v) for v in items) + ")"
     return _literal(value)
+
+
+def _query_coverage(
+    *,
+    measure: Measure,
+    group_by: Sequence[tuple[str, str]],
+    filters: Sequence[tuple[str, str, str, Any]],
+    notes: Sequence[str],
+    existential: bool,
+    limit: int | None,
+    sql: str,
+) -> Coverage:
+    """Include / exclude / unsure for one compiled number. No silent pad."""
+    include = [f"grain={measure.grain}", f"measure={measure.name}"]
+    if measure.description:
+        include.append(measure.description)
+    for obj_name, column in group_by:
+        include.append(f"group {obj_name}.{column}")
+    for obj_name, column, op, value in filters:
+        include.append(f"where {obj_name}.{column} {op} {value}")
+    exclude = [NO_SILENT_PAD]
+    expr = measure.expression.upper()
+    if "OUT" in expr and "OUTBOUND" in expr:
+        include.append("txn_type IN (OUT, outbound)")
+        exclude.append("txn_type not in (OUT, outbound)")
+    if "ADJUST" in (measure.description or "").upper():
+        exclude.append("ADJUST unsigned and excluded")
+    if limit is not None:
+        exclude.append(f"rows beyond LIMIT {int(limit)} not returned")
+    # A calendar/group pad would fill missing keys with 0. This compiler
+    # never emits one; if SQL ever did, coverage would be invalid.
+    upper_sql = sql.upper()
+    if "GENERATE_SERIES" in upper_sql or "RANGE LEFT" in upper_sql:
+        exclude = [x for x in exclude if x != NO_SILENT_PAD]
+    unsure: list[str] = []
+    if existential:
+        unsure.append("existential many-to-many filter reading")
+    if any("LEFT JOIN" in n.upper() or "joined " in n for n in notes):
+        unsure.append("LEFT JOIN unmatched dim keys stay in the total (not inner-dropped)")
+    return Coverage(tuple(include), tuple(exclude), tuple(unsure))
 
 
 # --------------------------------------------------------------------------
@@ -1349,7 +1621,28 @@ def demo_ontology(warehouse: Path) -> Ontology:
         lot_key.append("supplier_id")
 
     o = Ontology()
-    o.add_object("transaction", "transactions", ["txn_id"])
+    o.grain_aliases["sku"] = "product"
+    o.grain_aliases["plant"] = "location"
+    txn = cols.get("transactions", set())
+    txn_rel = "transactions"
+    if cortex_default or "ts" in txn:
+        # day is CAST(ts). Wrapping keeps the fact grain honest; a missing
+        # ts is missing_join, not a padded calendar.
+        txn_rel = "(SELECT *, CAST(ts AS DATE) AS day FROM transactions)"
+        o.add_object("transaction", txn_rel, ["txn_id"])
+        o.add_object(
+            "day",
+            "(SELECT DISTINCT CAST(ts AS DATE) AS day FROM transactions "
+            "WHERE ts IS NOT NULL)",
+            ["day"],
+        )
+        o.add_link("txn_on_day", "transaction", ["day"], "day", ["day"])
+    else:
+        o.add_object("transaction", "transactions", ["txn_id"])
+        o.missing_grains["day"] = (
+            "missing join: day grain needs transactions.ts; column is absent. "
+            "No silent pad."
+        )
     o.add_object("shipment", "shipments", ["shipment_id"])
     o.add_object("supplier", "suppliers", ["supplier_id"])
     o.add_object("location", "locations", ["location_id"])
@@ -1382,6 +1675,51 @@ def demo_ontology(warehouse: Path) -> Ontology:
     if cortex_default or "supplier_id" in inv:
         o.add_link("lot_from_supplier", "lot", ["supplier_id"], "supplier", ["supplier_id"])
     o.add_link("lot_of_product", "lot", ["sku"], "product", ["sku"])
+    origin_col = next(
+        (
+            cand
+            for cand in ("origin_location_id", "from_location_id", "origin_plant_id")
+            if cand in ship
+        ),
+        None,
+    )
+    dest_ok = cortex_default or "destination_location_id" in ship
+    if origin_col and dest_ok:
+        o.add_object(
+            "lane",
+            "("
+            f"SELECT DISTINCT {origin_col} AS origin_plant_id, "
+            "destination_location_id AS dest_plant_id FROM shipments "
+            f"WHERE {origin_col} IS NOT NULL AND destination_location_id IS NOT NULL"
+            ")",
+            ["origin_plant_id", "dest_plant_id"],
+        )
+        o.add_link(
+            "ship_on_lane",
+            "shipment",
+            [origin_col, "destination_location_id"],
+            "lane",
+            ["origin_plant_id", "dest_plant_id"],
+        )
+        o.add_link(
+            "lane_from_plant",
+            "lane",
+            ["origin_plant_id"],
+            "location",
+            ["location_id"],
+        )
+        o.add_link(
+            "lane_to_plant",
+            "lane",
+            ["dest_plant_id"],
+            "location",
+            ["location_id"],
+        )
+    else:
+        o.missing_grains["lane"] = (
+            "missing join: lane grain is origin->destination; shipments has no "
+            "origin_location_id (or from_location_id). No silent pad."
+        )
 
     # Thin DMS seed uses inbound/outbound; Cortex lake uses IN/OUT. Both listed.
     o.add_measure(
