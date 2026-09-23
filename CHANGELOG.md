@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - GEN-PATH-REFUSE-01: named ABSTAIN when ontology path / metric missing (#238)
+
+- **Ticket.** Serves [GEN-PATH-REFUSE-01 #238](https://github.com/Netie-AI/dms/issues/238) under EPIC-INSIGHTS-UX #178. Does not close #178. Does not stamp COMPLETE. Does not reseat GEN-03 `#194` ask_path 400 containment.
+- **Refuse.** When Cortex Insights ranks an intended metric that does not resolve onto the verified DMS ontology, `maybe_generative_ask` returns ABSTAIN and names the gap in the customer text (`gap: unknown_measure: no measure named '...'`). Compile `unknown_measure` / `no_path` / `ontology_unverified` / `coverage_invalid` use the same named-gap sentence. Isolated gen does not `bind_plan` a nearby measure. Product lane does not return None into Cortex.ask on that miss.
+- **Preserved.** Transport miss on a known measure still binds when `bind_on_miss=True` (GEN-02). Overlay recovery of a ranked id that compiles is not a gap. Planted refuses stay ABSTAIN. WRONG=0. OV/FreeRoute + Cortex only. No LIVE_KEY / `:5000` invent. E13 `audit_receipt` (#235/#252), multi-grain compile (#249/#234), SC grains (#232) stay on tip.
+- **Tests.** `tests/test_gen_path_refuse.py`. Live uncapped prove remains Platform (`scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`). CI green is not a climb stamp.
+
 ## 2026-09-23 - ONTOLOGY-AUDIT-01-FLOOR: INVARIANT-CHANGE trailer for #235 squash (#252)
 
 - **Ticket.** Serves [ONTOLOGY-AUDIT-01-FLOOR #252](https://github.com/Netie-AI/dms/issues/252) under EPIC-INSIGHTS-UX #178. Cures Verify R-0003 NO RELEASED on squash `dc752563` (push CI protected-paths FAIL: `tests/invariants/test_envelope.py` without `INVARIANT-CHANGE:` in the squash body).
