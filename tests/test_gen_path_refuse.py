@@ -132,7 +132,7 @@ def test_customer_text_names_gap_not_generic() -> None:
     assert "gap:" in named
     assert "profit" in named
     assert gap_reason_name("no_path: no chain from sale") == "no_path"
-    assert gap_reason_name("coverage_invalid: numeric answer missing include/exclude/unsure") == "coverage_invalid"
+    assert gap_reason_name("coverage_invalid: missing include") == "coverage_invalid"
     assert gap_reason_name("submit_failed") is None
 
 
