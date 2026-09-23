@@ -359,6 +359,62 @@ def resolve_grain_object(onto: Ontology, grain: str) -> str | None:
     return None
 
 
+_REL_FROM = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][\w.]*)", re.I)
+
+
+def _bare_table(name: str) -> str:
+    n = str(name or "").strip().strip('"').strip("`").strip("[]").lower()
+    return n.rsplit(".", 1)[-1]
+
+
+def relation_tables(relation: str) -> frozenset[str]:
+    """Base table names a relation SQL cites. Subqueries included."""
+    raw = (relation or "").strip()
+    if not raw:
+        return frozenset()
+    stripped = raw.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
+    found = {_bare_table(m.group(1)) for m in _REL_FROM.finditer(stripped)}
+    found.discard("")
+    if found:
+        return frozenset(found)
+    token = stripped.split()[0] if stripped.split() else ""
+    bare = _bare_table(token)
+    return frozenset({bare} if bare else ())
+
+
+def table_is_granted(table: str, grantable: set[str]) -> bool:
+    """True when the Space grant names the table or a Cortex warehouse_ alias."""
+    t = _bare_table(table)
+    if not t:
+        return False
+    allowed = {_bare_table(x) for x in grantable}
+    return t in allowed or f"warehouse_{t}" in allowed
+
+
+def ungranted_tables(tables: set[str], grantable: set[str]) -> tuple[str, ...]:
+    return tuple(sorted(t for t in tables if t and not table_is_granted(t, grantable)))
+
+
+def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
+    """Map validate ungranted → named missing_join. None if why is not ungranted.
+
+    Live KEEP_HOLD leftover: SKU+plant compiled through shipments then died as
+    ``validate:ungranted:shipments`` without naming ``missing_join`` / plant.
+    """
+    head = str(why or "").strip()
+    if not head.startswith("ungranted:"):
+        return None
+    named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
+    focus = [g for g in named if g != "sku"] or list(named)
+    label = ", ".join(focus) if focus else "join"
+    tables = head.split(":", 1)[-1]
+    return (
+        f"missing_join: no granted join path for grain {label} "
+        f"(ungranted {tables}). Declare the link on a granted table, "
+        "or ask for a measure defined at that grain."
+    )
+
+
 @dataclass
 class Ontology:
     objects: dict[str, ObjectType] = field(default_factory=dict)
@@ -1095,6 +1151,33 @@ class Ontology:
         ranked.sort(key=lambda p: (p.importance, p.grain, p.hops))
         return ranked
 
+    def object_tables(self, name: str) -> frozenset[str]:
+        obj = self.objects.get(name)
+        if obj is None:
+            return frozenset()
+        return relation_tables(obj.relation)
+
+    def steps_tables(self, steps: Sequence[str]) -> frozenset[str]:
+        out: set[str] = set()
+        for name in steps:
+            out |= set(self.object_tables(name))
+        return frozenset(out)
+
+    def granted_where_paths(
+        self,
+        ranked: Sequence[WherePath],
+        grain: str,
+        grantable: set[str] | None,
+    ) -> list[WherePath]:
+        pool = [p for p in ranked if p.grain == grain]
+        if grantable is None:
+            return pool
+        return [
+            p
+            for p in pool
+            if not ungranted_tables(set(self.steps_tables(p.steps)), grantable)
+        ]
+
     def _ranked_where_paths_for(
         self,
         from_grain: str,
@@ -1389,11 +1472,14 @@ class Ontology:
         via: dict[str, str] | None = None,
         order_desc: bool = True,
         limit: int | None = None,
+        grantable: set[str] | None = None,
     ) -> CompiledQuery | Refusal:
         """Locate + rank supply-chain grains, then compile. Not bind_plan.
 
         ≥2 grains required. A missing object, join, or metric is a named
-        refusal, never a one-grain guess.
+        refusal, never a one-grain guess. When ``grantable`` is set, a path
+        that cites an ungranted table is ``missing_join`` naming the grain --
+        not SQL that later dies as ``validate:ungranted:...``.
         """
         named = tuple(g for g in grains if g in SUPPLY_CHAIN_GRAINS)
         if len(named) < 2:
@@ -1449,8 +1535,43 @@ class Ontology:
         ranked = self.rank_where_paths(
             m.grain, [(g, obj) for g, obj, _c in specs], via=via
         )
+        if grantable is not None:
+            grant_miss: list[str] = []
+            for grain, obj, _c in specs:
+                if obj == m.grain:
+                    blocked = ungranted_tables(
+                        set(self.object_tables(obj)), grantable
+                    )
+                    if blocked:
+                        grant_miss.append(
+                            f"grain {grain} (object {obj} cites ungranted "
+                            f"{', '.join(blocked)})"
+                        )
+                    continue
+                if self.granted_where_paths(ranked, grain, grantable):
+                    continue
+                cited = set(self.object_tables(m.grain)) | set(
+                    self.object_tables(obj)
+                )
+                for path in ranked:
+                    if path.grain == grain:
+                        cited |= set(self.steps_tables(path.steps))
+                blocked = ungranted_tables(cited, grantable)
+                extra = f" (ungranted {', '.join(blocked)})" if blocked else ""
+                grant_miss.append(
+                    f"join {m.grain}->{obj} for grain {grain}{extra}"
+                )
+            if grant_miss:
+                return Refusal(
+                    "missing_join",
+                    "no granted join/object for " + "; ".join(grant_miss)
+                    + ". Declare the link on a granted table, or ask for a "
+                    "measure defined at that grain.",
+                )
         for grain, obj, _c in specs:
-            tops = [p for p in ranked if p.grain == grain and p.importance == 1]
+            pool = self.granted_where_paths(ranked, grain, grantable)
+            best = min((p.importance for p in pool), default=None)
+            tops = [p for p in pool if p.importance == best] if best is not None else []
             hopsets = {p.hops for p in tops}
             if len(hopsets) > 1:
                 routes = "; ".join(
@@ -1503,12 +1624,17 @@ def try_compile_multi_grain(
     question: str,
     *,
     via: dict[str, str] | None = None,
+    grantable: set[str] | None = None,
 ) -> CompiledQuery | Refusal | None:
-    """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan)."""
+    """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan).
+
+    When ``grantable`` is set, a path that cites an ungranted table is
+    ``missing_join`` naming the grain -- not a later ``validate:ungranted``.
+    """
     grains = detect_supply_chain_grains(question)
     if onto is None or not onto.verified or len(grains) < 2:
         return None
-    return onto.compile_grains(measure, grains, via=via)
+    return onto.compile_grains(measure, grains, via=via, grantable=grantable)
 
 
 def _render(op: str, value: Any) -> str:

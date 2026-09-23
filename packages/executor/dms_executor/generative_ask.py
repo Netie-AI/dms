@@ -52,6 +52,8 @@ from dms_executor.ontology import (
     coverage_from_sql_path,
     coverage_valid,
     demo_ontology,
+    detect_supply_chain_grains,
+    missing_join_for_ungranted,
     try_compile_multi_grain,
 )
 from dms_executor.semantic_retrieve import (
@@ -558,7 +560,7 @@ def _try_multi_grain_envelope(
     None means this ask is not a multi-grain compile (caller continues).
     """
     lock = _multi_grain_measure(q, onto, payload)
-    multi = try_compile_multi_grain(onto, lock or None, q)
+    multi = try_compile_multi_grain(onto, lock or None, q, grantable=allowed)
     if multi is None:
         return None
     source = PLAN_SOURCE_ONTOLOGY
@@ -574,8 +576,9 @@ def _try_multi_grain_envelope(
         )
     why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
     if why:
+        gap = missing_join_for_ungranted(why, detect_supply_chain_grains(q))
         return _abstain(
-            q, f"validate:{why}",
+            q, gap or f"validate:{why}",
             space_id=space_id, session_id=session_id, plan_source=source,
         )
     return _submit_validated(
@@ -630,8 +633,9 @@ def maybe_generative_ask(
     KEEP_HOLD: no all-time history under a forecast / 2099 badge).
     When the ask names >=2 supply-chain grains (sku/supplier/plant/lane/day),
     ``try_compile_multi_grain`` runs before one-grain GEN-01 plan or SQL
-    short-circuit: ranked where-paths + importance, or honest ABSTAIN naming
-    the missing join/metric. bind_plan is not that confident path.
+    short-circuit: ranked where-paths + importance on a *granted* join, or
+    honest ABSTAIN naming ``missing_join`` / the grain (never bare
+    ``validate:ungranted:...``). bind_plan is not that confident path.
     File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
