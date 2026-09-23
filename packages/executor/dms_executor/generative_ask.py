@@ -39,6 +39,7 @@ from dms_executor.ontology import (
     Coverage,
     Ontology,
     Refusal,
+    WherePath,
     coverage_from_sql_path,
     coverage_valid,
     demo_ontology,
@@ -81,6 +82,38 @@ def plan_source_from_payload(payload: dict[str, Any] | None) -> str:
 def with_plan_source(env: dict[str, Any], source: str) -> dict[str, Any]:
     env["plan_source"] = normalize_plan_source(source)
     return env
+
+
+def where_paths_for_envelope(paths: Sequence[WherePath]) -> list[dict[str, Any]]:
+    """JSON-ready where-paths for the ask envelope. Empty if none."""
+    return [
+        {
+            "grain": p.grain,
+            "target": p.target,
+            "hops": list(p.hops),
+            "steps": list(p.steps),
+            "importance": int(p.importance),
+            "cardinality": p.cardinality,
+        }
+        for p in paths
+    ]
+
+
+def _multi_grain_measure(
+    question: str,
+    onto: Ontology | None,
+    payload: dict[str, Any] | None,
+) -> str | None:
+    """Intent lock first, ranked plan measure second. Not bind_plan."""
+    lock = str(intent_slots(question, onto).get("measure") or "").strip()
+    if lock:
+        return lock
+    raw = payload.get("query_plan") if isinstance(payload, dict) else None
+    if isinstance(raw, dict):
+        ranked = str(raw.get("measure") or "").strip()
+        if ranked:
+            return ranked
+    return None
 
 
 @dataclass(frozen=True)
@@ -320,6 +353,7 @@ def _l2_envelope(
     notes: Sequence[str],
     plan_source: str = PLAN_SOURCE_OTHER,
     coverage: Coverage | None = None,
+    where_paths: Sequence[WherePath] = (),
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"Found {len(out_rows)} row(s)."
@@ -363,7 +397,10 @@ def _l2_envelope(
         *stamped.assumption_lines(),
     ]
     assert_envelope_valid(env)
-    return with_plan_source(env, plan_source)
+    env = with_plan_source(env, plan_source)
+    if where_paths:
+        env["where_paths"] = where_paths_for_envelope(where_paths)
+    return env
 
 
 def _submit_validated(
@@ -379,6 +416,7 @@ def _submit_validated(
     keep_gt: float | None = None,
     measure: str | None = None,
     coverage: Coverage | None = None,
+    where_paths: Sequence[WherePath] = (),
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -443,6 +481,7 @@ def _submit_validated(
         notes=notes,
         plan_source=plan_source,
         coverage=coverage,
+        where_paths=where_paths,
     )
 
 
@@ -500,6 +539,59 @@ def path_miss_envelope(
     )
 
 
+def _try_multi_grain_envelope(
+    q: str,
+    *,
+    onto: Ontology | None,
+    payload: dict[str, Any] | None,
+    allowed: set[str],
+    lake: Path | None,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+) -> dict[str, Any] | None:
+    """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
+
+    Runs before one-grain GEN-01 plan/SQL. bind_plan is not this path.
+    None means this ask is not a multi-grain compile (caller continues).
+    """
+    lock = _multi_grain_measure(q, onto, payload)
+    multi = try_compile_multi_grain(onto, lock or None, q)
+    if multi is None:
+        return None
+    source = PLAN_SOURCE_ONTOLOGY
+    if isinstance(multi, Refusal):
+        return _abstain(
+            q, f"{multi.reason}: {multi.detail}",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
+    if multi.existential:
+        return _abstain(
+            q, "existential many-to-many filter: ask path will not choose a reading",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
+    why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    if why:
+        return _abstain(
+            q, f"validate:{why}",
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
+    return _submit_validated(
+        multi.sql,
+        question=q,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+        notes=tuple([*multi.notes, "ontology_compile:where+importance"]),
+        plan_source=source,
+        measure=multi.measure,
+        coverage=multi.coverage,
+        where_paths=multi.where_paths,
+    )
+
+
 def maybe_generative_ask(
     question: str,
     *,
@@ -532,6 +624,10 @@ def maybe_generative_ask(
     Cortex compute miss may bind_plan when ``bind_on_miss`` (isolated gen lane)
     and Insights was not reached. Product path leaves miss as None so Cortex
     certified ask still runs. Explicit compute unsure is not overridden.
+    When the ask names ≥2 supply-chain grains (sku/supplier/plant/lane/day),
+    ``try_compile_multi_grain`` runs before one-grain GEN-01 plan or SQL
+    short-circuit: ranked where-paths + importance, or honest ABSTAIN naming
+    the missing join/metric. bind_plan is not that confident path.
     File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
@@ -593,6 +689,22 @@ def maybe_generative_ask(
             session_id=session_id,
             plan_source=source,
         )
+    # ≥2 supply-chain grains: compile ranked where-paths BEFORE one-grain
+    # GEN-01 plan/SQL. Live ranking fills kind=plan sku-only; that must
+    # not drop plant/day/lane/supplier (#249 / #234 KEEP_HOLD).
+    multi_env = _try_multi_grain_envelope(
+        q,
+        onto=onto,
+        payload=payload if isinstance(payload, dict) else None,
+        allowed=allowed,
+        lake=lake,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+    )
+    if multi_env is not None:
+        return multi_env
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
@@ -627,48 +739,12 @@ def maybe_generative_ask(
                 coverage=coverage_from_sql_path(sql=sql),
             )
     if kind != "plan":
-        # Multi-join supply-chain (≥2 of sku/supplier/plant/lane/day):
-        # locate + rank where-paths, or honest ABSTAIN naming the gap.
-        # bind_plan is not the confident path (#234).
-        lock = str(intent_slots(q, onto).get("measure") or "").strip()
-        multi = try_compile_multi_grain(onto, lock or None, q)
-        if multi is not None:
-            source = PLAN_SOURCE_ONTOLOGY
-            if isinstance(multi, Refusal):
-                return _abstain(
-                    q, f"{multi.reason}: {multi.detail}",
-                    space_id=space_id, session_id=session_id, plan_source=source,
-                )
-            if multi.existential:
-                return _abstain(
-                    q, "existential many-to-many filter: ask path will not choose a reading",
-                    space_id=space_id, session_id=session_id, plan_source=source,
-                )
-            why = validate_compiled_sql(
-                multi.sql, grantable=allowed, warehouse=lake
-            )
-            if why:
-                return _abstain(
-                    q, f"validate:{why}",
-                    space_id=space_id, session_id=session_id, plan_source=source,
-                )
-            return _submit_validated(
-                multi.sql,
-                question=q,
-                space_id=space_id,
-                session_id=session_id,
-                submit=submit,
-                ledger_append=ledger_append,
-                notes=tuple([*multi.notes, "ontology_compile:where+importance"]),
-                plan_source=source,
-                measure=multi.measure,
-                coverage=multi.coverage,
-            )
         # Isolated gen (ask_path=generative): bind from retrieved ontology
         # only when Cortex Insights was not reached. An Insights REFUSE
         # (unarmed / A-0009 / no SQL) is not a transport miss — bind_plan
         # over it is what left #201 at ontology_plan=0 / bind_plan=15.
         # Product path must miss into Cortex.ask so certified VQ/L0 still run.
+        # Multi-grain already ran above; bind_plan stays non-confident.
         if insights_was_reached(payload if isinstance(payload, dict) else None):
             if bind_on_miss:
                 return _abstain(
@@ -755,4 +831,5 @@ def maybe_generative_ask(
         keep_gt=plan.keep_gt,
         measure=plan.measure,
         coverage=compiled.coverage,
+        where_paths=compiled.where_paths,
     )

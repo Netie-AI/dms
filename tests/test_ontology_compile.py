@@ -1,7 +1,8 @@
-"""ONTOLOGY-COMPILE-01: ranked where-paths + importance, or named abstain.
+"""ONTOLOGY-MULTIGRAIN-01 / ONTOLOGY-COMPILE-01: ranked where-paths + importance.
 
-Multi-join supply-chain grains (sku/supplier/plant/lane/day). bind_plan is
-not the confident path. Not #178 COMPLETE. Not a bind_plan overlay.
+≥2 supply-chain grains (sku/supplier/plant/lane/day). try_compile_multi_grain
+runs before one-grain GEN-01 plan. bind_plan is not the confident path.
+Not #178 COMPLETE. Not a bind_plan overlay.
 """
 
 from __future__ import annotations
@@ -34,13 +35,13 @@ def _create_sc(con: Any) -> None:
     con.execute(
         "CREATE TABLE shipments ("
         "shipment_id VARCHAR PRIMARY KEY, sku VARCHAR, plant_id VARCHAR, "
-        "lane_id VARCHAR, origin_id VARCHAR, cost DOUBLE)"
+        "lane_id VARCHAR, origin_id VARCHAR, supplier_id VARCHAR, cost DOUBLE)"
     )
     con.execute(
         "INSERT INTO shipments VALUES "
-        "('H1','SKU-A','P1','L1','P2',40),"
-        "('H2','SKU-B','P1','L1','P2',60),"
-        "('H3','SKU-A','P2','L2','P1',10)"
+        "('H1','SKU-A','P1','L1','P2','S1',40),"
+        "('H2','SKU-B','P1','L1','P2','S1',60),"
+        "('H3','SKU-A','P2','L2','P1','S2',10)"
     )
 
 
@@ -73,7 +74,13 @@ def _ontology(*, supplier_link: bool = False, second_plant: bool = False) -> Ont
     o.add_link("ship_on_lane", "shipment", ["lane_id"], "lane", ["lane_id"])
     o.add_link("lane_to_plant", "lane", ["plant_id"], "plant", ["plant_id"])
     if supplier_link:
-        o.add_link("lane_from_supplier", "lane", ["plant_id"], "supplier", ["supplier_id"])
+        o.add_link(
+            "ship_from_supplier",
+            "shipment",
+            ["supplier_id"],
+            "supplier",
+            ["supplier_id"],
+        )
     if second_plant:
         o.add_link("ship_from_plant", "shipment", ["origin_id"], "plant", ["plant_id"])
     o.add_measure(
@@ -81,6 +88,12 @@ def _ontology(*, supplier_link: bool = False, second_plant: bool = False) -> Ont
         "shipment",
         "SUM(f.cost)",
         description="shipment cost / freight billed, one contribution per shipment",
+    )
+    o.add_measure(
+        "stock_value_myr",
+        "shipment",
+        "SUM(f.cost)",
+        description="stock value / carrying value / inventory spend, one contribution per lot",
     )
     return o
 
@@ -102,6 +115,10 @@ def test_detect_two_grains_and_ignores_warehouse_climb_l0s() -> None:
     assert detect_supply_chain_grains("shipment cost by SKU and day") == (
         "sku",
         "day",
+    )
+    assert detect_supply_chain_grains("shipment cost by SKU and lane") == (
+        "sku",
+        "lane",
     )
 
 
@@ -206,6 +223,73 @@ def _seed(path: Path) -> None:
         dst.close()
 
 
+def _sku_only_plan(measure: str = "shipping_cost_myr") -> dict[str, Any]:
+    """Live KEEP_HOLD payload: ranking filled a one-grain GEN-01 plan."""
+    return {
+        "query_plan": {
+            "measure": measure,
+            "group_by": [["product", "sku"]],
+        },
+        "plan_source": "ontology_plan",
+    }
+
+
+def _ask(
+    tmp_path: Path,
+    question: str,
+    *,
+    payload: dict[str, Any],
+    ontology: Ontology | None = None,
+    bind_on_miss: bool = True,
+    must_submit: bool = True,
+) -> dict[str, Any]:
+    warehouse = tmp_path / "sc.duckdb"
+    if not warehouse.is_file():
+        _seed(warehouse)
+    from dms_executor.generative_ask import load_verified_ontology
+
+    onto = load_verified_ontology(warehouse, ontology or _ontology())
+    assert onto is not None
+    submits: list[str] = []
+
+    def submit(sql: str) -> QueryResult:
+        submits.append(sql)
+        import duckdb
+
+        con = duckdb.connect(str(warehouse), read_only=True)
+        try:
+            cols = [d[0] for d in con.execute(sql).description]
+            rows = [dict(zip(cols, r, strict=True)) for r in con.execute(sql).fetchall()]
+        finally:
+            con.close()
+        return QueryResult(ok=True, status="ok", run_id="run_oc01", output={"rows": rows})
+
+    def boom(_s: str) -> QueryResult:
+        raise AssertionError("must not submit")
+
+    env = maybe_generative_ask(
+        question,
+        warehouse=warehouse,
+        grantable={"shipments", "products", "plants", "lanes", "suppliers"},
+        compute=lambda _c: payload,
+        submit=submit if must_submit else boom,
+        ledger_append=(
+            (lambda _b: LedgerAppendResponse(entry_id="led_oc01", hash="hash_oc01_not_entry"))
+            if must_submit
+            else (lambda _b: (_ for _ in ()).throw(AssertionError("must not append")))
+        ),
+        ontology=onto,
+        bind_on_miss=bind_on_miss,
+    )
+    assert env is not None
+    env["_submits"] = submits
+    return env
+
+
+def _grains_on_envelope(env: dict[str, Any]) -> set[str]:
+    return {str(p.get("grain")) for p in (env.get("where_paths") or []) if p.get("grain")}
+
+
 def test_ask_multi_join_is_ontology_plan_not_bind_plan(tmp_path: Path) -> None:
     warehouse = tmp_path / "sc.duckdb"
     _seed(warehouse)
@@ -250,6 +334,9 @@ def test_ask_multi_join_is_ontology_plan_not_bind_plan(tmp_path: Path) -> None:
     assert submits and "JOIN" in submits[0].upper()
     total = sum(float(r.get("shipping_cost_myr") or 0) for r in env["rows"])
     assert total == 110.0
+    paths = env.get("where_paths") or []
+    assert {p.get("grain") for p in paths} == {"sku", "plant"}
+    assert any(int(p.get("importance") or 0) == 1 for p in paths)
 
 
 def test_ask_missing_join_abstains_naming_day(tmp_path: Path) -> None:
@@ -302,3 +389,98 @@ def test_ask_missing_metric_abstains_naming_metric(tmp_path: Path) -> None:
     blob = " ".join(str(a) for a in (env.get("assumptions") or []))
     assert "missing_metric" in blob
     assert "bind_plan" not in blob
+
+
+def _assert_multi_grain_l2(env: dict[str, Any], grains: set[str], measure: str) -> None:
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert env.get("plan_source") == "ontology_plan"
+    notes = env.get("assumptions") or []
+    assert not any("bind_plan" in str(a) for a in notes)
+    assert any("ontology_compile:where+importance" in str(a) for a in notes)
+    assert _grains_on_envelope(env) == grains
+    tops = [p for p in (env.get("where_paths") or []) if int(p.get("importance") or 0) == 1]
+    assert {p.get("grain") for p in tops} == grains
+    assert env["rows"]
+    text = str(env.get("text") or "")
+    assert "Found" in text
+    sql = str(env.get("sql_used") or "")
+    assert "JOIN" in sql.upper()
+    total = sum(float(r.get(measure) or 0) for r in env["rows"])
+    assert total == 110.0
+    assert env.get("_submits")
+
+
+def test_keep_hold_sku_plant_beats_one_grain_plan(tmp_path: Path) -> None:
+    """#234 live: ranking plan grouped product_sku only. Must not drop plant."""
+    env = _ask(
+        tmp_path,
+        "shipping cost by SKU and plant",
+        payload=_sku_only_plan("shipping_cost_myr"),
+    )
+    _assert_multi_grain_l2(env, {"sku", "plant"}, "shipping_cost_myr")
+    sql = str(env.get("sql_used") or "").lower()
+    assert "sku" in sql and "plant" in sql
+    blob = " ".join(str(r) for r in env["rows"])
+    assert "SKU-A" in blob and "P1" in blob
+    assert "insights_ranking:ontology_plan" not in " ".join(
+        str(a) for a in (env.get("assumptions") or [])
+    )
+
+
+def test_keep_hold_sku_day_abstains_missing_join_despite_plan(tmp_path: Path) -> None:
+    """#234 live: L2 sku-only. Unit compile is missing_join day; plan must not win."""
+    env = _ask(
+        tmp_path,
+        "shipment cost by SKU and day",
+        payload=_sku_only_plan("shipping_cost_myr"),
+        must_submit=False,
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env.get("plan_source") == "ontology_plan"
+    assert not env.get("where_paths")
+    blob = " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert "missing_join" in blob and "day" in blob.lower()
+    assert "bind_plan" not in blob
+    text = str(env.get("text") or "").lower()
+    assert "cannot certify" in text
+
+
+def test_keep_hold_supplier_sku_beats_one_grain_plan(tmp_path: Path) -> None:
+    env = _ask(
+        tmp_path,
+        "stock value by supplier and SKU",
+        payload=_sku_only_plan("stock_value_myr"),
+        ontology=_ontology(supplier_link=True),
+    )
+    _assert_multi_grain_l2(env, {"sku", "supplier"}, "stock_value_myr")
+    sql = str(env.get("sql_used") or "").lower()
+    assert "sku" in sql and "supplier" in sql
+    blob = " ".join(str(r) for r in env["rows"])
+    assert "SKU-A" in blob and "S1" in blob
+
+
+def test_keep_hold_sku_lane_beats_one_grain_plan(tmp_path: Path) -> None:
+    env = _ask(
+        tmp_path,
+        "shipment cost by SKU and lane",
+        payload=_sku_only_plan("shipping_cost_myr"),
+    )
+    _assert_multi_grain_l2(env, {"sku", "lane"}, "shipping_cost_myr")
+    sql = str(env.get("sql_used") or "").lower()
+    assert "sku" in sql and "lane" in sql
+    blob = " ".join(str(r) for r in env["rows"])
+    assert "SKU-A" in blob and "L1" in blob
+
+
+def test_keep_hold_one_grain_plan_does_not_bind(tmp_path: Path) -> None:
+    env = _ask(
+        tmp_path,
+        "shipping cost by SKU and plant",
+        payload=_sku_only_plan(),
+        bind_on_miss=False,
+    )
+    _assert_multi_grain_l2(env, {"sku", "plant"}, "shipping_cost_myr")
+    assert env.get("plan_source") != "bind_plan"
