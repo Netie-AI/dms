@@ -233,6 +233,16 @@ n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>36 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+AGI-BUYER-WALK-01 (#236): steward Studio buyer walk for the 5-day
+supply-chain AGI-for-DB demo. Pack
+`tests/fixtures/buyer_walk/questions.yaml`. Script
+`python scripts/walk_buyer_studio.py` (self-check in CI; live needs
+`STUDIO_ORIGIN` + `DMS_API_BASE`). Studio copy on `StudioPage` lists
+five asks + one refuse/ABSTAIN why. Chat prefill via `draftQuestion`.
+Artifacts = receipt / ask envelope / export.xlsx. No invented charts,
+logos, ARR, or COMPLETE. Live leftover is Platform (post report on
+#178). Regression: `tests/test_walk_buyer_studio.py`. Not #178 COMPLETE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

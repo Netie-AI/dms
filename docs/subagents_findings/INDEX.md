@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-12: 36/46 = frozen 17 + 19 climb-05/06/07/08/09/10/11 leftovers; leftover unused Ops parent-SQL of certified sku-by-category / stock-value / shipment-cost never POSTed. Audit overdue still last_audit_date ceiling).
+PREFLIGHT for this goal: MISS (AGI-BUYER-WALK-01). Closest: DEMO_RUNBOOK / DEMO-HOST smoke / INSIGHTS-EXPORT-01. No prior buyer-walk pack.
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | agi-buyer-walk-01 | AGI-BUYER-WALK-01, Studio, supply-chain, abstain, dms-236 | Walk script + Studio copy. 5 asks ontology_plan or honest ABSTAIN; 1 refuse demo; cite receipt/ask/export. No logos/ARR/COMPLETE. Live Platform. | `2026-09-23_agi-buyer-walk-01.md` |
 | 2026-09-21 | gen-path-climb-12 | GEN-PATH-CLIMB-12, ontology_plan, certified leftover, 36/46, ops sku-by-category, ops stock, dms-228 | After #226 ontology_plan=36: leftover Ops parent-SQL of certified sku-by-category / stock-value / shipment-cost via spine slots. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-12.md` |
 | 2026-09-21 | gen-path-climb-11 | GEN-PATH-CLIMB-11, ontology_plan, certified leftover, 33/43, ops utilisation, ops cctv, dms-226 | After #224 ontology_plan=33: leftover Cortex Ops utilisation / CCTV / low-stock. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-11.md` |
 | 2026-09-21 | gen-path-climb-10 | GEN-PATH-CLIMB-10, ontology_plan, certified leftover, 30/40, ops expired, ops cold, dms-224 | After #222 ontology_plan=30: leftover Cortex Ops expired / cold / capacity>90. WRONG=0. Not COMPLETE. Live prove Platform. | `2026-09-21_gen-path-climb-10.md` |

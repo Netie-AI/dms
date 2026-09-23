@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - AGI-BUYER-WALK-01: Studio buyer walk (ask + refuse) (#236)
+
+- **Ticket.** Serves [AGI-BUYER-WALK-01 #236](https://github.com/Netie-AI/dms/issues/236) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent logos / ARR / dashboard screenshots.
+- **Walk.** `python scripts/walk_buyer_studio.py` on Studio. Five supply-chain asks must resolve as `plan_source=ontology_plan` or honest ABSTAIN (`ask_path=generative`). One planted refuse (`Just give me last month's number`) must ABSTAIN and print why. Artifacts cited: library/Studio receipt, ask envelope, Excel export from that envelope. Exact-match L0 does not count. Silent `127.0.0.1:8090` default is CONFIG, not PASS. CI green != live walk PASS.
+- **Studio copy.** Operate Studio lists the five asks and the refuse demo. Clicks prefill Chat (`draftQuestion`). Download Excel copies envelope rows. No invented charts.
+- **Not this ticket:** #178 COMPLETE, ontology compile, FreeRoute, fake buyer logos, ARR.
+
 ## 2026-09-21 - GEN-PATH-CLIMB-12: unused Ops parent-SQL leftover past ontology_plan=36 (#228)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-12 #228](https://github.com/Netie-AI/dms/issues/228) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #226 RISE_PASS @ `6eb89562` (ontology_plan=36 bind_plan=0 WRONG=0 answered=36/46 on uncapped harness) stands as the measured floor.

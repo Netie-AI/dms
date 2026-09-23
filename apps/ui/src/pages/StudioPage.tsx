@@ -40,6 +40,19 @@ type Receipt = {
   files?: FileRow[] | null;
 };
 
+/** AGI-BUYER-WALK-01 (#236). Keep in lockstep with tests/fixtures/buyer_walk/questions.yaml. */
+const BUYER_WALK_ASKS = [
+  "What is our total spend by supplier country?",
+  "What is total stock value by category?",
+  "Which SKUs are below reorder level in warehouse A?",
+  "Show warehouse capacity utilisation",
+  "Which locations are cold storage?",
+] as const;
+
+const BUYER_WALK_REFUSE = "Just give me last month's number";
+const BUYER_WALK_REFUSE_WHY =
+  "No certified as-of month on this lake. A green last-month figure would invent a period. Honest ABSTAIN is the product.";
+
 /** Flatten the tree to the leaves that can actually be previewed and asked about. */
 function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
   for (const n of nodes) {
@@ -336,6 +349,54 @@ export function StudioPage() {
           </button>
         </div>
       </div>
+
+      <section
+        data-testid="buyer-walk"
+        className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4"
+      >
+        <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
+          Buyer walk · 5-day AGI-for-DB
+        </p>
+        <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
+          Ask five supply-chain questions in Chat. Each answer is a real envelope (badge,
+          rows, audit_id) plus the Studio ingest receipt. Download Excel copies those rows
+          from the envelope. We do not invent charts, buyer logos, or ARR. Not COMPLETE.
+        </p>
+        <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
+          Steward proof is <code className="font-mono text-xs">python scripts/walk_buyer_studio.py</code>{" "}
+          on the ontology path (or honest ABSTAIN). Clicking a question here opens Chat with
+          it prefilled. Operate mode in the top bar. No ARR. No buyer logos.
+        </p>
+        <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+          {BUYER_WALK_ASKS.map((q) => (
+            <li key={q}>
+              <button
+                type="button"
+                onClick={() => navigate("/", { state: { draftQuestion: q } })}
+                className="h-full w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-left text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)]"
+              >
+                {q}
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div
+          data-testid="buyer-walk-refuse"
+          className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-sm"
+        >
+          <p className="font-medium text-[var(--color-ink)]">
+            Refuse / ABSTAIN demo: {BUYER_WALK_REFUSE}
+          </p>
+          <p className="mt-1 text-[var(--color-ink-muted)]">{BUYER_WALK_REFUSE_WHY}</p>
+          <button
+            type="button"
+            onClick={() => navigate("/", { state: { draftQuestion: BUYER_WALK_REFUSE } })}
+            className="mt-2 text-xs text-[var(--color-accent)] hover:underline"
+          >
+            Prefill the refuse in Chat
+          </button>
+        </div>
+      </section>
 
       <button
         type="button"

@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-09-21  
+**Last updated:** 2026-09-23  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -10,7 +10,7 @@ D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -Ope
 python D:\DMS\scripts\verify_demo_live.py
 python D:\DMS\scripts\verify_l2_vs_l1.py
 python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
-python D:\DMS\scripts\score_bird.py --self-check  # live: scripts/score_bird.md
+python D:\DMS\scripts\walk_buyer_studio.py --self-check
 pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
 python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
 ```
@@ -49,7 +49,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **GEN-PATH-CLIMB-12 #228** continue live ontology_plan rise vs 36. Live prove/climb = Platform after merge. Not #178 COMPLETE. |
+| **This tick** | **AGI-BUYER-WALK-01 #236** walk script + Studio copy shipped. Live leftover Platform (`walk_buyer_studio.py`). Not #178 COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |

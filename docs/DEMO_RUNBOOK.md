@@ -137,6 +137,19 @@ python D:\DMS\scripts\smoke_studio_host_online.py
 
 `verify_demo_live.py` stays the loopback 31/31 certify. This smoke does not re-run it and does not claim that floor.
 
+#### AGI-BUYER-WALK-01 (#236) -- 5-day Studio supply-chain walk
+
+Steward walk on Studio (Operate mode). Five supply-chain asks must resolve via the ontology path or honest ABSTAIN. One planted refuse (`Just give me last month's number`) must ABSTAIN and show why. Cite artifacts only: ingest/library receipt, ask envelope, Excel export from that envelope. No invented charts, buyer logos, ARR, or COMPLETE.
+
+```powershell
+python D:\DMS\scripts\walk_buyer_studio.py --self-check
+$env:STUDIO_ORIGIN = "https://studio.netie.ai"
+$env:DMS_API_BASE  = "$env:STUDIO_ORIGIN/api"
+python D:\DMS\scripts\walk_buyer_studio.py
+```
+
+No silent `127.0.0.1:8090` default. Unset env is CONFIG, not PASS. CI green != live walk PASS. Platform or UX steward posts the printed report on #178. Does **not** close #178.
+
 #### SCORE-BIRD-01 (#184) -- BIRD Space live score
 
 Platform attached postgresql `bird_minidev` @ `127.0.0.1:5432` to Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` (**source_count=1**, data_source `12b6f170`). First batch was `gender` `max_rows=50`; **bronze grows in batches**. Full **75-table** Mini-Dev extract is leftover until measured bronze count is 75. Do not invent 99.95% or EPIC-020b COMPLETE from a larger batch.
