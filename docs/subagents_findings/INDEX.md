@@ -2,6 +2,7 @@ PREFLIGHT for this goal: HIT (GEN-03 #194 @ 9b29c565 + ONTOLOGY-MULTIGRAIN-01 #2
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | insights-export-02 | INSIGHTS-EXPORT-02, powerbi, superset, envelope, NEEDS-YOU, dms-189 | #189 PBI/Superset from real ask envelope only. POST /v1/chat/export.bi copies rows. Honest stubs. Not COMPLETE. Not #108. | `2026-09-23_insights-export-02.md` |
 | 2026-09-23 | ontology-multigrain-02 | ONTOLOGY-MULTIGRAIN-02, mg_sku_plant, missing_join, plant, ungranted shipments, grantable, dms-254 | Grant-aware compile_grains: SKU+plant is a granted plant join or named ABSTAIN missing_join/plant, never validate:ungranted:shipments. Rebased onto GEN-03 #194. Bar (1) KEEP_HOLD. Not COMPLETE. | `2026-09-23_ontology-multigrain-02.md` |
 | 2026-09-23 | gen-03-contain-ask-path | GEN-03, ask_path, DMS_HARNESS_ASK_PATHS, bind_plan, /dms/query, ask_path_not_allowed, DR-0004, dms-194 | POST /v1/chat/ask refuses exact|generative unless server config. live_ask never bind_plan or POST /dms/query. D03 not confident. Product 26/26 identical, compute 14->0. Not COMPLETE. | `2026-09-23_gen-03-contain-ask-path.md` |
 | 2026-09-23 | gen-path-refuse-01 | GEN-PATH-REFUSE-01, ABSTAIN, named gap, unknown_measure, no_path, ranking abort, dms-238 | Fail-closed named ABSTAIN when Cortex ranks a metric DMS cannot compile, or compile no_path / unknown_measure. No bind_plan guess. No Cortex.ask fallthrough. WRONG=0. Not GEN-03 400. Not COMPLETE. | `2026-09-23_gen-path-refuse-01.md` |

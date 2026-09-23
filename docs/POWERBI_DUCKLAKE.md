@@ -46,6 +46,21 @@ SELECT COUNT(*) FROM lake.gold.sales_by_sku;  -- expect 496 on demo
 
 Use DuckDB ODBC / CLI with the ATTACH above. Never folder-connect the `data/` tree.
 
+### D. Ask-envelope stub (INSIGHTS-EXPORT-02)
+
+```http
+POST /v1/chat/export.bi
+Content-Type: application/json
+
+{ "envelope": { "...real ask envelope..." }, "target": "powerbi" }
+```
+
+Copies the **ask envelope table** into a Power Query `#table` (paste into
+Get Data > Blank Query). That is the answered rows, not a live semantic
+model and not DuckLake. No DAX measures are invented. Live ODBC / `.pbix`
+publish / Cortex parquet export remain **NEEDS-YOU**. Folder-union is still
+forbidden.
+
 ### C. If you must use a Parquet file
 
 Point at **one explicit** `ducklake-<uuid>.parquet` path from the catalog, not the

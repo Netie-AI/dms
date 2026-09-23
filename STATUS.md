@@ -34,6 +34,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
 | Local CI parity | `bash scripts/ci_local.sh all`; `python scripts/try_changes.py [--live]` - 41 checks, each states what it does *not* prove |
 | **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
+| **EXPORT-02 (#189)** | PBI/Superset stubs from ask envelope (`POST /v1/chat/export.bi`). Live connector NEEDS-YOU. Not COMPLETE |
 | **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
 | **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
 | **EPIC-025 CLOSED** (#87) | Gold promote calls Cortex `ledger.verify` at the GATE, not only at sign. Unreachable Cortex refuses. Attestation/actor invariant re-derived like #74 (R-0007). F70/F52(b)/A-0005 stay closed. Contract 1.2.0 has no get-entry; chain verify is the read-back |
@@ -49,12 +50,11 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **ONTOLOGY-MULTIGRAIN-02 #254** SKU+plant: granted plant path or named ABSTAIN `missing_join`/`plant`. Rebase onto GEN-03 #194 @ `9b29c565`. Bar (1) KEEP_HOLD. Not #178 COMPLETE. |
+| **This tick** | **INSIGHTS-EXPORT-02 #189** PBI/Superset envelope stubs. GEN-03 #194 + MULTIGRAIN-02 #254 on main. Bar (2) PASS @ `9b29c565`. Not bar (4). Not #178 COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | #255 rebase onto `9b29c565` (#194 GEN-03). Bar (1) KEEP_HOLD. Not COMPLETE. |
+| CI / PRs | #189 vs main `c267c42`. Do not reseat #231/#237. Not epic COMPLETE. |
 
 ## Agent models
-
 PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.
