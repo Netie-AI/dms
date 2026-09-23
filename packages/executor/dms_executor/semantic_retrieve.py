@@ -76,8 +76,12 @@ _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
     (("by destination", "by location"), "location", "location_code"),
+    (("by plant", "by warehouse"), "location", "location_code"),
     (("by category", "categoty", "categories by", "category sales"), "product", "category"),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
+    (("by supplier",), "supplier", "supplier_id"),
+    (("by lane", "per lane"), "lane", "origin_plant_id"),
+    (("by day", "per day", "each day"), "day", "day"),
 )
 _STOP = frozenset(
     {
@@ -308,6 +312,10 @@ def retrieve_ontology_slice(onto: Ontology | None, toks: set[str]) -> dict[str, 
         "objects": objects,
         "links": links,
         "columns": columns,
+        "grains": {
+            name: bool(spec.get("present"))
+            for name, spec in onto.supply_chain_catalog().items()
+        },
     }
 
 

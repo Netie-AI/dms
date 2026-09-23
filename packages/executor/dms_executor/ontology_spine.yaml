@@ -29,6 +29,14 @@ measures:
 # No alerts / delayed / storage_bin aliases — those have no honest DMS
 # measure (planted refuse stays ABSTAIN). supplier_ranking maps to the
 # verified risk+lead score, not sku_count.
+# Named supply-chain grains (SC-ONTOLOGY-01): sku/plant alias objects;
+# lane/day are declared when columns exist. Slot names only. No SQL.
+grains:
+  sku: product
+  supplier: supplier
+  plant: location
+  lane: lane
+  day: day
 measure_aliases:
   stock_value_by_category: stock_value_myr
   spend_by_country: stock_value_myr

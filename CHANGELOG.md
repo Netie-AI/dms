@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - SC-ONTOLOGY-01: supply-chain grains SKU-supplier-plant-lane-day (#232)
+
+- **Ticket.** Serves [SC-ONTOLOGY-01 #232](https://github.com/Netie-AI/dms/issues/232) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent 1PB LIVE / fake supply-chain metrics.
+- **Grains.** Named `sku` (alias of `product`), `supplier`, `plant` (alias of `location`), `day` (CAST `transactions.ts` when present), `lane` (origin->destination on shipments when origin column exists). Thin demo has dest-only shipments: lane is `missing_join` naming `origin_location_id`, not a padded route. Join `importance` 1/2/3 from a measure grain; grouping through M2M is filter-only.
+- **Coverage.** Every compiled number carries include/exclude/unsure. Exclude always names `missing groups not zero-padded`. Ask path stamps `coverage` on ontology_plan envelopes. Missing metric/join ABSTAINS with the reason in assumptions/text. FreeRoute stays Cortex/OV `free+normal`. No LIVE_KEY / second vault. No pack shrink. GEN-03 containment untouched.
+- **Regression.** `tests/test_sc_ontology.py`. CI green != Platform steward walk. #178 stays OPEN.
+
 ## 2026-09-23 - ONTOLOGY-COMPILE-01: ranked where-paths + importance for multi-join grains (#234)
 
 - **Ticket.** Serves [ONTOLOGY-COMPILE-01 #234](https://github.com/Netie-AI/dms/issues/234) under EPIC-INSIGHTS-UX #178. Does not stamp epic COMPLETE. Does not invent 1PB LIVE. Parallel with #232 grains / #235 audit / #238 refuse / #194 GEN-03 -- this seat is compile, not ask_path containment or FreeRoute.

@@ -259,6 +259,15 @@ Artifacts = receipt / ask envelope / export.xlsx. No invented charts,
 logos, ARR, or COMPLETE. Live leftover is Platform (post report on
 #178). Regression: `tests/test_walk_buyer_studio.py`. Not #178 COMPLETE.
 
+SC-ONTOLOGY-01 (#232): named supply-chain grains `sku` / `supplier` /
+`plant` / `lane` / `day` on `demo_ontology` (`grain_aliases` + `day` object
+when `transactions.ts` exists; `lane` only when origin+destination columns
+exist). Join importance ranks paths from a measure grain; missing metric/join
+is `missing_join` / `unknown_measure`, never a pad. Compiled numbers carry
+`coverage` include/exclude/unsure (`NO_SILENT_PAD`). Ask path stamps that on
+ontology_plan envelopes or ABSTAINS naming the gap. Spine `grains:` slot map.
+Regression: `tests/test_sc_ontology.py`. Not COMPLETE. Not 1PB LIVE.
+
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).
 Receipt copy: `apps/ui/src/lib/sqlSourceReceipt.ts`. Does not wire ask/chat

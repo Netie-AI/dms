@@ -36,8 +36,11 @@ from dms_executor.envelope import (
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
     CompiledQuery,
+    Coverage,
     Ontology,
     Refusal,
+    coverage_from_sql_path,
+    coverage_valid,
     demo_ontology,
     try_compile_multi_grain,
 )
@@ -109,6 +112,7 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
             for name, link in onto.links.items()
         },
         "columns": {str(k): sorted(v) for k, v in cols.items() if isinstance(v, set)},
+        "grains": onto.supply_chain_catalog(),
     }
 
 
@@ -280,6 +284,14 @@ def _abstain(
         text=(
             "I cannot certify an ontology-grounded query for that question, "
             "so I am not executing one."
+            + (
+                f" {reason}."
+                if reason.startswith("missing_join")
+                or reason.startswith("unknown_measure")
+                or reason.startswith("no_path")
+                or reason.startswith("coverage_invalid")
+                else ""
+            )
         ),
         badge="ABSTAIN",
         abstained=True,
@@ -307,6 +319,7 @@ def _l2_envelope(
     audit_id: str,
     notes: Sequence[str],
     plan_source: str = PLAN_SOURCE_OTHER,
+    coverage: Coverage | None = None,
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"Found {len(out_rows)} row(s)."
@@ -335,6 +348,20 @@ def _l2_envelope(
         audit_id=audit_id,
         grounded_tables=sorted(cited_relations(sql)),
     )
+    if not coverage_valid(coverage) or coverage is None:
+        return _abstain(
+            question,
+            "coverage_invalid: numeric answer missing include/exclude/unsure",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+        )
+    stamped = coverage
+    env["coverage"] = stamped.as_dict()
+    env["assumptions"] = [
+        *list(env.get("assumptions") or []),
+        *stamped.assumption_lines(),
+    ]
     assert_envelope_valid(env)
     return with_plan_source(env, plan_source)
 
@@ -351,7 +378,16 @@ def _submit_validated(
     plan_source: str,
     keep_gt: float | None = None,
     measure: str | None = None,
+    coverage: Coverage | None = None,
 ) -> dict[str, Any]:
+    if not coverage_valid(coverage):
+        return _abstain(
+            question,
+            "coverage_invalid: numeric answer missing include/exclude/unsure",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+        )
     try:
         result = submit(sql)
     except Exception:  # noqa: BLE001
@@ -406,6 +442,7 @@ def _submit_validated(
         audit_id=entry_id.strip(),
         notes=notes,
         plan_source=plan_source,
+        coverage=coverage,
     )
 
 
@@ -587,6 +624,7 @@ def maybe_generative_ask(
                 ledger_append=ledger_append,
                 notes=("GEN-01 Cortex ontology_plan SQL",),
                 plan_source=source,
+                coverage=coverage_from_sql_path(sql=sql),
             )
     if kind != "plan":
         # Multi-join supply-chain (≥2 of sku/supplier/plant/lane/day):
@@ -624,6 +662,7 @@ def maybe_generative_ask(
                 notes=tuple([*multi.notes, "ontology_compile:where+importance"]),
                 plan_source=source,
                 measure=multi.measure,
+                coverage=multi.coverage,
             )
         # Isolated gen (ask_path=generative): bind from retrieved ontology
         # only when Cortex Insights was not reached. An Insights REFUSE
@@ -715,4 +754,5 @@ def maybe_generative_ask(
         plan_source=source,
         keep_gt=plan.keep_gt,
         measure=plan.measure,
+        coverage=compiled.coverage,
     )
