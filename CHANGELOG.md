@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - ONTOLOGY-AUDIT-01-FLOOR: INVARIANT-CHANGE trailer for #235 squash (#252)
+
+- **Ticket.** Serves [ONTOLOGY-AUDIT-01-FLOOR #252](https://github.com/Netie-AI/dms/issues/252) under EPIC-INSIGHTS-UX #178. Cures Verify R-0003 NO RELEASED on squash `dc752563` (push CI protected-paths FAIL: `tests/invariants/test_envelope.py` without `INVARIANT-CHANGE:` in the squash body).
+- **Declare.** E13 `audit_receipt` include/exclude/unsure is declared on a commit that carries the trailer. Omit the receipt or stamp COMPLETE fails `assert_envelope_valid`. Does not weaken WRONG=0. Does not invent COMPLETE.
+- **Ticket merge.** Squash-merge commit **body** MUST include `INVARIANT-CHANGE:` or push CI fails again. Do not re-YES the broken `dc752563`.
+- **Not this ticket:** #178 COMPLETE, bar (1) PASS, #238/#194/#189 product work.
+
 ## 2026-09-23 - ONTOLOGY-AUDIT-01: include/exclude/unsure receipt on ask envelope (#235)
 
 - **Ticket.** Serves [ONTOLOGY-AUDIT-01 #235](https://github.com/Netie-AI/dms/issues/235) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent 99.95% / estate CLEAR.

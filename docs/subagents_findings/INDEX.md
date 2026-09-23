@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (ONTOLOGY-AUDIT-01: envelope audit_receipt include/exclude/unsure, E13, no invent COMPLETE).
+PREFLIGHT for this goal: HIT (ONTOLOGY-AUDIT-01-FLOOR #252: declare E13 audit_receipt with INVARIANT-CHANGE trailer after #235 squash dc752563).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | ontology-audit-01-floor | ONTOLOGY-AUDIT-01-FLOOR, INVARIANT-CHANGE, protected-paths, audit_receipt, E13, dms-252 | #235 squash missed trailer. Declare include/exclude/unsure E13 on a new commit. Ticket squash must keep INVARIANT-CHANGE. Not COMPLETE. | `2026-09-23_ontology-audit-01-floor.md` |
 | 2026-09-23 | ontology-audit-01 | ONTOLOGY-AUDIT-01, audit_receipt, E13, include, exclude, unsure, dms-235 | Every ask envelope stamps include/exclude/unsure (or N/A with why). Invented totals demote. COMPLETE illegal. Not #178 COMPLETE. | `2026-09-23_ontology-audit-01.md` |
 | 2026-09-23 | ontology-multigrain-01 | ONTOLOGY-MULTIGRAIN-01, where-paths, generative_ask, kind=plan, missing_join, bind_plan, dms-249 | try_compile_multi_grain before one-grain GEN-01 plan; expose where_paths; stamp where+importance; bind_plan non-confident. Not COMPLETE. | `2026-09-23_ontology-multigrain-01.md` |
 | 2026-09-23 | sc-ontology-01 | SC-ONTOLOGY-01, grains, sku, plant, lane, day, coverage, missing_join, dms-232 | Named supply-chain grains + join importance. Thin lane ABSTAINS missing origin. Numeric compile include/exclude/unsure. Not COMPLETE. | `2026-09-23_sc-ontology-01.md` |
