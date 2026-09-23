@@ -111,7 +111,7 @@ describe("answerDelivery", () => {
           include: { status: "complete", why: "done" },
           exclude: { status: "na", why: "N/A" },
           unsure: { status: "none", why: "none" },
-        },
+        } as unknown as NonNullable<AnswerEnvelope["audit_receipt"]>,
       }),
     ).toBeNull();
     const lines = auditReceiptLines({
