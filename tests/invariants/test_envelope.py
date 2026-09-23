@@ -30,6 +30,9 @@ INVARIANT-CHANGE: E13 (ONTOLOGY-AUDIT-01) — every envelope carries include /
 exclude / unsure (or explicit N/A with why). Status COMPLETE is illegal.
 Happy-path numbers must be grounded in include rows; silent pad / invent totals
 demote rather than grow the include set.
+INVARIANT-CHANGE: declare audit_receipt envelope invariant for #235/#252 floor
+cure — omit include/exclude/unsure (or stamp COMPLETE) must fail E13. Does
+not weaken WRONG=0. Does not invent epic COMPLETE.
 """
 
 from __future__ import annotations
@@ -1485,7 +1488,9 @@ def test_e13_column_sum_does_not_add_a_pad_row():
     assert_envelope_valid(env)
 
 
-def test_e13_complete_status_is_illegal():
+@pytest.mark.parametrize("arm", ("include", "exclude", "unsure"))
+def test_e13_complete_status_is_illegal(arm: str):
+    """COMPLETE is illegal on every receipt arm, not only include."""
     env = build_answer_envelope(
         answer_id="a_e13_complete",
         text="Total is 10.00.",
@@ -1495,7 +1500,7 @@ def test_e13_complete_status_is_illegal():
         rows=[{"qty": 10.0}],
         ask_mode="live",
     )
-    env["audit_receipt"]["include"]["status"] = "COMPLETE"
+    env["audit_receipt"][arm]["status"] = "COMPLETE"
     with pytest.raises(AssertionError, match="E13"):
         assert_envelope_valid(env)
 
@@ -1515,3 +1520,47 @@ def test_e13_abstain_is_explicit_na():
     assert rec["exclude"]["why"].startswith("N/A:")
     assert rec["unsure"]["status"] == "abstain"
     assert_envelope_valid(env)
+
+
+def test_e13_missing_audit_receipt_fails_gate():
+    """R-0007 — E13 fires when include/exclude/unsure is omitted.
+
+    Hand-built envelope that is otherwise E1-E9 valid (executed SQL, grounded
+    figure) so the missing receipt is the only violation.
+    """
+    env = {
+        "answer_id": "a_e13_missing",
+        "text": "Total outbound was 100.00.",
+        "values": [{"id": "v0", "value": 100.0, "label": "revenue_myr"}],
+        "badge": "L0_CERTIFIED",
+        "abstained": False,
+        "sql_used": "SELECT SUM(amount) AS revenue_myr FROM t WHERE txn_type = 'OUT'",
+        "rows": [{"revenue_myr": 100.0}],
+        "assumptions": [],
+        "as_of": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "contributing_sources": [],
+        "drillthrough_token": None,
+        "audit_id": "a_e13_missing",
+        "ask_mode": "live",
+    }
+    with pytest.raises(AssertionError, match="E13"):
+        assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize("arm", ("include", "exclude", "unsure"))
+def test_e13_missing_include_exclude_or_unsure_fails_gate(arm: str):
+    """#252 floor: each receipt arm is required. Omit one must fail E13."""
+    env = build_answer_envelope(
+        answer_id="a_e13_arm",
+        text="Total outbound was 100.00.",
+        badge="L0_CERTIFIED",
+        values=[{"id": "v0", "value": 100.0, "label": "revenue_myr"}],
+        sql_used="SELECT SUM(amount) AS revenue_myr FROM t WHERE txn_type = 'OUT'",
+        rows=[{"revenue_myr": 100.0}],
+        ask_mode="live",
+        audit_id="aud_e13_arm",
+    )
+    assert_envelope_valid(env)
+    del env["audit_receipt"][arm]
+    with pytest.raises(AssertionError, match="E13"):
+        assert_envelope_valid(env)
