@@ -35,6 +35,9 @@ from typing import Any
 
 from openpyxl import load_workbook
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from score_bound import bound_line, bound_pct, zero_wrong_summary_bounded  # noqa: E402
+
 # Money tolerance: a cent, or a relative whisker for large sums.
 ABS_TOL = 0.011
 REL_TOL = 1e-6
@@ -121,8 +124,7 @@ def oracle_eq_filter(
     totals = grouped_totals(path, sheet, filter_col, measure)
     if filter_value not in totals:
         raise KeyError(
-            f"{path.name}::{sheet} has no {filter_col}={filter_value!r}; "
-            f"keys={sorted(totals)}"
+            f"{path.name}::{sheet} has no {filter_col}={filter_value!r}; keys={sorted(totals)}"
         )
     return [(filter_value, totals[filter_value])]
 
@@ -273,8 +275,7 @@ QUESTION_PACK: list[dict[str, Any]] = [
             "SKU-BETA (hard rule 12); zero/empty under confident badge is P0"
         ),
         "question": (
-            "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr "
-            "for sku BETA?"
+            "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr for sku BETA?"
         ),
     },
     {
@@ -289,9 +290,7 @@ QUESTION_PACK: list[dict[str, Any]] = [
             "empty-filter green - city 'KL' vs stored 'Kuala Lumpur'; "
             "confident empty is false precision"
         ),
-        "question": (
-            "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city KL?"
-        ),
+        "question": ("In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city KL?"),
     },
     {
         "id": "exact_sku_beta_total",
@@ -323,8 +322,7 @@ QUESTION_PACK: list[dict[str, Any]] = [
             "must certify Kuala Lumpur from the named sheet, never rewrite KL"
         ),
         "question": (
-            "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr "
-            "for city Kuala Lumpur?"
+            "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city Kuala Lumpur?"
         ),
     },
     {
@@ -474,7 +472,11 @@ def ask_live(
         timeout=timeout,
     )
     if resp.status_code == 403:
-        detail = resp.json().get("detail") if resp.headers.get("content-type", "").startswith("application/json") else {}
+        detail = (
+            resp.json().get("detail")
+            if resp.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
         if not isinstance(detail, dict):
             detail = {"message": str(detail)}
         code = str(detail.get("code") or "")
@@ -576,8 +578,11 @@ def main(argv: list[str] | None = None) -> int:
     f32 = by_id.get("f32_ambiguous_categoty_top3")
     if f32 is not None:
         wide = oracle_top_n(
-            args.docs / "f32_ambiguous_scope.xlsx", "Wide_Fill", "category",
-            "sales_value_myr", 3,
+            args.docs / "f32_ambiguous_scope.xlsx",
+            "Wide_Fill",
+            "category",
+            "sales_value_myr",
+            3,
         )
         distinct = _fingerprint(f32) != _fingerprint(wide)
         print(f"  F32 scope-trap oracles distinct: {distinct}")
@@ -592,14 +597,27 @@ def main(argv: list[str] | None = None) -> int:
     blanks = by_id.get("blank_hanging_rows_top3")
     if blanks is not None:
         clean = oracle_top_n(
-            args.docs / "blank_rows_hanging.xlsx", "Sales_Clean", "category",
-            "sales_value_myr", 3,
+            args.docs / "blank_rows_hanging.xlsx",
+            "Sales_Clean",
+            "category",
+            "sales_value_myr",
+            3,
         )
         agree = _fingerprint(blanks) == _fingerprint(clean)
         print(f"  blank/hanging rows do not move the oracle: {agree}")
         if not agree:
             print(f"  FAIL messy {_fingerprint(blanks)} != clean {_fingerprint(clean)}")
             return 1
+
+    # A1-01: the zero-wrong summary must carry n and a bound (R-0007: can fail).
+    for n in (0, len(cases)):
+        if not zero_wrong_summary_bounded(pass_lines(n, len(cases))):
+            print(f"  FAIL zero-wrong summary lacks answered=/bound for n={n}")
+            return 1
+    if zero_wrong_summary_bounded(["PASS 0 confidently wrong."]):
+        print("  FAIL a bare '0 confidently wrong' must not pass the bound check")
+        return 1
+    print("  zero-wrong summary carries n and rule-of-three bound: True")
 
     if args.oracle_only:
         return 0
@@ -656,6 +674,7 @@ def main(argv: list[str] | None = None) -> int:
                 "coverage_pct": round(coverage, 2),
                 "correct": correct,
                 "answered": answered,
+                "bound_pct": bound_pct(answered),
                 "wrong": wrong,
                 "total": total,
                 "abstained": total - answered,
@@ -678,10 +697,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {f}")
         return 1
 
-    print("\nPASS 0 confidently wrong.")
-    if coverage < 100.0:
-        print(f"     {total - answered} abstained - raise coverage by curation, not by loosening.")
+    for line in pass_lines(answered, total):
+        print(line)
     return 0
+
+
+def pass_lines(answered: int, total: int) -> list[str]:
+    """The zero-wrong verdict with n and its rule-of-three bound (A1-01).
+
+    n is confidently-badged answers; abstains are not trials. Nothing
+    answered is "n/a", never 0 pct.
+    """
+    lines = [f"\nPASS 0 confidently wrong. {bound_line(answered)}"]
+    if answered < total:
+        lines.append(
+            f"     {total - answered} abstained - raise coverage by curation, not by loosening."
+        )
+    return lines
 
 
 if __name__ == "__main__":

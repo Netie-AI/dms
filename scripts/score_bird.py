@@ -29,6 +29,11 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from score_bound import (  # noqa: E402
+    bound_line,
+    bound_pct,
+    zero_wrong_summary_bounded,
+)
 from score_curated import (  # noqa: E402
     ask_error_envelope,
     judge,
@@ -162,6 +167,7 @@ def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
         "abstain": tallies["ABSTAIN"],
         "wrong": wrong,
         "answered": answered,
+        "bound_pct": bound_pct(answered),
         "precision_on_answered_pct": precision,
         "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
     }
@@ -277,6 +283,12 @@ def self_check(path: Path = DEFAULT_PACK) -> int:
         errs.append("judge plant")
     if empty_green != "WRONG":
         errs.append("confident empty gender answer must be WRONG")
+    if not zero_wrong_summary_bounded(pass_lines(0, 0, 0)):
+        errs.append("WRONG=0 summary must carry answered= and bound (A1-01)")
+    if not zero_wrong_summary_bounded(pass_lines(9, 4, 0)):
+        errs.append("WRONG=0 summary must carry answered= and bound (A1-01)")
+    if zero_wrong_summary_bounded(["PASS: WRONG=0 on both paths. leftover=0/75 tables."]):
+        errs.append("a bare WRONG=0 line must fail the bound check (R-0007)")
     if errs:
         print("FAIL: " + "; ".join(errs))
         return EXIT_FAIL
@@ -291,9 +303,7 @@ def self_check(path: Path = DEFAULT_PACK) -> int:
 def _forbid_wildcard(label: str, url: str) -> None:
     host = (urlparse(url).hostname or "").lower()
     if host in {"0.0.0.0", "*", "::", "[::]"}:
-        raise ValueError(
-            f"{label} hostname {host!r} is a public bind. DMS :8090 stays 127.0.0.1."
-        )
+        raise ValueError(f"{label} hostname {host!r} is a public bind. DMS :8090 stays 127.0.0.1.")
 
 
 def live_url(env: dict[str, str], url_arg: str | None) -> str:
@@ -450,20 +460,38 @@ def run_live(
                 "expect": expect,
             }
         )
-        print(
-            f"{qid}\tlive\t{verdict}\t{env.get('badge')}\trows={n}\t"
-            f"expect={expect}"
-        )
+        print(f"{qid}\tlive\t{verdict}\t{env.get('badge')}\trows={n}\texpect={expect}")
     return "ok", tallies, rows, skipped
+
+
+def pass_lines(exact_answered: int, gen_answered: int, leftover: int) -> list[str]:
+    """The WRONG=0 verdict plus its n and rule-of-three bound (A1-01, NETIE.md rule 7).
+
+    n is answered (OK+LAYER) across both paths. Below n=300 the bound is
+    above one percent and the line says so; nothing answered is n/a, never 0.
+    """
+    answered = exact_answered + gen_answered
+    return [
+        f"PASS: WRONG=0 on both paths. Not EPIC-020b COMPLETE. "
+        f"leftover={leftover}/{TARGET_TABLES} tables.",
+        f"  {bound_line(answered)}; exact_match answered={exact_answered} "
+        f"generative_live answered={gen_answered}.",
+    ]
 
 
 def _write_artifact(report: dict[str, Any]) -> None:
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
     slim = {k: v for k, v in report.items() if k != "cases"}
-    (art / "score_bird.json").write_text(
-        json.dumps(slim, indent=2) + "\n", encoding="utf-8"
+    # A1-01: answered (OK+LAYER over measured paths) and its rule-of-three bound.
+    answered = sum(
+        int(slim[k].get("answered") or 0)
+        for k in ("exact_match", "generative")
+        if isinstance(slim.get(k), dict)
     )
+    slim["answered"] = answered
+    slim["bound_pct"] = bound_pct(answered)
+    (art / "score_bird.json").write_text(json.dumps(slim, indent=2) + "\n", encoding="utf-8")
 
 
 def print_paths(*rows: dict[str, Any]) -> None:
@@ -581,10 +609,8 @@ def live(url: str, timeout: float, space_id: str) -> int:
     if wrong:
         print("FAIL: WRONG>0 (confidently wrong or transport error)")
         return EXIT_FAIL
-    print(
-        f"PASS: WRONG=0 on both paths. Not EPIC-020b COMPLETE. "
-        f"leftover={leftover}/{TARGET_TABLES} tables."
-    )
+    for line in pass_lines(exact_r["answered"], gen_r["answered"], leftover):
+        print(line)
     return EXIT_PASS
 
 
