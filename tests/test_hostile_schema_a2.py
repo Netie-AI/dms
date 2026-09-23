@@ -158,7 +158,12 @@ DEFECT_WORDS: dict[str, tuple[str, ...]] = {
 # joining the broken link and names it (check, link, orphan count) on both paths.
 _FIXED_ORPHAN = "ABSTAIN"
 _GAP_WRONG_FK = "WRONG"  # dms#259 A2-03: FK on a wrong column with coincident values passes verify
-_GAP_DUP_KEY = "WRONG"  # dms#260 A2-04: duplicate business key behind a unique surrogate
+# dms#260 A2-04: the declared business key (customer_code) is verified, so the
+# plan path abstains naming it. The SQL path still ships over the failed
+# ontology, which is A2-02's gap, so dup_business_key/customer_count/sql is
+# pinned to _GAP_ORPHAN_SQL. Cost: every dup_business_key plan row abstains,
+# including revenue/units by region whose oracle is unaffected.
+_GAP_DUP_KEY = "ABSTAIN"
 _GAP_CURRENCY = "WRONG"  # dms#261 A2-05: unit/currency in the question vs the data is never checked
 MEASURED: dict[tuple[str, str, str], str] = {}
 for _case in CASES:
@@ -170,19 +175,24 @@ for _case in CASES:
         MEASURED[(_case, "revenue_usd", _mode)] = _GAP_CURRENCY
 for _qid in QUESTIONS:
     MEASURED[("orphan", _qid, "plan")] = _FIXED_ORPHAN
+    MEASURED[("dup_business_key", _qid, "plan")] = _GAP_DUP_KEY
 MEASURED[("orphan", "revenue_by_region", "sql")] = _FIXED_ORPHAN
 # Coverage cost: the units SQL joins through order_customer too. Its rows would
 # be right (order 14 has no lines) but the join is over a failed link.
 MEASURED[("orphan", "units_by_region", "sql")] = _FIXED_ORPHAN
 MEASURED[("fk_wrong_col", "units_by_region", "plan")] = _GAP_WRONG_FK
 MEASURED[("fk_wrong_col", "units_by_region", "sql")] = _GAP_WRONG_FK
-MEASURED[("dup_business_key", "customer_count", "plan")] = _GAP_DUP_KEY
-MEASURED[("dup_business_key", "customer_count", "sql")] = _GAP_DUP_KEY
+# With A2-02 merged, generated SQL over the failed business key refuses too.
+MEASURED[("dup_business_key", "customer_count", "sql")] = _FIXED_ORPHAN
+# Coverage cost (A2-02 x A2-04): any SQL reading customers now refuses while
+# customer_code is duplicated, even where the region rows would be right.
+MEASURED[("dup_business_key", "revenue_by_region", "sql")] = _FIXED_ORPHAN
+MEASURED[("dup_business_key", "units_by_region", "sql")] = _FIXED_ORPHAN
 
 
 def _ontology(case: Case) -> Ontology:
     o = Ontology()
-    o.add_object("customer", "customers", ["customer_id"])
+    o.add_object("customer", "customers", ["customer_id"], business_key=["customer_code"])
     o.add_object("order", "orders", ["order_id"])
     o.add_object("line", "order_lines", ["line_id"])
     o.add_link("order_customer", "order", ["customer_id"], "customer", ["customer_id"])
