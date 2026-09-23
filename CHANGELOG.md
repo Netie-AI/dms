@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - ONTOLOGY-AUDIT-01: include/exclude/unsure receipt on ask envelope (#235)
+
+- **Ticket.** Serves [ONTOLOGY-AUDIT-01 #235](https://github.com/Netie-AI/dms/issues/235) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent 99.95% / estate CLEAR.
+- **Receipt.** `build_answer_envelope` always stamps `audit_receipt` with include rows, exclude reasons, and unsure/ABSTAIN (or explicit N/A with why). Include set is executed result rows only. Exclude is SQL WHERE/HAVING/FILTER or caller-supplied reasons; COMPLETE payloads are rejected and SQL is used instead. Unsure True from the engine demotes to ABSTAIN.
+- **Pad.** A stated figure that is not an include cell, same-row gap, or full-column sum demotes. Missing cells are not treated as zero. The constructor does not grow include rows to make a total look complete.
+- **Not this ticket:** #178 COMPLETE, FreeRoute client changes, GEN-03 ask_path containment, steward inspect of live Studio asks (Platform leftover).
+
 ## 2026-09-23 - ONTOLOGY-MULTIGRAIN-01: try_compile multi-grain before one-grain GEN-01 plan (#249)
 
 - **Ticket.** Serves [ONTOLOGY-MULTIGRAIN-01 #249](https://github.com/Netie-AI/dms/issues/249) under EPIC-INSIGHTS-UX #178 (follow-up to #234 KEEP_HOLD). Rebased onto SC-ONTOLOGY-01 #232 @ `936d810`. Does not stamp epic COMPLETE. Does not invent bar (1) PASS / 1PB LIVE. #250 was a duplicate seat and is not this PR.

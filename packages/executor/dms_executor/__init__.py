@@ -796,7 +796,8 @@ def map_ask_response_to_envelope(
     # still needed and is not what this is. This is the half DMS owns: whatever
     # the engine sends, DMS does not put a confident badge on a refusal.
     refused = route_l in _REFUSAL_ROUTES
-    if refused:
+    engine_unsure = resp.unsure is True
+    if refused or engine_unsure:
         badge_raw = "abstain"
     elif not badge_raw:
         badge_raw = "abstain" if resp.abstained else "l2_validated"
@@ -904,6 +905,7 @@ def map_ask_response_to_envelope(
         grounded_tables=grounded_tables,
         question=question,
         competing_scopes=competing_scopes,
+        exclude_reasons=list(resp.exclude_reasons) if resp.exclude_reasons else None,
     )
     assert_envelope_valid(env)
     return env

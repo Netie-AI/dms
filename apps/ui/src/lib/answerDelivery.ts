@@ -34,6 +34,7 @@ export function shareEnvelopePayload(envelope: AnswerEnvelope): string {
       space_id: envelope.space_id ?? null,
       audit_id: envelope.audit_id ?? null,
       as_of: envelope.as_of,
+      audit_receipt: envelope.audit_receipt ?? null,
     },
     null,
     2,
@@ -153,5 +154,26 @@ export function checkAnswerTotals(envelope: AnswerEnvelope): {
     rowSum,
     stated: valueSum,
     column: preferred,
+  };
+}
+
+export function auditReceiptLines(envelope: AnswerEnvelope): {
+  include: string;
+  exclude: string;
+  unsure: string;
+} | null {
+  const r = envelope.audit_receipt;
+  if (!r?.include?.why || !r.exclude?.why || !r.unsure?.why) return null;
+  if (
+    [r.include.status, r.exclude.status, r.unsure.status].some(
+      (s) => String(s).toLowerCase() === "complete",
+    )
+  ) {
+    return null;
+  }
+  return {
+    include: r.include.why,
+    exclude: r.exclude.why,
+    unsure: r.unsure.why,
   };
 }

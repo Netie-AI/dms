@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MOCK_STOCK_ASK,
   MOCK_WAREHOUSE_OPS_ID,
+  auditReceiptLines,
   checkAnswerTotals,
   shareEnvelopePayload,
   shareSpacePayload,
@@ -81,5 +82,46 @@ describe("answerDelivery", () => {
     });
     expect(r.status).toBe("ok");
     expect(r.message.toLowerCase()).toContain("grouped");
+  });
+
+  it("share payload copies audit receipt when present", () => {
+    const raw = shareEnvelopePayload({
+      ...base,
+      audit_receipt: {
+        include: {
+          status: "rows",
+          why: "executed result rows",
+          row_count: 2,
+          rows: base.rows,
+        },
+        exclude: { status: "na", why: "N/A: no WHERE/HAVING/FILTER" },
+        unsure: { status: "none", why: "not abstained; badge=L0_CERTIFIED" },
+      },
+    });
+    const j = JSON.parse(raw) as { audit_receipt: { include: { status: string } } };
+    expect(j.audit_receipt.include.status).toBe("rows");
+    expect(raw.toLowerCase()).not.toContain("complete");
+  });
+
+  it("audit receipt lines skip invented COMPLETE", () => {
+    expect(
+      auditReceiptLines({
+        ...base,
+        audit_receipt: {
+          include: { status: "complete", why: "done" },
+          exclude: { status: "na", why: "N/A" },
+          unsure: { status: "none", why: "none" },
+        },
+      }),
+    ).toBeNull();
+    const lines = auditReceiptLines({
+      ...base,
+      audit_receipt: {
+        include: { status: "rows", why: "executed result rows" },
+        exclude: { status: "na", why: "N/A: no WHERE" },
+        unsure: { status: "none", why: "not abstained" },
+      },
+    });
+    expect(lines?.include).toContain("executed result rows");
   });
 });

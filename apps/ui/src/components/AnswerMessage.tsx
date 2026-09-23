@@ -5,6 +5,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { useApp } from "@/context/AppContext";
 import {
+  auditReceiptLines,
   checkAnswerTotals,
   shareEnvelopePayload,
 } from "@/lib/answerDelivery";
@@ -129,6 +130,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const confirmFired = useRef(false);
   const rows = envelope.rows ?? [];
   const { prose, insights } = splitInsights(envelope.text);
+  const receipt = auditReceiptLines(envelope);
 
   async function fetchDrillRows(): Promise<Record<string, unknown>[] | null> {
     const token = envelope.drillthrough_token;
@@ -396,6 +398,25 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             Open Trust
           </Link>
         </p>
+      )}
+      {receipt && (
+        <div
+          data-testid="audit-receipt"
+          className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5 text-xs text-[var(--color-ink-muted)]"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">
+            Include / exclude / unsure
+          </p>
+          <p data-testid="audit-receipt-include" className="mt-1">
+            Include: {receipt.include}
+          </p>
+          <p data-testid="audit-receipt-exclude" className="mt-1">
+            Exclude: {receipt.exclude}
+          </p>
+          <p data-testid="audit-receipt-unsure" className="mt-1">
+            Unsure: {receipt.unsure}
+          </p>
+        </div>
       )}
       <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
         {renderWithValues(prose, envelope.values, selectValue)}
