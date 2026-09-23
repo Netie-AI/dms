@@ -523,7 +523,7 @@ def _locked_measure(question: str) -> str | None:
         return "outbound_kg"
     if "sku count" in qn or "how many sku" in qn or "how many unique sku" in qn:
         return "sku_count"
-    if "shipment cost" in qn or "freight" in qn:
+    if "shipment cost" in qn or "shipping cost" in qn or "freight" in qn:
         return "shipping_cost_myr"
     if "capacity utilisation" in qn or "capacity utilization" in qn:
         return "utilisation_pct"

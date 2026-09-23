@@ -249,6 +249,16 @@ not the confident path. Plant aliases to location until #232. Day without
 a calendar object abstains. Regression: `tests/test_ontology_compile.py`.
 CI != Platform live. Not COMPLETE. #178 NOT COMPLETE.
 
+ONTOLOGY-MULTIGRAIN-01 (#249): `maybe_generative_ask` prefers
+`try_compile_multi_grain` **before** one-grain GEN-01 plan/SQL. Rebased
+onto SC-ONTOLOGY-01 #232 @ `936d810`. Live ranking that fills a sku-only
+`ontology_plan` no longer drops the second grain. Envelope carries
+`where_paths`; assumptions stamp `ontology_compile:where+importance` when
+that path wins. Day still ABSTAIN `missing_join`. bind_plan stays
+non-confident. Coverage from #232 still stamps include/exclude/unsure.
+Regression: `tests/test_ontology_compile.py` KEEP_HOLD cases. CI !=
+Platform live. Not COMPLETE. #178 NOT COMPLETE.
+
 AGI-BUYER-WALK-01 (#236): steward Studio buyer walk for the 5-day
 supply-chain AGI-for-DB demo. Pack
 `tests/fixtures/buyer_walk/questions.yaml`. Script

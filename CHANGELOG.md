@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - ONTOLOGY-MULTIGRAIN-01: try_compile multi-grain before one-grain GEN-01 plan (#249)
+
+- **Ticket.** Serves [ONTOLOGY-MULTIGRAIN-01 #249](https://github.com/Netie-AI/dms/issues/249) under EPIC-INSIGHTS-UX #178 (follow-up to #234 KEEP_HOLD). Rebased onto SC-ONTOLOGY-01 #232 @ `936d810`. Does not stamp epic COMPLETE. Does not invent bar (1) PASS / 1PB LIVE. #250 was a duplicate seat and is not this PR.
+- **Ask path.** `maybe_generative_ask` runs `try_compile_multi_grain` after compute-unsure and **before** one-grain GEN-01 plan or SQL. Live ranking filling a sku-only `ontology_plan` no longer drops plant/day/lane/supplier. Envelope exposes `where_paths` and stamps `ontology_compile:where+importance` when that path wins. Honest ABSTAIN names `missing_join` / `missing_metric`. `bind_plan` stays non-confident. Coverage from #232 still stamps include/exclude/unsure on L2.
+- **Tests.** `tests/test_ontology_compile.py` KEEP_HOLD cases: sku+plant, sku+day missing_join ABSTAIN, supplier+sku, sku+lane -- each with a one-grain ranked plan payload. CI green != Platform live prove.
+- **Not this ticket:** #178 COMPLETE, bar (1) PASS, 1PB LIVE, second vault / LIVE_KEY, DB-GPT clone.
+
 ## 2026-09-23 - SC-ONTOLOGY-01: supply-chain grains SKU-supplier-plant-lane-day (#232)
 
 - **Ticket.** Serves [SC-ONTOLOGY-01 #232](https://github.com/Netie-AI/dms/issues/232) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent 1PB LIVE / fake supply-chain metrics.

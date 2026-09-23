@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (SC-ONTOLOGY-01 #232 grains+coverage; ONTOLOGY-COMPILE-01 where-paths on main; SCALE-FREE-AI-01 + AGI-BUYER-WALK-01).
+PREFLIGHT for this goal: HIT (SC-ONTOLOGY-01 #232 grains+coverage on 936d810; KEEP_HOLD was kind=plan short-circuit in generative_ask).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | ontology-multigrain-01 | ONTOLOGY-MULTIGRAIN-01, where-paths, generative_ask, kind=plan, missing_join, bind_plan, dms-249 | try_compile_multi_grain before one-grain GEN-01 plan; expose where_paths; stamp where+importance; bind_plan non-confident. Not COMPLETE. | `2026-09-23_ontology-multigrain-01.md` |
 | 2026-09-23 | sc-ontology-01 | SC-ONTOLOGY-01, grains, sku, plant, lane, day, coverage, missing_join, dms-232 | Named supply-chain grains + join importance. Thin lane ABSTAINS missing origin. Numeric compile include/exclude/unsure. Not COMPLETE. | `2026-09-23_sc-ontology-01.md` |
 | 2026-09-23 | ontology-compile-01 | ONTOLOGY-COMPILE-01, where-paths, importance, multi-join, missing_join, bind_plan, dms-234 | >=2 supply-chain grains: ranked where-paths + importance or ABSTAIN naming missing join/metric. bind_plan not confident path. Not COMPLETE. | `2026-09-23_ontology-compile-01.md` |
 | 2026-09-23 | scale-free-ai-01 | SCALE-FREE-AI-01, FreeRoute, OpenVault, dup_label, free+normal, dms-233 | Prove/ask keep free+normal. DMS names attempted vs skipped providers from OV HTTP only. Dup labels skipped. No chat discovery, no vault scrape, no second vault. WRONG=0. Not COMPLETE. | `2026-09-23_scale-free-ai-01.md` |
