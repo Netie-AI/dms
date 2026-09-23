@@ -30,9 +30,12 @@ PBI_BLOCKED = (
     "pbix_binary",
 )
 PBI_NEEDS_YOU = (
-    "Power BI Desktop is not in this appliance. Paste power_query_m into Get Data > Blank Query.",
-    "Live DuckDB ODBC, .pbix publish, and Cortex parquet export are not wired from this envelope path (NEEDS-YOU).",
-    "Do not Folder-connect DuckLake data/ (P-DMS-24 double-count). This table is the ask envelope, not a semantic model.",
+    "Power BI Desktop is not in this appliance. "
+    "Paste power_query_m into Get Data > Blank Query.",
+    "Live DuckDB ODBC, .pbix publish, and Cortex parquet export "
+    "are not wired from this envelope path (NEEDS-YOU).",
+    "Do not Folder-connect DuckLake data/ (P-DMS-24 double-count). "
+    "This table is the ask envelope, not a semantic model.",
 )
 SUPERSET_BLOCKED = (
     "sqlalchemy_uri",
@@ -40,8 +43,10 @@ SUPERSET_BLOCKED = (
     "live_database",
 )
 SUPERSET_NEEDS_YOU = (
-    "Apache Superset is not DMS chrome. Import the envelope dataset; do not embed Superset as product UI.",
-    "SQLAlchemy URI / live lake connection is not shipped (NEEDS-YOU: steward-hosted Superset). A URI would be a secret; it is omitted.",
+    "Apache Superset is not DMS chrome. Import the envelope dataset; "
+    "do not embed Superset as product UI.",
+    "SQLAlchemy URI / live lake connection is not shipped "
+    "(NEEDS-YOU: steward-hosted Superset). A URI would be a secret; it is omitted.",
 )
 
 
