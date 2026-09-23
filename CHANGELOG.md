@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - ONTOLOGY-COMPILE-01: ranked where-paths + importance for multi-join grains (#234)
+
+- **Ticket.** Serves [ONTOLOGY-COMPILE-01 #234](https://github.com/Netie-AI/dms/issues/234) under EPIC-INSIGHTS-UX #178. Does not stamp epic COMPLETE. Does not invent 1PB LIVE. Parallel with #232 grains / #235 audit / #238 refuse / #194 GEN-03 -- this seat is compile, not ask_path containment or FreeRoute.
+- **Compile.** `Ontology.compile_grains` locates sku/supplier/plant/lane/day, ranks where-paths by importance (shortest verified many-to-one first), then emits SQL. Missing object/join -> `missing_join` naming the grain. Missing measure -> `missing_metric`. Equal-importance paths still `ambiguous_path` (no silent pick). `bind_plan` is not the confident path: a >=2-grain miss compiles as `ontology_plan` or ABSTAIN. Plant aliases to `location` until #232 lands a plant object. Day with no calendar object abstains honestly.
+- **Tests.** `tests/test_ontology_compile.py` -- two-grain conserve + ranked paths, missing join/metric, equal-importance refuse, ask-path `plan_source=ontology_plan` not bind_plan. CI green != Platform live prove.
+- **Not this ticket:** #178 COMPLETE, 1PB LIVE, second vault / LIVE_KEY, DB-GPT clone, #232 grain tables, #194 ask_path 400.
+
 ## 2026-09-23 - SCALE-FREE-AI-01: FreeRoute multi-provider consume via OpenVault API (#233)
 
 - **Ticket.** Serves [SCALE-FREE-AI-01 #233](https://github.com/Netie-AI/dms/issues/233) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Platform/Free Keys owns mint; LIVE_KEY_ID is not rotated here.

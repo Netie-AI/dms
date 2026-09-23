@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -190,6 +191,25 @@ class Refusal:
         return False
 
 
+@dataclass(frozen=True)
+class WherePath:
+    """One join chain from the measure grain to a supply-chain grain.
+
+    ``importance`` is 1 for the unique best path (shortest verified
+    many-to-one). Equal importance on two hop-sets is ambiguity, not a pick.
+    """
+
+    grain: str
+    target: str
+    hops: tuple[str, ...]
+    steps: tuple[str, ...]
+    importance: int
+    cardinality: str
+
+    def render(self) -> str:
+        return " -> ".join(self.steps) if self.steps else self.target
+
+
 @dataclass
 class CompiledQuery:
     sql: str
@@ -204,9 +224,75 @@ class CompiledQuery:
     # refuse or abstain on this flag; callers that asked for the existential
     # reading get it, named.
     existential: bool = False
+    # Ranked where-paths + importance when the request spans ≥2 supply-chain
+    # grains (sku/supplier/plant/lane/day). Empty for single-grain compile.
+    # This is ontology_plan material, never bind_plan.
+    where_paths: tuple[WherePath, ...] = ()
 
     def __bool__(self) -> bool:
         return True
+
+
+# Steward-facing supply-chain grains. Aliases map onto declared objects when
+# present (plant→location until SC-ONTOLOGY-01 lands a plant object). A name
+# with no object is a missing join, not an invented table.
+SUPPLY_CHAIN_GRAINS = ("sku", "supplier", "plant", "lane", "day")
+GRAIN_OBJECTS: dict[str, tuple[str, ...]] = {
+    "sku": ("product", "sku"),
+    "supplier": ("supplier",),
+    "plant": ("plant", "location"),
+    "lane": ("lane", "shipment"),
+    "day": ("day", "calendar", "date"),
+}
+GRAIN_COLUMNS: dict[str, tuple[str, ...]] = {
+    "sku": ("sku",),
+    "supplier": ("supplier_id", "supplier_name"),
+    "plant": ("plant_id", "location_id", "location_code", "name"),
+    "lane": ("lane_id", "shipment_id"),
+    "day": ("day", "date", "ts"),
+}
+_OBJECT_TO_GRAIN: dict[str, str] = {
+    "product": "sku",
+    "sku": "sku",
+    "supplier": "supplier",
+    "suppliers": "supplier",
+    "plant": "plant",
+    "location": "plant",
+    "lane": "lane",
+    "shipment": "lane",
+    "day": "day",
+    "calendar": "day",
+    "date": "day",
+}
+_DAY_RE = re.compile(
+    r"\b(?:per[- ]day|by[- ]day|and[- ]day|daily|by[- ]date|days?)\b",
+    re.I,
+)
+_GRAIN_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("sku", re.compile(r"\bskus?\b", re.I)),
+    ("supplier", re.compile(r"\bsuppliers?\b", re.I)),
+    ("plant", re.compile(r"\bplants?\b", re.I)),
+    ("lane", re.compile(r"\blanes?\b", re.I)),
+    ("day", _DAY_RE),
+)
+
+
+def detect_supply_chain_grains(question: str) -> tuple[str, ...]:
+    """Grains the ask names. Word matches only; warehouse/shipment stay climb L0s."""
+    q = question or ""
+    return tuple(name for name, pat in _GRAIN_RES if pat.search(q))
+
+
+def grain_for_object(name: str) -> str | None:
+    token = str(name or "").lower().rsplit(".", 1)[-1]
+    return _OBJECT_TO_GRAIN.get(token)
+
+
+def resolve_grain_object(onto: Ontology, grain: str) -> str | None:
+    for name in GRAIN_OBJECTS.get(grain, (grain,)):
+        if name in onto.objects:
+            return name
+    return None
 
 
 @dataclass
@@ -710,6 +796,134 @@ class Ontology:
             frontier = nxt
         return None
 
+    def _all_paths(
+        self,
+        start: str,
+        target: str,
+        *,
+        for_filter: bool = False,
+        via: dict[str, str] | None = None,
+    ) -> list[list[LinkType]]:
+        """Every passable acyclic path. Does not pick. Grouping skips non-m2o."""
+        via = dict(via or {})
+        if start == target:
+            return [[]]
+        found: list[list[LinkType]] = []
+        stack: list[tuple[str, list[LinkType], frozenset[str]]] = [
+            (start, [], frozenset({start}))
+        ]
+        while stack:
+            obj, path, seen = stack.pop()
+            by_pair: dict[str, list[LinkType]] = {}
+            for link in self.links.values():
+                if link.from_object != obj or link.to_object in seen:
+                    continue
+                by_pair.setdefault(link.to_object, []).append(link)
+            for to_obj, links in by_pair.items():
+                if to_obj in via:
+                    named = [x for x in links if x.name == via[to_obj]]
+                    if not named:
+                        continue
+                    chosen_list = named
+                else:
+                    chosen_list = links
+                for chosen in chosen_list:
+                    if chosen.cardinality == "unverified":
+                        continue
+                    if chosen.cardinality != "many_to_one" and not for_filter:
+                        continue
+                    nxt = path + [chosen]
+                    if to_obj == target:
+                        found.append(nxt)
+                    else:
+                        stack.append((to_obj, nxt, seen | {to_obj}))
+        return found
+
+    def _column_for_grain(self, obj: str, grain: str) -> str | None:
+        preferred = GRAIN_COLUMNS.get(grain, ())
+        cols = self.__dict__.get("_column_cache", {}).get(obj)
+        keys = self.objects[obj].key if obj in self.objects else ()
+        pool = set(cols) if isinstance(cols, set) else set(keys)
+        for col in preferred:
+            if col in pool:
+                return col
+        if keys:
+            return keys[0]
+        if pool:
+            return sorted(pool)[0]
+        return None
+
+    def rank_where_paths(
+        self,
+        from_grain: str,
+        specs: Sequence[tuple[str, str]],
+        *,
+        via: dict[str, str] | None = None,
+        for_filter: bool = False,
+    ) -> list[WherePath]:
+        """Rank where-paths + importance. Does not compile. Empty if no path."""
+        ranked: list[WherePath] = []
+        for grain, target in specs:
+            paths = self._all_paths(
+                from_grain, target, for_filter=for_filter, via=via
+            )
+            keyed: list[tuple[tuple[int, int], list[LinkType]]] = []
+            for path in paths:
+                m2m = 0 if all(x.cardinality == "many_to_one" for x in path) else 1
+                keyed.append(((m2m, len(path)), path))
+            keyed.sort(key=lambda row: (row[0], tuple(x.name for x in row[1])))
+            seen_key: dict[tuple[int, int], int] = {}
+            next_rank = 1
+            for key, path in keyed:
+                if key not in seen_key:
+                    seen_key[key] = next_rank
+                    next_rank += 1
+                hops = tuple(x.name for x in path)
+                steps = (from_grain, *[x.to_object for x in path]) if path else (from_grain,)
+                if any(x.cardinality == "unverified" for x in path):
+                    card = "unverified"
+                elif any(x.cardinality != "many_to_one" for x in path):
+                    card = "many_to_many"
+                else:
+                    card = "many_to_one"
+                ranked.append(
+                    WherePath(
+                        grain=grain,
+                        target=target,
+                        hops=hops,
+                        steps=steps,
+                        importance=seen_key[key],
+                        cardinality=card,
+                    )
+                )
+        ranked.sort(key=lambda p: (p.importance, p.grain, p.hops))
+        return ranked
+
+    def _ranked_where_paths_for(
+        self,
+        from_grain: str,
+        group_by: Sequence[tuple[str, str]],
+        filters: Sequence[tuple[str, str, str, Any]],
+        via: dict[str, str] | None,
+    ) -> tuple[WherePath, ...]:
+        specs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for obj, _col in group_by:
+            g = grain_for_object(obj)
+            if not g or g in seen:
+                continue
+            seen.add(g)
+            specs.append((g, obj))
+        for obj, _column, _op, _value in filters:
+            g = grain_for_object(obj)
+            if not g or g in seen:
+                continue
+            seen.add(g)
+            specs.append((g, obj))
+        if len(specs) < 2:
+            return ()
+        return tuple(self.rank_where_paths(from_grain, specs, via=via))
+
     def _join_chain(
         self,
         path: list[LinkType],
@@ -920,6 +1134,12 @@ class Ontology:
             if int(limit) < 0:
                 return Refusal("bad_limit", f"limit {limit!r} is negative")
             sql += f"\nLIMIT {int(limit)}"
+        where_paths = self._ranked_where_paths_for(m.grain, group_by, filters, via)
+        if where_paths:
+            notes.extend(
+                f"where {p.grain}: {p.render()} importance={p.importance}"
+                for p in where_paths
+            )
         return CompiledQuery(
             sql=sql,
             measure=m.name,
@@ -927,6 +1147,98 @@ class Ontology:
             group_by=tuple(f"{o}.{c}" for o, c in group_by),
             notes=tuple(notes),
             existential=existential,
+            where_paths=where_paths,
+        )
+
+    def compile_grains(
+        self,
+        measure: str | None,
+        grains: Sequence[str],
+        *,
+        filters: Sequence[tuple[str, str, str, Any]] = (),
+        via: dict[str, str] | None = None,
+        order_desc: bool = True,
+        limit: int | None = None,
+    ) -> CompiledQuery | Refusal:
+        """Locate + rank supply-chain grains, then compile. Not bind_plan.
+
+        ≥2 grains required. A missing object, join, or metric is a named
+        refusal, never a one-grain guess.
+        """
+        named = tuple(g for g in grains if g in SUPPLY_CHAIN_GRAINS)
+        if len(named) < 2:
+            return Refusal(
+                "missing_join",
+                "multi-join compile needs ≥2 supply-chain grains "
+                f"(sku, supplier, plant, lane, day); got {list(named) or 'none'}",
+            )
+        if not self.verified:
+            return Refusal(
+                "ontology_unverified",
+                "verify() has not passed against this data, so no link cardinality "
+                "is known. An unverified ontology can describe the world; it "
+                "cannot answer a question.",
+            )
+        mid = str(measure or "").strip()
+        if not mid or mid not in self.measures:
+            return Refusal(
+                "missing_metric",
+                f"no measure named {mid or '(none)'!r} for a multi-grain compile "
+                f"spanning {', '.join(named)}",
+            )
+        m = self.measures[mid]
+        specs: list[tuple[str, str, str]] = []
+        missing: list[str] = []
+        for grain in named:
+            obj = resolve_grain_object(self, grain)
+            if obj is None:
+                missing.append(f"grain {grain} (object undeclared)")
+                continue
+            col = self._column_for_grain(obj, grain)
+            if not col:
+                missing.append(f"grain {grain} (no grouping column on {obj})")
+                continue
+            paths = self._all_paths(m.grain, obj, via=via)
+            if obj != m.grain and not paths:
+                missing.append(f"join {m.grain}->{obj} for grain {grain}")
+                continue
+            specs.append((grain, obj, col))
+        if missing:
+            return Refusal(
+                "missing_join",
+                "no verified join/object for " + "; ".join(missing)
+                + ". Declare the link, or ask for a measure defined at that grain.",
+            )
+        objects = [obj for _g, obj, _c in specs]
+        if len(set(objects)) < 2:
+            return Refusal(
+                "missing_join",
+                f"grains {', '.join(named)} resolve to one object {objects[0]!r}; "
+                "a multi-join compile needs two distinct objects.",
+            )
+        ranked = self.rank_where_paths(
+            m.grain, [(g, obj) for g, obj, _c in specs], via=via
+        )
+        for grain, obj, _c in specs:
+            tops = [p for p in ranked if p.grain == grain and p.importance == 1]
+            hopsets = {p.hops for p in tops}
+            if len(hopsets) > 1:
+                routes = "; ".join(
+                    " -> ".join(p.hops) if p.hops else p.target for p in tops
+                )
+                return Refusal(
+                    "ambiguous_path",
+                    f"{len(hopsets)} equal-importance where-paths reach grain "
+                    f"{grain} ({obj}) from {m.grain}: {routes}. Name the path "
+                    "with via=.",
+                )
+        return self.compile(
+            mid,
+            group_by=[(obj, col) for _g, obj, col in specs],
+            filters=filters,
+            via=via,
+            order_desc=order_desc,
+            limit=limit,
         )
 
     def describe(self) -> dict[str, Any]:
@@ -951,6 +1263,20 @@ class Ontology:
                 for m in self.measures.values()
             },
         }
+
+
+def try_compile_multi_grain(
+    onto: Ontology | None,
+    measure: str | None,
+    question: str,
+    *,
+    via: dict[str, str] | None = None,
+) -> CompiledQuery | Refusal | None:
+    """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan)."""
+    grains = detect_supply_chain_grains(question)
+    if onto is None or not onto.verified or len(grains) < 2:
+        return None
+    return onto.compile_grains(measure, grains, via=via)
 
 
 def _render(op: str, value: Any) -> str:

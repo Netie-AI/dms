@@ -34,7 +34,13 @@ from dms_executor.envelope import (
     build_answer_envelope,
 )
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
-from dms_executor.ontology import CompiledQuery, Ontology, Refusal, demo_ontology
+from dms_executor.ontology import (
+    CompiledQuery,
+    Ontology,
+    Refusal,
+    demo_ontology,
+    try_compile_multi_grain,
+)
 from dms_executor.semantic_retrieve import (
     bind_plan,
     intent_slots,
@@ -583,6 +589,42 @@ def maybe_generative_ask(
                 plan_source=source,
             )
     if kind != "plan":
+        # Multi-join supply-chain (≥2 of sku/supplier/plant/lane/day):
+        # locate + rank where-paths, or honest ABSTAIN naming the gap.
+        # bind_plan is not the confident path (#234).
+        lock = str(intent_slots(q, onto).get("measure") or "").strip()
+        multi = try_compile_multi_grain(onto, lock or None, q)
+        if multi is not None:
+            source = PLAN_SOURCE_ONTOLOGY
+            if isinstance(multi, Refusal):
+                return _abstain(
+                    q, f"{multi.reason}: {multi.detail}",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                )
+            if multi.existential:
+                return _abstain(
+                    q, "existential many-to-many filter: ask path will not choose a reading",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                )
+            why = validate_compiled_sql(
+                multi.sql, grantable=allowed, warehouse=lake
+            )
+            if why:
+                return _abstain(
+                    q, f"validate:{why}",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                )
+            return _submit_validated(
+                multi.sql,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=tuple([*multi.notes, "ontology_compile:where+importance"]),
+                plan_source=source,
+                measure=multi.measure,
+            )
         # Isolated gen (ask_path=generative): bind from retrieved ontology
         # only when Cortex Insights was not reached. An Insights REFUSE
         # (unarmed / A-0009 / no SQL) is not a transport miss — bind_plan
