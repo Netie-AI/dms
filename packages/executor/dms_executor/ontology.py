@@ -142,6 +142,11 @@ class ObjectType:
     key: tuple[str, ...]
 
 
+def _same_columns(a: Sequence[str], b: Sequence[str]) -> bool:
+    """Whether two column lists name the same set, case-insensitively as DuckDB does."""
+    return {c.casefold() for c in a} == {c.casefold() for c in b}
+
+
 @dataclass(frozen=True)
 class LinkType:
     """A named relationship. Cardinality is measured, never taken on trust."""
@@ -478,6 +483,13 @@ class Ontology:
                 f"{len(to_columns)}: {list(from_columns)} -> {list(to_columns)}. "
                 "A join cannot be checked unless both sides name the same arity."
             )
+        if one_to_one and not _same_columns(from_columns, self.objects[from_object].key):
+            # A2-03 / dms#259: one_to_one only exempts a link declared on the
+            # child's own key. Anywhere else it is a claim nothing checks.
+            raise ValueError(
+                f"link {name!r} is declared one_to_one on {list(from_columns)}, which "
+                f"is not {from_object!r}'s key {list(self.objects[from_object].key)}."
+            )
         self.links[name] = LinkType(
             name,
             from_object,
@@ -742,15 +754,18 @@ class Ontology:
                     Violation("link_readable", name, f"{type(exc).__name__}: {exc}")
                 )
                 continue
-            if set(link.from_columns) == set(child.key) and not link.one_to_one:
+            if _same_columns(link.from_columns, child.key) and not link.one_to_one:
                 # A2-03 / dms#259: line_id -> order_id passed fk_intact because
                 # every line_id happened to equal a real order id, and the
                 # join then attributed each line to the wrong order. A child's
                 # own key is only an FK when the link says it is one-to-one.
                 child_all = self.__dict__.get("_column_cache", {}).get(child.name, set())
-                siblings = sorted(
-                    c for c in link.to_columns if c in child_all and c not in link.from_columns
-                )
+                # DuckDB identifiers are case-insensitive, so every name
+                # comparison here is too: LINE_ID and line_id are one column.
+                wanted = {c.casefold() for c in link.to_columns} - {
+                    c.casefold() for c in link.from_columns
+                }
+                siblings = sorted(c for c in child_all if c.casefold() in wanted)
                 hint = (
                     f" {link.from_object} also has {', '.join(siblings)}, which "
                     "matches the parent key by name and is the likely foreign key."
@@ -2160,7 +2175,7 @@ def from_manifest(
             # That is explicit, not inferred, so it is passed through; every
             # other check in verify() still measures the link. Hand-authored
             # links get no such pass.
-            one_to_one=set(from_cols) == set(onto.objects[child].key),
+            one_to_one=_same_columns(from_cols, onto.objects[child].key),
         )
     return onto
 

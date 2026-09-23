@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import duckdb
+import pytest
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.ontology import Ontology, from_manifest
@@ -38,11 +39,11 @@ def _con() -> Any:
     return con
 
 
-def _ontology(line_fk: str) -> Ontology:
+def _ontology(line_fk: str, line_key: str = "line_id") -> Ontology:
     o = Ontology()
     o.add_object("customer", "customers", ["customer_id"])
     o.add_object("order", "orders", ["order_id"])
-    o.add_object("line", "order_lines", ["line_id"])
+    o.add_object("line", "order_lines", [line_key])
     o.add_link("order_customer", "order", ["customer_id"], "customer", ["customer_id"])
     o.add_link("line_order", "line", [line_fk], "order", ["order_id"])
     o.add_measure("units", "line", "SUM(f.qty)")
@@ -63,6 +64,41 @@ def test_link_on_child_key_is_refused_and_names_the_sibling_fk() -> None:
     assert "line_id" in v.detail
     assert "order_id" in v.detail and "likely foreign key" in v.detail
     assert o.links["line_order"].cardinality == "unverified"
+
+
+def test_child_key_match_is_case_insensitive() -> None:
+    """DuckDB folds identifier case, so key LINE_ID and link line_id are one column."""
+    o = _ontology("line_id", line_key="LINE_ID")
+    con = _con()
+    try:
+        [v] = o.verify(con)
+    finally:
+        con.close()
+    assert v.check == "fk_is_child_key" and not o.verified
+    assert "order_id" in v.detail and "likely foreign key" in v.detail
+
+
+def test_sibling_hint_is_case_insensitive() -> None:
+    o = Ontology()
+    o.add_object("order", "orders", ["order_id"])
+    o.add_object("line", "order_lines", ["line_id"])
+    o.add_link("line_order", "line", ["line_id"], "order", ["ORDER_ID"])
+    con = _con()
+    try:
+        [v] = o.verify(con)
+    finally:
+        con.close()
+    assert v.check == "fk_is_child_key"
+    assert "also has order_id" in v.detail
+
+
+def test_one_to_one_off_the_child_key_is_rejected() -> None:
+    o = Ontology()
+    o.add_object("order", "orders", ["order_id"])
+    o.add_object("line", "order_lines", ["line_id"])
+    with pytest.raises(ValueError, match="one_to_one"):
+        o.add_link("line_order", "line", ["order_id"], "order", ["order_id"], one_to_one=True)
+    assert "line_order" not in o.links
 
 
 def test_correct_fk_still_verifies() -> None:
@@ -159,8 +195,8 @@ def _submitter(path: Path) -> Any:
     return submit
 
 
-def _ask(tmp_path: Path, line_fk: str) -> dict[str, Any]:
-    lake = tmp_path / f"{line_fk}.duckdb"
+def _ask(tmp_path: Path, line_fk: str, line_key: str = "line_id") -> dict[str, Any]:
+    lake = tmp_path / f"{line_fk}_{line_key}.duckdb"
     con = duckdb.connect(str(lake))
     try:
         for stmt in _SEED:
@@ -176,7 +212,7 @@ def _ask(tmp_path: Path, line_fk: str) -> dict[str, Any]:
         },
         submit=_submitter(lake),
         ledger_append=lambda _p: SimpleNamespace(entry_id="led_a203", hash="h"),
-        ontology=_ontology(line_fk),
+        ontology=_ontology(line_fk, line_key),
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -203,3 +239,12 @@ def test_envelope_answers_with_the_correct_fk(tmp_path: Path) -> None:
         for r in env["rows"]
     }
     assert got == {("North", 12.0), ("South", 3.0)}
+
+
+def test_envelope_abstains_when_key_case_differs_from_link(tmp_path: Path) -> None:
+    """Verifier probe A1: key LINE_ID, link line_id shipped South=9, North=6 validated."""
+    env = _ask(tmp_path, "line_id", line_key="LINE_ID")
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert "ontology_unverified" in env["text"]
+    assert "9.0" not in env["text"] and "6.0" not in env["text"]
