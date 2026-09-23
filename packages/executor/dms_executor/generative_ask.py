@@ -179,6 +179,18 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     return target
 
 
+def unverified_reason(declared: Ontology | None) -> str:
+    """``ontology_unverified``, plus the checks verify() failed when known.
+
+    A bare "ontology_unverified" abstains honestly but tells the steward
+    nothing; the violation (e.g. business_key_unique on customer_code) is the
+    thing they can fix.
+    """
+    failed = (declared.__dict__.get("_violations") or []) if declared is not None else []
+    parts = [f"{v.check} {v.subject}: {v.detail}" for v in failed[:3]]
+    return "ontology_unverified" + (": " + "; ".join(parts) if parts else "")
+
+
 def _rows_gt(rows: list[dict[str, Any]], measure: str, keep_gt: float) -> list[dict[str, Any]]:
     """Keep rows whose measure (or sole numeric cell) is above keep_gt."""
     out: list[dict[str, Any]] = []
@@ -817,7 +829,7 @@ def maybe_generative_ask(
         )
     if onto is None or not onto.verified:
         return _abstain(
-            q, "ontology_unverified",
+            q, unverified_reason(ontology),
             space_id=space_id, session_id=session_id, plan_source=source,
         )
 

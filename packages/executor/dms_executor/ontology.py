@@ -140,6 +140,10 @@ class ObjectType:
     name: str
     relation: str
     key: tuple[str, ...]
+    #: Declared natural key (``customer_code``) behind a surrogate ``key``. A
+    #: surrogate can be unique while the business entity is duplicated under
+    #: two ids; verify() checks this claim too. Declared, never profiled.
+    business_key: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -440,8 +444,9 @@ class Ontology:
         key: Sequence[str],
         *,
         truncated: bool = False,
+        business_key: Sequence[str] | None = None,
     ) -> None:
-        self.objects[name] = ObjectType(name, relation, tuple(key))
+        self.objects[name] = ObjectType(name, relation, tuple(key), tuple(business_key or ()))
         if truncated:
             self.truncated[name] = True
         else:
@@ -637,13 +642,52 @@ class Ontology:
             }
         return cache[obj]
 
+    def _verify_business_key(self, con: Any, obj: ObjectType) -> Violation | None:
+        """One Violation naming the business key, its NULL rows and duplicate rows."""
+        bk = ", ".join(obj.business_key)
+        cols = ", ".join(_ident(c) for c in obj.business_key)
+        nulls = " OR ".join(f"{_ident(c)} IS NULL" for c in obj.business_key)
+        try:
+            null_rows = con.execute(
+                f"SELECT COUNT(*) FROM {obj.relation} WHERE {nulls}"
+            ).fetchone()[0]
+            dup_keys, dup_rows = con.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(n), 0) FROM (SELECT COUNT(*) AS n "
+                f"FROM {obj.relation} WHERE NOT ({nulls}) GROUP BY {cols} HAVING COUNT(*) > 1)"
+            ).fetchone()
+        except Exception as exc:  # noqa: BLE001
+            return Violation(
+                "business_key_unique", obj.name, f"business key ({bk}): {type(exc).__name__}: {exc}"
+            )
+        problems: list[str] = []
+        if int(dup_keys or 0):
+            problems.append(
+                f"{int(dup_rows):,} rows share {int(dup_keys):,} duplicate business key "
+                f"value(s) on ({bk})"
+            )
+        if int(null_rows or 0):
+            problems.append(f"{int(null_rows):,} rows have NULL in business key ({bk})")
+        if not problems:
+            return None
+        return Violation(
+            "business_key_unique",
+            obj.name,
+            "; ".join(problems)
+            + f" - the surrogate ({', '.join(obj.key)}) is unique, but one "
+            f"{obj.name} would be counted more than once",
+        )
+
     def verify(self, con: Any) -> list[Violation]:
         """Execute every claim. Nothing may be used until this has passed.
 
-        Four claims are checked, in the order a wrong one would do damage:
+        Five claims are checked, in the order a wrong one would do damage:
           key_unique      an object's key really identifies one row
           key_not_null    no key column is NULL - a NULL key both passes a
                           uniqueness check and silently drops rows from a join
+          business_key_unique  a declared business key (customer_code behind
+                          a surrogate customer_id) is non-NULL and unique. A
+                          unique surrogate over a duplicated business key
+                          counts one customer as two.
           fk_intact       every non-NULL child key exists in the parent. A
                           missing parent turns a LEFT JOIN into misattribution
                           (named groups shrink, the unmatched bucket grows,
@@ -696,6 +740,10 @@ class Ontology:
                         f"({', '.join(obj.key)}) - the key does not identify a row",
                     )
                 )
+            if obj.business_key:
+                violation = self._verify_business_key(con, obj)
+                if violation is not None:
+                    violations.append(violation)
 
         for name, link in list(self.links.items()):
             parent = self.objects[link.to_object]
@@ -796,6 +844,10 @@ class Ontology:
             )
 
         self.verified = not violations
+        # Kept so an abstention can name what failed instead of a bare
+        # "ontology_unverified" (dms#260 A2-04). Same cache slot style as
+        # _column_cache: not a dataclass field, not part of equality.
+        self.__dict__["_violations"] = list(violations)
         return violations
 
     # -- compilation -----------------------------------------------------
@@ -2066,6 +2118,10 @@ def from_manifest(
 
     relation = relation_for or _parquet
     pks: dict[str, list[str]] = dict(entry.get("primary_keys") or {})
+    # Optional declared natural keys ("schema.table" -> columns). Additive:
+    # SourceKeys does not read UNIQUE constraints yet, so today only a steward
+    # or hand-built manifest supplies this (dms#260 A2-04).
+    bks: dict[str, list[str]] = dict(entry.get("business_keys") or {})
 
     truncated_by_table = {
         f"{t['schema']}.{t['table']}": bool(t.get("truncated"))
@@ -2081,6 +2137,7 @@ def from_manifest(
             relation(schema, name),
             key,
             truncated=truncated_by_table.get(table, False),
+            business_key=bks.get(table),
         )
 
     # Grouped on the whole triple, not the name alone. Constraint names are

@@ -156,7 +156,12 @@ DEFECT_WORDS: dict[str, tuple[str, ...]] = {
 # WRONG rows name the ticket that owns the fix. Improving a row is editing it.
 _GAP_ORPHAN_SQL = "WRONG"  # dms#258 A2-02: generated SQL ships over an ontology that failed verify
 _GAP_WRONG_FK = "WRONG"  # dms#259 A2-03: FK on a wrong column with coincident values passes verify
-_GAP_DUP_KEY = "WRONG"  # dms#260 A2-04: duplicate business key behind a unique surrogate
+# dms#260 A2-04: the declared business key (customer_code) is verified, so the
+# plan path abstains naming it. The SQL path still ships over the failed
+# ontology, which is A2-02's gap, so dup_business_key/customer_count/sql is
+# pinned to _GAP_ORPHAN_SQL. Cost: every dup_business_key plan row abstains,
+# including revenue/units by region whose oracle is unaffected.
+_GAP_DUP_KEY = "ABSTAIN"
 _GAP_CURRENCY = "WRONG"  # dms#261 A2-05: unit/currency in the question vs the data is never checked
 MEASURED: dict[tuple[str, str, str], str] = {}
 for _case in CASES:
@@ -167,17 +172,18 @@ for _case in CASES:
     for _mode in ("plan", "sql"):
         MEASURED[(_case, "revenue_usd", _mode)] = _GAP_CURRENCY
 for _qid in QUESTIONS:
-    MEASURED[("orphan", _qid, "plan")] = "ABSTAIN_UNNAMED"
+    # A2-04: the abstention now carries verify()'s fk_intact violation.
+    MEASURED[("orphan", _qid, "plan")] = "ABSTAIN"
+    MEASURED[("dup_business_key", _qid, "plan")] = _GAP_DUP_KEY
 MEASURED[("orphan", "revenue_by_region", "sql")] = _GAP_ORPHAN_SQL
 MEASURED[("fk_wrong_col", "units_by_region", "plan")] = _GAP_WRONG_FK
 MEASURED[("fk_wrong_col", "units_by_region", "sql")] = _GAP_WRONG_FK
-MEASURED[("dup_business_key", "customer_count", "plan")] = _GAP_DUP_KEY
-MEASURED[("dup_business_key", "customer_count", "sql")] = _GAP_DUP_KEY
+MEASURED[("dup_business_key", "customer_count", "sql")] = _GAP_ORPHAN_SQL
 
 
 def _ontology(case: Case) -> Ontology:
     o = Ontology()
-    o.add_object("customer", "customers", ["customer_id"])
+    o.add_object("customer", "customers", ["customer_id"], business_key=["customer_code"])
     o.add_object("order", "orders", ["order_id"])
     o.add_object("line", "order_lines", ["line_id"])
     o.add_link("order_customer", "order", ["customer_id"], "customer", ["customer_id"])
