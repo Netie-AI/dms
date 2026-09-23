@@ -28,12 +28,13 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
 )
 
-from dms_executor.demo_ask import normalize_ask_question
+from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, warehouse_path
 from dms_executor.envelope import (
     _relation_bare,
     _sql_cited_labels,
+    asked_calendar_years,
     assert_envelope_valid,
     build_answer_envelope,
 )
@@ -379,6 +380,9 @@ def _l2_envelope(
         audit_id=audit_id,
         grounded_tables=sorted(cited_relations(sql)),
     )
+    if env.get("abstained"):
+        assert_envelope_valid(env)
+        return with_plan_source(env, plan_source)
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -622,7 +626,9 @@ def maybe_generative_ask(
     only) and Insights was not reached. ``Executor.live_ask`` always passes
     ``bind_on_miss=False`` (GEN-03). Product path leaves miss as None so Cortex
     certified ask still runs. Explicit compute unsure is not overridden.
-    When the ask names ≥2 supply-chain grains (sku/supplier/plant/lane/day),
+    Predictive asks and a named year 2099 abstain before compile (bar (2)
+    KEEP_HOLD: no all-time history under a forecast / 2099 badge).
+    When the ask names >=2 supply-chain grains (sku/supplier/plant/lane/day),
     ``try_compile_multi_grain`` runs before one-grain GEN-01 plan or SQL
     short-circuit: ranked where-paths + importance, or honest ABSTAIN naming
     the missing join/metric. bind_plan is not that confident path.
@@ -641,6 +647,16 @@ def maybe_generative_ask(
     if _UNSURE_ASK.search(q):
         return _abstain(
             q, "question is too vague or time-unbounded to ground",
+            space_id=space_id, session_id=session_id,
+        )
+    if _is_predictive(q):
+        return _abstain(
+            q, "predictive: history is not a forecast",
+            space_id=space_id, session_id=session_id,
+        )
+    if "2099" in asked_calendar_years(q):
+        return _abstain(
+            q, "year 2099 is not a certified period; all-time history is not that year",
             space_id=space_id, session_id=session_id,
         )
 

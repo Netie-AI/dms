@@ -84,7 +84,9 @@ EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS`; no lane
 POSTs Cortex `/dms/query` or binds a keyword plan, so isolated gen abstains
 past the pre-gates and the product path goes to the Cortex contract ask
-(`tests/test_gen03_contain_ask_path.py`). Isolated gen (offline only): Cortex
+(`tests/test_gen03_contain_ask_path.py`). Bar (2) KEEP_HOLD on that ticket:
+predict / revenue-2099 must not L2 all-time pad; not-cold must not invert
+under a confident badge. Isolated gen (offline only): Cortex
 compute miss may still bind retrieved ontology then validate/CRAG. Product path
 still Cortex-asks on compute miss. Distill ladder in `scripts/score_climb.md` (certified-first,
 YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,

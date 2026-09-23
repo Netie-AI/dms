@@ -20,7 +20,10 @@ typed plan, exactly the reply the ask path used to throw away or bind over.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,7 +32,9 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_api.settings import Settings, get_settings
 from dms_executor import Executor
-from dms_executor.envelope import assert_envelope_valid
+from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
@@ -42,9 +47,23 @@ D03_PROBES = (
     "What is the average stock value by location?",
     "Top 3 SKUs by lowest revenue",
     "What was revenue in 2025?",
+    "What was revenue in 2099?",
     "Predict how much revenue we will make",
     "How many distinct products do we keep in stock?",
 )
+
+_NOT_COLD_Q = "Which locations are not cold storage?"
+_REVENUE_2099_Q = "What was revenue in 2099?"
+_PREDICT_Q = "Predict how much revenue we will make"
+_ALL_TIME_REVENUE_SQL = (
+    "SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr "
+    "FROM transactions WHERE txn_type = 'OUT'"
+)
+_INVERT_COLD_SQL = (
+    'SELECT f."location_code" FROM locations f '
+    'WHERE f."is_cold_storage" = TRUE'
+)
+_ALL_TIME_REVENUE = 1234567.89
 
 #: Figures the binder shipped under L2_VALIDATED. None may reach rendered text.
 _GREEN_WRONG_FIGURES = ("29840", "29,840")
@@ -420,3 +439,199 @@ def test_the_compute_recorder_counts_a_call() -> None:
     assert out is not None and out.get("query_plan") is None
     assert len(cortex.computes) == 1
     assert not cortex.untouched()
+
+
+def _assert_keep_hold_not_l2(env: dict[str, Any], question: str) -> None:
+    """Bar (2) KEEP_HOLD: refuse / named ABSTAIN / non-L2. Not bar PASS."""
+    assert_envelope_valid(env)
+    badge = str(env.get("badge") or "")
+    assert badge != "L2_VALIDATED", (question, badge, env.get("sql_used"))
+    assert badge != "L1_GOVERNED_METRIC", (question, badge)
+    assert badge != "L0_CERTIFIED", (question, badge, env.get("sql_used"))
+    assert env["abstained"] is True, question
+    assert env["values"] == [], question
+    assert env["rows"] == [], question
+    text = str(env.get("text") or "")
+    assert "1234567" not in text.replace(",", ""), (question, text)
+    assert "99999" not in text, (question, text)
+
+
+def test_envelope_quoted_is_cold_does_not_invert_not_cold() -> None:
+    """E11 must see f.\"is_cold_storage\" = TRUE (F-0057 quoted ident)."""
+    env = build_answer_envelope(
+        answer_id="ans_gen03_e11q",
+        text="Found 1 row(s).\n  - location_code=WH-COLD",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": 1, "label": "n"}],
+        sql_used=_INVERT_COLD_SQL,
+        rows=[{"location_code": "WH-COLD", "is_cold_storage": True}],
+        question=_NOT_COLD_Q,
+        audit_id="aud_gen03_e11q",
+    )
+    _assert_keep_hold_not_l2(env, _NOT_COLD_Q)
+    notes = " ".join(str(a) for a in (env.get("assumptions") or [])).lower()
+    assert "polarity" in notes or "inverse" in env["text"].lower(), notes
+
+
+def test_envelope_revenue_2099_does_not_l2_all_time_pad() -> None:
+    env = build_answer_envelope(
+        answer_id="ans_gen03_2099",
+        text="Total revenue was RM 1,234,567.89.",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": _ALL_TIME_REVENUE, "unit": "MYR", "label": "revenue"}],
+        sql_used=_ALL_TIME_REVENUE_SQL,
+        rows=[{"sales_value_myr": _ALL_TIME_REVENUE}],
+        question=_REVENUE_2099_Q,
+        audit_id="aud_gen03_2099",
+    )
+    _assert_keep_hold_not_l2(env, _REVENUE_2099_Q)
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert "2099" in notes and "all-time pad" in notes, notes
+
+
+def test_envelope_predict_does_not_l2_history_as_forecast() -> None:
+    env = build_answer_envelope(
+        answer_id="ans_gen03_predict",
+        text="Total revenue was RM 1,234,567.89.",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": _ALL_TIME_REVENUE, "unit": "MYR", "label": "revenue"}],
+        sql_used=_ALL_TIME_REVENUE_SQL,
+        rows=[{"sales_value_myr": _ALL_TIME_REVENUE}],
+        question=_PREDICT_Q,
+        audit_id="aud_gen03_predict",
+    )
+    _assert_keep_hold_not_l2(env, _PREDICT_Q)
+    notes = " ".join(str(a) for a in (env.get("assumptions") or [])).lower()
+    assert "history pad" in notes or "forecast" in notes, notes
+
+
+def test_envelope_year_filtered_2099_sql_is_not_all_time_pad() -> None:
+    """R-0005: a query that actually names 2099 is not this pad."""
+    sql = (
+        "SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr "
+        "FROM transactions WHERE txn_type = 'OUT' "
+        "AND CAST(ts AS VARCHAR) LIKE '2099%'"
+    )
+    env = build_answer_envelope(
+        answer_id="ans_gen03_2099_ok",
+        text="Found 1 row(s).\n  - sales_value_myr=0.0",
+        badge="L2_VALIDATED",
+        abstained=False,
+        values=[{"id": "v0", "value": 0.0, "unit": "MYR", "label": "revenue"}],
+        sql_used=sql,
+        rows=[{"sales_value_myr": 0.0}],
+        question=_REVENUE_2099_Q,
+        audit_id="aud_gen03_2099_ok",
+    )
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert_envelope_valid(env)
+
+
+def test_bind_on_miss_keep_hold_not_cold_and_2099(tmp_path: Path) -> None:
+    """Offline bind_plan is the historical green-wrong path. Must not L2."""
+    warehouse = tmp_path / "keep_hold.duckdb"
+    ensure_demo_warehouse(warehouse)
+    grantable = {"inventory", "locations", "transactions", "suppliers", "shipments"}
+    submitted: list[str] = []
+
+    def _submit(sql: str) -> Any:
+        submitted.append(sql)
+        return SimpleNamespace(
+            ok=True,
+            status="ok",
+            run_id="run_keep_hold",
+            output={"rows": [{"sales_value_myr": _ALL_TIME_REVENUE, "is_cold_storage": True}]},
+        )
+
+    def _ledger(_payload: dict[str, Any]) -> Any:
+        return SimpleNamespace(entry_id="led_keep_hold", hash="hash_keep_hold_not_entry")
+
+    for question in (_REVENUE_2099_Q, _PREDICT_Q, "Predict revenue for 2099"):
+        submitted.clear()
+        env = maybe_generative_ask(
+            question,
+            warehouse=warehouse,
+            grantable=grantable,
+            compute=lambda _ctx: None,
+            submit=_submit,
+            ledger_append=_ledger,
+            bind_on_miss=True,
+        )
+        assert env is not None, question
+        _assert_keep_hold_not_l2(env, question)
+        assert submitted == [], (question, submitted)
+
+    submitted.clear()
+    env = maybe_generative_ask(
+        _NOT_COLD_Q,
+        warehouse=warehouse,
+        grantable=grantable,
+        compute=lambda _ctx: None,
+        submit=_submit,
+        ledger_append=_ledger,
+        bind_on_miss=True,
+    )
+    assert env is not None, _NOT_COLD_Q
+    sql = " ".join(submitted) + " " + str(env.get("sql_used") or "")
+    if env.get("badge") in {"L2_VALIDATED", "L1_GOVERNED_METRIC", "L0_CERTIFIED"}:
+        assert env.get("abstained") is False
+        compact = re.sub(r"\s+", " ", sql.lower())
+        assert "is_cold_storage" in compact
+        assert "is_cold_storage = true" not in compact.replace('"', "")
+        assert "is_cold_storage\" = true" not in compact
+    else:
+        _assert_keep_hold_not_l2(env, _NOT_COLD_Q)
+
+
+class _PadCortex(_RecordingCortex):
+    """Product-lane fake that ships the two KEEP_HOLD failure shapes."""
+
+    def ask(self, req: AskRequest) -> AskResponse:
+        self.asks.append(req)
+        q = req.question or ""
+        if "not cold" in q.lower():
+            return AskResponse(
+                answer="WH-COLD is cold storage.",
+                badge="governed_metric",
+                sql_used=_INVERT_COLD_SQL,
+                rows=[{"location_code": "WH-COLD", "is_cold_storage": True}],
+                assumptions="invert",
+                audit_id="aud_gen03_invert",
+                route="sql",
+            )
+        return AskResponse(
+            answer="Total revenue was RM 1,234,567.89.",
+            badge="session",
+            sql_used=_ALL_TIME_REVENUE_SQL,
+            rows=[{"sales_value_myr": _ALL_TIME_REVENUE}],
+            assumptions="all-time",
+            audit_id="aud_gen03_pad",
+            route="sql",
+        )
+
+
+def test_product_lane_keep_hold_not_cold_and_2099(
+    minter: ManifestMinter, bind_calls: list[str]
+) -> None:
+    """Product Cortex.ask still cannot invert not-cold or pad 2099 as L2."""
+    cortex = _PadCortex()
+    client, _ = _client(minter, cortex, harness=False)
+    cases = (
+        (_NOT_COLD_Q, "ses_gen03_kh_cold"),
+        (_REVENUE_2099_Q, "ses_gen03_kh_2099"),
+        (_PREDICT_Q, "ses_gen03_kh_predict"),
+    )
+    for question, sid in cases:
+        r = client.post(
+            "/v1/chat/ask",
+            json={"question": question, "session_id": sid},
+        )
+        assert r.status_code == 200, (question, r.text)
+        env = r.json()
+        _assert_keep_hold_not_l2(env, question)
+        assert bind_calls == []
+        assert cortex.computes == []

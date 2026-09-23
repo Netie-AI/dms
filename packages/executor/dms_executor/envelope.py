@@ -721,8 +721,16 @@ def _sql_filter_polarity(sql: str, concept: frozenset[str]) -> str | None:
     """'positive' / 'negative' if a filter atom overlaps ``concept``, else None."""
     seen: set[str] = set()
     for m in _SQL_ATOM.finditer(sql):
-        literal = m.group(1) if m.group(1) is not None else m.group(2)
+        quoted = m.group(2)
         ident = m.group(3)
+        # DuckDB / ANSI quoted identifiers. Treating "is_cold_storage" as a
+        # string literal left E11 blind (F-0057): `f."is_cold_storage" = TRUE`
+        # has the `=` after the atom, so literal polarity was None and a
+        # not-cold ask shipped the inverted filter under L2.
+        if quoted is not None and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", quoted):
+            ident = quoted
+            quoted = None
+        literal = m.group(1) if m.group(1) is not None else quoted
         if ident is not None and ident.lower() in _SQL_KW:
             continue
         if literal is not None:
@@ -794,6 +802,42 @@ def _executed_query(sql: str | None) -> bool:
     if not sql:
         return False
     return bool(_SQL_COMMENT.sub("", str(sql)).strip())
+
+
+#: Calendar years in the ask. SKU-2099 / WH-2024 do not count (hyphen prefix).
+_CALENDAR_YEAR = re.compile(r"(?<![A-Za-z0-9-])((?:19|20)\d{2})(?![A-Za-z0-9_])")
+_FORECAST_ASK = re.compile(
+    r"\b(?:predict(?:s|ed|ing|ion|ions|ive)?|forecast(?:s|ed|ing)?)\b",
+    re.I,
+)
+
+
+def asked_calendar_years(question: str | None) -> tuple[str, ...]:
+    if not question:
+        return ()
+    return tuple(_CALENDAR_YEAR.findall(question))
+
+
+def _year_in_sql(sql: str, year: str) -> bool:
+    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(year)}(?![A-Za-z0-9])", sql))
+
+
+def _all_time_year_pad(question: str | None, sql: str | None) -> str | None:
+    """Year named in the ask but missing from executed SQL (all-time pad)."""
+    if not _executed_query(sql):
+        return None
+    stripped = _SQL_COMMENT.sub("", str(sql))
+    for year in asked_calendar_years(question):
+        if not _year_in_sql(stripped, year):
+            return year
+    return None
+
+
+def _forecast_history_pad(question: str | None, sql: str | None) -> bool:
+    """True when a predict/forecast ask was answered with executed history SQL."""
+    if not _FORECAST_ASK.search(question or ""):
+        return False
+    return _executed_query(sql)
 
 
 def _money_like(text: str) -> list[float]:
@@ -1510,6 +1554,34 @@ def build_answer_envelope(
             "negated ask answered by a positive filter: polarity mismatch (E11/FF-02)"
         )
 
+    # Epic bar (2) KEEP_HOLD / GEN-03: a named year with no year in SQL is
+    # all-time history wearing that year's question. 2099 is the pinned case.
+    pad_year = None if abstained else _all_time_year_pad(question, sql_used)
+    if pad_year:
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            f"You asked about {pad_year}, but the query I matched is not "
+            f"filtered to that year. All-time history is not {pad_year}, so I "
+            f"cannot confirm the figure. Rather than pad last year's total as "
+            f"that year, I'm stopping here."
+        )
+        assumptions_list.append(
+            f"named year {pad_year} answered by unfiltered history: all-time pad"
+        )
+
+    if not abstained and _forecast_history_pad(question, sql_used):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "You asked for a forecast, but the query I matched reads historical "
+            "transactions. That is not a prediction, so I cannot confirm the "
+            "figure. Rather than pad history as a forecast, I'm stopping here."
+        )
+        assumptions_list.append(
+            "predict/forecast ask answered by historical SQL: history pad"
+        )
+
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.
     # Promote figures grounded in row cells or same-row |a−b| (shortfall); if any
@@ -1822,6 +1894,7 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
 
 __all__ = [
     "ALLOWED_BADGES",
+    "asked_calendar_years",
     "assert_envelope_valid",
     "build_answer_envelope",
     "build_audit_receipt",
