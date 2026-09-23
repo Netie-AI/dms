@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (ONTOLOGY-COMPILE-01 ranked where-paths; SCALE-FREE-AI-01 + AGI-BUYER-WALK-01 on main).
+PREFLIGHT for this goal: HIT (SCALE-WAREHOUSE-01 rebase onto #234/#233/#236; TB->PB pack, NOT LIVE 1PB).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-23 | scale-warehouse-01 | SCALE-WAREHOUSE-01, partition, Space ACL, grain, TB, PB, dms-237 | Design pack maps #232 SKU/supplier/plant/lane/day into Hive day+plant partitions + DR-0002 ACL. ROADMAP_NOT_LIVE. No remount. Not COMPLETE. | `2026-09-23_scale-warehouse-01.md` |
 | 2026-09-23 | ontology-compile-01 | ONTOLOGY-COMPILE-01, where-paths, importance, multi-join, missing_join, bind_plan, dms-234 | >=2 supply-chain grains: ranked where-paths + importance or ABSTAIN naming missing join/metric. bind_plan not confident path. Not COMPLETE. | `2026-09-23_ontology-compile-01.md` |
 | 2026-09-23 | scale-free-ai-01 | SCALE-FREE-AI-01, FreeRoute, OpenVault, dup_label, free+normal, dms-233 | Prove/ask keep free+normal. DMS names attempted vs skipped providers from OV HTTP only. Dup labels skipped. No chat discovery, no vault scrape, no second vault. WRONG=0. Not COMPLETE. | `2026-09-23_scale-free-ai-01.md` |
 | 2026-09-23 | agi-buyer-walk-01 | AGI-BUYER-WALK-01, Studio, supply-chain, abstain, dms-236 | Walk script + Studio copy. 5 asks ontology_plan or honest ABSTAIN; 1 refuse demo; cite receipt/ask/export. No logos/ARR/COMPLETE. Live Platform. | `2026-09-23_agi-buyer-walk-01.md` |

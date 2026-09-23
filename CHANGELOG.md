@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - SCALE-WAREHOUSE-01: TB->PB warehouse design pack (#237)
+
+- **Ticket.** Serves [SCALE-WAREHOUSE-01 #237](https://github.com/Netie-AI/dms/issues/237) under EPIC-INSIGHTS-UX #178. Design/docs/schemas only. Does not stamp epic COMPLETE. Does not claim 1PB LIVE.
+- **Pack.** `docs/SCALE_WAREHOUSE.md` + `docs/schemas/scale_warehouse.yaml` define partition keys (`day`, `plant_id` on facts; PB roadmap adds `sku_hash_bucket` / `lane_id`), Space ACL (DR-0002 predicates, never `space_id` storage partitions), and grain cardinality envelopes. Maps #232 grains SKU / supplier / plant / lane / day into warehouse layout. Plant is not `locations`. Lane is not dest-only shipments.
+- **Honesty.** `status: ROADMAP_NOT_LIVE`. `petabyte_live` / `live_1pb` stay false. Founder lake remount is not required and needs Platform GO. P-DMS-34 (91-row writer lock) is not lifted. No demo_warehouse / ontology runtime change.
+- **Check.** `tests/test_scale_warehouse_pack.py` fails if the pack claims LIVE 1PB, COMPLETE, or a remount.
+- **Not this ticket:** #178 COMPLETE, 1PB production, founder lake remount, plant/lane/day on the live seed, a new scale epic.
+
 ## 2026-09-23 - ONTOLOGY-COMPILE-01: ranked where-paths + importance for multi-join grains (#234)
 
 - **Ticket.** Serves [ONTOLOGY-COMPILE-01 #234](https://github.com/Netie-AI/dms/issues/234) under EPIC-INSIGHTS-UX #178. Does not stamp epic COMPLETE. Does not invent 1PB LIVE. Parallel with #232 grains / #235 audit / #238 refuse / #194 GEN-03 -- this seat is compile, not ask_path containment or FreeRoute.
