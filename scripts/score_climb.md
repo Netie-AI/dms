@@ -4,6 +4,21 @@
 **Depends on:** GEN-01 landed @ `a9578348` (retrieve + execute-validate + offline `--ab`).
 **Does not close** #180 or #178. **Not COMPLETE.** Not 99.95%.
 
+> **GEN-03 (#194) changed what this harness can measure. Read this first.**
+>
+> - `ask_path=exact|generative` now returns **400 `ask_path_not_allowed`** unless the
+>   server sets `DMS_HARNESS_ASK_PATHS`. A customer origin (including
+>   `https://studio.netie.ai/api`) refuses every case, and the scorer counts a 400
+>   as a failure rather than laundering it into an ABSTAIN. Run `--climb --ab`
+>   only against a measurement origin that sets that variable.
+> - No ask lane calls Cortex `POST /dms/query` and no ask lane binds `bind_plan`.
+>   Cortex never implemented the `ontology_plan` mode this sent (KB F-0055), so the
+>   isolated `generative` lane now ABSTAINs past the pre-gates instead of answering
+>   from a keyword plan. Its previous answers were keyword-bound, and three of them
+>   were wrong on value.
+> - The sections below describe the pre-GEN-03 lane. They are kept for what the
+>   numbers in the frozen baselines meant, not as instructions.
+
 Climb is measured on the **product ask path** (pack exact-match first, then GEN-01 generative on miss). Do not expand certified packs as the climb. Isolated live A/B uses `ask_path=exact|generative`. Offline dual-path remains `python scripts/score_curated.py --ab` (no keys).
 
 GEN-02 follow-on: isolated `ask_path=generative` Cortex `POST /dms/query` miss binds local `bind_plan` from the retrieved ontology, then the same compile → validate/CRAG → submit. Product path does **not** bind on miss (Cortex certified still runs). Explicit Cortex `unsure` is not overridden. Planted refuses stay ABSTAIN. Ontology measures are warehouse-honest (thin reseed vs Cortex lake), not pack SQL.
@@ -58,7 +73,7 @@ Re-measure. Do not edit these counts to invent a rise. Climb gen via retrieve+Co
 | Platform product-path | `--climb --url https://studio.netie.ai/api` | host-online COMPLETE |
 | CI / any seat, no network | `--self-check` and `--ab` | a live score |
 
-`--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve + Cortex compute, bind_plan on compute miss, execute-validate; skip pack). Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
+`--climb --ab` POSTs each curated question twice: `ask_path=exact` (VQ/pack/refuse only) then `ask_path=generative` (ontology retrieve, then ABSTAIN since GEN-03 closed the plan source; before GEN-03 this was Cortex compute with bind_plan on miss, execute-validate; skip pack). Both lanes need `DMS_HARNESS_ASK_PATHS` on the target origin or every case comes back 400. Cortex compute / OpenVault FreeRoute stay on the host. This script never sends keys.
 
 ## GEN-PATH-ROUTE-02 (#203) — measured ontology_plan>=1 (fix #201 leftover)
 

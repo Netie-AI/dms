@@ -5,10 +5,18 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { useApp } from "@/context/AppContext";
 import {
+  auditReceiptLines,
   checkAnswerTotals,
   shareEnvelopePayload,
 } from "@/lib/answerDelivery";
 import { ceoSafeHref } from "@/lib/productMode";
+import {
+  biCopyText,
+  biPanelHeadline,
+  biStub,
+  type BiExportResponse,
+  type BiTarget,
+} from "@/lib/biExport";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
 import {
   csvDownloadName,
@@ -124,11 +132,15 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [shareNote, setShareNote] = useState<string | null>(null);
   const [exportErr, setExportErr] = useState<string | null>(null);
+  const [biPanel, setBiPanel] = useState<BiExportResponse | null>(null);
+  const [biFocus, setBiFocus] = useState<BiTarget | null>(null);
+  const [biNote, setBiNote] = useState<string | null>(null);
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
   const confirmFired = useRef(false);
   const rows = envelope.rows ?? [];
   const { prose, insights } = splitInsights(envelope.text);
+  const receipt = auditReceiptLines(envelope);
 
   async function fetchDrillRows(): Promise<Record<string, unknown>[] | null> {
     const token = envelope.drillthrough_token;
@@ -221,6 +233,42 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     URL.revokeObjectURL(url);
   }
 
+  async function loadBi(target: BiTarget) {
+    setExportErr(null);
+    setBiNote(null);
+    const exportRows = await rowsForExport();
+    const res = await fetch("/api/v1/chat/export.bi", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        envelope: { ...envelope, rows: exportRows },
+        target,
+      }),
+    });
+    if (!res.ok) {
+      setExportErr(await res.text());
+      setBiPanel(null);
+      setBiFocus(null);
+      return;
+    }
+    const body = (await res.json()) as BiExportResponse;
+    setBiPanel(body);
+    setBiFocus(target);
+  }
+
+  function downloadBiStub(target: BiTarget) {
+    if (!biPanel) return;
+    const stub = biStub(biPanel, target);
+    if (!stub) return;
+    const blob = new Blob([biCopyText(stub)], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = stub.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function runDrillthrough() {
     const token = envelope.drillthrough_token;
     if (!token) return;
@@ -287,6 +335,24 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
           >
             Download Excel
+          </button>
+        ) : null}
+        {envelope.answer_id ? (
+          <button
+            type="button"
+            onClick={() => void loadBi("powerbi")}
+            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+          >
+            Power BI
+          </button>
+        ) : null}
+        {envelope.answer_id ? (
+          <button
+            type="button"
+            onClick={() => void loadBi("superset")}
+            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+          >
+            Superset
           </button>
         ) : null}
         <button
@@ -396,6 +462,25 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             Open Trust
           </Link>
         </p>
+      )}
+      {receipt && (
+        <div
+          data-testid="audit-receipt"
+          className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5 text-xs text-[var(--color-ink-muted)]"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">
+            Include / exclude / unsure
+          </p>
+          <p data-testid="audit-receipt-include" className="mt-1">
+            Include: {receipt.include}
+          </p>
+          <p data-testid="audit-receipt-exclude" className="mt-1">
+            Exclude: {receipt.exclude}
+          </p>
+          <p data-testid="audit-receipt-unsure" className="mt-1">
+            Unsure: {receipt.unsure}
+          </p>
+        </div>
       )}
       <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
         {renderWithValues(prose, envelope.values, selectValue)}
@@ -508,7 +593,49 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </pre>
       )}
       {exportErr && (
-        <p className="mt-3 text-xs text-[var(--color-danger)]">Excel export: {exportErr}</p>
+        <p className="mt-3 text-xs text-[var(--color-danger)]">Export: {exportErr}</p>
+      )}
+      {biPanel && biFocus && biStub(biPanel, biFocus) && (
+        <div className="mt-3 border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-3 py-2.5">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-warn)]">
+            {biFocus === "powerbi" ? "Power BI" : "Superset"} -- envelope stub
+          </p>
+          <p className="mt-1 text-xs text-[var(--color-ink)]">
+            {biPanelHeadline(biPanel, biFocus)}
+          </p>
+          <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
+            {biPanel.row_count} {biPanel.source_table} row(s) copied from this ask.
+            No metrics invented. Not a live connector.
+          </p>
+          <ul className="mt-2 list-inside list-disc text-xs text-[var(--color-ink)]">
+            {biStub(biPanel, biFocus)!.needs_you.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          <p className="mt-2 flex flex-wrap gap-3 text-xs">
+            <button
+              type="button"
+              className="text-[var(--color-accent)] underline-offset-2 hover:underline"
+              onClick={() => {
+                const stub = biStub(biPanel, biFocus);
+                if (!stub) return;
+                void copyText(biCopyText(stub)).then((ok) => {
+                  setBiNote(ok ? "Copied" : "Copy failed");
+                  window.setTimeout(() => setBiNote(null), 1600);
+                });
+              }}
+            >
+              {biNote ?? (biFocus === "powerbi" ? "Copy Power Query" : "Copy dataset JSON")}
+            </button>
+            <button
+              type="button"
+              className="text-[var(--color-accent)] underline-offset-2 hover:underline"
+              onClick={() => downloadBiStub(biFocus)}
+            >
+              Download {biStub(biPanel, biFocus)!.filename}
+            </button>
+          </p>
+        </div>
       )}
       {drillErr && (
         <p className="mt-3 text-xs text-[var(--color-danger)]">Drill-through: {drillErr}</p>

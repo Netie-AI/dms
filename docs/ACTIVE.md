@@ -20,6 +20,13 @@ existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`). HTTP:
 answer_id+badge; does not re-ask or add rows. Not FRTR / #29. Regression:
 `tests/test_insights_export.py`. Not COMPLETE.
 
+INSIGHTS-EXPORT-02 (#189): `packages/core/dms_core/bi_export.py` copies an
+existing ask envelope into Power Query M and a Superset dataset JSON (URI
+omitted). HTTP: `POST /v1/chat/export.bi`. Chat: Power BI / Superset.
+Refuses without answer_id+badge; does not re-ask, invent metrics, or stamp
+COMPLETE. Live ODBC / Desktop / steward Superset = NEEDS-YOU. Regression:
+`tests/test_insights_export_bi.py`. Not COMPLETE. Does not reopen #108.
+
 INSIGHTS-HOST-01 (#196): hosted consume of Cortex `GET|POST /v1/insights`
 (Cortex #213). Client: `packages/cortex_client/cortex_client/insights.py`.
 HTTP: `apps/api/dms_api/routes/insights.py` forwards
@@ -27,6 +34,14 @@ HTTP: `apps/api/dms_api/routes/insights.py` forwards
 closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
 `live_5000_ci` always false. Regression: `tests/test_insights_host.py`.
 Live hosted walk = Platform after merge. Not COMPLETE.
+
+SCALE-FREE-AI-01 (#233): FreeRoute free+normal providers resolve through
+OpenVault API only (`dms_core.freeroute`, `GET /v1/freeroute/providers`).
+Duplicate labels skipped. No chat-token discovery, no local vault scrape,
+no second vault. WRONG=0 unchanged. Harness:
+`python scripts/bakeoff_freeroute.py --self-check`. Docs:
+`docs/FREEROUTE_PROVIDERS.md`. Regression: `tests/test_scale_free_ai.py`.
+Live catalog leftover Platform. Not #178 COMPLETE.
 
 EPIC-014 MCP-01: `apps/api/dms_api/routes/mcp.py` wraps existing
 `POST /v1/chat/ask`, `GET /v1/library/warehouse/{table}/preview`,
@@ -72,9 +87,15 @@ EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
 (`scripts/score_climb.md`). Probe + ask use httpx (`score_http`), not urllib
 (SCORE-CLIENT-01 / #187; urllib CF1010s the public origin). `ask_path=exact|generative|product` on
-`POST /v1/chat/ask`. Isolated gen: Cortex compute miss binds retrieved
-ontology then validate/CRAG. Product path still Cortex-asks on compute
-miss. Distill ladder in `scripts/score_climb.md` (certified-first,
+`POST /v1/chat/ask`. GEN-03 (#194): `exact|generative` return 400
+`ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS`; no lane
+POSTs Cortex `/dms/query` or binds a keyword plan, so isolated gen abstains
+past the pre-gates and the product path goes to the Cortex contract ask
+(`tests/test_gen03_contain_ask_path.py`). Bar (2) KEEP_HOLD on that ticket:
+predict / revenue-2099 must not L2 all-time pad; not-cold must not invert
+under a confident badge. Isolated gen (offline only): Cortex
+compute miss may still bind retrieved ontology then validate/CRAG. Product path
+still Cortex-asks on compute miss. Distill ladder in `scripts/score_climb.md` (certified-first,
 YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
 Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.
 Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.
@@ -232,6 +253,69 @@ n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
 `tests/test_gen_path_climb12.py`. Platform leftover after deploy:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>36 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
+
+ONTOLOGY-AUDIT-01 (#235): `audit_receipt` on every ask envelope
+(`packages/executor/dms_executor/envelope.py`). Include = executed rows;
+exclude = SQL WHERE/HAVING/FILTER or N/A with why; unsure = ABSTAIN or none.
+Invented totals / silent zero-pad demote (E13). Chat shows the three why
+lines. Regression: `tests/test_ontology_audit.py`,
+`tests/invariants/test_envelope.py` E13. Platform leftover: steward inspect
+of >=3 Studio asks after deploy. Not COMPLETE. #178 NOT COMPLETE.
+
+ONTOLOGY-COMPILE-01 (#234): ranked where-paths + importance when an ask
+spans >=2 supply-chain grains (sku/supplier/plant/lane/day).
+`Ontology.compile_grains` / `try_compile_multi_grain` locate then compile,
+or Refusal `missing_join` / `missing_metric` naming the gap. bind_plan is
+not the confident path. Plant aliases to location until #232. Day without
+a calendar object abstains. Regression: `tests/test_ontology_compile.py`.
+CI != Platform live. Not COMPLETE. #178 NOT COMPLETE.
+
+ONTOLOGY-MULTIGRAIN-01 (#249): `maybe_generative_ask` prefers
+`try_compile_multi_grain` **before** one-grain GEN-01 plan/SQL. Rebased
+onto SC-ONTOLOGY-01 #232 @ `936d810`. Live ranking that fills a sku-only
+`ontology_plan` no longer drops the second grain. Envelope carries
+`where_paths`; assumptions stamp `ontology_compile:where+importance` when
+that path wins. Day still ABSTAIN `missing_join`. bind_plan stays
+non-confident. Coverage from #232 still stamps include/exclude/unsure.
+Regression: `tests/test_ontology_compile.py` KEEP_HOLD cases. CI !=
+Platform live. Not COMPLETE. #178 NOT COMPLETE.
+
+ONTOLOGY-MULTIGRAIN-02 (#254): grant-aware multi-grain compile. SKU+plant
+either emits a Space-granted plant join path or ABSTAINS `missing_join`
+naming `plant` -- never bare `validate:ungranted:shipments`. Live leftover
+after #249: Finance shipping-cost cited ungranted `shipments`. where_paths
+/ WRONG=0 / #238 refuse stand. Regression:
+`tests/test_ontology_compile.py` mg_sku_plant. CI != Platform live re-prove.
+Bar (1) KEEP_HOLD. Rebased onto GEN-03 #194 @ `9b29c565`. Not COMPLETE.
+#178 NOT COMPLETE.
+
+AGI-BUYER-WALK-01 (#236): steward Studio buyer walk for the 5-day
+supply-chain AGI-for-DB demo. Pack
+`tests/fixtures/buyer_walk/questions.yaml`. Script
+`python scripts/walk_buyer_studio.py` (self-check in CI; live needs
+`STUDIO_ORIGIN` + `DMS_API_BASE`). Studio copy on `StudioPage` lists
+five asks + one refuse/ABSTAIN why. Chat prefill via `draftQuestion`.
+Artifacts = receipt / ask envelope / export.xlsx. No invented charts,
+logos, ARR, or COMPLETE. Live leftover is Platform (post report on
+#178). Regression: `tests/test_walk_buyer_studio.py`. Not #178 COMPLETE.
+
+GEN-PATH-REFUSE-01 (#238): fail-closed ABSTAIN with a named gap when
+Cortex ranks a metric the verified ontology cannot compile, or
+`Ontology.compile` returns `unknown_measure` / `no_path`. Customer
+text carries `gap:`. Does not bind_plan a nearby measure. Product
+lane does not fall through to Cortex.ask on that miss. Transport
+miss + known measure still binds on isolated gen (GEN-02). Not
+GEN-03 `ask_path` 400. Regression: `tests/test_gen_path_refuse.py`.
+Not COMPLETE. #178 NOT COMPLETE.
+
+SC-ONTOLOGY-01 (#232): named supply-chain grains `sku` / `supplier` /
+`plant` / `lane` / `day` on `demo_ontology` (`grain_aliases` + `day` object
+when `transactions.ts` exists; `lane` only when origin+destination columns
+exist). Join importance ranks paths from a measure grain; missing metric/join
+is `missing_join` / `unknown_measure`, never a pad. Compiled numbers carry
+`coverage` include/exclude/unsure (`NO_SILENT_PAD`). Ask path stamps that on
+ontology_plan envelopes or ABSTAINS naming the gap. Spine `grains:` slot map.
+Regression: `tests/test_sc_ontology.py`. Not COMPLETE. Not 1PB LIVE.
 
 EPIC-020 SQLSRC-09 / SQLSRC-PG-01: Studio SQL Server/MySQL/PostgreSQL form posts
 `POST /v1/studio/sources/sql` (`apps/ui/src/components/SqlSourcePanel.tsx`).

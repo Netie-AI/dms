@@ -22,7 +22,7 @@ ALLOWED_BADGES = frozenset(
     }
 )
 
-_COVER_KEYS = (
+COVER_KEYS = (
     "answer_id",
     "badge",
     "abstained",
@@ -32,7 +32,9 @@ _COVER_KEYS = (
     "space_id",
     "text",
     "sql_used",
+    "audit_receipt",
 )
+_COVER_KEYS = COVER_KEYS
 
 
 class EnvelopeExportError(ValueError):

@@ -26,6 +26,13 @@ INVARIANT-CHANGE: E9-02/F32 a competing set that is only DEMO_TABLES /
 warehouse_* lake aliases is not a workbook sheet conflict. Live leftover
 sentence named warehouse_inventory / warehouse_locations /
 warehouse_suppliers / warehouse_transactions.
+INVARIANT-CHANGE: E13 (ONTOLOGY-AUDIT-01) — every envelope carries include /
+exclude / unsure (or explicit N/A with why). Status COMPLETE is illegal.
+Happy-path numbers must be grounded in include rows; silent pad / invent totals
+demote rather than grow the include set.
+INVARIANT-CHANGE: declare audit_receipt envelope invariant for #235/#252 floor
+cure — omit include/exclude/unsure (or stamp COMPLETE) must fail E13. Does
+not weaken WRONG=0. Does not invent epic COMPLETE.
 """
 
 from __future__ import annotations
@@ -1418,3 +1425,142 @@ def test_f32_wide_fill_still_demotes_with_column_cards_and_demo_grant():
     for n in ("383,803.56", "242,755.97", "228,548.84"):
         assert n not in env["text"]
     assert_envelope_valid(env)
+
+
+def test_e13_happy_path_receipt_on_certified_number():
+    env = build_answer_envelope(
+        answer_id="a_e13",
+        text="Total outbound was 100.00.",
+        badge="L0_CERTIFIED",
+        values=[{"id": "v0", "value": 100.0, "label": "revenue_myr"}],
+        sql_used="SELECT SUM(amount) AS revenue_myr FROM t WHERE txn_type = 'OUT'",
+        rows=[{"revenue_myr": 100.0}],
+        ask_mode="live",
+        audit_id="aud_e13",
+    )
+    assert env["abstained"] is False
+    rec = env["audit_receipt"]
+    assert rec["include"]["status"] == "rows"
+    assert rec["include"]["row_count"] == 1
+    assert rec["include"]["rows"] == [{"revenue_myr": 100.0}]
+    assert rec["exclude"]["status"] == "filters"
+    assert rec["exclude"]["reasons"][0]["kind"] == "where"
+    assert "OUT" in rec["exclude"]["reasons"][0]["detail"]
+    assert rec["unsure"]["status"] == "none"
+    assert rec["unsure"]["abstained"] is False
+    assert rec["include"]["status"].lower() != "complete"
+    assert_envelope_valid(env)
+
+
+def test_e13_invent_total_demotes_without_padding_rows():
+    env = build_answer_envelope(
+        answer_id="a_e13_invent",
+        text="Total is 999.",
+        badge="L2_VALIDATED",
+        values=[{"id": "v0", "value": 999.0, "label": "total"}],
+        sql_used="SELECT qty FROM t",
+        rows=[{"sku": "A", "qty": 10.0}, {"sku": "B", "qty": 20.0}],
+        ask_mode="live",
+    )
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env["audit_receipt"]["include"]["status"] == "na"
+    assert env["audit_receipt"]["unsure"]["status"] == "abstain"
+    assert any("ONTOLOGY-AUDIT-01" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
+def test_e13_column_sum_does_not_add_a_pad_row():
+    env = build_answer_envelope(
+        answer_id="a_e13_sum",
+        text="Total is 100.00.",
+        badge="L2_VALIDATED",
+        values=[{"id": "v0", "value": 100.0, "label": "qty"}],
+        sql_used="SELECT sku, qty FROM t",
+        rows=[{"sku": "A", "qty": 40.0}, {"sku": "B", "qty": 60.0}],
+        ask_mode="live",
+    )
+    assert env["abstained"] is False
+    assert len(env["rows"]) == 2
+    assert env["audit_receipt"]["include"]["row_count"] == 2
+    assert env["audit_receipt"]["exclude"]["status"] == "na"
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize("arm", ("include", "exclude", "unsure"))
+def test_e13_complete_status_is_illegal(arm: str):
+    """COMPLETE is illegal on every receipt arm, not only include."""
+    env = build_answer_envelope(
+        answer_id="a_e13_complete",
+        text="Total is 10.00.",
+        badge="L2_VALIDATED",
+        values=[{"id": "v0", "value": 10.0, "label": "qty"}],
+        sql_used="SELECT qty FROM t",
+        rows=[{"qty": 10.0}],
+        ask_mode="live",
+    )
+    env["audit_receipt"][arm]["status"] = "COMPLETE"
+    with pytest.raises(AssertionError, match="E13"):
+        assert_envelope_valid(env)
+
+
+def test_e13_abstain_is_explicit_na():
+    env = build_answer_envelope(
+        answer_id="a_e13_na",
+        text="Cannot answer.",
+        badge="ABSTAIN",
+        abstained=True,
+        ask_mode="demo",
+    )
+    rec = env["audit_receipt"]
+    assert rec["include"]["status"] == "na"
+    assert rec["include"]["why"].startswith("N/A:")
+    assert rec["exclude"]["status"] == "na"
+    assert rec["exclude"]["why"].startswith("N/A:")
+    assert rec["unsure"]["status"] == "abstain"
+    assert_envelope_valid(env)
+
+
+def test_e13_missing_audit_receipt_fails_gate():
+    """R-0007 — E13 fires when include/exclude/unsure is omitted.
+
+    Hand-built envelope that is otherwise E1-E9 valid (executed SQL, grounded
+    figure) so the missing receipt is the only violation.
+    """
+    env = {
+        "answer_id": "a_e13_missing",
+        "text": "Total outbound was 100.00.",
+        "values": [{"id": "v0", "value": 100.0, "label": "revenue_myr"}],
+        "badge": "L0_CERTIFIED",
+        "abstained": False,
+        "sql_used": "SELECT SUM(amount) AS revenue_myr FROM t WHERE txn_type = 'OUT'",
+        "rows": [{"revenue_myr": 100.0}],
+        "assumptions": [],
+        "as_of": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "contributing_sources": [],
+        "drillthrough_token": None,
+        "audit_id": "a_e13_missing",
+        "ask_mode": "live",
+    }
+    with pytest.raises(AssertionError, match="E13"):
+        assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize("arm", ("include", "exclude", "unsure"))
+def test_e13_missing_include_exclude_or_unsure_fails_gate(arm: str):
+    """#252 floor: each receipt arm is required. Omit one must fail E13."""
+    env = build_answer_envelope(
+        answer_id="a_e13_arm",
+        text="Total outbound was 100.00.",
+        badge="L0_CERTIFIED",
+        values=[{"id": "v0", "value": 100.0, "label": "revenue_myr"}],
+        sql_used="SELECT SUM(amount) AS revenue_myr FROM t WHERE txn_type = 'OUT'",
+        rows=[{"revenue_myr": 100.0}],
+        ask_mode="live",
+        audit_id="aud_e13_arm",
+    )
+    assert_envelope_valid(env)
+    del env["audit_receipt"][arm]
+    with pytest.raises(AssertionError, match="E13"):
+        assert_envelope_valid(env)

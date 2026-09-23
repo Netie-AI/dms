@@ -2,7 +2,87 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - INSIGHTS-EXPORT-02: Power BI + Superset stubs from ask envelope (#189)
+
+- **Ticket.** Serves [INSIGHTS-EXPORT-02 #189](https://github.com/Netie-AI/dms/issues/189) under EPIC-INSIGHTS-UX #178 Phase B. Does not stamp epic COMPLETE. Does not invent 99.95%. Does not reopen #108. Does not invent bar (4) PASS. Does not reseat #231/#237.
+- **Export.** `POST /v1/chat/export.bi` copies an existing ask envelope into a Power Query `#table` and a Superset dataset JSON. Same gate as Excel (`answer_id` + badge). Does not re-ask Cortex, does not invent DAX/Superset metrics, does not emit a SQLAlchemy URI or DuckLake folder connector.
+- **Honesty.** `complete` is always false. `live_connector` is always false. `needs_you` names Desktop / live ODBC / steward-hosted Superset. Prefer the named stub over a fake connector.
+- **UI.** Power BI / Superset on the answer posts that envelope and shows the NEEDS-YOU panel. Filename `dms_answer_<answer_id>.pq` / `.superset.json` (no clock).
+- **Not this ticket:** live Power BI Desktop walk, Superset-as-chrome, #178 COMPLETE, FRTR Copilot (#29).
+
+## 2026-09-23 - ONTOLOGY-MULTIGRAIN-02: mg_sku_plant named missing_join/plant or granted path (#254)
+
+- **Ticket.** Serves [ONTOLOGY-MULTIGRAIN-02 #254](https://github.com/Netie-AI/dms/issues/254) under EPIC-INSIGHTS-UX #178. Follow-up to #249 KEEP_HOLD (3/4): live `mg_sku_plant` died as bare `validate:ungranted:shipments`. Rebased onto GEN-03 #194 @ `9b29c565`. Does not stamp epic COMPLETE. Does not invent bar (1) PASS / 1PB LIVE.
+- **Ask path.** Multi-grain compile is grant-aware. A SKU+plant ask either emits a join path whose tables the Space may read (Ops `shipments`+`locations`, or Finance `stock_value` via inventory+locations) or ABSTAINS `missing_join` naming `plant` -- never `validate:ungranted:shipments`. where_paths / WRONG=0 / refuse discipline from #238 stand. `bind_plan` stays non-confident. GEN-03 `ask_path` 400 + `bind_on_miss=False` on live_ask are unchanged.
+- **Tests.** `tests/test_ontology_compile.py` mg_sku_plant: Finance shipping-cost named ABSTAIN; Ops shipping-cost granted path; Finance stock-value granted plant path. CI green != Platform live re-prove.
+- **Not this ticket:** #178 COMPLETE, bar (1) PASS, 1PB LIVE, second vault / LIVE_KEY, reseating #194/#189/#231/#237/#238.
+
+## 2026-09-23 - GEN-03: contain the ask path - no keyword-bound answer under a confident badge (#194)
+
+- **Ticket.** Serves [GEN-03 #194](https://github.com/Netie-AI/dms/issues/194) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. No new climb number.
+- **Refuse.** `POST /v1/chat/ask` with `ask_path` `exact` or `generative` returns 400 `ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS` (default off). Checked first: no compliance gate, Cortex call, submit or ledger append on a refused request. Server config only, never a header (DR-0004).
+- **Contain.** `live_ask` no longer POSTs Cortex `/dms/query` on any lane and passes `bind_on_miss=False` everywhere. Cortex ignores `mode`/`ontology` and returns no typed plan (KB F-0055), so the call always missed and the generative lane answered from `bind_plan` under L2_VALIDATED with wrong numbers. The paraphrase and vague-ask pre-gates still run where they were (moving them is GEN-07). `bind_plan` is kept for offline harnesses. Tip `f9cad233` multi-grain compile and GEN-PATH-REFUSE-01 named ABSTAIN stay `ontology_plan`, not bind_plan. Bar (2) KEEP_HOLD: predict / revenue-2099 is not L2 all-time pad; not-cold invert is not a confident badge (E11 sees quoted `"is_cold_storage"`). WRONG=0 not weakened.
+- **Honest docstrings.** `cortex_client` compute no longer claims to be the engine's generate+validate path; deletion is CONTRACT-FAKE-01.
+- **Not this ticket:** Cortex changes, the seam decision, GEN-04/05a/07, `scripts/score_curated.py` live `--ab` (400s on a customer origin until run against a measurement origin), ticket close.
+
+## 2026-09-23 - GEN-PATH-REFUSE-01: named ABSTAIN when ontology path / metric missing (#238)
+
+- **Ticket.** Serves [GEN-PATH-REFUSE-01 #238](https://github.com/Netie-AI/dms/issues/238) under EPIC-INSIGHTS-UX #178. Does not close #178. Does not stamp COMPLETE. Does not reseat GEN-03 `#194` ask_path 400 containment.
+- **Refuse.** When Cortex Insights ranks an intended metric that does not resolve onto the verified DMS ontology, `maybe_generative_ask` returns ABSTAIN and names the gap in the customer text (`gap: unknown_measure: no measure named '...'`). Compile `unknown_measure` / `no_path` / `ontology_unverified` / `coverage_invalid` use the same named-gap sentence. Isolated gen does not `bind_plan` a nearby measure. Product lane does not return None into Cortex.ask on that miss.
+- **Preserved.** Transport miss on a known measure still binds when `bind_on_miss=True` (GEN-02). Overlay recovery of a ranked id that compiles is not a gap. Planted refuses stay ABSTAIN. WRONG=0. OV/FreeRoute + Cortex only. No LIVE_KEY / `:5000` invent. E13 `audit_receipt` (#235/#252), multi-grain compile (#249/#234), SC grains (#232) stay on tip.
+- **Tests.** `tests/test_gen_path_refuse.py`. Live uncapped prove remains Platform (`scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`). CI green is not a climb stamp.
+
+## 2026-09-23 - ONTOLOGY-AUDIT-01-FLOOR: INVARIANT-CHANGE trailer for #235 squash (#252)
+
+- **Ticket.** Serves [ONTOLOGY-AUDIT-01-FLOOR #252](https://github.com/Netie-AI/dms/issues/252) under EPIC-INSIGHTS-UX #178. Cures Verify R-0003 NO RELEASED on squash `dc752563` (push CI protected-paths FAIL: `tests/invariants/test_envelope.py` without `INVARIANT-CHANGE:` in the squash body).
+- **Declare.** E13 `audit_receipt` include/exclude/unsure is declared on a commit that carries the trailer. Omit the receipt or stamp COMPLETE fails `assert_envelope_valid`. Does not weaken WRONG=0. Does not invent COMPLETE.
+- **Ticket merge.** Squash-merge commit **body** MUST include `INVARIANT-CHANGE:` or push CI fails again. Do not re-YES the broken `dc752563`.
+- **Not this ticket:** #178 COMPLETE, bar (1) PASS, #238/#194/#189 product work.
+
+## 2026-09-23 - ONTOLOGY-AUDIT-01: include/exclude/unsure receipt on ask envelope (#235)
+
+- **Ticket.** Serves [ONTOLOGY-AUDIT-01 #235](https://github.com/Netie-AI/dms/issues/235) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent 99.95% / estate CLEAR.
+- **Receipt.** `build_answer_envelope` always stamps `audit_receipt` with include rows, exclude reasons, and unsure/ABSTAIN (or explicit N/A with why). Include set is executed result rows only. Exclude is SQL WHERE/HAVING/FILTER or caller-supplied reasons; COMPLETE payloads are rejected and SQL is used instead. Unsure True from the engine demotes to ABSTAIN.
+- **Pad.** A stated figure that is not an include cell, same-row gap, or full-column sum demotes. Missing cells are not treated as zero. The constructor does not grow include rows to make a total look complete.
+- **Not this ticket:** #178 COMPLETE, FreeRoute client changes, GEN-03 ask_path containment, steward inspect of live Studio asks (Platform leftover).
+
+## 2026-09-23 - ONTOLOGY-MULTIGRAIN-01: try_compile multi-grain before one-grain GEN-01 plan (#249)
+
+- **Ticket.** Serves [ONTOLOGY-MULTIGRAIN-01 #249](https://github.com/Netie-AI/dms/issues/249) under EPIC-INSIGHTS-UX #178 (follow-up to #234 KEEP_HOLD). Rebased onto SC-ONTOLOGY-01 #232 @ `936d810`. Does not stamp epic COMPLETE. Does not invent bar (1) PASS / 1PB LIVE. #250 was a duplicate seat and is not this PR.
+- **Ask path.** `maybe_generative_ask` runs `try_compile_multi_grain` after compute-unsure and **before** one-grain GEN-01 plan or SQL. Live ranking filling a sku-only `ontology_plan` no longer drops plant/day/lane/supplier. Envelope exposes `where_paths` and stamps `ontology_compile:where+importance` when that path wins. Honest ABSTAIN names `missing_join` / `missing_metric`. `bind_plan` stays non-confident. Coverage from #232 still stamps include/exclude/unsure on L2.
+- **Tests.** `tests/test_ontology_compile.py` KEEP_HOLD cases: sku+plant, sku+day missing_join ABSTAIN, supplier+sku, sku+lane -- each with a one-grain ranked plan payload. CI green != Platform live prove.
+- **Not this ticket:** #178 COMPLETE, bar (1) PASS, 1PB LIVE, second vault / LIVE_KEY, DB-GPT clone.
+
+## 2026-09-23 - SC-ONTOLOGY-01: supply-chain grains SKU-supplier-plant-lane-day (#232)
+
+- **Ticket.** Serves [SC-ONTOLOGY-01 #232](https://github.com/Netie-AI/dms/issues/232) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent 1PB LIVE / fake supply-chain metrics.
+- **Grains.** Named `sku` (alias of `product`), `supplier`, `plant` (alias of `location`), `day` (CAST `transactions.ts` when present), `lane` (origin->destination on shipments when origin column exists). Thin demo has dest-only shipments: lane is `missing_join` naming `origin_location_id`, not a padded route. Join `importance` 1/2/3 from a measure grain; grouping through M2M is filter-only.
+- **Coverage.** Every compiled number carries include/exclude/unsure. Exclude always names `missing groups not zero-padded`. Ask path stamps `coverage` on ontology_plan envelopes. Missing metric/join ABSTAINS with the reason in assumptions/text. FreeRoute stays Cortex/OV `free+normal`. No LIVE_KEY / second vault. No pack shrink. GEN-03 containment untouched.
+- **Regression.** `tests/test_sc_ontology.py`. CI green != Platform steward walk. #178 stays OPEN.
+
+## 2026-09-23 - ONTOLOGY-COMPILE-01: ranked where-paths + importance for multi-join grains (#234)
+
+- **Ticket.** Serves [ONTOLOGY-COMPILE-01 #234](https://github.com/Netie-AI/dms/issues/234) under EPIC-INSIGHTS-UX #178. Does not stamp epic COMPLETE. Does not invent 1PB LIVE. Parallel with #232 grains / #235 audit / #238 refuse / #194 GEN-03 -- this seat is compile, not ask_path containment or FreeRoute.
+- **Compile.** `Ontology.compile_grains` locates sku/supplier/plant/lane/day, ranks where-paths by importance (shortest verified many-to-one first), then emits SQL. Missing object/join -> `missing_join` naming the grain. Missing measure -> `missing_metric`. Equal-importance paths still `ambiguous_path` (no silent pick). `bind_plan` is not the confident path: a >=2-grain miss compiles as `ontology_plan` or ABSTAIN. Plant aliases to `location` until #232 lands a plant object. Day with no calendar object abstains honestly.
+- **Tests.** `tests/test_ontology_compile.py` -- two-grain conserve + ranked paths, missing join/metric, equal-importance refuse, ask-path `plan_source=ontology_plan` not bind_plan. CI green != Platform live prove.
+- **Not this ticket:** #178 COMPLETE, 1PB LIVE, second vault / LIVE_KEY, DB-GPT clone, #232 grain tables, #194 ask_path 400.
+
+## 2026-09-23 - SCALE-FREE-AI-01: FreeRoute multi-provider consume via OpenVault API (#233)
+
+- **Ticket.** Serves [SCALE-FREE-AI-01 #233](https://github.com/Netie-AI/dms/issues/233) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Platform/Free Keys owns mint; LIVE_KEY_ID is not rotated here.
+- **Consume.** Prove/ask stay on FreeRoute `free+normal`. DMS resolves which free providers that preference would attempt vs skip from OpenVault HTTP (`/api/freeroute/status`, `/api/freeroute/onboard`, `/api/tool/register`, `/api/keys`). No `POST /v1/chat/completions` for discovery. No local vault Path scrape. No second vault. Duplicate labels skipped (`dup_label`). Paid primary hops skipped. WRONG=0 unchanged -- this does not add generate retries to burn more keys.
+- **Harness.** `GET /v1/freeroute/providers` plus `python scripts/bakeoff_freeroute.py --self-check`. Docs: `docs/FREEROUTE_PROVIDERS.md`. Live catalog leftover is Platform (`OPENVAULT_URL` already on the host). CI green != climb PASS.
+- **Not this ticket:** #178 COMPLETE, LIVE_KEY rotate, mass fake accounts, ticket close, climb/ontology/export edits.
+
+## 2026-09-23 - AGI-BUYER-WALK-01: Studio buyer walk (ask + refuse) (#236)
+
+- **Ticket.** Serves [AGI-BUYER-WALK-01 #236](https://github.com/Netie-AI/dms/issues/236) under EPIC-INSIGHTS-UX #178. Does not close the epic. Does not stamp COMPLETE. Does not invent logos / ARR / dashboard screenshots.
+- **Walk.** `python scripts/walk_buyer_studio.py` on Studio. Five supply-chain asks must resolve as `plan_source=ontology_plan` or honest ABSTAIN (`ask_path=generative`). One planted refuse (`Just give me last month's number`) must ABSTAIN and print why. Artifacts cited: library/Studio receipt, ask envelope, Excel export from that envelope. Exact-match L0 does not count. Silent `127.0.0.1:8090` default is CONFIG, not PASS. CI green != live walk PASS.
+- **Studio copy.** Operate Studio lists the five asks and the refuse demo. Clicks prefill Chat (`draftQuestion`). Download Excel copies envelope rows. No invented charts.
+- **Not this ticket:** #178 COMPLETE, ontology compile, FreeRoute, fake buyer logos, ARR.
+
 ## 2026-09-21 - GEN-PATH-CLIMB-12: unused Ops parent-SQL leftover past ontology_plan=36 (#228)
+
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-12 #228](https://github.com/Netie-AI/dms/issues/228) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. #226 RISE_PASS @ `6eb89562` (ontology_plan=36 bind_plan=0 WRONG=0 answered=36/46 on uncapped harness) stands as the measured floor.
 - **Climb.** Score leftover Ops parent-SQL of Cortex `certified_queries.yaml` L0s live already answers (`SKU count by category`, `stock value by category`, `shipment cost by destination`) as `ontology_plan`. Same SQL as `cq_sku_count_by_category` / `cq_stock_value_by_category` / `cq_cost_by_destination`. Not PACK_METRICS expansion (prove-path is generative). Ontology spine slot `shipment_cost_by_destination` plus retrieve/overlay lock sku-by-category onto `sku_count`, stock-value onto `stock_value_myr`, shipment-cost onto `shipping_cost_myr`. Harness unions the new L0s so this SHA cannot score the 36/46 pack. Live prove FAILs on ontology_plan<=36 or climb-12 rise L0s not `ontology_plan`. Frozen n=26 stays a floor, not a cap. Planted refuses stay ABSTAIN. FreeRoute `free+normal` only. No LIVE_KEY / `:5000` invent. No second vault.

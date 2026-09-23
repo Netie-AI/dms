@@ -3,7 +3,8 @@
 Every path that builds an ask envelope — live Cortex map or demo router —
 must call ``build_answer_envelope``. AST invariants fail the build otherwise.
 
-E1–E9 live in ``assert_envelope_valid``.
+E1–E9 live in ``assert_envelope_valid``. E13 (ONTOLOGY-AUDIT-01) stamps
+include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
 """
 
 from __future__ import annotations
@@ -598,6 +599,13 @@ _SQL_KW = frozenset(
 )
 _SQL_ATOM = re.compile(r"'([^']*)'|\"([^\"]*)\"|(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)")
 _SQL_KW_POS = re.compile(r"\b(?:where|having|from)\b", re.I)
+_WHERE_HAVING_CHUNK = re.compile(
+    r"\b(where|having)\s+(.+?)(?=\b(?:group\s+by|order\s+by|limit|offset|"
+    r"union|except|intersect|qualify)\b|$)",
+    re.I | re.S,
+)
+_AGG_FILTER = re.compile(r"\bfilter\s*\(\s*where\s+([^)]+)\)", re.I | re.S)
+_FORBIDDEN_RECEIPT_STATUS = frozenset({"complete", "completed"})
 
 
 def _norm_concept_tokens(raw: str) -> frozenset[str]:
@@ -713,8 +721,16 @@ def _sql_filter_polarity(sql: str, concept: frozenset[str]) -> str | None:
     """'positive' / 'negative' if a filter atom overlaps ``concept``, else None."""
     seen: set[str] = set()
     for m in _SQL_ATOM.finditer(sql):
-        literal = m.group(1) if m.group(1) is not None else m.group(2)
+        quoted = m.group(2)
         ident = m.group(3)
+        # DuckDB / ANSI quoted identifiers. Treating "is_cold_storage" as a
+        # string literal left E11 blind (F-0057): `f."is_cold_storage" = TRUE`
+        # has the `=` after the atom, so literal polarity was None and a
+        # not-cold ask shipped the inverted filter under L2.
+        if quoted is not None and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", quoted):
+            ident = quoted
+            quoted = None
+        literal = m.group(1) if m.group(1) is not None else quoted
         if ident is not None and ident.lower() in _SQL_KW:
             continue
         if literal is not None:
@@ -786,6 +802,42 @@ def _executed_query(sql: str | None) -> bool:
     if not sql:
         return False
     return bool(_SQL_COMMENT.sub("", str(sql)).strip())
+
+
+#: Calendar years in the ask. SKU-2099 / WH-2024 do not count (hyphen prefix).
+_CALENDAR_YEAR = re.compile(r"(?<![A-Za-z0-9-])((?:19|20)\d{2})(?![A-Za-z0-9_])")
+_FORECAST_ASK = re.compile(
+    r"\b(?:predict(?:s|ed|ing|ion|ions|ive)?|forecast(?:s|ed|ing)?)\b",
+    re.I,
+)
+
+
+def asked_calendar_years(question: str | None) -> tuple[str, ...]:
+    if not question:
+        return ()
+    return tuple(_CALENDAR_YEAR.findall(question))
+
+
+def _year_in_sql(sql: str, year: str) -> bool:
+    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(year)}(?![A-Za-z0-9])", sql))
+
+
+def _all_time_year_pad(question: str | None, sql: str | None) -> str | None:
+    """Year named in the ask but missing from executed SQL (all-time pad)."""
+    if not _executed_query(sql):
+        return None
+    stripped = _SQL_COMMENT.sub("", str(sql))
+    for year in asked_calendar_years(question):
+        if not _year_in_sql(stripped, year):
+            return year
+    return None
+
+
+def _forecast_history_pad(question: str | None, sql: str | None) -> bool:
+    """True when a predict/forecast ask was answered with executed history SQL."""
+    if not _FORECAST_ASK.search(question or ""):
+        return False
+    return _executed_query(sql)
 
 
 def _money_like(text: str) -> list[float]:
@@ -962,6 +1014,230 @@ def unmapped_badge(raw: str | None, *, abstained: bool) -> str | None:
     return key
 
 
+def _is_forbidden_receipt_status(raw: str) -> bool:
+    return str(raw or "").strip().lower() in _FORBIDDEN_RECEIPT_STATUS
+
+
+def _sql_filter_reasons(sql: str | None) -> list[dict[str, str]]:
+    """WHERE / HAVING / FILTER atoms from executed SQL. Empty if none — never invented."""
+    stripped = _SQL_COMMENT.sub(" ", str(sql or ""))
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    if not stripped:
+        return []
+    reasons: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _AGG_FILTER.finditer(stripped):
+        detail = m.group(1).strip().rstrip(";").strip()
+        key = ("filter", detail.lower())
+        if not detail or key in seen:
+            continue
+        seen.add(key)
+        reasons.append({"kind": "filter", "detail": detail[:500]})
+    # FILTER (WHERE ...) is not a query-level WHERE; strip it before clause scan.
+    stripped_wo_filter = _AGG_FILTER.sub(" ", stripped)
+    for m in _WHERE_HAVING_CHUNK.finditer(stripped_wo_filter):
+        detail = m.group(2).strip().rstrip(";").strip()
+        kind = m.group(1).lower()
+        key = (kind, detail.lower())
+        if not detail or key in seen:
+            continue
+        seen.add(key)
+        reasons.append({"kind": kind, "detail": detail[:500]})
+    return reasons
+
+
+def _normalize_exclude_reasons(raw: Any) -> list[dict[str, str]] | None:
+    """Caller-supplied exclude list, or None to derive. COMPLETE / malformed is None."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return None
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, str):
+            detail = item.strip()
+            if not detail:
+                continue
+            if _is_forbidden_receipt_status(detail):
+                return None
+            out.append({"kind": "filter", "detail": detail[:500]})
+            continue
+        if not isinstance(item, dict):
+            return None
+        detail = str(
+            item.get("detail") or item.get("reason") or item.get("why") or ""
+        ).strip()
+        kind = str(item.get("kind") or "filter").strip().lower() or "filter"
+        if _is_forbidden_receipt_status(kind):
+            return None
+        if not detail:
+            continue
+        out.append({"kind": kind[:40], "detail": detail[:500]})
+    return out
+
+
+def _full_numeric_column_sums(rows: list[dict[str, Any]]) -> list[float]:
+    """Sums of columns that are numeric on every include row.
+
+    A missing cell is not treated as zero — that is the silent pad this
+    receipt exists to forbid.
+    """
+    if not rows:
+        return []
+    keys: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key in seen:
+                continue
+            seen.add(key)
+            keys.append(key)
+    out: list[float] = []
+    for key in keys:
+        col: list[float] = []
+        ok = True
+        for row in rows:
+            val = row.get(key)
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                ok = False
+                break
+            col.append(float(val))
+        if ok and col:
+            out.append(sum(col))
+    return out
+
+
+def invented_totals(
+    values: list[dict[str, Any]] | None,
+    rows: list[dict[str, Any]] | None,
+) -> list[float]:
+    """Stated figures that are neither include cells nor a full-column sum."""
+    row_list = [dict(r) for r in (rows or []) if isinstance(r, dict)]
+    grounded = _row_grounded_candidates(row_list) + _full_numeric_column_sums(row_list)
+    out: list[float] = []
+    for v in values or []:
+        if not isinstance(v, dict):
+            continue
+        if str(v.get("label") or "") == "row_count":
+            continue
+        raw = v.get("value")
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            continue
+        fv = float(raw)
+        if not any(_close(fv, g) for g in grounded):
+            out.append(fv)
+    return out
+
+
+def build_audit_receipt(
+    *,
+    abstained: bool,
+    badge: str,
+    rows: list[dict[str, Any]],
+    sql_used: str | None,
+    assumptions: list[str],
+    exclude_reasons: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Include / exclude / unsure from executed evidence. Never status COMPLETE."""
+    include_rows = [dict(r) for r in rows if isinstance(r, dict)]
+    executed = _executed_query(sql_used)
+    include: dict[str, Any]
+    exclude: dict[str, Any]
+    unsure: dict[str, Any]
+    if abstained:
+        include = {
+            "status": "na",
+            "row_count": 0,
+            "rows": [],
+            "why": "N/A: abstained; no include set",
+        }
+    elif include_rows:
+        include = {
+            "status": "rows",
+            "row_count": len(include_rows),
+            "rows": include_rows,
+            "why": (
+                "executed result rows that produced the certified figures "
+                "(query grain / LIMIT); not a claim of full-table completeness"
+                if executed
+                else (
+                    "result rows returned with the answer; not a SQL grain claim"
+                )
+            ),
+        }
+    else:
+        include = {
+            "status": "na",
+            "row_count": 0,
+            "rows": [],
+            "why": (
+                "N/A: document retrieval; include set is cited snippets, "
+                "not SQL rows"
+                if not executed
+                else "N/A: executed SQL returned no include rows"
+            ),
+        }
+
+    caller = _normalize_exclude_reasons(exclude_reasons)
+    derived = _sql_filter_reasons(sql_used) if executed else []
+    if abstained:
+        exclude = {
+            "status": "na",
+            "reasons": [],
+            "why": "N/A: abstained; no exclude receipt",
+        }
+    elif caller:
+        exclude = {
+            "status": "filters",
+            "reasons": caller,
+            "why": "caller-supplied exclude reasons; not invented",
+        }
+    elif derived:
+        exclude = {
+            "status": "filters",
+            "reasons": derived,
+            "why": (
+                "extracted from executed SQL WHERE/HAVING/FILTER; "
+                "grain-level exclusions not claimed"
+            ),
+        }
+    elif executed:
+        exclude = {
+            "status": "na",
+            "reasons": [],
+            "why": (
+                "N/A: no WHERE/HAVING/FILTER in executed SQL; "
+                "none excluded at result grain"
+            ),
+        }
+    else:
+        exclude = {
+            "status": "na",
+            "reasons": [],
+            "why": "N/A: document retrieval; no SQL filter grain",
+        }
+
+    if abstained:
+        why_unsure = next(
+            (a for a in assumptions if str(a).strip()),
+            "abstained; badge=ABSTAIN",
+        )
+        unsure = {
+            "status": "abstain",
+            "abstained": True,
+            "badge": "ABSTAIN",
+            "why": str(why_unsure),
+        }
+    else:
+        unsure = {
+            "status": "none",
+            "abstained": False,
+            "badge": badge,
+            "why": f"not abstained; badge={badge}",
+        }
+    return {"include": include, "exclude": exclude, "unsure": unsure}
+
+
 def normalize_badge(raw: str | None, *, abstained: bool) -> str:
     """Map an engine badge onto the customer vocabulary. Unknown means abstain.
 
@@ -1063,6 +1339,7 @@ def build_answer_envelope(
     competing_scopes: list[str] | None = None,
     constraint_trace: list[dict[str, Any]] | None = None,
     cascade_path: bool = False,
+    exclude_reasons: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -1277,6 +1554,34 @@ def build_answer_envelope(
             "negated ask answered by a positive filter: polarity mismatch (E11/FF-02)"
         )
 
+    # Epic bar (2) KEEP_HOLD / GEN-03: a named year with no year in SQL is
+    # all-time history wearing that year's question. 2099 is the pinned case.
+    pad_year = None if abstained else _all_time_year_pad(question, sql_used)
+    if pad_year:
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            f"You asked about {pad_year}, but the query I matched is not "
+            f"filtered to that year. All-time history is not {pad_year}, so I "
+            f"cannot confirm the figure. Rather than pad last year's total as "
+            f"that year, I'm stopping here."
+        )
+        assumptions_list.append(
+            f"named year {pad_year} answered by unfiltered history: all-time pad"
+        )
+
+    if not abstained and _forecast_history_pad(question, sql_used):
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "You asked for a forecast, but the query I matched reads historical "
+            "transactions. That is not a prediction, so I cannot confirm the "
+            "figure. Rather than pad history as a forecast, I'm stopping here."
+        )
+        assumptions_list.append(
+            "predict/forecast ask answered by historical SQL: history pad"
+        )
+
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.
     # Promote figures grounded in row cells or same-row |a−b| (shortfall); if any
@@ -1298,6 +1603,22 @@ def build_answer_envelope(
             )
             assumptions_list.append(
                 "prose figure not in query result: withheld (E4)"
+            )
+
+    # ONTOLOGY-AUDIT-01 — a stated figure that is not in include rows (and is
+    # not a full-column sum of those rows) is an invented total. Demote rather
+    # than pad include rows with zeros to make the number look complete.
+    if not abstained and _executed_query(sql_used) and rows_out:
+        invented = invented_totals(values_out, rows_out)
+        if invented:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = (
+                "This answer states figure(s) I cannot cite from the include "
+                "rows. Rather than pad or invent a total, I'm stopping here."
+            )
+            assumptions_list.append(
+                "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
 
     if abstained:
@@ -1345,6 +1666,14 @@ def build_answer_envelope(
         # holding all six demo tables (dms#5). The count a viewer reads has to
         # come from the manifest, not from the request that asked for it.
         "grounded_tables": list(grounded_tables or []),
+        "audit_receipt": build_audit_receipt(
+            abstained=bool(abstained),
+            badge=badge_out,
+            rows=rows_out,
+            sql_used=sql_out,
+            assumptions=assumptions_list,
+            exclude_reasons=None if abstained else exclude_reasons,
+        ),
     }
     if trace_out is not None:
         env["constraint_trace"] = trace_out
@@ -1506,6 +1835,48 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             "a retrieval path may quote a number, never compute one"
         )
 
+    # E13 (ONTOLOGY-AUDIT-01) — include / exclude / unsure, or explicit N/A.
+    # Never COMPLETE. Include set is executed rows, never a padded extra total.
+    receipt = envelope.get("audit_receipt")
+    assert isinstance(receipt, dict), "E13: audit_receipt required"
+    for key in ("include", "exclude", "unsure"):
+        part = receipt.get(key)
+        assert isinstance(part, dict), f"E13: audit_receipt.{key} required"
+        status = str(part.get("status") or "").strip().lower()
+        assert status, f"E13: audit_receipt.{key}.status required"
+        assert not _is_forbidden_receipt_status(status), (
+            f"E13: audit_receipt.{key}.status must not invent COMPLETE"
+        )
+        assert isinstance(part.get("why"), str) and str(part.get("why")).strip(), (
+            f"E13: audit_receipt.{key}.why required"
+        )
+    inc = receipt["include"]
+    inc_rows = inc.get("rows") if isinstance(inc.get("rows"), list) else None
+    assert inc_rows is not None, "E13: include.rows required"
+    assert inc.get("row_count") == len(inc_rows), "E13: include.row_count must equal include.rows"
+    env_rows = envelope.get("rows") or []
+    assert inc.get("row_count") == len(env_rows), "E13: include.row_count must equal envelope.rows"
+    uns = receipt["unsure"]
+    if abstained:
+        assert inc.get("status") == "na", "E13: abstain include.status must be na"
+        assert uns.get("status") == "abstain", "E13: abstain unsure.status must be abstain"
+        assert uns.get("abstained") is True, "E13: abstain unsure.abstained must be true"
+        assert inc.get("row_count") == 0, "E13: abstain include.row_count must be 0"
+    else:
+        assert uns.get("status") == "none", "E13: answered unsure.status must be none"
+        assert uns.get("abstained") is False, "E13: answered unsure.abstained must be false"
+        if _executed_query(sql_used):
+            assert inc.get("status") == "rows", "E13: SQL answer include.status must be rows"
+            assert inc.get("row_count") > 0, "E13: SQL answer must carry include rows"
+            extras = invented_totals(
+                values if isinstance(values, list) else [],
+                env_rows if isinstance(env_rows, list) else [],
+            )
+            assert not extras, (
+                f"E13: invented totals {extras} not in include rows "
+                "(silent pad forbidden)"
+            )
+
     # E8
     assert isinstance(as_of, str) and as_of.strip(), "E8: as_of required"
     try:
@@ -1523,9 +1894,12 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
 
 __all__ = [
     "ALLOWED_BADGES",
+    "asked_calendar_years",
     "assert_envelope_valid",
     "build_answer_envelope",
+    "build_audit_receipt",
     "competing_category_scopes",
+    "invented_totals",
     "normalize_badge",
     "normalize_contributing_sources",
     "orphan_money_figures",

@@ -37,15 +37,24 @@ export function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, askError, asking, askQueueDepth]);
 
-  // Studio hands the selection over through router state. Consume it once and
-  // clear it, so a later back-navigation does not silently re-apply a scope the
-  // user has since cleared.
+  // Studio hands the selection / buyer-walk question through router state.
+  // Consume it once and clear it, so a later back-navigation does not silently
+  // re-apply a scope or draft the user has since cleared.
   useEffect(() => {
     const s = location.state as
-      | { groundedTables?: string[]; groundedLabels?: string[] }
+      | { groundedTables?: string[]; groundedLabels?: string[]; draftQuestion?: string }
       | null;
+    let consumed = false;
     if (s?.groundedTables?.length) {
       setGrounded(s.groundedTables, s.groundedLabels ?? []);
+      consumed = true;
+    }
+    const draftQuestion = s?.draftQuestion?.trim();
+    if (draftQuestion) {
+      setDraft(draftQuestion);
+      consumed = true;
+    }
+    if (consumed) {
       navigate(location.pathname, { replace: true, state: null });
     }
   }, [location, navigate, setGrounded]);

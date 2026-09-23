@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-09-21  
+**Last updated:** 2026-09-23  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -10,7 +10,7 @@ D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -Ope
 python D:\DMS\scripts\verify_demo_live.py
 python D:\DMS\scripts\verify_l2_vs_l1.py
 python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
-python D:\DMS\scripts\score_bird.py --self-check  # live: scripts/score_bird.md
+python D:\DMS\scripts\walk_buyer_studio.py --self-check
 pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
 python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
 ```
@@ -22,7 +22,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Result |
 |----|--------|
 | Demo | `verify_demo_live.py` **31/31** live on a cold stack. Bounds error at ~3/31, not zero (R-0010) |
-| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104) - all asserted on the customer envelope. E12 does not treat `total ... by <dim>` as one-number (live Finance spend was eating cq_spend_by_country) |
+| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape, **E13** include/exclude/unsure receipt (#235) - all on the customer envelope. Not #178 COMPLETE. |
 | **A-0005 CLOSED** (#70) | The ledger actor is resolved server-side. `sign_gold_metric` requires it, with no fallback to caller data, so `/gold/sign` and `/run` both close at the binding (R-0004) |
 | **DR-0004 accepted** (#71) | **Option A** - identity from config, never a request. `x-dms-*` headers are **refused** with 400, not ignored. 7 invariants; 4 go red against a pass-through (R-0007) |
 | Predictive (#67) | A literal-list guard certified 4 forecast asks with historical numbers under `L2_VALIDATED`. Now intent-based. KB **F-0021** |
@@ -34,6 +34,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
 | Local CI parity | `bash scripts/ci_local.sh all`; `python scripts/try_changes.py [--live]` - 41 checks, each states what it does *not* prove |
 | **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
+| **EXPORT-02 (#189)** | PBI/Superset stubs from ask envelope (`POST /v1/chat/export.bi`). Live connector NEEDS-YOU. Not COMPLETE |
 | **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
 | **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
 | **EPIC-025 CLOSED** (#87) | Gold promote calls Cortex `ledger.verify` at the GATE, not only at sign. Unreachable Cortex refuses. Attestation/actor invariant re-derived like #74 (R-0007). F70/F52(b)/A-0005 stay closed. Contract 1.2.0 has no get-entry; chain verify is the read-back |
@@ -49,12 +50,11 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **GEN-PATH-CLIMB-12 #228** continue live ontology_plan rise vs 36. Live prove/climb = Platform after merge. Not #178 COMPLETE. |
+| **This tick** | **INSIGHTS-EXPORT-02 #189** PBI/Superset envelope stubs. GEN-03 #194 + MULTIGRAIN-02 #254 on main. Bar (2) PASS @ `9b29c565`. Not bar (4). Not #178 COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | #228 climb vs #226 ontology_plan=36. Floor: Cortex#44. |
+| CI / PRs | #189 vs main `c267c42`. Do not reseat #231/#237. Not epic COMPLETE. |
 
 ## Agent models
-
 PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.

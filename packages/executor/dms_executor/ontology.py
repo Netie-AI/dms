@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -79,6 +80,11 @@ from typing import Any, Literal
 ROOT = Path(__file__).resolve().parents[3]
 
 Cardinality = Literal["many_to_one", "many_to_many", "unverified"]
+
+#: Named supply-chain grains (SC-ONTOLOGY-01 / #232). Aliases resolve onto
+#: declared objects; a grain with no object or join abstains rather than pad.
+SUPPLY_CHAIN_GRAINS = ("sku", "supplier", "plant", "lane", "day")
+NO_SILENT_PAD = "missing groups not zero-padded"
 
 
 def _ident(name: str) -> str:
@@ -190,6 +196,78 @@ class Refusal:
         return False
 
 
+@dataclass(frozen=True)
+class WherePath:
+    """One join chain from the measure grain to a supply-chain grain.
+
+    ``importance`` is 1 for the unique best path (shortest verified
+    many-to-one). Equal importance on two hop-sets is ambiguity, not a pick.
+    """
+
+    grain: str
+    target: str
+    hops: tuple[str, ...]
+    steps: tuple[str, ...]
+    importance: int
+    cardinality: str
+
+    def render(self) -> str:
+        return " -> ".join(self.steps) if self.steps else self.target
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """What a number includes, excludes, and cannot certify.
+
+    Every numeric compile must carry all three lists. Empty ``unsure`` is
+    allowed; omitting a key or dropping ``NO_SILENT_PAD`` from exclude is not.
+    """
+
+    include: tuple[str, ...]
+    exclude: tuple[str, ...]
+    unsure: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, list[str]]:
+        return {
+            "include": list(self.include),
+            "exclude": list(self.exclude),
+            "unsure": list(self.unsure),
+        }
+
+    def assumption_lines(self) -> tuple[str, ...]:
+        def _join(parts: tuple[str, ...]) -> str:
+            return "; ".join(parts) if parts else "none"
+
+        return (
+            f"include: {_join(self.include)}",
+            f"exclude: {_join(self.exclude)}",
+            f"unsure: {_join(self.unsure)}",
+        )
+
+
+def coverage_valid(cov: Coverage | None) -> bool:
+    """True when include/exclude/unsure are validatable (no silent pad)."""
+    if not isinstance(cov, Coverage):
+        return False
+    if not cov.include:
+        return False
+    if NO_SILENT_PAD not in cov.exclude:
+        return False
+    for part in (*cov.include, *cov.exclude, *cov.unsure):
+        if not isinstance(part, str) or not part.strip():
+            return False
+    return True
+
+
+def coverage_from_sql_path(*, sql: str) -> Coverage:
+    """Honest coverage when Cortex query_sql was not slot-compiled."""
+    return Coverage(
+        include=(f"query_sql as submitted ({' '.join(sql.split())[:80]})",),
+        exclude=(NO_SILENT_PAD,),
+        unsure=("query_sql not slot-compiled; grain coverage unknown",),
+    )
+
+
 @dataclass
 class CompiledQuery:
     sql: str
@@ -204,9 +282,137 @@ class CompiledQuery:
     # refuse or abstain on this flag; callers that asked for the existential
     # reading get it, named.
     existential: bool = False
+    # Ranked where-paths + importance when the request spans >=2 supply-chain
+    # grains (sku/supplier/plant/lane/day). Empty for single-grain compile.
+    # This is ontology_plan material, never bind_plan.
+    where_paths: tuple[WherePath, ...] = ()
+    coverage: Coverage | None = None
 
     def __bool__(self) -> bool:
         return True
+
+
+# Steward-facing grain -> candidate objects (first hit wins). SC-ONTOLOGY-01
+# aliases sku->product and plant->location; lane is a real object when origin
+# exists else missing_join (do not treat dest-only shipment as a lane).
+GRAIN_OBJECTS: dict[str, tuple[str, ...]] = {
+    "sku": ("product", "sku"),
+    "supplier": ("supplier",),
+    "plant": ("plant", "location"),
+    "lane": ("lane", "shipment"),
+    "day": ("day", "calendar", "date"),
+}
+GRAIN_COLUMNS: dict[str, tuple[str, ...]] = {
+    "sku": ("sku",),
+    "supplier": ("supplier_id", "supplier_name"),
+    "plant": ("plant_id", "location_id", "location_code", "name"),
+    "lane": ("lane_id", "shipment_id"),
+    "day": ("day", "date", "ts"),
+}
+_OBJECT_TO_GRAIN: dict[str, str] = {
+    "product": "sku",
+    "sku": "sku",
+    "supplier": "supplier",
+    "suppliers": "supplier",
+    "plant": "plant",
+    "location": "plant",
+    "lane": "lane",
+    "shipment": "lane",
+    "day": "day",
+    "calendar": "day",
+    "date": "day",
+}
+_DAY_RE = re.compile(
+    r"\b(?:per[- ]day|by[- ]day|and[- ]day|daily|by[- ]date|days?)\b",
+    re.I,
+)
+_GRAIN_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("sku", re.compile(r"\bskus?\b", re.I)),
+    ("supplier", re.compile(r"\bsuppliers?\b", re.I)),
+    ("plant", re.compile(r"\bplants?\b", re.I)),
+    ("lane", re.compile(r"\blanes?\b", re.I)),
+    ("day", _DAY_RE),
+)
+
+
+def detect_supply_chain_grains(question: str) -> tuple[str, ...]:
+    """Grains the ask names. Word matches only; warehouse/shipment stay climb L0s."""
+    q = question or ""
+    return tuple(name for name, pat in _GRAIN_RES if pat.search(q))
+
+
+def grain_for_object(name: str) -> str | None:
+    token = str(name or "").lower().rsplit(".", 1)[-1]
+    return _OBJECT_TO_GRAIN.get(token)
+
+
+def resolve_grain_object(onto: Ontology, grain: str) -> str | None:
+    """Declared object for a grain. Honest miss beats shipment/calendar fallback."""
+    if grain in onto.missing_grains:
+        return None
+    alias = onto.grain_aliases.get(grain)
+    if alias and alias in onto.objects:
+        return alias
+    for name in GRAIN_OBJECTS.get(grain, (grain,)):
+        if name in onto.objects:
+            return name
+    return None
+
+
+_REL_FROM = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][\w.]*)", re.I)
+
+
+def _bare_table(name: str) -> str:
+    n = str(name or "").strip().strip('"').strip("`").strip("[]").lower()
+    return n.rsplit(".", 1)[-1]
+
+
+def relation_tables(relation: str) -> frozenset[str]:
+    """Base table names a relation SQL cites. Subqueries included."""
+    raw = (relation or "").strip()
+    if not raw:
+        return frozenset()
+    stripped = raw.replace('"', "").replace("`", "").replace("[", "").replace("]", "")
+    found = {_bare_table(m.group(1)) for m in _REL_FROM.finditer(stripped)}
+    found.discard("")
+    if found:
+        return frozenset(found)
+    token = stripped.split()[0] if stripped.split() else ""
+    bare = _bare_table(token)
+    return frozenset({bare} if bare else ())
+
+
+def table_is_granted(table: str, grantable: set[str]) -> bool:
+    """True when the Space grant names the table or a Cortex warehouse_ alias."""
+    t = _bare_table(table)
+    if not t:
+        return False
+    allowed = {_bare_table(x) for x in grantable}
+    return t in allowed or f"warehouse_{t}" in allowed
+
+
+def ungranted_tables(tables: set[str], grantable: set[str]) -> tuple[str, ...]:
+    return tuple(sorted(t for t in tables if t and not table_is_granted(t, grantable)))
+
+
+def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
+    """Map validate ungranted → named missing_join. None if why is not ungranted.
+
+    Live KEEP_HOLD leftover: SKU+plant compiled through shipments then died as
+    ``validate:ungranted:shipments`` without naming ``missing_join`` / plant.
+    """
+    head = str(why or "").strip()
+    if not head.startswith("ungranted:"):
+        return None
+    named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
+    focus = [g for g in named if g != "sku"] or list(named)
+    label = ", ".join(focus) if focus else "join"
+    tables = head.split(":", 1)[-1]
+    return (
+        f"missing_join: no granted join path for grain {label} "
+        f"(ungranted {tables}). Declare the link on a granted table, "
+        "or ask for a measure defined at that grain."
+    )
 
 
 @dataclass
@@ -220,6 +426,10 @@ class Ontology:
     # from "the source is dirty" without reading the bronze registry
     # (SQLSRC-07 / dms#157).
     truncated: dict[str, bool] = field(default_factory=dict)
+    #: Named grain -> declared object (sku->product, plant->location).
+    grain_aliases: dict[str, str] = field(default_factory=dict)
+    #: Grain name -> why it is not declared (origin missing, no ts, ...).
+    missing_grains: dict[str, str] = field(default_factory=dict)
 
     # -- authoring -------------------------------------------------------
 
@@ -286,6 +496,134 @@ class Ontology:
                 "A measure with no grain cannot be protected from fan-out."
             )
         self.measures[name] = Measure(name, grain, expression, additive, description)
+
+    def resolve_object(self, name: str) -> str | Refusal:
+        """Canonical object for a named grain, or a refusal naming the gap.
+
+        Aliases (sku, plant) resolve onto declared objects. A supply-chain
+        grain with no object or join is ``missing_join``, not a guessed pad.
+        """
+        if name in self.objects:
+            return name
+        alias = self.grain_aliases.get(name)
+        if alias and alias in self.objects:
+            return alias
+        if name in SUPPLY_CHAIN_GRAINS:
+            detail = self.missing_grains.get(name) or (
+                f"missing join: {name} grain is not declared on this warehouse. "
+                "No silent pad."
+            )
+            return Refusal("missing_join", detail)
+        return Refusal("unknown_object", f"unknown object {name!r}")
+
+    def supply_chain_catalog(self) -> dict[str, Any]:
+        """SKU / supplier / plant / lane / day: present object or missing join."""
+        out: dict[str, Any] = {}
+        for name in SUPPLY_CHAIN_GRAINS:
+            resolved = self.resolve_object(name)
+            if isinstance(resolved, Refusal):
+                out[name] = {
+                    "object": None,
+                    "present": False,
+                    "missing": resolved.detail,
+                    "alias_of": self.grain_aliases.get(name),
+                }
+                continue
+            obj = self.objects[resolved]
+            out[name] = {
+                "object": resolved,
+                "present": True,
+                "missing": None,
+                "alias_of": self.grain_aliases.get(name),
+                "key": list(obj.key),
+            }
+        return out
+
+    def join_importance(self, measure: str) -> dict[str, Any]:
+        """Ranked join paths from the measure grain to each supply-chain grain.
+
+        importance 1 = same grain or one many-to-one hop; 2 = multi-hop
+        many-to-one; 3 = filter-only (many-to-many). Missing metric/join is
+        named, never ranked. Unverified ontologies cannot rank.
+        """
+        m = self.measures.get(measure)
+        if m is None:
+            return {
+                "measure": measure,
+                "missing_metric": True,
+                "detail": f"no measure named {measure!r}",
+                "grains": {},
+            }
+        if not self.verified:
+            return {
+                "measure": measure,
+                "missing_metric": False,
+                "detail": "ontology_unverified",
+                "grains": {},
+            }
+        grains: dict[str, Any] = {}
+        for name in SUPPLY_CHAIN_GRAINS:
+            resolved = self.resolve_object(name)
+            if isinstance(resolved, Refusal):
+                grains[name] = {
+                    "object": None,
+                    "importance": None,
+                    "path": [],
+                    "missing": resolved.detail,
+                }
+                continue
+            if resolved == m.grain:
+                grains[name] = {
+                    "object": resolved,
+                    "importance": 1,
+                    "path": [],
+                    "missing": None,
+                }
+                continue
+            grouped = self._resolve_path(m.grain, resolved, None)
+            if isinstance(grouped, list):
+                hops = len(grouped)
+                grains[name] = {
+                    "object": resolved,
+                    "importance": 1 if hops <= 1 else 2,
+                    "path": [link.name for link in grouped],
+                    "missing": None,
+                }
+                continue
+            filtered = self._resolve_path(m.grain, resolved, None, for_filter=True)
+            if isinstance(filtered, list) and filtered:
+                grains[name] = {
+                    "object": resolved,
+                    "importance": 3,
+                    "path": [link.name for link in filtered],
+                    "filter_only": True,
+                    "missing": (
+                        f"no many-to-one join from {m.grain} to {name}; "
+                        "grouping would fan out. Filter-only path exists."
+                    ),
+                }
+                continue
+            if isinstance(grouped, Refusal):
+                detail = grouped.detail
+            elif isinstance(filtered, Refusal):
+                detail = filtered.detail
+            else:
+                detail = (
+                    f"missing join: no chain from {m.grain} to {name}. "
+                    "No silent pad."
+                )
+            grains[name] = {
+                "object": resolved,
+                "importance": None,
+                "path": [],
+                "missing": detail,
+            }
+        return {
+            "measure": measure,
+            "grain": m.grain,
+            "missing_metric": False,
+            "grains": grains,
+        }
 
     # -- verification ----------------------------------------------------
 
@@ -710,6 +1048,161 @@ class Ontology:
             frontier = nxt
         return None
 
+    def _all_paths(
+        self,
+        start: str,
+        target: str,
+        *,
+        for_filter: bool = False,
+        via: dict[str, str] | None = None,
+    ) -> list[list[LinkType]]:
+        """Every passable acyclic path. Does not pick. Grouping skips non-m2o."""
+        via = dict(via or {})
+        if start == target:
+            return [[]]
+        found: list[list[LinkType]] = []
+        stack: list[tuple[str, list[LinkType], frozenset[str]]] = [
+            (start, [], frozenset({start}))
+        ]
+        while stack:
+            obj, path, seen = stack.pop()
+            by_pair: dict[str, list[LinkType]] = {}
+            for link in self.links.values():
+                if link.from_object != obj or link.to_object in seen:
+                    continue
+                by_pair.setdefault(link.to_object, []).append(link)
+            for to_obj, links in by_pair.items():
+                if to_obj in via:
+                    named = [x for x in links if x.name == via[to_obj]]
+                    if not named:
+                        continue
+                    chosen_list = named
+                else:
+                    chosen_list = links
+                for chosen in chosen_list:
+                    if chosen.cardinality == "unverified":
+                        continue
+                    if chosen.cardinality != "many_to_one" and not for_filter:
+                        continue
+                    nxt = path + [chosen]
+                    if to_obj == target:
+                        found.append(nxt)
+                    else:
+                        stack.append((to_obj, nxt, seen | {to_obj}))
+        return found
+
+    def _column_for_grain(self, obj: str, grain: str) -> str | None:
+        preferred = GRAIN_COLUMNS.get(grain, ())
+        cols = self.__dict__.get("_column_cache", {}).get(obj)
+        keys = self.objects[obj].key if obj in self.objects else ()
+        pool = set(cols) if isinstance(cols, set) else set(keys)
+        for col in preferred:
+            if col in pool:
+                return col
+        if keys:
+            return keys[0]
+        if pool:
+            return sorted(pool)[0]
+        return None
+
+    def rank_where_paths(
+        self,
+        from_grain: str,
+        specs: Sequence[tuple[str, str]],
+        *,
+        via: dict[str, str] | None = None,
+        for_filter: bool = False,
+    ) -> list[WherePath]:
+        """Rank where-paths + importance. Does not compile. Empty if no path."""
+        ranked: list[WherePath] = []
+        for grain, target in specs:
+            paths = self._all_paths(
+                from_grain, target, for_filter=for_filter, via=via
+            )
+            keyed: list[tuple[tuple[int, int], list[LinkType]]] = []
+            for path in paths:
+                m2m = 0 if all(x.cardinality == "many_to_one" for x in path) else 1
+                keyed.append(((m2m, len(path)), path))
+            keyed.sort(key=lambda row: (row[0], tuple(x.name for x in row[1])))
+            seen_key: dict[tuple[int, int], int] = {}
+            next_rank = 1
+            for key, path in keyed:
+                if key not in seen_key:
+                    seen_key[key] = next_rank
+                    next_rank += 1
+                hops = tuple(x.name for x in path)
+                steps = (from_grain, *[x.to_object for x in path]) if path else (from_grain,)
+                if any(x.cardinality == "unverified" for x in path):
+                    card = "unverified"
+                elif any(x.cardinality != "many_to_one" for x in path):
+                    card = "many_to_many"
+                else:
+                    card = "many_to_one"
+                ranked.append(
+                    WherePath(
+                        grain=grain,
+                        target=target,
+                        hops=hops,
+                        steps=steps,
+                        importance=seen_key[key],
+                        cardinality=card,
+                    )
+                )
+        ranked.sort(key=lambda p: (p.importance, p.grain, p.hops))
+        return ranked
+
+    def object_tables(self, name: str) -> frozenset[str]:
+        obj = self.objects.get(name)
+        if obj is None:
+            return frozenset()
+        return relation_tables(obj.relation)
+
+    def steps_tables(self, steps: Sequence[str]) -> frozenset[str]:
+        out: set[str] = set()
+        for name in steps:
+            out |= set(self.object_tables(name))
+        return frozenset(out)
+
+    def granted_where_paths(
+        self,
+        ranked: Sequence[WherePath],
+        grain: str,
+        grantable: set[str] | None,
+    ) -> list[WherePath]:
+        pool = [p for p in ranked if p.grain == grain]
+        if grantable is None:
+            return pool
+        return [
+            p
+            for p in pool
+            if not ungranted_tables(set(self.steps_tables(p.steps)), grantable)
+        ]
+
+    def _ranked_where_paths_for(
+        self,
+        from_grain: str,
+        group_by: Sequence[tuple[str, str]],
+        filters: Sequence[tuple[str, str, str, Any]],
+        via: dict[str, str] | None,
+    ) -> tuple[WherePath, ...]:
+        specs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for obj, _col in group_by:
+            g = grain_for_object(obj)
+            if not g or g in seen:
+                continue
+            seen.add(g)
+            specs.append((g, obj))
+        for obj, _column, _op, _value in filters:
+            g = grain_for_object(obj)
+            if not g or g in seen:
+                continue
+            seen.add(g)
+            specs.append((g, obj))
+        if len(specs) < 2:
+            return ()
+        return tuple(self.rank_where_paths(from_grain, specs, via=via))
+
     def _join_chain(
         self,
         path: list[LinkType],
@@ -789,6 +1282,15 @@ class Ontology:
 
         cols_known = self.__dict__.get("_column_cache", {})
         for obj_name, column in group_by:
+            resolved = self.resolve_object(obj_name)
+            if isinstance(resolved, Refusal):
+                if resolved.reason == "unknown_object":
+                    return Refusal(
+                        "unknown_object",
+                        f"cannot group by unknown object {obj_name!r}",
+                    )
+                return resolved
+            obj_name = resolved
             if obj_name not in self.objects:
                 return Refusal("unknown_object", f"cannot group by unknown object {obj_name!r}")
             if obj_name in cols_known and column not in cols_known[obj_name]:
@@ -840,6 +1342,15 @@ class Ontology:
         for obj_name, column, op, value in filters:
             if op.upper() not in {"=", "<>", "<", "<=", ">", ">=", "IN", "LIKE"}:
                 return Refusal("bad_operator", f"operator {op!r} is not allowed")
+            resolved = self.resolve_object(obj_name)
+            if isinstance(resolved, Refusal):
+                if resolved.reason == "unknown_object":
+                    return Refusal(
+                        "unknown_object",
+                        f"cannot filter on unknown object {obj_name!r}",
+                    )
+                return resolved
+            obj_name = resolved
             if obj_name not in self.objects:
                 return Refusal("unknown_object", f"cannot filter on unknown object {obj_name!r}")
             if obj_name in cols_known and column not in cols_known[obj_name]:
@@ -920,6 +1431,27 @@ class Ontology:
             if int(limit) < 0:
                 return Refusal("bad_limit", f"limit {limit!r} is negative")
             sql += f"\nLIMIT {int(limit)}"
+        where_paths = self._ranked_where_paths_for(m.grain, group_by, filters, via)
+        if where_paths:
+            notes.extend(
+                f"where {p.grain}: {p.render()} importance={p.importance}"
+                for p in where_paths
+            )
+        coverage = _query_coverage(
+            measure=m,
+            group_by=group_by,
+            filters=filters,
+            notes=notes,
+            existential=existential,
+            limit=limit,
+            sql=sql,
+        )
+        if not coverage_valid(coverage):
+            return Refusal(
+                "coverage_invalid",
+                "numeric compile missing validatable include/exclude/unsure "
+                "(no silent pad).",
+            )
         return CompiledQuery(
             sql=sql,
             measure=m.name,
@@ -927,6 +1459,137 @@ class Ontology:
             group_by=tuple(f"{o}.{c}" for o, c in group_by),
             notes=tuple(notes),
             existential=existential,
+            where_paths=where_paths,
+            coverage=coverage,
+        )
+
+    def compile_grains(
+        self,
+        measure: str | None,
+        grains: Sequence[str],
+        *,
+        filters: Sequence[tuple[str, str, str, Any]] = (),
+        via: dict[str, str] | None = None,
+        order_desc: bool = True,
+        limit: int | None = None,
+        grantable: set[str] | None = None,
+    ) -> CompiledQuery | Refusal:
+        """Locate + rank supply-chain grains, then compile. Not bind_plan.
+
+        ≥2 grains required. A missing object, join, or metric is a named
+        refusal, never a one-grain guess. When ``grantable`` is set, a path
+        that cites an ungranted table is ``missing_join`` naming the grain --
+        not SQL that later dies as ``validate:ungranted:...``.
+        """
+        named = tuple(g for g in grains if g in SUPPLY_CHAIN_GRAINS)
+        if len(named) < 2:
+            return Refusal(
+                "missing_join",
+                "multi-join compile needs ≥2 supply-chain grains "
+                f"(sku, supplier, plant, lane, day); got {list(named) or 'none'}",
+            )
+        if not self.verified:
+            return Refusal(
+                "ontology_unverified",
+                "verify() has not passed against this data, so no link cardinality "
+                "is known. An unverified ontology can describe the world; it "
+                "cannot answer a question.",
+            )
+        mid = str(measure or "").strip()
+        if not mid or mid not in self.measures:
+            return Refusal(
+                "missing_metric",
+                f"no measure named {mid or '(none)'!r} for a multi-grain compile "
+                f"spanning {', '.join(named)}",
+            )
+        m = self.measures[mid]
+        specs: list[tuple[str, str, str]] = []
+        missing: list[str] = []
+        for grain in named:
+            obj = resolve_grain_object(self, grain)
+            if obj is None:
+                missing.append(f"grain {grain} (object undeclared)")
+                continue
+            col = self._column_for_grain(obj, grain)
+            if not col:
+                missing.append(f"grain {grain} (no grouping column on {obj})")
+                continue
+            paths = self._all_paths(m.grain, obj, via=via)
+            if obj != m.grain and not paths:
+                missing.append(f"join {m.grain}->{obj} for grain {grain}")
+                continue
+            specs.append((grain, obj, col))
+        if missing:
+            return Refusal(
+                "missing_join",
+                "no verified join/object for " + "; ".join(missing)
+                + ". Declare the link, or ask for a measure defined at that grain.",
+            )
+        objects = [obj for _g, obj, _c in specs]
+        if len(set(objects)) < 2:
+            return Refusal(
+                "missing_join",
+                f"grains {', '.join(named)} resolve to one object {objects[0]!r}; "
+                "a multi-join compile needs two distinct objects.",
+            )
+        ranked = self.rank_where_paths(
+            m.grain, [(g, obj) for g, obj, _c in specs], via=via
+        )
+        if grantable is not None:
+            grant_miss: list[str] = []
+            for grain, obj, _c in specs:
+                if obj == m.grain:
+                    blocked = ungranted_tables(
+                        set(self.object_tables(obj)), grantable
+                    )
+                    if blocked:
+                        grant_miss.append(
+                            f"grain {grain} (object {obj} cites ungranted "
+                            f"{', '.join(blocked)})"
+                        )
+                    continue
+                if self.granted_where_paths(ranked, grain, grantable):
+                    continue
+                cited = set(self.object_tables(m.grain)) | set(
+                    self.object_tables(obj)
+                )
+                for path in ranked:
+                    if path.grain == grain:
+                        cited |= set(self.steps_tables(path.steps))
+                blocked = ungranted_tables(cited, grantable)
+                extra = f" (ungranted {', '.join(blocked)})" if blocked else ""
+                grant_miss.append(
+                    f"join {m.grain}->{obj} for grain {grain}{extra}"
+                )
+            if grant_miss:
+                return Refusal(
+                    "missing_join",
+                    "no granted join/object for " + "; ".join(grant_miss)
+                    + ". Declare the link on a granted table, or ask for a "
+                    "measure defined at that grain.",
+                )
+        for grain, obj, _c in specs:
+            pool = self.granted_where_paths(ranked, grain, grantable)
+            best = min((p.importance for p in pool), default=None)
+            tops = [p for p in pool if p.importance == best] if best is not None else []
+            hopsets = {p.hops for p in tops}
+            if len(hopsets) > 1:
+                routes = "; ".join(
+                    " -> ".join(p.hops) if p.hops else p.target for p in tops
+                )
+                return Refusal(
+                    "ambiguous_path",
+                    f"{len(hopsets)} equal-importance where-paths reach grain "
+                    f"{grain} ({obj}) from {m.grain}: {routes}. Name the path "
+                    "with via=.",
+                )
+        return self.compile(
+            mid,
+            group_by=[(obj, col) for _g, obj, col in specs],
+            filters=filters,
+            via=via,
+            order_desc=order_desc,
+            limit=limit,
         )
 
     def describe(self) -> dict[str, Any]:
@@ -950,7 +1613,28 @@ class Ontology:
                          "additive": m.additive, "description": m.description}
                 for m in self.measures.values()
             },
+            "grains": self.supply_chain_catalog(),
+            "grain_aliases": dict(self.grain_aliases),
         }
+
+
+def try_compile_multi_grain(
+    onto: Ontology | None,
+    measure: str | None,
+    question: str,
+    *,
+    via: dict[str, str] | None = None,
+    grantable: set[str] | None = None,
+) -> CompiledQuery | Refusal | None:
+    """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan).
+
+    When ``grantable`` is set, a path that cites an ungranted table is
+    ``missing_join`` naming the grain -- not a later ``validate:ungranted``.
+    """
+    grains = detect_supply_chain_grains(question)
+    if onto is None or not onto.verified or len(grains) < 2:
+        return None
+    return onto.compile_grains(measure, grains, via=via, grantable=grantable)
 
 
 def _render(op: str, value: Any) -> str:
@@ -958,6 +1642,46 @@ def _render(op: str, value: Any) -> str:
         items = value if isinstance(value, (list, tuple, set)) else [value]
         return "(" + ", ".join(_literal(v) for v in items) + ")"
     return _literal(value)
+
+
+def _query_coverage(
+    *,
+    measure: Measure,
+    group_by: Sequence[tuple[str, str]],
+    filters: Sequence[tuple[str, str, str, Any]],
+    notes: Sequence[str],
+    existential: bool,
+    limit: int | None,
+    sql: str,
+) -> Coverage:
+    """Include / exclude / unsure for one compiled number. No silent pad."""
+    include = [f"grain={measure.grain}", f"measure={measure.name}"]
+    if measure.description:
+        include.append(measure.description)
+    for obj_name, column in group_by:
+        include.append(f"group {obj_name}.{column}")
+    for obj_name, column, op, value in filters:
+        include.append(f"where {obj_name}.{column} {op} {value}")
+    exclude = [NO_SILENT_PAD]
+    expr = measure.expression.upper()
+    if "OUT" in expr and "OUTBOUND" in expr:
+        include.append("txn_type IN (OUT, outbound)")
+        exclude.append("txn_type not in (OUT, outbound)")
+    if "ADJUST" in (measure.description or "").upper():
+        exclude.append("ADJUST unsigned and excluded")
+    if limit is not None:
+        exclude.append(f"rows beyond LIMIT {int(limit)} not returned")
+    # A calendar/group pad would fill missing keys with 0. This compiler
+    # never emits one; if SQL ever did, coverage would be invalid.
+    upper_sql = sql.upper()
+    if "GENERATE_SERIES" in upper_sql or "RANGE LEFT" in upper_sql:
+        exclude = [x for x in exclude if x != NO_SILENT_PAD]
+    unsure: list[str] = []
+    if existential:
+        unsure.append("existential many-to-many filter reading")
+    if any("LEFT JOIN" in n.upper() or "joined " in n for n in notes):
+        unsure.append("LEFT JOIN unmatched dim keys stay in the total (not inner-dropped)")
+    return Coverage(tuple(include), tuple(exclude), tuple(unsure))
 
 
 # --------------------------------------------------------------------------
@@ -1023,7 +1747,28 @@ def demo_ontology(warehouse: Path) -> Ontology:
         lot_key.append("supplier_id")
 
     o = Ontology()
-    o.add_object("transaction", "transactions", ["txn_id"])
+    o.grain_aliases["sku"] = "product"
+    o.grain_aliases["plant"] = "location"
+    txn = cols.get("transactions", set())
+    txn_rel = "transactions"
+    if cortex_default or "ts" in txn:
+        # day is CAST(ts). Wrapping keeps the fact grain honest; a missing
+        # ts is missing_join, not a padded calendar.
+        txn_rel = "(SELECT *, CAST(ts AS DATE) AS day FROM transactions)"
+        o.add_object("transaction", txn_rel, ["txn_id"])
+        o.add_object(
+            "day",
+            "(SELECT DISTINCT CAST(ts AS DATE) AS day FROM transactions "
+            "WHERE ts IS NOT NULL)",
+            ["day"],
+        )
+        o.add_link("txn_on_day", "transaction", ["day"], "day", ["day"])
+    else:
+        o.add_object("transaction", "transactions", ["txn_id"])
+        o.missing_grains["day"] = (
+            "missing join: day grain needs transactions.ts; column is absent. "
+            "No silent pad."
+        )
     o.add_object("shipment", "shipments", ["shipment_id"])
     o.add_object("supplier", "suppliers", ["supplier_id"])
     o.add_object("location", "locations", ["location_id"])
@@ -1056,6 +1801,51 @@ def demo_ontology(warehouse: Path) -> Ontology:
     if cortex_default or "supplier_id" in inv:
         o.add_link("lot_from_supplier", "lot", ["supplier_id"], "supplier", ["supplier_id"])
     o.add_link("lot_of_product", "lot", ["sku"], "product", ["sku"])
+    origin_col = next(
+        (
+            cand
+            for cand in ("origin_location_id", "from_location_id", "origin_plant_id")
+            if cand in ship
+        ),
+        None,
+    )
+    dest_ok = cortex_default or "destination_location_id" in ship
+    if origin_col and dest_ok:
+        o.add_object(
+            "lane",
+            "("
+            f"SELECT DISTINCT {origin_col} AS origin_plant_id, "
+            "destination_location_id AS dest_plant_id FROM shipments "
+            f"WHERE {origin_col} IS NOT NULL AND destination_location_id IS NOT NULL"
+            ")",
+            ["origin_plant_id", "dest_plant_id"],
+        )
+        o.add_link(
+            "ship_on_lane",
+            "shipment",
+            [origin_col, "destination_location_id"],
+            "lane",
+            ["origin_plant_id", "dest_plant_id"],
+        )
+        o.add_link(
+            "lane_from_plant",
+            "lane",
+            ["origin_plant_id"],
+            "location",
+            ["location_id"],
+        )
+        o.add_link(
+            "lane_to_plant",
+            "lane",
+            ["dest_plant_id"],
+            "location",
+            ["location_id"],
+        )
+    else:
+        o.missing_grains["lane"] = (
+            "missing join: lane grain is origin->destination; shipments has no "
+            "origin_location_id (or from_location_id). No silent pad."
+        )
 
     # Thin DMS seed uses inbound/outbound; Cortex lake uses IN/OUT. Both listed.
     o.add_measure(

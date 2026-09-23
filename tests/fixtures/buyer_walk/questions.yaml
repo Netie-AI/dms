@@ -1,0 +1,54 @@
+# AGI-BUYER-WALK-01 (#236) under EPIC-INSIGHTS-UX #178.
+# Steward pack for the 5-day Studio supply-chain AGI-for-DB demo.
+# Not COMPLETE. No buyer logos. No ARR. No invented charts.
+#
+# Live: python scripts/walk_buyer_studio.py
+#   STUDIO_ORIGIN=https://studio.netie.ai
+#   DMS_API_BASE=https://studio.netie.ai/api
+# Asks use ask_path=generative (ontology path). A confident exact-match
+# L0 does not count. Honest ABSTAIN counts. Planted refuse must ABSTAIN.
+# Artifacts: Studio receipt, ask envelope, Excel export from that envelope.
+
+ticket: AGI-BUYER-WALK-01
+issue: 236
+epic: 178
+honesty: Not COMPLETE. No buyer logos. No ARR. No invented charts.
+artifacts:
+  - receipt
+  - ask
+  - export
+
+spaces:
+  finance: cccccccc-cccc-cccc-cccc-cccccccccccc
+
+questions:
+  - id: bw_spend_by_country
+    kind: ask
+    space: finance
+    question: What is our total spend by supplier country?
+
+  - id: bw_stock_value
+    kind: ask
+    space: finance
+    question: What is total stock value by category?
+
+  - id: bw_low_stock
+    kind: ask
+    space: finance
+    question: Which SKUs are below reorder level in warehouse A?
+
+  - id: bw_capacity
+    kind: ask
+    space: finance
+    question: Show warehouse capacity utilisation
+
+  - id: bw_cold_storage
+    kind: ask
+    space: finance
+    question: Which locations are cold storage?
+
+  - id: bw_last_month
+    kind: refuse
+    space: finance
+    question: Just give me last month's number
+    why: No certified as-of month on this lake. A green last-month figure would invent a period. Honest ABSTAIN is the product.

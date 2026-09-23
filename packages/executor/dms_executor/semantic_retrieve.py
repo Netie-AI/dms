@@ -36,6 +36,11 @@ _ENTITY_PREFIX = re.compile(r"^\s*(which|list|rank)\b", re.I)
 _SPINE_PATH = Path(__file__).with_name("ontology_spine.yaml")
 _WH_A = re.compile(r"\b(warehouse a|wh-a)\b", re.I)
 _COLD = re.compile(r"cold[\s-]?storage", re.I)
+_COLD_NEGATED = re.compile(
+    r"(?:\b(?:not|excluding|other\s+than)\b.{0,48}cold[\s-]?storage)"
+    r"|(?:non-cold)",
+    re.I,
+)
 _STILL_UNTYPED = re.compile(
     r"\b(delayed|alerts?|storage bin|high-risk|pending shipment|risk and lead)\b",
     re.I,
@@ -76,8 +81,12 @@ _TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
 _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by country", "supplier country"), "supplier", "country"),
     (("by destination", "by location"), "location", "location_code"),
+    (("by plant", "by warehouse"), "location", "location_code"),
     (("by category", "categoty", "categories by", "category sales"), "product", "category"),
     (("by sku", "selling sku", "skus by"), "product", "sku"),
+    (("by supplier",), "supplier", "supplier_id"),
+    (("by lane", "per lane"), "lane", "origin_plant_id"),
+    (("by day", "per day", "each day"), "day", "day"),
 )
 _STOP = frozenset(
     {
@@ -308,6 +317,10 @@ def retrieve_ontology_slice(onto: Ontology | None, toks: set[str]) -> dict[str, 
         "objects": objects,
         "links": links,
         "columns": columns,
+        "grains": {
+            name: bool(spec.get("present"))
+            for name, spec in onto.supply_chain_catalog().items()
+        },
     }
 
 
@@ -382,7 +395,8 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
     if _COLD.search(question or ""):
         if not _has_col(context, "location", "is_cold_storage"):
             return None
-        filters.append(["location", "is_cold_storage", "=", True])
+        want_cold = not bool(_COLD_NEGATED.search(question or ""))
+        filters.append(["location", "is_cold_storage", "=", want_cold])
     if re.search(r"\bexpir", qn):
         if not _has_col(context, "lot", "expiry_date"):
             return None
@@ -515,7 +529,7 @@ def _locked_measure(question: str) -> str | None:
         return "outbound_kg"
     if "sku count" in qn or "how many sku" in qn or "how many unique sku" in qn:
         return "sku_count"
-    if "shipment cost" in qn or "freight" in qn:
+    if "shipment cost" in qn or "shipping cost" in qn or "freight" in qn:
         return "shipping_cost_myr"
     if "capacity utilisation" in qn or "capacity utilization" in qn:
         return "utilisation_pct"

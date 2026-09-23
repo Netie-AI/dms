@@ -1,9 +1,19 @@
-"""Off-contract Cortex compute — Insights generate then POST /dms/query.
+"""Off-contract Cortex compute helper — Insights generate, then POST /dms/query.
 
-Contract 1.2.0 has ask/submit/ledger only. Generative ontology_plan is Cortex
-``POST /v1/insights`` ``generate=true`` (OpenVault FreeRoute inside Cortex).
-``POST /dms/query`` remains a typed-plan fallback. DMS never invents provider
-keys and never puts secrets in the body.
+Contract 1.2.0 has ask/submit/ledger only. This module is not a planner.
+``POST /dms/query`` ignores ``mode`` and ``ontology`` on Cortex origin/main
+(CortexOS/api/dms_query.py; KB F-0055) and does not return a typed
+``query_plan.measure``. A 200 is the engine's own /dms/query answer, not a
+FreeRoute generate+validate plan built from the context DMS sent.
+
+``POST /v1/insights`` ``generate=true`` is Cortex Insights (OpenVault keys stay
+in Cortex). It may REFUSE when unarmed; it is not a Cortex-internal
+generate+validate path that always emits a typed plan.
+
+No ask-path caller remains after GEN-03 (dms#194): ``Executor.live_ask`` passes
+a closed, no-network compute seam instead. Deleting this module and
+``CortexClient.compute_query`` is tracked in CONTRACT-FAKE-01. DMS never invents
+provider keys and never puts secrets in the body.
 """
 
 from __future__ import annotations
@@ -682,14 +692,18 @@ def compute_query(
     api_key: str | None = None,
     timeout: float = 120.0,
 ) -> dict[str, Any] | None:
-    """POST Cortex ontology_plan compute. None on transport miss only.
+    """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
 
-    Order: ``POST /v1/insights`` generate=true ask=false (OV/FreeRoute),
-    ``GET /v1/insights/ontology`` when ranking is omitted (A-0009 401 or
-    generate SQL without YAML metrics), one ranked-slot generate retry when
-    FreeRoute ran with no SQL/plan (not UNARMED) using the walked/resolved
-    measure plus retrieve/pack slots, then ``POST /dms/query`` for a typed
-    ``query_plan`` (walked ranked metric forwarded). Ranking stays
+    Not a generate+validate planner Cortex implements. Cortex ``/dms/query``
+    ignores ``mode``/``ontology`` and does not emit ``query_plan.measure``
+    (KB F-0055). Insights generate may return SELECT SQL or REFUSE; that is
+    Insights, not a typed-plan guarantee. ``Executor.live_ask`` does not call
+    this after GEN-03 (dms#194).
+
+    Order when a harness still calls this: ``POST /v1/insights`` generate=true
+    ask=false, ``GET /v1/insights/ontology`` when ranking is omitted, one
+    ranked-slot generate retry when generate ran with no SQL/plan (not UNARMED),
+    then ``POST /dms/query`` which is not a typed-plan source. Ranking stays
     attached when generate SQL is present so a validate-fail can climb via
     ontology_plan slots. Insights 200 REFUSE / 401 still count as reached so
     isolated gen does not bind_plan over them. An empty key is not replaced

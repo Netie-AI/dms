@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.bi_export import export_envelope_bi
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -120,9 +121,16 @@ class AskBody(BaseModel):
     #: Capped because a "scope" listing everything is not a scope, and the list
     #: reaches manifest minting.
     grounded_tables: list[str] | None = Field(default=None, max_length=32)
-    #: Isolated A/B lanes for GEN-02. Default product = certified-first then
-    #: free generative. Not an x-dms header (DR-0004).
+    #: Ask ladder. None or "product" is the product path (certified-first, then
+    #: the Cortex contract ask). "exact" and "generative" are the isolated GEN-02
+    #: measurement lanes: refused with 400 ask_path_not_allowed unless the server
+    #: sets DMS_HARNESS_ASK_PATHS (GEN-03). A body field, not an x-dms header
+    #: (DR-0004), and the switch that allows it is server config, not the request.
     ask_path: Literal["product", "exact", "generative"] | None = None
+
+
+#: The ask_path values only a measurement origin may run (GEN-03).
+_HARNESS_ASK_PATHS = frozenset({"exact", "generative"})
 
 
 class DrillthroughBody(BaseModel):
@@ -133,6 +141,13 @@ class ExportXlsxBody(BaseModel):
     """INSIGHTS-EXPORT-01 — serialize an existing ask envelope. No re-ask."""
 
     envelope: dict[str, Any]
+
+
+class ExportBiBody(BaseModel):
+    """INSIGHTS-EXPORT-02 — Power BI / Superset from an existing ask envelope."""
+
+    envelope: dict[str, Any]
+    target: Literal["powerbi", "superset"] | None = None
 
 
 def _space_refusal_envelope(
@@ -203,6 +218,25 @@ def chat_ask(
     cortex: CortexDep,
     ask: AskServiceDep,
 ) -> dict[str, Any]:
+    # GEN-03 (dms#194). The isolated lanes are a measurement harness, not a
+    # product surface: on ask_path=generative a keyword-bound plan answered
+    # under L2_VALIDATED with wrong numbers. A caller naming one is refused, not
+    # quietly served the product lane (DR-0004) - an A/B that silently ran the
+    # wrong ladder would score it. First check, so a refused request reaches no
+    # compliance gate, Cortex call, submit or ledger append.
+    if body.ask_path in _HARNESS_ASK_PATHS and not settings.dms_harness_ask_paths:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ask_path_not_allowed",
+                "message": (
+                    f"ask_path '{body.ask_path}' is a measurement lane and this server "
+                    "does not run it; omit ask_path for the product answer, or enable "
+                    "DMS_HARNESS_ASK_PATHS on a measurement origin."
+                ),
+            },
+        )
+
     if body.space_id and store.get(body.space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
 
@@ -384,3 +418,30 @@ def chat_export_xlsx(
         ),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/export.bi")
+def chat_export_bi(
+    body: ExportBiBody,
+    cortex: CortexDep,
+) -> dict[str, Any]:
+    """Power BI / Superset stubs from a real ask envelope. No invented metrics."""
+    peek = body.envelope if isinstance(body.envelope, dict) else {}
+    decision = compliance_gate(
+        action="chat.export",
+        metadata={
+            "task_id": "chat.export",
+            "answer_id": str(peek.get("answer_id") or "")[:80],
+            "target": body.target or "powerbi,superset",
+        },
+        client=cortex,
+    )
+    # Serializer of the caller envelope — not a lake write or live BI connector.
+    enforce(decision, mutation=False)
+    try:
+        return export_envelope_bi(body.envelope, target=body.target)
+    except EnvelopeExportError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
