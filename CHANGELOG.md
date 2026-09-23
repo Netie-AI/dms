@@ -6,7 +6,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Ticket.** First ticket of [EPIC-A2 #256](https://github.com/Netie-AI/dms/issues/256) (PRD-001 amendment accepted by founder 2026-09-23). Measurement only. No product code changed. Does not stamp #256 COMPLETE.
 - **Gate.** `tests/test_hostile_schema_a2.py` plants four defects one at a time (orphan FK, FK on the wrong column, duplicate business key behind a surrogate, `revenue_usd` holding MYR) into a clean 3-table warehouse, asks 4 questions on the typed-plan and generated-SQL paths through `maybe_generative_ask` with a real duckdb submit, and grades envelope rows against oracle values, not row counts.
-- **Measured.** n=40 envelopes, **14 confidently WRONG** on main @ `3c3b621`. Pinned in `MEASURED` so a fix or a regression both fail until the pin is edited. Owners: #258 (SQL path ignores failed verify), #259 (wrong-column FK), #260 (duplicate business key), #261 (currency never checked; 10 of 14).
+- **Measured.** n=40 envelopes, **14 confidently WRONG** on main @ `3c3b621`. Pinned in `MEASURED` so a fix or a regression both fail until the pin is edited. Owners: #258 (SQL path ignores failed verify), #259 (wrong-column FK), #260 (duplicate business key), #261 (currency never checked; 9 of 14).
 - **Proves it can fail.** Flipping one pin to OK fails with the envelope's rows and text. A clean-schema control must answer with oracle values, so abstaining cannot pass for free.
 
 ## 2026-09-23 - INSIGHTS-EXPORT-02: Power BI + Superset stubs from ask envelope (#189)
