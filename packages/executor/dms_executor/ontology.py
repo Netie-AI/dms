@@ -153,6 +153,10 @@ class LinkType:
     to_columns: tuple[str, ...]
     cardinality: Cardinality = "unverified"
     max_fanout: int = 0
+    #: Opt-in: the child side is the child's own key on purpose (a shared
+    #: primary key / subtype table). Without it, a link declared on the child
+    #: key is refused by verify() as ``fk_is_child_key`` (A2-03 / dms#259).
+    one_to_one: bool = False
 
 
 @dataclass(frozen=True)
@@ -455,7 +459,11 @@ class Ontology:
         from_columns: Sequence[str],
         to_object: str,
         to_columns: Sequence[str],
+        *,
+        one_to_one: bool = False,
     ) -> None:
+        """Declare a link. ``one_to_one=True`` is the only way to declare a link
+        whose child columns are the child object's own key; see verify()."""
         for obj in (from_object, to_object):
             if obj not in self.objects:
                 raise KeyError(f"link {name!r} names unknown object {obj!r}")
@@ -471,7 +479,12 @@ class Ontology:
                 "A join cannot be checked unless both sides name the same arity."
             )
         self.links[name] = LinkType(
-            name, from_object, tuple(from_columns), to_object, tuple(to_columns)
+            name,
+            from_object,
+            tuple(from_columns),
+            to_object,
+            tuple(to_columns),
+            one_to_one=one_to_one,
         )
         self.verified = False
 
@@ -656,6 +669,11 @@ class Ontology:
                           than join through, and the compiler needs to know.
                           A link with orphans stays unverified rather than
                           being blessed many-to-one.
+          fk_is_child_key a link whose child columns are the child's own key
+                          is almost always a mis-declared FK (line_id where
+                          order_id was meant). Coincident values pass every
+                          other check, so it stays unverified unless declared
+                          ``one_to_one=True``.
         """
         violations: list[Violation] = []
         self.__dict__["_column_cache"] = {}
@@ -724,6 +742,35 @@ class Ontology:
                     Violation("link_readable", name, f"{type(exc).__name__}: {exc}")
                 )
                 continue
+            if set(link.from_columns) == set(child.key) and not link.one_to_one:
+                # A2-03 / dms#259: line_id -> order_id passed fk_intact because
+                # every line_id happened to equal a real order id, and the
+                # join then attributed each line to the wrong order. A child's
+                # own key is only an FK when the link says it is one-to-one.
+                child_all = self.__dict__.get("_column_cache", {}).get(child.name, set())
+                siblings = sorted(
+                    c for c in link.to_columns if c in child_all and c not in link.from_columns
+                )
+                hint = (
+                    f" {link.from_object} also has {', '.join(siblings)}, which "
+                    "matches the parent key by name and is the likely foreign key."
+                    if siblings
+                    else ""
+                )
+                violations.append(
+                    Violation(
+                        "fk_is_child_key",
+                        name,
+                        f"{link.from_object} -> {link.to_object} is declared on "
+                        f"({', '.join(link.from_columns)}), which is "
+                        f"{link.from_object}'s own key. A foreign key on the child "
+                        "key is a one-to-one claim; values that merely coincide "
+                        "with parent keys pass every other check and misattribute "
+                        f"rows.{hint} The link stays unverified unless declared "
+                        "one_to_one=True.",
+                    )
+                )
+                continue
             if int(pn) == 0:
                 # "Unique because empty" is not a measurement, it is an absence
                 # of one, and the verdict would be cached and trusted. A
@@ -784,6 +831,7 @@ class Ontology:
                 self.links[name] = LinkType(
                     link.name, link.from_object, link.from_columns,
                     link.to_object, link.to_columns, "many_to_one", 1,
+                    link.one_to_one,
                 )
                 continue
             worst = con.execute(
@@ -793,6 +841,7 @@ class Ontology:
             self.links[name] = LinkType(
                 link.name, link.from_object, link.from_columns,
                 link.to_object, link.to_columns, "many_to_many", int(worst or 0),
+                link.one_to_one,
             )
 
         self.verified = not violations
@@ -2098,12 +2147,20 @@ def from_manifest(
             # An end of this link has no primary key or was not extracted. A link
             # to an object that cannot identify a row is not a link.
             continue
+        from_cols = [str(c["from_column"]) for c in cols]
         onto.add_link(
             name if name not in onto.links else f"{name}@{child}",
             child,
-            [str(c["from_column"]) for c in cols],
+            from_cols,
             parent,
             [str(c["to_column"]) for c in cols],
+            # A2-03 / dms#259: a database FK constraint declared on the child's
+            # own primary key IS the schema owner's one-to-one declaration (a
+            # shared-primary-key subtype, e.g. Person.Person -> BusinessEntity).
+            # That is explicit, not inferred, so it is passed through; every
+            # other check in verify() still measures the link. Hand-authored
+            # links get no such pass.
+            one_to_one=set(from_cols) == set(onto.objects[child].key),
         )
     return onto
 

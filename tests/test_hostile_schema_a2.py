@@ -155,7 +155,12 @@ DEFECT_WORDS: dict[str, tuple[str, ...]] = {
 # Measured on main @ 3c3b621 (2026-09-23). (case, qid, mode) -> verdict.
 # WRONG rows name the ticket that owns the fix. Improving a row is editing it.
 _GAP_ORPHAN_SQL = "WRONG"  # dms#258 A2-02: generated SQL ships over an ontology that failed verify
-_GAP_WRONG_FK = "WRONG"  # dms#259 A2-03: FK on a wrong column with coincident values passes verify
+# dms#259 A2-03: verify() now refuses a link declared on the child's own key
+# (fk_is_child_key), so every fk_wrong_col plan row abstains - unnamed, because
+# the abstention does not carry the violation text (coverage cost: two plan rows
+# that were OK now abstain). The generated-SQL row stays WRONG: that path ships
+# over an ontology that failed verify, which is dms#258 A2-02's residual.
+_GAP_WRONG_FK = "WRONG"
 _GAP_DUP_KEY = "WRONG"  # dms#260 A2-04: duplicate business key behind a unique surrogate
 _GAP_CURRENCY = "WRONG"  # dms#261 A2-05: unit/currency in the question vs the data is never checked
 MEASURED: dict[tuple[str, str, str], str] = {}
@@ -169,7 +174,8 @@ for _case in CASES:
 for _qid in QUESTIONS:
     MEASURED[("orphan", _qid, "plan")] = "ABSTAIN_UNNAMED"
 MEASURED[("orphan", "revenue_by_region", "sql")] = _GAP_ORPHAN_SQL
-MEASURED[("fk_wrong_col", "units_by_region", "plan")] = _GAP_WRONG_FK
+for _qid in QUESTIONS:
+    MEASURED[("fk_wrong_col", _qid, "plan")] = "ABSTAIN_UNNAMED"
 MEASURED[("fk_wrong_col", "units_by_region", "sql")] = _GAP_WRONG_FK
 MEASURED[("dup_business_key", "customer_count", "plan")] = _GAP_DUP_KEY
 MEASURED[("dup_business_key", "customer_count", "sql")] = _GAP_DUP_KEY
