@@ -157,12 +157,14 @@ DEFECT_WORDS: dict[str, tuple[str, ...]] = {
 # dms#258 A2-02 closed: a declared ontology that failed verify now refuses SQL
 # joining the broken link and names it (check, link, orphan count) on both paths.
 _FIXED_ORPHAN = "ABSTAIN"
-_GAP_WRONG_FK = "WRONG"  # dms#259 A2-03: FK on a wrong column with coincident values passes verify
+# dms#259 A2-03: verify() refuses a link declared on the child's own key
+# (fk_is_child_key). With A2-02, both paths abstain and name it. Coverage cost:
+# fk_wrong_col questions that do not use line_order abstain too (whole ontology drops).
+_FIXED_WRONG_FK = "ABSTAIN"
 # dms#260 A2-04: the declared business key (customer_code) is verified, so the
-# plan path abstains naming it. The SQL path still ships over the failed
-# ontology, which is A2-02's gap, so dup_business_key/customer_count/sql is
-# pinned to _GAP_ORPHAN_SQL. Cost: every dup_business_key plan row abstains,
-# including revenue/units by region whose oracle is unaffected.
+# plan path abstains naming it; with A2-02 merged the SQL path refuses too.
+# Cost: every dup_business_key plan row abstains, including revenue/units by
+# region whose oracle is unaffected.
 _GAP_DUP_KEY = "ABSTAIN"
 _GAP_CURRENCY = "WRONG"  # dms#261 A2-05: unit/currency in the question vs the data is never checked
 MEASURED: dict[tuple[str, str, str], str] = {}
@@ -176,12 +178,12 @@ for _case in CASES:
 for _qid in QUESTIONS:
     MEASURED[("orphan", _qid, "plan")] = _FIXED_ORPHAN
     MEASURED[("dup_business_key", _qid, "plan")] = _GAP_DUP_KEY
+    MEASURED[("fk_wrong_col", _qid, "plan")] = _FIXED_WRONG_FK
 MEASURED[("orphan", "revenue_by_region", "sql")] = _FIXED_ORPHAN
 # Coverage cost: the units SQL joins through order_customer too. Its rows would
 # be right (order 14 has no lines) but the join is over a failed link.
 MEASURED[("orphan", "units_by_region", "sql")] = _FIXED_ORPHAN
-MEASURED[("fk_wrong_col", "units_by_region", "plan")] = _GAP_WRONG_FK
-MEASURED[("fk_wrong_col", "units_by_region", "sql")] = _GAP_WRONG_FK
+MEASURED[("fk_wrong_col", "units_by_region", "sql")] = _FIXED_WRONG_FK
 # With A2-02 merged, generated SQL over the failed business key refuses too.
 MEASURED[("dup_business_key", "customer_count", "sql")] = _FIXED_ORPHAN
 # Coverage cost (A2-02 x A2-04): any SQL reading customers now refuses while
