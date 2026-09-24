@@ -254,6 +254,21 @@ n=26 stays a floor. Planted refuses stay ABSTAIN. Regression:
 `python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
 Need ontology_plan>36 + WRONG=0. Not COMPLETE. #178 NOT COMPLETE.
 
+GEN-PATH-CLIMB-13 (#231): continue live ontology_plan rise past 39 after
+#228 RISE_PASS (39/49 WRONG=0 on uncapped harness). Unused leftover:
+Cortex metrics.yaml parent-SQL of certified L0s via retrieve slots
+(`how many SKUs per category`, `what is our inventory worth per category`,
+Ops `freight spend per destination`). Same SQL as
+cq_sku_count_by_category / cq_stock_value_by_category /
+cq_cost_by_destination. Not PACK_METRICS. Not golden TARGET paraphrases.
+Retrieve locks per-category / per-destination group and inventory-worth
+onto stock_value_myr. Harness unions the new L0s; live prove FAILs
+ontology_plan<=39. Frozen n=26 stays a floor. Planted refuses stay
+ABSTAIN. Regression: `tests/test_gen_path_climb13.py`. Platform leftover
+after deploy:
+`python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api`.
+Need ontology_plan>39 + WRONG=0. Not climb PASS. Do not reopen #178.
+
 ONTOLOGY-AUDIT-01 (#235): `audit_receipt` on every ask envelope
 (`packages/executor/dms_executor/envelope.py`). Include = executed rows;
 exclude = SQL WHERE/HAVING/FILTER or N/A with why; unsure = ABSTAIN or none.
