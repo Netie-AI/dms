@@ -189,6 +189,10 @@ def ranked_measure_tokens(name: str) -> set[str]:
     # "top 3 categoty sales" (top+sales only).
     if "categoty" in out:
         out.add("category")
+    # Cortex metrics.yaml parent-SQL of stock_value_by_category uses
+    # "inventory worth" / "worth per category", not the literal "stock value".
+    if "worth" in out:
+        out.add("value")
     return out
 
 

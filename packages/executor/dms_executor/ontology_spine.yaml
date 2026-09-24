@@ -56,6 +56,9 @@ measure_aliases:
   low_stock_wh_a: below_reorder_lots
   cq_sku_count_by_category: sku_count
   sku_count_by_category: sku_count
+  sku_count_per_category: sku_count
+  inventory_worth_by_category: stock_value_myr
+  freight_spend_per_destination: shipping_cost_myr
   cq_sales_top5_value: outbound_value_myr
   sales_top5_value: outbound_value_myr
   cq_sales_top3_volume: outbound_kg

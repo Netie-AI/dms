@@ -17,25 +17,25 @@ router = APIRouter()
 #: Python 3.12 (PEP 701) and this package targets 3.11.
 _OPENVAULT_DEFAULT_ROOT = "D:\\\\OpenVault"
 
-# GEN-PATH-CLIMB-12: pack identity on the live host. #226 RISE_PASS was
-# ontology_plan=36 on n=46 (17 frozen L0 + 4 climb-05/06 + 3 climb-07
-# + 3 climb-08 + 3 climb-09 + 3 climb-10 + 3 climb-11). Remaining unused
-# Cortex leftover is Ops parent-SQL of certified L0s via ontology spine
-# slots (sku-count-by-category / stock-value / shipment-cost). /health
-# advertises the harness identity this SHA must score. Not a sixth
-# port. Not COMPLETE. Do not reintroduce frozen n=26 / n=34 / n=37 /
-# n=40 / n=43 / n=46.
+# GEN-PATH-CLIMB-13: pack identity on the live host. #228 RISE_PASS was
+# ontology_plan=39 on n=49 (17 frozen L0 + 4 climb-05/06 + 3 climb-07
+# + 3 climb-08 + 3 climb-09 + 3 climb-10 + 3 climb-11 + 3 climb-12).
+# Remaining unused Cortex leftover is parent-SQL of certified L0s via
+# retrieve slots (how-many-SKUs-per-category / inventory-worth /
+# freight-spend-per-destination). /health advertises the harness
+# identity this SHA must score. Not a sixth port. Not COMPLETE. Do not
+# reintroduce frozen n=26 / n=34 / n=37 / n=40 / n=43 / n=46 / n=49.
 GEN_PATH_CLIMB: dict[str, Any] = {
-    "ticket": "GEN-PATH-CLIMB-12",
-    "issue": 228,
+    "ticket": "GEN-PATH-CLIMB-13",
+    "issue": 231,
     "pack": "curated_ceo",
     "frozen_n": 26,
-    "prior_n": 46,
-    "n": 49,
+    "prior_n": 49,
+    "n": 52,
     "rise_l0": [
-        "ops_sku_count_by_category_syn",
-        "ops_stock_value_syn",
-        "ops_shipment_cost_syn",
+        "cq_sku_count_by_category_per",
+        "cq_stock_value_worth",
+        "ops_freight_spend_destination",
     ],
 }
 

@@ -356,6 +356,35 @@ questions:
     cortex_id: cq_cost_by_destination
     question: shipment cost by destination
 
+  # Unused Cortex leftover after #228 RISE_PASS ontology_plan=39 / n=49.
+  # certified_queries.yaml primaries+synonyms and climb-12 Ops parent-SQL
+  # are already POSTed. Remaining leftover is Cortex metrics.yaml
+  # parent-SQL of those certified L0s (same SQL as
+  # cq_sku_count_by_category / cq_stock_value_by_category /
+  # cq_cost_by_destination) via retrieve slots, not PACK_METRICS,
+  # not last_audit_date, not golden TARGET paraphrases. Isolated gen
+  # compiles as ontology_plan.
+  - id: cq_sku_count_by_category_per
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_sku_count_by_category
+    question: how many SKUs per category
+
+  - id: cq_stock_value_worth
+    space: finance
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_stock_value_by_category
+    question: what is our inventory worth per category
+
+  - id: ops_freight_spend_destination
+    space: ops
+    expect: l0
+    min_rows: 1
+    cortex_id: cq_cost_by_destination
+    question: freight spend per destination
+
   # --- Honest refuse: Cortex L0 SQL exists but no Space can run it ---
 
   - id: trap_alerts_ungranted

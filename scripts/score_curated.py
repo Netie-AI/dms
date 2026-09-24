@@ -316,6 +316,37 @@ CLIMB12_RISE_L0: tuple[dict[str, Any], ...] = (
 CLIMB12_RISE_IDS: tuple[str, ...] = tuple(str(c["id"]) for c in CLIMB12_RISE_L0)
 CLIMB12_UNION_L0: tuple[dict[str, Any], ...] = CLIMB11_UNION_L0 + CLIMB12_RISE_L0
 
+# #228 RISE_PASS: ontology_plan=39 / n=49. The 22 climb-05/06/07/08/09/10/11/12
+# leftovers plus the frozen 17 already compile. Unused leftover below is
+# Cortex metrics.yaml parent-SQL of certified L0s already live (retrieve
+# slots, not PACK_METRICS, not last_audit_date). Union them so live
+# --prove-path cannot score the 39/49 pack. Audit overdue still optional.
+CLIMB13_RISE_L0: tuple[dict[str, Any], ...] = (
+    {
+        "id": "cq_sku_count_by_category_per",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "how many SKUs per category",
+    },
+    {
+        "id": "cq_stock_value_worth",
+        "space": "finance",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "what is our inventory worth per category",
+    },
+    {
+        "id": "ops_freight_spend_destination",
+        "space": "ops",
+        "expect": "l0",
+        "min_rows": 1,
+        "question": "freight spend per destination",
+    },
+)
+CLIMB13_RISE_IDS: tuple[str, ...] = tuple(str(c["id"]) for c in CLIMB13_RISE_L0)
+CLIMB13_UNION_L0: tuple[dict[str, Any], ...] = CLIMB12_UNION_L0 + CLIMB13_RISE_L0
+
 # Platform D distill -> Netie-native mapping. Ideas only; no vendor paste.
 DISTILL: dict[str, Any] = {
     "ideas_only": True,
@@ -404,15 +435,15 @@ def load_pack(path: Path) -> dict[str, Any]:
 
 def merge_pack_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Union climb leftover L0s. Live --prove-path cannot score frozen 26
-    or the n=31 / n=34 / n=37 / n=40 / n=43 / n=46 packs (ontology_plan=21
-    / 24 / 27 / 30 / 33 / 36).
+    or the n=31 / n=34 / n=37 / n=40 / n=43 / n=46 / n=49 packs
+    (ontology_plan=21 / 24 / 27 / 30 / 33 / 36 / 39).
 
     Studio SHA does not include questions.yaml. Dual KEEP_HOLD 17/26 was
     this list staying at the frozen pack when the scoring checkout lagged.
     """
     by_id = {str(row.get("id") or ""): row for row in questions}
     out = list(questions)
-    for case in CLIMB12_UNION_L0:
+    for case in CLIMB13_UNION_L0:
         qid = str(case["id"])
         if qid not in by_id:
             out.append(dict(case))
@@ -681,6 +712,9 @@ def self_check() -> int:
     if len(ids) <= 46:
         print("FAIL: pack must outgrow n=46 so climb-12 rise L0s are scored")
         return 1
+    if len(ids) <= 49:
+        print("FAIL: pack must outgrow n=49 so climb-13 rise L0s are scored")
+        return 1
     frozen26 = [
         {"id": f"frozen_{i}", "space": "finance", "expect": "abstain", "question": "x"}
         for i in range(int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]))
@@ -729,6 +763,13 @@ def self_check() -> int:
             f"(36/46 freeze): {missing_climb12}"
         )
         return 1
+    missing_climb13 = [qid for qid in CLIMB13_RISE_IDS if qid not in ids]
+    if missing_climb13:
+        print(
+            "FAIL: climb-13 leftover L0 missing from pack "
+            f"(39/49 freeze): {missing_climb13}"
+        )
+        return 1
     if any(
         qid not in merged_ids
         for qid in (
@@ -739,6 +780,7 @@ def self_check() -> int:
             *CLIMB10_RISE_IDS,
             *CLIMB11_RISE_IDS,
             *CLIMB12_RISE_IDS,
+            *CLIMB13_RISE_IDS,
         )
     ):
         print("FAIL: merge_pack_questions must inject rise L0s into frozen 26")
@@ -863,6 +905,24 @@ def self_check() -> int:
         CLIMB12_RISE_IDS,
     ):
         print("FAIL: ontology_plan climb-12 rise L0s must pass the gate")
+        return 1
+    if leftover_ids_not_ontology(
+        [
+            {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+            for qid in CLIMB13_RISE_IDS
+        ],
+        CLIMB13_RISE_IDS,
+    ) != list(CLIMB13_RISE_IDS):
+        print("FAIL: abstained climb-13 rise L0s must fail the gate")
+        return 1
+    if leftover_ids_not_ontology(
+        [
+            {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+            for qid in CLIMB13_RISE_IDS
+        ],
+        CLIMB13_RISE_IDS,
+    ):
+        print("FAIL: ontology_plan climb-13 rise L0s must pass the gate")
         return 1
     expects = {str(c.get("expect") or "").lower() for c in pack["questions"]}
     if "l0" not in expects or not (expects & REFUSE):
@@ -1289,8 +1349,38 @@ def self_check() -> int:
         ),
         mode="live",
     )
-    if live_climb_gate(rise39) is not None:
-        print("FAIL: live climb-12 must pass ontology_plan>36 with rise L0s")
+    if live_climb_gate(rise39) is None:
+        print("FAIL: live climb-13 must fail flat ontology_plan=39")
+        return 1
+    rise42 = build_gen_path_prove_report(
+        {"OK": 42, "LAYER": 0, "ABSTAIN": 10, "WRONG": 0},
+        cases=(
+            [
+                {"id": f"q{i}", "verdict": "OK", "plan_source": "ontology_plan"}
+                for i in range(17)
+            ]
+            + [
+                {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+                for qid in (
+                    *CLIMB06_RISE_IDS,
+                    *CLIMB07_RISE_IDS,
+                    *CLIMB08_RISE_IDS,
+                    *CLIMB09_RISE_IDS,
+                    *CLIMB10_RISE_IDS,
+                    *CLIMB11_RISE_IDS,
+                    *CLIMB12_RISE_IDS,
+                    *CLIMB13_RISE_IDS,
+                )
+            ]
+            + [
+                {"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"}
+                for i in range(10)
+            ]
+        ),
+        mode="live",
+    )
+    if live_climb_gate(rise42) is not None:
+        print("FAIL: live climb-13 must pass ontology_plan>39 with rise L0s")
         return 1
     if "COMPLETE" in json.dumps(climb_plant) or "99.95" in json.dumps(climb_plant):
         print("FAIL: climb plant invented COMPLETE / 99.95")
@@ -1936,6 +2026,8 @@ def _leftover_l0_unscored(cases: list[dict[str, Any]]) -> list[str]:
     #224 RISE_PASS 33/43 never asked leftover Ops utilisation / cctv / low-stock.
     #226 RISE_PASS 36/46 never asked leftover Ops sku-by-category / stock /
     # shipment-cost parent-SQL synonyms.
+    #228 RISE_PASS 39/49 never asked leftover how-many-SKUs-per-category /
+    # inventory-worth / freight-spend parent-SQL.
     """
     got = {str(row.get("id") or "") for row in cases}
     required = (
@@ -1946,6 +2038,7 @@ def _leftover_l0_unscored(cases: list[dict[str, Any]]) -> list[str]:
         + CLIMB10_RISE_IDS
         + CLIMB11_RISE_IDS
         + CLIMB12_RISE_IDS
+        + CLIMB13_RISE_IDS
     )
     return [qid for qid in required if qid not in got]
 
@@ -2045,9 +2138,10 @@ def live_climb_gate(report: dict[str, Any]) -> str | None:
     Dual KEEP_HOLD 17/26 is not climb PASS. #216 21/31 is not climb-07 PASS.
     #218 24/34 is not climb-08 PASS. #220 27/37 is not climb-09 PASS.
     #222 30/40 is not climb-10 PASS. #224 33/43 is not climb-11 PASS.
-    #226 36/46 is not climb-12 PASS. Rise L0s (climb-06/07/08/09/10/11/12)
-    must be ontology_plan. Do not shrink the pack to fake a higher percent.
-    Do not reintroduce frozen n=26 / n=34 / n=37 / n=40 / n=43 / n=46.
+    #226 36/46 is not climb-12 PASS. #228 39/49 is not climb-13 PASS.
+    Rise L0s (climb-06/07/08/09/10/11/12/13) must be ontology_plan.
+    Do not shrink the pack to fake a higher percent.
+    Do not reintroduce frozen n=26 / n=34 / n=37 / n=40 / n=43 / n=46 / n=49.
     """
     by = report.get("by_plan_source") or {}
     onto_row = by.get("ontology_plan") if isinstance(by, dict) else None
@@ -2060,6 +2154,7 @@ def live_climb_gate(report: dict[str, Any]) -> str | None:
     missing10 = leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS)
     missing11 = leftover_ids_not_ontology(cases, CLIMB11_RISE_IDS)
     missing12 = leftover_ids_not_ontology(cases, CLIMB12_RISE_IDS)
+    missing13 = leftover_ids_not_ontology(cases, CLIMB13_RISE_IDS)
     if int(report.get("n") or 0) <= int(QUALIFIED_GEN_COVERAGE_CLAIM["n"]):
         return "pack n<=26 is frozen 17/26 KEEP_HOLD, not climb-06"
     if missing06:
@@ -2088,8 +2183,12 @@ def live_climb_gate(report: dict[str, Any]) -> str | None:
         return "climb-12 rise L0s not ontology_plan (flat 36/46): " + ",".join(
             missing12
         )
-    if onto <= 36:
-        return "ontology_plan<=36 is KEEP_HOLD, not climb PASS"
+    if missing13:
+        return "climb-13 rise L0s not ontology_plan (flat 39/49): " + ",".join(
+            missing13
+        )
+    if onto <= 39:
+        return "ontology_plan<=39 is KEEP_HOLD, not climb PASS"
     return None
 
 
@@ -2132,6 +2231,7 @@ def _write_prove_report(
     print("climb10_rise_l0 " + ",".join(CLIMB10_RISE_IDS))
     print("climb11_rise_l0 " + ",".join(CLIMB11_RISE_IDS))
     print("climb12_rise_l0 " + ",".join(CLIMB12_RISE_IDS))
+    print("climb13_rise_l0 " + ",".join(CLIMB13_RISE_IDS))
     print(f"reason: {report['phase_a_hold_may_clear_reason']}")
     print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
     if not report["passed_wrong_zero"]:
