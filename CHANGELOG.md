@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
+
+- **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.
+- **Change.** Alembic `0004_ontology_store` after `0001`-`0003`: `ontology_version` (space, source identity kind+host+database+schema, schema fingerprint, status proposed|active|superseded, created_by, created_at); `onto_object_type`; `onto_property` (PK flag); `onto_link` (from/to types, FK columns, declared one-to-one|one-to-many, measured cardinality from `verify()`); `onto_measure` (column, aggregate, grain); every element state proposed|confirmed|rejected; `onto_object`; `onto_link_instance`; `onto_audit` (who, action type, inputs, result, when). Thin repository in `dms_core.control_plane.onto_store`: load active, load by version, list versions. The only write is reconnect: same identity+fingerprint returns the same version id; a changed fingerprint inserts a new proposed version and one audit row; the old active row is not updated. First snapshot bootstraps `active`. Confirm/reject is the next ticket.
+- **Guards.** Extract-only (DR-0005). No credentials, connection strings, or passwords in any column. No Cortex/LLM/network. Fingerprint is a sha256 of sorted tables/columns/types/PKs/FKs (stable under column-order changes).
+- **Gate.** `tests/test_onto_store_01.py` (no skip / xfail / importorskip). Floor 1 calls 0004 `upgrade()`/`downgrade()` on a recording Alembic `op` because GitHub CI sets `DMS_SKIP_CONTROL_PLANE_TESTS=1`; live `alembic upgrade head` is `tests/control_plane/conftest.py` when Postgres is up.
+- **Not this ticket:** action engine confirm/reject, ask-path wiring, COMPLETE, merge.
+
 ## 2026-09-25 - ORACLE-FIX-01: curated oracles use demo seed txn_type (#301)
 
 - **Ticket.** [ORACLE-FIX-01 #301](https://github.com/Netie-AI/dms/issues/301) under dms#231 / EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
