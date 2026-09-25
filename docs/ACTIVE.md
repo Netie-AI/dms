@@ -3,6 +3,16 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+ONTO-STORE-01 (#279): Postgres ontology store. Migration
+`alembic/versions/0004_ontology_store.py`. Repository
+`packages/core/dms_core/control_plane/onto_store.py` (load active / by version /
+list versions; reconnect is the only write). Source identity is
+kind+host+database+schema, never credentials. Schema fingerprint is a stable
+hash of tables, columns, types, PKs, FKs. Confirm/reject is not in this
+module. Regression: `tests/test_onto_store_01.py`. Live Alembic against
+Postgres: `tests/control_plane` when hostdb is up (CI skips that folder).
+Not COMPLETE.
+
 GRANT-READ-01 (#297): ask-path retrieve and cascade use `demo_acl`'s
 default readable set when the caller ticks nothing (`requested or
 default_readable`). Unticked uploads never enter the Insights generate
