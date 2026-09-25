@@ -190,9 +190,6 @@ MEASURED[("dup_business_key", "customer_count", "sql")] = _FIXED_ORPHAN
 # customer_code is duplicated, even where the region rows would be right.
 MEASURED[("dup_business_key", "revenue_by_region", "sql")] = _FIXED_ORPHAN
 MEASURED[("dup_business_key", "units_by_region", "sql")] = _FIXED_ORPHAN
-# A2-06 / dms#262: re-derived after the Epic hop-through-fk_intact ruling.
-# Only pins that still answer with an oracle-equal row multiset. The rest
-# of the MEASURED ABSTAIN pins stay as on main. CI fixtures, not live.
 _A2_06_OK: tuple[tuple[str, str, str], ...] = (
     ("orphan", "customer_count", "plan"),
     ("fk_wrong_col", "revenue_by_region", "plan"),

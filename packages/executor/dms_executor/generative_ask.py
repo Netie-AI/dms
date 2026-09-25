@@ -290,6 +290,21 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     return target
 
 
+def cached_verify_violations(onto: Ontology) -> list[Violation] | None:
+    """Violations left by ``Ontology.verify``, or None if that cache is absent.
+
+    ``verify()`` writes ``self.__dict__["_violations"]`` (same non-field slot
+    as ``_column_cache``). Missing or None is fail-closed: the ask must not
+    compile or execute. An empty list means verify ran and found nothing.
+    """
+    if "_violations" not in onto.__dict__:
+        return None
+    raw = onto.__dict__["_violations"]
+    if raw is None:
+        return None
+    return list(raw)
+
+
 def declared_ontology_violations(warehouse: Path | None, onto: Ontology) -> list[Violation]:
     """Verify a caller-declared ontology against the lake and keep the evidence.
 
@@ -980,15 +995,22 @@ def maybe_generative_ask(
     # never declared for (BIRD) must keep answering generated SQL as before.
     declared: Ontology | None = None
     declared_violations: list[Violation] = []
+    verify_cache_missing = False
     if onto is None:
         onto = load_verified_ontology(lake)
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:
             onto = loaded
-            declared_violations = list(loaded.__dict__.get("_violations") or [])
-            if declared_violations or not loaded.verified:
+            cached = cached_verify_violations(loaded)
+            if not loaded.verified and cached is None:
+                # verify left verified=False but the evidence slot is gone.
+                verify_cache_missing = True
                 declared = loaded
+            else:
+                declared_violations = cached or []
+                if declared_violations or not loaded.verified:
+                    declared = loaded
         else:
             declared_violations = declared_ontology_violations(lake, onto)
             if declared_violations or not onto.verified:
@@ -1017,6 +1039,16 @@ def maybe_generative_ask(
             setup_src, validate_reason=validate_why
         )
         return env
+
+    if verify_cache_missing:
+        return _stamp(
+            _abstain(
+                q,
+                "ontology_unverified",
+                space_id=space_id,
+                session_id=session_id,
+            )
+        )
 
     kind = parse_compute_plan(payload)
     source = plan_source_from_payload(payload)

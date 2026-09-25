@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - A2-06: caller ontology stays unread; missing verify cache abstains (#262)
+
+- **Ticket.** [A2-06 #262](https://github.com/Netie-AI/dms/issues/262). Same PR. Does not merge. Does not stamp COMPLETE. CI fixtures, not live.
+- **Verify.** `_compile_maybe_unverified` compiles on a private shallow copy (`verified=True` on the copy only). A scoped ask leaves the caller's `verified` and every link cardinality unchanged. `Ontology.verify` writes `_violations` on `self.__dict__`. If that slot is missing or None after a failed verify, plan and SQL both ABSTAIN `ontology_unverified`.
+- **Gating.** `tests/test_hostile_schema_a2.py` differs from `3f0353a6` only by `_A2_06_OK` (three named ABSTAIN->OK pins). The six defect-touching pins stay byte-identical ABSTAIN.
+- **Not this ticket:** live prove; COMPLETE; merge.
+
 ## 2026-09-25 - A2-06: scope ontology refusals to the failed subject (#262)
 
 - **Ticket.** [A2-06 #262](https://github.com/Netie-AI/dms/issues/262) under EPIC-A2 #256. Does not stamp the epic COMPLETE. Does not invent a live coverage or WRONG=0 figure. Any n is a CI fixture.

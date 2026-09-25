@@ -119,7 +119,8 @@ A2-06 (#262): `load_verified_ontology` keeps a caller-declared ontology when
 verify fails. No hop-blessing of failed-link cardinality. A hop through a
 failed `fk_intact` link is a use of that subject. Failed object key cites
 grain / hop / destination / SQL that reads the relation. Clean-plan compile
-uses a shallow copy (caller `verified` is not toggled). No-declared lakes
+uses a shallow copy (caller `verified` and link cardinalities are not
+written). Missing `_violations` fail-closes. No-declared lakes
 unchanged. Regression: `tests/test_a2_06_scoped_ontology.py`,
 `tests/test_hostile_schema_a2.py` (`_A2_06_OK` re-derived). CI fixtures,
 not live. Not COMPLETE.

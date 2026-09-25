@@ -20,7 +20,11 @@ from typing import Any
 import duckdb
 import pytest
 from dms_executor.envelope import assert_envelope_valid
-from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
+from dms_executor.generative_ask import (
+    cached_verify_violations,
+    load_verified_ontology,
+    maybe_generative_ask,
+)
 from dms_executor.ontology import Ontology
 
 from tests.test_hostile_schema_a2 import (
@@ -68,7 +72,7 @@ def test_declared_failed_ontology_stays_loaded(tmp_path: Path) -> None:
     loaded = load_verified_ontology(lake, _ontology(case))
     assert loaded is not None
     assert loaded.verified is False
-    checks = [v.check for v in loaded.__dict__.get("_violations") or []]
+    checks = [v.check for v in cached_verify_violations(loaded) or []]
     assert "fk_intact" in checks
     assert loaded.links["order_customer"].cardinality == "unverified"
 
@@ -358,3 +362,85 @@ def test_dup_dimension_key_orders_only_sql_still_answers(tmp_path: Path) -> None
     )
     assert env["abstained"] is False
     assert _rows_multiset(env.get("rows")) == Counter({(1000.0,)})
+
+
+def test_scoped_ask_does_not_mutate_caller_ontology(tmp_path: Path) -> None:
+    """Verify #1/#2: compile copy must not write the caller's flag or links."""
+    lake = tmp_path / "immut.duckdb"
+    _seed_stmts(lake, _ORPHAN_WITH_LINES)
+    onto = _hostile_onto()
+    con = duckdb.connect(str(lake))
+    try:
+        onto.verify(con)
+    finally:
+        con.close()
+    before_verified = onto.verified
+    before_cards = {name: link.cardinality for name, link in onto.links.items()}
+    assert before_verified is False
+    assert before_cards["order_customer"] == "unverified"
+
+    env = _ask_fixture(
+        lake,
+        "How many customers do we have?",
+        {"query_plan": {"measure": "customer_count", "group_by": []}},
+        onto,
+    )
+    assert env["abstained"] is False
+    assert onto.verified is before_verified
+    assert {name: link.cardinality for name, link in onto.links.items()} == before_cards
+
+
+def test_cached_verify_violations_none_when_missing() -> None:
+    onto = Ontology()
+    assert cached_verify_violations(onto) is None
+    onto.__dict__["_violations"] = None
+    assert cached_verify_violations(onto) is None
+    onto.__dict__["_violations"] = []
+    assert cached_verify_violations(onto) == []
+
+
+@pytest.mark.parametrize(
+    "question,payload",
+    [
+        (
+            "How many customers do we have?",
+            {"query_plan": {"measure": "customer_count", "group_by": []}},
+        ),
+        (
+            "What is total revenue?",
+            {"query_sql": "SELECT SUM(amount_myr) AS revenue FROM orders"},
+        ),
+    ],
+)
+def test_missing_violations_cache_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    payload: dict[str, Any],
+) -> None:
+    """If verify's ``_violations`` slot is gone, plan and SQL both abstain."""
+    lake = tmp_path / "missing_cache.duckdb"
+    _seed_stmts(lake, _ORPHAN_WITH_LINES)
+    loaded = load_verified_ontology(lake, _hostile_onto())
+    assert loaded is not None
+    assert loaded.verified is False
+    assert cached_verify_violations(loaded) is not None
+    del loaded.__dict__["_violations"]
+    assert cached_verify_violations(loaded) is None
+
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.load_verified_ontology",
+        lambda *args, **kwargs: loaded,
+    )
+    env = maybe_generative_ask(
+        question,
+        warehouse=lake,
+        grantable=set(GRANTS),
+        compute=lambda _ctx: payload,
+        submit=_submitter(lake),
+        ledger_append=_ledger,
+        ontology=loaded,
+    )
+    assert env is not None
+    assert_envelope_valid(env)
+    _assert_named_unverified(env)
