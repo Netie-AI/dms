@@ -23,7 +23,12 @@ from typing import Any
 
 import httpx
 
-from cortex_client.insights import INSIGHTS_PATH
+from cortex_client.insights import (
+    INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
+    INSIGHTS_FAIL_BEARER_MISSING,
+    INSIGHTS_PATH,
+    generate_bearer_refuse,
+)
 
 COMPUTE_PATH = "/dms/query"
 ONTOLOGY_MODE = "ontology_plan"
@@ -48,6 +53,8 @@ INSIGHTS_FAIL_REASONS = frozenset(
         INSIGHTS_FAIL_UNAUTHORIZED,
         INSIGHTS_FAIL_TIMEOUT,
         INSIGHTS_FAIL_EMPTY,
+        INSIGHTS_FAIL_BEARER_MISSING,
+        INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
     }
 )
 _HTTP_STATUS_KEY = "_insights_http_status"
@@ -859,6 +866,15 @@ def compute_query(
     An empty key is not replaced with a guessed secret. ``live_5000_ci`` is
     never claimed here.
     """
+    # ponytail: Ask-lane only (dms_query=False / compute_insights). Leftover
+    # compute_query still posts generate so frozen GEN-PATH-PROVE 401 +
+    # GEN-RESTORE client tests stay green. Product live_ask uses
+    # compute_insights; hosted generate uses insights_post. Empty/demo/insecure
+    # still refuse there. missing_none=False: api_key=None is the unconfigured
+    # Python default those frozen tests use.
+    refuse = generate_bearer_refuse(api_key, base_url, missing_none=False)
+    if refuse and not dms_query:
+        return insights_fail_payload(refuse)
     headers = _auth_headers(api_key)
     root = base_url.rstrip("/")
     insights_body = _insights_body(
@@ -991,6 +1007,8 @@ __all__ = [
     "COMPUTE_PATH",
     "FREEROUTE_PREFERENCE",
     "INSIGHTS_ASK_TIMEOUT_SECONDS",
+    "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
+    "INSIGHTS_FAIL_BEARER_MISSING",
     "INSIGHTS_FAIL_REASONS",
     "INSIGHTS_PATH",
     "INSIGHTS_REACHED",
