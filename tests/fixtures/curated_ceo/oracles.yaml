@@ -22,14 +22,14 @@ oracles:
     cortex_id: cq_sales_top5_value
     sql: >
       SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr
-      FROM transactions WHERE txn_type = 'OUT'
+      FROM transactions WHERE txn_type = 'outbound'
       GROUP BY sku ORDER BY sales_value_myr DESC, sku ASC LIMIT 5
 
   cq_sales_top3_volume:
     cortex_id: cq_sales_top3_volume
     sql: >
       SELECT sku, SUM(quantity_kg) AS total_sold_kg
-      FROM transactions WHERE txn_type = 'OUT'
+      FROM transactions WHERE txn_type = 'outbound'
       GROUP BY sku ORDER BY total_sold_kg DESC, sku ASC LIMIT 3
 
   cq_supplier_ranking:
@@ -118,7 +118,7 @@ oracles:
     cortex_id: cq_sales_top5_value
     sql: >
       SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr
-      FROM transactions WHERE txn_type = 'OUT'
+      FROM transactions WHERE txn_type = 'outbound'
       GROUP BY sku ORDER BY sales_value_myr DESC, sku ASC LIMIT 5
 
   cq_top3_category_syn_value:
@@ -128,7 +128,7 @@ oracles:
              ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
       FROM transactions t
       JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
-      WHERE t.txn_type = 'OUT'
+      WHERE t.txn_type = 'outbound'
       GROUP BY c.category
       ORDER BY sales_value_myr DESC, c.category ASC
       LIMIT 3
@@ -137,7 +137,7 @@ oracles:
     cortex_id: cq_sales_top5_value
     sql: >
       SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS sales_value_myr
-      FROM transactions WHERE txn_type = 'OUT'
+      FROM transactions WHERE txn_type = 'outbound'
       GROUP BY sku ORDER BY sales_value_myr DESC, sku ASC LIMIT 5
 
   cq_top3_category_syn_show:
@@ -147,7 +147,7 @@ oracles:
              ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
       FROM transactions t
       JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
-      WHERE t.txn_type = 'OUT'
+      WHERE t.txn_type = 'outbound'
       GROUP BY c.category
       ORDER BY sales_value_myr DESC, c.category ASC
       LIMIT 3
@@ -159,7 +159,7 @@ oracles:
              ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
       FROM transactions t
       JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
-      WHERE t.txn_type = 'OUT'
+      WHERE t.txn_type = 'outbound'
       GROUP BY c.category
       ORDER BY sales_value_myr DESC, c.category ASC
       LIMIT 3
@@ -171,7 +171,7 @@ oracles:
              ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
       FROM transactions t
       JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
-      WHERE t.txn_type = 'OUT'
+      WHERE t.txn_type = 'outbound'
       GROUP BY c.category
       ORDER BY sales_value_myr DESC, c.category ASC
       LIMIT 3
@@ -271,7 +271,7 @@ oracles:
              ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr
       FROM transactions t
       JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
-      WHERE t.txn_type = 'OUT'
+      WHERE t.txn_type = 'outbound'
       GROUP BY c.category
       ORDER BY sales_value_myr DESC, c.category ASC
       LIMIT 3

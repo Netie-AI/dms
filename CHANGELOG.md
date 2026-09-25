@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - ORACLE-FIX-01: curated oracles use demo seed txn_type (#301)
+
+- **Ticket.** [ORACLE-FIX-01 #301](https://github.com/Netie-AI/dms/issues/301) under dms#231 / EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
+- **Change.** Nine curated oracles in `tests/fixtures/curated_ceo/oracles.yaml` filter `txn_type = 'outbound'` (the value `demo_warehouse.py` seeds and `_REVENUE_SQL` uses). Not `'OUT'` (Cortex warehouse). Value from seed source, never from an answer. Phase 1 figures are not re-labelled; 1b and later runs record this merge commit as the oracle file commit.
+- **Gate.** `tests/test_oracle_fix_01.py::test_curated_oracles_match_demo_seed_txn_type`. Seeded tmp lake. Fails on parent `f5fcc42e` (R-0007): nine `'OUT'` literals and nine zero-row oracles. `cq_audit_overdue` keeps its own ORACLE_ERROR category. No skip/xfail. No existing-test edit. Scorer, questions, pins, contract, invariants, import-linter, `.github/` untouched.
+- **Not this ticket:** live prove; COMPLETE; merge; Phase 1 re-label.
+
 ## 2026-09-25 - GRANT-READ-01: generate context and cascade ignore unticked uploads (#297)
 
 - **Ticket.** [GRANT-READ-01 #297](https://github.com/Netie-AI/dms/issues/297) under EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live. No Cortex ranking claim.
