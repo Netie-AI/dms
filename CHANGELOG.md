@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - BEARER-01: generate=true bearer + transport guards (#289)
+
+- **Ticket.** [BEARER-01 #289](https://github.com/Netie-AI/dms/issues/289) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Does not clear the pilot security bar (KEY-01 #273 owns the demo default).
+- **Generate only.** `POST /v1/insights` with `generate=true` (hosted `insights_post` and ask-lane `compute_insights`) sends the configured Cortex key as `Authorization: Bearer`. Empty or demo-viewer keys make no generate call. Plain `http` to a non-loopback host makes no generate call. Named ABSTAIN: `insights_bearer_missing`, `insights_bearer_insecure_transport`. Never WRONG. Ranked / `generate=false` / `cortex_read` / ontology-trust routes unchanged. `settings.py` and `cortex_read.py` untouched.
+- **Must not:** mint or rotate a key; log or echo the token; edit existing tests; touch `.github/`, invariants, import-linter, `score_curated.py`, or `semantic_retrieve.py`.
+
 ## 2026-09-25 - PII-01: mask personal columns before Cortex context and in exports (#272)
 
 - **Ticket.** [PII-01 #272](https://github.com/Netie-AI/dms/issues/272) under parked EPIC-BANK-01 #267. Does not stamp the epic COMPLETE. Does not close the bank bar.

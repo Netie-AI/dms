@@ -42,6 +42,13 @@ closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
 `live_5000_ci` always false. Regression: `tests/test_insights_host.py`.
 Live hosted walk = Platform after merge. Not COMPLETE.
 
+BEARER-01 (#289): generate=true `/v1/insights` (hosted + `compute_insights`)
+refuses a missing/empty/demo-viewer key and plain http to a non-loopback
+host. Named ABSTAIN `insights_bearer_missing` /
+`insights_bearer_insecure_transport`. Ranked lanes unchanged. KEY-01
+(#273) removes the settings default. Regression:
+`tests/test_insights_bearer_01.py`. Not COMPLETE.
+
 SCALE-FREE-AI-01 (#233): FreeRoute free+normal providers resolve through
 OpenVault API only (`dms_core.freeroute`, `GET /v1/freeroute/providers`).
 Duplicate labels skipped. No chat-token discovery, no local vault scrape,

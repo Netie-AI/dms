@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (PII-01 #272 local masker on GEN-RESTORE Insights ontology body).
+PREFLIGHT for this goal: HIT (BEARER-01 #289 generate=true bearer; PII-01 #272 local masker landed).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-25 | bearer-01 | BEARER-01, generate=true, Authorization Bearer, insights_bearer_missing, insights_bearer_insecure_transport, dms-289 | Generate=true refuses missing/demo key and plain http non-loopback. Named ABSTAIN. Ranked lanes and settings.py untouched. | `2026-09-25_bearer-01.md` |
 | 2026-09-25 | pii-01-local-masker | pii, mask, nric, encodings, DMSMASK, dms-272 | Local detector drops PII encodings and masks answers/exports. Cortex #268 both-maskers live run leftover. | `2026-09-25_pii-01-local-masker.md` |
 | 2026-09-25 | gen-restore-01 | GEN-RESTORE-01, Insights, compute_insights, /dms/query, plan_origin, chart_from_rows, setup fields, dms-276 | Reopen generative seam to Cortex Insights only (8s). Named ABSTAIN. plan_origin. Reuse chart_from_rows. Copy setup fields as received. WRONG pins stay. Not live score. | `2026-09-25_gen-restore-01.md` |
 | 2026-09-25 | a1-02-bird-minidev | A1-02, bird_minidev, gold SQL, GOLD_ERROR, FreeRoute learn, served_local, setup_fingerprint, plan_origin, dms-264 | 500 Mini-Dev questions loaded at run time, graded against gold SQL. No target. Learn-off + fresh route store for Cortex runs. Envelope setup fields copied or unknown. Fingerprints must match to compare. | `2026-09-25_a1-02-bird-minidev.md` |
