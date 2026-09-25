@@ -583,7 +583,10 @@ def typed_ranked_retry_plan(
         keep = shape.get("keep_gt")
     if isinstance(keep, (int, float)):
         plan["keep_gt"] = float(keep)
-    return plan
+    # QUAL-GUARD-01: add extracted grains/dims. Localized for dms#289 rebase.
+    from cortex_client.qualifiers import apply_qualifiers_to_retry_plan
+
+    return apply_qualifiers_to_retry_plan(plan, question)
 
 
 def normalize_insights_compute(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -802,6 +805,17 @@ def _insights_body(
     return body
 
 
+def _leg_kind(payload: dict[str, Any] | None) -> str:
+    """sql / plan / nothing for one Insights generate POST."""
+    if not isinstance(payload, dict):
+        return "nothing"
+    if insights_query_sql(payload):
+        return "sql"
+    if typed_query_plan(payload):
+        return "plan"
+    return "nothing"
+
+
 def _run_insights_legs(
     http: httpx.Client,
     root: str,
@@ -811,7 +825,11 @@ def _run_insights_legs(
     ontology: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Generate, optional ontology GET, one ranked retry. No /dms/query."""
+    from cortex_client.qualifiers import retry_plan_covers_qualifiers
+
+    legs: list[dict[str, str]] = []
     insights_payload = _insights_generate_post(http, root, insights_body, headers)
+    legs.append({"returned": _leg_kind(insights_payload)})
     if not _has_ranked_metrics(insights_payload):
         ranking = _insights_ontology_get(http, root, question, headers)
         if ranking is not None:
@@ -819,7 +837,11 @@ def _run_insights_legs(
     ranked_plan = typed_ranked_retry_plan(
         insights_payload, ontology=ontology, question=question
     )
-    if generate_retry_eligible(insights_payload) and ranked_plan:
+    # QUAL-GUARD-01: never send a retry plan that dropped a qualifier.
+    retry_ok = bool(ranked_plan) and retry_plan_covers_qualifiers(
+        ranked_plan, question
+    )
+    if generate_retry_eligible(insights_payload) and retry_ok and ranked_plan is not None:
         retry_body = dict(insights_body)
         retry_body["query_plan"] = {
             k: v for k, v in ranked_plan.items() if k != "ranked_id"
@@ -829,10 +851,15 @@ def _run_insights_legs(
         )
         retry_body["generate_retry"] = "ranked_slots"
         retry_payload = _insights_generate_post(http, root, retry_body, headers)
+        legs.append({"returned": _leg_kind(retry_payload)})
         if isinstance(retry_payload, dict):
             insights_payload = _merge_ontology_ranking(
                 retry_payload, insights_payload or {}
             )
+    if isinstance(insights_payload, dict):
+        out = dict(insights_payload)
+        out["generate_legs"] = {"count": len(legs), "legs": legs}
+        return out
     return insights_payload
 
 

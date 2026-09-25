@@ -14,6 +14,13 @@ cross-check + FRTR golden), `packages/executor/dms_executor/xlsx_orch.py`
 `POST /v1/studio/xlsx-orch/crosscheck|extract|golden`.
 Regression: `tests/test_xlsx_orch.py`. Pointer owns Copilot paste (P-DMS-36).
 
+QUAL-GUARD-01 (#290): `cortex_client/qualifiers.py` extracts time grain /
+time filter / group-by / named filters and refuses an answer that drops
+one (`unhonored_qualifier:<kind>=<value>`). Retrieve grain table adds
+month/week/quarter/year. Ranked retry adds the grain or skips. Route A/B
+notes and generate_legs on the envelope. PII-01 masking untouched.
+Regression: `tests/test_qual_guard_01.py`. Not COMPLETE. Scorer is #292.
+
 PII-01 (#272): `packages/core/dms_core/pii.py` classifies name/IC/phone/email/
 account columns (name + value patterns, no network). Retrieve drops flagged
 encodings; `build_answer_envelope` plus xlsx/BI export mask raw cells as

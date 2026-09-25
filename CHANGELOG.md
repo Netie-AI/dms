@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - QUAL-GUARD-01: named abstain when a qualifier is dropped (#290)
+
+- **Ticket.** [QUAL-GUARD-01 #290](https://github.com/Netie-AI/dms/issues/290) under EPIC-INSIGHTS-UX #178. Does not stamp the epic COMPLETE. Does not close #231. Does not edit `scripts/score_curated.py` (dms#292).
+- **Change.** Deterministic qualifier extractor (time grain day/week/month/quarter/year including daily..yearly; time filter last/this N / named month/year; group-by `by X`/`per X`; named filter values). Coverage check on every non-abstain generate_sql / ranked retry / ontology_plan / bind_plan path before the envelope is stamped. Uncovered qualifier is named ABSTAIN `unhonored_qualifier:<kind>=<value>`. Ranked retry adds the grain/dimension or skips. Generate legs recorded. Route A `fallback:generate_empty`, route B `fallback:validate:<why>` (reject reason kept). Grain table in retrieve gains month/week/quarter/year. PII-01 masking untouched. No invented ontology grains.
+- **Gate.** `tests/test_qual_guard_01.py` seeded fixtures only. Pack questions that newly abstain are listed on the PR. Pack figure measured under the old scorer (pre SCORE-ROWS-01), labelled CI fixtures / scorer OK, rows not compared. Not a live 52-row claim.
+- **Not this ticket:** dms#292 scorer; live prove; Cortex; LLM.
+
 ## 2026-09-25 - SCORE-ROWS-01: curated judge compares answer rows with oracle SQL (#292)
 
 - **Ticket.** [SCORE-ROWS-01 #292](https://github.com/Netie-AI/dms/issues/292) under EPIC-020 #178. Does not close tickets. Not COMPLETE. Does not invent a live WRONG=0 or coverage number. Bar PASS is only Platform's live row-compared `--prove-path`.
