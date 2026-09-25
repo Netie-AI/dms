@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -308,11 +309,23 @@ def connect_readonly(path: Path | None = None) -> duckdb.DuckDBPyConnection:
     return connect_file(db)
 
 
-def execute_sql(sql: str, *, path: Path | None = None) -> list[dict[str, Any]]:
+def execute_sql(
+    sql: str,
+    *,
+    path: Path | None = None,
+    params: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Run SELECT-shaped SQL; returns list of row dicts."""
     con = connect_readonly(path)
     try:
-        rel = con.execute(sql)
+        bind: dict[str, Any] = dict(params) if params else {}
+        if "$as_of" in sql and "as_of" not in bind:
+            # ponytail: omitted as_of uses this connection's CURRENT_DATE.
+            # Ceiling: midnight crossing vs an earlier report stamp.
+            # Upgrade: pass the recorded run date from the harness.
+            row = con.execute("SELECT CURRENT_DATE").fetchone()
+            bind["as_of"] = row[0] if row else None
+        rel = con.execute(sql, bind) if bind else con.execute(sql)
         cols = [d[0] for d in rel.description]
         return [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
     finally:

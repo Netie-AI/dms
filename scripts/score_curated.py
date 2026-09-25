@@ -30,6 +30,7 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from oracle_row_match import (  # noqa: E402
     envelope_rows,
+    read_engine_clock,
     read_schema_version,
     rows_mismatch_reason,
     run_oracle_select,
@@ -617,6 +618,7 @@ def judge_detailed(
     oracle_db: Path | str | None = None,
     oracles: Mapping[str, Any] | None = None,
     oracle_sql: str | None = None,
+    as_of: str | None = None,
 ) -> JudgeResult:
     """Row-compared judge when oracle_db is set. ORACLE_ERROR never OK."""
     legacy = _judge_badge(case, env)
@@ -629,7 +631,8 @@ def judge_detailed(
         return JudgeResult(legacy, "", legacy)
     if not sql:
         return JudgeResult("ORACLE_ERROR", "oracle_error:missing_sql", legacy)
-    gold, err = run_oracle_select(oracle_db, sql)
+    params = {"as_of": as_of} if as_of is not None and "$as_of" in sql else None
+    gold, err = run_oracle_select(oracle_db, sql, params=params)
     if err is not None:
         return JudgeResult("ORACLE_ERROR", f"oracle_error:{err}", legacy)
 
@@ -658,6 +661,7 @@ def judge(
     oracle_db: Path | str | None = None,
     oracles: Mapping[str, Any] | None = None,
     oracle_sql: str | None = None,
+    as_of: str | None = None,
 ) -> str:
     """OK | ABSTAIN | LAYER | WRONG | ORACLE_ERROR. WRONG/ORACLE_ERROR are P0."""
     return judge_detailed(
@@ -666,6 +670,7 @@ def judge(
         oracle_db=oracle_db,
         oracles=oracles,
         oracle_sql=oracle_sql,
+        as_of=as_of,
     ).verdict
 
 
@@ -676,6 +681,7 @@ def judge_envelope(
     oracle_db: Path | str | None = None,
     oracles: Mapping[str, Any] | None = None,
     oracle_sql: str | None = None,
+    as_of: str | None = None,
 ) -> str:
     """Live judge. Silent demo fallback is WRONG (lying 200), not OK."""
     return judge_envelope_detailed(
@@ -684,6 +690,7 @@ def judge_envelope(
         oracle_db=oracle_db,
         oracles=oracles,
         oracle_sql=oracle_sql,
+        as_of=as_of,
     ).verdict
 
 
@@ -694,6 +701,7 @@ def judge_envelope_detailed(
     oracle_db: Path | str | None = None,
     oracles: Mapping[str, Any] | None = None,
     oracle_sql: str | None = None,
+    as_of: str | None = None,
 ) -> JudgeResult:
     inner = judge_detailed(
         case,
@@ -701,6 +709,7 @@ def judge_envelope_detailed(
         oracle_db=oracle_db,
         oracles=oracles,
         oracle_sql=oracle_sql,
+        as_of=as_of,
     )
     if env.get("demo_fallback_used"):
         return JudgeResult("WRONG", "demo_fallback_used", inner.scorer_ok_rows_not_compared)
@@ -764,6 +773,13 @@ def require_oracle_db(path: Path | None) -> str | None:
     if not path.is_file():
         return f"CONFIG: --oracle-db is not a file: {path}. Not a score."
     return None
+
+
+def _oracle_clock(oracle_db: Path | str | None) -> tuple[str | None, str | None]:
+    """Engine CURRENT_DATE + TimeZone from the oracle DuckDB. Not harness clock."""
+    if oracle_db is None:
+        return None, None
+    return read_engine_clock(oracle_db)
 
 
 def classify_path(route: Any) -> str:
@@ -1712,6 +1728,7 @@ def score_pack_live(
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
     oracles = load_oracles() if oracle_db is not None else None
     schema_ver = read_schema_version(oracle_db) if oracle_db is not None else None
+    as_of, oracle_tz = _oracle_clock(oracle_db)
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
     for case in pack["questions"]:
@@ -1745,7 +1762,7 @@ def score_pack_live(
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
         result = judge_envelope_detailed(
-            case, env, oracle_db=oracle_db, oracles=oracles
+            case, env, oracle_db=oracle_db, oracles=oracles, as_of=as_of
         )
         verdict = result.verdict
         tallies[verdict] += 1
@@ -1780,6 +1797,8 @@ def score_pack_live(
                 "reason": result.reason,
                 LEGACY_JUDGE_LABEL: result.scorer_ok_rows_not_compared,
                 "oracle_schema_version": schema_ver,
+                "oracle_as_of": as_of,
+                "oracle_timezone": oracle_tz,
             }
         )
     return tallies, cases_out
@@ -1805,7 +1824,11 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"coverage {tallies['OK']}/{n}  "
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}"
     )
-    print(f"oracle_db={oracle_db} schema_version={read_schema_version(oracle_db)}")
+    as_of, oracle_tz = _oracle_clock(oracle_db)
+    print(
+        f"oracle_db={oracle_db} schema_version={read_schema_version(oracle_db)} "
+        f"oracle_as_of={as_of} timezone={oracle_tz}"
+    )
     print_category_report(cats)
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
@@ -1825,6 +1848,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "passed": wrong == 0 and oracle_error == 0,
                 "oracle_db": str(oracle_db),
                 "schema_version": read_schema_version(oracle_db),
+                "oracle_as_of": as_of,
+                "oracle_timezone": oracle_tz,
                 "categories": cats,
             },
             indent=2,
@@ -1910,10 +1935,13 @@ def run_ab_curated(
     compare_db: Path | None = None
     oracles: dict[str, Any] | None = None
     schema_ver: str | None = None
+    as_of: str | None = None
+    oracle_tz: str | None = None
     if compare_rows:
         compare_db = oracle_db if oracle_db is not None else tmp
         oracles = load_oracles()
         schema_ver = read_schema_version(compare_db)
+        as_of, oracle_tz = _oracle_clock(compare_db)
     def submit(sql: str) -> Any:
         from dms_executor.demo_warehouse import connect_file
 
@@ -1959,10 +1987,10 @@ def run_ab_curated(
         )
         gen_env = gen_env if gen_env is not None else _ab_miss()
         exact_r = judge_detailed(
-            case, exact_env, oracle_db=compare_db, oracles=oracles
+            case, exact_env, oracle_db=compare_db, oracles=oracles, as_of=as_of
         )
         gen_r = judge_detailed(
-            case, gen_env, oracle_db=compare_db, oracles=oracles
+            case, gen_env, oracle_db=compare_db, oracles=oracles, as_of=as_of
         )
         ev = exact_r.verdict
         gv = gen_r.verdict
@@ -2025,6 +2053,8 @@ def run_ab_curated(
         "compare_rows": compare_rows,
         "oracle_db": str(compare_db) if compare_db is not None else None,
         "schema_version": schema_ver,
+        "oracle_as_of": as_of,
+        "oracle_timezone": oracle_tz,
         "cases": cases_out,
     }
 
@@ -2059,7 +2089,9 @@ def ab_offline(oracle_db: Path | None = None) -> int:
     if report.get("oracle_db"):
         print(
             f"oracle_db={report['oracle_db']} "
-            f"schema_version={report.get('schema_version')}"
+            f"schema_version={report.get('schema_version')} "
+            f"oracle_as_of={report.get('oracle_as_of')} "
+            f"timezone={report.get('oracle_timezone')}"
         )
         print_category_report(exact["categories"])
         print_category_report(gen["categories"])
@@ -2235,6 +2267,7 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     report = build_climb_report(tallies, cases=cases, url=url)
     report["oracle_db"] = str(oracle_db)
     report["schema_version"] = read_schema_version(oracle_db)
+    report["oracle_as_of"], report["oracle_timezone"] = _oracle_clock(oracle_db)
     measured = report["measured"]
     base = report["baseline"]
     delta = report["delta"]
@@ -2257,7 +2290,10 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"generative={by_path['generative']} other={by_path['other']}"
     )
     print(f"answered vs baseline @ {base['commit']}: {report['answered_vs_baseline']}")
-    print(f"oracle_db={oracle_db} schema_version={report['schema_version']}")
+    print(
+        f"oracle_db={oracle_db} schema_version={report['schema_version']} "
+        f"oracle_as_of={report.get('oracle_as_of')} timezone={report.get('oracle_timezone')}"
+    )
     print_category_report(report["categories"])
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
@@ -2329,6 +2365,7 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
     oracle_error = int(exact_t.get("ORACLE_ERROR") or 0) + int(
         gen_t.get("ORACLE_ERROR") or 0
     )
+    oracle_as_of, oracle_tz = _oracle_clock(oracle_db)
     report = {
         "kind": "dms.ab_live",
         "ticket": "GEN-02",
@@ -2338,6 +2375,8 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         "claim": "measured",
         "oracle_db": str(oracle_db),
         "schema_version": read_schema_version(oracle_db),
+        "oracle_as_of": oracle_as_of,
+        "oracle_timezone": oracle_tz,
         "baseline_ab": {
             "commit": base["commit"],
             "exact_answered": base["exact_answered"],
@@ -2372,7 +2411,10 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         f"generative_answered={base['generative_answered']}"
     )
     print(f"generative vs baseline: {vs}  crag={crag}")
-    print(f"oracle_db={oracle_db} schema_version={report['schema_version']}")
+    print(
+        f"oracle_db={oracle_db} schema_version={report['schema_version']} "
+        f"oracle_as_of={report.get('oracle_as_of')} timezone={report.get('oracle_timezone')}"
+    )
     print_category_report(exact_r["categories"])
     print_category_report(gen_r["categories"])
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
@@ -2732,7 +2774,11 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
     )
     report["oracle_db"] = str(oracle_db)
     report["schema_version"] = read_schema_version(oracle_db)
-    print(f"oracle_db={oracle_db} schema_version={report['schema_version']}")
+    report["oracle_as_of"], report["oracle_timezone"] = _oracle_clock(oracle_db)
+    print(
+        f"oracle_db={oracle_db} schema_version={report['schema_version']} "
+        f"oracle_as_of={report.get('oracle_as_of')} timezone={report.get('oracle_timezone')}"
+    )
     code, _ = _write_prove_report(report, live_climb=True)
     if int(exact_t["WRONG"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
