@@ -15,6 +15,9 @@ from bird_minidev import (  # noqa: E402
     EXIT_PASS,
     MINIDEV_DBS,
     MINIDEV_N,
+    PLAN_ORIGIN_GENERATE_SQL,
+    PLAN_ORIGIN_ONTOLOGY_RANKING,
+    SETUP_FIELD_KEYS,
     SYNTHETIC,
     UNKNOWN,
     cells_equal,
@@ -122,32 +125,46 @@ def _load_served_fixture(name: str) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _unknown_setup() -> dict[str, object]:
+    out: dict[str, object] = {key: UNKNOWN for key in SETUP_FIELD_KEYS}
+    out["provider"] = UNKNOWN
+    out["model"] = UNKNOWN
+    out["plan_origin"] = UNKNOWN
+    return out
+
+
 def test_served_from_response_copies_reported_and_unknown_never_guesses() -> None:
     absent = served_from_response(_load_served_fixture("served_absent.json"))
-    assert absent == {
-        "provider": UNKNOWN,
-        "model": UNKNOWN,
-        "served_provider": UNKNOWN,
-        "served_model": UNKNOWN,
-        "served_local": UNKNOWN,
-    }
+    assert absent == _unknown_setup()
     assert served_from_response(None) == absent
-    # Today's aliases are not ROUTER-1 fields: do not guess.
+    # Aliases are not envelope setup fields: do not guess.
     assert served_from_response({"provider": "groq", "model": "llama-3.3"}) == absent
+    assert served_from_response({"plan_source": "ontology_plan"}) == absent
     present = served_from_response(_load_served_fixture("served_present.json"))
-    assert present == {
-        "provider": "groq",
-        "model": "llama-3.3-70b-versatile",
-        "served_provider": "groq",
-        "served_model": "llama-3.3-70b-versatile",
-        "served_local": False,
-    }
+    assert present["served_provider"] == "ov_free_llama_unique"
+    assert present["served_model"] == "not-a-default-model"
+    assert present["served_local"] is False
+    assert present["learn_enabled"] is False
+    assert present["learn_source"] == "freeroute-store"
+    assert present["route_store_id"] == "rs_present"
+    assert present["plan_origin"] == PLAN_ORIGIN_GENERATE_SQL
+    assert present["provider"] == present["served_provider"]
+    assert present["model"] == present["served_model"]
+    # Nested Insights payload is not the DMS envelope: do not infer.
     nested = served_from_response(_load_served_fixture("served_nested.json"))
-    assert nested["served_provider"] == "ollama"
-    assert nested["served_model"] == "llama3.1"
-    assert nested["served_local"] is True
+    assert nested == absent
+    nulls = served_from_response({key: None for key in SETUP_FIELD_KEYS})
+    assert nulls == {**absent, "plan_origin": UNKNOWN}
+    ranking = served_from_response({"plan_origin": PLAN_ORIGIN_ONTOLOGY_RANKING})
+    assert ranking["plan_origin"] == PLAN_ORIGIN_ONTOLOGY_RANKING
+    for key in SETUP_FIELD_KEYS:
+        assert ranking[key] == UNKNOWN
     # Do not treat route/badge as a model.
     assert served_from_response({"route": "generated", "badge": "L2_VALIDATED"}) == absent
+    # Non-bool local/learn is unknown, never coerced false.
+    coerced = served_from_response({"served_local": 0, "learn_enabled": "false"})
+    assert coerced["served_local"] == UNKNOWN
+    assert coerced["learn_enabled"] == UNKNOWN
 
 
 def test_compare_refuses_different_fingerprints_unless_forced() -> None:
@@ -162,7 +179,8 @@ def test_compare_refuses_different_fingerprints_unless_forced() -> None:
     code, body = compare_runs(left, right, force=False)
     assert code == EXIT_CONFIG
     assert body["refused"] is True
-    assert "fingerprint" in body["note"].lower() or "ROUTER-1" in body["note"]
+    assert "fingerprint" in body["note"].lower()
+    assert "learn_enabled" in body["note"]
     forced, forced_body = compare_runs(left, right, force=True)
     assert forced == EXIT_PASS
     assert forced_body["comparison"] == "cross-setup"
@@ -170,6 +188,97 @@ def test_compare_refuses_different_fingerprints_unless_forced() -> None:
     same, same_body = compare_runs(left, dict(left), force=False)
     assert same == EXIT_PASS
     assert same_body["comparison"] == "same-setup"
+
+
+def test_fingerprint_includes_envelope_setup_fields_and_compare_refuses() -> None:
+    shared = dict(
+        learn="0",
+        store_id="/tmp/store",
+        fresh=True,
+        hash_before="abc",
+        mix={"ov/model/local=false": 1},
+        served_local={"true": 0, "false": 1, "unknown": 0},
+    )
+    a = setup_payload(
+        **shared,
+        setup_mix_counts={
+            "served_provider=ov|served_model=m|served_local=false|"
+            "learn_enabled=false|learn_source=freeroute-store|route_store_id=rs_a": 1
+        },
+    )
+    b = setup_payload(
+        **shared,
+        setup_mix_counts={
+            "served_provider=ov|served_model=m|served_local=false|"
+            "learn_enabled=true|learn_source=freeroute-store|route_store_id=rs_a": 1
+        },
+    )
+    assert setup_fingerprint(a) != setup_fingerprint(b)
+    left = {
+        "setup_fingerprint": setup_fingerprint(a),
+        "summary": {"n": 1, "wrong": 0, "answered": 1},
+    }
+    right = {
+        "setup_fingerprint": setup_fingerprint(b),
+        "summary": {"n": 1, "wrong": 0, "answered": 1},
+    }
+    code, body = compare_runs(left, right, force=False)
+    assert code == EXIT_CONFIG
+    assert body["refused"] is True
+    assert "learn_enabled" in body["note"]
+
+
+def test_plan_origin_counts_generate_sql_and_ranking_separately(tmp_path: Path) -> None:
+    questions, meta = load_minidev_source(str(SYNTHETIC), dest_dir=tmp_path)
+    gold_rows = [{"n": 2}]
+
+    def gold_fn(_sql: str) -> tuple[list[dict[str, object]] | None, str | None]:
+        if "missing_table" in _sql:
+            return None, "sql_error"
+        return gold_rows, None
+
+    def ask_fn(question: str) -> dict[str, object]:
+        origin = (
+            PLAN_ORIGIN_ONTOLOGY_RANKING
+            if "names" in question.lower() or "list widget" in question.lower()
+            else PLAN_ORIGIN_GENERATE_SQL
+        )
+        if "broken" in question:
+            return {
+                "badge": "ABSTAIN",
+                "abstained": True,
+                "rows": [],
+                "plan_origin": origin,
+            }
+        return {
+            "badge": "L0_CERTIFIED",
+            "abstained": False,
+            "rows": gold_rows,
+            "plan_origin": origin,
+            "served_provider": "ov_free_llama_unique",
+            "served_model": "not-a-default-model",
+            "served_local": False,
+            "learn_enabled": False,
+            "learn_source": "freeroute-store",
+            "route_store_id": "rs_minidev",
+        }
+
+    _code, report, err = run_minidev(
+        questions,
+        ask_fn=ask_fn,
+        gold_fn=gold_fn,
+        data_meta=meta,
+        cortex=False,
+        env=_env(tmp_path),
+        write=False,
+    )
+    assert err is None and report is not None
+    origins = report["plan_origin"]
+    assert origins[PLAN_ORIGIN_GENERATE_SQL] >= 1
+    assert origins[PLAN_ORIGIN_ONTOLOGY_RANKING] >= 1
+    by = report["summary"]["by_plan_origin"]
+    assert PLAN_ORIGIN_GENERATE_SQL in by
+    assert PLAN_ORIGIN_ONTOLOGY_RANKING in by
 
 
 def test_freeroute_live_refuses_unless_learn_off_and_store_fresh(tmp_path: Path) -> None:
@@ -214,9 +323,13 @@ def test_run_minidev_records_models_mix_fingerprint_and_refuses_learn_on(
             "badge": "L0_CERTIFIED",
             "abstained": False,
             "rows": gold_rows,
-            "served_provider": "groq",
-            "served_model": "llama-3.3",
+            "served_provider": "ov_free_llama_unique",
+            "served_model": "not-a-default-model",
             "served_local": False,
+            "learn_enabled": False,
+            "learn_source": "freeroute-store",
+            "route_store_id": "rs_minidev",
+            "plan_origin": PLAN_ORIGIN_GENERATE_SQL,
         }
 
     env = _env(tmp_path, CORTEX_FREEROUTE_LEARN="1")
@@ -263,24 +376,25 @@ def test_run_minidev_records_models_mix_fingerprint_and_refuses_learn_on(
     assert art["sha"]
     assert art["data_bytes"] == meta["bytes"]
     mix = art["served_mix"]
-    assert mix["groq/llama-3.3/local=false"] >= 1
+    assert mix["ov_free_llama_unique/not-a-default-model/local=false"] >= 1
     assert art["served_local"]["false"] >= 1
     assert art["setup"]["served_local"]["false"] >= 1
+    assert art["plan_origin"][PLAN_ORIGIN_GENERATE_SQL] >= 1
+    assert art["plan_origin"][PLAN_ORIGIN_ONTOLOGY_RANKING] == 0
+    assert art["summary"]["by_plan_origin"][PLAN_ORIGIN_GENERATE_SQL]["right"] >= 1
     for case in art["cases"]:
-        assert "provider" in case and "model" in case
-        assert "served_local" in case
-        if case["verdict"] != "GOLD_ERROR" and "broken" not in str(case.get("id")):
-            if case["provider"] == "groq":
-                assert case["served_local"] is False
-    payload = setup_payload(
-        learn="0",
-        store_id=str(store),
-        fresh=True,
-        hash_before=art["freeroute"]["hash_before"],
-        mix=mix,
-        served_local=art["served_local"],
-    )
-    assert art["setup_fingerprint"] == setup_fingerprint(payload)
+        for key in SETUP_FIELD_KEYS:
+            assert key in case
+        assert "plan_origin" in case
+        if case["verdict"] != "GOLD_ERROR" and case["verdict"] != "ABSTAIN":
+            assert case["served_provider"] == "ov_free_llama_unique"
+            assert case["served_local"] is False
+            assert case["learn_enabled"] is False
+            assert case["learn_source"] == "freeroute-store"
+            assert case["route_store_id"] == "rs_minidev"
+            assert case["plan_origin"] == PLAN_ORIGIN_GENERATE_SQL
+    assert art["setup_fingerprint"] == setup_fingerprint(art["setup"])
+    assert art["setup"]["setup_mix"]
 
     unknown_ask = {
         "badge": "ABSTAIN",
@@ -300,8 +414,17 @@ def test_run_minidev_records_models_mix_fingerprint_and_refuses_learn_on(
     assert report3["cases"][0]["provider"] == UNKNOWN
     assert report3["cases"][0]["model"] == UNKNOWN
     assert report3["cases"][0]["served_local"] == UNKNOWN
+    assert report3["cases"][0]["learn_enabled"] == UNKNOWN
+    assert report3["cases"][0]["learn_source"] == UNKNOWN
+    assert report3["cases"][0]["route_store_id"] == UNKNOWN
+    assert report3["cases"][0]["plan_origin"] == UNKNOWN
     assert report3["served_mix"] == {f"{UNKNOWN}/{UNKNOWN}/local={UNKNOWN}": 1}
     assert report3["served_local"] == {"true": 0, "false": 0, "unknown": 1}
+    assert report3["plan_origin"] == {
+        PLAN_ORIGIN_GENERATE_SQL: 0,
+        PLAN_ORIGIN_ONTOLOGY_RANKING: 0,
+        UNKNOWN: 1,
+    }
 
 
 def test_validate_refuses_shrunk_full_set_without_limit() -> None:

@@ -3,7 +3,11 @@
   "badge": "L2_VALIDATED",
   "abstained": false,
   "rows": [{"n": 2}],
-  "served_provider": "groq",
-  "served_model": "llama-3.3-70b-versatile",
-  "served_local": false
+  "served_provider": "ov_free_llama_unique",
+  "served_model": "not-a-default-model",
+  "served_local": false,
+  "learn_enabled": false,
+  "learn_source": "freeroute-store",
+  "route_store_id": "rs_present",
+  "plan_origin": "generate_sql"
 }

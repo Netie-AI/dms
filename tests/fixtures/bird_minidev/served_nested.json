@@ -6,6 +6,10 @@
   "insights": {
     "served_provider": "ollama",
     "served_model": "llama3.1",
-    "served_local": true
-  }
+    "served_local": true,
+    "learn_enabled": true,
+    "learn_source": "nested-store",
+    "route_store_id": "rs_nested"
+  },
+  "plan_source": "ontology_plan"
 }

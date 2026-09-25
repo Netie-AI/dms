@@ -105,14 +105,16 @@ Numeric match is not 4 dp absolute: integers exact; other numbers use
 `|a-b| <= max(1e-9, 1e-6 * max(|a|,|b|))`. 29+ digit numeric strings must not
 crash. GOLD_ERROR excludes the question from n.
 
-Each case copies Cortex ROUTER-1 (#269) fields `served_provider`,
-`served_model`, and `served_local` when present. Absent fields are
-`unknown` (boolean local is never guessed false). Today's Cortex main
-does not return them yet. Run-level `served_mix` includes
-`provider/model/local=...` plus `served_local` true/false/unknown counts.
-`setup_fingerprint` covers learn flag, store state, and that mix.
-`--compare` refuses different fingerprints unless `--force-cross-setup`,
-which labels the result `cross-setup`.
+Each case copies six DMS envelope setup fields when present:
+`served_provider`, `served_model`, `served_local`, `learn_enabled`,
+`learn_source`, `route_store_id`. Absent or null is `unknown` (never
+inferred from aliases or nested Insights JSON). Boolean fields are only
+copied when they are bools. Each case also records `plan_origin`
+(`generate_sql` or `ontology_ranking`, else `unknown`); the summary
+counts those two separately (`by_plan_origin`). `setup_fingerprint`
+covers learn flag, store state, and the six-field mix. `--compare`
+refuses different fingerprints unless `--force-cross-setup`, which
+labels the result `cross-setup`.
 
 First live run is a Platform baseline, not PASS. No target. Do not quote a
 Mini-Dev percent from CI or this tree.

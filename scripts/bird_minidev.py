@@ -13,9 +13,14 @@ Until Cortex ROUTER-1: live Cortex scoring requires CORTEX_FREEROUTE_LEARN=0,
 a fresh CORTEX_ROUTE_STORE, and recorded store snapshots. Missing those is
 CONFIG, not a score. Offline/--self-check skips the freeze.
 
-Served provider/model/local are copied from Cortex Insights fields
-``served_provider``, ``served_model``, ``served_local`` when present;
-otherwise ``unknown``. Never guessed from FreeRoute plans, env, or aliases.
+Six setup fields are copied from the DMS ask envelope (GEN-RESTORE-01
+copy-through of Cortex Insights): ``served_provider``, ``served_model``,
+``served_local``, ``learn_enabled``, ``learn_source``, ``route_store_id``.
+Absent or null is ``unknown``. Never inferred from aliases, nested
+Insights payloads, env, or FreeRoute plans. Per-answer ``plan_origin``
+is ``generate_sql`` or ``ontology_ranking`` (else ``unknown``); the
+harness counts those two separately. ``setup_fingerprint`` includes the
+six fields; ``--compare`` refuses a mismatch unless ``--force-cross-setup``.
 
 """
 
@@ -58,10 +63,22 @@ STORE_ENV = "CORTEX_ROUTE_STORE"
 CONFIDENT = frozenset(
     {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "L2_ANOMALOUS"}
 )
-# Cortex ROUTER-1 (#269) Insights fields. Exact names only; never aliases.
-_SERVED_PROVIDER = "served_provider"
-_SERVED_MODEL = "served_model"
-_SERVED_LOCAL = "served_local"
+# Same names as dms_executor.generative_ask.SETUP_FIELD_KEYS (do not import
+# executor here: its package init pulls CortexClient). Exact envelope keys.
+SETUP_FIELD_KEYS: tuple[str, ...] = (
+    "served_provider",
+    "served_model",
+    "served_local",
+    "learn_enabled",
+    "learn_source",
+    "route_store_id",
+)
+BOOL_SETUP_KEYS = frozenset({"served_local", "learn_enabled"})
+PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
+PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
+PLAN_ORIGINS = frozenset(
+    {PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING}
+)
 
 SYNTHETIC_SETUP: tuple[str, ...] = (
     "CREATE TABLE widgets (id INTEGER, name VARCHAR, price DOUBLE)",
@@ -271,52 +288,40 @@ def run_pg_gold(
             pass
 
 
-def _lookup_exact(env: Mapping[str, Any], name: str) -> Any:
-    """Read one ROUTER-1 field by exact name. Top-level, else insights/provenance."""
-    if name in env:
-        return env[name]
-    for wrap in ("insights", "provenance"):
-        inner = env.get(wrap)
-        if isinstance(inner, dict) and name in inner:
-            return inner[name]
-    return None
-
-
-def _reported_name(raw: Any) -> str:
+def _copy_setup_value(key: str, env: Mapping[str, Any]) -> Any:
+    """Copy one envelope setup field. Missing/null/non-bool is unknown."""
+    if key not in env:
+        return UNKNOWN
+    raw = env[key]
+    if key in BOOL_SETUP_KEYS:
+        return raw if isinstance(raw, bool) else UNKNOWN
     if raw is None:
         return UNKNOWN
     text = str(raw).strip()
     return text if text else UNKNOWN
 
 
-def _reported_local(raw: Any) -> bool | str:
-    """Boolean as Cortex sent it. Absent or non-bool is unknown, never guessed."""
-    if isinstance(raw, bool):
-        return raw
-    return UNKNOWN
+def plan_origin_from_envelope(env: Mapping[str, Any] | None) -> str:
+    """Copy plan_origin from the DMS envelope. Never infer from plan_source."""
+    if not isinstance(env, dict) or "plan_origin" not in env:
+        return UNKNOWN
+    val = str(env.get("plan_origin") or "").strip().lower()
+    return val if val in PLAN_ORIGINS else UNKNOWN
 
 
 def served_from_response(env: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Copy served_provider / served_model / served_local. Never guess."""
-    empty = {
-        "provider": UNKNOWN,
-        "model": UNKNOWN,
-        "served_local": UNKNOWN,
-        "served_provider": UNKNOWN,
-        "served_model": UNKNOWN,
-    }
+    """Copy six envelope setup fields plus plan_origin. Never guess."""
+    empty = {key: UNKNOWN for key in SETUP_FIELD_KEYS}
+    empty["provider"] = UNKNOWN
+    empty["model"] = UNKNOWN
+    empty["plan_origin"] = UNKNOWN
     if not isinstance(env, dict):
-        return empty
-    provider = _reported_name(_lookup_exact(env, _SERVED_PROVIDER))
-    model = _reported_name(_lookup_exact(env, _SERVED_MODEL))
-    local = _reported_local(_lookup_exact(env, _SERVED_LOCAL))
-    return {
-        "provider": provider,
-        "model": model,
-        "served_provider": provider,
-        "served_model": model,
-        "served_local": local,
-    }
+        return dict(empty)
+    out = {key: _copy_setup_value(key, env) for key in SETUP_FIELD_KEYS}
+    out["provider"] = out["served_provider"]
+    out["model"] = out["served_model"]
+    out["plan_origin"] = plan_origin_from_envelope(env)
+    return out
 
 
 def local_label(val: Any) -> str:
@@ -327,13 +332,34 @@ def local_label(val: Any) -> str:
     return UNKNOWN
 
 
+def _field_label(key: str, val: Any) -> str:
+    if key in BOOL_SETUP_KEYS:
+        return local_label(val)
+    text = str(val if val is not None else UNKNOWN).strip()
+    return text if text else UNKNOWN
+
+
 def served_mix(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     counts: Counter[str] = Counter()
     for row in cases:
-        provider = str(row.get("provider") or UNKNOWN)
-        model = str(row.get("model") or UNKNOWN)
+        provider = str(row.get("served_provider") or row.get("provider") or UNKNOWN)
+        model = str(row.get("served_model") or row.get("model") or UNKNOWN)
         local = local_label(row.get("served_local"))
         counts[f"{provider}/{model}/local={local}"] += 1
+    return dict(sorted(counts.items()))
+
+
+def setup_mix_key(row: Mapping[str, Any]) -> str:
+    return "|".join(
+        f"{key}={_field_label(key, row.get(key, UNKNOWN))}"
+        for key in SETUP_FIELD_KEYS
+    )
+
+
+def setup_mix(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in cases:
+        counts[setup_mix_key(row)] += 1
     return dict(sorted(counts.items()))
 
 
@@ -348,6 +374,22 @@ def served_local_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     }
 
 
+def plan_origin_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in cases:
+        val = str(row.get("plan_origin") or UNKNOWN)
+        if val not in PLAN_ORIGINS:
+            val = UNKNOWN
+        counts[val] += 1
+    return {
+        PLAN_ORIGIN_GENERATE_SQL: int(counts.get(PLAN_ORIGIN_GENERATE_SQL, 0)),
+        PLAN_ORIGIN_ONTOLOGY_RANKING: int(
+            counts.get(PLAN_ORIGIN_ONTOLOGY_RANKING, 0)
+        ),
+        UNKNOWN: int(counts.get(UNKNOWN, 0)),
+    }
+
+
 def setup_payload(
     *,
     learn: str | None,
@@ -356,6 +398,7 @@ def setup_payload(
     hash_before: str | None,
     mix: Mapping[str, int],
     served_local: Mapping[str, int] | None = None,
+    setup_mix_counts: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     local = dict(served_local) if served_local is not None else served_local_counts([])
     return {
@@ -365,6 +408,7 @@ def setup_payload(
         "hash_before": hash_before,
         "served_mix": dict(mix),
         "served_local": local,
+        "setup_mix": dict(setup_mix_counts or {}),
     }
 
 
@@ -605,23 +649,22 @@ def score_cases(
         else:
             verdict = gold_error_dominating(None, grade_envelope(env, gold_rows or []))
         got = envelope_rows(env)
-        rows.append(
-            {
-                "id": item.get("question_id", item.get("id")),
-                "db_id": item.get("db_id"),
-                "difficulty": item.get("difficulty") or "unknown",
-                "verdict": verdict,
-                "badge": env.get("badge"),
-                "gold_rows": len(gold_rows or []),
-                "got_rows": len(got),
-                "gold_error": gold_err,
-                "provider": served["provider"],
-                "model": served["model"],
-                "served_provider": served["served_provider"],
-                "served_model": served["served_model"],
-                "served_local": served["served_local"],
-            }
-        )
+        case = {
+            "id": item.get("question_id", item.get("id")),
+            "db_id": item.get("db_id"),
+            "difficulty": item.get("difficulty") or "unknown",
+            "verdict": verdict,
+            "badge": env.get("badge"),
+            "gold_rows": len(gold_rows or []),
+            "got_rows": len(got),
+            "gold_error": gold_err,
+            "provider": served["provider"],
+            "model": served["model"],
+            "plan_origin": served["plan_origin"],
+        }
+        for key in SETUP_FIELD_KEYS:
+            case[key] = served[key]
+        rows.append(case)
     return rows
 
 
@@ -662,8 +705,11 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     summary = _slice_tally(rows)
     summary["by_db_id"] = breakdown(rows, "db_id")
     summary["by_difficulty"] = breakdown(rows, "difficulty")
+    summary["by_plan_origin"] = breakdown(rows, "plan_origin")
     summary["served_mix"] = served_mix(rows)
     summary["served_local"] = served_local_counts(rows)
+    summary["setup_mix"] = setup_mix(rows)
+    summary["plan_origin"] = plan_origin_counts(rows)
     return summary
 
 
@@ -706,6 +752,24 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
         f"served_local true={local.get('true', 0)} "
         f"false={local.get('false', 0)} unknown={local.get('unknown', 0)}"
     )
+    print("setup fields mix:")
+    setup = summary.get("setup_mix") or {}
+    if not setup:
+        print("  (none)")
+    for key, count in setup.items():
+        print(f"  {key} {count}")
+    origins = summary.get("plan_origin") or {}
+    print(
+        f"plan_origin generate_sql={origins.get(PLAN_ORIGIN_GENERATE_SQL, 0)} "
+        f"ontology_ranking={origins.get(PLAN_ORIGIN_ONTOLOGY_RANKING, 0)} "
+        f"unknown={origins.get(UNKNOWN, 0)}"
+    )
+    print("per plan_origin:")
+    for origin, row in (summary.get("by_plan_origin") or {}).items():
+        print(
+            f"  {origin} n={row['n']} RIGHT={row['right']} ABSTAIN={row['abstain']} "
+            f"WRONG={row['wrong']} GOLD_ERROR={row['gold_error']}"
+        )
 
 
 def artifact_path(env: Mapping[str, str] | None = None) -> Path:
@@ -739,9 +803,11 @@ def compare_runs(
             "right": fb,
             "note": (
                 "Refuse to compare Mini-Dev runs with different setup fingerprints. "
-                "Learning flag, store state, and served-model mix must match. "
-                "ROUTER-1 vs pre-ROUTER-1 is not the same setup. "
-                "Pass --force-cross-setup to label a cross-setup comparison."
+                "Learning flag, store state, and envelope setup fields "
+                "(served_provider, served_model, served_local, learn_enabled, "
+                "learn_source, route_store_id) must match. Absent fields are "
+                "unknown, never inferred. Pass --force-cross-setup to label a "
+                "cross-setup comparison."
             ),
         }
     label = "same-setup" if same else "cross-setup"
@@ -763,7 +829,7 @@ def compare_runs(
     if not same:
         result["note"] = (
             "cross-setup comparison (--force-cross-setup). "
-            "Not the same setup. Do not quote as a ROUTER-1 delta."
+            "Not the same setup. Do not quote as a setup delta."
         )
     return EXIT_PASS, result
 
@@ -916,33 +982,76 @@ def minidev_self_check() -> list[str]:
     if rows is not None or kind != "dead_connection":
         errs.append("run_pg_gold must pin dead_connection on connect failure")
 
+    unknown_setup = {key: UNKNOWN for key in SETUP_FIELD_KEYS}
+    unknown_setup.update(
+        {"provider": UNKNOWN, "model": UNKNOWN, "plan_origin": UNKNOWN}
+    )
     served_u = served_from_response({"badge": "L0_CERTIFIED", "rows": [{"n": 1}]})
-    if served_u != {
-        "provider": UNKNOWN,
-        "model": UNKNOWN,
-        "served_provider": UNKNOWN,
-        "served_model": UNKNOWN,
-        "served_local": UNKNOWN,
-    }:
-        errs.append("missing ROUTER-1 served_* must record unknown, never guess")
+    if served_u != unknown_setup:
+        errs.append("missing envelope setup fields must record unknown, never guess")
     served_alias = served_from_response({"provider": "groq", "model": "llama-3.3"})
-    if served_alias["provider"] != UNKNOWN or served_alias["served_local"] != UNKNOWN:
-        errs.append("provider/model aliases must not fill ROUTER-1 served_*")
+    if any(served_alias[key] != UNKNOWN for key in SETUP_FIELD_KEYS):
+        errs.append("provider/model aliases must not fill envelope setup fields")
+    if served_alias["plan_origin"] != UNKNOWN:
+        errs.append("plan_source aliases must not fill plan_origin")
+    nested_only = served_from_response(
+        {
+            "insights": {
+                "served_provider": "ollama",
+                "served_model": "llama3.1",
+                "served_local": True,
+                "learn_enabled": True,
+            }
+        }
+    )
+    if any(nested_only[key] != UNKNOWN for key in SETUP_FIELD_KEYS):
+        errs.append("nested Insights payload must not fill envelope setup fields")
     served_r = served_from_response(
         {
             "served_provider": "groq",
             "served_model": "llama-3.3",
             "served_local": False,
+            "learn_enabled": False,
+            "learn_source": "freeroute-store",
+            "route_store_id": "rs_self",
+            "plan_origin": PLAN_ORIGIN_GENERATE_SQL,
         }
     )
-    if served_r != {
-        "provider": "groq",
-        "model": "llama-3.3",
-        "served_provider": "groq",
-        "served_model": "llama-3.3",
-        "served_local": False,
-    }:
-        errs.append("ROUTER-1 served_* fields must be copied")
+    if served_r["served_provider"] != "groq" or served_r["served_local"] is not False:
+        errs.append("envelope setup fields must be copied verbatim")
+    if served_r["plan_origin"] != PLAN_ORIGIN_GENERATE_SQL:
+        errs.append("plan_origin generate_sql must be copied")
+    if (
+        served_from_response({"plan_origin": PLAN_ORIGIN_ONTOLOGY_RANKING})[
+            "plan_origin"
+        ]
+        != PLAN_ORIGIN_ONTOLOGY_RANKING
+    ):
+        errs.append("plan_origin ontology_ranking must be copied")
+    if served_from_response({"plan_source": "ontology_plan"})["plan_origin"] != UNKNOWN:
+        errs.append("plan_origin must not be inferred from plan_source")
+    fp_a = setup_fingerprint(
+        setup_payload(
+            learn="0",
+            store_id="s",
+            fresh=True,
+            hash_before="h",
+            mix={},
+            setup_mix_counts={"served_provider=a|learn_enabled=false": 1},
+        )
+    )
+    fp_b = setup_fingerprint(
+        setup_payload(
+            learn="0",
+            store_id="s",
+            fresh=True,
+            hash_before="h",
+            mix={},
+            setup_mix_counts={"served_provider=a|learn_enabled=true": 1},
+        )
+    )
+    if fp_a == fp_b:
+        errs.append("fingerprint must include envelope setup fields")
 
     left = {
         "setup_fingerprint": "aaa",
@@ -991,7 +1100,6 @@ def run_minidev(
         freeze = frozen
 
     sliced = list(questions)
-    total = len(sliced)
     if limit is not None:
         sliced = sliced[: max(limit, 0)]
     cases = score_cases(
@@ -1000,6 +1108,8 @@ def run_minidev(
     summary = summarize(cases)
     mix = summary["served_mix"]
     local_counts = summary["served_local"]
+    setup_mix_counts = summary["setup_mix"]
+    origin_counts = summary["plan_origin"]
     if cortex:
         finished = finish_freeroute(freeze or {})
         if isinstance(finished, str):
@@ -1012,6 +1122,7 @@ def run_minidev(
             hash_before=freeze.get("hash_before"),
             mix=mix,
             served_local=local_counts,
+            setup_mix_counts=setup_mix_counts,
         )
         freeroute_out = dict(freeze)
     else:
@@ -1022,6 +1133,7 @@ def run_minidev(
             hash_before=None,
             mix=mix,
             served_local=local_counts,
+            setup_mix_counts=setup_mix_counts,
         )
         freeroute_out = {
             "cortex": False,
@@ -1046,6 +1158,8 @@ def run_minidev(
         "setup_fingerprint": setup_fingerprint(payload),
         "served_mix": mix,
         "served_local": local_counts,
+        "setup_mix": setup_mix_counts,
+        "plan_origin": origin_counts,
         "summary": summary,
         "cases": cases,
         "note": (
