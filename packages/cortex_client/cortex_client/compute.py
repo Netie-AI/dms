@@ -1,4 +1,4 @@
-"""Off-contract Cortex compute helper — Insights generate, then POST /dms/query.
+"""Off-contract Cortex compute helper — Insights generate, then leftover /dms/query.
 
 Contract 1.2.0 has ask/submit/ledger only. This module is not a planner.
 ``POST /dms/query`` ignores ``mode`` and ``ontology`` on Cortex origin/main
@@ -10,10 +10,10 @@ FreeRoute generate+validate plan built from the context DMS sent.
 in Cortex). It may REFUSE when unarmed; it is not a Cortex-internal
 generate+validate path that always emits a typed plan.
 
-No ask-path caller remains after GEN-03 (dms#194): ``Executor.live_ask`` passes
-a closed, no-network compute seam instead. Deleting this module and
-``CortexClient.compute_query`` is tracked in CONTRACT-FAKE-01. DMS never invents
-provider keys and never puts secrets in the body.
+Ask lanes call ``compute_insights`` (generate + ontology ranking + one ranked
+retry). They never POST ``/dms/query``. ``compute_query`` still exists for
+CONTRACT-FAKE-01. DMS never invents provider keys and never puts secrets in
+the body.
 """
 
 from __future__ import annotations
@@ -28,8 +28,29 @@ from cortex_client.insights import INSIGHTS_PATH
 COMPUTE_PATH = "/dms/query"
 ONTOLOGY_MODE = "ontology_plan"
 PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
+PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
+PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
+PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
 INSIGHTS_REACHED = "insights_reached"
 INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
+#: Product-lane Insights bound. Not CortexClient's 120s contract timeout and
+#: not the pre-GEN-03 45s /dms/query stall. One httpx timeout for the Client.
+INSIGHTS_ASK_TIMEOUT_SECONDS = 8.0
+INSIGHTS_FAIL_UNARMED = "insights_unarmed"
+INSIGHTS_FAIL_REFUSED = "insights_refused"
+INSIGHTS_FAIL_UNAUTHORIZED = "insights_unauthorized"
+INSIGHTS_FAIL_TIMEOUT = "insights_timeout"
+INSIGHTS_FAIL_EMPTY = "insights_no_sql_no_ranking"
+INSIGHTS_FAIL_REASONS = frozenset(
+    {
+        INSIGHTS_FAIL_UNARMED,
+        INSIGHTS_FAIL_REFUSED,
+        INSIGHTS_FAIL_UNAUTHORIZED,
+        INSIGHTS_FAIL_TIMEOUT,
+        INSIGHTS_FAIL_EMPTY,
+    }
+)
+_HTTP_STATUS_KEY = "_insights_http_status"
 # FreeRoute pick stays in Cortex/OpenVault. Hint only; no provider ids or tokens.
 FREEROUTE_PREFERENCE = "free+normal"
 _SELECT_SQL = re.compile(r"(?is)^\s*(with|select)\b")
@@ -574,9 +595,11 @@ def normalize_insights_compute(payload: dict[str, Any]) -> dict[str, Any] | None
     sql = insights_query_sql(out)
     if plan is not None:
         out["query_plan"] = plan
+        out["plan_origin"] = PLAN_ORIGIN_GENERATE_SQL
         return attach_compute_plan_source(out)
     if sql:
         out["query_sql"] = sql
+        out["plan_origin"] = PLAN_ORIGIN_GENERATE_SQL
         return attach_compute_plan_source(out)
     return None
 
@@ -619,7 +642,9 @@ def _insights_envelope(res: httpx.Response | None) -> dict[str, Any] | None:
         return None
     status = str(payload.get("status") or "").upper()
     if res.status_code == 200 or status in INSIGHTS_STATUSES:
-        return payload
+        out = dict(payload)
+        out[_HTTP_STATUS_KEY] = int(res.status_code)
+        return out
     return None
 
 
@@ -663,7 +688,11 @@ def _insights_ontology_get(
             params={"q": question},
             headers=headers,
         )
-    except (httpx.HTTPError, TypeError):
+    except httpx.HTTPError as exc:
+        if isinstance(exc, httpx.TimeoutException):
+            raise
+        return None
+    except TypeError:
         return None
     return _insights_envelope(res)
 
@@ -681,41 +710,72 @@ def _insights_generate_post(
             json=body,
             headers=headers,
         )
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        if isinstance(exc, httpx.TimeoutException):
+            raise
         return None
     return _insights_envelope(res)
 
 
-def compute_query(
-    base_url: str,
-    *,
-    question: str,
-    session_id: str | None = None,
-    space_id: str | None = None,
-    ontology: dict[str, Any] | None = None,
-    api_key: str | None = None,
-    timeout: float = 120.0,
-) -> dict[str, Any] | None:
-    """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
+def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
+    """Named fail-closed reason stamped by ``compute_insights``, or None."""
+    if not isinstance(payload, dict):
+        return None
+    raw = str(payload.get("insights_fail") or "").strip()
+    return raw if raw in INSIGHTS_FAIL_REASONS else None
 
-    Not a generate+validate planner Cortex implements. Cortex ``/dms/query``
-    ignores ``mode``/``ontology`` and does not emit ``query_plan.measure``
-    (KB F-0055). Insights generate may return SELECT SQL or REFUSE; that is
-    Insights, not a typed-plan guarantee. ``Executor.live_ask`` does not call
-    this after GEN-03 (dms#194).
 
-    Order when a harness still calls this: ``POST /v1/insights`` generate=true
-    ask=false, ``GET /v1/insights/ontology`` when ranking is omitted, one
-    ranked-slot generate retry when generate ran with no SQL/plan (not UNARMED),
-    then ``POST /dms/query`` which is not a typed-plan source. Ranking stays
-    attached when generate SQL is present so a validate-fail can climb via
-    ontology_plan slots. Insights 200 REFUSE / 401 still count as reached so
-    isolated gen does not bind_plan over them. An empty key is not replaced
-    with a guessed secret. ``live_5000_ci`` is never claimed here.
+def insights_fail_payload(
+    reason: str, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Insights answered without a usable plan. Never a bind_plan miss."""
+    out = insights_miss_payload(payload or {})
+    out["insights_fail"] = reason if reason in INSIGHTS_FAIL_REASONS else INSIGHTS_FAIL_EMPTY
+    out[INSIGHTS_REACHED] = True
+    return out
+
+
+def classify_insights_fail(
+    payload: dict[str, Any] | None, *, timed_out: bool = False
+) -> str | None:
+    """Named ABSTAIN when Insights produced no SQL and no ranking.
+
+    Timeout wins. 401/403 is unauthorized. Unarmed climb is unarmed. Other
+    REFUSE is refused. Empty 200 is no_sql_no_ranking. Ranking or SQL is not
+    a fail — the ask path compiles those. Transport miss (None) is not named.
     """
-    headers = _auth_headers(api_key)
-    root = base_url.rstrip("/")
-    insights_body: dict[str, Any] = {
+    if timed_out:
+        return INSIGHTS_FAIL_TIMEOUT
+    if not isinstance(payload, dict):
+        return None
+    if insights_query_sql(payload) or typed_query_plan(payload):
+        return None
+    if _has_ranked_metrics(payload):
+        return None
+    http_status = int(payload.get(_HTTP_STATUS_KEY) or 0)
+    gen = payload.get("generative")
+    gen_d = gen if isinstance(gen, dict) else {}
+    climb = gen_d.get("climb")
+    climb_d = climb if isinstance(climb, dict) else {}
+    final = str(climb_d.get("final") or "").upper()
+    if http_status in {401, 403} or final == "REFUSED_AUTH":
+        return INSIGHTS_FAIL_UNAUTHORIZED
+    if final in {"UNARMED", "NO_KEY"}:
+        return INSIGHTS_FAIL_UNARMED
+    status = str(payload.get("status") or "").upper()
+    if status == "REFUSE" or payload.get("ok") is False:
+        return INSIGHTS_FAIL_REFUSED
+    return INSIGHTS_FAIL_EMPTY
+
+
+def _insights_body(
+    question: str,
+    *,
+    session_id: str | None,
+    space_id: str | None,
+    ontology: dict[str, Any] | None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
         "intent": question,
         "question": question,
         "ask": False,
@@ -727,11 +787,83 @@ def compute_query(
         "model_preference": FREEROUTE_PREFERENCE,
     }
     if ontology is not None:
-        insights_body["ontology"] = ontology
+        body["ontology"] = ontology
         if isinstance(ontology, dict):
             slots = ontology.get("intent_slots")
             if isinstance(slots, dict) and slots:
-                insights_body["intent_slots"] = slots
+                body["intent_slots"] = slots
+    return body
+
+
+def _run_insights_legs(
+    http: httpx.Client,
+    root: str,
+    question: str,
+    insights_body: dict[str, Any],
+    headers: dict[str, str] | None,
+    ontology: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Generate, optional ontology GET, one ranked retry. No /dms/query."""
+    insights_payload = _insights_generate_post(http, root, insights_body, headers)
+    if not _has_ranked_metrics(insights_payload):
+        ranking = _insights_ontology_get(http, root, question, headers)
+        if ranking is not None:
+            insights_payload = _merge_ontology_ranking(insights_payload, ranking)
+    ranked_plan = typed_ranked_retry_plan(
+        insights_payload, ontology=ontology, question=question
+    )
+    if generate_retry_eligible(insights_payload) and ranked_plan:
+        retry_body = dict(insights_body)
+        retry_body["query_plan"] = {
+            k: v for k, v in ranked_plan.items() if k != "ranked_id"
+        }
+        retry_body["ranked_metric"] = (
+            ranked_plan.get("ranked_id") or ranked_plan["measure"]
+        )
+        retry_body["generate_retry"] = "ranked_slots"
+        retry_payload = _insights_generate_post(http, root, retry_body, headers)
+        if isinstance(retry_payload, dict):
+            insights_payload = _merge_ontology_ranking(
+                retry_payload, insights_payload or {}
+            )
+    return insights_payload
+
+
+def compute_query(
+    base_url: str,
+    *,
+    question: str,
+    session_id: str | None = None,
+    space_id: str | None = None,
+    ontology: dict[str, Any] | None = None,
+    api_key: str | None = None,
+    timeout: float = 120.0,
+    dms_query: bool = True,
+) -> dict[str, Any] | None:
+    """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
+
+    Not a generate+validate planner Cortex implements. Cortex ``/dms/query``
+    ignores ``mode``/``ontology`` and does not emit ``query_plan.measure``
+    (KB F-0055). Insights generate may return SELECT SQL or REFUSE; that is
+    Insights, not a typed-plan guarantee.
+
+    Ask lanes pass ``dms_query=False`` (or call ``compute_insights``) so they
+    never POST ``/dms/query``. Deleting this function is CONTRACT-FAKE-01.
+
+    Order: ``POST /v1/insights`` generate=true ask=false, ``GET
+    /v1/insights/ontology`` when ranking is omitted, one ranked-slot generate
+    retry when generate ran with no SQL/plan (not UNARMED), then optional
+    ``POST /dms/query``. Ranking stays attached when generate SQL is present so
+    a validate-fail can climb via ontology_plan slots. Insights 200 REFUSE /
+    401 still count as reached so isolated gen does not bind_plan over them.
+    An empty key is not replaced with a guessed secret. ``live_5000_ci`` is
+    never claimed here.
+    """
+    headers = _auth_headers(api_key)
+    root = base_url.rstrip("/")
+    insights_body = _insights_body(
+        question, session_id=session_id, space_id=space_id, ontology=ontology
+    )
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",
@@ -742,41 +874,21 @@ def compute_query(
         dms_body["ontology"] = ontology
     insights_payload: dict[str, Any] | None = None
     dms_res: httpx.Response | None = None
+    timed_out = False
     try:
         with httpx.Client(timeout=timeout) as http:
-            insights_payload = _insights_generate_post(
-                http, root, insights_body, headers
-            )
-            # YAML ranking. No FreeRoute. Attach even when generate SQL exists
-            # so validate-or-abstain can climb via ranked DMS measures.
-            if not _has_ranked_metrics(insights_payload):
-                ranking = _insights_ontology_get(http, root, question, headers)
-                if ranking is not None:
-                    insights_payload = _merge_ontology_ranking(
-                        insights_payload, ranking
-                    )
-            # FreeRoute climb: one retry with walked/resolved slots, not the
-            # raw top pack id (sku_count must not retry a revenue ask).
-            # Skip when climb.final is UNARMED (second shot cannot arm keys).
+            try:
+                insights_payload = _run_insights_legs(
+                    http, root, question, insights_body, headers, ontology
+                )
+            except httpx.TimeoutException:
+                timed_out = True
+                if not dms_query:
+                    return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
+                return None
             ranked_plan = typed_ranked_retry_plan(
                 insights_payload, ontology=ontology, question=question
             )
-            if generate_retry_eligible(insights_payload) and ranked_plan:
-                retry_body = dict(insights_body)
-                retry_body["query_plan"] = {
-                    k: v for k, v in ranked_plan.items() if k != "ranked_id"
-                }
-                retry_body["ranked_metric"] = (
-                    ranked_plan.get("ranked_id") or ranked_plan["measure"]
-                )
-                retry_body["generate_retry"] = "ranked_slots"
-                retry_payload = _insights_generate_post(
-                    http, root, retry_body, headers
-                )
-                if isinstance(retry_payload, dict):
-                    insights_payload = _merge_ontology_ranking(
-                        retry_payload, insights_payload or {}
-                    )
             if isinstance(insights_payload, dict):
                 if ranked_plan:
                     dms_body.setdefault(
@@ -797,16 +909,36 @@ def compute_query(
                 normalized = normalize_insights_compute(insights_payload)
                 if normalized is not None:
                     return normalized
+                if not dms_query:
+                    fail = classify_insights_fail(
+                        insights_payload, timed_out=timed_out
+                    )
+                    if fail:
+                        return insights_fail_payload(fail, insights_payload)
+                    return insights_miss_payload(insights_payload)
+            elif not dms_query:
+                fail = classify_insights_fail(insights_payload, timed_out=timed_out)
+                if fail:
+                    return insights_fail_payload(fail, insights_payload)
+                return None
             try:
                 dms_res = http.post(
                     f"{root}{COMPUTE_PATH}",
                     json=dms_body,
                     headers=headers,
                 )
+            except httpx.TimeoutException:
+                if insights_payload is not None:
+                    return insights_miss_payload(insights_payload)
+                return None
             except httpx.HTTPError:
                 if insights_payload is not None:
                     return insights_miss_payload(insights_payload)
                 return None
+    except httpx.TimeoutException:
+        if not dms_query:
+            return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
+        return None
     except httpx.HTTPError:
         return None
     if dms_res is None:
@@ -826,17 +958,55 @@ def compute_query(
     return None
 
 
+def compute_insights(
+    base_url: str,
+    *,
+    question: str,
+    session_id: str | None = None,
+    space_id: str | None = None,
+    ontology: dict[str, Any] | None = None,
+    api_key: str | None = None,
+    timeout: float = INSIGHTS_ASK_TIMEOUT_SECONDS,
+) -> dict[str, Any] | None:
+    """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
+
+    Timeout is ``INSIGHTS_ASK_TIMEOUT_SECONDS`` (8s) unless the caller passes a
+    tighter bound. Fail-closed payloads stamp ``insights_fail`` with a named
+    reason. OpenVault keys stay in Cortex; this client forwards ``api_key``
+    when already configured and never invents one.
+    """
+    return compute_query(
+        base_url,
+        question=question,
+        session_id=session_id,
+        space_id=space_id,
+        ontology=ontology,
+        api_key=api_key,
+        timeout=timeout,
+        dms_query=False,
+    )
+
+
 __all__ = [
     "COMPUTE_PATH",
     "FREEROUTE_PREFERENCE",
+    "INSIGHTS_ASK_TIMEOUT_SECONDS",
+    "INSIGHTS_FAIL_REASONS",
     "INSIGHTS_PATH",
     "INSIGHTS_REACHED",
     "ONTOLOGY_MODE",
+    "PLAN_ORIGINS",
+    "PLAN_ORIGIN_GENERATE_SQL",
+    "PLAN_ORIGIN_ONTOLOGY_RANKING",
     "PLAN_SOURCES",
     "attach_compute_plan_source",
+    "classify_insights_fail",
+    "compute_insights",
     "compute_query",
     "first_ranked_metric_id",
     "generate_retry_eligible",
+    "insights_fail_payload",
+    "insights_fail_reason",
     "insights_miss_payload",
     "insights_query_sql",
     "insights_was_reached",

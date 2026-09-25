@@ -54,6 +54,7 @@ from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, exec
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
+    chart_from_rows,
     normalize_contributing_sources,
 )
 from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
@@ -115,23 +116,34 @@ DEMO_TENANT_ID = "tenant_demo"
 DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
-def _closed_compute_seam(_context: dict[str, Any]) -> dict[str, Any] | None:
-    """GEN-03: the ask path's plan source. Always a miss; makes no network call.
+def _insights_compute_seam(
+    cortex: Any,
+    question: str,
+    *,
+    session_id: str | None,
+    space_id: str | None,
+    ontology: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Ask-path planner: Cortex Insights generate + ranking. Never /dms/query.
 
-    This used to POST Cortex ``/dms/query`` (and later Insights generate) with
-    ``mode=ontology_plan``. Cortex does not implement that mode: it drops
-    ``mode`` and ``ontology`` and never returns ``query_plan.measure``
-    (KB F-0055), so every call missed. On ask_path=generative the miss fell
-    through to the DMS keyword binder, which answered under L2_VALIDATED with
-    wrong numbers; on the product lane the POST (45s timeout) was made and its
-    reply thrown away before the Cortex contract ask.
-
-    It stays a callable rather than ``None`` because ``maybe_generative_ask``
-    returns early on ``compute is None`` before its paraphrase and _UNSURE_ASK
-    pre-gates, and those gates must keep running where they are until GEN-07
-    moves them. Deleting the client method is CONTRACT-FAKE-01.
+    Calls ``compute_insights`` only. Fakes without that method miss (no
+    ``compute_query``, so no leftover /dms/query). Timeout is the Insights
+    bound inside the client, not the 120s contract timeout. Pre-gates still
+    run because this stays a callable — ``maybe_generative_ask`` returns
+    early on ``compute is None`` before paraphrase and _UNSURE_ASK.
     """
-    return None
+    fn = getattr(cortex, "compute_insights", None)
+    if not callable(fn):
+        return None
+    try:
+        return fn(
+            question,
+            session_id=session_id,
+            space_id=space_id,
+            ontology=ontology,
+        )
+    except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
+        return None
 
 
 class Executor:
@@ -420,14 +432,15 @@ class Executor:
         suggested to the model.
 
         ``ask_path``: product (default) = certified-first (VQ, pack, planted
-        refuse), then the generative pre-gates, then the Cortex contract ask.
-        exact = VQ/pack/refuse only. generative = skip VQ/pack; past the planted
-        refuse and the pre-gates it has no plan source, so it abstains. Isolated
+        refuse), then the generative pre-gates, then Insights generate+ranking
+        (never /dms/query), then the Cortex contract ask on a miss. exact =
+        VQ/pack/refuse only. generative = skip VQ/pack; past the planted refuse
+        and the pre-gates it uses Insights only and fail-closes named. Isolated
         lanes miss as ABSTAIN (no Cortex mix); over HTTP they run only where the
         server sets DMS_HARNESS_ASK_PATHS.
 
-        GEN-03: no lane POSTs Cortex ``/dms/query`` and no lane binds a keyword
-        plan (``bind_on_miss=False`` everywhere; see ``_closed_compute_seam``).
+        GEN-RESTORE-01: no lane POSTs Cortex ``/dms/query`` and no lane binds a
+        keyword plan (``bind_on_miss=False`` everywhere).
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
@@ -586,8 +599,8 @@ class Executor:
                 self._store_turn(session_id, space_id, env)
                 return env
         if allow_gen:
-            # GEN-03: the compute seam is closed and nothing binds on a miss, so
-            # no lane POSTs /dms/query or answers from bind_plan. Pre-gates stay.
+            # Insights generate + ranking. Never POST /dms/query. Nothing binds
+            # on a miss (bind_on_miss=False). Pre-gates stay before this call.
             gen_env = maybe_generative_ask(
                 question,
                 space_id=space_id,
@@ -595,7 +608,13 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(granted),
                 tables=tables,
-                compute=_closed_compute_seam,
+                compute=lambda catalog: _insights_compute_seam(
+                    self._cortex,
+                    question,
+                    session_id=session_id,
+                    space_id=space_id,
+                    ontology=catalog,
+                ),
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
@@ -617,8 +636,8 @@ class Executor:
                 question,
                 # Say what happened. "did not certify" implied a plan was tried;
                 # since GEN-03 this lane has no plan source to try (R-0011).
-                "generative miss: no plan source on this lane (GEN-03: Cortex "
-                "/dms/query does not plan, keyword bind is off)",
+                "generative miss: no plan source on this lane (Insights "
+                "returned no SQL and no ranking; keyword bind is off)",
                 space_id=space_id,
                 session_id=session_id,
             )
@@ -737,23 +756,7 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
     return None
 
 
-def _chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Fallback when Cortex omits chart_spec: category + measure → hbar."""
-    if not rows:
-        return None
-    keys = list(rows[0].keys())
-    num_key = next(
-        (
-            k
-            for k in keys
-            if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
-        ),
-        None,
-    )
-    cat_key = next((k for k in keys if k != num_key and isinstance(rows[0].get(k), str)), None)
-    if num_key and cat_key:
-        return {"kind": "hbar", "x": cat_key, "y": num_key, "title": "Result"}
-    return None
+_chart_from_rows = chart_from_rows
 
 
 def map_ask_response_to_envelope(

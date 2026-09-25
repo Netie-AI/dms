@@ -5,10 +5,11 @@ hand it to a caller-supplied ``compute`` planner, fill typed slots, compile,
 validate, then Cortex-submit. Unsure or validate-fail is ABSTAIN. A compute
 miss returns None (existing contract ask still runs).
 
-GEN-03: the live ask path has no planner. Cortex POST /dms/query ignores the
-ontology context and returns no typed plan (KB F-0055), so ``Executor.live_ask``
-passes a closed, no-network seam and ``bind_on_miss=False``. Only offline
-harnesses and compile-path tests supply a planner here.
+GEN-RESTORE-01: ``Executor.live_ask`` passes an Insights-only compute seam
+(generate + ontology ranking + one ranked retry) with ``bind_on_miss=False``.
+No ask lane POSTs ``/dms/query``. Insights fail-closed reasons never bind.
+Cortex POST /dms/query still ignores ontology context (KB F-0055);
+``compute_query`` stays for CONTRACT-FAKE-01.
 
 Does not expand certified exact-match packs. Does not invent provider keys.
 """
@@ -24,6 +25,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from cortex_client.compute import (
+    PLAN_ORIGIN_GENERATE_SQL,
+    PLAN_ORIGIN_ONTOLOGY_RANKING,
+    PLAN_ORIGINS,
+    insights_fail_reason,
     insights_was_reached,
     query_plan_from_insights_ranking,
 )
@@ -37,6 +42,7 @@ from dms_executor.envelope import (
     asked_calendar_years,
     assert_envelope_valid,
     build_answer_envelope,
+    chart_from_rows,
 )
 from dms_executor.gen_path_refuse import (
     customer_abstain_text,
@@ -94,6 +100,24 @@ def plan_source_from_payload(payload: dict[str, Any] | None) -> str:
 
 def with_plan_source(env: dict[str, Any], source: str) -> dict[str, Any]:
     env["plan_source"] = normalize_plan_source(source)
+    return env
+
+
+def normalize_plan_origin(raw: Any) -> str:
+    val = str(raw or "").strip().lower()
+    return val if val in PLAN_ORIGINS else ""
+
+
+def plan_origin_from_payload(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    return normalize_plan_origin(payload.get("plan_origin"))
+
+
+def with_plan_origin(env: dict[str, Any], origin: str) -> dict[str, Any]:
+    val = normalize_plan_origin(origin)
+    if val:
+        env["plan_origin"] = val
     return env
 
 
@@ -414,6 +438,7 @@ def _l2_envelope(
     plan_source: str = PLAN_SOURCE_OTHER,
     coverage: Coverage | None = None,
     where_paths: Sequence[WherePath] = (),
+    plan_origin: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"Found {len(out_rows)} row(s)."
@@ -421,6 +446,8 @@ def _l2_envelope(
         text += "\n" + "\n".join(
             "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
         )
+    # Same row-based builder as the Cortex contract path when Cortex omits chart.
+    chart = chart_from_rows(out_rows)
     env = build_answer_envelope(
         answer_id="ans_gen01",
         text=text,
@@ -428,6 +455,7 @@ def _l2_envelope(
         abstained=False,
         rows=out_rows,
         sql_used=sql,
+        chart=chart,
         assumptions=[
             "GEN-01 ontology compile",
             "executed via Cortex submit after validate",
@@ -444,7 +472,7 @@ def _l2_envelope(
     )
     if env.get("abstained"):
         assert_envelope_valid(env)
-        return with_plan_source(env, plan_source)
+        return with_plan_origin(with_plan_source(env, plan_source), plan_origin)
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -460,7 +488,7 @@ def _l2_envelope(
         *stamped.assumption_lines(),
     ]
     assert_envelope_valid(env)
-    env = with_plan_source(env, plan_source)
+    env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
     if where_paths:
         env["where_paths"] = where_paths_for_envelope(where_paths)
     return env
@@ -481,6 +509,7 @@ def _submit_validated(
     coverage: Coverage | None = None,
     where_paths: Sequence[WherePath] = (),
     warehouse: Path | None = None,
+    plan_origin: str = "",
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -555,6 +584,7 @@ def _submit_validated(
         plan_source=plan_source,
         coverage=coverage,
         where_paths=where_paths,
+        plan_origin=plan_origin,
     )
 
 
@@ -770,6 +800,7 @@ def maybe_generative_ask(
     kind = parse_compute_plan(payload)
     fallback_note: str | None = None
     source = plan_source_from_payload(payload)
+    origin = plan_origin_from_payload(payload)
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
@@ -777,6 +808,7 @@ def maybe_generative_ask(
         payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_ONTOLOGY
+        origin = PLAN_ORIGIN_ONTOLOGY_RANKING
         fallback_note = "insights_ranking:ontology_plan"
     if kind == "miss" and ranked_slots is None:
         # GEN-PATH-REFUSE-01: Cortex ranked the intended metric, DMS cannot
@@ -813,11 +845,13 @@ def maybe_generative_ask(
         ledger_append=ledger_append,
     )
     if multi_env is not None:
-        return multi_env
+        return with_plan_origin(multi_env, origin)
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
             source = PLAN_SOURCE_ONTOLOGY
+        if not origin:
+            origin = PLAN_ORIGIN_GENERATE_SQL
         if not sql:
             return _abstain(
                 q, "query_sql was empty",
@@ -849,6 +883,7 @@ def maybe_generative_ask(
             payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
             kind = parse_compute_plan(payload)
             source = PLAN_SOURCE_ONTOLOGY
+            origin = PLAN_ORIGIN_ONTOLOGY_RANKING
             fallback_note = "insights_ranking:ontology_plan"
         else:
             return _submit_validated(
@@ -862,8 +897,20 @@ def maybe_generative_ask(
                 plan_source=source,
                 coverage=coverage_from_sql_path(sql=sql),
                 warehouse=lake,
+                plan_origin=origin,
             )
     if kind != "plan":
+        # Named Insights fail-closed: never bind. Product Cortex.ask still
+        # runs only on a transport miss (no insights_fail stamp).
+        fail = insights_fail_reason(payload if isinstance(payload, dict) else None)
+        if fail:
+            return _abstain(
+                q,
+                fail,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+            )
         # Offline harness only (bind_on_miss): bind from retrieved ontology
         # when Cortex Insights was not reached. An Insights REFUSE
         # (unarmed / A-0009 / no SQL) is not a transport miss -- bind_plan
@@ -886,6 +933,7 @@ def maybe_generative_ask(
         payload = bind_plan(q, ctx)
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_BIND
+        origin = ""
         if kind == "unsure":
             return _abstain(
                 q, "retrieve bind abstained (unsure)",
@@ -948,6 +996,12 @@ def maybe_generative_ask(
             q, f"validate:{why}",
             space_id=space_id, session_id=session_id, plan_source=source,
         )
+    if not origin and source != PLAN_SOURCE_BIND:
+        origin = (
+            PLAN_ORIGIN_ONTOLOGY_RANKING
+            if fallback_note == "insights_ranking:ontology_plan"
+            else PLAN_ORIGIN_GENERATE_SQL
+        )
     return _submit_validated(
         compiled.sql,
         question=q,
@@ -962,4 +1016,5 @@ def maybe_generative_ask(
         coverage=compiled.coverage,
         where_paths=compiled.where_paths,
         warehouse=lake,
+        plan_origin=origin,
     )

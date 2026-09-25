@@ -93,13 +93,12 @@ EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 (SCORE-CLIENT-01 / #187; urllib CF1010s the public origin). `ask_path=exact|generative|product` on
 `POST /v1/chat/ask`. GEN-03 (#194): `exact|generative` return 400
 `ask_path_not_allowed` unless the server sets `DMS_HARNESS_ASK_PATHS`; no lane
-POSTs Cortex `/dms/query` or binds a keyword plan, so isolated gen abstains
-past the pre-gates and the product path goes to the Cortex contract ask
-(`tests/test_gen03_contain_ask_path.py`). Bar (2) KEEP_HOLD on that ticket:
-predict / revenue-2099 must not L2 all-time pad; not-cold must not invert
-under a confident badge. Isolated gen (offline only): Cortex
-compute miss may still bind retrieved ontology then validate/CRAG. Product path
-still Cortex-asks on compute miss. Distill ladder in `scripts/score_climb.md` (certified-first,
+POSTs Cortex `/dms/query` or binds a keyword plan. GEN-RESTORE-01 (#276):
+the generative seam calls Cortex Insights (generate + ranking + one ranked
+retry, timeout 8s) and fail-closes named; still never `/dms/query`. Product
+miss without an Insights fail stamp still Cortex-asks. Bar (2) KEEP_HOLD
+pins (predict / 2099 / not-cold) stay. Isolated gen (offline only): Cortex
+compute miss may still bind retrieved ontology then validate/CRAG. Distill ladder in `scripts/score_climb.md` (certified-first,
 YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
 Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.
 Baseline A/B @ `a9578348` exact 10/26 gen 1/26 WRONG=0.

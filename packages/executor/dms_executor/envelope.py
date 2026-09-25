@@ -1312,6 +1312,29 @@ def _ensure_values(
     return [{"id": "v_count", "value": float(len(rows)), "label": "row_count"}]
 
 
+def chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Fallback when Cortex omits chart_spec: category + measure → hbar.
+
+    Same builder the Cortex contract path uses. None when rows do not fit
+    (no string category plus numeric measure). Do not invent a shell.
+    """
+    if not rows:
+        return None
+    keys = list(rows[0].keys())
+    num_key = next(
+        (
+            k
+            for k in keys
+            if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
+        ),
+        None,
+    )
+    cat_key = next((k for k in keys if k != num_key and isinstance(rows[0].get(k), str)), None)
+    if num_key and cat_key:
+        return {"kind": "hbar", "x": cat_key, "y": num_key, "title": "Result"}
+    return None
+
+
 def build_answer_envelope(
     *,
     answer_id: str,
@@ -1898,6 +1921,7 @@ __all__ = [
     "assert_envelope_valid",
     "build_answer_envelope",
     "build_audit_receipt",
+    "chart_from_rows",
     "competing_category_scopes",
     "invented_totals",
     "normalize_badge",
