@@ -22,6 +22,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from oracle_row_match import run_oracle_select  # noqa: E402
+from score_curated import (  # noqa: E402
+    read_engine_clock_from_con,
+    round_date_label,
+    stamp_round_clock,
+)
 
 ORACLES_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 SEED_PATH = ROOT / "packages" / "executor" / "dms_executor" / "demo_warehouse.py"
@@ -107,3 +112,48 @@ def test_cq_audit_overdue_bound_as_of_two_dates(tmp_path: Path) -> None:
             f"cq_audit_overdue rows at as_of={as_of.isoformat()} "
             f"must match seed-derived overdue supplier_id set"
         )
+
+
+def test_round_invalid_when_engine_date_crosses_midnight() -> None:
+    """Mismatched before/after is INVALID, never WRONG. Matching dates are not."""
+    mismatched = round_date_label("2026-09-24", "2026-09-25")
+    assert mismatched == "INVALID"
+    assert mismatched != "WRONG"
+
+    report = {"passed": True, "wrong": 3}
+    label = stamp_round_clock(report, "2026-09-24", "2026-09-25", "UTC")
+    assert label == "INVALID"
+    assert report["round_label"] == "INVALID"
+    assert report["round_label"] != "WRONG"
+    assert report["passed"] is False
+    assert report["wrong"] == 3
+    assert report["oracle_as_of"] == "2026-09-24"
+    assert report["oracle_as_of_after"] == "2026-09-25"
+    assert report["oracle_timezone"] == "UTC"
+
+    ok = {"passed": True, "wrong": 0}
+    match = stamp_round_clock(ok, "2026-09-25", "2026-09-25", "Asia/Kuala_Lumpur")
+    assert match is None
+    assert ok.get("round_label") != "INVALID"
+    assert ok["passed"] is True
+    assert ok["wrong"] == 0
+
+
+def test_engine_date_comes_from_answer_connection(tmp_path: Path) -> None:
+    """CURRENT_DATE is read on the same connection, not datetime.now()."""
+    warehouse = _load_demo_warehouse()
+    db = tmp_path / "dms_demo.duckdb"
+    warehouse.ensure_demo_warehouse(db)
+    con = warehouse.connect_file(db)
+    try:
+        con.execute("SET TimeZone = 'UTC'")
+        as_of, tz = read_engine_clock_from_con(con)
+        row = con.execute(
+            "SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')"
+        ).fetchone()
+        assert row is not None
+        assert tz == "UTC"
+        assert as_of == str(row[0])
+        assert tz == str(row[1])
+    finally:
+        con.close()

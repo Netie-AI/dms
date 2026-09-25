@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - ORACLE-FIX-02 amendment 2: engine date bookends, round INVALID (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) comment 5832321962 (20:24 MYT). Adds to the bind-date work. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
+- **Change.** Each scoring round reads `CURRENT_DATE` + `TimeZone` from the answer engine, never `datetime.now()`. Offline A/B / prove: `connect_file` on the submit DuckDB, `SELECT CURRENT_DATE` on that connection before execute, bookend before/after the round, bind `$as_of` to the before date. Live HTTP cannot share the remote engine session; bookends use `--oracle-db` DuckDB `CURRENT_DATE`, never the harness clock. Timezone is stored on the score report. If before != after, the round is labelled `INVALID` at the run layer and is not printed as WRONG. Judge verdicts (`OK`/`WRONG`/`ORACLE_ERROR`/`ABSTAIN`/`LAYER`) and `oracle_row_match` comparison are unchanged.
+- **Gate.** `tests/test_oracle_fix_02.py::test_round_invalid_when_engine_date_crosses_midnight` (mismatched pair -> INVALID, not WRONG; matching pair not INVALID). Two-date bind test unchanged. `test_oracle_fix_01.py` not edited this round.
+- **Not this ticket:** other oracles; comparator edits; COMPLETE; merge.
+
 ## 2026-09-25 - ORACLE-FIX-02: cq_audit_overdue binds the run date (#308)
 
 - **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) under dms#231 / EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
