@@ -13,6 +13,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from dms_core.pii import fail_closed_mask_payload
+
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES
 
@@ -1604,6 +1606,23 @@ def build_answer_envelope(
         assumptions_list.append(
             "predict/forecast ask answered by historical SQL: history pad"
         )
+
+    # PII-01 before E4: IC/phone digits in k=v prose must not look like uncited money.
+    # Detector errors fail closed (string cells become DMSMASK_unknown_00).
+    masked = fail_closed_mask_payload(
+        text=text or "",
+        rows=rows_out,
+        values=values_out,
+        sources=sources,
+        chart=chart,
+        sql_used=sql_used,
+    )
+    text = masked["text"]
+    rows_out = masked["rows"]
+    values_out = masked["values"]
+    sources = masked["sources"]
+    chart = masked["chart"]
+    sql_used = masked["sql_used"]
 
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.

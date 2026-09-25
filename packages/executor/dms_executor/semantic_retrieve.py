@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from cortex_client.compute import pack_id_shape
+from dms_core.pii import column_is_pii, sanitize_retrieve_parts
 
 from dms_executor.demo_warehouse import connect_file
 from dms_executor.ontology import Ontology
@@ -235,6 +236,9 @@ def retrieve_value_encodings(
                 name = _safe_ident(str(col))
                 if not name or skip.search(name) or _score(name, toks) <= 0:
                     continue
+                # Name-flagged PII is never sampled. Detector errors fail closed.
+                if column_is_pii(name, (), table=table):
+                    continue
                 key = f"{table}.{name}"
                 try:
                     fetched = con.execute(
@@ -244,8 +248,11 @@ def retrieve_value_encodings(
                 except Exception:  # noqa: BLE001
                     continue
                 vals = [str(r[0]) for r in fetched if r and r[0] is not None]
-                if vals:
-                    encodings[key] = vals
+                if not vals:
+                    continue
+                if column_is_pii(name, vals, table=table):
+                    continue
+                encodings[key] = vals
     finally:
         con.close()
     return encodings
@@ -465,6 +472,9 @@ def retrieve_short_context(
     encodings = retrieve_value_encodings(warehouse, schema, toks)
     onto_slice = retrieve_ontology_slice(ontology, toks)
     bound = lookup_bound_values(question, warehouse)
+    cleaned = sanitize_retrieve_parts({"encodings": encodings, "bound_values": bound})
+    encodings = cleaned.get("encodings") or {}
+    bound = cleaned.get("bound_values") or {}
     aliases = load_measure_aliases()
     if aliases and ontology is not None:
         keep_m = onto_slice.setdefault("measures", {})

@@ -14,8 +14,15 @@ cross-check + FRTR golden), `packages/executor/dms_executor/xlsx_orch.py`
 `POST /v1/studio/xlsx-orch/crosscheck|extract|golden`.
 Regression: `tests/test_xlsx_orch.py`. Pointer owns Copilot paste (P-DMS-36).
 
+PII-01 (#272): `packages/core/dms_core/pii.py` classifies name/IC/phone/email/
+account columns (name + value patterns, no network). Retrieve drops flagged
+encodings; `build_answer_envelope` plus xlsx/BI export mask raw cells as
+`DMSMASK_*`. Detector errors fail closed. Regression: `tests/test_pii_01.py`.
+Live both-maskers run with Cortex #268 is leftover. Not #267 COMPLETE.
+
 INSIGHTS-EXPORT-01 (#188): `packages/core/dms_core/xlsx_export.py` copies an
-existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`). HTTP:
+existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`), then
+masks PII-01 cells. HTTP:
 `POST /v1/chat/export.xlsx`. Chat: Download Excel. Refuses without
 answer_id+badge; does not re-ask or add rows. Not FRTR / #29. Regression:
 `tests/test_insights_export.py`. Not COMPLETE.

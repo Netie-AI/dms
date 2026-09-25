@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - PII-01: mask personal columns before Cortex context and in exports (#272)
+
+- **Ticket.** [PII-01 #272](https://github.com/Netie-AI/dms/issues/272) under parked EPIC-BANK-01 #267. Does not stamp the epic COMPLETE. Does not close the bank bar.
+- **Change.** Local deterministic detector in `dms_core/pii.py` (no network, no model). Column-name plus value-pattern checks for person names, Malaysian IC numbers, phones, emails and account numbers. Flagged sample values are dropped from retrieve `encodings` / `bound_values` before compute. Answer text, rows, xlsx and BI exports replace raw values with stable `DMSMASK_<kind>_<nn>` tokens. Aggregates keep their numbers. Detector errors fail closed (do not send the values). Not a sixth port: swap is Cortex #268 HTTP PII-MASK or a DLP call behind the same functions.
+- **Placeholders.** Tokens are not email/phone/IC/account-shaped, so a plain regex second masker leaves them unchanged. Cortex #268 is not merged; the live both-maskers run is an honest leftover and is not claimed.
+- **Gate.** `tests/test_pii_01.py` seeds a fake table, captures compute context, Insights POST `body["ontology"]` (GEN-RESTORE path: `retrieve_short_context` -> `compute_insights` ontology), plus export bytes, and asserts none of the seeded raw values appear. Demo `locations.name` / `supplier_name` stay unmasked so existing packs do not gain WRONG.
+- **Not this ticket:** Cortex #268, login, TLS, auditor export, `scripts/score_curated.py`, live both-maskers prove.
+
 ## 2026-09-25 - GEN-RESTORE-01: Cortex setup fields copy-through (#276)
 
 - **Setup fields.** When Insights returns `served_provider`, `served_model`, `served_local`, `learn_enabled`, `learn_source`, `route_store_id`, copy them onto the DMS answer envelope exactly as received. Null stays null. Missing stays absent. Never infer. Prove without Cortex#269 is expected to omit them. Harness fingerprint compare is dms#264 (parked). Not COMPLETE.
