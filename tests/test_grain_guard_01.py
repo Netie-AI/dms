@@ -275,10 +275,11 @@ def test_total_asked_but_per_sku_rows_abstains_scalar_expected(
     minter: ManifestMinter, lake: Path
 ) -> None:
     env, cortex = _post(minter, lake, TOTAL_WH_A_Q, TOTAL_PER_SKU_SQL)
-    # One row per SKU came back (1200 and 80); neither may reach the customer.
+    # One row per SKU would come back (1200 and 80); neither may reach the
+    # customer. A grouped query on a total ask is refused before it runs.
     assert len(_oracle_rows(lake, TOTAL_PER_SKU_SQL)) == 2
     _assert_grain_abstain(env, "grain_mismatch:scalar_expected", "1200", "80", "1280")
-    assert cortex.executed == [TOTAL_PER_SKU_SQL]
+    assert cortex.executed == []
 
 
 def test_low_stock_count_filter_per_sku_abstains(minter: ManifestMinter, lake: Path) -> None:
@@ -316,6 +317,9 @@ def test_which_list_with_extra_measure_returns_only_requested_columns(
     assert "96.7" not in text and "utilisation_pct" not in text, text
     assert all("utilisation_pct" not in str(v) for v in env["values"]), env["values"]
     assert "dropped unrequested column(s) utilisation_pct" in _reasons(env)
+    # The audited SQL is the one whose rows were shown (no hidden figure).
+    assert "utilisation_pct" not in str(env["sql_used"]).split(" FROM (", 1)[0]
+    assert _multiset(_oracle_rows(lake, env["sql_used"])) == _multiset(env["rows"])
 
 
 # --- 4. matching grain keeps L2 ------------------------------------------------
@@ -372,3 +376,89 @@ def test_requested_grain_and_named_measure_pass() -> None:
     assert grain_mismatch_reason("Show the utilisation for warehouse A", util) is None
     assert grain_mismatch_reason("Which warehouse has the highest utilisation?", util) is None
     assert grain_mismatch_reason("Show stock ; not sql (", "not sql (") is None
+
+
+# --- verifier probes (round 2): bypasses closed, legit asks kept ---------------
+
+WH_B_STOCK_SQL = (
+    "SELECT i.sku, SUM(i.quantity_kg) AS {alias} FROM inventory i "
+    "WHERE i.location_id = 'WH-B' GROUP BY i.sku"
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "prefix", "figures"),
+    [
+        # trim would launder an unfiltered row set: every warehouse "almost full"
+        (
+            "Which warehouses are almost full?",
+            "SELECT location_code, ROUND(100.0*SUM(current_load_kg)/SUM(capacity_kg),1) "
+            "AS utilisation_pct FROM locations GROUP BY location_code",
+            "unrequested_measure:utilisation_pct",
+            ("WH-A", "WH-B", "WH-D"),
+        ),
+        # every SKU listed as below reorder
+        (
+            "Which SKUs are below reorder level?",
+            "SELECT sku, SUM(quantity_kg) AS on_hand_kg FROM inventory GROUP BY sku",
+            "unrequested_measure:on_hand_kg",
+            ("RS622XK",),
+        ),
+        # per-SKU grain on a total ask, hidden by LIMIT 1 (1200, true total 1280)
+        (
+            TOTAL_WH_A_Q,
+            TOTAL_PER_SKU_SQL + " ORDER BY 2 DESC LIMIT 1",
+            "grain_mismatch:scalar_expected",
+            ("1200", "1280", "RS622XK"),
+        ),
+        # unrequested grain that is not an aggregate input
+        (
+            CAPACITY_Q,
+            "SELECT is_cold_storage, ROUND(100.0*SUM(current_load_kg)/SUM(capacity_kg),1) "
+            "AS utilisation_pct FROM locations GROUP BY is_cold_storage",
+            "unrequested_grain:is_cold_storage",
+            ("60.5", "96.7"),
+        ),
+        # COUNT FILTER tally wrapped in a derived table
+        (
+            LOW_STOCK_Q,
+            "SELECT * FROM (SELECT sku, COUNT(*) FILTER (WHERE quantity_kg < reorder_level_kg) "
+            "AS below FROM inventory WHERE location_id = 'WH-A' GROUP BY sku) t",
+            "unrequested_measure:below",
+            ("RS622XK",),
+        ),
+    ],
+)
+def test_round2_bypasses_abstain_named(
+    minter: ManifestMinter,
+    lake: Path,
+    question: str,
+    sql: str,
+    prefix: str,
+    figures: tuple[str, ...],
+) -> None:
+    env, _ = _post(minter, lake, question, sql, space=OPS)
+    _assert_grain_abstain(env, prefix, *figures)
+
+
+@pytest.mark.parametrize(
+    ("question", "sql"),
+    [
+        ("Show stock levels in warehouse B", WH_B_STOCK_SQL.format(alias="on_hand_kg")),
+        ("Show inventory in warehouse B", WH_B_STOCK_SQL.format(alias="quantity_kg")),
+        ("List the stock on hand in warehouse B", WH_B_STOCK_SQL.format(alias="quantity_kg")),
+        (
+            "Which warehouses hold more than one SKU?",
+            "SELECT location_id, COUNT(DISTINCT sku) AS sku_count FROM inventory "
+            "GROUP BY location_id HAVING COUNT(DISTINCT sku) > 1",
+        ),
+    ],
+)
+def test_round2_legit_asks_keep_l2_with_their_figure(
+    minter: ManifestMinter, lake: Path, question: str, sql: str
+) -> None:
+    """The figure the question asks for is kept, and the rows are the oracle's."""
+    env, _ = _post(minter, lake, question, sql, space=OPS)
+    _assert_l2_matches_oracle(env, lake, sql)
+    oracle = _oracle_rows(lake, sql)
+    assert len(oracle[0]) == 2 and len(env["rows"][0]) == 2, env["rows"]

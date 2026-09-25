@@ -77,8 +77,12 @@ from dms_executor.semantic_retrieve import (
 )
 from dms_executor.sql_currency import currency_mismatch_reason
 from dms_executor.sql_grain import (
+    REASON_UNREQUESTED_MEASURE,
     grain_mismatch_reason,
+    output_names,
     scalar_rows_reason,
+    trim_is_safe,
+    trimmed_sql,
     unrequested_measure_outputs,
 )
 from dms_executor.verified_queries import rows_from_submit_result
@@ -739,6 +743,47 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
+    # Which/list ask with a ride-along figure: return only the requested
+    # entity columns, never the extra figure under L2 (acceptance 3) -- and
+    # only when a predicate already selected those entities. The trimmed SQL
+    # is what executes, so sql_used and the ledger rebuild the shown rows.
+    dropped = unrequested_measure_outputs(question, sql)
+    if dropped:
+        if not trim_is_safe(question, sql, keep_gt=keep_gt):
+            return _abstain(
+                question,
+                f"{REASON_UNREQUESTED_MEASURE}:{dropped[0]}",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        names = output_names(sql)
+        drop = {d.lower() for d in dropped}
+        keep_cols = [n for n in names or [] if n.lower() not in drop]
+        gt_col = str(measure or "")
+        pushdown = keep_gt is not None and gt_col.lower() in drop
+        if not keep_cols or (keep_gt is not None and not pushdown and gt_col not in keep_cols):
+            return _abstain(
+                question,
+                f"{REASON_UNREQUESTED_MEASURE}:{dropped[0]}",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        gt_name = next(n for n in names or [] if n.lower() == gt_col.lower()) if pushdown else ""
+        sql = trimmed_sql(
+            sql,
+            keep_cols,
+            where_gt=(gt_name, float(keep_gt)) if pushdown and keep_gt is not None else None,
+        )
+        if pushdown:
+            keep_gt = None
+        notes = (
+            *notes,
+            "GRAIN-GUARD-01: dropped unrequested column(s) " + ", ".join(dropped),
+        )
     try:
         result = submit(sql)
     except Exception:  # noqa: BLE001
@@ -773,24 +818,6 @@ def _submit_validated(
             session_id=session_id,
             plan_source=plan_source,
             notes=notes,
-        )
-    dropped = unrequested_measure_outputs(question, sql)
-    if dropped:
-        # Which/list ask: return only the requested entity columns, never the
-        # extra figure under L2 (GRAIN-GUARD-01 acceptance 3).
-        trimmed = [
-            {k: v for k, v in row.items() if k not in set(dropped)}
-            for row in rows_from_submit_result(result)
-        ]
-        result = SimpleNamespace(
-            ok=True,
-            status=getattr(result, "status", "ok"),
-            run_id=getattr(result, "run_id", "") or "",
-            output={"rows": trimmed},
-        )
-        notes = (
-            *notes,
-            "GRAIN-GUARD-01: dropped unrequested column(s) " + ", ".join(dropped),
         )
     run_id = str(getattr(result, "run_id", None) or "")
     try:

@@ -6,10 +6,14 @@ measure's own input (``GROUP BY capacity_kg`` for "capacity utilisation"),
 one row per SKU where a single total was asked, or a list ask ("which
 locations ...") answered with an aggregate the question never named.
 
-Wrong grain, a scalar ask answered with a breakdown, a COUNT tally on a list
-ask, or an unrequested figure on a "show the X" ask is a named ABSTAIN. A
-"which / list" ask whose rows are the right entities with a ride-along figure
-keeps L2 over the requested columns only (the figure is dropped).
+Wrong grain, a scalar ask answered with a grouped query, a COUNT tally on a
+list ask (no HAVING), or an unrequested figure on a "show the X" ask is a
+named ABSTAIN. Pass-through derived tables (``SELECT * FROM (...) t``) are
+walked to the select that sets the grain. A "which / list" ask with a
+ride-along figure keeps L2 over the requested columns only when a predicate
+(keep_gt, or a WHERE / HAVING on what the question names) already selected
+the entities; otherwise the figure is the only sign of an unfiltered row set
+and the ask abstains. The trimmed SQL is what executes and is audited.
 
 Fail closed only on clear evidence. An unparseable or set-operation SQL is not
 evidence and passes to the gates that already exist. The missing-dimension
@@ -79,6 +83,23 @@ _MEASURE_SUFFIX = re.compile(r"_(kg|myr|usd|eur|sgd|pct|days|score|qty|amount|co
 _WORD = re.compile(r"[a-z0-9]+")
 
 
+# Business words a question uses for a column token (both directions).
+_SYNONYMS: dict[str, frozenset[str]] = {
+    "quantity": frozenset({"stock", "inventory", "qty", "hand", "units"}),
+    "value": frozenset({"worth", "valuation"}),
+    "cost": frozenset({"spend", "spent", "expense", "price", "freight"}),
+    "outbound": frozenset({"sales", "sold", "selling", "revenue", "sell"}),
+    "current": frozenset({"load", "utilisation", "utilization", "full", "occupancy"}),
+    "load": frozenset({"utilisation", "utilization", "full", "occupancy"}),
+}
+# Entity keys / labels: grouping by one of these is naming the entity asked for.
+_KEY_COLUMN = re.compile(r"(^|_)(id|code|name|sku|no|number|key|label|title)$", re.I)
+# Time buckets: a missing or extra time grain is QUAL-GUARD-01's call.
+_TIME_COLUMN = re.compile(
+    r"(^|_)(day|date|week|month|quarter|year|ts|period|time|at)$", re.I
+)
+
+
 def _q_words(question: str) -> list[str]:
     return _WORD.findall(question.lower())
 
@@ -89,14 +110,19 @@ def _tokens(name: str) -> list[str]:
     ]
 
 
+def _word_match(tok: str, w: str) -> bool:
+    stem = tok[:5]
+    return w == tok or (len(stem) >= 5 and w.startswith(stem)) or (
+        len(w) >= 5 and tok.startswith(w[:5])
+    )
+
+
 def _overlaps(name: str, words: Sequence[str]) -> bool:
-    """A name token matches a question word on a shared 5-char stem (or whole)."""
+    """A name token matches a question word on a shared 5-char stem, whole, or synonym."""
     for tok in _tokens(name):
-        stem = tok[:5]
+        syn = _SYNONYMS.get(tok, frozenset())
         for w in words:
-            if w == tok or (len(stem) >= 5 and w.startswith(stem)) or (
-                len(w) >= 5 and tok.startswith(w[:5])
-            ):
+            if _word_match(tok, w) or w in syn:
                 return True
     return False
 
@@ -110,20 +136,79 @@ def _requested_by(name: str, question: str) -> bool:
     return False
 
 
-def _outer_select(sql: str) -> exp.Select | None:
+def _parse(sql: str) -> exp.Expression | None:
     try:
-        tree = parse_one(sql, read=_DIALECT)
+        return parse_one(sql, read=_DIALECT)
     except Exception:  # noqa: BLE001 -- not evidence; other gates own parse errors
         return None
+
+
+def _outer_select(sql: str) -> exp.Select | None:
+    tree = _parse(sql)
     return tree if isinstance(tree, exp.Select) else None
+
+
+def _has_agg(select: exp.Select) -> bool:
+    return any(p.find(exp.AggFunc) is not None for p in select.expressions)
+
+
+def _is_star(select: exp.Select) -> bool:
+    return any(
+        isinstance(p, exp.Star) or (isinstance(p, exp.Column) and isinstance(p.this, exp.Star))
+        for p in select.expressions
+    )
+
+
+def _derived_inner(select: exp.Select) -> exp.Select | None:
+    """The sole derived table in FROM (no joins), if any."""
+    if select.args.get("joins"):
+        return None
+    frm = select.args.get("from")
+    src = frm.this if frm is not None else None
+    if isinstance(src, exp.Subquery) and isinstance(src.this, exp.Select):
+        return src.this
+    return None
+
+
+def _grain_chain(select: exp.Select) -> list[exp.Select]:
+    """Outer select, then each pass-through derived table the grain comes from.
+
+    ``SELECT * FROM (SELECT sku, COUNT(*) FILTER ... GROUP BY sku) t`` has the
+    per-SKU tally's grain, not the wrapper's. Descend while the wrapper neither
+    aggregates nor groups; stop at the first select that does.
+    """
+    chain = [select]
+    cur = select
+    while cur.args.get("group") is None and not _has_agg(cur):
+        inner = _derived_inner(cur)
+        if inner is None:
+            break
+        chain.append(inner)
+        cur = inner
+    return chain
+
+
+def _effective_projections(chain: list[exp.Select]) -> list[exp.Expression]:
+    """Projections of the grain select, limited to what the wrapper(s) pass out."""
+    names: set[str] | None = None
+    for sel in chain[:-1]:
+        if not _is_star(sel):
+            here = {p.alias_or_name.lower() for p in sel.expressions}
+            names = here if names is None else names & here
+    projs = list(chain[-1].expressions)
+    if names is None:
+        return projs
+    return [p for p in projs if p.alias_or_name.lower() in names]
+
+
+def _agg_inputs_of(proj: exp.Expression) -> set[str]:
+    return {c.name.lower() for agg in proj.find_all(exp.AggFunc) for c in agg.find_all(exp.Column)}
 
 
 def _agg_inputs(select: exp.Select) -> set[str]:
     out: set[str] = set()
     for proj in select.expressions:
-        for agg in proj.find_all(exp.AggFunc):
-            for col in agg.find_all(exp.Column):
-                out.add(col.name.lower())
+        out |= _agg_inputs_of(proj)
     return out
 
 
@@ -156,6 +241,21 @@ def _group_columns(select: exp.Select) -> list[str]:
     return out
 
 
+def _pinned_columns(select: exp.Select) -> set[str]:
+    """Columns WHERE pins to one literal (``col = 'WH-A'``): one group, not a breakdown."""
+    where = select.args.get("where")
+    if where is None:
+        return set()
+    out: set[str] = set()
+    for eq in where.find_all(exp.EQ):
+        left, right = eq.this, eq.expression
+        if isinstance(left, exp.Column) and isinstance(right, (exp.Literal, exp.Boolean)):
+            out.add(left.name.lower())
+        elif isinstance(right, exp.Column) and isinstance(left, (exp.Literal, exp.Boolean)):
+            out.add(right.name.lower())
+    return out
+
+
 def _where_columns(select: exp.Select) -> set[str]:
     out: set[str] = set()
     for arg in ("where", "having"):
@@ -163,6 +263,28 @@ def _where_columns(select: exp.Select) -> set[str]:
         if node is not None:
             out.update(c.name.lower() for c in node.find_all(exp.Column))
     return out
+
+
+def _predicate_names_question(chain: list[exp.Select], words: Sequence[str]) -> bool:
+    """A WHERE / HAVING somewhere in the chain filters on what the question names.
+
+    Evidence that the row set is the question's entities, not every entity:
+    a predicate column or string literal that shares a stem (or synonym) with
+    a question word (``is_cold_storage`` for "cold storage", ``'CHEMICALS'``
+    for "chemicals"). A scope filter alone (``location_code = 'WH-A'``) is not.
+    """
+    for sel in chain:
+        for arg in ("where", "having"):
+            node = sel.args.get(arg)
+            if node is None:
+                continue
+            for col in node.find_all(exp.Column):
+                if _overlaps(col.name, words):
+                    return True
+            for lit in node.find_all(exp.Literal):
+                if lit.is_string and _overlaps(str(lit.this), words):
+                    return True
+    return False
 
 
 def _list_head(question: str) -> str:
@@ -183,31 +305,66 @@ def grain_mismatch_reason(question: str, sql: str) -> str | None:
 
     SQL-only; runs before submit. ``None`` means no clear evidence.
     """
-    select = _outer_select(sql)
-    if select is None:
+    outer = _outer_select(sql)
+    if outer is None:
         return None
+    chain = _grain_chain(outer)
+    select = chain[-1]
     words = _q_words(question)
+    groups = _group_columns(select)
+    pinned = _pinned_columns(select)
 
-    # (b) grouped by the measure's own input: a dimension nobody asked for.
+    # (a) a single total asked, grouped query: a breakdown whatever the row
+    # count (``ORDER BY 2 DESC LIMIT 1`` over per-SKU sums is one SKU, not the
+    # total). A group pinned to one literal by WHERE is still one figure.
+    if scalar_asked(question) and select.args.get("group") is not None:
+        if any(col not in pinned for col in groups) or len(groups) < len(
+            select.args["group"].expressions
+        ):
+            return SCALAR_EXPECTED
+
+    # (b) a dimension nobody asked for: the measure's own input
+    # (capacity_kg for "capacity utilisation"), or any non-key column the
+    # question neither names nor asks a breakdown by (is_cold_storage).
     inputs = _agg_inputs(select)
-    for col in _group_columns(select):
-        if col in inputs and not _requested_by(col, question):
+    where_cols = _where_columns(select)
+    for col in groups:
+        if _requested_by(col, question):
+            continue
+        if col in inputs:
+            return f"{REASON_UNREQUESTED_GRAIN}:{col}"
+        if (
+            _has_agg(select)
+            and not _KEY_COLUMN.search(col)
+            and not _TIME_COLUMN.search(col)
+            and col not in where_cols
+            and not _overlaps(col, words)
+        ):
             return f"{REASON_UNREQUESTED_GRAIN}:{col}"
 
-    # List ask: the answer is entities. An aggregate output is requested only
-    # by an aggregation cue or by name; a COUNT only by a count cue (COUNT(*)
-    # FILTER is the predicate turned into a tally: its zero rows are entities
-    # the predicate excludes, so trimming it cannot fix the row set).
+    # List ask: the answer is entities. An aggregate output is requested by an
+    # aggregation cue, by name, or (on "show X") by its input column. A COUNT
+    # without a count cue is COUNT(*) FILTER, the predicate turned into a
+    # tally: its zero rows are entities the predicate excludes, so trimming
+    # cannot fix the row set -- unless HAVING already filters on it.
     head = _list_head(question)
     if head:
-        where_cols = _where_columns(select)
-        for proj in select.expressions:
+        having = select.args.get("having") is not None
+        for proj in _effective_projections(chain):
             inner = proj.this if isinstance(proj, exp.Alias) else proj
             name = proj.alias_or_name
             if inner.find(exp.AggFunc) is not None:
-                if inner.find(exp.Count) is not None and not _COUNT_CUE.search(question):
+                if (
+                    inner.find(exp.Count) is not None
+                    and not _COUNT_CUE.search(question)
+                    and not having
+                ):
                     return f"{REASON_UNREQUESTED_MEASURE}:{name}"
-                if head == "show" and not _overlaps(name, words):
+                if (
+                    head == "show"
+                    and not _overlaps(name, words)
+                    and not any(_overlaps(c, words) for c in _agg_inputs_of(inner))
+                ):
                     return f"{REASON_UNREQUESTED_MEASURE}:{name}"
             elif isinstance(inner, exp.Column):
                 col = inner.name.lower()
@@ -224,26 +381,69 @@ def grain_mismatch_reason(question: str, sql: str) -> str | None:
 def unrequested_measure_outputs(question: str, sql: str) -> list[str]:
     """Aggregate output names a which/list ask never requested.
 
-    The row set is the grouped entities, already filtered by WHERE / HAVING /
-    keep_gt; the extra figure only rides along. Dropping it leaves exactly the
-    entities asked for. Only non-COUNT aggregates reach here
-    (``grain_mismatch_reason`` abstains on a COUNT first).
+    Only non-COUNT aggregates reach here (``grain_mismatch_reason`` abstains
+    on a bare COUNT first). Whether dropping them is safe is
+    ``trim_is_safe``'s call, not this function's.
     """
     if _list_head(question) not in {"which", "list"}:
         return []
-    select = _outer_select(sql)
-    if select is None:
+    outer = _outer_select(sql)
+    if outer is None:
         return []
+    chain = _grain_chain(outer)
     words = _q_words(question)
     out: list[str] = []
     keep = 0
-    for proj in select.expressions:
+    for proj in _effective_projections(chain):
         inner = proj.this if isinstance(proj, exp.Alias) else proj
         if inner.find(exp.AggFunc) is not None and not _overlaps(proj.alias_or_name, words):
             out.append(proj.alias_or_name)
         else:
             keep += 1
     return out if keep else []
+
+
+def output_names(sql: str) -> list[str] | None:
+    """Output column names of the SQL, or ``None`` when a star hides them."""
+    outer = _outer_select(sql)
+    if outer is None:
+        return None
+    chain = _grain_chain(outer)
+    if all(_is_star(s) for s in chain[:-1]) and len(chain) > 1:
+        projs = chain[-1].expressions
+    elif _is_star(outer):
+        return None
+    else:
+        projs = _effective_projections(chain)
+    if any(isinstance(p, exp.Star) for p in projs):
+        return None
+    return [p.alias_or_name for p in projs]
+
+
+def trim_is_safe(question: str, sql: str, *, keep_gt: float | None) -> bool:
+    """Dropping the ride-along figure leaves the question's entities only if a
+    predicate already selected them: ``keep_gt`` on the measure, or a WHERE /
+    HAVING that filters on what the question names. Otherwise the figure is
+    the only evidence of an unfiltered row set, and hiding it would certify
+    every entity (all five warehouses as "almost full") -- abstain instead.
+    """
+    if keep_gt is not None:
+        return True
+    outer = _outer_select(sql)
+    if outer is None:
+        return False
+    return _predicate_names_question(_grain_chain(outer), _q_words(question))
+
+
+def trimmed_sql(sql: str, keep: Sequence[str], *, where_gt: tuple[str, float] | None = None) -> str:
+    """The SQL whose rows are the trimmed rows, so ledger and envelope can rebuild them."""
+    body = sql.strip().rstrip(";").strip()
+    cols = ", ".join(exp.to_identifier(c, quoted=True).sql(dialect=_DIALECT) for c in keep)
+    out = f"SELECT {cols} FROM ({body}) AS grain_trim"
+    if where_gt is not None:
+        ident = exp.to_identifier(where_gt[0], quoted=True).sql(dialect=_DIALECT)
+        out += f" WHERE {ident} > {float(where_gt[1])!r}"
+    return out
 
 
 def scalar_rows_reason(question: str, rows: Sequence[Any]) -> str | None:
