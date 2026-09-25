@@ -190,6 +190,13 @@ MEASURED[("dup_business_key", "customer_count", "sql")] = _FIXED_ORPHAN
 # customer_code is duplicated, even where the region rows would be right.
 MEASURED[("dup_business_key", "revenue_by_region", "sql")] = _FIXED_ORPHAN
 MEASURED[("dup_business_key", "units_by_region", "sql")] = _FIXED_ORPHAN
+_A2_06_OK: tuple[tuple[str, str, str], ...] = (
+    ("orphan", "customer_count", "plan"),
+    ("fk_wrong_col", "revenue_by_region", "plan"),
+    ("fk_wrong_col", "customer_count", "plan"),
+)
+for _key in _A2_06_OK:
+    MEASURED[_key] = "OK"
 
 
 def _ontology(case: Case) -> Ontology:

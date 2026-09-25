@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - A2-06: caller ontology stays unread; missing verify cache abstains (#262)
+
+- **Ticket.** [A2-06 #262](https://github.com/Netie-AI/dms/issues/262). Same PR. Does not merge. Does not stamp COMPLETE. CI fixtures, not live.
+- **Verify.** `_compile_maybe_unverified` compiles on a private shallow copy (`verified=True` on the copy only). A scoped ask leaves the caller's `verified` and every link cardinality unchanged. `Ontology.verify` writes `_violations` on `self.__dict__`. If that slot is missing or None after a failed verify, plan and SQL both ABSTAIN `ontology_unverified`.
+- **Gating.** `tests/test_hostile_schema_a2.py` differs from `3f0353a6` only by `_A2_06_OK` (three named ABSTAIN->OK pins). The six defect-touching pins stay byte-identical ABSTAIN.
+- **Not this ticket:** live prove; COMPLETE; merge.
+
+## 2026-09-25 - A2-06: scope ontology refusals to the failed subject (#262)
+
+- **Ticket.** [A2-06 #262](https://github.com/Netie-AI/dms/issues/262) under EPIC-A2 #256. Does not stamp the epic COMPLETE. Does not invent a live coverage or WRONG=0 figure. Any n is a CI fixture.
+- **Change.** `load_verified_ontology` keeps a caller-declared ontology when `verify` fails. Failed-link cardinality is never re-blessed. A hop through a failed `fk_intact` link is a use of that subject (plan path or SQL that reads both relations). A failed object key cites when it is the grain, a hop, a group/filter/via destination, or when SQL reads its relation. Compile of a clean plan uses a shallow copy so the caller's `verified` flag is not toggled. Lakes with no declared ontology (demo/live, BIRD) still drop the default demo ontology on failure.
+- **Gate.** Flip list re-derived after the Epic hop ruling: only pins whose envelope rows equal the hostile-schema oracle as a **multiset** move ABSTAIN -> OK. A badge, OK status, or matching row count alone cannot pass. New fixtures (orphan-with-lines; duplicated dimension key) abstain when the path/SQL touches the failed subject. Defect-touching ABSTAIN pins stay. New: `tests/test_a2_06_scoped_ontology.py`. No skip/xfail. No invariants / import-linter / contract / WRONG / scorer / BEARER / QUAL-GUARD edits. Any n/M is CI fixtures, not live.
+- **Not this ticket:** live prove; FX; COMPLETE; merge.
+
 ## 2026-09-25 - QUAL-GUARD-01: named abstain when a qualifier is dropped (#290)
 
 - **Ticket.** [QUAL-GUARD-01 #290](https://github.com/Netie-AI/dms/issues/290) under EPIC-INSIGHTS-UX #178. Does not stamp the epic COMPLETE. Does not close #231. Does not edit `scripts/score_curated.py` (dms#292).
