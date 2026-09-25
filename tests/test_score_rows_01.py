@@ -16,10 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from oracle_row_match import read_schema_version  # noqa: E402
 from score_curated import (  # noqa: E402
+    EXIT_BLOCKED,
     EXIT_CONFIG,
     FIGURE_LABEL_FIXTURE,
     PACK_DENOMINATOR,
     REFUSE,
+    climb_ab_live,
     judge,
     judge_detailed,
     load_pack,
@@ -277,6 +279,24 @@ def test_live_modes_require_oracle_db() -> None:
     assert main(["--climb", "--url", "https://studio.netie.ai/api"]) == EXIT_CONFIG
     assert main(["--climb", "--ab", "--url", "https://studio.netie.ai/api"]) == EXIT_CONFIG
     assert main(["--prove-path", "--url", "https://studio.netie.ai/api"]) == EXIT_CONFIG
+
+
+def test_climb_ab_cf1010_blocked_without_oracle_db(monkeypatch) -> None:
+    """Probe BLOCKED must not require --oracle-db (existing 2-arg call)."""
+
+    def fake_probe(_url: str, _timeout: float) -> tuple[str, str]:
+        return "blocked", "CF1010 Cloudflare browser-signature ban (not IAP)."
+
+    monkeypatch.setattr("score_curated.probe_climb_host", fake_probe)
+    assert climb_ab_live("https://studio.netie.ai/api", 1.0) == EXIT_BLOCKED
+
+
+def test_climb_ab_ok_host_without_oracle_db_is_config(monkeypatch) -> None:
+    def fake_probe(_url: str, _timeout: float) -> tuple[str, str]:
+        return "ok", "product=dms ask_mode=live"
+
+    monkeypatch.setattr("score_curated.probe_climb_host", fake_probe)
+    assert climb_ab_live("https://studio.netie.ai/api", 1.0) == EXIT_CONFIG
 
 
 def test_self_check_still_passes_on_52_question_pack() -> None:

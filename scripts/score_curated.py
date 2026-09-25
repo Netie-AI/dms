@@ -1785,7 +1785,12 @@ def score_pack_live(
     return tallies, cases_out
 
 
-def live(url: str, timeout: float, oracle_db: Path) -> int:
+def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     tallies, _cases = score_pack_live(url, timeout, oracle_db=oracle_db)
     n = sum(tallies.values())
     wrong = tallies["WRONG"]
@@ -2208,7 +2213,7 @@ def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
     return kind, detail
 
 
-def climb(url: str, timeout: float, oracle_db: Path) -> int:
+def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     kind, detail = probe_climb_host(url, timeout)
     print(f"GEN-02 climb host {url}  [{kind}] {detail}")
     if kind == "blocked":
@@ -2217,6 +2222,11 @@ def climb(url: str, timeout: float, oracle_db: Path) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     try:
         tallies, cases = score_pack_live(url, timeout, oracle_db=oracle_db)
     except ImportError:
@@ -2279,7 +2289,7 @@ def _crag_counts(cases: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
-def climb_ab_live(url: str, timeout: float, oracle_db: Path) -> int:
+def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     """Live isolated A/B: ask_path=exact vs ask_path=generative. WRONG=0 law."""
     kind, detail = probe_climb_host(url, timeout)
     print(f"GEN-02 live A/B host {url}  [{kind}] {detail}")
@@ -2289,6 +2299,11 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     print("-- ask_path=exact --")
     try:
         exact_t, exact_cases = score_pack_live(
@@ -2674,7 +2689,7 @@ def prove_path_offline(oracle_db: Path | None = None) -> int:
     return code
 
 
-def prove_path_live(url: str, timeout: float, oracle_db: Path) -> int:
+def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     kind, detail, health = probe_climb_health(url, timeout)
     print(f"GEN-PATH-PROVE-01 host {url}  [{kind}] {detail}")
     climb = health.get("gen_path_climb") if isinstance(health, dict) else None
@@ -2695,6 +2710,11 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     print("-- ask_path=generative (plan_source labels) --")
     try:
         gen_t, gen_cases = score_pack_live(
