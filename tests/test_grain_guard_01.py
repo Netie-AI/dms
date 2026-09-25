@@ -683,3 +683,151 @@ _DEDUP = "(SELECT sku, ANY_VALUE(category) AS category FROM inventory GROUP BY s
 )
 def test_gate_shapes(question: str, sql: str, want: str | None) -> None:
     assert grain_mismatch_reason(question, sql) == want
+
+
+# --- round 4: the verifier's round-3 bypasses ----------------------------------
+
+TOTAL_STOCK_Q = "What is the total stock quantity?"
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "prefix", "figures"),
+    [
+        # no requested dimension: a per-SKU average is a breakdown, not the figure
+        (
+            "What is the average unit cost?",
+            "SELECT sku, AVG(unit_cost_myr) AS avg_unit_cost_myr FROM inventory GROUP BY sku",
+            "grain_mismatch:scalar_expected",
+            ("SKU-GAMMA", "12.0", "8.75"),
+        ),
+        (
+            "What is the highest unit cost?",
+            "SELECT supplier_id, MAX(unit_cost_myr) AS max_cost FROM inventory "
+            "GROUP BY supplier_id",
+            "unrequested_grain:supplier_id",
+            ("SUP-04",),
+        ),
+        # ANY_VALUE is one row's value dressed as an aggregate
+        (
+            TOTAL_STOCK_Q,
+            "SELECT ANY_VALUE(quantity_kg) AS total_quantity_kg FROM inventory",
+            "grain_mismatch:scalar_expected",
+            ("1200.0",),
+        ),
+        # a LIMIT inside a derived table picks an arbitrary subset
+        (
+            TOTAL_STOCK_Q,
+            "SELECT SUM(quantity_kg) AS total_quantity_kg "
+            "FROM (SELECT quantity_kg FROM inventory LIMIT 2) t",
+            "grain_unanalysable:nested_limit",
+            ("1280",),
+        ),
+        # summing DISTINCT values drops equal lots
+        (
+            TOTAL_STOCK_Q,
+            "SELECT SUM(q) AS total_quantity_kg "
+            "FROM (SELECT DISTINCT quantity_kg AS q FROM inventory) t",
+            "grain_unanalysable:nested_grouping",
+            (),
+        ),
+        # "total" answered by the largest lot
+        (
+            "How much stock do we hold in total?",
+            "SELECT MAX(quantity_kg) AS total_quantity_kg FROM inventory",
+            "grain_mismatch:total_not_summed",
+            ("3400",),
+        ),
+    ],
+)
+def test_round4_bypasses_abstain_before_execution(
+    minter: ManifestMinter,
+    lake: Path,
+    question: str,
+    sql: str,
+    prefix: str,
+    figures: tuple[str, ...],
+) -> None:
+    env, cortex = _post(minter, lake, question, sql, space=OPS)
+    _assert_grain_abstain(env, prefix, *figures)
+    assert cortex.executed == [], "a shape the gate refuses must not execute"
+
+
+def test_round4_breakdown_cut_at_limit_abstains_truncated(
+    minter: ManifestMinter, lake: Path
+) -> None:
+    """A breakdown that fills its LIMIT may be missing groups; no top-N was asked."""
+    sql = (
+        "SELECT category, SUM(quantity_kg) AS quantity_kg FROM inventory "
+        "GROUP BY category ORDER BY 2 DESC LIMIT 1"
+    )
+    assert len(_oracle_rows(lake, sql)) == 1
+    env, _ = _post(minter, lake, "Show stock by category", sql, space=OPS)
+    _assert_grain_abstain(env, "grain_mismatch:truncated", "PACKAGING", "4300")
+
+
+@pytest.mark.parametrize(
+    ("question", "sql"),
+    [
+        ("What is the average unit cost?",
+         "SELECT AVG(unit_cost_myr) AS avg_unit_cost_myr FROM inventory"),
+        ("What is the highest unit cost?",
+         "SELECT MAX(unit_cost_myr) AS max_unit_cost_myr FROM inventory"),
+        (TOTAL_STOCK_Q, "SELECT SUM(quantity_kg) AS total_quantity_kg FROM inventory"),
+        # the default LIMIT 50 over 4 groups is not a truncation
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS quantity_kg FROM inventory "
+         "GROUP BY category LIMIT 50"),
+        # a top-N ask fills its LIMIT by design
+        ("Top 2 categories by stock",
+         "SELECT category, SUM(quantity_kg) AS quantity_kg FROM inventory "
+         "GROUP BY category ORDER BY 2 DESC LIMIT 2"),
+        # a DISTINCT dimension join (the curated top-3 oracle's shape) is analysable
+        ("Show stock by category",
+         "SELECT c.category, SUM(i.quantity_kg) AS quantity_kg FROM inventory i "
+         "JOIN (SELECT DISTINCT sku, category FROM inventory) c ON i.sku = c.sku "
+         "GROUP BY c.category"),
+        ("How many SKUs do we have?",
+         "SELECT COUNT(*) AS sku_count FROM (SELECT DISTINCT sku FROM inventory) s"),
+    ],
+)
+def test_round4_legit_asks_keep_l2(
+    minter: ManifestMinter, lake: Path, question: str, sql: str
+) -> None:
+    env, _ = _post(minter, lake, question, sql, space=OPS)
+    _assert_l2_matches_oracle(env, lake, sql)
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "want"),
+    [
+        ("What is the average unit cost?",
+         "SELECT location_id, AVG(unit_cost_myr) AS a FROM inventory GROUP BY location_id",
+         "grain_mismatch:scalar_expected"),
+        ("What is the average stock quantity?",
+         "SELECT supplier_id, AVG(quantity_kg) AS a FROM inventory GROUP BY supplier_id",
+         "grain_mismatch:scalar_expected"),
+        (TOTAL_STOCK_Q, "SELECT ARG_MAX(quantity_kg, sku) AS t FROM inventory",
+         "grain_mismatch:scalar_expected"),
+        (TOTAL_STOCK_Q, "SELECT FIRST(quantity_kg) AS t FROM inventory",
+         "grain_mismatch:scalar_expected"),
+        (TOTAL_STOCK_Q, "SELECT SUM(quantity_kg) AS t FROM inventory USING SAMPLE 50%",
+         "grain_unanalysable:sample"),
+        (TOTAL_STOCK_Q,
+         "SELECT SUM(quantity_kg) AS t FROM inventory "
+         "WHERE sku IN (SELECT sku FROM inventory LIMIT 1)",
+         "grain_unanalysable:nested_limit"),
+        (TOTAL_STOCK_Q,
+         "SELECT SUM(quantity_kg) AS t FROM (SELECT quantity_kg FROM inventory OFFSET 1) x",
+         "grain_unanalysable:nested_offset"),
+        (TOTAL_STOCK_Q,
+         "SELECT SUM(q) AS t FROM (SELECT DISTINCT quantity_kg * 1 AS q FROM inventory) x",
+         "grain_unanalysable:nested_distinct"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory GROUP BY category OFFSET 1",
+         "grain_unanalysable:offset"),
+        ("What is the highest unit cost?",
+         "SELECT MAX(unit_cost_myr) AS m FROM inventory", None),
+    ],
+)
+def test_round4_gate_shapes(question: str, sql: str, want: str | None) -> None:
+    assert grain_mismatch_reason(question, sql) == want

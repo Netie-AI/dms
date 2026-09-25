@@ -17,8 +17,16 @@ analyse is one it cannot prove has the question's grain, so it abstains
   SETS, an out-of-range position, or any other expression;
 - CTEs and subqueries that neither group nor aggregate, except the entity
   dedup ``SELECT key, ANY_VALUE(attr) ... GROUP BY key`` (one row per key,
-  no measure), which the outer query may count and group by but never
-  aggregate over.
+  no measure), or ``SELECT DISTINCT <bare columns>``, which the outer query
+  may count and group by but never aggregate over;
+- no LIMIT / OFFSET / DISTINCT / QUALIFY inside a derived table, no
+  TABLESAMPLE, no outer OFFSET: each decides which rows the answer is
+  computed over.
+
+A scalar ask's outputs may not be row pickers (ANY_VALUE / FIRST / ARG_MAX:
+one row's value), and a "total" needs a SUM or COUNT. After execution, a
+result that fills the outer LIMIT on a question with no top-N abstains
+``grain_mismatch:truncated``.
 
 On an analysable query: a scalar ask needs an all-aggregate, ungrouped
 outermost SELECT and exactly one executed row; every GROUP BY column must be
@@ -51,6 +59,8 @@ REASON_UNREQUESTED_MEASURE = "unrequested_measure"
 REASON_UNREQUESTED_COLUMN = "unrequested_column"
 REASON_UNANALYSABLE = "grain_unanalysable"
 SCALAR_EXPECTED = f"{REASON_GRAIN_MISMATCH}:scalar_expected"
+TOTAL_NOT_SUMMED = f"{REASON_GRAIN_MISMATCH}:total_not_summed"
+TRUNCATED = f"{REASON_GRAIN_MISMATCH}:truncated"
 
 GRAIN_REASONS = frozenset(
     {
@@ -65,9 +75,34 @@ GRAIN_REASONS = frozenset(
 # A single figure is asked for.
 _SCALAR_CUE = re.compile(
     r"\b(total|how\s+many|how\s+much|overall|in\s+total|sum\s+of|number\s+of|"
-    r"count\s+of|altogether)\b",
+    r"count\s+of|altogether|average|avg|mean|median)\b",
     re.I,
 )
+# A sum is asked for: MAX / MIN / a picked row is not a total.
+_TOTAL_CUE = re.compile(r"\b(total|sum\s+of|altogether)\b", re.I)
+_NOT_SUM_CUE = re.compile(
+    r"\b(average|avg|mean|median|max\w*|min\w*|highest|lowest|largest|smallest|"
+    r"biggest|peak|most|least)\b",
+    re.I,
+)
+# The question itself asks for only the first N rows.
+_RANK_CUE = re.compile(
+    r"\b(top|bottom|first|highest|lowest|most|least|largest|smallest|biggest|"
+    r"best|worst|rank\w*|limit)\b",
+    re.I,
+)
+# One row's value dressed as an aggregate.
+_PICKERS: tuple[type[exp.Expression], ...] = (
+    exp.AnyValue,
+    exp.First,
+    exp.Last,
+    exp.ArgMax,
+    exp.ArgMin,
+    exp.FirstValue,
+    exp.LastValue,
+)
+# Clauses that change which rows a derived table holds.
+_ROW_SET_CLAUSES = ("limit", "offset", "fetch", "qualify", "distinct", "sample")
 # The question names a breakdown, a ranking, a list or a comparison.
 # "across all X" is a scope, not a breakdown.
 _BREAKDOWN_CUE = re.compile(
@@ -275,6 +310,28 @@ def _dedup_outputs(select: exp.Select) -> set[str] | None:
     return out
 
 
+def _distinct_outputs(select: exp.Select) -> set[str] | None:
+    """Output names when ``select`` is ``SELECT DISTINCT <bare columns>``, else None.
+
+    The same entity dedup as the ANY_VALUE form (a dimension to join or
+    count), so the outer query may count and group by it but never aggregate
+    its values: summing DISTINCT values drops equal lots.
+    """
+    if not select.args.get("distinct") or select.args["distinct"].args.get("on"):
+        return None
+    if select.args.get("group") is not None or _is_agg(select):
+        return None
+    if any(s is not select for s in select.find_all(exp.Select)):
+        return None
+    out: set[str] = set()
+    for proj in select.expressions:
+        inner = _unalias(proj)
+        if not isinstance(inner, exp.Column) or isinstance(inner.this, exp.Star):
+            return None
+        out.add(proj.alias_or_name.lower())
+    return out
+
+
 def _dedup_alias(select: exp.Select) -> str:
     parent = select.parent
     if isinstance(parent, (exp.Subquery, exp.CTE)):
@@ -336,14 +393,28 @@ def _unanalysable(tree: exp.Expression | None) -> str | None:
         return "set_operation"
     if tree.find(exp.Window) is not None:
         return "window_function"
+    if tree.find(exp.TableSample) is not None:
+        return "sample"
+    if tree.args.get("offset") is not None or tree.args.get("fetch") is not None:
+        return "offset"
     dedup_names: set[str] = set()
     dedup_aliases: set[str] = set()
     for inner in tree.find_all(exp.Select):
         if inner is tree:
             continue
-        if inner.args.get("group") is None and not _is_agg(inner):
+        # A LIMIT / OFFSET / DISTINCT inside a derived table decides which
+        # rows the answer is computed over; the gate cannot prove that is the
+        # question's row set.
+        distinct = _distinct_outputs(inner)
+        for clause in _ROW_SET_CLAUSES:
+            if inner.args.get(clause) and not (clause == "distinct" and distinct):
+                return f"nested_{clause}"
+        if distinct:
+            names: set[str] | None = distinct
+        elif inner.args.get("group") is None and not _is_agg(inner):
             continue
-        names = _dedup_outputs(inner)
+        else:
+            names = _dedup_outputs(inner)
         if names is None:
             return "nested_grouping"
         dedup_names |= names
@@ -376,7 +447,8 @@ def _all_aggregate(select: exp.Select) -> bool:
     """Every output is an aggregate and no bare column sits outside one."""
     for proj in select.expressions:
         inner = _unalias(proj)
-        if not _is_agg(inner):
+        if not _is_agg(inner) or inner.find(*_PICKERS) is not None:
+            # ANY_VALUE / FIRST / ARG_MAX is one row's value, not an aggregate.
             return False
         if any(c.find_ancestor(exp.AggFunc) is None for c in inner.find_all(exp.Column)):
             return False
@@ -405,6 +477,11 @@ def scalar_asked(question: str) -> bool:
     return bool(_SCALAR_CUE.search(question)) and not _BREAKDOWN_CUE.search(question)
 
 
+def _entity_ask(question: str) -> bool:
+    """The question names a breakdown, ranking or list: an entity key may be its grain."""
+    return bool(_BREAKDOWN_CUE.search(question) or _LIST_HEAD.search(question))
+
+
 def _group_key_reason(
     col: str, *, is_bucket: bool, question: str, words: Sequence[str], inputs: set[str]
 ) -> str | None:
@@ -425,7 +502,10 @@ def _group_key_reason(
         return f"{REASON_UNREQUESTED_GRAIN}:{col}"
     if _overlaps(col, named):
         return None
-    if _KEY_COLUMN.search(col) and not by_words:
+    # An entity key with no dimension named is the grain of an entity ask
+    # only ("Which SKUs ..."); on "What is the average unit cost?" a per-SKU
+    # key is a breakdown nobody asked for.
+    if _KEY_COLUMN.search(col) and not by_words and _entity_ask(question):
         return None
     return f"{REASON_UNREQUESTED_GRAIN}:{col}"
 
@@ -452,6 +532,13 @@ def grain_mismatch_reason(question: str, sql: str) -> str | None:
     if scalar_asked(question):
         if select.args.get("group") is not None or not _all_aggregate(select):
             return SCALAR_EXPECTED
+        if (
+            _TOTAL_CUE.search(question)
+            and not _NOT_SUM_CUE.search(question)
+            and select.find(exp.Sum, exp.Count) is None
+        ):
+            # "total" answered by MAX / MIN / AVG is one lot, not the sum.
+            return TOTAL_NOT_SUMMED
         return None
 
     # (b) a dimension nobody asked for: the measure's own input (capacity_kg
@@ -505,6 +592,31 @@ def scalar_rows_reason(question: str, rows: Sequence[Any]) -> str | None:
     return None
 
 
+def _outer_limit(sql: str) -> int | None:
+    tree = _parse(sql)
+    limit = tree.args.get("limit") if isinstance(tree, exp.Select) else None
+    node = limit.args.get("expression") if isinstance(limit, exp.Limit) else None
+    if isinstance(node, exp.Literal) and node.is_int:
+        return int(node.this)
+    return None
+
+
+def rows_mismatch_reason(question: str, sql: str, rows: Sequence[Any]) -> str | None:
+    """Post-execution grain check on the rows the answer would show.
+
+    A scalar ask needs exactly one row. A result that fills the outer LIMIT
+    on a question that asked for no top-N may be missing groups: the gate
+    cannot prove it is the whole answer, so it abstains.
+    """
+    why = scalar_rows_reason(question, rows)
+    if why:
+        return why
+    limit = _outer_limit(sql)
+    if limit is not None and len(rows) >= limit and not _RANK_CUE.search(question):
+        return TRUNCATED
+    return None
+
+
 def grain_abstain_text(reason: str) -> str:
     """Rendered ABSTAIN text for a grain reason. States no figure."""
     head, _, detail = str(reason).partition(":")
@@ -512,6 +624,10 @@ def grain_abstain_text(reason: str) -> str:
         what = f"it was broken down by {detail}, which you did not ask for"
     elif reason == SCALAR_EXPECTED:
         what = "you asked for a single figure and the query did not return exactly one total"
+    elif reason == TOTAL_NOT_SUMMED:
+        what = "you asked for a total and the query did not add the figures up"
+    elif reason == TRUNCATED:
+        what = "the query cut the result off at its row limit, so some of it may be missing"
     elif head == REASON_UNREQUESTED_MEASURE:
         what = f"it adds a figure ({detail}) that you did not ask for"
     elif head == REASON_UNREQUESTED_COLUMN:

@@ -76,7 +76,7 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
-from dms_executor.sql_grain import grain_mismatch_reason, scalar_rows_reason
+from dms_executor.sql_grain import grain_mismatch_reason, rows_mismatch_reason
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -761,7 +761,7 @@ def _submit_validated(
             run_id=getattr(result, "run_id", "") or "",
             output={"rows": kept},
         )
-    scalar_why = scalar_rows_reason(question, rows_from_submit_result(result))
+    scalar_why = rows_mismatch_reason(question, sql, rows_from_submit_result(result))
     if scalar_why:
         return _abstain(
             question,
