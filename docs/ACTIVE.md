@@ -97,6 +97,13 @@ validate then Cortex submit. Unsure or validate-fail is ABSTAIN. A/B vs
 exact-match: `python scripts/score_curated.py --ab`. Not pack expansion.
 Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
+SCORE-ROWS-01 (#292): live `--live` / `--prove-path` / `--ab` / `--climb`
+compare `expect: l0` answer rows to `oracles.yaml` SQL on `--oracle-db`
+(read-only DuckDB; `schema_version` recorded). Helper
+`scripts/oracle_row_match.py`. Regression: `tests/test_score_rows_01.py`.
+Category figures are out of 52 and labelled CI fixtures, not live. Not
+COMPLETE. Bar PASS is Platform's live row-compared prove.
+
 A2-05 (#261): named-currency questions go through `dms_executor/sql_currency.py`
 (sqlglot, DuckDB dialect) before submit. Swap: that module only. No FX.
 Regression: `tests/test_sql_currency_a2_05.py`, `tests/test_hostile_schema_a2.py`.

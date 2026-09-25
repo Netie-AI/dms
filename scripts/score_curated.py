@@ -5,12 +5,12 @@ walkthrough analog: exact certified questions a manager can click, plus
 traps that must abstain. It does not start EPIC-019 (no new VQ repo).
 
   python scripts/score_curated.py --self-check
-  python scripts/score_curated.py --live
-  python scripts/score_curated.py --ab
-  python scripts/score_curated.py --climb --url https://studio.netie.ai/api
-  python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api
+  python scripts/score_curated.py --live --oracle-db PATH
+  python scripts/score_curated.py --ab --oracle-db PATH
+  python scripts/score_curated.py --climb --url URL --oracle-db PATH
+  python scripts/score_curated.py --climb --ab --url URL --oracle-db PATH
   python scripts/score_curated.py --prove-path
-  python scripts/score_curated.py --prove-path --url https://studio.netie.ai/api
+  python scripts/score_curated.py --prove-path --url URL --oracle-db PATH
 """
 
 from __future__ import annotations
@@ -19,10 +19,21 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+from oracle_row_match import (  # noqa: E402
+    envelope_rows,
+    read_schema_version,
+    rows_mismatch_reason,
+    run_oracle_select,
+)
 DEFAULT_PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 DEFAULT_ORACLES = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 DEFAULT_URL = "http://127.0.0.1:8090"
@@ -43,6 +54,12 @@ EXIT_PASS = 0
 EXIT_FAIL = 1
 EXIT_CONFIG = 2
 EXIT_BLOCKED = 3
+# curated_ceo questions.yaml size at SCORE-ROWS-01. Category figures never
+# use a smaller denominator. Not a live score.
+PACK_DENOMINATOR = 52
+FIGURE_LABEL_FIXTURE = "CI fixtures, not live"
+FIGURE_LABEL_LIVE = "live row-compared"
+LEGACY_JUDGE_LABEL = "scorer_ok_rows_not_compared"
 
 # Live curated_ceo @ 91c5cc99 (VQ-04 refuse traps). Frozen measurement, not a target.
 BASELINE_91C5CC99: dict[str, Any] = {
@@ -552,8 +569,15 @@ def ask_error_envelope(exc: BaseException) -> dict[str, Any] | None:
     return None
 
 
-def judge(case: dict[str, Any], env: dict[str, Any]) -> str:
-    """OK | ABSTAIN | LAYER | WRONG. WRONG is the only P0."""
+@dataclass(frozen=True)
+class JudgeResult:
+    verdict: str
+    reason: str
+    scorer_ok_rows_not_compared: str
+
+
+def _judge_badge(case: dict[str, Any], env: dict[str, Any]) -> str:
+    """OK | ABSTAIN | LAYER | WRONG. Badge/min_rows only. No row compare."""
     expect = str(case.get("expect") or "l0").lower()
     badge = str(env.get("badge") or "")
     rows = env.get("rows") or env.get("values") or []
@@ -573,11 +597,173 @@ def judge(case: dict[str, Any], env: dict[str, Any]) -> str:
     return "OK"
 
 
-def judge_envelope(case: dict[str, Any], env: dict[str, Any]) -> str:
+def _lookup_oracle_sql(
+    case: dict[str, Any],
+    oracles: Mapping[str, Any] | None,
+    oracle_sql: str | None,
+) -> str:
+    if oracle_sql is not None:
+        return str(oracle_sql).strip()
+    if oracles is None:
+        return ""
+    qid = str(case.get("id") or "")
+    return str((oracles.get(qid) or {}).get("sql") or "").strip()
+
+
+def judge_detailed(
+    case: dict[str, Any],
+    env: dict[str, Any],
+    *,
+    oracle_db: Path | str | None = None,
+    oracles: Mapping[str, Any] | None = None,
+    oracle_sql: str | None = None,
+) -> JudgeResult:
+    """Row-compared judge when oracle_db is set. ORACLE_ERROR never OK."""
+    legacy = _judge_badge(case, env)
+    expect = str(case.get("expect") or "l0").lower()
+    if expect in REFUSE or oracle_db is None:
+        return JudgeResult(legacy, "", legacy)
+
+    sql = _lookup_oracle_sql(case, oracles, oracle_sql)
+    if expect != "l0":
+        return JudgeResult(legacy, "", legacy)
+    if not sql:
+        return JudgeResult("ORACLE_ERROR", "oracle_error:missing_sql", legacy)
+    gold, err = run_oracle_select(oracle_db, sql)
+    if err is not None:
+        return JudgeResult("ORACLE_ERROR", f"oracle_error:{err}", legacy)
+
+    if not is_confident(env):
+        return JudgeResult("ABSTAIN", "", legacy)
+
+    got = envelope_rows(env)
+    min_rows = int(case.get("min_rows") or 0)
+    if min_rows and len(got) < min_rows:
+        reason = rows_mismatch_reason(got, gold or [], sql=sql)
+        return JudgeResult("WRONG", reason or "", legacy)
+
+    reason = rows_mismatch_reason(got, gold or [], sql=sql)
+    if reason:
+        return JudgeResult("WRONG", reason, legacy)
+    badge = str(env.get("badge") or "")
+    if not badge.startswith("L0"):
+        return JudgeResult("LAYER", "", legacy)
+    return JudgeResult("OK", "", legacy)
+
+
+def judge(
+    case: dict[str, Any],
+    env: dict[str, Any],
+    *,
+    oracle_db: Path | str | None = None,
+    oracles: Mapping[str, Any] | None = None,
+    oracle_sql: str | None = None,
+) -> str:
+    """OK | ABSTAIN | LAYER | WRONG | ORACLE_ERROR. WRONG/ORACLE_ERROR are P0."""
+    return judge_detailed(
+        case,
+        env,
+        oracle_db=oracle_db,
+        oracles=oracles,
+        oracle_sql=oracle_sql,
+    ).verdict
+
+
+def judge_envelope(
+    case: dict[str, Any],
+    env: dict[str, Any],
+    *,
+    oracle_db: Path | str | None = None,
+    oracles: Mapping[str, Any] | None = None,
+    oracle_sql: str | None = None,
+) -> str:
     """Live judge. Silent demo fallback is WRONG (lying 200), not OK."""
+    return judge_envelope_detailed(
+        case,
+        env,
+        oracle_db=oracle_db,
+        oracles=oracles,
+        oracle_sql=oracle_sql,
+    ).verdict
+
+
+def judge_envelope_detailed(
+    case: dict[str, Any],
+    env: dict[str, Any],
+    *,
+    oracle_db: Path | str | None = None,
+    oracles: Mapping[str, Any] | None = None,
+    oracle_sql: str | None = None,
+) -> JudgeResult:
+    inner = judge_detailed(
+        case,
+        env,
+        oracle_db=oracle_db,
+        oracles=oracles,
+        oracle_sql=oracle_sql,
+    )
     if env.get("demo_fallback_used"):
-        return "WRONG"
-    return judge(case, env)
+        return JudgeResult("WRONG", "demo_fallback_used", inner.scorer_ok_rows_not_compared)
+    return inner
+
+
+def pack_category_report(
+    tallies: Mapping[str, int],
+    *,
+    figure_label: str,
+) -> dict[str, Any]:
+    """answered/abstained/WRONG/LAYER/ORACLE_ERROR/excluded-pending-scan out of 52."""
+    ok = int(tallies.get("OK") or 0)
+    layer = int(tallies.get("LAYER") or 0)
+    abstain = int(tallies.get("ABSTAIN") or 0)
+    wrong = int(tallies.get("WRONG") or 0)
+    oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
+    answered = ok + layer
+    accounted = ok + layer + abstain + wrong + oracle_error
+    denom = max(PACK_DENOMINATOR, accounted)
+    excluded = denom - accounted
+
+    def frac(n: int) -> str:
+        return f"{n}/{denom}"
+
+    return {
+        "denominator": denom,
+        "figure_label": figure_label,
+        "answered": answered,
+        "answered_of": frac(answered),
+        "abstained": abstain,
+        "abstained_of": frac(abstain),
+        "wrong": wrong,
+        "wrong_of": frac(wrong),
+        "layer": layer,
+        "layer_of": frac(layer),
+        "oracle_error": oracle_error,
+        "oracle_error_of": frac(oracle_error),
+        "excluded_pending_scan": excluded,
+        "excluded_pending_scan_of": frac(excluded),
+    }
+
+
+def print_category_report(cats: Mapping[str, Any]) -> None:
+    print(
+        f"answered {cats['answered_of']}  abstained {cats['abstained_of']}  "
+        f"WRONG {cats['wrong_of']}  LAYER {cats['layer_of']}  "
+        f"ORACLE_ERROR {cats['oracle_error_of']}  "
+        f"excluded-pending-scan {cats['excluded_pending_scan_of']}"
+    )
+    print(str(cats["figure_label"]))
+
+
+def require_oracle_db(path: Path | None) -> str | None:
+    """None if usable; else a CONFIG reason. Live modes must not score without it."""
+    if path is None:
+        return (
+            "CONFIG: --oracle-db PATH is required in live / --prove-path / "
+            "--ab / --climb (DuckDB the answer ran on). Not a score."
+        )
+    if not path.is_file():
+        return f"CONFIG: --oracle-db is not a file: {path}. Not a score."
+    return None
 
 
 def classify_path(route: Any) -> str:
@@ -714,6 +900,12 @@ def self_check() -> int:
         return 1
     if len(ids) <= 49:
         print("FAIL: pack must outgrow n=49 so climb-13 rise L0s are scored")
+        return 1
+    if len(ids) < PACK_DENOMINATOR:
+        print(
+            f"FAIL: pack smaller than SCORE-ROWS-01 denominator "
+            f"{PACK_DENOMINATOR}, got {len(ids)}"
+        )
         return 1
     frozen26 = [
         {"id": f"frozen_{i}", "space": "finance", "expect": "abstain", "question": "x"}
@@ -973,6 +1165,78 @@ def self_check() -> int:
     )
     if planted_demo != "WRONG":
         print("FAIL: demo fallback must not score OK")
+        return 1
+    cats = pack_category_report(
+        {"OK": 40, "LAYER": 0, "ABSTAIN": 9, "WRONG": 2, "ORACLE_ERROR": 1},
+        figure_label=FIGURE_LABEL_FIXTURE,
+    )
+    if (
+        cats["answered_of"] != "40/52"
+        or cats["wrong_of"] != "2/52"
+        or cats["oracle_error_of"] != "1/52"
+        or cats["excluded_pending_scan_of"] != "0/52"
+        or cats["figure_label"] != FIGURE_LABEL_FIXTURE
+    ):
+        print("FAIL: category report must be out of 52 and labelled CI fixtures")
+        return 1
+    short = pack_category_report(
+        {"OK": 1, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0, "ORACLE_ERROR": 0},
+        figure_label=FIGURE_LABEL_FIXTURE,
+    )
+    if short["excluded_pending_scan_of"] != "51/52":
+        print("FAIL: unscored questions must stay excluded-pending-scan out of 52")
+        return 1
+    import tempfile
+
+    import duckdb
+
+    row_db = Path(tempfile.mkdtemp()) / "self_check_rows.duckdb"
+    seed = duckdb.connect(str(row_db))
+    try:
+        seed.execute("CREATE TABLE meta (key VARCHAR PRIMARY KEY, value VARCHAR)")
+        seed.execute("INSERT INTO meta VALUES ('schema_version', '1')")
+        seed.execute("CREATE TABLE sales (month INTEGER, sku VARCHAR, amount DOUBLE)")
+        seed.executemany(
+            "INSERT INTO sales VALUES (?, ?, ?)",
+            [(m, "A", 10.0) for m in range(1, 13)],
+        )
+    finally:
+        seed.close()
+    if read_schema_version(row_db) != "1":
+        print("FAIL: schema_version must be recorded from meta")
+        return 1
+    monthly = "SELECT month, ROUND(SUM(amount), 2) AS total FROM sales GROUP BY month"
+    l0 = {"id": "monthly", "expect": "l0", "min_rows": 1}
+    green = {"badge": "L0_CERTIFIED", "abstained": False}
+    three = judge_detailed(
+        l0,
+        {**green, "rows": [{"month": 1, "total": 10.0}] * 3},
+        oracle_db=row_db,
+        oracle_sql=monthly,
+    )
+    if three.verdict != "WRONG" or "rows_mismatch:count=3/12" not in three.reason:
+        print("FAIL: ungrouped rows vs monthly oracle must be WRONG count")
+        return 1
+    if three.scorer_ok_rows_not_compared != "OK":
+        print("FAIL: legacy judge must stay labelled scorer_ok_rows_not_compared")
+        return 1
+    missing = judge_detailed(
+        l0,
+        {**green, "rows": [{"month": 1, "total": 10.0}]},
+        oracle_db=row_db,
+        oracle_sql="SELECT no_such_column FROM sales",
+    )
+    if missing.verdict != "ORACLE_ERROR" or missing.verdict == "OK":
+        print("FAIL: missing-column oracle must be ORACLE_ERROR, never OK")
+        return 1
+    trap = judge_detailed(
+        {"expect": "refuse"},
+        {**green, "rows": [{"v": 1}]},
+        oracle_db=row_db,
+        oracle_sql="SELECT 1",
+    )
+    if trap.verdict != "WRONG":
+        print("FAIL: confident refuse must stay WRONG when oracle_db is set")
         return 1
     b = BASELINE_91C5CC99
     if (
@@ -1441,9 +1705,13 @@ def score_pack_live(
     url: str,
     timeout: float,
     ask_path: str | None = None,
+    *,
+    oracle_db: Path | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]]]:
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
+    oracles = load_oracles() if oracle_db is not None else None
+    schema_ver = read_schema_version(oracle_db) if oracle_db is not None else None
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
     for case in pack["questions"]:
@@ -1470,11 +1738,16 @@ def score_pack_live(
                         "rows": 0,
                         "expect": case.get("expect"),
                         "error": err,
+                        "reason": "",
+                        LEGACY_JUDGE_LABEL: "WRONG",
                     }
                 )
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
-        verdict = judge_envelope(case, env)
+        result = judge_envelope_detailed(
+            case, env, oracle_db=oracle_db, oracles=oracles
+        )
+        verdict = result.verdict
         tallies[verdict] += 1
         badge = env.get("badge")
         route = env.get("route")
@@ -1482,10 +1755,15 @@ def score_pack_live(
         crag = classify_crag(env)
         plan_source = classify_plan_source(env)
         n = len(env.get("rows") or [])
+        extra = ""
+        if result.reason:
+            extra += f"\treason={result.reason}"
+        if oracle_db is not None:
+            extra += f"\t{LEGACY_JUDGE_LABEL}={result.scorer_ok_rows_not_compared}"
         print(
             f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}\t"
             f"plan_source={plan_source}\tcrag={crag}"
-            f"\trows={n}\texpect={case['expect']}"
+            f"\trows={n}\texpect={case['expect']}{extra}"
         )
         cases_out.append(
             {
@@ -1499,24 +1777,36 @@ def score_pack_live(
                 "rows": n,
                 "expect": case.get("expect"),
                 "demo_fallback_used": bool(env.get("demo_fallback_used")),
+                "reason": result.reason,
+                LEGACY_JUDGE_LABEL: result.scorer_ok_rows_not_compared,
+                "oracle_schema_version": schema_ver,
             }
         )
     return tallies, cases_out
 
 
-def live(url: str, timeout: float) -> int:
-    tallies, _cases = score_pack_live(url, timeout)
+def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
+    tallies, _cases = score_pack_live(url, timeout, oracle_db=oracle_db)
     n = sum(tallies.values())
     wrong = tallies["WRONG"]
+    oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     answered_ok = tallies["OK"] + tallies["LAYER"]
     precision = 100.0 if answered_ok + wrong == 0 else (
         100.0 * answered_ok / (answered_ok + wrong)
     )
+    cats = pack_category_report(tallies, figure_label=FIGURE_LABEL_LIVE)
     print(
         f"precision-on-answered {precision:.2f} pct  "
         f"coverage {tallies['OK']}/{n}  "
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}"
     )
+    print(f"oracle_db={oracle_db} schema_version={read_schema_version(oracle_db)}")
+    print_category_report(cats)
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
     (art / "score_curated.json").write_text(
@@ -1529,15 +1819,22 @@ def live(url: str, timeout: float) -> int:
                 "correct": tallies["OK"],
                 "answered": tallies["OK"] + tallies["LAYER"],
                 "wrong": wrong,
+                "oracle_error": oracle_error,
                 "total": n,
                 "abstained": tallies["ABSTAIN"],
-                "passed": wrong == 0,
+                "passed": wrong == 0 and oracle_error == 0,
+                "oracle_db": str(oracle_db),
+                "schema_version": read_schema_version(oracle_db),
+                "categories": cats,
             },
             indent=2,
         )
         + "\n",
         encoding="utf-8",
     )
+    if oracle_error:
+        print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
     if wrong:
         print("FAIL: confidently wrong or transport error")
         return EXIT_FAIL
@@ -1566,12 +1863,13 @@ def _ab_seed(path: Path) -> Any:
 
 
 def _tally() -> dict[str, int]:
-    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0}
+    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0, "ORACLE_ERROR": 0}
 
 
 def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
     wrong = tallies["WRONG"]
     answered = tallies["OK"] + tallies["LAYER"]
+    oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     return {
         "path": name,
         "n": n,
@@ -1579,15 +1877,24 @@ def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
         "layer": tallies["LAYER"],
         "abstain": tallies["ABSTAIN"],
         "wrong": wrong,
+        "oracle_error": oracle_error,
         "answered": answered,
         "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
+        "categories": pack_category_report(tallies, figure_label=FIGURE_LABEL_FIXTURE),
     }
 
 
-def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
+def run_ab_curated(
+    pack_path: Path = DEFAULT_PACK,
+    *,
+    oracle_db: Path | None = None,
+    compare_rows: bool = False,
+) -> dict[str, Any]:
     """Offline A/B: exact-match pack vs retrieve+bind generative on the same pack.
 
     Fake submit/ledger so CI has no keys. Does not expand certified packs.
+    compare_rows=False keeps the badge/min_rows judge (existing tests).
+    CLI --ab sets compare_rows so l0 answers are checked against oracle SQL.
     """
     import tempfile
     from types import SimpleNamespace
@@ -1600,6 +1907,13 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
     pack = load_pack(pack_path)
     tmp = Path(tempfile.mkdtemp()) / "ab_gen01.duckdb"
     onto = _ab_seed(tmp)
+    compare_db: Path | None = None
+    oracles: dict[str, Any] | None = None
+    schema_ver: str | None = None
+    if compare_rows:
+        compare_db = oracle_db if oracle_db is not None else tmp
+        oracles = load_oracles()
+        schema_ver = read_schema_version(compare_db)
     def submit(sql: str) -> Any:
         from dms_executor.demo_warehouse import connect_file
 
@@ -1644,8 +1958,14 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
             ontology=onto,
         )
         gen_env = gen_env if gen_env is not None else _ab_miss()
-        ev = judge(case, exact_env)
-        gv = judge(case, gen_env)
+        exact_r = judge_detailed(
+            case, exact_env, oracle_db=compare_db, oracles=oracles
+        )
+        gen_r = judge_detailed(
+            case, gen_env, oracle_db=compare_db, oracles=oracles
+        )
+        ev = exact_r.verdict
+        gv = gen_r.verdict
         exact_t[ev] += 1
         gen_t[gv] += 1
         cases_out.append(
@@ -1658,6 +1978,12 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
                 "generative_badge": gen_env.get("badge"),
                 "plan_source": classify_plan_source(gen_env),
                 "crag": classify_crag(gen_env),
+                "exact_reason": exact_r.reason,
+                "generative_reason": gen_r.reason,
+                LEGACY_JUDGE_LABEL: {
+                    "exact": exact_r.scorer_ok_rows_not_compared,
+                    "generative": gen_r.scorer_ok_rows_not_compared,
+                },
             }
         )
     n = len(pack["questions"])
@@ -1668,6 +1994,7 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
         key = str(row.get("crag") or "skipped")
         crag_counts[key] = crag_counts.get(key, 0) + 1
     base = BASELINE_AB_A9578348
+    oracle_error = int(exact_r["oracle_error"]) + int(gen_r["oracle_error"])
     return {
         "kind": "dms.ab_gen01",
         "pack": "curated_ceo",
@@ -1689,13 +2016,26 @@ def run_ab_curated(pack_path: Path = DEFAULT_PACK) -> dict[str, Any]:
             gen_r["answered"], int(base["generative_answered"])
         ),
         "wrong": exact_r["wrong"] + gen_r["wrong"],
-        "passed": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
+        "oracle_error": oracle_error,
+        "passed": (
+            exact_r["wrong"] == 0
+            and gen_r["wrong"] == 0
+            and oracle_error == 0
+        ),
+        "compare_rows": compare_rows,
+        "oracle_db": str(compare_db) if compare_db is not None else None,
+        "schema_version": schema_ver,
         "cases": cases_out,
     }
 
 
-def ab_offline() -> int:
-    report = run_ab_curated()
+def ab_offline(oracle_db: Path | None = None) -> int:
+    if oracle_db is not None:
+        why = require_oracle_db(oracle_db)
+        if why:
+            print(why)
+            return EXIT_CONFIG
+    report = run_ab_curated(oracle_db=oracle_db, compare_rows=True)
     exact = report["exact_match"]
     gen = report["generative"]
     base = report["baseline_ab"]
@@ -1716,6 +2056,13 @@ def ab_offline() -> int:
         f"generative vs baseline: {report['generative_vs_baseline']}  "
         f"crag={report['crag']}"
     )
+    if report.get("oracle_db"):
+        print(
+            f"oracle_db={report['oracle_db']} "
+            f"schema_version={report.get('schema_version')}"
+        )
+        print_category_report(exact["categories"])
+        print_category_report(gen["categories"])
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
     slim = {k: v for k, v in report.items() if k != "cases"}
@@ -1724,6 +2071,9 @@ def ab_offline() -> int:
         print("FAIL: A/B report invented COMPLETE / 99.95")
         return EXIT_FAIL
     (art / "ab_gen01.json").write_text(blob + "\n", encoding="utf-8")
+    if int(report.get("oracle_error") or 0):
+        print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
     if not report["passed"]:
         print("FAIL: A/B WRONG>0")
         return EXIT_FAIL
@@ -1751,11 +2101,13 @@ def build_climb_report(
 ) -> dict[str, Any]:
     n = sum(tallies.values())
     wrong = tallies["WRONG"]
+    oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     answered = tallies["OK"] + tallies["LAYER"]
     base = BASELINE_91C5CC99
     base_ans = baseline_answered()
     vs = answered_vs_baseline(answered, base_ans)
     by_path = _answered_by_path(cases)
+    cats = pack_category_report(tallies, figure_label=FIGURE_LABEL_LIVE)
     return {
         "kind": "dms.score_climb",
         "ticket": "GEN-02",
@@ -1778,6 +2130,7 @@ def build_climb_report(
             "layer": tallies["LAYER"],
             "abstain": tallies["ABSTAIN"],
             "wrong": wrong,
+            "oracle_error": oracle_error,
             "answered": answered,
             "coverage_ok_pct": round(100.0 * tallies["OK"] / n, 2) if n else 0.0,
             "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
@@ -1792,7 +2145,9 @@ def build_climb_report(
         "answered_by_path": by_path,
         "answered_vs_baseline": vs,
         "wrong": wrong,
+        "oracle_error": oracle_error,
         "passed_wrong_zero": wrong == 0,
+        "categories": cats,
         "distill": distill_block(),
         "cases": cases,
     }
@@ -1858,7 +2213,7 @@ def probe_climb_host(url: str, timeout: float) -> tuple[str, str]:
     return kind, detail
 
 
-def climb(url: str, timeout: float) -> int:
+def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     kind, detail = probe_climb_host(url, timeout)
     print(f"GEN-02 climb host {url}  [{kind}] {detail}")
     if kind == "blocked":
@@ -1867,12 +2222,19 @@ def climb(url: str, timeout: float) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     try:
-        tallies, cases = score_pack_live(url, timeout)
+        tallies, cases = score_pack_live(url, timeout, oracle_db=oracle_db)
     except ImportError:
         print("CONFIG: httpx required (DMS .venv). Not a score.")
         return EXIT_CONFIG
     report = build_climb_report(tallies, cases=cases, url=url)
+    report["oracle_db"] = str(oracle_db)
+    report["schema_version"] = read_schema_version(oracle_db)
     measured = report["measured"]
     base = report["baseline"]
     delta = report["delta"]
@@ -1895,6 +2257,8 @@ def climb(url: str, timeout: float) -> int:
         f"generative={by_path['generative']} other={by_path['other']}"
     )
     print(f"answered vs baseline @ {base['commit']}: {report['answered_vs_baseline']}")
+    print(f"oracle_db={oracle_db} schema_version={report['schema_version']}")
+    print_category_report(report["categories"])
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
     slim = {k: v for k, v in report.items() if k != "cases"}
@@ -1904,6 +2268,9 @@ def climb(url: str, timeout: float) -> int:
     (art / "score_climb_cases.json").write_text(
         json.dumps(report["cases"], indent=2) + "\n", encoding="utf-8"
     )
+    if int(report.get("oracle_error") or 0):
+        print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
     if not report["passed_wrong_zero"]:
         print("FAIL: WRONG>0 (law). Not COMPLETE.")
         return EXIT_FAIL
@@ -1922,7 +2289,7 @@ def _crag_counts(cases: list[dict[str, Any]]) -> dict[str, int]:
     return out
 
 
-def climb_ab_live(url: str, timeout: float) -> int:
+def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     """Live isolated A/B: ask_path=exact vs ask_path=generative. WRONG=0 law."""
     kind, detail = probe_climb_host(url, timeout)
     print(f"GEN-02 live A/B host {url}  [{kind}] {detail}")
@@ -1932,20 +2299,36 @@ def climb_ab_live(url: str, timeout: float) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     print("-- ask_path=exact --")
     try:
-        exact_t, exact_cases = score_pack_live(url, timeout, ask_path="exact")
+        exact_t, exact_cases = score_pack_live(
+            url, timeout, ask_path="exact", oracle_db=oracle_db
+        )
         print("-- ask_path=generative --")
-        gen_t, gen_cases = score_pack_live(url, timeout, ask_path="generative")
+        gen_t, gen_cases = score_pack_live(
+            url, timeout, ask_path="generative", oracle_db=oracle_db
+        )
     except ImportError:
         print("CONFIG: httpx required (DMS .venv). Not a score.")
         return EXIT_CONFIG
     n = sum(exact_t.values())
     exact_r = _path_report("exact_match", exact_t, n)
     gen_r = _path_report("generative_semantic", gen_t, n)
+    exact_r["categories"] = pack_category_report(
+        exact_t, figure_label=FIGURE_LABEL_LIVE
+    )
+    gen_r["categories"] = pack_category_report(gen_t, figure_label=FIGURE_LABEL_LIVE)
     base = BASELINE_AB_A9578348
     crag = _crag_counts(gen_cases)
     vs = answered_vs_baseline(gen_r["answered"], int(base["generative_answered"]))
+    oracle_error = int(exact_t.get("ORACLE_ERROR") or 0) + int(
+        gen_t.get("ORACLE_ERROR") or 0
+    )
     report = {
         "kind": "dms.ab_live",
         "ticket": "GEN-02",
@@ -1953,6 +2336,8 @@ def climb_ab_live(url: str, timeout: float) -> int:
         "pack": "curated_ceo",
         "url": url,
         "claim": "measured",
+        "oracle_db": str(oracle_db),
+        "schema_version": read_schema_version(oracle_db),
         "baseline_ab": {
             "commit": base["commit"],
             "exact_answered": base["exact_answered"],
@@ -1968,6 +2353,7 @@ def climb_ab_live(url: str, timeout: float) -> int:
         "crag": crag,
         "generative_vs_baseline": vs,
         "wrong": exact_r["wrong"] + gen_r["wrong"],
+        "oracle_error": oracle_error,
         "passed_wrong_zero": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
     }
     blob = json.dumps(report, indent=2)
@@ -1986,6 +2372,9 @@ def climb_ab_live(url: str, timeout: float) -> int:
         f"generative_answered={base['generative_answered']}"
     )
     print(f"generative vs baseline: {vs}  crag={crag}")
+    print(f"oracle_db={oracle_db} schema_version={report['schema_version']}")
+    print_category_report(exact_r["categories"])
+    print_category_report(gen_r["categories"])
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
     (art / "score_climb_ab.json").write_text(blob + "\n", encoding="utf-8")
@@ -1993,6 +2382,9 @@ def climb_ab_live(url: str, timeout: float) -> int:
         json.dumps({"exact": exact_cases, "generative": gen_cases}, indent=2) + "\n",
         encoding="utf-8",
     )
+    if oracle_error:
+        print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
     if not report["passed_wrong_zero"]:
         print("FAIL: WRONG>0 (law). Not COMPLETE.")
         return EXIT_FAIL
@@ -2091,6 +2483,7 @@ def build_gen_path_prove_report(
 ) -> dict[str, Any]:
     n = sum(int(v) for v in tallies.values()) or len(cases)
     wrong = int(tallies.get("WRONG") or 0)
+    oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     answered = int(tallies.get("OK") or 0) + int(tallies.get("LAYER") or 0)
     raw = _plan_source_bucket(cases)
     by_source: dict[str, Any] = {}
@@ -2108,6 +2501,7 @@ def build_gen_path_prove_report(
         bind_answered=raw["bind_plan"],
         answered=answered,
     )
+    figure_label = FIGURE_LABEL_LIVE if mode == "live" else FIGURE_LABEL_FIXTURE
     return {
         "kind": "dms.gen_path_prove",
         "ticket": "GEN-PATH-PROVE-01",
@@ -2122,12 +2516,14 @@ def build_gen_path_prove_report(
         "layer": int(tallies.get("LAYER") or 0),
         "abstain": int(tallies.get("ABSTAIN") or 0),
         "wrong": wrong,
+        "oracle_error": oracle_error,
         "answered": answered,
         "passed_wrong_zero": wrong == 0,
         "by_plan_source": by_source,
         HOLD_MAY_CLEAR_FIELD: hold,
         "phase_a_hold_may_clear": hold,
         "phase_a_hold_may_clear_reason": reason,
+        "categories": pack_category_report(tallies, figure_label=figure_label),
         "cases": cases,
     }
 
@@ -2219,6 +2615,8 @@ def _write_prove_report(
         f"WRONG {report['wrong']}  answered {report['answered']}/{report['n']}  "
         f"{HOLD_MAY_CLEAR_FIELD}: {report[HOLD_MAY_CLEAR_FIELD]}"
     )
+    if report.get("categories"):
+        print_category_report(report["categories"])
     print(
         "leftover_l0 "
         + ",".join(CLIMB05_LEFTOVER_L0)
@@ -2234,6 +2632,9 @@ def _write_prove_report(
     print("climb13_rise_l0 " + ",".join(CLIMB13_RISE_IDS))
     print(f"reason: {report['phase_a_hold_may_clear_reason']}")
     print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
+    if int(report.get("oracle_error") or 0):
+        print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL, report
     if not report["passed_wrong_zero"]:
         print("FAIL: WRONG>0 (law).")
         return EXIT_FAIL, report
@@ -2246,8 +2647,13 @@ def _write_prove_report(
     return EXIT_PASS, report
 
 
-def prove_path_offline() -> int:
-    ab = run_ab_curated()
+def prove_path_offline(oracle_db: Path | None = None) -> int:
+    if oracle_db is not None:
+        why = require_oracle_db(oracle_db)
+        if why:
+            print(why)
+            return EXIT_CONFIG
+    ab = run_ab_curated(oracle_db=oracle_db, compare_rows=True)
     cases = [
         {
             "id": row["id"],
@@ -2265,6 +2671,7 @@ def prove_path_offline() -> int:
         "LAYER": int(gen["layer"]),
         "ABSTAIN": int(gen["abstain"]),
         "WRONG": int(gen["wrong"]),
+        "ORACLE_ERROR": int(gen.get("oracle_error") or 0),
     }
     report = build_gen_path_prove_report(
         tallies, cases=cases, mode="offline", pack=str(ab.get("pack") or "curated_ceo")
@@ -2273,13 +2680,16 @@ def prove_path_offline() -> int:
     if int(ab["wrong"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
         return EXIT_FAIL
+    if int(ab.get("oracle_error") or 0):
+        print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
     if _leftover_l0_unscored(cases):
         print("FAIL: leftover L0s not scored (frozen 17/26 pack)")
         return EXIT_FAIL
     return code
 
 
-def prove_path_live(url: str, timeout: float) -> int:
+def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     kind, detail, health = probe_climb_health(url, timeout)
     print(f"GEN-PATH-PROVE-01 host {url}  [{kind}] {detail}")
     climb = health.get("gen_path_climb") if isinstance(health, dict) else None
@@ -2300,20 +2710,35 @@ def prove_path_live(url: str, timeout: float) -> int:
     if kind == "fail":
         print("FAIL: host is not a live governed ask")
         return EXIT_FAIL
+    why = require_oracle_db(oracle_db)
+    if why:
+        print(why)
+        return EXIT_CONFIG
+    assert oracle_db is not None
     print("-- ask_path=generative (plan_source labels) --")
     try:
-        gen_t, gen_cases = score_pack_live(url, timeout, ask_path="generative")
+        gen_t, gen_cases = score_pack_live(
+            url, timeout, ask_path="generative", oracle_db=oracle_db
+        )
         print("-- ask_path=exact (WRONG=0 on same pack) --")
-        exact_t, _exact_cases = score_pack_live(url, timeout, ask_path="exact")
+        exact_t, _exact_cases = score_pack_live(
+            url, timeout, ask_path="exact", oracle_db=oracle_db
+        )
     except ImportError:
         print("CONFIG: httpx required (DMS .venv). Not a score.")
         return EXIT_CONFIG
     report = build_gen_path_prove_report(
         gen_t, cases=gen_cases, mode="live", url=url
     )
+    report["oracle_db"] = str(oracle_db)
+    report["schema_version"] = read_schema_version(oracle_db)
+    print(f"oracle_db={oracle_db} schema_version={report['schema_version']}")
     code, _ = _write_prove_report(report, live_climb=True)
     if int(exact_t["WRONG"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
+        return EXIT_FAIL
+    if int(exact_t.get("ORACLE_ERROR") or 0):
+        print("FAIL: exact-match lane ORACLE_ERROR>0")
         return EXIT_FAIL
     if _leftover_l0_unscored(gen_cases):
         print("FAIL: leftover L0s not scored (frozen 17/26 pack)")
@@ -2330,7 +2755,14 @@ def main(argv: list[str]) -> int:
     p.add_argument("--prove-path", action="store_true")
     p.add_argument("--url", default=None)
     p.add_argument("--timeout", type=float, default=120.0)
+    p.add_argument(
+        "--oracle-db",
+        default=None,
+        help="DuckDB file the answer ran on. Required in live / --climb / "
+        "--prove-path --url. Read-only oracle SQL.",
+    )
     args = p.parse_args(argv)
+    oracle_db = Path(args.oracle_db) if args.oracle_db else None
     if args.self_check:
         return self_check()
     if args.prove_path:
@@ -2342,11 +2774,21 @@ def main(argv: list[str]) -> int:
                     f"(Platform: {PLATFORM_API}). No laptop default."
                 )
                 return EXIT_CONFIG
-            return prove_path_live(target, args.timeout)
+            why = require_oracle_db(oracle_db)
+            if why:
+                print(why)
+                return EXIT_CONFIG
+            assert oracle_db is not None
+            return prove_path_live(target, args.timeout, oracle_db)
         target = climb_url(args.url)
         if target:
-            return prove_path_live(target, args.timeout)
-        return prove_path_offline()
+            why = require_oracle_db(oracle_db)
+            if why:
+                print(why)
+                return EXIT_CONFIG
+            assert oracle_db is not None
+            return prove_path_live(target, args.timeout, oracle_db)
+        return prove_path_offline(oracle_db)
     if args.climb:
         target = climb_url(args.url)
         if not target:
@@ -2355,18 +2797,29 @@ def main(argv: list[str]) -> int:
                 f"(Platform: {PLATFORM_API}). No laptop default."
             )
             return EXIT_CONFIG
+        why = require_oracle_db(oracle_db)
+        if why:
+            print(why)
+            return EXIT_CONFIG
+        assert oracle_db is not None
         if args.ab:
-            return climb_ab_live(target, args.timeout)
-        return climb(target, args.timeout)
+            return climb_ab_live(target, args.timeout, oracle_db)
+        return climb(target, args.timeout, oracle_db)
     if args.ab:
-        return ab_offline()
+        return ab_offline(oracle_db)
     if args.live:
+        why = require_oracle_db(oracle_db)
+        if why:
+            print(why)
+            return EXIT_CONFIG
+        assert oracle_db is not None
         url = (args.url or os.environ.get("DMS_URL") or DEFAULT_URL).rstrip("/")
-        return live(url, args.timeout)
+        return live(url, args.timeout, oracle_db)
     print(
         "usage: python scripts/score_curated.py "
-        "--self-check | --live | --ab | --climb --url URL | --climb --ab --url URL "
-        "| --prove-path | --prove-path --url URL"
+        "--self-check | --live --oracle-db PATH | --ab [--oracle-db PATH] | "
+        "--climb --url URL --oracle-db PATH | --climb --ab --url URL --oracle-db PATH "
+        "| --prove-path [--oracle-db PATH] | --prove-path --url URL --oracle-db PATH"
     )
     return EXIT_CONFIG
 
