@@ -117,27 +117,37 @@ def test_grader_plants_ok_abstain_wrong_column_order() -> None:
     assert grade_envelope(empty, gold) == "WRONG"
 
 
+def _load_served_fixture(name: str) -> dict[str, object]:
+    path = ROOT / "tests" / "fixtures" / "bird_minidev" / name
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_served_from_response_copies_reported_and_unknown_never_guesses() -> None:
-    assert served_from_response({"badge": "L0_CERTIFIED", "rows": [{"n": 1}]}) == {
+    absent = served_from_response(_load_served_fixture("served_absent.json"))
+    assert absent == {
         "provider": UNKNOWN,
         "model": UNKNOWN,
+        "served_provider": UNKNOWN,
+        "served_model": UNKNOWN,
+        "served_local": UNKNOWN,
     }
-    assert served_from_response(None) == {"provider": UNKNOWN, "model": UNKNOWN}
-    assert served_from_response({"provider": "", "model": "  "}) == {
-        "provider": UNKNOWN,
-        "model": UNKNOWN,
-    }
-    assert served_from_response({"provider": "groq", "model": "llama-3.3"}) == {
+    assert served_from_response(None) == absent
+    # Today's aliases are not ROUTER-1 fields: do not guess.
+    assert served_from_response({"provider": "groq", "model": "llama-3.3"}) == absent
+    present = served_from_response(_load_served_fixture("served_present.json"))
+    assert present == {
         "provider": "groq",
-        "model": "llama-3.3",
+        "model": "llama-3.3-70b-versatile",
+        "served_provider": "groq",
+        "served_model": "llama-3.3-70b-versatile",
+        "served_local": False,
     }
-    nested = {"provenance": {"provider": "ov", "model": "mistral-small"}}
-    assert served_from_response(nested) == {"provider": "ov", "model": "mistral-small"}
+    nested = served_from_response(_load_served_fixture("served_nested.json"))
+    assert nested["served_provider"] == "ollama"
+    assert nested["served_model"] == "llama3.1"
+    assert nested["served_local"] is True
     # Do not treat route/badge as a model.
-    assert served_from_response({"route": "generated", "badge": "L2_VALIDATED"}) == {
-        "provider": UNKNOWN,
-        "model": UNKNOWN,
-    }
+    assert served_from_response({"route": "generated", "badge": "L2_VALIDATED"}) == absent
 
 
 def test_compare_refuses_different_fingerprints_unless_forced() -> None:
@@ -204,8 +214,9 @@ def test_run_minidev_records_models_mix_fingerprint_and_refuses_learn_on(
             "badge": "L0_CERTIFIED",
             "abstained": False,
             "rows": gold_rows,
-            "provider": "groq",
-            "model": "llama-3.3",
+            "served_provider": "groq",
+            "served_model": "llama-3.3",
+            "served_local": False,
         }
 
     env = _env(tmp_path, CORTEX_FREEROUTE_LEARN="1")
@@ -252,17 +263,22 @@ def test_run_minidev_records_models_mix_fingerprint_and_refuses_learn_on(
     assert art["sha"]
     assert art["data_bytes"] == meta["bytes"]
     mix = art["served_mix"]
-    assert mix["groq/llama-3.3"] >= 1
+    assert mix["groq/llama-3.3/local=false"] >= 1
+    assert art["served_local"]["false"] >= 1
+    assert art["setup"]["served_local"]["false"] >= 1
     for case in art["cases"]:
         assert "provider" in case and "model" in case
-        if case["verdict"] != "GOLD_ERROR":
-            assert case["provider"] in {"groq", UNKNOWN}
+        assert "served_local" in case
+        if case["verdict"] != "GOLD_ERROR" and "broken" not in str(case.get("id")):
+            if case["provider"] == "groq":
+                assert case["served_local"] is False
     payload = setup_payload(
         learn="0",
         store_id=str(store),
         fresh=True,
         hash_before=art["freeroute"]["hash_before"],
         mix=mix,
+        served_local=art["served_local"],
     )
     assert art["setup_fingerprint"] == setup_fingerprint(payload)
 
@@ -283,7 +299,9 @@ def test_run_minidev_records_models_mix_fingerprint_and_refuses_learn_on(
     assert err3 is None and code3 == EXIT_PASS and report3 is not None
     assert report3["cases"][0]["provider"] == UNKNOWN
     assert report3["cases"][0]["model"] == UNKNOWN
-    assert report3["served_mix"] == {f"{UNKNOWN}/{UNKNOWN}": 1}
+    assert report3["cases"][0]["served_local"] == UNKNOWN
+    assert report3["served_mix"] == {f"{UNKNOWN}/{UNKNOWN}/local={UNKNOWN}": 1}
+    assert report3["served_local"] == {"true": 0, "false": 0, "unknown": 1}
 
 
 def test_validate_refuses_shrunk_full_set_without_limit() -> None:
@@ -316,7 +334,9 @@ def test_validate_refuses_shrunk_full_set_without_limit() -> None:
 def test_no_bird_corpus_committed() -> None:
     folder = ROOT / "tests" / "fixtures" / "bird_minidev"
     jsons = sorted(p.name for p in folder.glob("*.json"))
-    assert jsons == ["synthetic.json"]
+    assert "synthetic.json" in jsons
+    assert "served_present.json" in jsons
+    assert "served_absent.json" in jsons
     data = json.loads(SYNTHETIC.read_text(encoding="utf-8"))
     assert len(data) < 20
     assert len(data) != MINIDEV_N

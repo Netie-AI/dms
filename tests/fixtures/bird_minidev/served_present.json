@@ -1,0 +1,9 @@
+{
+  "answer": "2 widgets",
+  "badge": "L2_VALIDATED",
+  "abstained": false,
+  "rows": [{"n": 2}],
+  "served_provider": "groq",
+  "served_model": "llama-3.3-70b-versatile",
+  "served_local": false
+}

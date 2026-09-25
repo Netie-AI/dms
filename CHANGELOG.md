@@ -16,6 +16,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Keys.** No provider keys in the body. Model access stays in Cortex via OpenVault.
 - **Not this ticket:** live Studio re-prove (#231, Platform), CONNECT-ASK-01 (#277), deleting `/dms/query`, moving pre-gates (GEN-07), `semantic_retrieve.py` (PII-01 #272).
 
+## 2026-09-25 - A1-02: record Cortex ROUTER-1 served_* fields (#264)
+
+- **Ticket.** Follow-up on [A1-02 #264](https://github.com/Netie-AI/dms/issues/264). Cortex ROUTER-1 (#269) returns `served_provider`, `served_model`, `served_local` on Insights answers; GEN-RESTORE-01 copies them onto the DMS envelope with `learn_enabled`, `learn_source`, `route_store_id`.
+- **Change.** The Mini-Dev harness reads those exact names from the DMS answer envelope. Absent is `unknown`, never guessed. Per-answer fields, run-level mix, and `setup_fingerprint` all include them. Also records `plan_origin` (`generate_sql` or `ontology_ranking`) and counts them separately. Fixtures `served_present.json` / `served_absent.json` / `served_nested.json`.
+- **Must not:** guess from aliases; live Mini-Dev score; merge.
+
 ## 2026-09-25 - A1-02: BIRD Mini-Dev harness (EPIC-A1 #257, #264)
 
 - **Ticket.** [A1-02 #264](https://github.com/Netie-AI/dms/issues/264). Rebuild on main after EPIC-A2 (#230), A2-05 (#261), and GEN-RESTORE-01 (#276). Held local `a1-02` @ `6396dec` was never pushed. Does not stamp EPIC-A1 COMPLETE. Does not touch `scripts/score_curated.py`.

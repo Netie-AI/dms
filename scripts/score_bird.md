@@ -105,9 +105,12 @@ Numeric match is not 4 dp absolute: integers exact; other numbers use
 `|a-b| <= max(1e-9, 1e-6 * max(|a|,|b|))`. 29+ digit numeric strings must not
 crash. GOLD_ERROR excludes the question from n.
 
-Each case records `provider` and `model` as Cortex/ask reported them, or
-`unknown` if missing. Never guessed. Run-level `served_mix` plus a
-`setup_fingerprint` over learn flag, store state, and served-model mix.
+Each case copies Cortex ROUTER-1 (#269) fields `served_provider`,
+`served_model`, and `served_local` when present. Absent fields are
+`unknown` (boolean local is never guessed false). Today's Cortex main
+does not return them yet. Run-level `served_mix` includes
+`provider/model/local=...` plus `served_local` true/false/unknown counts.
+`setup_fingerprint` covers learn flag, store state, and that mix.
 `--compare` refuses different fingerprints unless `--force-cross-setup`,
 which labels the result `cross-setup`.
 

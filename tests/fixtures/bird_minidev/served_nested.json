@@ -1,0 +1,11 @@
+{
+  "answer": "2 widgets",
+  "badge": "L2_VALIDATED",
+  "abstained": false,
+  "rows": [{"n": 2}],
+  "insights": {
+    "served_provider": "ollama",
+    "served_model": "llama3.1",
+    "served_local": true
+  }
+}

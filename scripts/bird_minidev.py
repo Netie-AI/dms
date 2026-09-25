@@ -13,8 +13,10 @@ Until Cortex ROUTER-1: live Cortex scoring requires CORTEX_FREEROUTE_LEARN=0,
 a fresh CORTEX_ROUTE_STORE, and recorded store snapshots. Missing those is
 CONFIG, not a score. Offline/--self-check skips the freeze.
 
-Served provider/model are copied from the Cortex/ask JSON when present;
-otherwise ``unknown``. Never guessed from FreeRoute plans or env.
+Served provider/model/local are copied from Cortex Insights fields
+``served_provider``, ``served_model``, ``served_local`` when present;
+otherwise ``unknown``. Never guessed from FreeRoute plans, env, or aliases.
+
 """
 
 from __future__ import annotations
@@ -56,26 +58,10 @@ STORE_ENV = "CORTEX_ROUTE_STORE"
 CONFIDENT = frozenset(
     {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "L2_ANOMALOUS"}
 )
-# Reported keys only. Never infer from badge, route, question, or FreeRoute plan.
-_PROVIDER_PATHS: tuple[tuple[str, ...], ...] = (
-    ("provider",),
-    ("served_provider",),
-    ("llm_provider",),
-    ("model_provider",),
-    ("provenance", "provider"),
-    ("telemetry", "provider"),
-    ("served", "provider"),
-)
-_MODEL_PATHS: tuple[tuple[str, ...], ...] = (
-    ("model",),
-    ("served_model",),
-    ("llm_model",),
-    ("model_id",),
-    ("model_name",),
-    ("provenance", "model"),
-    ("telemetry", "model"),
-    ("served", "model"),
-)
+# Cortex ROUTER-1 (#269) Insights fields. Exact names only; never aliases.
+_SERVED_PROVIDER = "served_provider"
+_SERVED_MODEL = "served_model"
+_SERVED_LOCAL = "served_local"
 
 SYNTHETIC_SETUP: tuple[str, ...] = (
     "CREATE TABLE widgets (id INTEGER, name VARCHAR, price DOUBLE)",
@@ -285,34 +271,60 @@ def run_pg_gold(
             pass
 
 
-def _nested(obj: Any, path: Sequence[str]) -> Any:
-    cur: Any = obj
-    for key in path:
-        if not isinstance(cur, dict):
-            return None
-        cur = cur.get(key)
-    return cur
+def _lookup_exact(env: Mapping[str, Any], name: str) -> Any:
+    """Read one ROUTER-1 field by exact name. Top-level, else insights/provenance."""
+    if name in env:
+        return env[name]
+    for wrap in ("insights", "provenance"):
+        inner = env.get(wrap)
+        if isinstance(inner, dict) and name in inner:
+            return inner[name]
+    return None
 
 
-def _reported_str(env: Mapping[str, Any], paths: Sequence[tuple[str, ...]]) -> str:
-    for path in paths:
-        val = _nested(env, path)
-        if val is None:
-            continue
-        text = str(val).strip()
-        if text:
-            return text
+def _reported_name(raw: Any) -> str:
+    if raw is None:
+        return UNKNOWN
+    text = str(raw).strip()
+    return text if text else UNKNOWN
+
+
+def _reported_local(raw: Any) -> bool | str:
+    """Boolean as Cortex sent it. Absent or non-bool is unknown, never guessed."""
+    if isinstance(raw, bool):
+        return raw
     return UNKNOWN
 
 
-def served_from_response(env: Mapping[str, Any] | None) -> dict[str, str]:
-    """Copy provider/model as Cortex/ask reported them. Never guess."""
-    if not isinstance(env, dict):
-        return {"provider": UNKNOWN, "model": UNKNOWN}
-    return {
-        "provider": _reported_str(env, _PROVIDER_PATHS),
-        "model": _reported_str(env, _MODEL_PATHS),
+def served_from_response(env: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Copy served_provider / served_model / served_local. Never guess."""
+    empty = {
+        "provider": UNKNOWN,
+        "model": UNKNOWN,
+        "served_local": UNKNOWN,
+        "served_provider": UNKNOWN,
+        "served_model": UNKNOWN,
     }
+    if not isinstance(env, dict):
+        return empty
+    provider = _reported_name(_lookup_exact(env, _SERVED_PROVIDER))
+    model = _reported_name(_lookup_exact(env, _SERVED_MODEL))
+    local = _reported_local(_lookup_exact(env, _SERVED_LOCAL))
+    return {
+        "provider": provider,
+        "model": model,
+        "served_provider": provider,
+        "served_model": model,
+        "served_local": local,
+    }
+
+
+def local_label(val: Any) -> str:
+    if val is True:
+        return "true"
+    if val is False:
+        return "false"
+    return UNKNOWN
 
 
 def served_mix(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -320,8 +332,20 @@ def served_mix(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     for row in cases:
         provider = str(row.get("provider") or UNKNOWN)
         model = str(row.get("model") or UNKNOWN)
-        counts[f"{provider}/{model}"] += 1
+        local = local_label(row.get("served_local"))
+        counts[f"{provider}/{model}/local={local}"] += 1
     return dict(sorted(counts.items()))
+
+
+def served_local_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for row in cases:
+        counts[local_label(row.get("served_local"))] += 1
+    return {
+        "true": int(counts.get("true", 0)),
+        "false": int(counts.get("false", 0)),
+        "unknown": int(counts.get("unknown", 0)),
+    }
 
 
 def setup_payload(
@@ -331,13 +355,16 @@ def setup_payload(
     fresh: bool | None,
     hash_before: str | None,
     mix: Mapping[str, int],
+    served_local: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
+    local = dict(served_local) if served_local is not None else served_local_counts([])
     return {
         "learn": learn,
         "store_id": store_id,
         "fresh": fresh,
         "hash_before": hash_before,
         "served_mix": dict(mix),
+        "served_local": local,
     }
 
 
@@ -590,6 +617,9 @@ def score_cases(
                 "gold_error": gold_err,
                 "provider": served["provider"],
                 "model": served["model"],
+                "served_provider": served["served_provider"],
+                "served_model": served["served_model"],
+                "served_local": served["served_local"],
             }
         )
     return rows
@@ -633,6 +663,7 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     summary["by_db_id"] = breakdown(rows, "db_id")
     summary["by_difficulty"] = breakdown(rows, "difficulty")
     summary["served_mix"] = served_mix(rows)
+    summary["served_local"] = served_local_counts(rows)
     return summary
 
 
@@ -664,12 +695,17 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
             f"  {diff} n={row['n']} RIGHT={row['right']} ABSTAIN={row['abstain']} "
             f"WRONG={row['wrong']} GOLD_ERROR={row['gold_error']}"
         )
-    print("served provider/model counts:")
+    print("served provider/model/local counts:")
     mix = summary.get("served_mix") or {}
     if not mix:
         print("  (none)")
     for key, count in mix.items():
         print(f"  {key} {count}")
+    local = summary.get("served_local") or {}
+    print(
+        f"served_local true={local.get('true', 0)} "
+        f"false={local.get('false', 0)} unknown={local.get('unknown', 0)}"
+    )
 
 
 def artifact_path(env: Mapping[str, str] | None = None) -> Path:
@@ -881,11 +917,32 @@ def minidev_self_check() -> list[str]:
         errs.append("run_pg_gold must pin dead_connection on connect failure")
 
     served_u = served_from_response({"badge": "L0_CERTIFIED", "rows": [{"n": 1}]})
-    if served_u != {"provider": UNKNOWN, "model": UNKNOWN}:
-        errs.append("missing Cortex model/provider must record unknown, never guess")
-    served_r = served_from_response({"provider": "groq", "model": "llama-3.3"})
-    if served_r != {"provider": "groq", "model": "llama-3.3"}:
-        errs.append("reported provider/model must be copied")
+    if served_u != {
+        "provider": UNKNOWN,
+        "model": UNKNOWN,
+        "served_provider": UNKNOWN,
+        "served_model": UNKNOWN,
+        "served_local": UNKNOWN,
+    }:
+        errs.append("missing ROUTER-1 served_* must record unknown, never guess")
+    served_alias = served_from_response({"provider": "groq", "model": "llama-3.3"})
+    if served_alias["provider"] != UNKNOWN or served_alias["served_local"] != UNKNOWN:
+        errs.append("provider/model aliases must not fill ROUTER-1 served_*")
+    served_r = served_from_response(
+        {
+            "served_provider": "groq",
+            "served_model": "llama-3.3",
+            "served_local": False,
+        }
+    )
+    if served_r != {
+        "provider": "groq",
+        "model": "llama-3.3",
+        "served_provider": "groq",
+        "served_model": "llama-3.3",
+        "served_local": False,
+    }:
+        errs.append("ROUTER-1 served_* fields must be copied")
 
     left = {
         "setup_fingerprint": "aaa",
@@ -942,6 +999,7 @@ def run_minidev(
     )
     summary = summarize(cases)
     mix = summary["served_mix"]
+    local_counts = summary["served_local"]
     if cortex:
         finished = finish_freeroute(freeze or {})
         if isinstance(finished, str):
@@ -953,6 +1011,7 @@ def run_minidev(
             fresh=freeze.get("fresh"),
             hash_before=freeze.get("hash_before"),
             mix=mix,
+            served_local=local_counts,
         )
         freeroute_out = dict(freeze)
     else:
@@ -962,6 +1021,7 @@ def run_minidev(
             fresh=None,
             hash_before=None,
             mix=mix,
+            served_local=local_counts,
         )
         freeroute_out = {
             "cortex": False,
@@ -985,6 +1045,7 @@ def run_minidev(
         "setup": payload,
         "setup_fingerprint": setup_fingerprint(payload),
         "served_mix": mix,
+        "served_local": local_counts,
         "summary": summary,
         "cases": cases,
         "note": (
