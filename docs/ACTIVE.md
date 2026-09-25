@@ -344,6 +344,10 @@ to the ontology. #116 live certify is separate.
 SCORE-BIRD-01 (#184): `scripts/score_bird.py` + `scripts/score_bird.md`.
 Live A/B on Space `f0da7dd3-...` (source_count=1). Bronze grows in batches
 past baseline `gender`. Leftover target 75. Not EPIC-020b COMPLETE.
+A1-02 (#264): `--minidev` grades 500 Mini-Dev questions against gold SQL.
+Corpus fetched at run time, never committed. Envelope setup fields copied
+or unknown; `plan_origin` counted separately. No target. Live baseline is
+Platform. Regression: `tests/test_bird_minidev.py`.
 
 EPIC-CCA constraint cascade: `packages/executor/dms_executor/cca/`. One
 matching rule in `binder.py` (pack proposes, landed values decide, exact match

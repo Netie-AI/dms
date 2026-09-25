@@ -1,8 +1,9 @@
-PREFLIGHT for this goal: HIT (gen-03-contain-ask-path; gen-path-route-01/02; gen-restore Insights seam).
+PREFLIGHT for this goal: HIT (A1-02 #264 Mini-Dev harness; gen-restore-01 Insights seam).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
 | 2026-09-25 | gen-restore-01 | GEN-RESTORE-01, Insights, compute_insights, /dms/query, plan_origin, chart_from_rows, setup fields, dms-276 | Reopen generative seam to Cortex Insights only (8s). Named ABSTAIN. plan_origin. Reuse chart_from_rows. Copy setup fields as received. WRONG pins stay. Not live score. | `2026-09-25_gen-restore-01.md` |
+| 2026-09-25 | a1-02-bird-minidev | A1-02, bird_minidev, gold SQL, GOLD_ERROR, FreeRoute learn, served_local, setup_fingerprint, plan_origin, dms-264 | 500 Mini-Dev questions loaded at run time, graded against gold SQL. No target. Learn-off + fresh route store for Cortex runs. Envelope setup fields copied or unknown. Fingerprints must match to compare. | `2026-09-25_a1-02-bird-minidev.md` |
 | 2026-09-25 | sqlglot-currency-gate | sqlglot, currency, unit, A2-05, dms-261, hard rule 6, swap | Parser isolated in sql_currency.py. Swap: Cortex HTTP verify-unit or another dialect parser. No FX. #262 after. | `2026-09-25_sqlglot-currency-gate.md` |
 | 2026-09-24 | regex-sql-safety-ceiling | sql safety, regex, sqlglot, currency gate, grain rule, dms-261, dms-262 | 11 verifier rounds each beat the regex SQL checks; class fix is a parser (founder call, rule 6). #262 must land after #261 (alone raises WRONG 7 -> 10). | `2026-09-24_regex-sql-safety-ceiling.md` |
 | 2026-09-23 | climb-metric-ceiling | GEN-PATH-CLIMB, ontology_plan, BIRD, unseen schema, 100 percent, dms-178 | Climb count grows by restating certified SQL on one warehouse; cannot measure DB-GPT-class accuracy. PRD amendment brief routed, not built. B blocked on CLIMB-12 live prove. | `2026-09-23_climb-metric-ceiling.md` |

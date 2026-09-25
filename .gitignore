@@ -28,6 +28,15 @@ vendor/
 
 # Cloned benchmark corpora (CRAG, open_ragbench) - fetched, never vendored
 tests/repos/
+# BIRD Mini-Dev corpus: fetch at run time, never vendor (licence + size)
+tests/fixtures/bird_minidev/*.json
+!tests/fixtures/bird_minidev/synthetic.json
+!tests/fixtures/bird_minidev/served_present.json
+!tests/fixtures/bird_minidev/served_absent.json
+!tests/fixtures/bird_minidev/served_nested.json
+mini_dev_postgresql.json
+mini_dev_mysql.json
+mini_dev_sqlite.json
 logs/
 *.err.log
 *.out.log
