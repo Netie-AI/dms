@@ -2,6 +2,22 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - ORACLE-FIX-02 amendment 2: engine date bookends, round INVALID (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) comment 5832321962 (20:24 MYT). Adds to the bind-date work. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
+- **Change.** Each scoring round reads `CURRENT_DATE` + `TimeZone` from the answer engine, never `datetime.now()`. Offline A/B / prove: `connect_file` on the submit DuckDB, `SELECT CURRENT_DATE` on that connection before execute, bookend before/after the round, bind `$as_of` to the before date. Live HTTP cannot share the remote engine session; bookends use `--oracle-db` DuckDB `CURRENT_DATE`, never the harness clock. Timezone is stored on the score report. If before != after, the round is labelled `INVALID` at the run layer and is not printed as WRONG. Judge verdicts (`OK`/`WRONG`/`ORACLE_ERROR`/`ABSTAIN`/`LAYER`) and `oracle_row_match` comparison are unchanged.
+- **Gate.** `tests/test_oracle_fix_02.py::test_round_invalid_when_engine_date_crosses_midnight` (mismatched pair -> INVALID, not WRONG; matching pair not INVALID). Two-date bind test unchanged. `test_oracle_fix_01.py` not edited this round.
+- **Not this ticket:** other oracles; comparator edits; COMPLETE; merge.
+
+## 2026-09-25 - ORACLE-FIX-02: cq_audit_overdue binds the run date (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) under dms#231 / EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
+- **Cause (recorded first).** dms#292 `run_oracle_select` on `cq_audit_overdue`: seeded `demo_warehouse.py` lake returns err=None (`suppliers.last_audit_date` DATE exists). SCORE-ROWS-01 / `score_curated --self-check` harness lake (`sales` / `sku_sales` only) returns `CatalogException:Catalog Error: Table with name suppliers does not exist!`. The remaining defect on the seed is `CURRENT_DATE` (expected rows follow the wall clock).
+- **Change.** `cq_audit_overdue` oracle SQL binds `$as_of` in place of `CURRENT_DATE`. 90-day rule matches DMS `audit_overdue` in `packages/executor/dms_executor/ontology.py:2036-2044` (`CAST(f.last_audit_date AS DATE) < CURRENT_DATE - INTERVAL 90 DAY`). Seed dates unchanged. Harness passes the recorded engine date into the oracle; comparison logic in `oracle_row_match.py` and labels in `score_curated.py` are untouched. 1b records this merge as the oracle-file commit; nothing already run is relabelled.
+- **Gate.** `tests/test_oracle_fix_02.py::test_cq_audit_overdue_bound_as_of_two_dates` (seed-derived rows at two as-of dates). Two tightenings in `tests/test_oracle_fix_01.py`: (a) remove `cq_audit_overdue` from `_OWN_ORACLE_ERROR`; (b) zero-row check covers every oracle whose `expect` is an answer. Refuse/abstain stay exempt by `expect`. `trap_high_risk_pending` out of scope. No skip/xfail.
+- **Not this ticket:** other oracles; live prove; COMPLETE; merge; Phase 1 re-label.
+
+
 ## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
 
 - **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.

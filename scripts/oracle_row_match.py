@@ -158,6 +158,46 @@ def rows_mismatch_reason(
     return "rows_mismatch:values"
 
 
+def read_engine_clock(db_path: Path | str) -> tuple[str | None, str | None]:
+    """CURRENT_DATE and TimeZone from this DuckDB file. Not the harness clock."""
+    try:
+        import duckdb
+    except ImportError:
+        return None, None
+    path = Path(db_path)
+    try:
+        con = duckdb.connect(str(path), read_only=True)
+        try:
+            row = con.execute(
+                "SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')"
+            ).fetchone()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 - clock must not fail the scorer
+        return None, None
+    if not row:
+        return None, None
+    as_of = str(row[0]).strip() if row[0] is not None else ""
+    tz = str(row[1]).strip() if row[1] is not None else ""
+    return (as_of or None, tz or None)
+
+
+def bind_oracle_params(
+    con: Any,
+    sql: str,
+    params: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Named binds for oracle SQL. Auto-fill $as_of from this connection."""
+    bind: dict[str, Any] = dict(params) if params else {}
+    if "$as_of" in sql and "as_of" not in bind:
+        # ponytail: omitted as_of uses this connection's CURRENT_DATE.
+        # Ceiling: a midnight crossing can disagree with an earlier report stamp.
+        # Upgrade: always pass the recorded run date from the harness.
+        row = con.execute("SELECT CURRENT_DATE").fetchone()
+        bind["as_of"] = row[0] if row else None
+    return bind or None
+
+
 def read_schema_version(db_path: Path | str) -> str:
     try:
         import duckdb
@@ -181,7 +221,9 @@ def read_schema_version(db_path: Path | str) -> str:
 
 
 def run_oracle_select(
-    db_path: Path | str, sql: str
+    db_path: Path | str,
+    sql: str,
+    params: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Read-only SELECT. (rows, None) or (None, error). Never raises into OK."""
     if not is_select_sql(sql):
@@ -200,7 +242,8 @@ def run_oracle_select(
             con.execute("SET default_transaction_read_only = on")
         except Exception:  # noqa: BLE001 - best-effort
             pass
-        cur = con.execute(sql)
+        bind = bind_oracle_params(con, sql, params)
+        cur = con.execute(sql, bind) if bind else con.execute(sql)
         cols = [str(c[0]) for c in (cur.description or [])]
         out = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
         return out, None
