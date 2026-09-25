@@ -172,7 +172,8 @@ class Executor:
             # Bound to this Executor's warehouse, not the process-wide default,
             # so an Executor pointed at another warehouse grants that one's
             # uploads rather than the demo warehouse's.
-            uploads=lambda: ingested_bronze_tables(self._warehouse)
+            uploads=lambda: ingested_bronze_tables(self._warehouse),
+            warehouse=self._warehouse,
         )
         if fetch_key_on_start:
             self.startup()
@@ -555,24 +556,26 @@ class Executor:
             self._store_turn(session_id, space_id, env)
             return env
 
-        # The grant decides what the cascade may open, never the request.
-        #
-        # This read ``tables or grantable_tables(...)`` and ``tables`` is the
-        # request body's grounded_tables, unvalidated at this point. The later
-        # grant check in demo_acl caught it on the answering path, but a blocked
-        # cascade returns 200 before ever reaching that check, and the abstain
-        # envelope carries up to twelve distinct values per scanned column in
-        # its evidence. A caller naming a table this Space cannot read got its
-        # column values back from an endpoint that answers 403 for the same
-        # table one line later. Intersecting here is the fix; the request may
-        # narrow the grant and may never widen it.
-        granted = self.grantable_tables(space_id=space_id)
-        requested = [t for t in (tables or []) if t in set(granted)]
+        # Narrow-only. demo_acl's default readable set is grantable intersect
+        # DEMO_TABLES; an upload is readable only when explicitly selected.
+        # This path used ``requested or grantable_tables(...)``, so with
+        # nothing ticked the cascade and retrieve opened every bronze upload
+        # tagged to the Space and sent DISTINCT samples in the Insights body.
+        # Intersection with granted still narrows a selection; an unread grant
+        # never falls back to the whole space.
+        try:
+            granted = self.grantable_tables(space_id=space_id)
+        except Exception:  # noqa: BLE001 -- empty context, never the whole space
+            granted = []
+        selection = [t for t in (tables or []) if t]
+        requested = [t for t in selection if t in set(granted)]
+        default_readable = [t for t in granted if t in DEMO_TABLES]
+        readable = requested or default_readable
         cascade = (
             run_cascade(
                 question,
                 warehouse=ensure_demo_warehouse(self._warehouse),
-                tables=requested or granted,
+                tables=readable,
             )
             if cascade_enabled()
             else CascadeOutcome(engaged=False)
@@ -606,7 +609,7 @@ class Executor:
                 space_id=space_id,
                 session_id=session_id,
                 warehouse=self._warehouse,
-                grantable=set(granted),
+                grantable=set(readable),
                 tables=tables,
                 compute=lambda catalog: _insights_compute_seam(
                     self._cortex,

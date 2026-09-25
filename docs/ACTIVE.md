@@ -3,6 +3,12 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+GRANT-READ-01 (#297): ask-path retrieve and cascade use `demo_acl`'s
+default readable set when the caller ticks nothing (`requested or
+default_readable`). Unticked uploads never enter the Insights generate
+context. `list_space_source_ids` reads the Executor warehouse.
+Regression: `tests/test_grant_read_01.py`. Not COMPLETE.
+
 S4 warehouse identity: `packages/executor/dms_executor/warehouse_identity.py`
 copies Studio bronze from `DMS_WAREHOUSE_DB` into `CORTEX_WAREHOUSE_DB`.
 CLI + check: `scripts/sync_bronze_to_serving.py`. Regression:
