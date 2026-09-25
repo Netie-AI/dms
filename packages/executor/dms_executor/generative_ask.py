@@ -64,6 +64,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.sql_currency import currency_mismatch_reason
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -479,11 +480,21 @@ def _submit_validated(
     measure: str | None = None,
     coverage: Coverage | None = None,
     where_paths: Sequence[WherePath] = (),
+    warehouse: Path | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
             question,
             "coverage_invalid: numeric answer missing include/exclude/unsure",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+        )
+    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
+    if ccy_why:
+        return _abstain(
+            question,
+            ccy_why,
             space_id=space_id,
             session_id=session_id,
             plan_source=plan_source,
@@ -652,6 +663,7 @@ def _try_multi_grain_envelope(
         measure=multi.measure,
         coverage=multi.coverage,
         where_paths=multi.where_paths,
+        warehouse=lake,
     )
 
 
@@ -849,6 +861,7 @@ def maybe_generative_ask(
                 notes=("GEN-01 Cortex ontology_plan SQL",),
                 plan_source=source,
                 coverage=coverage_from_sql_path(sql=sql),
+                warehouse=lake,
             )
     if kind != "plan":
         # Offline harness only (bind_on_miss): bind from retrieved ontology
@@ -948,4 +961,5 @@ def maybe_generative_ask(
         measure=plan.measure,
         coverage=compiled.coverage,
         where_paths=compiled.where_paths,
+        warehouse=lake,
     )

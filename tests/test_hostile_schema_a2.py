@@ -152,7 +152,7 @@ DEFECT_WORDS: dict[str, tuple[str, ...]] = {
     "lying_column": ("usd", "myr", "currency"),
 }
 
-# Measured on main @ 3c3b621 (2026-09-23). (case, qid, mode) -> verdict.
+# Measured on main @ b10a5d22 then A2-05. (case, qid, mode) -> verdict.
 # WRONG rows name the ticket that owns the fix. Improving a row is editing it.
 # dms#258 A2-02 closed: a declared ontology that failed verify now refuses SQL
 # joining the broken link and names it (check, link, orphan count) on both paths.
@@ -166,7 +166,7 @@ _FIXED_WRONG_FK = "ABSTAIN"
 # Cost: every dup_business_key plan row abstains, including revenue/units by
 # region whose oracle is unaffected.
 _GAP_DUP_KEY = "ABSTAIN"
-_GAP_CURRENCY = "WRONG"  # dms#261 A2-05: unit/currency in the question vs the data is never checked
+_GAP_CURRENCY = "ABSTAIN"  # dms#261 A2-05: named currency must match the measure unit
 MEASURED: dict[tuple[str, str, str], str] = {}
 for _case in CASES:
     for _qid in QUESTIONS:
@@ -247,6 +247,15 @@ def _row_tuple(row: dict[str, Any]) -> tuple[Any, ...]:
     return (*text, *nums)
 
 
+def _defect_words(case_id: str, qid: str) -> tuple[str, ...]:
+    """Case defect, plus currency words on revenue_usd (unanswerable on every lake)."""
+    base = DEFECT_WORDS[case_id]
+    if qid != "revenue_usd":
+        return base
+    extra = DEFECT_WORDS["lying_column"] if case_id == "lying_column" else DEFECT_WORDS["control"]
+    return tuple(dict.fromkeys((*base, *extra)))
+
+
 def grade(env: dict[str, Any], oracle: set[tuple[Any, ...]] | None, words: tuple[str, ...]) -> str:
     if env.get("abstained") is True or env.get("badge") == "ABSTAIN":
         said = " ".join([str(env.get("text") or ""), *map(str, env.get("assumptions") or [])])
@@ -289,7 +298,7 @@ def test_envelope_verdict_matches_measured(
     tmp_path: Path, case_id: str, qid: str, mode: str
 ) -> None:
     env = _ask(tmp_path, case_id, qid, mode)
-    verdict = grade(env, ORACLE[case_id][qid], DEFECT_WORDS[case_id])
+    verdict = grade(env, ORACLE[case_id][qid], _defect_words(case_id, qid))
     rendered = (env.get("text") or "")[:160]
     assert verdict == MEASURED[(case_id, qid, mode)], (
         f"{case_id}/{qid}/{mode}: envelope says {verdict}, pin says "
