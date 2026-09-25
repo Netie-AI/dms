@@ -115,6 +115,14 @@ A2-05 (#261): named-currency questions go through `dms_executor/sql_currency.py`
 (sqlglot, DuckDB dialect) before submit. Swap: that module only. No FX.
 Regression: `tests/test_sql_currency_a2_05.py`, `tests/test_hostile_schema_a2.py`.
 
+A2-06 (#262): `load_verified_ontology` keeps a caller-declared ontology when
+verify fails and marks only failed subjects. Failed link: unusable for
+compile and for SQL whose fact is the child. Failed object key / business
+key: measures on that object, and paths through it, unusable. No-declared
+lakes unchanged. Regression: `tests/test_a2_06_scoped_ontology.py`,
+`tests/test_hostile_schema_a2.py` (9 MEASURED pins ABSTAIN -> OK).
+CI fixtures, not live. Not COMPLETE.
+
 EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
 (`scripts/score_climb.md`). Probe + ask use httpx (`score_http`), not urllib

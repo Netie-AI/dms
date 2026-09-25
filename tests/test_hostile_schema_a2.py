@@ -190,6 +190,21 @@ MEASURED[("dup_business_key", "customer_count", "sql")] = _FIXED_ORPHAN
 # customer_code is duplicated, even where the region rows would be right.
 MEASURED[("dup_business_key", "revenue_by_region", "sql")] = _FIXED_ORPHAN
 MEASURED[("dup_business_key", "units_by_region", "sql")] = _FIXED_ORPHAN
+# A2-06 / dms#262: refusals scope to the failed subject. These 9 have an
+# unaffected oracle and no longer touch that subject as grain.
+_A2_06_OK: tuple[tuple[str, str, str], ...] = (
+    ("orphan", "units_by_region", "plan"),
+    ("orphan", "customer_count", "plan"),
+    ("orphan", "units_by_region", "sql"),
+    ("fk_wrong_col", "revenue_by_region", "plan"),
+    ("fk_wrong_col", "customer_count", "plan"),
+    ("dup_business_key", "revenue_by_region", "plan"),
+    ("dup_business_key", "units_by_region", "plan"),
+    ("dup_business_key", "revenue_by_region", "sql"),
+    ("dup_business_key", "units_by_region", "sql"),
+)
+for _key in _A2_06_OK:
+    MEASURED[_key] = "OK"
 
 
 def _ontology(case: Case) -> Ontology:

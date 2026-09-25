@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (QUAL-GUARD-01 #290 extractor + coverage; BEARER-01 #289 generate=true bearer; PII-01 #272 local masker landed).
+PREFLIGHT for this goal: PARTIAL (A2-05 sqlglot gate landed; no prior A2-06 scoped-verify note).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-25 | a2-06-scoped-ontology | A2-06, load_verified_ontology, failed subject, fk_intact, business_key, dms-262 | One verify violation no longer drops the whole declared ontology. Failed link/object stay unusable; clean grain answers. Demo/BIRD undeclared path unchanged. | `2026-09-25_a2-06-scoped-ontology.md` |
 | 2026-09-25 | qual-guard-01 | qualifier, time_grain, unhonored_qualifier, ranked retry, generate_legs, dms-290 | Dropped time grain/group/filter is named ABSTAIN. Retry adds grain or skips. Route A/B notes. Scorer is #292. | `2026-09-25_qual-guard-01.md` |
 | 2026-09-25 | bearer-01 | BEARER-01, generate=true, Authorization Bearer, insights_bearer_missing, insights_bearer_insecure_transport, dms-289 | Generate=true refuses missing/demo key and plain http non-loopback. Named ABSTAIN. Ranked lanes and settings.py untouched. | `2026-09-25_bearer-01.md` |
 | 2026-09-25 | pii-01-local-masker | pii, mask, nric, encodings, DMSMASK, dms-272 | Local detector drops PII encodings and masks answers/exports. Cortex #268 both-maskers live run leftover. | `2026-09-25_pii-01-local-masker.md` |

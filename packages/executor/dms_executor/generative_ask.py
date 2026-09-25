@@ -55,6 +55,7 @@ from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
+    LinkType,
     Ontology,
     Refusal,
     Violation,
@@ -258,30 +259,43 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
 
 
 def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
-    """Verify against the lake. Unverified ontologies cannot answer (compile refuses).
+    """Verify against the lake. Failed subjects stay marked; the rest can answer.
+
+    A caller-declared ontology that fails verify is returned with those
+    subjects marked (A2-06). The default demo ontology (``onto is None``)
+    still returns None on failure so lakes it was never declared for
+    (BIRD, live product) keep today's SQL behaviour.
 
     Does not reseed. A test warehouse must already hold the relations the
     ontology names — ``ensure_demo_warehouse`` would drop them.
     """
     if warehouse is None or not Path(warehouse).is_file():
         return None
-    target = onto if onto is not None else demo_ontology(Path(warehouse))
+    if onto is not None:
+        target = onto
+        declared = True
+    else:
+        target = demo_ontology(Path(warehouse))
+        declared = False
     con = connect_file(Path(warehouse))
     try:
         violations = target.verify(con)
     finally:
         con.close()
-    if violations or not target.verified:
+    if not violations and target.verified:
+        return target
+    if not declared:
         return None
+    _scope_failed_subjects(target, violations)
     return target
 
 
 def declared_ontology_violations(warehouse: Path | None, onto: Ontology) -> list[Violation]:
     """Verify a caller-declared ontology against the lake and keep the evidence.
 
-    ``load_verified_ontology`` answers None on failure and drops the reasons;
-    A2-02 needs them so the SQL path can refuse by name. Empty when the lake is
-    missing (nothing to measure) or the ontology passed.
+    Empty when the lake is missing (nothing to measure) or the ontology passed.
+    Prefer ``load_verified_ontology`` when the caller also needs the scoped
+    ontology; this helper re-runs verify and does not bless hop-usable links.
     """
     if warehouse is None or not Path(warehouse).is_file():
         return []
@@ -299,6 +313,128 @@ def violation_reason(violations: Sequence[Violation], *, limit: int = 3) -> str:
     if more > 0:
         named.append(f"+{more} more")
     return "ontology_unverified: " + "; ".join(named) if named else "ontology_unverified"
+
+
+def _scope_failed_subjects(onto: Ontology, violations: Sequence[Violation]) -> None:
+    """Bless fk_intact links for hop use. The violation stays for the gates.
+
+    verify() measures parent uniqueness then leaves the link unverified when
+    orphans exist, so compile would skip it. A measure not grained on the
+    child can still hop through; child-grain compile/SQL still abstains.
+    """
+    for v in violations:
+        if v.check != "fk_intact":
+            continue
+        link = onto.links.get(v.subject)
+        if link is None or link.cardinality != "unverified":
+            continue
+        onto.links[v.subject] = LinkType(
+            link.name,
+            link.from_object,
+            link.from_columns,
+            link.to_object,
+            link.to_columns,
+            "many_to_one",
+            1,
+            link.one_to_one,
+        )
+
+
+def _canonical_object(onto: Ontology, name: str) -> str | None:
+    resolved = onto.resolve_object(name)
+    if isinstance(resolved, str):
+        return resolved
+    return name if name in onto.objects else None
+
+
+def _declared_paths(onto: Ontology, start: str, target: str) -> list[list[LinkType]]:
+    """Acyclic declared paths, ignoring cardinality. Subject-touch only."""
+    if start == target:
+        return [[]]
+    found: list[list[LinkType]] = []
+    stack: list[tuple[str, list[LinkType], frozenset[str]]] = [
+        (start, [], frozenset({start}))
+    ]
+    while stack:
+        obj, path, seen = stack.pop()
+        for link in onto.links.values():
+            if link.from_object != obj or link.to_object in seen:
+                continue
+            nxt = path + [link]
+            if link.to_object == target:
+                found.append(nxt)
+            else:
+                stack.append((link.to_object, nxt, seen | {link.to_object}))
+    return found
+
+
+def _plan_dests(plan: QueryPlan, onto: Ontology, grain: str) -> set[str]:
+    names = [obj for obj, _col in plan.group_by]
+    names.extend(obj for obj, _col, _op, _val in plan.filters)
+    if plan.via:
+        names.extend(plan.via)
+    dests: set[str] = set()
+    for obj in names:
+        name = _canonical_object(onto, obj)
+        if name and name != grain:
+            dests.add(name)
+    return dests
+
+
+def _plan_uses_link(
+    onto: Ontology, grain: str, dests: set[str], link: LinkType
+) -> bool:
+    for dest in dests:
+        for path in _declared_paths(onto, grain, dest):
+            if any(hop.name == link.name for hop in path):
+                return True
+    return False
+
+
+def _object_is_through_hop(onto: Ontology, grain: str, dests: set[str], obj: str) -> bool:
+    for dest in dests:
+        if dest == obj:
+            continue
+        for path in _declared_paths(onto, grain, dest):
+            hops = {hop.from_object for hop in path} | {hop.to_object for hop in path}
+            hops.discard(grain)
+            hops.discard(dest)
+            if obj in hops:
+                return True
+    return False
+
+
+def violations_cited_by_plan(
+    plan: QueryPlan, onto: Ontology, violations: Sequence[Violation]
+) -> list[Violation]:
+    """Violations that make this typed plan unusable.
+
+    A failed link is unusable when the measure is grained on its child and
+    the plan's path uses the link. A failed object key or business key makes
+    measures grained on that object, and paths through it, unusable.
+    """
+    spec = onto.measures.get(plan.measure)
+    if spec is None:
+        return []
+    grain = spec.grain
+    dests = _plan_dests(plan, onto, grain)
+    hit: list[Violation] = []
+    for v in violations:
+        link = onto.links.get(v.subject)
+        if link is not None:
+            if grain == link.from_object and _plan_uses_link(onto, grain, dests, link):
+                hit.append(v)
+            continue
+        if v.subject in onto.objects and (
+            grain == v.subject or _object_is_through_hop(onto, grain, dests, v.subject)
+        ):
+            hit.append(v)
+    return hit
+
+
+def _fact_relation(sql: str) -> str | None:
+    labels = _sql_cited_labels(sql)
+    return _relation_bare(labels[0]) if labels else None
 
 
 def _violation_relations(onto: Ontology, v: Violation) -> set[str]:
@@ -320,17 +456,31 @@ def _violation_relations(onto: Ontology, v: Violation) -> set[str]:
 def violations_cited_by_sql(
     sql: str, onto: Ontology, violations: Sequence[Violation]
 ) -> list[Violation]:
-    """Violations whose every relation the SQL reads (a join over a broken link).
+    """Violations whose failed subject is the SQL grain (A2-02 / A2-06).
 
-    SQL that never touches a failed link's relations is not made wrong by it,
-    so a count over one clean table still answers.
+    Failed link: first FROM is the child relation and the SQL reads both of
+    the link's relations. A hop from another grain through the link is not
+    cited. Failed object: first FROM is that object's relation (a measure
+    grained on the broken key). Dimension joins to it still answer.
     """
     named = cited_relations(sql)
+    fact = _fact_relation(sql)
     hit: list[Violation] = []
     for v in violations:
-        rels = _violation_relations(onto, v)
-        if rels and rels <= named:
-            hit.append(v)
+        link = onto.links.get(v.subject)
+        if link is not None:
+            rels = _violation_relations(onto, v)
+            if not (rels and rels <= named):
+                continue
+            child = onto.objects.get(link.from_object)
+            child_rel = _relation_bare(child.relation) if child is not None else None
+            if fact and child_rel and fact == child_rel:
+                hit.append(v)
+            continue
+        if v.subject in onto.objects:
+            obj = onto.objects[v.subject]
+            if fact and fact == _relation_bare(obj.relation):
+                hit.append(v)
     return hit
 
 
@@ -780,6 +930,27 @@ def _try_multi_grain_envelope(
     )
 
 
+def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
+    """Compile a plan that does not touch a failed subject (A2-06).
+
+    ``Ontology.compile`` still blanket-refuses when ``verified`` is False so
+    existing callers stay fail-closed. A scoped ask lifts the flag only for
+    this call; failed links that were not hop-blessed stay unusable.
+    """
+    was = onto.verified
+    try:
+        onto.verified = True
+        return onto.compile(
+            plan.measure,
+            group_by=plan.group_by,
+            filters=plan.filters,
+            via=plan.via,
+            limit=plan.limit,
+        )
+    finally:
+        onto.verified = was
+
+
 def maybe_generative_ask(
     question: str,
     *,
@@ -858,18 +1029,26 @@ def maybe_generative_ask(
         lake = None
 
     onto = ontology
-    # A2-02: a caller-declared ontology that FAILED verify keeps its evidence.
-    # The default demo ontology (ontology=None) does not: a lake it was never
-    # declared for (BIRD) must keep answering generated SQL as before.
+    # A2-02/A2-06: a caller-declared ontology that FAILED verify keeps its
+    # evidence and stays loaded with failed subjects marked. The default
+    # demo ontology (ontology=None) still drops on failure: a lake it was
+    # never declared for (BIRD) must keep answering generated SQL as before.
     declared: Ontology | None = None
     declared_violations: list[Violation] = []
     if onto is None:
         onto = load_verified_ontology(lake)
     elif lake is not None and not onto.verified:
-        declared_violations = declared_ontology_violations(lake, onto)
-        if declared_violations or not onto.verified:
-            declared = onto
-            onto = None
+        loaded = load_verified_ontology(lake, onto)
+        if loaded is not None:
+            onto = loaded
+            declared_violations = list(loaded.__dict__.get("_violations") or [])
+            if declared_violations or not loaded.verified:
+                declared = loaded
+        else:
+            declared_violations = declared_ontology_violations(lake, onto)
+            if declared_violations or not onto.verified:
+                declared = onto
+                onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
     # Short retrieved context only -- not the full ontology dump.
     ctx = retrieve_short_context(
@@ -1099,7 +1278,7 @@ def maybe_generative_ask(
                 notes=trail_notes,
             )
         )
-    if onto is None or not onto.verified:
+    if onto is None or (not onto.verified and not declared_violations):
         return _stamp(
             _abstain(
                 q,
@@ -1109,14 +1288,20 @@ def maybe_generative_ask(
                 plan_source=source,
             )
         )
+    if not onto.verified:
+        touched = violations_cited_by_plan(plan, onto, declared_violations)
+        if touched:
+            return _stamp(
+                _abstain(
+                    q,
+                    violation_reason(touched),
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
+            )
 
-    compiled = onto.compile(
-        plan.measure,
-        group_by=plan.group_by,
-        filters=plan.filters,
-        via=plan.via,
-        limit=plan.limit,
-    )
+    compiled = _compile_maybe_unverified(onto, plan)
     if isinstance(compiled, Refusal):
         return _stamp(
             _abstain(
