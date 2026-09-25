@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.ontology import demo_ontology
 from dms_executor.semantic_retrieve import bind_plan, retrieve_short_context
@@ -151,9 +152,15 @@ def test_generative_cold_storage_validates(tmp_path: Path) -> None:
         bind_on_miss=True,
     )
     assert env is not None
-    assert env["badge"] == "L2_VALIDATED"
-    assert env["abstained"] is False
-    assert "is_cold_storage" in (env.get("sql_used") or "")
+    # GRAIN-GUARD-01: the compiled SQL answers "which locations" with a
+    # utilisation figure nobody asked for (oracle-WRONG). Named ABSTAIN, no
+    # rows, no figure -- never a trimmed rewrite under L2.
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert "gap: unrequested_measure:utilisation_pct" in env["text"], env["text"]
+    assert "WH-C" not in env["text"] and "96.7" not in env["text"]
+    assert_envelope_valid(env)
 
 
 def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
@@ -184,15 +191,14 @@ def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
         bind_on_miss=True,
     )
     assert env is not None
-    assert env["badge"] == "L2_VALIDATED"
-    assert env["abstained"] is False
-    assert env["rows"]
-    # GRAIN-GUARD-01: a which-list ask returns the entities asked for; the
-    # unrequested utilisation figure is dropped, never shown under L2.
-    codes = sorted(str(v) for row in env["rows"] for v in row.values())
-    assert codes == ["WH-C", "WH-E"], env["rows"]
-    assert "utilisation_pct" not in str(env["rows"])
-    assert "WH-E" in env["text"] and "97.8" not in env["text"], env["text"]
+    # GRAIN-GUARD-01: "which locations" answered with a utilisation figure
+    # abstains named; the figure is not trimmed off to certify the list.
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert "gap: unrequested_measure:utilisation_pct" in env["text"], env["text"]
+    assert "WH-E" not in env["text"] and "97.8" not in env["text"], env["text"]
+    assert_envelope_valid(env)
 
 
 def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:

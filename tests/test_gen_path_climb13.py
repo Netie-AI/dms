@@ -275,10 +275,13 @@ def test_unused_certified_leftover_raises_above_39(tmp_path: Path) -> None:
     assert leftover_ids_not_ontology(cases, CLIMB11_RISE_IDS) == guarded_ids(CLIMB11_RISE_IDS)
     assert leftover_ids_not_ontology(cases, CLIMB12_RISE_IDS) == guarded_ids(CLIMB12_RISE_IDS)
     assert leftover_ids_not_ontology(cases, CLIMB13_RISE_IDS) == guarded_ids(CLIMB13_RISE_IDS)
-    # GRAIN-GUARD-01: climb-11 rise L0s abstain named (oracle-WRONG), so the
-    # measured offline climb no longer passes the live gate.
     why = live_climb_gate(report)
-    assert why is not None and "climb-11 rise L0s not ontology_plan" in why, why
+    assert why is not None
+    # GRAIN-GUARD-01 round 3: ops_chemicals_list (climb-09 rise) answered
+    # "list chemicals" with a stock-value figure (oracle-WRONG); it abstains
+    # named now (no trim), so the live gate fails on climb-09 itself.
+    assert "climb-09 rise L0s not ontology_plan" in why, why
+    assert "ops_chemicals_list" in why, why
 
 
 def test_merge_injects_climb13_into_n49() -> None:

@@ -11,6 +11,10 @@ Every case here goes through ``POST /v1/chat/ask`` (ask_path=generative) and
 asserts on the customer envelope: badge, abstained, rendered text and rows.
 SQL is only the fixture input. The fake Cortex returns the generated SQL from
 Insights and executes submits on the demo warehouse, so the rows are real.
+
+Round 3 is fail closed: a shape the gate cannot analyse (GROUP BY ALL, an
+expression or positional key, ROLLUP, a window, a nested aggregate, a star)
+abstains ``grain_unanalysable:<why>``, and no rows are ever trimmed.
 """
 
 from __future__ import annotations
@@ -303,23 +307,14 @@ def test_cctv_with_extra_plain_column_abstains(minter: ManifestMinter, lake: Pat
     _assert_grain_abstain(env, "unrequested_column:capacity_kg", "100000", "CAM-A-01")
 
 
-def test_which_list_with_extra_measure_returns_only_requested_columns(
+def test_which_list_with_extra_measure_abstains_no_trim(
     minter: ManifestMinter, lake: Path
 ) -> None:
-    """Acceptance 3, second branch: never L2 over the extra-column row set."""
-    env, _ = _post(minter, lake, COLD_Q, COLD_EXTRA_MEASURE_SQL)
-    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"))
-    assert env["abstained"] is False
-    assert env["rows"] == [{"location_location_code": "WH-C"}]
-    assert _multiset(env["rows"]) == _multiset(_oracle_rows(lake, COLD_ORACLE_SQL))
-    text = str(env.get("text") or "")
-    assert "WH-C" in text
-    assert "96.7" not in text and "utilisation_pct" not in text, text
-    assert all("utilisation_pct" not in str(v) for v in env["values"]), env["values"]
-    assert "dropped unrequested column(s) utilisation_pct" in _reasons(env)
-    # The audited SQL is the one whose rows were shown (no hidden figure).
-    assert "utilisation_pct" not in str(env["sql_used"]).split(" FROM (", 1)[0]
-    assert _multiset(_oracle_rows(lake, env["sql_used"])) == _multiset(env["rows"])
+    """Acceptance 3: never L2 over the extra-figure row set, and no hidden trim."""
+    env, cortex = _post(minter, lake, COLD_Q, COLD_EXTRA_MEASURE_SQL)
+    _assert_grain_abstain(env, "unrequested_measure:utilisation_pct", "WH-C", "96.7")
+    assert cortex.executed == [], "no trimmed rewrite may execute"
+    assert "dropped unrequested" not in _reasons(env)
 
 
 # --- 4. matching grain keeps L2 ------------------------------------------------
@@ -358,6 +353,9 @@ def test_breakdown_and_ranking_asks_are_not_scalar() -> None:
         "grain_mismatch:scalar_expected"
     )
     assert scalar_rows_reason("How many SKUs do we have in inventory?", rows[:1]) is None
+    assert scalar_rows_reason("How many SKUs do we have in inventory?", []) == (
+        "grain_mismatch:scalar_expected"
+    )
 
 
 def test_requested_grain_and_named_measure_pass() -> None:
@@ -371,11 +369,10 @@ def test_requested_grain_and_named_measure_pass() -> None:
     )
     util = (
         "SELECT location_code, ROUND(100.0 * SUM(current_load_kg) / SUM(capacity_kg), 1) "
-        "AS utilisation_pct FROM locations WHERE location_code = 'WH-A' GROUP BY 1"
+        "AS utilisation_pct FROM locations WHERE location_code = 'WH-A' GROUP BY location_code"
     )
     assert grain_mismatch_reason("Show the utilisation for warehouse A", util) is None
     assert grain_mismatch_reason("Which warehouse has the highest utilisation?", util) is None
-    assert grain_mismatch_reason("Show stock ; not sql (", "not sql (") is None
 
 
 # --- verifier probes (round 2): bypasses closed, legit asks kept ---------------
@@ -424,7 +421,7 @@ WH_B_STOCK_SQL = (
             LOW_STOCK_Q,
             "SELECT * FROM (SELECT sku, COUNT(*) FILTER (WHERE quantity_kg < reorder_level_kg) "
             "AS below FROM inventory WHERE location_id = 'WH-A' GROUP BY sku) t",
-            "unrequested_measure:below",
+            "grain_unanalysable:nested_grouping",
             ("RS622XK",),
         ),
     ],
@@ -462,3 +459,227 @@ def test_round2_legit_asks_keep_l2_with_their_figure(
     _assert_l2_matches_oracle(env, lake, sql)
     oracle = _oracle_rows(lake, sql)
     assert len(oracle[0]) == 2 and len(env["rows"][0]) == 2, env["rows"]
+
+
+# --- round 3: fail closed on what the gate cannot analyse ----------------------
+
+UTIL = "ROUND(100.0*SUM(current_load_kg)/SUM(capacity_kg),1) AS utilisation_pct"
+PER_SKU_A = "SELECT sku, SUM(quantity_kg) AS q FROM inventory WHERE location_id='WH-A' GROUP BY sku"
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "prefix", "figures"),
+    [
+        # a total asked "across all" is still one figure, not a per-warehouse list
+        (
+            "What is the total number of SKUs across all warehouses?",
+            "SELECT location_id, COUNT(DISTINCT sku) AS sku_count FROM inventory "
+            "GROUP BY location_id",
+            "grain_mismatch:scalar_expected",
+            ("WH-A", "WH-B"),
+        ),
+        # the capacity_kg grain behind an expression key
+        (
+            CAPACITY_Q,
+            f"SELECT CAST(capacity_kg AS BIGINT) AS cap, {UTIL} FROM locations "
+            "GROUP BY CAST(capacity_kg AS BIGINT)",
+            "grain_unanalysable:expression_group_key",
+            ("97.8", "90000"),
+        ),
+        # ... behind GROUP BY ALL
+        (
+            CAPACITY_Q,
+            f"SELECT capacity_kg, {UTIL} FROM locations GROUP BY ALL",
+            "grain_unanalysable:group_by_all",
+            ("97.8", "90000"),
+        ),
+        # a stem-matching WHERE is no longer a licence to hide the figure
+        (
+            "Which locations are almost full?",
+            f"SELECT location_code, {UTIL} FROM locations WHERE current_load_kg > 0 "
+            "GROUP BY location_code",
+            "unrequested_measure:utilisation_pct",
+            ("WH-A", "WH-B", "WH-D"),
+        ),
+        (
+            "Which locations are almost full?",
+            f"SELECT location_code, {UTIL} FROM locations WHERE location_code <> '' "
+            "GROUP BY location_code",
+            "unrequested_measure:utilisation_pct",
+            ("WH-A", "WH-B", "WH-D"),
+        ),
+        # per-SKU grain on a total ask, hidden by a window + LIMIT 1
+        (
+            TOTAL_WH_A_Q,
+            "SELECT DISTINCT sku, SUM(quantity_kg) OVER (PARTITION BY sku) AS total_quantity_kg "
+            "FROM inventory WHERE location_id='WH-A' ORDER BY 2 DESC LIMIT 1",
+            "grain_unanalysable:window_function",
+            ("1200", "1280"),
+        ),
+        # ... hidden in a subquery: MAX of per-SKU sums is one SKU, not the total
+        (
+            TOTAL_WH_A_Q,
+            f"SELECT MAX(q) AS total_quantity_kg FROM ({PER_SKU_A}) t",
+            "grain_unanalysable:nested_grouping",
+            ("1200", "1280"),
+        ),
+        # ... one lot's bare value answering a total
+        (
+            TOTAL_WH_A_Q,
+            "SELECT quantity_kg AS total_quantity_kg FROM inventory WHERE location_id='WH-A' "
+            "ORDER BY 1 DESC LIMIT 1",
+            "grain_mismatch:scalar_expected",
+            ("1200", "1280"),
+        ),
+        # a union is not one grain
+        (
+            TOTAL_WH_A_Q,
+            "SELECT SUM(quantity_kg) AS q FROM inventory WHERE location_id='WH-A' UNION ALL "
+            "SELECT SUM(quantity_kg) FROM inventory WHERE location_id='WH-B'",
+            "grain_unanalysable:set_operation",
+            ("1280",),
+        ),
+        # an unaliased extra figure names itself in the gap (no empty name)
+        (
+            COLD_Q,
+            "SELECT location_code, SUM(capacity_kg) FROM locations WHERE is_cold_storage "
+            "GROUP BY location_code",
+            "unrequested_measure:SUM(capacity_kg)",
+            ("WH-C",),
+        ),
+    ],
+)
+def test_round3_bypasses_abstain_named(
+    minter: ManifestMinter,
+    lake: Path,
+    question: str,
+    sql: str,
+    prefix: str,
+    figures: tuple[str, ...],
+) -> None:
+    env, cortex = _post(minter, lake, question, sql, space=OPS)
+    _assert_grain_abstain(env, prefix, *figures)
+    assert cortex.executed == [], "a shape the gate refuses must not execute"
+
+
+@pytest.mark.parametrize(
+    ("question", "sql"),
+    [
+        # synonym via the ontology spine vocabulary: product type -> category
+        (
+            "Show stock by product type",
+            "SELECT category, SUM(quantity_kg) AS quantity_kg FROM inventory GROUP BY category",
+        ),
+        ("Show capacity utilisation for cold storage vs ambient",
+         f"SELECT is_cold_storage, {UTIL} FROM locations GROUP BY is_cold_storage"),
+        (
+            "What is the total stock quantity for SKU-ALPHA and SKU-BETA?",
+            "SELECT SUM(quantity_kg) AS total_quantity_kg FROM inventory "
+            "WHERE sku IN ('SKU-ALPHA','SKU-BETA')",
+        ),
+        (
+            "Show average unit cost per supplier",
+            "SELECT supplier_id, AVG(unit_cost_myr) AS avg_unit_cost_myr FROM inventory "
+            "GROUP BY supplier_id",
+        ),
+    ],
+)
+def test_round3_legit_asks_keep_l2(
+    minter: ManifestMinter, lake: Path, question: str, sql: str
+) -> None:
+    env, _ = _post(minter, lake, question, sql, space=OPS)
+    _assert_l2_matches_oracle(env, lake, sql)
+
+
+def test_synonym_phrase_does_not_license_a_different_grain(
+    minter: ManifestMinter, lake: Path
+) -> None:
+    """"product type" names category; it leaves no "product" to name a SKU grain."""
+    env, _ = _post(
+        minter,
+        lake,
+        "Show stock by product type",
+        "SELECT sku, SUM(quantity_kg) AS quantity_kg FROM inventory GROUP BY sku",
+        space=OPS,
+    )
+    _assert_grain_abstain(env, "unrequested_grain:sku", "SKU-ALPHA")
+
+
+_DEDUP = "(SELECT sku, ANY_VALUE(category) AS category FROM inventory GROUP BY sku)"
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "want"),
+    [
+        ("Show stock by warehouse",
+         "SELECT supplier_id, SUM(quantity_kg) AS q FROM inventory GROUP BY supplier_id",
+         "unrequested_grain:supplier_id"),
+        ("Show stock by warehouse",
+         "SELECT expiry_date, SUM(quantity_kg) AS q FROM inventory GROUP BY expiry_date",
+         "unrequested_grain:expiry_date"),
+        # "in warehouse A" is a scope, not a second dimension
+        ("Show stock value by category in warehouse A",
+         "SELECT category, supplier_id, SUM(quantity_kg * unit_cost_myr) AS v FROM inventory "
+         "WHERE location_id = 'WH-A' GROUP BY category, supplier_id",
+         "unrequested_grain:supplier_id"),
+        ("Show stock value by category in warehouse A",
+         "SELECT category, location_id, SUM(quantity_kg * unit_cost_myr) AS v FROM inventory "
+         "WHERE location_id = 'WH-A' GROUP BY category, location_id",
+         "unrequested_grain:location_id"),
+        ("Top 5 SKUs by revenue",
+         "SELECT sku, SUM(quantity_kg * unit_cost_myr) AS v FROM transactions "
+         "GROUP BY sku ORDER BY v DESC LIMIT 5", None),
+        ("Show outbound quantity by supplier",
+         "SELECT supplier_id, date_trunc('month', ts) AS m, SUM(quantity_kg) AS q "
+         "FROM transactions GROUP BY supplier_id, m",
+         "unrequested_grain:ts"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory GROUP BY ROLLUP(category)",
+         "grain_unanalysable:rollup"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory GROUP BY CUBE(category)",
+         "grain_unanalysable:cube"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory "
+         "GROUP BY GROUPING SETS ((category), ())",
+         "grain_unanalysable:grouping_sets"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory GROUP BY 3",
+         "grain_unanalysable:positional_group_key"),
+        ("Show warehouse capacity utilisation",
+         f"SELECT CAST(capacity_kg AS BIGINT) AS cap, {UTIL} FROM locations GROUP BY 1",
+         "grain_unanalysable:expression_group_key"),
+        ("Show warehouse capacity utilisation",
+         f"SELECT capacity_kg, {UTIL} FROM locations GROUP BY 1",
+         "unrequested_grain:capacity_kg"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory GROUP BY 1", None),
+        ("Show stock by category",
+         "SELECT CASE WHEN quantity_kg > 100 THEN 1 ELSE 0 END AS big, SUM(quantity_kg) AS q "
+         "FROM inventory GROUP BY big",
+         "grain_unanalysable:expression_group_key"),
+        ("Show stock by category", "SELECT * FROM inventory", "grain_unanalysable:star_projection"),
+        ("Show stock by category",
+         "WITH g AS (SELECT category, SUM(quantity_kg) AS q FROM inventory GROUP BY category) "
+         "SELECT category, q FROM g",
+         "grain_unanalysable:nested_grouping"),
+        ("Show stock by category",
+         "SELECT category, SUM(quantity_kg) AS q FROM inventory "
+         "WHERE quantity_kg > (SELECT AVG(quantity_kg) FROM inventory) GROUP BY category",
+         "grain_unanalysable:nested_grouping"),
+        ("What is total stock value?", f"SELECT SUM(f.category) AS x FROM {_DEDUP} f",
+         "grain_unanalysable:nested_grouping"),
+        ("Show stock by category", "not sql (((", "grain_unanalysable:parse"),
+        ("What is the total stock?", "SELECT SUM(quantity_kg) AS q, sku FROM inventory",
+         "grain_mismatch:scalar_expected"),
+        # analysable and matching
+        ("How many SKUs do we have?", f"SELECT COUNT(*) AS sku_count FROM {_DEDUP} f", None),
+        ("Show SKU count by category",
+         f"SELECT f.category, COUNT(*) AS sku_count FROM {_DEDUP} f GROUP BY f.category", None),
+        ("Show monthly outbound quantity",
+         "SELECT date_trunc('month', ts) AS m, SUM(quantity_kg) AS q FROM transactions "
+         "GROUP BY date_trunc('month', ts)", None),
+    ],
+)
+def test_gate_shapes(question: str, sql: str, want: str | None) -> None:
+    assert grain_mismatch_reason(question, sql) == want

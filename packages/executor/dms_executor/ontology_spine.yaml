@@ -74,3 +74,19 @@ measure_aliases:
   supplier_ranking: supplier_rank_score
   cq_audit_overdue: audit_overdue
   audit_overdue: audit_overdue
+# GRAIN-GUARD-01: business words a question uses for a column-name token.
+# Slot names only, no SQL. A GROUP BY column must be named by the question,
+# directly or through one of these. Multi-word phrases are matched first and
+# consume their words ("product type" is category, not a product/SKU grain).
+column_vocabulary:
+  location: [warehouse, plant, site, destination, store]
+  category: [product type, product category, product family, type, family]
+  sku: [product, item]
+  supplier: [vendor]
+  country: [nation]
+  quantity: [stock, inventory, qty, on hand, units]
+  value: [worth, valuation]
+  cost: [spend, spent, expense, price, freight]
+  outbound: [sales, sold, selling, revenue, sell]
+  current: [load, utilisation, utilization, full, occupancy]
+  load: [utilisation, utilization, full, occupancy]

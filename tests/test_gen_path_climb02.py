@@ -381,7 +381,9 @@ def test_climb02_offline_prove_gt_eleven_not_complete(tmp_path: Path) -> None:
         assert env.get("plan_source") == "ontology_plan"
         assert env["badge"] == "L2_VALIDATED"
     ok = sum(1 for qid, _q, _ids in pairs if qid not in GRAIN_GUARDED)
-    assert ok == 10
+    # GRAIN-GUARD-01 round 3: capacity, cold storage, expired and chemicals
+    # were oracle-WRONG under L2 on main and abstain named now (no trim).
+    assert ok == 7
     cases = [
         (
             {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}

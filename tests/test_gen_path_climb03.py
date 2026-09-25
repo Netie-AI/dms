@@ -27,6 +27,7 @@ from dms_executor.semantic_retrieve import intent_slots, load_measure_aliases
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from score_curated import build_gen_path_prove_report, classify_plan_source  # noqa: E402
+from test_gen_path_climb05 import GRAIN_GUARDED, assert_grain_abstain  # noqa: E402
 
 L0_PAIRS: tuple[tuple[str, str], ...] = (
     ("cq_spend_by_country", "What is our total spend by supplier country?"),
@@ -239,7 +240,11 @@ def test_sku_only_ranking_recovers_l0s(tmp_path: Path) -> None:
         assert env is not None
         src = classify_plan_source(env)
         ok = env["badge"] == "L2_VALIDATED" and src == "ontology_plan"
-        if ok:
+        if qid in GRAIN_GUARDED:
+            # GRAIN-GUARD-01: oracle-WRONG under L2 on main; named ABSTAIN now.
+            assert_grain_abstain(env)
+            ok = False
+        elif ok:
             hits += 1
             assert env["abstained"] is False
             assert env.get("rows")
@@ -251,7 +256,8 @@ def test_sku_only_ranking_recovers_l0s(tmp_path: Path) -> None:
                 "plan_source": src if ok else "other",
             }
         )
-    assert hits > 13
+    # Honest count: every L0 whose grain matches its question (10 of 17).
+    assert hits == sum(1 for qid, _q in L0_PAIRS if qid not in GRAIN_GUARDED) == 10
     report = build_gen_path_prove_report(
         {
             "OK": hits,
@@ -269,28 +275,24 @@ def test_sku_only_ranking_recovers_l0s(tmp_path: Path) -> None:
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 13
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == hits
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True
 
 
 def test_capacity_above_90_keep_gt_has_rows(tmp_path: Path) -> None:
+    """GRAIN-GUARD-01: keep_gt selects WH-C / WH-E, but the compiled SQL also
+    carries the utilisation figure the "which locations" ask never named.
+    Named ABSTAIN, no rows -- the figure is not trimmed off to certify it."""
     env = _env(
         tmp_path,
         "Which locations are above 90 percent capacity?",
         "sku_count",
     )
     assert env is not None
-    assert env["badge"] == "L2_VALIDATED"
-    assert env.get("plan_source") == "ontology_plan"
-    rows = env.get("rows") or []
-    assert len(rows) >= 1
-    # GRAIN-GUARD-01: a which-list ask returns the entities asked for; the
-    # unrequested utilisation figure is dropped, never shown under L2.
-    codes = sorted(str(v) for row in env["rows"] for v in row.values())
-    assert codes == ["WH-C", "WH-E"], env["rows"]
-    assert "utilisation_pct" not in str(env["rows"])
-    assert "WH-E" in env["text"] and "97.8" not in env["text"], env["text"]
+    assert_grain_abstain(env)
+    assert "unrequested_measure:utilisation_pct" in env["text"], env["text"]
+    assert "WH-E" not in env["text"] and "97.8" not in env["text"], env["text"]
 
 
 def test_supplier_ranking_finance_not_ops(tmp_path: Path) -> None:

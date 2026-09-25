@@ -6,30 +6,42 @@ measure's own input (``GROUP BY capacity_kg`` for "capacity utilisation"),
 one row per SKU where a single total was asked, or a list ask ("which
 locations ...") answered with an aggregate the question never named.
 
-Wrong grain, a scalar ask answered with a grouped query, a COUNT tally on a
-list ask (no HAVING), or an unrequested figure on a "show the X" ask is a
-named ABSTAIN. Pass-through derived tables (``SELECT * FROM (...) t``) are
-walked to the select that sets the grain. A "which / list" ask with a
-ride-along figure keeps L2 over the requested columns only when a predicate
-(keep_gt, or a WHERE / HAVING on what the question names) already selected
-the entities; otherwise the figure is the only sign of an unfiltered row set
-and the ask abstains. The trimmed SQL is what executes and is audited.
+Fail closed, like Cortex ``manifest.py``: a query this gate cannot fully
+analyse is one it cannot prove has the question's grain, so it abstains
+``grain_unanalysable:<why>``. The shapes it can analyse:
 
-Fail closed only on clear evidence. An unparseable or set-operation SQL is not
-evidence and passes to the gates that already exist. The missing-dimension
-case ("by month" with no month bucket) is QUAL-GUARD-01's, not this module's.
+- one outermost SELECT (no set operation, no window function);
+- GROUP BY keys that are bare columns, or a time bucket (date_trunc /
+  strftime / extract / year ...) over a bare column, named directly, by
+  output alias or by position -- not GROUP BY ALL, ROLLUP / CUBE / GROUPING
+  SETS, an out-of-range position, or any other expression;
+- CTEs and subqueries that neither group nor aggregate, except the entity
+  dedup ``SELECT key, ANY_VALUE(attr) ... GROUP BY key`` (one row per key,
+  no measure), which the outer query may count and group by but never
+  aggregate over.
+
+On an analysable query: a scalar ask needs an all-aggregate, ungrouped
+outermost SELECT and exactly one executed row; every GROUP BY column must be
+named by the question (directly or through the ontology spine's
+``column_vocabulary``), or be the entity key on an ask with no by/per/each
+dimension; a which/list/show ask may not carry a figure it never named.
+Anything else is a named ABSTAIN. No rows are ever dropped to make a shape
+fit: the figure that shows a list is unfiltered is the evidence, not noise.
 
 sqlglot lives here and in sql_currency. Swap: a Cortex HTTP grain-check behind
-the same two functions.
+the same functions.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from functools import lru_cache
 from typing import Any
 
 from sqlglot import exp, parse_one
+
+from dms_executor.semantic_retrieve import load_ontology_spine
 
 _DIALECT = "duckdb"
 
@@ -37,6 +49,7 @@ REASON_UNREQUESTED_GRAIN = "unrequested_grain"
 REASON_GRAIN_MISMATCH = "grain_mismatch"
 REASON_UNREQUESTED_MEASURE = "unrequested_measure"
 REASON_UNREQUESTED_COLUMN = "unrequested_column"
+REASON_UNANALYSABLE = "grain_unanalysable"
 SCALAR_EXPECTED = f"{REASON_GRAIN_MISMATCH}:scalar_expected"
 
 GRAIN_REASONS = frozenset(
@@ -45,6 +58,7 @@ GRAIN_REASONS = frozenset(
         REASON_GRAIN_MISMATCH,
         REASON_UNREQUESTED_MEASURE,
         REASON_UNREQUESTED_COLUMN,
+        REASON_UNANALYSABLE,
     }
 )
 
@@ -55,10 +69,24 @@ _SCALAR_CUE = re.compile(
     re.I,
 )
 # The question names a breakdown, a ranking, a list or a comparison.
+# "across all X" is a scope, not a breakdown.
 _BREAKDOWN_CUE = re.compile(
     r"\b(by|per|each|every|which|list|top|bottom|rank\w*|breakdown|split|"
-    r"across|group(?:ed)?|vs|versus|compar\w*|trend\w*|over\s+time|"
-    r"daily|weekly|monthly|quarterly|yearly|annual\w*|what\s+are|show\s+all)\b",
+    r"across(?!\s+(?:all|the\s+whole|every)\b)|group(?:ed)?|vs|versus|compar\w*|"
+    r"trend\w*|over\s+time|daily|weekly|monthly|quarterly|yearly|annual\w*|"
+    r"what\s+are|show\s+all)\b",
+    re.I,
+)
+# An explicit dimension: the words after by / per / each / every.
+_BY_PHRASE = re.compile(r"\b(?:by|per|each|every)\s+((?:[a-z0-9-]+\s*){1,3})", re.I)
+_SCOPE_WORDS = frozenset(
+    {"in", "for", "at", "of", "on", "from", "with", "during", "where", "that", "which",
+     "who", "over", "across", "within", "inside", "under", "to"}
+)
+# A time grain the question asks for.
+_TIME_CUE = re.compile(
+    r"\b(daily|weekly|monthly|quarterly|yearly|annual\w*|trend\w*|over\s+time|"
+    r"timeline|history|(?:by|per|each|every)\s+(?:day|date|week|month|quarter|year))\b",
     re.I,
 )
 # The question asks for entities, not a figure.
@@ -71,7 +99,7 @@ _AGG_CUE = re.compile(
     re.I,
 )
 _COUNT_CUE = re.compile(r"\b(count|how\s+many|number\s+of|tally)\b", re.I)
-# Unit / plumbing tokens carry no meaning on their own in an alias.
+# Unit / plumbing tokens carry no meaning on their own in a name.
 _UNIT_TOKENS = frozenset(
     {
         "pct", "percent", "myr", "usd", "eur", "sgd", "kg", "kgs", "qty", "amt",
@@ -80,180 +108,279 @@ _UNIT_TOKENS = frozenset(
 )
 # Numeric measure-looking plain columns (not keys, not labels).
 _MEASURE_SUFFIX = re.compile(r"_(kg|myr|usd|eur|sgd|pct|days|score|qty|amount|cost|value)$", re.I)
+# Entity keys / labels: the natural grain of an entity list.
+_KEY_COLUMN = re.compile(r"(^|_)(id|code|name|sku|no|number|key|label|title)$", re.I)
+_TIME_COLUMN = re.compile(r"(^|_)(day|date|week|month|quarter|year|ts|period|time|at)$", re.I)
+_TIME_BUCKETS: tuple[type[exp.Expression], ...] = (
+    exp.DateTrunc,
+    exp.TimestampTrunc,
+    exp.DatetimeTrunc,
+    exp.TimeTrunc,
+    exp.TimeToStr,
+    exp.Extract,
+    exp.Year,
+    exp.Quarter,
+    exp.Month,
+    exp.Week,
+    exp.Day,
+    exp.DayOfWeek,
+)
 _WORD = re.compile(r"[a-z0-9]+")
 
 
-# Business words a question uses for a column token (both directions).
-_SYNONYMS: dict[str, frozenset[str]] = {
-    "quantity": frozenset({"stock", "inventory", "qty", "hand", "units"}),
-    "value": frozenset({"worth", "valuation"}),
-    "cost": frozenset({"spend", "spent", "expense", "price", "freight"}),
-    "outbound": frozenset({"sales", "sold", "selling", "revenue", "sell"}),
-    "current": frozenset({"load", "utilisation", "utilization", "full", "occupancy"}),
-    "load": frozenset({"utilisation", "utilization", "full", "occupancy"}),
-}
-# Entity keys / labels: grouping by one of these is naming the entity asked for.
-_KEY_COLUMN = re.compile(r"(^|_)(id|code|name|sku|no|number|key|label|title)$", re.I)
-# Time buckets: a missing or extra time grain is QUAL-GUARD-01's call.
-_TIME_COLUMN = re.compile(
-    r"(^|_)(day|date|week|month|quarter|year|ts|period|time|at)$", re.I
-)
+# --- words -------------------------------------------------------------------
+
+
+def _sing(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith("ss") else word
+
+
+@lru_cache(maxsize=1)
+def _vocabulary() -> tuple[tuple[tuple[str, ...], str], ...]:
+    """(phrase words, column token) from the ontology spine, longest phrase first."""
+    raw = (load_ontology_spine() or {}).get("column_vocabulary") or {}
+    out: list[tuple[tuple[str, ...], str]] = []
+    if isinstance(raw, dict):
+        for token, phrases in raw.items():
+            for phrase in phrases or []:
+                words = tuple(_sing(w) for w in _WORD.findall(str(phrase).lower()))
+                if words:
+                    out.append((words, str(token).lower()))
+    out.sort(key=lambda item: -len(item[0]))
+    return tuple(out)
+
+
+def _expand(words: Sequence[str]) -> list[str]:
+    """Question words plus the column tokens the spine vocabulary maps them to.
+
+    A multi-word phrase consumes its words, so "product type" adds category
+    and leaves no "product" behind to name a SKU grain.
+    """
+    ws = [_sing(w) for w in words]
+    used = [False] * len(ws)
+    extra: list[str] = []
+    for phrase, token in _vocabulary():
+        n = len(phrase)
+        for i in range(len(ws) - n + 1):
+            if any(used[i : i + n]) or tuple(ws[i : i + n]) != phrase:
+                continue
+            extra.append(token)
+            if n > 1:
+                for j in range(i, i + n):
+                    used[j] = True
+    return [w for w, u in zip(ws, used, strict=True) if not u] + extra
 
 
 def _q_words(question: str) -> list[str]:
-    return _WORD.findall(question.lower())
+    return _expand(_WORD.findall(question.lower()))
 
 
 def _tokens(name: str) -> list[str]:
     return [
-        t for t in re.split(r"[^a-z0-9]+", name.lower()) if len(t) >= 3 and t not in _UNIT_TOKENS
+        _sing(t)
+        for t in re.split(r"[^a-z0-9]+", name.lower())
+        if len(t) >= 3 and t not in _UNIT_TOKENS
     ]
 
 
 def _word_match(tok: str, w: str) -> bool:
-    stem = tok[:5]
-    return w == tok or (len(stem) >= 5 and w.startswith(stem)) or (
+    return w == tok or (len(tok) >= 5 and w.startswith(tok[:5])) or (
         len(w) >= 5 and tok.startswith(w[:5])
     )
 
 
 def _overlaps(name: str, words: Sequence[str]) -> bool:
-    """A name token matches a question word on a shared 5-char stem, whole, or synonym."""
-    for tok in _tokens(name):
-        syn = _SYNONYMS.get(tok, frozenset())
-        for w in words:
-            if _word_match(tok, w) or w in syn:
-                return True
-    return False
+    """A name token matches a question word on a shared 5-char stem or whole."""
+    return any(_word_match(tok, w) for tok in _tokens(name) for w in words)
 
 
-def _requested_by(name: str, question: str) -> bool:
-    """``by|per|each|for each <...name tokens...>`` in the question."""
-    low = question.lower()
-    for tok in _tokens(name):
-        if re.search(rf"\b(by|per|each|every)\s+(\w+\s+){{0,2}}{re.escape(tok[:5])}", low):
-            return True
-    return False
+def _by_words(question: str) -> list[str]:
+    """The dimension words after by/per/each/every, up to a scope preposition.
+
+    "value by category in warehouse A" names category; "in warehouse A" is a
+    filter, not a second dimension.
+    """
+    out: list[str] = []
+    for m in _BY_PHRASE.finditer(question.lower()):
+        for w in _WORD.findall(m.group(1)):
+            if w in _SCOPE_WORDS:
+                break
+            out.append(w)
+    return _expand(out)
+
+
+def _head_words(question: str) -> list[str]:
+    """Words before the first by/per/each/every: the entity the ask leads with."""
+    m = _BY_PHRASE.search(question.lower())
+    head = question.lower()[: m.start()] if m else question.lower()
+    return _expand(_WORD.findall(head))
+
+
+# --- SQL shape -----------------------------------------------------------------
 
 
 def _parse(sql: str) -> exp.Expression | None:
     try:
         return parse_one(sql, read=_DIALECT)
-    except Exception:  # noqa: BLE001 -- not evidence; other gates own parse errors
+    except Exception:  # noqa: BLE001 -- unparseable is unanalysable, reported by name
         return None
 
 
-def _outer_select(sql: str) -> exp.Select | None:
-    tree = _parse(sql)
-    return tree if isinstance(tree, exp.Select) else None
+def _unalias(proj: exp.Expression) -> exp.Expression:
+    return proj.this if isinstance(proj, exp.Alias) else proj
 
 
-def _has_agg(select: exp.Select) -> bool:
-    return any(p.find(exp.AggFunc) is not None for p in select.expressions)
+def _out_name(proj: exp.Expression) -> str:
+    if isinstance(proj, exp.Alias):
+        return proj.alias
+    if isinstance(proj, exp.Column) and not isinstance(proj.this, exp.Star):
+        return proj.name
+    return proj.sql(dialect=_DIALECT)
 
 
-def _is_star(select: exp.Select) -> bool:
-    return any(
-        isinstance(p, exp.Star) or (isinstance(p, exp.Column) and isinstance(p.this, exp.Star))
-        for p in select.expressions
-    )
+def _is_agg(node: exp.Expression) -> bool:
+    return node.find(exp.AggFunc) is not None
 
 
-def _derived_inner(select: exp.Select) -> exp.Select | None:
-    """The sole derived table in FROM (no joins), if any."""
-    if select.args.get("joins"):
-        return None
-    frm = select.args.get("from")
-    src = frm.this if frm is not None else None
-    if isinstance(src, exp.Subquery) and isinstance(src.this, exp.Select):
-        return src.this
-    return None
+def _dedup_outputs(select: exp.Select) -> set[str] | None:
+    """ANY_VALUE output names when ``select`` is an entity dedup, else None.
 
-
-def _grain_chain(select: exp.Select) -> list[exp.Select]:
-    """Outer select, then each pass-through derived table the grain comes from.
-
-    ``SELECT * FROM (SELECT sku, COUNT(*) FILTER ... GROUP BY sku) t`` has the
-    per-SKU tally's grain, not the wrapper's. Descend while the wrapper neither
-    aggregates nor groups; stop at the first select that does.
+    ``SELECT sku, ANY_VALUE(category) AS category FROM inventory GROUP BY sku``:
+    bare-column keys, every other output ANY_VALUE of a bare column, no
+    HAVING, nothing nested. One row per key and no measure.
     """
-    chain = [select]
-    cur = select
-    while cur.args.get("group") is None and not _has_agg(cur):
-        inner = _derived_inner(cur)
-        if inner is None:
-            break
-        chain.append(inner)
-        cur = inner
-    return chain
+    group = select.args.get("group")
+    if group is None or select.args.get("having") is not None:
+        return None
+    if any(group.args.get(k) for k in ("all", "rollup", "cube", "grouping_sets")):
+        return None
+    keys = set()
+    for key in group.expressions:
+        if not isinstance(key, exp.Column):
+            return None
+        keys.add(key.name.lower())
+    if any(s is not select for s in select.find_all(exp.Select)):
+        return None
+    out: set[str] = set()
+    for proj in select.expressions:
+        inner = _unalias(proj)
+        if isinstance(inner, exp.Column) and inner.name.lower() in keys:
+            continue
+        if isinstance(inner, exp.IgnoreNulls):
+            inner = inner.this
+        if isinstance(inner, exp.AnyValue) and isinstance(inner.this, exp.Column):
+            out.add(proj.alias_or_name.lower())
+            continue
+        return None
+    return out
 
 
-def _effective_projections(chain: list[exp.Select]) -> list[exp.Expression]:
-    """Projections of the grain select, limited to what the wrapper(s) pass out."""
-    names: set[str] | None = None
-    for sel in chain[:-1]:
-        if not _is_star(sel):
-            here = {p.alias_or_name.lower() for p in sel.expressions}
-            names = here if names is None else names & here
-    projs = list(chain[-1].expressions)
-    if names is None:
-        return projs
-    return [p for p in projs if p.alias_or_name.lower() in names]
+def _dedup_alias(select: exp.Select) -> str:
+    parent = select.parent
+    if isinstance(parent, (exp.Subquery, exp.CTE)):
+        return parent.alias_or_name.lower()
+    return ""
+
+
+def _time_bucket_column(node: exp.Expression) -> exp.Column | None:
+    if not isinstance(node, _TIME_BUCKETS):
+        return None
+    cols = list(node.find_all(exp.Column))
+    return cols[0] if len(cols) == 1 else None
+
+
+def _group_keys(select: exp.Select) -> tuple[list[tuple[str, bool]], str | None]:
+    """(column name, is time bucket) per GROUP BY key, or an unanalysable reason."""
+    group = select.args.get("group")
+    if group is None:
+        return [], None
+    if group.args.get("all"):
+        return [], "group_by_all"
+    for kind in ("rollup", "cube", "grouping_sets"):
+        if group.args.get(kind):
+            return [], kind
+    aliases = {
+        proj.alias.lower(): proj.this
+        for proj in select.expressions
+        if isinstance(proj, exp.Alias)
+    }
+    projs = list(select.expressions)
+    out: list[tuple[str, bool]] = []
+    for key in group.expressions:
+        node: exp.Expression = key
+        if isinstance(key, exp.Literal):
+            # GROUP BY 1 is analysable only as the projection it points at;
+            # that projection must itself be a bare column or a time bucket.
+            idx = int(key.this) - 1 if key.is_int else -1
+            if not 0 <= idx < len(projs):
+                return [], "positional_group_key"
+            node = _unalias(projs[idx])
+        elif isinstance(key, exp.Column) and not key.table and key.name.lower() in aliases:
+            node = aliases[key.name.lower()]
+        if isinstance(node, exp.Column) and not isinstance(node.this, exp.Star):
+            out.append((node.name.lower(), False))
+            continue
+        bucket = _time_bucket_column(node)
+        if bucket is not None:
+            out.append((bucket.name.lower(), True))
+            continue
+        return [], "expression_group_key"
+    return out, None
+
+
+def _unanalysable(tree: exp.Expression | None) -> str | None:
+    """Why the gate cannot analyse this SQL's grain, or None."""
+    if tree is None:
+        return "parse"
+    if not isinstance(tree, exp.Select) or tree.find(exp.SetOperation) is not None:
+        return "set_operation"
+    if tree.find(exp.Window) is not None:
+        return "window_function"
+    dedup_names: set[str] = set()
+    dedup_aliases: set[str] = set()
+    for inner in tree.find_all(exp.Select):
+        if inner is tree:
+            continue
+        if inner.args.get("group") is None and not _is_agg(inner):
+            continue
+        names = _dedup_outputs(inner)
+        if names is None:
+            return "nested_grouping"
+        dedup_names |= names
+        alias = _dedup_alias(inner)
+        if alias:
+            dedup_aliases.add(alias)
+    # The outer query may count dedup rows and group by their attributes,
+    # but aggregating an ANY_VALUE pick is summing an arbitrary lot.
+    for agg in tree.find_all(exp.AggFunc):
+        if agg.find_ancestor(exp.Select) is not tree:
+            continue
+        for col in agg.find_all(exp.Column):
+            if col.name.lower() in dedup_names and (
+                not col.table or col.table.lower() in dedup_aliases
+            ):
+                return "nested_grouping"
+    if any(isinstance(p, exp.Star) or (
+        isinstance(p, exp.Column) and isinstance(p.this, exp.Star)
+    ) for p in tree.expressions):
+        return "star_projection"
+    _keys, why = _group_keys(tree)
+    return why
 
 
 def _agg_inputs_of(proj: exp.Expression) -> set[str]:
     return {c.name.lower() for agg in proj.find_all(exp.AggFunc) for c in agg.find_all(exp.Column)}
 
 
-def _agg_inputs(select: exp.Select) -> set[str]:
-    out: set[str] = set()
+def _all_aggregate(select: exp.Select) -> bool:
+    """Every output is an aggregate and no bare column sits outside one."""
     for proj in select.expressions:
-        out |= _agg_inputs_of(proj)
-    return out
-
-
-def _projection_by_alias(select: exp.Select) -> dict[str, exp.Expression]:
-    out: dict[str, exp.Expression] = {}
-    for proj in select.expressions:
-        inner = proj.this if isinstance(proj, exp.Alias) else proj
-        out[proj.alias_or_name.lower()] = inner
-    return out
-
-
-def _group_columns(select: exp.Select) -> list[str]:
-    group = select.args.get("group")
-    if group is None:
-        return []
-    by_alias = _projection_by_alias(select)
-    projs = list(select.expressions)
-    out: list[str] = []
-    for key in group.expressions:
-        node: exp.Expression = key
-        if isinstance(key, exp.Literal) and key.is_int:
-            idx = int(key.this) - 1
-            if 0 <= idx < len(projs):
-                p = projs[idx]
-                node = p.this if isinstance(p, exp.Alias) else p
-        elif isinstance(key, exp.Column) and not key.table and key.name.lower() in by_alias:
-            node = by_alias[key.name.lower()]
-        if isinstance(node, exp.Column):
-            out.append(node.name.lower())
-    return out
-
-
-def _pinned_columns(select: exp.Select) -> set[str]:
-    """Columns WHERE pins to one literal (``col = 'WH-A'``): one group, not a breakdown."""
-    where = select.args.get("where")
-    if where is None:
-        return set()
-    out: set[str] = set()
-    for eq in where.find_all(exp.EQ):
-        left, right = eq.this, eq.expression
-        if isinstance(left, exp.Column) and isinstance(right, (exp.Literal, exp.Boolean)):
-            out.add(left.name.lower())
-        elif isinstance(right, exp.Column) and isinstance(left, (exp.Literal, exp.Boolean)):
-            out.add(right.name.lower())
-    return out
+        inner = _unalias(proj)
+        if not _is_agg(inner):
+            return False
+        if any(c.find_ancestor(exp.AggFunc) is None for c in inner.find_all(exp.Column)):
+            return False
+    return True
 
 
 def _where_columns(select: exp.Select) -> set[str]:
@@ -263,28 +390,6 @@ def _where_columns(select: exp.Select) -> set[str]:
         if node is not None:
             out.update(c.name.lower() for c in node.find_all(exp.Column))
     return out
-
-
-def _predicate_names_question(chain: list[exp.Select], words: Sequence[str]) -> bool:
-    """A WHERE / HAVING somewhere in the chain filters on what the question names.
-
-    Evidence that the row set is the question's entities, not every entity:
-    a predicate column or string literal that shares a stem (or synonym) with
-    a question word (``is_cold_storage`` for "cold storage", ``'CHEMICALS'``
-    for "chemicals"). A scope filter alone (``location_code = 'WH-A'``) is not.
-    """
-    for sel in chain:
-        for arg in ("where", "having"):
-            node = sel.args.get(arg)
-            if node is None:
-                continue
-            for col in node.find_all(exp.Column):
-                if _overlaps(col.name, words):
-                    return True
-            for lit in node.find_all(exp.Literal):
-                if lit.is_string and _overlaps(str(lit.this), words):
-                    return True
-    return False
 
 
 def _list_head(question: str) -> str:
@@ -300,155 +405,102 @@ def scalar_asked(question: str) -> bool:
     return bool(_SCALAR_CUE.search(question)) and not _BREAKDOWN_CUE.search(question)
 
 
+def _group_key_reason(
+    col: str, *, is_bucket: bool, question: str, words: Sequence[str], inputs: set[str]
+) -> str | None:
+    by_words = _by_words(question)
+    if _overlaps(col, by_words):
+        return None
+    # With an explicit by/per/each dimension, a key must be that dimension or
+    # the entity the ask leads with ("Top 5 SKUs by revenue"); a word in a
+    # trailing scope ("... in warehouse A") names a filter, not a grain.
+    named = _head_words(question) if by_words else words
+    if is_bucket or _TIME_COLUMN.search(col):
+        # A time grain nobody asked for is a breakdown too. (A time grain
+        # asked for and missing is QUAL-GUARD-01's.)
+        if _TIME_CUE.search(question) or _overlaps(col, named):
+            return None
+        return f"{REASON_UNREQUESTED_GRAIN}:{col}"
+    if col in inputs:
+        return f"{REASON_UNREQUESTED_GRAIN}:{col}"
+    if _overlaps(col, named):
+        return None
+    if _KEY_COLUMN.search(col) and not by_words:
+        return None
+    return f"{REASON_UNREQUESTED_GRAIN}:{col}"
+
+
 def grain_mismatch_reason(question: str, sql: str) -> str | None:
     """Named reason when the SQL's grain or projection is not the question's.
 
-    SQL-only; runs before submit. ``None`` means no clear evidence.
+    SQL-only; runs before submit. ``None`` means the gate analysed the whole
+    query and found the question's grain and columns.
     """
-    outer = _outer_select(sql)
-    if outer is None:
-        return None
-    chain = _grain_chain(outer)
-    select = chain[-1]
+    tree = _parse(sql)
+    why = _unanalysable(tree)
+    if why:
+        return f"{REASON_UNANALYSABLE}:{why}"
+    assert isinstance(tree, exp.Select)
+    select = tree
     words = _q_words(question)
-    groups = _group_columns(select)
-    pinned = _pinned_columns(select)
+    keys, _ = _group_keys(select)
 
-    # (a) a single total asked, grouped query: a breakdown whatever the row
-    # count (``ORDER BY 2 DESC LIMIT 1`` over per-SKU sums is one SKU, not the
-    # total). A group pinned to one literal by WHERE is still one figure.
-    if scalar_asked(question) and select.args.get("group") is not None:
-        if any(col not in pinned for col in groups) or len(groups) < len(
-            select.args["group"].expressions
-        ):
+    # (a) a single figure asked: all aggregates, no GROUP BY. A grouped query
+    # is a breakdown whatever the row count (ORDER BY 2 DESC LIMIT 1 over
+    # per-SKU sums is one SKU, not the total); a bare column is one row's
+    # value, not an aggregate.
+    if scalar_asked(question):
+        if select.args.get("group") is not None or not _all_aggregate(select):
             return SCALAR_EXPECTED
+        return None
 
-    # (b) a dimension nobody asked for: the measure's own input
-    # (capacity_kg for "capacity utilisation"), or any non-key column the
-    # question neither names nor asks a breakdown by (is_cold_storage).
-    inputs = _agg_inputs(select)
-    where_cols = _where_columns(select)
-    for col in groups:
-        if _requested_by(col, question):
-            continue
-        if col in inputs:
-            return f"{REASON_UNREQUESTED_GRAIN}:{col}"
-        if (
-            _has_agg(select)
-            and not _KEY_COLUMN.search(col)
-            and not _TIME_COLUMN.search(col)
-            and col not in where_cols
-            and not _overlaps(col, words)
-        ):
-            return f"{REASON_UNREQUESTED_GRAIN}:{col}"
+    # (b) a dimension nobody asked for: the measure's own input (capacity_kg
+    # for "capacity utilisation"), or a column the question never names.
+    inputs = {c for p in select.expressions for c in _agg_inputs_of(p)}
+    for col, is_bucket in keys:
+        grain_why = _group_key_reason(
+            col, is_bucket=is_bucket, question=question, words=words, inputs=inputs
+        )
+        if grain_why:
+            return grain_why
 
-    # List ask: the answer is entities. An aggregate output is requested by an
-    # aggregation cue, by name, or (on "show X") by its input column. A COUNT
-    # without a count cue is COUNT(*) FILTER, the predicate turned into a
-    # tally: its zero rows are entities the predicate excludes, so trimming
-    # cannot fix the row set -- unless HAVING already filters on it.
+    # (c) list ask: the answer is entities. An aggregate output is requested
+    # by an aggregation cue, or by name ("show" also by its input column). A
+    # COUNT without a count cue and no HAVING is COUNT(*) FILTER, the
+    # predicate turned into a tally: its zero rows are entities the predicate
+    # excludes. A ride-along figure on "which / list" is the only sign the
+    # row set is unfiltered, so it abstains -- nothing is trimmed.
     head = _list_head(question)
-    if head:
-        having = select.args.get("having") is not None
-        for proj in _effective_projections(chain):
-            inner = proj.this if isinstance(proj, exp.Alias) else proj
-            name = proj.alias_or_name
-            if inner.find(exp.AggFunc) is not None:
-                if (
-                    inner.find(exp.Count) is not None
-                    and not _COUNT_CUE.search(question)
-                    and not having
-                ):
-                    return f"{REASON_UNREQUESTED_MEASURE}:{name}"
-                if (
-                    head == "show"
-                    and not _overlaps(name, words)
-                    and not any(_overlaps(c, words) for c in _agg_inputs_of(inner))
-                ):
-                    return f"{REASON_UNREQUESTED_MEASURE}:{name}"
-            elif isinstance(inner, exp.Column):
-                col = inner.name.lower()
-                if (
-                    _MEASURE_SUFFIX.search(col)
-                    and col not in where_cols
-                    and not _overlaps(col, words)
-                    and not _overlaps(name, words)
-                ):
-                    return f"{REASON_UNREQUESTED_COLUMN}:{col}"
+    if not head:
+        return None
+    where_cols = _where_columns(select)
+    having = select.args.get("having") is not None
+    for proj in select.expressions:
+        inner = _unalias(proj)
+        name = _out_name(proj)
+        if _is_agg(inner):
+            if inner.find(exp.Count) is not None and not _COUNT_CUE.search(question) and not having:
+                return f"{REASON_UNREQUESTED_MEASURE}:{name}"
+            if _overlaps(name, words):
+                continue
+            if head == "show" and any(_overlaps(c, words) for c in _agg_inputs_of(inner)):
+                continue
+            return f"{REASON_UNREQUESTED_MEASURE}:{name}"
+        if isinstance(inner, exp.Column):
+            col = inner.name.lower()
+            if (
+                _MEASURE_SUFFIX.search(col)
+                and col not in where_cols
+                and not _overlaps(col, words)
+                and not _overlaps(name, words)
+            ):
+                return f"{REASON_UNREQUESTED_COLUMN}:{col}"
     return None
 
 
-def unrequested_measure_outputs(question: str, sql: str) -> list[str]:
-    """Aggregate output names a which/list ask never requested.
-
-    Only non-COUNT aggregates reach here (``grain_mismatch_reason`` abstains
-    on a bare COUNT first). Whether dropping them is safe is
-    ``trim_is_safe``'s call, not this function's.
-    """
-    if _list_head(question) not in {"which", "list"}:
-        return []
-    outer = _outer_select(sql)
-    if outer is None:
-        return []
-    chain = _grain_chain(outer)
-    words = _q_words(question)
-    out: list[str] = []
-    keep = 0
-    for proj in _effective_projections(chain):
-        inner = proj.this if isinstance(proj, exp.Alias) else proj
-        if inner.find(exp.AggFunc) is not None and not _overlaps(proj.alias_or_name, words):
-            out.append(proj.alias_or_name)
-        else:
-            keep += 1
-    return out if keep else []
-
-
-def output_names(sql: str) -> list[str] | None:
-    """Output column names of the SQL, or ``None`` when a star hides them."""
-    outer = _outer_select(sql)
-    if outer is None:
-        return None
-    chain = _grain_chain(outer)
-    if all(_is_star(s) for s in chain[:-1]) and len(chain) > 1:
-        projs = chain[-1].expressions
-    elif _is_star(outer):
-        return None
-    else:
-        projs = _effective_projections(chain)
-    if any(isinstance(p, exp.Star) for p in projs):
-        return None
-    return [p.alias_or_name for p in projs]
-
-
-def trim_is_safe(question: str, sql: str, *, keep_gt: float | None) -> bool:
-    """Dropping the ride-along figure leaves the question's entities only if a
-    predicate already selected them: ``keep_gt`` on the measure, or a WHERE /
-    HAVING that filters on what the question names. Otherwise the figure is
-    the only evidence of an unfiltered row set, and hiding it would certify
-    every entity (all five warehouses as "almost full") -- abstain instead.
-    """
-    if keep_gt is not None:
-        return True
-    outer = _outer_select(sql)
-    if outer is None:
-        return False
-    return _predicate_names_question(_grain_chain(outer), _q_words(question))
-
-
-def trimmed_sql(sql: str, keep: Sequence[str], *, where_gt: tuple[str, float] | None = None) -> str:
-    """The SQL whose rows are the trimmed rows, so ledger and envelope can rebuild them."""
-    body = sql.strip().rstrip(";").strip()
-    cols = ", ".join(exp.to_identifier(c, quoted=True).sql(dialect=_DIALECT) for c in keep)
-    out = f"SELECT {cols} FROM ({body}) AS grain_trim"
-    if where_gt is not None:
-        ident = exp.to_identifier(where_gt[0], quoted=True).sql(dialect=_DIALECT)
-        out += f" WHERE {ident} > {float(where_gt[1])!r}"
-    return out
-
-
 def scalar_rows_reason(question: str, rows: Sequence[Any]) -> str | None:
-    """(c) a single total was asked but more than one row came back."""
-    if scalar_asked(question) and len(rows) > 1:
+    """A single figure was asked; anything but exactly one row is not it."""
+    if scalar_asked(question) and len(rows) != 1:
         return SCALAR_EXPECTED
     return None
 
@@ -459,11 +511,16 @@ def grain_abstain_text(reason: str) -> str:
     if head == REASON_UNREQUESTED_GRAIN:
         what = f"it was broken down by {detail}, which you did not ask for"
     elif reason == SCALAR_EXPECTED:
-        what = "you asked for a single total and the query returned a breakdown"
+        what = "you asked for a single figure and the query did not return exactly one total"
     elif head == REASON_UNREQUESTED_MEASURE:
         what = f"it adds a figure ({detail}) that you did not ask for"
     elif head == REASON_UNREQUESTED_COLUMN:
         what = f"it adds a column ({detail}) that you did not ask for"
+    elif head == REASON_UNANALYSABLE:
+        what = (
+            "its shape could not be fully checked against your question "
+            f"({detail.replace('_', ' ')}), so I cannot prove its grain"
+        )
     else:
         what = "its shape does not match what you asked"
     return (

@@ -248,7 +248,11 @@ def test_unused_certified_leftover_raises_above_27(tmp_path: Path) -> None:
     assert leftover_ids_not_ontology(cases, CLIMB09_RISE_IDS) == guarded_ids(CLIMB09_RISE_IDS)
     why = live_climb_gate(report)
     assert why is not None
-    assert "climb-10" in why or "ontology_plan<=30" in why
+    # GRAIN-GUARD-01 round 3: ops_chemicals_list (climb-09 rise) answered
+    # "list chemicals" with a stock-value figure (oracle-WRONG); it abstains
+    # named now (no trim), so the live gate fails on climb-09 itself.
+    assert "climb-09 rise L0s not ontology_plan" in why, why
+    assert "ops_chemicals_list" in why, why
 
 
 def test_merge_injects_climb09_into_n37() -> None:
@@ -425,6 +429,11 @@ def test_ops_leftover_l0s_compile_without_suppliers_or_txns(tmp_path: Path) -> N
     ):
         env = _env(tmp_path, q, "sku_count", grantable=OPS_GRANT)
         assert env is not None
+        if q == "List chemicals in inventory":
+            # GRAIN-GUARD-01: compiled with an unrequested stock-value figure.
+            assert_grain_abstain(env)
+            assert "unrequested_measure:stock_value_myr" in env["text"], env["text"]
+            continue
         assert env["badge"] == "L2_VALIDATED"
         assert classify_plan_source(env) == "ontology_plan"
         assert env.get("rows")

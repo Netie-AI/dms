@@ -289,8 +289,11 @@ def test_unused_certified_leftover_raises_above_36(tmp_path: Path) -> None:
     assert report["passed_wrong_zero"] is True
     why = live_climb_gate(report)
     assert why is not None
-    # GRAIN-GUARD-01: climb-11's rise L0s now abstain named (oracle-WRONG).
-    assert "climb-11 rise L0s not ontology_plan" in why, why
+    # GRAIN-GUARD-01 round 3: ops_chemicals_list (climb-09 rise) answered
+    # "list chemicals" with a stock-value figure (oracle-WRONG); it abstains
+    # named now (no trim), so the live gate fails on climb-09 itself.
+    assert "climb-09 rise L0s not ontology_plan" in why, why
+    assert "ops_chemicals_list" in why, why
     assert leftover_rise_not_ontology(cases) == []
     assert leftover_ids_not_ontology(cases, CLIMB07_RISE_IDS) == guarded_ids(CLIMB07_RISE_IDS)
     assert leftover_ids_not_ontology(cases, CLIMB08_RISE_IDS) == guarded_ids(CLIMB08_RISE_IDS)

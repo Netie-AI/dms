@@ -230,7 +230,12 @@ def test_insights_generate_sql_is_ontology_plan_not_bind(
         warehouse=warehouse,
         grantable={"sales", "lots", "regions"},
         compute=lambda _c: {
-            "query_sql": "SELECT sku, SUM(amount) AS revenue FROM sales GROUP BY sku",
+            # GRAIN-GUARD-01: grouped by the category the question names.
+            "query_sql": (
+                'SELECT l."category" AS "product_category", SUM(s.amount) AS "revenue" '
+                "FROM sales s LEFT JOIN (SELECT sku, ANY_VALUE(category) AS category "
+                'FROM lots GROUP BY sku) l ON s."sku" = l."sku" GROUP BY l."category"'
+            ),
             "plan_source": "ontology_plan",
             "values": [{"revenue": 999999}],
             "live_5000_ci": True,

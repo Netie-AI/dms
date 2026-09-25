@@ -76,6 +76,10 @@ SYNONYM_L0: tuple[tuple[str, str], ...] = (
 # per-SKU COUNT FILTER tally incl. SKUs not below reorder; a utilisation figure
 # on "show the CCTV camera"; an audit_overdue tally). They now abstain with a
 # named grain reason, so they are not hits and the climb counts drop by them.
+# Round 3 removed the trim: the which/list asks answered with a ride-along
+# utilisation / stock-value figure (cold storage, above 90, expired,
+# chemicals) were oracle-WRONG on main and now abstain unrequested_measure
+# instead of being rewritten to their entity column.
 GRAIN_GUARDED: frozenset[str] = frozenset(
     {
         "cq_capacity_utilisation",
@@ -85,6 +89,14 @@ GRAIN_GUARDED: frozenset[str] = frozenset(
         "cq_cctv_wh_a",
         "ops_cctv_wh_a",
         "cq_audit_overdue",
+        "cq_cold_storage",
+        "ops_cold_storage",
+        "cq_capacity_above_90",
+        "ops_capacity_above_90",
+        "cq_expired_items",
+        "ops_expired_items",
+        "cq_chemicals_list",
+        "ops_chemicals_list",
     }
 )
 _GRAIN_PREFIXES = (
@@ -92,6 +104,7 @@ _GRAIN_PREFIXES = (
     "unrequested_measure:",
     "unrequested_column:",
     "grain_mismatch:",
+    "grain_unanalysable:",
 )
 
 
