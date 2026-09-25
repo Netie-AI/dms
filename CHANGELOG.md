@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - GEN-RESTORE-01: Cortex setup fields copy-through (#276)
+
+- **Setup fields.** When Insights returns `served_provider`, `served_model`, `served_local`, `learn_enabled`, `learn_source`, `route_store_id`, copy them onto the DMS answer envelope exactly as received. Null stays null. Missing stays absent. Never infer. Prove without Cortex#269 is expected to omit them. Harness fingerprint compare is dms#264 (parked). Not COMPLETE.
+
+## 2026-09-25 - GEN-RESTORE-01: Insights compute seam, fail closed, WRONG=0 (#276)
+
+- **Ticket.** Serves [GEN-RESTORE-01 #276](https://github.com/Netie-AI/dms/issues/276) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Does not invent a live #231 score or bar PASS.
+- **Seam.** Generative `live_ask` calls Cortex Insights only: `POST /v1/insights` generate=true, `GET /v1/insights/ontology` when ranking is omitted, one ranked-slot generate retry. Ask lanes never POST `/dms/query` (F-0055). `compute_query` stays for CONTRACT-FAKE-01 (`dms_query=False` or `compute_insights`). Timeout is `INSIGHTS_ASK_TIMEOUT_SECONDS = 8.0` (not the 120s contract timeout, not the old 45s /dms/query stall).
+- **Fail closed.** Named ABSTAIN: `insights_unarmed`, `insights_refused`, `insights_unauthorized`, `insights_timeout`, `insights_no_sql_no_ranking`. None bind. `bind_on_miss=False` on every lane. `ask_path` 400 unless `DMS_HARNESS_ASK_PATHS`. Pre-gates stay. Validate then Cortex submit, or ABSTAIN.
+- **plan_origin.** Answered envelopes stamp `plan_origin=generate_sql` or `plan_origin=ontology_ranking` next to `plan_source`.
+- **Chart.** `_l2_envelope` reuses `chart_from_rows` (the Cortex contract fallback). No chart when rows do not fit. No new builder.
+- **Keys.** No provider keys in the body. Model access stays in Cortex via OpenVault.
+- **Not this ticket:** live Studio re-prove (#231, Platform), CONNECT-ASK-01 (#277), deleting `/dms/query`, moving pre-gates (GEN-07), `semantic_retrieve.py` (PII-01 #272).
+
 ## 2026-09-25 - A2-05: currency asked vs currency in the data (EPIC-A2 #256, #261)
 
 - **Ticket.** [A2-05 #261](https://github.com/Netie-AI/dms/issues/261). Founder chose sqlglot in DMS (hard rule 6 swap scenario). Replaces the regex/allowlist that failed four adversarial rounds. No FX conversion. Does not stamp #256 COMPLETE. Does not touch #262.

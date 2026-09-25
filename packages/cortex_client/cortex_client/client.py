@@ -12,7 +12,15 @@ from cortex_contract.execution import Manifest as ContractManifest
 from cortex_contract.execution import QueryResult as ContractQueryResult
 from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 
-from cortex_client.compute import compute_query as post_compute_query
+from cortex_client.compute import (
+    INSIGHTS_ASK_TIMEOUT_SECONDS,
+)
+from cortex_client.compute import (
+    compute_insights as post_compute_insights,
+)
+from cortex_client.compute import (
+    compute_query as post_compute_query,
+)
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
     ask as ask_api,
@@ -162,13 +170,14 @@ class CortexClient:
         session_id: str | None = None,
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
+        dms_query: bool = True,
     ) -> dict[str, Any] | None:
         """Off-contract Insights generate then leftover POST /dms/query.
 
         Not Cortex's generate+validate path (KB F-0055): ``/dms/query`` ignores
-        ``mode``/``ontology`` and does not return ``query_plan.measure``. No
-        ask-path caller remains after GEN-03 (dms#194); deletion is
-        CONTRACT-FAKE-01. None on miss.
+        ``mode``/``ontology`` and does not return ``query_plan.measure``. Ask
+        lanes must pass ``dms_query=False`` or call ``compute_insights``.
+        Deletion is CONTRACT-FAKE-01. None on miss.
 
         OpenVault keys stay in Cortex. This client forwards ``api_key`` when
         already configured and never invents one.
@@ -181,6 +190,32 @@ class CortexClient:
             ontology=ontology,
             api_key=self.api_key,
             timeout=self.timeout,
+            dms_query=dms_query,
+        )
+
+    def compute_insights(
+        self,
+        question: str,
+        *,
+        session_id: str | None = None,
+        space_id: str | None = None,
+        ontology: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Ask-lane Insights planner. Never POST /dms/query.
+
+        Timeout is min(INSIGHTS_ASK_TIMEOUT_SECONDS, this client's timeout) so
+        the product lane cannot stall on a 45s leftover /dms/query or the 120s
+        contract timeout. OpenVault keys stay in Cortex.
+        """
+        bound = min(INSIGHTS_ASK_TIMEOUT_SECONDS, float(self.timeout))
+        return post_compute_insights(
+            self.base_url,
+            question=question,
+            session_id=session_id,
+            space_id=space_id,
+            ontology=ontology,
+            api_key=self.api_key,
+            timeout=bound,
         )
 
     def insights_law(self) -> dict[str, Any]:

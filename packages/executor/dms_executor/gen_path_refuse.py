@@ -35,6 +35,11 @@ GAP_REASONS = frozenset(
         "ambiguous_path",
         "unknown_link",
         "coverage_invalid",
+        "insights_unarmed",
+        "insights_refused",
+        "insights_unauthorized",
+        "insights_timeout",
+        "insights_no_sql_no_ranking",
     }
 )
 
