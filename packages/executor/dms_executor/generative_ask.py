@@ -48,6 +48,7 @@ from dms_executor.ontology import (
     Coverage,
     Ontology,
     Refusal,
+    Violation,
     WherePath,
     coverage_from_sql_path,
     coverage_valid,
@@ -177,6 +178,64 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     if violations or not target.verified:
         return None
     return target
+
+
+def declared_ontology_violations(warehouse: Path | None, onto: Ontology) -> list[Violation]:
+    """Verify a caller-declared ontology against the lake and keep the evidence.
+
+    ``load_verified_ontology`` answers None on failure and drops the reasons;
+    A2-02 needs them so the SQL path can refuse by name. Empty when the lake is
+    missing (nothing to measure) or the ontology passed.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return []
+    con = connect_file(Path(warehouse))
+    try:
+        return list(onto.verify(con))
+    finally:
+        con.close()
+
+
+def violation_reason(violations: Sequence[Violation], *, limit: int = 3) -> str:
+    """``ontology_unverified: <check> on <subject>: <detail>`` -- the named gap."""
+    named = [f"{v.check} on {v.subject}: {v.detail}" for v in violations[:limit]]
+    more = len(violations) - len(named)
+    if more > 0:
+        named.append(f"+{more} more")
+    return "ontology_unverified: " + "; ".join(named) if named else "ontology_unverified"
+
+
+def _violation_relations(onto: Ontology, v: Violation) -> set[str]:
+    """Bare relations a violation's subject (link or object) reads."""
+    objs: list[str] = []
+    link = onto.links.get(v.subject)
+    if link is not None:
+        objs = [link.from_object, link.to_object]
+    elif v.subject in onto.objects:
+        objs = [v.subject]
+    out: set[str] = set()
+    for name in objs:
+        obj = onto.objects.get(name)
+        if obj is not None:
+            out |= cited_relations(f"SELECT * FROM {obj.relation}")
+    return out
+
+
+def violations_cited_by_sql(
+    sql: str, onto: Ontology, violations: Sequence[Violation]
+) -> list[Violation]:
+    """Violations whose every relation the SQL reads (a join over a broken link).
+
+    SQL that never touches a failed link's relations is not made wrong by it,
+    so a count over one clean table still answers.
+    """
+    named = cited_relations(sql)
+    hit: list[Violation] = []
+    for v in violations:
+        rels = _violation_relations(onto, v)
+        if rels and rels <= named:
+            hit.append(v)
+    return hit
 
 
 def _rows_gt(rows: list[dict[str, Any]], measure: str, keep_gt: float) -> list[dict[str, Any]]:
@@ -674,10 +733,18 @@ def maybe_generative_ask(
         lake = None
 
     onto = ontology
+    # A2-02: a caller-declared ontology that FAILED verify keeps its evidence.
+    # The default demo ontology (ontology=None) does not: a lake it was never
+    # declared for (BIRD) must keep answering generated SQL as before.
+    declared: Ontology | None = None
+    declared_violations: list[Violation] = []
     if onto is None:
         onto = load_verified_ontology(lake)
     elif lake is not None and not onto.verified:
-        onto = load_verified_ontology(lake, onto)
+        declared_violations = declared_ontology_violations(lake, onto)
+        if declared_violations or not onto.verified:
+            declared = onto
+            onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
     # Short retrieved context only -- not the full ontology dump.
     ctx = retrieve_short_context(
@@ -745,6 +812,21 @@ def maybe_generative_ask(
                 space_id=space_id, session_id=session_id, plan_source=source,
             )
         why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        broken = (
+            violations_cited_by_sql(sql, declared, declared_violations)
+            if declared is not None and not why
+            else []
+        )
+        if broken:
+            # The lake's declared ontology says this join is not safe (an
+            # orphan FK misattributes or drops rows). SQL is no exemption.
+            return _abstain(
+                q,
+                violation_reason(broken),
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+            )
         if why:
             if why.startswith("hostile_sql:") or ranked_slots is None:
                 return _abstain(
@@ -817,8 +899,11 @@ def maybe_generative_ask(
         )
     if onto is None or not onto.verified:
         return _abstain(
-            q, "ontology_unverified",
-            space_id=space_id, session_id=session_id, plan_source=source,
+            q,
+            violation_reason(declared_violations),
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=source,
         )
 
     compiled = onto.compile(

@@ -2,6 +2,28 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-23 - A1-01: scorers print n and the rule-of-three bound beside WRONG=0 (EPIC-A1 #257, #263)
+
+- **Ticket.** First ticket of [EPIC-A1 #257](https://github.com/Netie-AI/dms/issues/257). Reporting only; no verdict logic touched. Built in its own worktree and accepted by an independent adversarial verifier on the first round.
+- **Change.** `scripts/score_bound.py` (shared helper: `bound_pct = 300/answered` or None, a checker that rejects any `WRONG=0` / `0 confidently wrong` line without `answered=` and a bound on it or the next line). `score_bird.py` and `score_answers.py` print `answered=<n> bound about X pct (rule of three, 95 pct)`, or `bound n/a (nothing answered)`, and stamp `answered` / `bound_pct` (null when unanswered) into their JSON artifacts. Both `--self-check` / `--oracle-only` CI steps now fail if the line regresses to a bare zero.
+- **Why.** NETIE.md rule 7: below n=300 a printed 0 invites reading 0 percent. `ontology_bench.py` already did this; the other two did not.
+- **Not this ticket:** `scripts/score_curated.py` (CLIMB-13 PR #240 owns it); any coverage target; any BIRD number as a claim.
+
+## 2026-09-23 - A2-02/03/04: schema-defect refusals (EPIC-A2 #256)
+
+- **Tickets.** #258 A2-02, #259 A2-03, #260 A2-04. Each built in its own worktree and accepted by an independent adversarial verifier (#259 after one repair round). #261 A2-05 (currency) not in this entry: its verifier rejected round 2.
+- **#258.** A caller-declared ontology that fails `verify` now refuses generated SQL that reads a failed link's relations, and both paths name the violation (check, link, orphan count) instead of a bare `ontology_unverified`. Lakes with no declared ontology (live product, BIRD) are unchanged; `score_bird --self-check` passes before and after.
+- **#259.** `verify` refuses a link declared on the child's own key (`fk_is_child_key`) unless `one_to_one=True`, and names a sibling column that matches the parent key.
+- **#260.** `add_object(..., business_key=[...])` is verified unique and non-null (`business_key_unique`). Declared only, no profiling.
+- **Measured.** A2 gate n=40: confident WRONG 14 -> **7** (all 7 are currency, #261). Coverage costs pinned, not hidden: when one claim fails the whole declared ontology drops, so unaffected questions on that lake abstain (named).
+- **Open, founder call.** `from_manifest` still treats a DB FK declared on the child's own PK as one-to-one (AdventureWorks shared-PK subtypes rely on it). Nothing yet produces `business_keys` from source UNIQUE constraints.
+
+## 2026-09-23 - A2-01: hostile-schema envelope gate (EPIC-A2 #256)
+
+- **Ticket.** First ticket of [EPIC-A2 #256](https://github.com/Netie-AI/dms/issues/256) (PRD-001 amendment accepted by founder 2026-09-23). Measurement only. No product code changed. Does not stamp #256 COMPLETE.
+- **Gate.** `tests/test_hostile_schema_a2.py` plants four defects one at a time (orphan FK, FK on the wrong column, duplicate business key behind a surrogate, `revenue_usd` holding MYR) into a clean 3-table warehouse, asks 4 questions on the typed-plan and generated-SQL paths through `maybe_generative_ask` with a real duckdb submit, and grades envelope rows against oracle values, not row counts.
+- **Measured.** n=40 envelopes, **14 confidently WRONG** on main @ `3c3b621`. Pinned in `MEASURED` so a fix or a regression both fail until the pin is edited. Owners: #258 (SQL path ignores failed verify), #259 (wrong-column FK), #260 (duplicate business key), #261 (currency never checked; 9 of 14).
+- **Proves it can fail.** Flipping one pin to OK fails with the envelope's rows and text. A clean-schema control must answer with oracle values, so abstaining cannot pass for free.
 ## 2026-09-23 - GEN-PATH-CLIMB-13: unused parent-SQL leftover past ontology_plan=39 (#231)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-13 #231](https://github.com/Netie-AI/dms/issues/231) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Does not reopen #178. #228 RISE_PASS @ `dff2a6ea` (ontology_plan=39 bind_plan=0 WRONG=0 answered=39/49 on uncapped harness) stands as the measured floor.

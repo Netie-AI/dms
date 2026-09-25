@@ -140,6 +140,15 @@ class ObjectType:
     name: str
     relation: str
     key: tuple[str, ...]
+    #: Declared natural key (``customer_code``) behind a surrogate ``key``. A
+    #: surrogate can be unique while the business entity is duplicated under
+    #: two ids; verify() checks this claim too. Declared, never profiled.
+    business_key: tuple[str, ...] = ()
+
+
+def _same_columns(a: Sequence[str], b: Sequence[str]) -> bool:
+    """Whether two column lists name the same set, case-insensitively as DuckDB does."""
+    return {c.casefold() for c in a} == {c.casefold() for c in b}
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,10 @@ class LinkType:
     to_columns: tuple[str, ...]
     cardinality: Cardinality = "unverified"
     max_fanout: int = 0
+    #: Opt-in: the child side is the child's own key on purpose (a shared
+    #: primary key / subtype table). Without it, a link declared on the child
+    #: key is refused by verify() as ``fk_is_child_key`` (A2-03 / dms#259).
+    one_to_one: bool = False
 
 
 @dataclass(frozen=True)
@@ -440,8 +453,9 @@ class Ontology:
         key: Sequence[str],
         *,
         truncated: bool = False,
+        business_key: Sequence[str] | None = None,
     ) -> None:
-        self.objects[name] = ObjectType(name, relation, tuple(key))
+        self.objects[name] = ObjectType(name, relation, tuple(key), tuple(business_key or ()))
         if truncated:
             self.truncated[name] = True
         else:
@@ -455,7 +469,11 @@ class Ontology:
         from_columns: Sequence[str],
         to_object: str,
         to_columns: Sequence[str],
+        *,
+        one_to_one: bool = False,
     ) -> None:
+        """Declare a link. ``one_to_one=True`` is the only way to declare a link
+        whose child columns are the child object's own key; see verify()."""
         for obj in (from_object, to_object):
             if obj not in self.objects:
                 raise KeyError(f"link {name!r} names unknown object {obj!r}")
@@ -470,8 +488,20 @@ class Ontology:
                 f"{len(to_columns)}: {list(from_columns)} -> {list(to_columns)}. "
                 "A join cannot be checked unless both sides name the same arity."
             )
+        if one_to_one and not _same_columns(from_columns, self.objects[from_object].key):
+            # A2-03 / dms#259: one_to_one only exempts a link declared on the
+            # child's own key. Anywhere else it is a claim nothing checks.
+            raise ValueError(
+                f"link {name!r} is declared one_to_one on {list(from_columns)}, which "
+                f"is not {from_object!r}'s key {list(self.objects[from_object].key)}."
+            )
         self.links[name] = LinkType(
-            name, from_object, tuple(from_columns), to_object, tuple(to_columns)
+            name,
+            from_object,
+            tuple(from_columns),
+            to_object,
+            tuple(to_columns),
+            one_to_one=one_to_one,
         )
         self.verified = False
 
@@ -637,13 +667,52 @@ class Ontology:
             }
         return cache[obj]
 
+    def _verify_business_key(self, con: Any, obj: ObjectType) -> Violation | None:
+        """One Violation naming the business key, its NULL rows and duplicate rows."""
+        bk = ", ".join(obj.business_key)
+        cols = ", ".join(_ident(c) for c in obj.business_key)
+        nulls = " OR ".join(f"{_ident(c)} IS NULL" for c in obj.business_key)
+        try:
+            null_rows = con.execute(
+                f"SELECT COUNT(*) FROM {obj.relation} WHERE {nulls}"
+            ).fetchone()[0]
+            dup_keys, dup_rows = con.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(n), 0) FROM (SELECT COUNT(*) AS n "
+                f"FROM {obj.relation} WHERE NOT ({nulls}) GROUP BY {cols} HAVING COUNT(*) > 1)"
+            ).fetchone()
+        except Exception as exc:  # noqa: BLE001
+            return Violation(
+                "business_key_unique", obj.name, f"business key ({bk}): {type(exc).__name__}: {exc}"
+            )
+        problems: list[str] = []
+        if int(dup_keys or 0):
+            problems.append(
+                f"{int(dup_rows):,} rows share {int(dup_keys):,} duplicate business key "
+                f"value(s) on ({bk})"
+            )
+        if int(null_rows or 0):
+            problems.append(f"{int(null_rows):,} rows have NULL in business key ({bk})")
+        if not problems:
+            return None
+        return Violation(
+            "business_key_unique",
+            obj.name,
+            "; ".join(problems)
+            + f" - the surrogate ({', '.join(obj.key)}) is unique, but one "
+            f"{obj.name} would be counted more than once",
+        )
+
     def verify(self, con: Any) -> list[Violation]:
         """Execute every claim. Nothing may be used until this has passed.
 
-        Four claims are checked, in the order a wrong one would do damage:
+        Five claims are checked, in the order a wrong one would do damage:
           key_unique      an object's key really identifies one row
           key_not_null    no key column is NULL - a NULL key both passes a
                           uniqueness check and silently drops rows from a join
+          business_key_unique  a declared business key (customer_code behind
+                          a surrogate customer_id) is non-NULL and unique. A
+                          unique surrogate over a duplicated business key
+                          counts one customer as two.
           fk_intact       every non-NULL child key exists in the parent. A
                           missing parent turns a LEFT JOIN into misattribution
                           (named groups shrink, the unmatched bucket grows,
@@ -656,6 +725,11 @@ class Ontology:
                           than join through, and the compiler needs to know.
                           A link with orphans stays unverified rather than
                           being blessed many-to-one.
+          fk_is_child_key a link whose child columns are the child's own key
+                          is almost always a mis-declared FK (line_id where
+                          order_id was meant). Coincident values pass every
+                          other check, so it stays unverified unless declared
+                          ``one_to_one=True``.
         """
         violations: list[Violation] = []
         self.__dict__["_column_cache"] = {}
@@ -696,6 +770,10 @@ class Ontology:
                         f"({', '.join(obj.key)}) - the key does not identify a row",
                     )
                 )
+            if obj.business_key:
+                violation = self._verify_business_key(con, obj)
+                if violation is not None:
+                    violations.append(violation)
 
         for name, link in list(self.links.items()):
             parent = self.objects[link.to_object]
@@ -722,6 +800,38 @@ class Ontology:
             except Exception as exc:  # noqa: BLE001
                 violations.append(
                     Violation("link_readable", name, f"{type(exc).__name__}: {exc}")
+                )
+                continue
+            if _same_columns(link.from_columns, child.key) and not link.one_to_one:
+                # A2-03 / dms#259: line_id -> order_id passed fk_intact because
+                # every line_id happened to equal a real order id, and the
+                # join then attributed each line to the wrong order. A child's
+                # own key is only an FK when the link says it is one-to-one.
+                child_all = self.__dict__.get("_column_cache", {}).get(child.name, set())
+                # DuckDB identifiers are case-insensitive, so every name
+                # comparison here is too: LINE_ID and line_id are one column.
+                wanted = {c.casefold() for c in link.to_columns} - {
+                    c.casefold() for c in link.from_columns
+                }
+                siblings = sorted(c for c in child_all if c.casefold() in wanted)
+                hint = (
+                    f" {link.from_object} also has {', '.join(siblings)}, which "
+                    "matches the parent key by name and is the likely foreign key."
+                    if siblings
+                    else ""
+                )
+                violations.append(
+                    Violation(
+                        "fk_is_child_key",
+                        name,
+                        f"{link.from_object} -> {link.to_object} is declared on "
+                        f"({', '.join(link.from_columns)}), which is "
+                        f"{link.from_object}'s own key. A foreign key on the child "
+                        "key is a one-to-one claim; values that merely coincide "
+                        "with parent keys pass every other check and misattribute "
+                        f"rows.{hint} The link stays unverified unless declared "
+                        "one_to_one=True.",
+                    )
                 )
                 continue
             if int(pn) == 0:
@@ -784,6 +894,7 @@ class Ontology:
                 self.links[name] = LinkType(
                     link.name, link.from_object, link.from_columns,
                     link.to_object, link.to_columns, "many_to_one", 1,
+                    link.one_to_one,
                 )
                 continue
             worst = con.execute(
@@ -793,9 +904,14 @@ class Ontology:
             self.links[name] = LinkType(
                 link.name, link.from_object, link.from_columns,
                 link.to_object, link.to_columns, "many_to_many", int(worst or 0),
+                link.one_to_one,
             )
 
         self.verified = not violations
+        # Kept so an abstention can name what failed instead of a bare
+        # "ontology_unverified" (dms#260 A2-04). Same cache slot style as
+        # _column_cache: not a dataclass field, not part of equality.
+        self.__dict__["_violations"] = list(violations)
         return violations
 
     # -- compilation -----------------------------------------------------
@@ -2066,6 +2182,10 @@ def from_manifest(
 
     relation = relation_for or _parquet
     pks: dict[str, list[str]] = dict(entry.get("primary_keys") or {})
+    # Optional declared natural keys ("schema.table" -> columns). Additive:
+    # SourceKeys does not read UNIQUE constraints yet, so today only a steward
+    # or hand-built manifest supplies this (dms#260 A2-04).
+    bks: dict[str, list[str]] = dict(entry.get("business_keys") or {})
 
     truncated_by_table = {
         f"{t['schema']}.{t['table']}": bool(t.get("truncated"))
@@ -2081,6 +2201,7 @@ def from_manifest(
             relation(schema, name),
             key,
             truncated=truncated_by_table.get(table, False),
+            business_key=bks.get(table),
         )
 
     # Grouped on the whole triple, not the name alone. Constraint names are
@@ -2098,12 +2219,20 @@ def from_manifest(
             # An end of this link has no primary key or was not extracted. A link
             # to an object that cannot identify a row is not a link.
             continue
+        from_cols = [str(c["from_column"]) for c in cols]
         onto.add_link(
             name if name not in onto.links else f"{name}@{child}",
             child,
-            [str(c["from_column"]) for c in cols],
+            from_cols,
             parent,
             [str(c["to_column"]) for c in cols],
+            # A2-03 / dms#259: a database FK constraint declared on the child's
+            # own primary key IS the schema owner's one-to-one declaration (a
+            # shared-primary-key subtype, e.g. Person.Person -> BusinessEntity).
+            # That is explicit, not inferred, so it is passed through; every
+            # other check in verify() still measures the link. Hand-authored
+            # links get no such pass.
+            one_to_one=_same_columns(from_cols, onto.objects[child].key),
         )
     return onto
 
