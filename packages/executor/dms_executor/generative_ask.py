@@ -64,7 +64,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
-from dms_executor.sql_currency import currency_gate_reason
+from dms_executor.sql_currency import currency_mismatch_reason
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -490,7 +490,7 @@ def _submit_validated(
             session_id=session_id,
             plan_source=plan_source,
         )
-    ccy_why = currency_gate_reason(question, sql, warehouse=warehouse)
+    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
     if ccy_why:
         return _abstain(
             question,

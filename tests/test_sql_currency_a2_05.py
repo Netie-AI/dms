@@ -17,7 +17,7 @@ import duckdb
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.ontology import Ontology
-from dms_executor.sql_currency import asked_currencies, asked_currency, currency_gate_reason
+from dms_executor.sql_currency import asked_currencies, asked_currency, currency_mismatch_reason
 
 USD_Q = "What is total revenue in USD?"
 NO_CCY_Q = "What is revenue by region?"
@@ -348,7 +348,7 @@ def test_typed_plan_usd_on_myr_abstains(tmp_path: Path) -> None:
 def test_unparseable_sql_abstains_when_currency_named(tmp_path: Path) -> None:
     lake = tmp_path / "bad.duckdb"
     _seed_myr(lake)
-    reason = currency_gate_reason(USD_Q, "SELECT SUM(amount_myr FROM orders", warehouse=lake)
+    reason = currency_mismatch_reason(USD_Q, "SELECT SUM(amount_myr FROM orders", warehouse=lake)
     assert reason is not None
     assert "parsed" in reason.lower()
     # EXPLAIN will also fail this shape; the gate reason is what we pin.
@@ -362,7 +362,7 @@ def test_no_currency_named_skips_gate_even_with_usd_cte_name(tmp_path: Path) -> 
         "WITH usd_book AS (SELECT amount_myr AS amt FROM orders) "
         "SELECT SUM(amt) AS revenue FROM usd_book"
     )
-    assert currency_gate_reason(NO_CCY_Q, sql, warehouse=lake) is None
+    assert currency_mismatch_reason(NO_CCY_Q, sql, warehouse=lake) is None
     env = _ask(lake, "What is total revenue?", _sql_path(sql))
     assert env["abstained"] is False, env.get("text")
     vals = [

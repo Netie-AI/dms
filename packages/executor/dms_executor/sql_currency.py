@@ -234,7 +234,7 @@ def asked_currencies(question: str) -> frozenset[str]:
     return frozenset(found)
 
 
-def currency_gate_reason(
+def currency_mismatch_reason(
     question: str,
     sql: str,
     *,
@@ -853,6 +853,6 @@ __all__ = [
     "SourceColumn",
     "asked_currencies",
     "asked_currency",
-    "currency_gate_reason",
+    "currency_mismatch_reason",
     "is_currency_column",
 ]
