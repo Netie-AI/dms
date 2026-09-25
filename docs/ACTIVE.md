@@ -83,6 +83,10 @@ validate then Cortex submit. Unsure or validate-fail is ABSTAIN. A/B vs
 exact-match: `python scripts/score_curated.py --ab`. Not pack expansion.
 Regression: `tests/test_gen01_generative_ask.py`. Not COMPLETE.
 
+A2-05 (#261): named-currency questions go through `dms_executor/sql_currency.py`
+(sqlglot, DuckDB dialect) before submit. Swap: that module only. No FX.
+Regression: `tests/test_sql_currency_a2_05.py`, `tests/test_hostile_schema_a2.py`.
+
 EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`
 (`scripts/score_climb.md`). Probe + ask use httpx (`score_http`), not urllib

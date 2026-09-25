@@ -17,6 +17,9 @@ dependencies = [
   "pytz>=2024.1",
   "PyYAML>=6.0",
   "openpyxl>=3.1",
+  # SQL parser for the currency unit gate (dms_executor.sql_currency). Swap:
+  # Cortex HTTP verify-unit, or another dialect parser behind that module.
+  "sqlglot>=27.0.0,<28",
 ]
 
 [tool.setuptools.packages.find]

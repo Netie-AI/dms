@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - A2-05: currency asked vs currency in the data (EPIC-A2 #256, #261)
+
+- **Ticket.** [A2-05 #261](https://github.com/Netie-AI/dms/issues/261). Founder chose sqlglot in DMS (hard rule 6 swap scenario). Replaces the regex/allowlist that failed four adversarial rounds. No FX conversion. Does not stamp #256 COMPLETE. Does not touch #262.
+- **Change.** Pin `sqlglot>=27,<28` on `dms-executor`. Parser isolated in `dms_executor/sql_currency.py`. When a question names a currency, both typed-plan and generated-SQL paths parse DuckDB SQL, resolve select/aggregate outputs through CTEs, derived tables, subqueries, aliases and joins, and answer only if the measure unit is known and matches (column suffix or same-relation currency column). Else ABSTAIN naming the mismatch. Parse/lineage failure fails closed. Column-name vs currency-column conflict is unverified.
+- **Gate.** `*/revenue_usd/*` pins move WRONG -> ABSTAIN. A2 gate confident WRONG 7 -> **0**. Questions naming no currency are unchanged. Round 1-3 bypasses are regression tests in `tests/test_sql_currency_a2_05.py`.
+- **Not this ticket:** FX rates; #262 scope-refusal; `scripts/score_curated.py`.
+
 ## 2026-09-23 - A1-01: scorers print n and the rule-of-three bound beside WRONG=0 (EPIC-A1 #257, #263)
 
 - **Ticket.** First ticket of [EPIC-A1 #257](https://github.com/Netie-AI/dms/issues/257). Reporting only; no verdict logic touched. Built in its own worktree and accepted by an independent adversarial verifier on the first round.

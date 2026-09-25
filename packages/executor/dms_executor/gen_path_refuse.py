@@ -53,6 +53,9 @@ def gap_reason_name(reason: str) -> str | None:
 def customer_abstain_text(reason: str) -> str:
     """Rendered ABSTAIN text. Named gaps appear in the sentence (hard rule 10)."""
     gap = str(reason or "").strip()
+    if gap.startswith("currency_mismatch:"):
+        body = gap.split(":", 1)[1].strip()
+        return body if body else _GENERIC_ABSTAIN
     if not gap or gap_reason_name(gap) is None:
         return _GENERIC_ABSTAIN
     return (

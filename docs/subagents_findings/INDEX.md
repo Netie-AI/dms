@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (GEN-PATH-CLIMB-13: 39/49 = frozen 17 + 22 climb leftovers; leftover unused Cortex metrics.yaml parent-SQL of certified sku-by-category / stock-value / shipment-cost never POSTed. Audit overdue still last_audit_date ceiling).
+PREFLIGHT for this goal: HIT (A2-05 #261 sqlglot currency gate; regex-sql-safety-ceiling 2026-09-24; founder parser=sqlglot in DMS).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-25 | sqlglot-currency-gate | sqlglot, currency, unit, A2-05, dms-261, hard rule 6, swap | Parser isolated in sql_currency.py. Swap: Cortex HTTP verify-unit or another dialect parser. No FX. #262 after. | `2026-09-25_sqlglot-currency-gate.md` |
 | 2026-09-24 | regex-sql-safety-ceiling | sql safety, regex, sqlglot, currency gate, grain rule, dms-261, dms-262 | 11 verifier rounds each beat the regex SQL checks; class fix is a parser (founder call, rule 6). #262 must land after #261 (alone raises WRONG 7 -> 10). | `2026-09-24_regex-sql-safety-ceiling.md` |
 | 2026-09-23 | climb-metric-ceiling | GEN-PATH-CLIMB, ontology_plan, BIRD, unseen schema, 100 percent, dms-178 | Climb count grows by restating certified SQL on one warehouse; cannot measure DB-GPT-class accuracy. PRD amendment brief routed, not built. B blocked on CLIMB-12 live prove. | `2026-09-23_climb-metric-ceiling.md` |
 | 2026-09-23 | gen-path-climb-13 | GEN-PATH-CLIMB-13, ontology_plan, certified leftover, 39/49, per category, inventory worth, freight spend, dms-231 | After #228 ontology_plan=39: leftover Cortex metrics.yaml parent-SQL of certified sku-by-category / stock-value / shipment-cost via retrieve slots. WRONG=0. Not climb PASS. Live prove Platform. | `2026-09-23_gen-path-climb-13.md` |
