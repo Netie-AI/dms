@@ -16,6 +16,7 @@ Does not expand certified exact-match packs. Does not invent provider keys.
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -286,7 +287,6 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         return target
     if not declared:
         return None
-    _scope_failed_subjects(target, violations)
     return target
 
 
@@ -295,7 +295,7 @@ def declared_ontology_violations(warehouse: Path | None, onto: Ontology) -> list
 
     Empty when the lake is missing (nothing to measure) or the ontology passed.
     Prefer ``load_verified_ontology`` when the caller also needs the scoped
-    ontology; this helper re-runs verify and does not bless hop-usable links.
+    ontology. Does not change link cardinality.
     """
     if warehouse is None or not Path(warehouse).is_file():
         return []
@@ -313,31 +313,6 @@ def violation_reason(violations: Sequence[Violation], *, limit: int = 3) -> str:
     if more > 0:
         named.append(f"+{more} more")
     return "ontology_unverified: " + "; ".join(named) if named else "ontology_unverified"
-
-
-def _scope_failed_subjects(onto: Ontology, violations: Sequence[Violation]) -> None:
-    """Bless fk_intact links for hop use. The violation stays for the gates.
-
-    verify() measures parent uniqueness then leaves the link unverified when
-    orphans exist, so compile would skip it. A measure not grained on the
-    child can still hop through; child-grain compile/SQL still abstains.
-    """
-    for v in violations:
-        if v.check != "fk_intact":
-            continue
-        link = onto.links.get(v.subject)
-        if link is None or link.cardinality != "unverified":
-            continue
-        onto.links[v.subject] = LinkType(
-            link.name,
-            link.from_object,
-            link.from_columns,
-            link.to_object,
-            link.to_columns,
-            "many_to_one",
-            1,
-            link.one_to_one,
-        )
 
 
 def _canonical_object(onto: Ontology, name: str) -> str | None:
@@ -368,7 +343,7 @@ def _declared_paths(onto: Ontology, start: str, target: str) -> list[list[LinkTy
     return found
 
 
-def _plan_dests(plan: QueryPlan, onto: Ontology, grain: str) -> set[str]:
+def _plan_dests(plan: QueryPlan, onto: Ontology) -> set[str]:
     names = [obj for obj, _col in plan.group_by]
     names.extend(obj for obj, _col, _op, _val in plan.filters)
     if plan.via:
@@ -376,65 +351,51 @@ def _plan_dests(plan: QueryPlan, onto: Ontology, grain: str) -> set[str]:
     dests: set[str] = set()
     for obj in names:
         name = _canonical_object(onto, obj)
-        if name and name != grain:
+        if name:
             dests.add(name)
     return dests
 
 
-def _plan_uses_link(
-    onto: Ontology, grain: str, dests: set[str], link: LinkType
-) -> bool:
+def _plan_used_subjects(
+    plan: QueryPlan, onto: Ontology, grain: str
+) -> tuple[set[str], set[str]]:
+    """Objects and link names the typed plan uses (grain, hops, destinations)."""
+    dests = _plan_dests(plan, onto)
+    objects = {grain} | dests
+    links: set[str] = set()
     for dest in dests:
-        for path in _declared_paths(onto, grain, dest):
-            if any(hop.name == link.name for hop in path):
-                return True
-    return False
-
-
-def _object_is_through_hop(onto: Ontology, grain: str, dests: set[str], obj: str) -> bool:
-    for dest in dests:
-        if dest == obj:
+        if dest == grain:
             continue
         for path in _declared_paths(onto, grain, dest):
-            hops = {hop.from_object for hop in path} | {hop.to_object for hop in path}
-            hops.discard(grain)
-            hops.discard(dest)
-            if obj in hops:
-                return True
-    return False
+            for hop in path:
+                links.add(hop.name)
+                objects.add(hop.from_object)
+                objects.add(hop.to_object)
+    return objects, links
 
 
 def violations_cited_by_plan(
     plan: QueryPlan, onto: Ontology, violations: Sequence[Violation]
 ) -> list[Violation]:
-    """Violations that make this typed plan unusable.
+    """Violations whose failed subject the typed plan uses.
 
-    A failed link is unusable when the measure is grained on its child and
-    the plan's path uses the link. A failed object key or business key makes
-    measures grained on that object, and paths through it, unusable.
+    A failed link is cited whenever the plan's path uses it, whatever the
+    grain. A failed object is cited when it is the grain, a hop, or a
+    group_by / filter / via destination.
     """
     spec = onto.measures.get(plan.measure)
     if spec is None:
         return []
-    grain = spec.grain
-    dests = _plan_dests(plan, onto, grain)
+    objects, links = _plan_used_subjects(plan, onto, spec.grain)
     hit: list[Violation] = []
     for v in violations:
-        link = onto.links.get(v.subject)
-        if link is not None:
-            if grain == link.from_object and _plan_uses_link(onto, grain, dests, link):
+        if v.subject in onto.links:
+            if v.subject in links:
                 hit.append(v)
             continue
-        if v.subject in onto.objects and (
-            grain == v.subject or _object_is_through_hop(onto, grain, dests, v.subject)
-        ):
+        if v.subject in objects:
             hit.append(v)
     return hit
-
-
-def _fact_relation(sql: str) -> str | None:
-    labels = _sql_cited_labels(sql)
-    return _relation_bare(labels[0]) if labels else None
 
 
 def _violation_relations(onto: Ontology, v: Violation) -> set[str]:
@@ -456,31 +417,17 @@ def _violation_relations(onto: Ontology, v: Violation) -> set[str]:
 def violations_cited_by_sql(
     sql: str, onto: Ontology, violations: Sequence[Violation]
 ) -> list[Violation]:
-    """Violations whose failed subject is the SQL grain (A2-02 / A2-06).
+    """Violations whose every relation the SQL reads (A2-02).
 
-    Failed link: first FROM is the child relation and the SQL reads both of
-    the link's relations. A hop from another grain through the link is not
-    cited. Failed object: first FROM is that object's relation (a measure
-    grained on the broken key). Dimension joins to it still answer.
+    Failed link: both of its relations appear. Failed object: its relation
+    appears. SQL that never reads those relations is not made wrong by them.
     """
     named = cited_relations(sql)
-    fact = _fact_relation(sql)
     hit: list[Violation] = []
     for v in violations:
-        link = onto.links.get(v.subject)
-        if link is not None:
-            rels = _violation_relations(onto, v)
-            if not (rels and rels <= named):
-                continue
-            child = onto.objects.get(link.from_object)
-            child_rel = _relation_bare(child.relation) if child is not None else None
-            if fact and child_rel and fact == child_rel:
-                hit.append(v)
-            continue
-        if v.subject in onto.objects:
-            obj = onto.objects[v.subject]
-            if fact and fact == _relation_bare(obj.relation):
-                hit.append(v)
+        rels = _violation_relations(onto, v)
+        if rels and rels <= named:
+            hit.append(v)
     return hit
 
 
@@ -933,22 +880,20 @@ def _try_multi_grain_envelope(
 def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
     """Compile a plan that does not touch a failed subject (A2-06).
 
-    ``Ontology.compile`` still blanket-refuses when ``verified`` is False so
-    existing callers stay fail-closed. A scoped ask lifts the flag only for
-    this call; failed links that were not hop-blessed stay unusable.
+    ``Ontology.compile`` still blanket-refuses when ``verified`` is False.
+    A shallow copy lifts only that flag so the caller's ontology is not
+    mutated. Shared link objects keep the cardinality ``verify()`` set;
+    failed links stay unverified and compile will not join through them.
     """
-    was = onto.verified
-    try:
-        onto.verified = True
-        return onto.compile(
-            plan.measure,
-            group_by=plan.group_by,
-            filters=plan.filters,
-            via=plan.via,
-            limit=plan.limit,
-        )
-    finally:
-        onto.verified = was
+    scoped = copy.copy(onto)
+    scoped.verified = True
+    return scoped.compile(
+        plan.measure,
+        group_by=plan.group_by,
+        filters=plan.filters,
+        via=plan.via,
+        limit=plan.limit,
+    )
 
 
 def maybe_generative_ask(
