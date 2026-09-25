@@ -96,8 +96,9 @@ EPIC-GEN-01 GEN-02 (#180): live coverage climb + isolated A/B harness.
 POSTs Cortex `/dms/query` or binds a keyword plan. GEN-RESTORE-01 (#276):
 the generative seam calls Cortex Insights (generate + ranking + one ranked
 retry, timeout 8s) and fail-closes named; still never `/dms/query`. Product
-miss without an Insights fail stamp still Cortex-asks. Bar (2) KEEP_HOLD
-pins (predict / 2099 / not-cold) stay. Isolated gen (offline only): Cortex
+miss without an Insights fail stamp still Cortex-asks. Answered envelopes
+reuse `chart_from_rows` and copy Cortex setup fields as received (no infer).
+Bar (2) KEEP_HOLD pins (predict / 2099 / not-cold) stay. Isolated gen (offline only): Cortex
 compute miss may still bind retrieved ontology then validate/CRAG. Distill ladder in `scripts/score_climb.md` (certified-first,
 YAML spine pack `ontology_spine.yaml` for retrieve, hybrid_fuse + CRAG,
 Cortex text2sql -- no vendor SDK). Typed lake filters on isolated gen.

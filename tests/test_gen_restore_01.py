@@ -34,7 +34,11 @@ from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, L
 from cortex_contract.execution import QueryResult
 from dms_executor import Executor, _chart_from_rows
 from dms_executor.envelope import assert_envelope_valid, chart_from_rows
-from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
+from dms_executor.generative_ask import (
+    SETUP_FIELD_KEYS,
+    load_verified_ontology,
+    maybe_generative_ask,
+)
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.ontology import Ontology
 
@@ -42,6 +46,17 @@ _PREDICT_Q = "Predict how much revenue we will make"
 _REVENUE_2099_Q = "What was revenue in 2099?"
 _NOT_COLD_Q = "Which locations are not cold storage?"
 _GENERATE_SQL = "SELECT sku, SUM(amount) AS revenue FROM sales GROUP BY sku"
+# Distinctive Cortex#269 values. Must not match any DMS default or guess.
+_SETUP_PRESENT = {
+    "served_provider": "ov_free_llama_unique",
+    "served_model": "not-a-default-model",
+    "served_local": False,
+    "learn_enabled": True,
+    "learn_source": "freeroute-store",
+    "route_store_id": "rs_276_test",
+}
+_SETUP_NULL = {key: None for key in SETUP_FIELD_KEYS}
+_GUESSES = ("unknown", "openai", "local", "", 0, "0")
 
 
 def _ontology() -> Ontology:
@@ -479,6 +494,87 @@ def test_answered_envelope_has_no_chart_when_rows_do_not_fit(
     assert env["badge"] == "L2_VALIDATED"
     assert env.get("chart") is None
     assert chart_from_rows(rows) is None
+    assert_envelope_valid(env)
+
+
+def test_abstain_envelope_has_no_chart(
+    warehouse: Path, onto: Ontology
+) -> None:
+    env = _ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        onto=onto,
+        compute=lambda _c: insights_fail_payload(INSIGHTS_FAIL_EMPTY),
+        bind_on_miss=True,
+    )
+    _assert_named_abstain(env, INSIGHTS_FAIL_EMPTY)
+    assert env is not None
+    assert env.get("chart") is None
+
+
+def test_setup_fields_copied_verbatim(
+    warehouse: Path, onto: Ontology
+) -> None:
+    env = _ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        onto=onto,
+        compute=lambda _c: {
+            "query_sql": _GENERATE_SQL,
+            "plan_source": "ontology_plan",
+            "plan_origin": PLAN_ORIGIN_GENERATE_SQL,
+            **_SETUP_PRESENT,
+        },
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    for key, want in _SETUP_PRESENT.items():
+        assert key in env
+        assert env[key] == want
+        assert env[key] is want or type(env[key]) is type(want)
+    assert_envelope_valid(env)
+
+
+def test_setup_fields_null_stay_null(
+    warehouse: Path, onto: Ontology
+) -> None:
+    env = _ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        onto=onto,
+        compute=lambda _c: {
+            "query_sql": _GENERATE_SQL,
+            "plan_source": "ontology_plan",
+            "plan_origin": PLAN_ORIGIN_GENERATE_SQL,
+            **_SETUP_NULL,
+        },
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    for key in SETUP_FIELD_KEYS:
+        assert key in env
+        assert env[key] is None
+    assert_envelope_valid(env)
+
+
+def test_setup_fields_missing_are_not_inferred(
+    warehouse: Path, onto: Ontology
+) -> None:
+    env = _ask(
+        "What is revenue by product category?",
+        warehouse=warehouse,
+        onto=onto,
+        compute=lambda _c: {
+            "query_sql": _GENERATE_SQL,
+            "plan_source": "ontology_plan",
+            "plan_origin": PLAN_ORIGIN_GENERATE_SQL,
+        },
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    for key in SETUP_FIELD_KEYS:
+        assert key not in env
+        assert env.get(key) not in _GUESSES
     assert_envelope_valid(env)
 
 

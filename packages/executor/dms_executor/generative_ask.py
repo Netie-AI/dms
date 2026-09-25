@@ -84,6 +84,15 @@ PLAN_SOURCE_OTHER = "other"
 PLAN_SOURCES = frozenset(
     {PLAN_SOURCE_ONTOLOGY, PLAN_SOURCE_BIND, PLAN_SOURCE_OTHER}
 )
+# Cortex#269 ROUTER-1 Insights fingerprint. Copy as received; never infer.
+SETUP_FIELD_KEYS: tuple[str, ...] = (
+    "served_provider",
+    "served_model",
+    "served_local",
+    "learn_enabled",
+    "learn_source",
+    "route_store_id",
+)
 
 
 def normalize_plan_source(raw: Any) -> str:
@@ -118,6 +127,22 @@ def with_plan_origin(env: dict[str, Any], origin: str) -> dict[str, Any]:
     val = normalize_plan_origin(origin)
     if val:
         env["plan_origin"] = val
+    return env
+
+
+def with_setup_fields(
+    env: dict[str, Any] | None, payload: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Copy Cortex Insights setup fields onto the envelope exactly as received.
+
+    A null stays null. A missing key stays absent. Never default or guess.
+    dms#264 harness fingerprint compare is parked; this is copy-through only.
+    """
+    if env is None or not isinstance(payload, dict):
+        return env
+    for key in SETUP_FIELD_KEYS:
+        if key in payload:
+            env[key] = payload[key]
     return env
 
 
@@ -796,6 +821,12 @@ def maybe_generative_ask(
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
         payload = None
+    # Freeze the Insights payload. Later bind_plan overwrite must not invent
+    # or drop Cortex setup fields. Ranking merge keeps these keys.
+    setup_src = payload if isinstance(payload, dict) else None
+
+    def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
+        return with_setup_fields(env, setup_src)
 
     kind = parse_compute_plan(payload)
     fallback_note: str | None = None
@@ -815,20 +846,24 @@ def maybe_generative_ask(
         # compile it. Named ABSTAIN — do not bind_plan or Cortex.ask a guess.
         gap = ranking_missing_metric_gap(q, payload, onto=onto)
         if gap:
-            return _abstain(
-                q,
-                gap,
-                space_id=space_id,
-                session_id=session_id,
-                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+            return _stamp(
+                _abstain(
+                    q,
+                    gap,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                )
             )
     if kind == "unsure":
-        return _abstain(
-            q,
-            "compute abstained (unsure)",
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=source,
+        return _stamp(
+            _abstain(
+                q,
+                "compute abstained (unsure)",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+            )
         )
     # ≥2 supply-chain grains: compile ranked where-paths BEFORE one-grain
     # GEN-01 plan/SQL. Live ranking fills kind=plan sku-only; that must
@@ -845,7 +880,7 @@ def maybe_generative_ask(
         ledger_append=ledger_append,
     )
     if multi_env is not None:
-        return with_plan_origin(multi_env, origin)
+        return _stamp(with_plan_origin(multi_env, origin))
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
@@ -853,9 +888,11 @@ def maybe_generative_ask(
         if not origin:
             origin = PLAN_ORIGIN_GENERATE_SQL
         if not sql:
-            return _abstain(
-                q, "query_sql was empty",
-                space_id=space_id, session_id=session_id, plan_source=source,
+            return _stamp(
+                _abstain(
+                    q, "query_sql was empty",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                )
             )
         why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
         broken = (
@@ -866,18 +903,22 @@ def maybe_generative_ask(
         if broken:
             # The lake's declared ontology says this join is not safe (an
             # orphan FK misattributes or drops rows). SQL is no exemption.
-            return _abstain(
-                q,
-                violation_reason(broken),
-                space_id=space_id,
-                session_id=session_id,
-                plan_source=source,
+            return _stamp(
+                _abstain(
+                    q,
+                    violation_reason(broken),
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
             )
         if why:
             if why.startswith("hostile_sql:") or ranked_slots is None:
-                return _abstain(
-                    q, f"validate:{why}",
-                    space_id=space_id, session_id=session_id, plan_source=source,
+                return _stamp(
+                    _abstain(
+                        q, f"validate:{why}",
+                        space_id=space_id, session_id=session_id, plan_source=source,
+                    )
                 )
             # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
             payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
@@ -886,30 +927,34 @@ def maybe_generative_ask(
             origin = PLAN_ORIGIN_ONTOLOGY_RANKING
             fallback_note = "insights_ranking:ontology_plan"
         else:
-            return _submit_validated(
-                sql,
-                question=q,
-                space_id=space_id,
-                session_id=session_id,
-                submit=submit,
-                ledger_append=ledger_append,
-                notes=("GEN-01 Cortex ontology_plan SQL",),
-                plan_source=source,
-                coverage=coverage_from_sql_path(sql=sql),
-                warehouse=lake,
-                plan_origin=origin,
+            return _stamp(
+                _submit_validated(
+                    sql,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                    submit=submit,
+                    ledger_append=ledger_append,
+                    notes=("GEN-01 Cortex ontology_plan SQL",),
+                    plan_source=source,
+                    coverage=coverage_from_sql_path(sql=sql),
+                    warehouse=lake,
+                    plan_origin=origin,
+                )
             )
     if kind != "plan":
         # Named Insights fail-closed: never bind. Product Cortex.ask still
         # runs only on a transport miss (no insights_fail stamp).
         fail = insights_fail_reason(payload if isinstance(payload, dict) else None)
         if fail:
-            return _abstain(
-                q,
-                fail,
-                space_id=space_id,
-                session_id=session_id,
-                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+            return _stamp(
+                _abstain(
+                    q,
+                    fail,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                )
             )
         # Offline harness only (bind_on_miss): bind from retrieved ontology
         # when Cortex Insights was not reached. An Insights REFUSE
@@ -920,51 +965,61 @@ def maybe_generative_ask(
         # live_ask always passes bind_on_miss=False (GEN-03).
         if insights_was_reached(payload if isinstance(payload, dict) else None):
             if bind_on_miss:
-                return _abstain(
-                    q,
-                    "insights generate did not return a typed plan or SQL",
-                    space_id=space_id,
-                    session_id=session_id,
-                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                return _stamp(
+                    _abstain(
+                        q,
+                        "insights generate did not return a typed plan or SQL",
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                    )
                 )
-            return None
+            return _stamp(None)
         if not bind_on_miss:
-            return None
+            return _stamp(None)
         payload = bind_plan(q, ctx)
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_BIND
         origin = ""
         if kind == "unsure":
-            return _abstain(
-                q, "retrieve bind abstained (unsure)",
-                space_id=space_id, session_id=session_id,
-                plan_source=source,
+            return _stamp(
+                _abstain(
+                    q, "retrieve bind abstained (unsure)",
+                    space_id=space_id, session_id=session_id,
+                    plan_source=source,
+                )
             )
         if kind != "plan":
             methods = ",".join(str(m) for m in (ctx.get("methods") or []))
-            return _abstain(
-                q,
-                f"query_plan was not typed after retrieve ({methods})",
-                space_id=space_id,
-                session_id=session_id,
-                plan_source=source,
+            return _stamp(
+                _abstain(
+                    q,
+                    f"query_plan was not typed after retrieve ({methods})",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
             )
         fallback_note = "compute_fallback:bind_plan"
 
     assert isinstance(payload, dict)
     plan = plan_from_payload(payload)
     if plan is None:
-        return _abstain(
-            q, "query_plan was not typed",
-            space_id=space_id, session_id=session_id, plan_source=source,
+        return _stamp(
+            _abstain(
+                q, "query_plan was not typed",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
         )
     if onto is None or not onto.verified:
-        return _abstain(
-            q,
-            violation_reason(declared_violations),
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=source,
+        return _stamp(
+            _abstain(
+                q,
+                violation_reason(declared_violations),
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+            )
         )
 
     compiled = onto.compile(
@@ -975,26 +1030,34 @@ def maybe_generative_ask(
         limit=plan.limit,
     )
     if isinstance(compiled, Refusal):
-        return _abstain(
-            q, f"{compiled.reason}: {compiled.detail}",
-            space_id=space_id, session_id=session_id, plan_source=source,
+        return _stamp(
+            _abstain(
+                q, f"{compiled.reason}: {compiled.detail}",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
         )
     if not isinstance(compiled, CompiledQuery):
-        return _abstain(
-            q, "compile_failed",
-            space_id=space_id, session_id=session_id, plan_source=source,
+        return _stamp(
+            _abstain(
+                q, "compile_failed",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
         )
     if compiled.existential:
-        return _abstain(
-            q, "existential many-to-many filter: ask path will not choose a reading",
-            space_id=space_id, session_id=session_id, plan_source=source,
+        return _stamp(
+            _abstain(
+                q, "existential many-to-many filter: ask path will not choose a reading",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
         )
 
     why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
     if why:
-        return _abstain(
-            q, f"validate:{why}",
-            space_id=space_id, session_id=session_id, plan_source=source,
+        return _stamp(
+            _abstain(
+                q, f"validate:{why}",
+                space_id=space_id, session_id=session_id, plan_source=source,
+            )
         )
     if not origin and source != PLAN_SOURCE_BIND:
         origin = (
@@ -1002,19 +1065,21 @@ def maybe_generative_ask(
             if fallback_note == "insights_ranking:ontology_plan"
             else PLAN_ORIGIN_GENERATE_SQL
         )
-    return _submit_validated(
-        compiled.sql,
-        question=q,
-        space_id=space_id,
-        session_id=session_id,
-        submit=submit,
-        ledger_append=ledger_append,
-        notes=tuple([*compiled.notes, *([fallback_note] if fallback_note else [])]),
-        plan_source=source,
-        keep_gt=plan.keep_gt,
-        measure=plan.measure,
-        coverage=compiled.coverage,
-        where_paths=compiled.where_paths,
-        warehouse=lake,
-        plan_origin=origin,
+    return _stamp(
+        _submit_validated(
+            compiled.sql,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=tuple([*compiled.notes, *([fallback_note] if fallback_note else [])]),
+            plan_source=source,
+            keep_gt=plan.keep_gt,
+            measure=plan.measure,
+            coverage=compiled.coverage,
+            where_paths=compiled.where_paths,
+            warehouse=lake,
+            plan_origin=origin,
+        )
     )

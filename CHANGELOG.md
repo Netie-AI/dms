@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - GEN-RESTORE-01: Cortex setup fields copy-through (#276)
+
+- **Setup fields.** When Insights returns `served_provider`, `served_model`, `served_local`, `learn_enabled`, `learn_source`, `route_store_id`, copy them onto the DMS answer envelope exactly as received. Null stays null. Missing stays absent. Never infer. Prove without Cortex#269 is expected to omit them. Harness fingerprint compare is dms#264 (parked). Not COMPLETE.
+
 ## 2026-09-25 - GEN-RESTORE-01: Insights compute seam, fail closed, WRONG=0 (#276)
 
 - **Ticket.** Serves [GEN-RESTORE-01 #276](https://github.com/Netie-AI/dms/issues/276) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Does not invent a live #231 score or bar PASS.
