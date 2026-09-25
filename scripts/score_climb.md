@@ -696,13 +696,16 @@ Studio SPA `/health` is HTML. Use the **API** prefix (`/api/health`).
 python scripts/score_curated.py --self-check
 
 # Offline A/B: exact-match pack vs retrieve+bind generative (GEN-01). No keys.
+# Optional --oracle-db compares l0 rows; omitted uses the temp warehouse the
+# answers ran on (SCORE-ROWS-01). Figures are CI fixtures, not live.
 python scripts/score_curated.py --ab
 
 # Platform live climb against Studio API (Cortex+OpenVault already on the host):
+# SCORE-ROWS-01: --oracle-db is required (DuckDB the answer ran on).
 $env:DMS_API_BASE = "https://studio.netie.ai/api"
-python scripts/score_curated.py --climb
+python scripts/score_curated.py --climb --oracle-db PATH
 # or:
-python scripts/score_curated.py --climb --url https://studio.netie.ai/api
+python scripts/score_curated.py --climb --url https://studio.netie.ai/api --oracle-db PATH
 ```
 
 Artifacts (under `DMS_SCORE_DIR` or `.tmp/`): `score_climb.json` (counts + delta), `score_climb_cases.json` (per qid).

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - SCORE-ROWS-01: curated judge compares answer rows with oracle SQL (#292)
+
+- **Ticket.** [SCORE-ROWS-01 #292](https://github.com/Netie-AI/dms/issues/292) under EPIC-020 #178. Does not close tickets. Not COMPLETE. Does not invent a live WRONG=0 or coverage number. Bar PASS is only Platform's live row-compared `--prove-path`.
+- **Change.** In live, `--prove-path`, `--ab` and `--climb`, `judge()` runs each `expect: l0` oracle SQL from `tests/fixtures/curated_ceo/oracles.yaml` read-only against `--oracle-db` (required on live host modes; schema_version recorded). Answer rows vs oracle rows as a multiset: column-order-insensitive value tuples, numbers rounded to the oracle ROUND scale, ORDER BY honoured only with LIMIT (top-N), NULL equals NULL. Mismatch is WRONG (`rows_mismatch:count=<a>/<b>` or `rows_mismatch:values`). Failed oracle SQL is `ORACLE_ERROR`, never OK and never skipped. Refuse/abstain/trap keep the badge rule (confident is WRONG). Report categories answered / abstained / WRONG / LAYER / ORACLE_ERROR / excluded-pending-scan are each out of 52. For one release the old badge judge is printed beside the new one as `scorer_ok_rows_not_compared`. Helper: `scripts/oracle_row_match.py` (same multiset idea as BIRD `grade_envelope`, not that harness).
+- **Gate.** `tests/test_score_rows_01.py` builds its own DuckDB fixture (no skip / xfail / importorskip). 3-row ungrouped vs monthly is WRONG; exact match OK; top-5 one SKU off WRONG; float past ROUND OK; missing column ORACLE_ERROR never OK; confident trap WRONG. Nine refuse/trap shapes each have a test. `--self-check` still passes on the 52-question pack. Existing scorer assertions were not loosened. No oracle SQL, WRONG pin, contract pin, invariants, import-linter, or `.github/` edits.
+- **Figures.** Any number in this PR is a CI fixture out of 52, labelled `CI fixtures, not live`. Earlier KEEP_HOLD climb/WRONG figures stay KEEP_HOLD until re-run under this scorer on prove.
+- **Not this ticket:** runtime `packages/` / `apps/`, live prove, changing oracles, COMPLETE, merge.
+
 ## 2026-09-25 - BEARER-01: generate=true bearer + transport guards (#289)
 
 - **Ticket.** [BEARER-01 #289](https://github.com/Netie-AI/dms/issues/289) under EPIC-INSIGHTS-UX #178. Does not close tickets. Not COMPLETE. Does not clear the pilot security bar (KEY-01 #273 owns the demo default).
