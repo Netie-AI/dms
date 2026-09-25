@@ -76,3 +76,40 @@ GEN-02 #180 (curated coverage climb vs baseline @ `91c5cc99`) is a different pac
 No live counts from this cloud seat. Prove postgres `bird_minidev` and Studio are Platform. Paste the `--live` table here when Platform runs it. Until then quote only `--self-check` and leftover target=75.
 
 Must not: invent PASS, open public `:8090`, put OV keys in chat, green planted leftover traps, weaken `score_answers --oracle-only`, claim COMPLETE because a later batch attached more than gender.
+
+## A1-02 Mini-Dev (#264)
+
+Grades the real 500-question BIRD Mini-Dev JSON (11 databases) against gold SQL
+executed read-only. The corpus is loaded at run time (path or URL) and is
+never committed. `--self-check` uses `tests/fixtures/bird_minidev/synthetic.json`.
+
+```
+python scripts/score_bird.py --self-check
+python scripts/score_bird.py --minidev mini_dev_postgresql.json --live
+python scripts/score_bird.py --compare a.json b.json
+```
+
+Live prove:
+
+- `DMS_API_BASE` -- POST `/v1/chat/ask` on the BIRD Space
+- `BIRD_PG_DSN` (or `BIRD_PG_HOST`) -- gold SQL, read-only
+- `CORTEX_FREEROUTE_LEARN=0` -- required until Cortex ROUTER-1
+- `CORTEX_ROUTE_STORE` -- empty file or missing path (fresh). Snapshots
+  (learn flag, path, fresh, row count / hash before and after) go in the
+  artifact. Unset/1 or a dirty store is CONFIG: no scored result.
+- `--offline` skips freeze (no Cortex)
+- `--with-evidence` appends BIRD evidence (reported separately)
+- `--limit N` is smoke and is printed; refusing a shrunk 500 without `--limit`
+
+Numeric match is not 4 dp absolute: integers exact; other numbers use
+`|a-b| <= max(1e-9, 1e-6 * max(|a|,|b|))`. 29+ digit numeric strings must not
+crash. GOLD_ERROR excludes the question from n.
+
+Each case records `provider` and `model` as Cortex/ask reported them, or
+`unknown` if missing. Never guessed. Run-level `served_mix` plus a
+`setup_fingerprint` over learn flag, store state, and served-model mix.
+`--compare` refuses different fingerprints unless `--force-cross-setup`,
+which labels the result `cross-setup`.
+
+First live run is a Platform baseline, not PASS. No target. Do not quote a
+Mini-Dev percent from CI or this tree.

@@ -16,6 +16,15 @@ Append-only. Never edited, only added to. Newest first.
 - **Keys.** No provider keys in the body. Model access stays in Cortex via OpenVault.
 - **Not this ticket:** live Studio re-prove (#231, Platform), CONNECT-ASK-01 (#277), deleting `/dms/query`, moving pre-gates (GEN-07), `semantic_retrieve.py` (PII-01 #272).
 
+## 2026-09-25 - A1-02: BIRD Mini-Dev harness (EPIC-A1 #257, #264)
+
+- **Ticket.** [A1-02 #264](https://github.com/Netie-AI/dms/issues/264). Rebuild on main after EPIC-A2 (#230), A2-05 (#261), and GEN-RESTORE-01 (#276). Held local `a1-02` @ `6396dec` was never pushed. Does not stamp EPIC-A1 COMPLETE. Does not touch `scripts/score_curated.py`.
+- **Harness.** `python scripts/score_bird.py --minidev <mini_dev_postgresql.json> --live` POSTs each question to `/v1/chat/ask`, executes gold SQL read-only, and grades envelope rows as a multiset (column-order-insensitive). Prints n, answered, RIGHT/ABSTAIN/WRONG, EX on answered, abstain rate, rule-of-three bound, per-db and per-difficulty breakdown, run SHA / time / data size. GOLD_ERROR is counted and excluded from n. `--limit` is smoke and is printed. `--self-check` plants on a synthetic Mini-Dev-shaped fixture (DuckDB via `dms_executor.minidev_gold`).
+- **Numeric.** Not 4 dp absolute. Integers exact (29+ digit strings must not crash `norm_cell`). Other numbers: `|a-b| <= max(1e-9, 1e-6 * max(|a|,|b|))`.
+- **Until Cortex ROUTER-1.** Live Cortex scoring requires `CORTEX_FREEROUTE_LEARN=0` and a fresh `CORTEX_ROUTE_STORE`, with before/after hash or row count in the artifact. Missing those is CONFIG, not a silent score. `--offline` / `--self-check` skip freeze.
+- **Setup fields.** Each case copies six envelope fields from the DMS answer (`served_provider`, `served_model`, `served_local`, `learn_enabled`, `learn_source`, `route_store_id`) or records `unknown` (never guessed). Also records `plan_origin` (`generate_sql` or `ontology_ranking`) and counts them separately. `setup_fingerprint` covers learn flag, store state, and those setup fields. `--compare` refuses different fingerprints unless `--force-cross-setup` (labeled cross-setup).
+- **Must not:** commit BIRD data; set a target; shrink the 500; quote a live Mini-Dev score from this tree (Platform baseline later); keys in code.
+
 ## 2026-09-25 - A2-05: currency asked vs currency in the data (EPIC-A2 #256, #261)
 
 - **Ticket.** [A2-05 #261](https://github.com/Netie-AI/dms/issues/261). Founder chose sqlglot in DMS (hard rule 6 swap scenario). Replaces the regex/allowlist that failed four adversarial rounds. No FX conversion. Does not stamp #256 COMPLETE. Does not touch #262.

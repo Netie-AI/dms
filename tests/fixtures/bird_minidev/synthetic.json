@@ -1,0 +1,34 @@
+[
+  {
+    "question_id": 1,
+    "db_id": "toy",
+    "question": "How many widgets are there?",
+    "evidence": "Count rows in widgets.",
+    "SQL": "SELECT COUNT(*) AS n FROM widgets",
+    "difficulty": "simple"
+  },
+  {
+    "question_id": 2,
+    "db_id": "toy",
+    "question": "List widget names",
+    "evidence": "",
+    "SQL": "SELECT name FROM widgets ORDER BY id",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 3,
+    "db_id": "toy",
+    "question": "What is the average widget price?",
+    "evidence": "Use AVG(price).",
+    "SQL": "SELECT AVG(price) AS avg_price FROM widgets",
+    "difficulty": "moderate"
+  },
+  {
+    "question_id": 4,
+    "db_id": "toy2",
+    "question": "This gold SQL is broken on purpose",
+    "evidence": "",
+    "SQL": "SELECT nope FROM missing_table",
+    "difficulty": "challenging"
+  }
+]

@@ -10,7 +10,10 @@ It is not GEN-02's curated coverage climb. Not EPIC-020b / #108 COMPLETE.
 
   python scripts/score_bird.py --self-check
   DMS_API_BASE=https://<studio>/api python scripts/score_bird.py --live
+  python scripts/score_bird.py --minidev <mini_dev_postgresql.json> --live
 
+A1-02 Mini-Dev (#264) grades /v1/chat/ask envelopes against gold SQL.
+No accuracy target. Not a quoted Mini-Dev score from this tree.
 No laptop default URL. Unset live env is CONFIG, not PASS.
 """
 
@@ -292,10 +295,17 @@ def self_check(path: Path = DEFAULT_PACK) -> int:
     if errs:
         print("FAIL: " + "; ".join(errs))
         return EXIT_FAIL
+    from bird_minidev import minidev_self_check
+
+    mini_errs = minidev_self_check()
+    if mini_errs:
+        print("FAIL: " + "; ".join(mini_errs))
+        return EXIT_FAIL
     print(
         f"PASS: bird pack {len(ids)} cases, leftover traps {len(leftover)}, "
         "judge fail-closed. bronze may grow. not a live measurement."
     )
+    print("PASS: minidev grader plants. not a live Mini-Dev score.")
     print_honesty(pack["honesty"])
     return EXIT_PASS
 
@@ -622,9 +632,46 @@ def main(argv: list[str]) -> int:
     p.add_argument("--url", default=None)
     p.add_argument("--timeout", type=float, default=60.0)
     p.add_argument("--space", default=None)
+    p.add_argument(
+        "--minidev",
+        default=None,
+        metavar="JSON",
+        help="BIRD Mini-Dev JSON path or URL (500 questions). Never committed.",
+    )
+    p.add_argument(
+        "--with-evidence",
+        action="store_true",
+        help="Append BIRD evidence text to the question (reported separately).",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Smoke slice. Printed. Not a Mini-Dev score.",
+    )
+    p.add_argument(
+        "--offline",
+        action="store_true",
+        help="No Cortex. Skips FreeRoute freeze. Synthetic/--self-check path.",
+    )
+    p.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("A", "B"),
+        help="Compare two Mini-Dev artifacts. Refuses different setup fingerprints.",
+    )
+    p.add_argument(
+        "--force-cross-setup",
+        action="store_true",
+        help="Allow a labeled cross-setup compare. Never implied same-setup.",
+    )
     args = p.parse_args(argv)
     if args.self_check:
         return self_check()
+    if args.minidev or args.compare:
+        from bird_minidev import run_minidev_cli
+
+        return run_minidev_cli(args, dict(os.environ))
     space = (args.space or os.environ.get("BIRD_SPACE_ID") or BIRD_SPACE).strip()
     if args.live:
         try:
@@ -637,7 +684,8 @@ def main(argv: list[str]) -> int:
     if args.ab:
         return ab_offline()
     print(
-        "usage: python scripts/score_bird.py --self-check | --ab | --live\n"
+        "usage: python scripts/score_bird.py --self-check | --ab | --live | "
+        "--minidev JSON --live | --compare A B\n"
         "--live requires DMS_API_BASE (A/B exact vs GEN-01 product path)."
     )
     return EXIT_CONFIG
