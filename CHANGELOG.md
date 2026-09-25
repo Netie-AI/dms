@@ -10,6 +10,13 @@ Append-only. Never edited, only added to. Newest first.
 - **Gate.** `tests/test_served_attr_01.py`, 17 tests on the envelope (`assert_envelope_valid`, rows, text), three through `POST /v1/chat/ask`. On parent `cdd3ae2`: 16 failed, 1 passed. The pass is `test_diag_flag_off_by_default_records_nothing` (the flag stays off). The 16 fail on `served_attribution` / `served_provider` / `served_payload_keys` missing, or on a per-leg shape the parent does not copy. No existing test edited, no skip/xfail. Ranking answers on this parent include a second cell next to `WH-C`; those four tests assert `WH-C` is in the row and the text. The generate-SQL path still pins the one-column row.
 - **Not this ticket:** Cortex code (Cortex#269); the grid runner's INVALID label (dms#299); client timeout values and the ranking-after-timeout answer path (dms#317).
 
+## 2026-09-25 - ORACLE-FIX-02 amendment 2: engine date bookends, round INVALID (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) comment 5832321962 (20:24 MYT). Adds to the bind-date work. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
+- **Change.** Each scoring round reads `CURRENT_DATE` + `TimeZone` from the answer engine, never `datetime.now()`. Offline A/B / prove: `connect_file` on the submit DuckDB, `SELECT CURRENT_DATE` on that connection before execute, bookend before/after the round, bind `$as_of` to the before date. Live HTTP cannot share the remote engine session; bookends use `--oracle-db` DuckDB `CURRENT_DATE`, never the harness clock. Timezone is stored on the score report. If before != after, the round is labelled `INVALID` at the run layer and is not printed as WRONG. Judge verdicts (`OK`/`WRONG`/`ORACLE_ERROR`/`ABSTAIN`/`LAYER`) and `oracle_row_match` comparison are unchanged.
+- **Gate.** `tests/test_oracle_fix_02.py::test_round_invalid_when_engine_date_crosses_midnight` (mismatched pair -> INVALID, not WRONG; matching pair not INVALID). Two-date bind test unchanged. `test_oracle_fix_01.py` not edited this round.
+- **Not this ticket:** other oracles; comparator edits; COMPLETE; merge.
+
 ## 2026-09-25 - PII-MASK-CHECK-01: free-text PII + NANP/intl phones (#303)
 
 - **Ticket.** [PII-MASK-CHECK-01 #303](https://github.com/Netie-AI/dms/issues/303) under dms#272 / parked EPIC-BANK-01 #267. Does not stamp COMPLETE. Does not merge. CI fixtures, not live. Does not lift Platform's BIRD exclusion.
