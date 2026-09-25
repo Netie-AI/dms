@@ -442,7 +442,7 @@ def test_capacity_and_cctv_lock_utilisation_not_sku() -> None:
 def test_low_stock_locks_below_reorder_not_sku() -> None:
     q = "Which SKUs are below reorder level in warehouse A?"
     slots = intent_slots(q, None)
-    assert slots.get("measure") == "below_reorder_lots"
+    assert slots.get("measure") == "below_reorder_kg"
     aliases = load_measure_aliases()
     allowed = {
         "sku_count",
@@ -450,32 +450,34 @@ def test_low_stock_locks_below_reorder_not_sku() -> None:
         "stock_value_myr",
         "utilisation_pct",
         "below_reorder_lots",
+        "below_reorder_kg",
         "audit_overdue",
     }
     specs = {
         "below_reorder_lots": "lots below reorder level",
+        "below_reorder_kg": "on-hand kg in lots below reorder level (low stock)",
         "sku_count": "count of unique SKUs",
     }
     pack = overlay_pack_id_from_question(
         q,
-        prefer="below_reorder_lots",
+        prefer="below_reorder_kg",
         aliases=aliases,
         allowed=allowed,
         specs=specs,
     )
     assert pack is not None
-    assert aliases[pack] == "below_reorder_lots"
+    assert aliases[pack] == "below_reorder_kg"
     assert "low_stock" in pack
     plan = query_plan_from_insights_ranking(
         {"ontology": {"metrics": [{"id": "sku_count"}]}},
         allowed,
         aliases=aliases,
         specs=specs,
-        prefer="below_reorder_lots",
+        prefer="below_reorder_kg",
         question=q,
     )
     assert plan is not None
-    assert plan["query_plan"]["measure"] == "below_reorder_lots"
+    assert plan["query_plan"]["measure"] == "below_reorder_kg"
     assert plan["plan_source"] == "ontology_plan"
     ranked_id = str(plan["query_plan"].get("ranked_id") or "")
     assert "sku_count" not in ranked_id

@@ -189,6 +189,12 @@ class Measure:
     # not a guarantee today.
     additive: bool = True
     description: str = ""
+    # The row predicate of a ``COUNT(*) FILTER (WHERE ...)``-style measure
+    # (``quantity_kg < reorder_level_kg``). Set when the measure counts or sums
+    # only qualifying rows. ``compile(qualifying_only=True)`` turns it into a
+    # HAVING so a group with zero qualifying rows is not listed as an answer
+    # to "which X are <qualifier>" (a 0 row is not a member).
+    qualifier: str | None = None
 
 
 @dataclass
@@ -513,6 +519,7 @@ class Ontology:
         *,
         additive: bool = True,
         description: str = "",
+        qualifier: str | None = None,
     ) -> None:
         """Reject a measure at authoring time if its grain is not an object.
 
@@ -525,7 +532,9 @@ class Ontology:
                 f"measure {name!r} declares grain {grain!r}, which is not an object type. "
                 "A measure with no grain cannot be protected from fan-out."
             )
-        self.measures[name] = Measure(name, grain, expression, additive, description)
+        self.measures[name] = Measure(
+            name, grain, expression, additive, description, qualifier
+        )
 
     def resolve_object(self, name: str) -> str | Refusal:
         """Canonical object for a named grain, or a refusal naming the gap.
@@ -1361,6 +1370,9 @@ class Ontology:
         via: dict[str, str] | None = None,
         order_desc: bool = True,
         limit: int | None = None,
+        keys_only: bool = False,
+        having_gt: float | None = None,
+        qualifying_only: bool = False,
     ) -> CompiledQuery | Refusal:
         """Turn a typed request into SQL that cannot inflate the measure.
 
@@ -1368,6 +1380,13 @@ class Ontology:
         - or the UI - fills slots. It never writes SQL, which is Palantir's
         posture and the reason the space of wrong queries is small enough to
         reason about.
+
+        ``keys_only`` answers "which X ..." with the group keys alone: the
+        measure only fixes the grain and any threshold, and is not projected
+        (a list of locations is not a list of utilisation figures).
+        ``having_gt`` keeps groups whose measure exceeds a threshold, in SQL.
+        ``qualifying_only`` drops groups with zero rows passing the measure's
+        ``qualifier`` (a COUNT FILTER of 0 is not a member of the list).
         """
         if not self.verified:
             return Refusal(
@@ -1534,15 +1553,35 @@ class Ontology:
                     "no fact row is duplicated or re-read"
                 )
 
+        if keys_only and not group_keys:
+            return Refusal(
+                "bad_projection",
+                "keys_only needs at least one group key: a list answer with no "
+                "entity column would be an empty projection",
+            )
+        having: list[str] = []
+        if group_keys and having_gt is not None:
+            having.append(f"{m.expression} > {float(having_gt)!r}")
+        if group_keys and qualifying_only and m.qualifier:
+            having.append(f"COUNT(*) FILTER (WHERE {m.qualifier}) > 0")
+            notes.append(
+                f"groups with no row passing the {m.name} qualifier are dropped"
+            )
         agg = f"{m.expression} AS {_ident(m.name)}"
-        sql = f"SELECT {', '.join([*selects, agg])}\nFROM {fact.relation} f"
+        projected = list(selects) if keys_only else [*selects, agg]
+        sql = f"SELECT {', '.join(projected)}\nFROM {fact.relation} f"
         if joins:
             sql += "\n" + "\n".join(joins)
         if where:
             sql += "\nWHERE " + "\n  AND ".join(where)
         if group_keys:
             sql += "\nGROUP BY " + ", ".join(group_keys)
-            sql += f"\nORDER BY {_ident(m.name)} {'DESC' if order_desc else 'ASC'}"
+            if having:
+                sql += "\nHAVING " + " AND ".join(having)
+            if keys_only:
+                sql += "\nORDER BY " + ", ".join(group_keys)
+            else:
+                sql += f"\nORDER BY {_ident(m.name)} {'DESC' if order_desc else 'ASC'}"
         if limit is not None:
             if int(limit) < 0:
                 return Refusal("bad_limit", f"limit {limit!r} is negative")
@@ -1991,6 +2030,14 @@ def demo_ontology(warehouse: Path) -> Ontology:
         "ROUND(SUM(f.quantity_kg * f.unit_cost_myr), 2)",
         description="stock value / carrying value / inventory spend, one contribution per lot",
     )
+    # Same arithmetic as stock_value_myr, named for the question it answers:
+    # "total spend by supplier country" labelled stock_value_myr told the
+    # reader a different figure than the one asked about.
+    o.add_measure(
+        "spend_myr", "lot",
+        "ROUND(SUM(f.quantity_kg * f.unit_cost_myr), 2)",
+        description="total spend / supplier spend at cost, one contribution per lot",
+    )
     o.add_measure(
         "shipping_cost_myr", "shipment", "ROUND(SUM(f.cost_myr), 2)",
         description="shipment cost / freight billed, one contribution per shipment",
@@ -2013,12 +2060,27 @@ def demo_ontology(warehouse: Path) -> Ontology:
             ),
         )
     if cortex_default or "reorder_level_kg" in inv:
+        below = (
+            "f.quantity_kg < f.reorder_level_kg AND COALESCE(f.reorder_level_kg, 0) > 0"
+        )
         o.add_measure(
             "below_reorder_lots",
             "lot",
-            "COUNT(*) FILTER (WHERE f.quantity_kg < f.reorder_level_kg "
-            "AND COALESCE(f.reorder_level_kg, 0) > 0)",
+            f"COUNT(*) FILTER (WHERE {below})",
             description="lots below reorder level; one contribution per qualifying lot",
+            qualifier=below,
+        )
+        # "Which SKUs are below reorder level" is answered by the SKU and the
+        # on-hand kg that is below reorder, not by a lot count of 1.
+        o.add_measure(
+            "below_reorder_kg",
+            "lot",
+            f"ROUND(SUM(f.quantity_kg) FILTER (WHERE {below}), 2)",
+            description=(
+                "on-hand kg in lots below reorder level (low stock); "
+                "one contribution per qualifying lot"
+            ),
+            qualifier=below,
         )
     sup = cols.get("suppliers", set())
     if cortex_default or {"risk_score", "lead_time_days"} <= sup:
@@ -2033,11 +2095,12 @@ def demo_ontology(warehouse: Path) -> Ontology:
             ),
         )
     if cortex_default or "last_audit_date" in sup:
+        overdue = "CAST(f.last_audit_date AS DATE) < CURRENT_DATE - INTERVAL 90 DAY"
         o.add_measure(
             "audit_overdue",
             "supplier",
-            "COUNT(*) FILTER (WHERE CAST(f.last_audit_date AS DATE) "
-            "< CURRENT_DATE - INTERVAL 90 DAY)",
+            f"COUNT(*) FILTER (WHERE {overdue})",
+            qualifier=overdue,
             description=(
                 "suppliers whose last audit is overdue (>90 days); "
                 "one contribution per overdue supplier"

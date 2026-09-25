@@ -18,7 +18,9 @@ the body.
 
 from __future__ import annotations
 
+import os
 import re
+import time
 from typing import Any
 
 import httpx
@@ -38,9 +40,14 @@ PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
 PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
 INSIGHTS_REACHED = "insights_reached"
 INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
-#: Product-lane Insights bound. Not CortexClient's 120s contract timeout and
-#: not the pre-GEN-03 45s /dms/query stall. One httpx timeout for the Client.
-INSIGHTS_ASK_TIMEOUT_SECONDS = 8.0
+#: Product-lane Insights bound (default). Not CortexClient's 120s contract
+#: timeout and not the pre-GEN-03 45s /dms/query stall. One httpx timeout for
+#: the Client. Was 8s, which is shorter than a measured Cortex FreeRoute
+#: generate (13-53s on the 52-question prove): 13/52 asks died as
+#: insights_timeout before Cortex answered. Override per deploy with
+#: ``DMS_INSIGHTS_ASK_TIMEOUT_SECONDS`` (Settings field of the same name).
+INSIGHTS_ASK_TIMEOUT_SECONDS = 60.0
+INSIGHTS_ASK_TIMEOUT_ENV = "DMS_INSIGHTS_ASK_TIMEOUT_SECONDS"
 INSIGHTS_FAIL_UNARMED = "insights_unarmed"
 INSIGHTS_FAIL_REFUSED = "insights_refused"
 INSIGHTS_FAIL_UNAUTHORIZED = "insights_unauthorized"
@@ -58,6 +65,28 @@ INSIGHTS_FAIL_REASONS = frozenset(
     }
 )
 _HTTP_STATUS_KEY = "_insights_http_status"
+#: Stamped when generate timed out but the no-model ontology ranking answered.
+GENERATE_TIMED_OUT = "generate_timed_out"
+
+
+def insights_ask_timeout_seconds(raw: str | float | None = None) -> float:
+    """Configured Insights ask bound: explicit value, env, else the default.
+
+    Non-numeric, zero, negative or non-finite values fall back to the default
+    rather than disabling the bound: a hung engine must still fail.
+    """
+    val: Any = raw if raw is not None else os.environ.get(INSIGHTS_ASK_TIMEOUT_ENV)
+    if val is None or (isinstance(val, str) and not val.strip()):
+        return INSIGHTS_ASK_TIMEOUT_SECONDS
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return INSIGHTS_ASK_TIMEOUT_SECONDS
+    if not (num > 0) or num == float("inf"):
+        return INSIGHTS_ASK_TIMEOUT_SECONDS
+    return num
+
+
 # FreeRoute pick stays in Cortex/OpenVault. Hint only; no provider ids or tokens.
 FREEROUTE_PREFERENCE = "free+normal"
 _SELECT_SQL = re.compile(r"(?is)^\s*(with|select)\b")
@@ -823,17 +852,44 @@ def _run_insights_legs(
     insights_body: dict[str, Any],
     headers: dict[str, str] | None,
     ontology: dict[str, Any] | None,
+    *,
+    budget_s: float | None = None,
 ) -> dict[str, Any] | None:
-    """Generate, optional ontology GET, one ranked retry. No /dms/query."""
+    """Generate, optional ontology GET, one ranked retry. No /dms/query.
+
+    A generate timeout is not the end of the ask: the no-model ranking
+    (``GET /v1/insights/ontology``) still runs, and when it ranks a metric the
+    payload carries that ranking with ``generate_timed_out`` stamped. Only
+    when generate timed out AND ranking is unavailable does the timeout
+    propagate (named ``insights_timeout`` by the caller). A retry that would
+    exceed the budget, or that times out, keeps the first leg's ranking.
+    """
     from cortex_client.qualifiers import retry_plan_covers_qualifiers
 
+    started = time.monotonic()
     legs: list[dict[str, str]] = []
-    insights_payload = _insights_generate_post(http, root, insights_body, headers)
-    legs.append({"returned": _leg_kind(insights_payload)})
+    insights_payload: dict[str, Any] | None = None
+    gen_timed_out = False
+    try:
+        insights_payload = _insights_generate_post(http, root, insights_body, headers)
+        legs.append({"returned": _leg_kind(insights_payload)})
+    except httpx.TimeoutException:
+        gen_timed_out = True
+        legs.append({"returned": "timeout"})
     if not _has_ranked_metrics(insights_payload):
-        ranking = _insights_ontology_get(http, root, question, headers)
+        try:
+            ranking = _insights_ontology_get(http, root, question, headers)
+        except httpx.TimeoutException:
+            ranking = None
         if ranking is not None:
             insights_payload = _merge_ontology_ranking(insights_payload, ranking)
+    if gen_timed_out:
+        if not _has_ranked_metrics(insights_payload):
+            raise httpx.TimeoutException("insights generate timed out; no ranking")
+        out = dict(insights_payload or {})
+        out[GENERATE_TIMED_OUT] = True
+        out["generate_legs"] = {"count": len(legs), "legs": legs}
+        return out
     ranked_plan = typed_ranked_retry_plan(
         insights_payload, ontology=ontology, question=question
     )
@@ -841,7 +897,15 @@ def _run_insights_legs(
     retry_ok = bool(ranked_plan) and retry_plan_covers_qualifiers(
         ranked_plan, question
     )
-    if generate_retry_eligible(insights_payload) and retry_ok and ranked_plan is not None:
+    # A second generate that cannot finish inside the budget only delays the
+    # ranking answer the first leg already holds.
+    within_budget = budget_s is None or (time.monotonic() - started) < budget_s / 2
+    if (
+        generate_retry_eligible(insights_payload)
+        and retry_ok
+        and ranked_plan is not None
+        and within_budget
+    ):
         retry_body = dict(insights_body)
         retry_body["query_plan"] = {
             k: v for k, v in ranked_plan.items() if k != "ranked_id"
@@ -850,8 +914,12 @@ def _run_insights_legs(
             ranked_plan.get("ranked_id") or ranked_plan["measure"]
         )
         retry_body["generate_retry"] = "ranked_slots"
-        retry_payload = _insights_generate_post(http, root, retry_body, headers)
-        legs.append({"returned": _leg_kind(retry_payload)})
+        try:
+            retry_payload = _insights_generate_post(http, root, retry_body, headers)
+            legs.append({"returned": _leg_kind(retry_payload)})
+        except httpx.TimeoutException:
+            retry_payload = None
+            legs.append({"returned": "timeout"})
         if isinstance(retry_payload, dict):
             insights_payload = _merge_ontology_ranking(
                 retry_payload, insights_payload or {}
@@ -922,7 +990,13 @@ def compute_query(
         with httpx.Client(timeout=timeout) as http:
             try:
                 insights_payload = _run_insights_legs(
-                    http, root, question, insights_body, headers, ontology
+                    http,
+                    root,
+                    question,
+                    insights_body,
+                    headers,
+                    ontology,
+                    budget_s=float(timeout),
                 )
             except httpx.TimeoutException:
                 timed_out = True
@@ -1009,15 +1083,20 @@ def compute_insights(
     space_id: str | None = None,
     ontology: dict[str, Any] | None = None,
     api_key: str | None = None,
-    timeout: float = INSIGHTS_ASK_TIMEOUT_SECONDS,
+    timeout: float | None = None,
 ) -> dict[str, Any] | None:
     """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
 
-    Timeout is ``INSIGHTS_ASK_TIMEOUT_SECONDS`` (8s) unless the caller passes a
-    tighter bound. Fail-closed payloads stamp ``insights_fail`` with a named
-    reason. OpenVault keys stay in Cortex; this client forwards ``api_key``
-    when already configured and never invents one.
+    Timeout is ``insights_ask_timeout_seconds()`` (env
+    ``DMS_INSIGHTS_ASK_TIMEOUT_SECONDS``, default 60s) unless the caller
+    passes a bound. A generate timeout still runs the no-model ontology
+    ranking; ``insights_timeout`` is named only when both fail. Fail-closed
+    payloads stamp ``insights_fail`` with a named reason. OpenVault keys stay
+    in Cortex; this client forwards ``api_key`` when already configured and
+    never invents one.
     """
+    if timeout is None:
+        timeout = insights_ask_timeout_seconds()
     return compute_query(
         base_url,
         question=question,
@@ -1033,6 +1112,8 @@ def compute_insights(
 __all__ = [
     "COMPUTE_PATH",
     "FREEROUTE_PREFERENCE",
+    "GENERATE_TIMED_OUT",
+    "INSIGHTS_ASK_TIMEOUT_ENV",
     "INSIGHTS_ASK_TIMEOUT_SECONDS",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
@@ -1051,6 +1132,7 @@ __all__ = [
     "first_ranked_metric_id",
     "generate_retry_eligible",
     "insights_fail_payload",
+    "insights_ask_timeout_seconds",
     "insights_fail_reason",
     "insights_miss_payload",
     "insights_query_sql",

@@ -1,7 +1,8 @@
 """GEN-RESTORE-01 (dms#276): Insights-only compute seam, fail closed, WRONG=0.
 
 Does not stamp COMPLETE. Does not invent a live #231 score. Platform owns
-the Studio re-prove. Timeout bound is INSIGHTS_ASK_TIMEOUT_SECONDS (8s).
+the Studio re-prove. Timeout bound is INSIGHTS_ASK_TIMEOUT_SECONDS (60s default,
+``DMS_INSIGHTS_ASK_TIMEOUT_SECONDS`` override); see test_insights_timeout_fallback.py.
 """
 
 from __future__ import annotations
@@ -240,8 +241,10 @@ class _FakeHttp:
         return self._resp(body, 200)
 
 
-def test_insights_timeout_bound_is_eight_seconds() -> None:
-    assert INSIGHTS_ASK_TIMEOUT_SECONDS == 8.0
+def test_insights_timeout_bound_default_clears_a_generate() -> None:
+    # 8s was shorter than a measured Cortex generate (13-53s): 13/52 asks
+    # died as insights_timeout on the live prove.
+    assert INSIGHTS_ASK_TIMEOUT_SECONDS == 60.0
 
 
 def test_compute_insights_calls_insights_never_dms_query() -> None:
@@ -715,7 +718,7 @@ def test_live_ask_uses_compute_insights_never_compute_query(
     assert cortex.asks == []
 
 
-def test_cortex_client_compute_insights_uses_eight_second_timeout() -> None:
+def test_cortex_client_compute_insights_uses_insights_bound_timeout() -> None:
     posts: list[dict[str, Any]] = []
     timeouts: list[Any] = []
     fake = _FakeHttp(

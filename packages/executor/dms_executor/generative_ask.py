@@ -26,6 +26,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from cortex_client.compute import (
+    GENERATE_TIMED_OUT,
+    INSIGHTS_FAIL_TIMEOUT,
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
@@ -153,7 +155,7 @@ def generate_legs_view(
                 got = str(item.get("returned") or "nothing").strip().lower()
             else:
                 got = "nothing"
-            if got not in {"sql", "plan", "nothing"}:
+            if got not in {"sql", "plan", "nothing", "timeout"}:
                 got = "nothing"
             legs.append({"returned": got})
         count = int(raw.get("count") or len(legs))
@@ -234,6 +236,11 @@ class QueryPlan:
     via: dict[str, str] | None = None
     limit: int | None = 50
     keep_gt: float | None = None
+    # "which X ..." answers project the entity keys only; the measure fixes
+    # grain and threshold (compiled as HAVING), it is not an answer column.
+    keys_only: bool = False
+    # Drop groups with zero rows passing the measure's qualifier.
+    qualifying_only: bool = False
 
 
 def ontology_catalog(onto: Ontology) -> dict[str, Any]:
@@ -511,6 +518,7 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
     lim = int(limit) if isinstance(limit, int) else 50
     keep_raw = raw.get("keep_gt")
     keep_gt = float(keep_raw) if isinstance(keep_raw, (int, float)) else None
+    keys_only = str(raw.get("project") or "").strip().lower() == "keys" and bool(group_by)
     return QueryPlan(
         measure=measure,
         group_by=group_by,
@@ -518,6 +526,8 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
         via=via,
         limit=lim,
         keep_gt=keep_gt,
+        keys_only=keys_only,
+        qualifying_only=raw.get("qualifying_only") is True,
     )
 
 
@@ -908,6 +918,10 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
         filters=plan.filters,
         via=plan.via,
         limit=plan.limit,
+        keys_only=plan.keys_only,
+        # keys_only drops the measure column, so the threshold must be SQL.
+        having_gt=plan.keep_gt if plan.keys_only else None,
+        qualifying_only=plan.qualifying_only,
     )
 
 
@@ -1173,6 +1187,14 @@ def maybe_generative_ask(
         # Named Insights fail-closed: never bind. Product Cortex.ask still
         # runs only on a transport miss (no insights_fail stamp).
         fail = insights_fail_reason(payload if isinstance(payload, dict) else None)
+        if (
+            not fail
+            and isinstance(payload, dict)
+            and payload.get(GENERATE_TIMED_OUT) is True
+        ):
+            # Generate timed out and the no-model ranking did not compile to
+            # a DMS plan: still a named timeout, never a silent miss.
+            fail = INSIGHTS_FAIL_TIMEOUT
         if fail:
             return _stamp(
                 _abstain(
@@ -1325,7 +1347,8 @@ def maybe_generative_ask(
             ledger_append=ledger_append,
             notes=tuple([*compiled.notes, *trail_notes]),
             plan_source=source,
-            keep_gt=plan.keep_gt,
+            # keys_only compiled keep_gt into HAVING; no measure column to filter.
+            keep_gt=None if plan.keys_only else plan.keep_gt,
             measure=plan.measure,
             coverage=compiled.coverage,
             where_paths=compiled.where_paths,

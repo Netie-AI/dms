@@ -130,11 +130,13 @@ def test_overlay_picks_prefer_pack_id_not_weaker() -> None:
         "utilisation_pct",
         "outbound_kg",
         "below_reorder_lots",
+        "below_reorder_kg",
         "shipping_cost_myr",
         "supplier_rank_score",
     }
     specs = {
         "below_reorder_lots": "lots below reorder level",
+        "below_reorder_kg": "on-hand kg in lots below reorder level (low stock)",
         "utilisation_pct": "warehouse capacity utilisation percent",
         "outbound_kg": "quantity sold",
         "shipping_cost_myr": "shipment cost",
@@ -162,13 +164,13 @@ def test_overlay_picks_prefer_pack_id_not_weaker() -> None:
     assert aliases[volume] == "outbound_kg"
     reorder = overlay_pack_id_from_question(
         "Which SKUs are below reorder level in warehouse A?",
-        prefer="below_reorder_lots",
+        prefer="below_reorder_kg",
         aliases=aliases,
         allowed=allowed,
         specs=specs,
     )
     assert reorder is not None
-    assert aliases[reorder] == "below_reorder_lots"
+    assert aliases[reorder] == "below_reorder_kg"
     assert (
         overlay_pack_id_from_question(
             "How many SKUs do we have in inventory?",
@@ -285,13 +287,23 @@ def test_capacity_above_90_keep_gt_has_rows(tmp_path: Path) -> None:
     assert env.get("plan_source") == "ontology_plan"
     rows = env.get("rows") or []
     assert len(rows) >= 1
-    for row in rows:
-        nums = [
-            v
-            for v in row.values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        ]
-        assert nums and max(float(n) for n in nums) > 90
+    # Keys only: the list of locations, threshold applied as HAVING in SQL.
+    db = tmp_path / "climb03.duckdb"
+    con = connect_file(db)
+    try:
+        want = {
+            r[0]
+            for r in con.execute(
+                "SELECT location_code FROM locations "
+                "WHERE 100.0 * current_load_kg / capacity_kg > 90"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+    assert all(set(row) == {"location_location_code"} for row in rows)
+    assert {row["location_location_code"] for row in rows} == want
+    for code in want:
+        assert code in env["text"]
 
 
 def test_supplier_ranking_finance_not_ops(tmp_path: Path) -> None:

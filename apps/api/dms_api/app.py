@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.cortex_url,
         timeout=settings.cortex_timeout_seconds,
         api_key=settings.cortex_api_key,
+        insights_timeout=settings.dms_insights_ask_timeout_seconds,
     )
     app.state.cortex = cortex
     ask = build_ask_service(cortex)

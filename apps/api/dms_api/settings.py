@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     #: bounded: a hung engine must still fail rather than hold a worker forever.
     #: Raise it for a slower provider, do not remove it.
     cortex_timeout_seconds: float = 120.0
+    #: Insights ask-lane bound (POST /v1/insights generate). A Cortex FreeRoute
+    #: generate measured 13-53s on the 52-question prove; the old hard-coded 8s
+    #: turned 13/52 asks into insights_timeout. On a generate timeout the
+    #: no-model ontology ranking still runs. Capped by cortex_timeout_seconds.
+    dms_insights_ask_timeout_seconds: float = 60.0
     # Viewer key for Cortex's read-only ontology/eval surfaces (off-contract, see
     # cortex_read.py). Matches Cortex's built-in demo key so local bring-up works;
     # set CORTEX_API_KEY wherever DMS_API_KEYS is set.

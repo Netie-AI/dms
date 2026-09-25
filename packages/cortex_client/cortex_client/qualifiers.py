@@ -18,6 +18,7 @@ KIND_TIME_GRAIN = "time_grain"
 KIND_TIME_FILTER = "time_filter"
 KIND_GROUP_BY = "group_by"
 KIND_NAMED_FILTER = "named_filter"
+KIND_GRAIN = "grain"
 
 # ponytail: closed needle list, not a parser. Ceiling: unseen synonyms
 # ("MoM", "fiscal period"). Upgrade: Cortex HTTP qualifier-check.
@@ -149,6 +150,39 @@ _NAMED_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 _QUOTED_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"")
 _WH_A_RE = re.compile(r"\b(warehouse a|wh-a)\b", re.I)
 _WH_A_ALIASES = ("warehouse a", "wh-a", "wh_a", "warehouse_a")
+# Answer grain named by a list ask ("which locations ...", "list chemicals
+# ...") or a warehouse-level show ("show warehouse capacity utilisation").
+# The answer rows must be keyed by that entity; a table grouped by some other
+# column (capacity_kg) answers a different question.
+_GRAIN_NOUNS: dict[str, str] = {
+    "location": "warehouse",
+    "locations": "warehouse",
+    "warehouse": "warehouse",
+    "warehouses": "warehouse",
+    "supplier": "supplier",
+    "suppliers": "supplier",
+    "sku": "sku",
+    "skus": "sku",
+    "item": "sku",
+    "items": "sku",
+    "product": "sku",
+    "products": "sku",
+    "chemical": "sku",
+    "chemicals": "sku",
+}
+_LIST_GRAIN_RE = re.compile(
+    r"^\s*(?:which|list)\s+(?:[\w-]+\s+){0,2}?(" + "|".join(_GRAIN_NOUNS) + r")\b",
+    re.I,
+)
+_SHOW_GRAIN_RE = re.compile(
+    r"^\s*show\s+(?:the\s+|each\s+|every\s+)?(warehouses?|locations?)\b(?!\s+a\b)",
+    re.I,
+)
+# Measure inputs: grouping by one of these is never an entity grain.
+_MEASURE_INPUT_COL_RE = re.compile(
+    r"\b[a-z_]*(?:capacity_kg|current_load_kg|quantity_kg|reorder_level_kg|"
+    r"unit_cost_myr|cost_myr|amount|risk_score|lead_time_days)\b"
+)
 
 # Ranking metric after by/per — not a dimension.
 _MEASURE_TAILS = frozenset(
@@ -265,6 +299,11 @@ def extract_qualifiers(question: str) -> tuple[tuple[str, str], ...]:
             continue
         _add(KIND_NAMED_FILTER, "warehouse a")
 
+    grain_m = _LIST_GRAIN_RE.search(q) or _SHOW_GRAIN_RE.search(q)
+    if grain_m:
+        noun = grain_m.group(1).lower()
+        _add(KIND_GRAIN, _GRAIN_NOUNS.get(noun, _GRAIN_NOUNS.get(noun.rstrip("s"), "")))
+
     return tuple(out)
 
 
@@ -332,6 +371,44 @@ def _honors_group_by(dim: str, *, sql: str | None, plan: dict[str, Any] | None) 
     return any(a in hay for a in aliases)
 
 
+def _sql_select_blob(sql: str | None) -> str:
+    if not sql:
+        return ""
+    m = re.search(r"\bselect\b(.+?)\bfrom\b", sql, flags=re.I | re.S)
+    return (m.group(1) if m else "").lower()
+
+
+def _plan_group_blob(plan: dict[str, Any] | None) -> str:
+    if not isinstance(plan, dict):
+        return ""
+    return json.dumps(plan.get("group_by") or [], default=str).lower()
+
+
+def _honors_grain(grain: str, *, sql: str | None, plan: dict[str, Any] | None) -> bool:
+    """Answer rows keyed by the asked entity, and not grouped by a measure input.
+
+    SQL: the key is grouped or (ungrouped list SQL) selected. Plan: group_by
+    carries it. A GROUP BY on capacity_kg / quantity_kg is a grain mismatch
+    even when the key also appears.
+    """
+    group_sql = _sql_group_blob(sql)
+    plan_group = _plan_group_blob(plan)
+    if _MEASURE_INPUT_COL_RE.search(group_sql) or _MEASURE_INPUT_COL_RE.search(plan_group):
+        return False
+    aliases = {
+        "warehouse": ("location_code", "warehouse", "location_id"),
+        "supplier": ("supplier_id", "supplier_name"),
+        "sku": ("sku",),
+    }.get(grain, (grain,))
+    if sql:
+        hay = group_sql if group_sql.strip() else _sql_select_blob(sql)
+        if any(a in hay for a in aliases):
+            return True
+    if isinstance(plan, dict):
+        return any(a in plan_group for a in aliases)
+    return False
+
+
 def _honors_named_filter(value: str, *, sql: str | None, plan: dict[str, Any] | None) -> bool:
     aliases = [value]
     if _norm(value) in {_norm(a) for a in _WH_A_ALIASES}:
@@ -373,6 +450,8 @@ def unhonored_qualifier_reason(
             ok = _honors_named_filter(value, sql=sql, plan=plan)
         elif kind == KIND_TIME_FILTER:
             ok = _honors_time_filter(value, sql=sql, plan=plan)
+        elif kind == KIND_GRAIN:
+            ok = _honors_grain(value, sql=sql, plan=plan)
         if not ok:
             return qualifier_reason(kind, value)
     return None
@@ -394,7 +473,7 @@ def apply_qualifiers_to_retry_plan(
         pair: list[str] | None = None
         if kind == KIND_TIME_GRAIN:
             pair = list(_GRAIN_GROUP.get(value) or [])
-        elif kind == KIND_GROUP_BY:
+        elif kind in (KIND_GROUP_BY, KIND_GRAIN):
             pair = list(_DIM_GROUP.get(value) or [])
         if pair and not _group_has(group, pair[-1]):
             group.append(pair)
@@ -410,6 +489,7 @@ def retry_plan_covers_qualifiers(plan: dict[str, Any] | None, question: str) -> 
 
 
 __all__ = [
+    "KIND_GRAIN",
     "KIND_GROUP_BY",
     "KIND_NAMED_FILTER",
     "KIND_TIME_FILTER",
