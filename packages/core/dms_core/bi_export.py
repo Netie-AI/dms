@@ -1,9 +1,9 @@
 """INSIGHTS-EXPORT-02 — Power BI / Superset connect stubs from a real ask envelope.
 
-Copies envelope rows (or values, or Cover) as received. Does not ask Cortex,
-does not query DuckDB, does not invent DAX/Superset metrics, does not emit a
-live SQLAlchemy URI or DuckLake folder connector. Gate is the same envelope
-shape as Excel export. Not COMPLETE. Not #108.
+Copies envelope rows (or values, or Cover), then masks personal-data cells
+(PII-01). Does not ask Cortex, does not query DuckDB, does not invent
+DAX/Superset metrics, does not emit a live SQLAlchemy URI or DuckLake folder
+connector. Gate is the same envelope shape as Excel export. Not COMPLETE. Not #108.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from typing import Any, Literal
 
+from dms_core.pii import fail_closed_mask_envelope
 from dms_core.xlsx_export import (
     COVER_KEYS,
     EnvelopeExportError,
@@ -213,6 +214,7 @@ def export_envelope_bi(
             "it does not invent metrics.",
         )
     assert isinstance(envelope, dict)
+    envelope = fail_closed_mask_envelope(envelope)
     if target is not None and target not in TARGETS:
         raise EnvelopeExportError(
             "target_unknown",

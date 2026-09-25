@@ -49,6 +49,12 @@ DMS sits **on top of** the warehouse (today DuckDB+Parquet; later Iceberg/MinIO 
 
 ---
 
+## PII-01 leftover — live both-maskers run with Cortex #268
+
+DMS placeholders are `DMSMASK_<kind>_<nn>` so a regex PII masker will not rewrite them. A unit test (`test_placeholders_are_stable_and_not_pii_shaped`) is the stand-in. Cortex #268 is not merged on this SHA.
+
+**Condition:** Cortex #268 merged, then a Platform seeded-question run with both maskers on. Same answer or abstain as a run without personal data; no seeded raw values leave DMS. Do not claim that run passed from this ticket.
+
 ## P-DMS-21 — C7-full generation (schema retrieval + model)
 
 **C7-min done** (EXPLAIN + retry structure + L2 abstain stub). Remaining: `schema_retrieval.py` + FreeRoute `sql_generator.is_configured()→True` + plausibility (needs C8).  

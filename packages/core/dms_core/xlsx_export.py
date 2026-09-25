@@ -1,8 +1,8 @@
 """INSIGHTS-EXPORT-01 — serialize a real ask envelope to .xlsx.
 
-Copies envelope fields and rows as received. Does not ask Cortex, does not
-query DuckDB, does not add total/rank rows. Gate is envelope shape, not a
-parallel invent path. Not EPIC-016 FRTR (#29).
+Copies envelope fields and rows, then masks personal-data cells (PII-01).
+Does not ask Cortex, does not query DuckDB, does not add total/rank rows.
+Gate is envelope shape, not a parallel invent path. Not EPIC-016 FRTR (#29).
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from dms_core.pii import fail_closed_mask_envelope
 from dms_core.xlsx_ooxml import xlsx_workbook_bytes
 
 ALLOWED_BADGES = frozenset(
@@ -192,5 +193,6 @@ def export_envelope_xlsx(envelope: object) -> tuple[bytes, str]:
             "it does not invent rows.",
         )
     assert isinstance(envelope, dict)
-    data = xlsx_workbook_bytes(envelope_sheets(envelope))
-    return data, xlsx_download_name(str(envelope.get("answer_id") or ""))
+    safe = fail_closed_mask_envelope(envelope)
+    data = xlsx_workbook_bytes(envelope_sheets(safe))
+    return data, xlsx_download_name(str(safe.get("answer_id") or ""))

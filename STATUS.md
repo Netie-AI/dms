@@ -50,10 +50,10 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **A1-02 #264** BIRD Mini-Dev harness on GEN-RESTORE-01 #276. Not a live Mini-Dev score. |
+| **This tick** | **PII-01 #272** mask personal columns before Cortex context and exports. Cortex #268 both-maskers live run is leftover. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | A1-02 vs main `1c5d990`. Do not reseat #237. |
+| CI / PRs | PII-01 #274 rebased onto main `b1d77a97`. Do not reseat #237. |
 ## Agent models
 PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.
