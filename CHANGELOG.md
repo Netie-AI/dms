@@ -6,7 +6,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Ticket.** [A2-06 #262](https://github.com/Netie-AI/dms/issues/262) under EPIC-A2 #256. Does not stamp the epic COMPLETE. Does not invent a live coverage or WRONG=0 figure. Any n is a CI fixture.
 - **Change.** `load_verified_ontology` keeps a caller-declared ontology when `verify` fails and marks only the failed subjects. A failed link stays unusable for compile and for generated SQL whose fact is the child (A2-02 `violations_cited_by_sql`). A failed object key or business key makes measures grained on that object, and paths through it, unusable. Lakes with no declared ontology (demo/live, BIRD) still drop the default demo ontology on failure.
-- **Gate.** Nine MEASURED pins whose oracle is unaffected move ABSTAIN -> OK with oracle-equal rows and text (`assert_envelope_valid`). Defect-touching ABSTAIN pins stay and still name the subject. New: `tests/test_a2_06_scoped_ontology.py`. No skip/xfail. No invariants / import-linter / contract / WRONG / scorer / BEARER / QUAL-GUARD edits.
+- **Gate.** Nine MEASURED pins whose oracle is unaffected move ABSTAIN -> OK. Each pin asserts envelope rows equal the hostile-schema oracle as a **multiset** (order-insensitive value tuples, duplicates counted). A badge, OK status, or matching row count alone cannot pass. Defect-touching ABSTAIN pins stay and still name the subject. New: `tests/test_a2_06_scoped_ontology.py`. No skip/xfail. No invariants / import-linter / contract / WRONG / scorer / BEARER / QUAL-GUARD edits. Any n/M is CI fixtures, not live.
 - **Not this ticket:** live prove; FX; COMPLETE; merge.
 
 ## 2026-09-25 - QUAL-GUARD-01: named abstain when a qualifier is dropped (#290)

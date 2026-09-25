@@ -11,11 +11,13 @@ Assertions are on the customer envelope (``assert_envelope_valid``) plus
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import duckdb
+import pytest
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 
@@ -23,9 +25,11 @@ from tests.test_hostile_schema_a2 import (
     _A2_06_OK,
     CASES,
     ORACLE,
+    QUESTIONS,
     _ask,
     _defect_words,
     _ontology,
+    _row_tuple,
     _seed,
     grade,
 )
@@ -78,19 +82,47 @@ def test_undeclared_demo_ontology_still_none_on_foreign_lake(tmp_path: Path) -> 
     assert load_verified_ontology(lake) is None
 
 
-def test_nine_unaffected_oracles_answer_ok(tmp_path: Path) -> None:
-    """The 9 MEASURED pins A2-06 flips: rows match the oracle, not just a badge."""
-    for case_id, qid, mode in _A2_06_OK:
-        env = _ask(tmp_path, case_id, qid, mode)
-        oracle = ORACLE[case_id][qid]
-        assert oracle is not None, f"{case_id}/{qid}/{mode} has no oracle"
-        verdict = grade(env, oracle, _defect_words(case_id, qid))
-        assert verdict == "OK", (
-            f"{case_id}/{qid}/{mode}: {verdict} badge={env.get('badge')} "
-            f"rows={env.get('rows')} text={(env.get('text') or '')[:160]!r}"
-        )
-        assert env["abstained"] is False
-        assert env["text"]
+def _rows_multiset(rows: Any) -> Counter[tuple[Any, ...]]:
+    """Order-insensitive value tuples; duplicate rows count. Badge is not used."""
+    if not isinstance(rows, list):
+        return Counter()
+    return Counter(_row_tuple(r) for r in rows if isinstance(r, dict))
+
+
+def test_multiset_rejects_duplicate_rows_a_set_would_accept() -> None:
+    """R-0007: a badge/set match is not enough; a doubled row fails the pin."""
+    want = {("North", 12.0), ("South", 3.0)}
+    north = {"region": "North", "units": 12.0}
+    doubled = [north, north, {"region": "South", "units": 3.0}]
+    assert {_row_tuple(r) for r in doubled} == want
+    assert _rows_multiset(doubled) != Counter(want)
+
+
+@pytest.mark.parametrize("case_id,qid,mode", list(_A2_06_OK))
+def test_flipped_pin_rows_equal_oracle_multiset(
+    tmp_path: Path, case_id: str, qid: str, mode: str
+) -> None:
+    """Each ABSTAIN->OK pin: envelope rows == oracle as a multiset.
+
+    Column names differ by path (region vs customer_region); values do not.
+    ``_row_tuple`` drops names. ``Counter`` counts duplicate tuples. A
+    confident badge, OK status, or matching row count alone cannot pass.
+    """
+    oracle = ORACLE[case_id][qid]
+    assert oracle is not None, (
+        f"{case_id}/{qid}/{mode} has no oracle; pin must stay ABSTAIN"
+    )
+    env = _ask(tmp_path, case_id, qid, mode)
+    assert env["abstained"] is False, f"{case_id}/{qid}/{mode} abstained: {env.get('text')!r}"
+    assert env["text"], f"{case_id}/{qid}/{mode} has no rendered text"
+    got = _rows_multiset(env.get("rows"))
+    want = Counter(oracle)
+    assert got == want, (
+        f"{case_id}/{qid}/{mode} {QUESTIONS[qid][0]!r}: "
+        f"row multiset {dict(got)} != oracle {dict(want)}. "
+        f"badge={env.get('badge')} n={len(env.get('rows') or [])} "
+        f"rows={env.get('rows')}"
+    )
 
 
 def test_defect_touching_rows_still_name_the_subject(tmp_path: Path) -> None:
