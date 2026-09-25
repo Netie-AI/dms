@@ -76,6 +76,11 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
+from dms_executor.sql_grain import (
+    grain_mismatch_reason,
+    scalar_rows_reason,
+    unrequested_measure_outputs,
+)
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -723,6 +728,17 @@ def _submit_validated(
             session_id=session_id,
             plan_source=plan_source,
         )
+    # GRAIN-GUARD-01: L2 only over the grain and columns the question asked.
+    grain_why = grain_mismatch_reason(question, sql)
+    if grain_why:
+        return _abstain(
+            question,
+            grain_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     try:
         result = submit(sql)
     except Exception:  # noqa: BLE001
@@ -747,6 +763,34 @@ def _submit_validated(
             status=getattr(result, "status", "ok"),
             run_id=getattr(result, "run_id", "") or "",
             output={"rows": kept},
+        )
+    scalar_why = scalar_rows_reason(question, rows_from_submit_result(result))
+    if scalar_why:
+        return _abstain(
+            question,
+            scalar_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
+    dropped = unrequested_measure_outputs(question, sql)
+    if dropped:
+        # Which/list ask: return only the requested entity columns, never the
+        # extra figure under L2 (GRAIN-GUARD-01 acceptance 3).
+        trimmed = [
+            {k: v for k, v in row.items() if k not in set(dropped)}
+            for row in rows_from_submit_result(result)
+        ]
+        result = SimpleNamespace(
+            ok=True,
+            status=getattr(result, "status", "ok"),
+            run_id=getattr(result, "run_id", "") or "",
+            output={"rows": trimmed},
+        )
+        notes = (
+            *notes,
+            "GRAIN-GUARD-01: dropped unrequested column(s) " + ", ".join(dropped),
         )
     run_id = str(getattr(result, "run_id", None) or "")
     try:

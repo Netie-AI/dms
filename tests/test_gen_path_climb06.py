@@ -33,7 +33,13 @@ from score_curated import (  # noqa: E402
     load_pack,
     merge_pack_questions,
 )
-from test_gen_path_climb05 import FROZEN_17, SYNONYM_L0  # noqa: E402
+from test_gen_path_climb05 import (  # noqa: E402
+    FROZEN_17,
+    GRAIN_GUARDED,
+    SYNONYM_L0,
+    assert_grain_abstain,
+    honest,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
@@ -125,9 +131,12 @@ def _env(
 
 def _hits(tmp_path: Path, pairs: tuple[tuple[str, str], ...]) -> int:
     n = 0
-    for _qid, question in pairs:
+    for qid, question in pairs:
         env = _env(tmp_path, question, "sku_count")
         assert env is not None
+        if qid in GRAIN_GUARDED:
+            assert_grain_abstain(env)
+            continue
         src = classify_plan_source(env)
         ok = env["badge"] == "L2_VALIDATED" and src == "ontology_plan"
         if ok:
@@ -153,9 +162,9 @@ def test_dual_flat_was_unasked_rise_l0s(tmp_path: Path) -> None:
     """#214 diagnosis completed: 3/4 synonyms already compile on #210 locks."""
     frozen = _hits(tmp_path, FROZEN_17)
     syn = _hits(tmp_path, SYNONYM_L0)
-    assert frozen == 17
-    assert syn == len(SYNONYM_L0)
-    assert frozen + syn > 17
+    assert frozen == honest(FROZEN_17)
+    assert syn == honest(SYNONYM_L0)
+    assert frozen + syn == honest(FROZEN_17, SYNONYM_L0)
 
 
 def test_merge_injects_rise_l0s_into_frozen_26() -> None:

@@ -20,6 +20,7 @@ from cortex_client.compute import (
 
 from dms_executor.ontology import Ontology
 from dms_executor.semantic_retrieve import intent_slots, load_measure_aliases
+from dms_executor.sql_grain import GRAIN_REASONS, grain_abstain_text
 
 GAP_REASONS = frozenset(
     {
@@ -64,6 +65,8 @@ def customer_abstain_text(reason: str) -> str:
     if gap.startswith("currency_mismatch:"):
         body = gap.split(":", 1)[1].strip()
         return body if body else _GENERIC_ABSTAIN
+    if gap.split(":", 1)[0].strip() in GRAIN_REASONS:
+        return grain_abstain_text(gap)
     if not gap or gap_reason_name(gap) is None:
         return _GENERIC_ABSTAIN
     return (

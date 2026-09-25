@@ -45,7 +45,14 @@ from score_curated import (  # noqa: E402
     load_pack,
     merge_pack_questions,
 )
-from test_gen_path_climb05 import FROZEN_17, SYNONYM_L0  # noqa: E402
+from test_gen_path_climb05 import (  # noqa: E402
+    FROZEN_17,
+    GRAIN_GUARDED,
+    SYNONYM_L0,
+    assert_grain_abstain,
+    guarded_ids,
+    honest,
+)
 from test_gen_path_climb07 import CLIMB07_SYNONYM_L0  # noqa: E402
 from test_gen_path_climb08 import CLIMB08_SYNONYM_L0  # noqa: E402
 from test_gen_path_climb09 import CLIMB09_SYNONYM_L0  # noqa: E402
@@ -147,6 +154,9 @@ def _hits(
         tables = OPS_GRANT if qid.startswith("ops_") else grantable
         env = _env(tmp_path, question, "sku_count", grantable=tables)
         assert env is not None
+        if qid in GRAIN_GUARDED:
+            assert_grain_abstain(env)
+            continue
         src = classify_plan_source(env)
         ok = env["badge"] == "L2_VALIDATED" and src == "ontology_plan"
         if ok:
@@ -177,16 +187,33 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
     syn08 = _hits(tmp_path, CLIMB08_SYNONYM_L0)
     syn09 = _hits(tmp_path, CLIMB09_SYNONYM_L0)
     syn10 = _hits(tmp_path, CLIMB10_SYNONYM_L0)
-    assert frozen == 17
-    assert syn06 == len(SYNONYM_L0)
-    assert syn07 == len(CLIMB07_SYNONYM_L0)
-    assert syn08 == len(CLIMB08_SYNONYM_L0)
-    assert syn09 == len(CLIMB09_SYNONYM_L0)
-    assert syn10 == len(CLIMB10_SYNONYM_L0)
-    assert frozen + syn06 + syn07 + syn08 + syn09 == 30
-    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 > 30
+    assert frozen == honest(FROZEN_17)
+    assert syn06 == honest(SYNONYM_L0)
+    assert syn07 == honest(CLIMB07_SYNONYM_L0)
+    assert syn08 == honest(CLIMB08_SYNONYM_L0)
+    assert syn09 == honest(CLIMB09_SYNONYM_L0)
+    assert syn10 == honest(CLIMB10_SYNONYM_L0)
+    assert frozen + syn06 + syn07 + syn08 + syn09 == honest(
+        FROZEN_17,
+        SYNONYM_L0,
+        CLIMB07_SYNONYM_L0,
+        CLIMB08_SYNONYM_L0,
+        CLIMB09_SYNONYM_L0,
+    )
+    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 == honest(
+        FROZEN_17,
+        SYNONYM_L0,
+        CLIMB07_SYNONYM_L0,
+        CLIMB08_SYNONYM_L0,
+        CLIMB09_SYNONYM_L0,
+        CLIMB10_SYNONYM_L0,
+    )
     cases = [
-        {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        (
+            {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+            if qid in GRAIN_GUARDED
+            else {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        )
         for qid, _q in (
             *FROZEN_17,
             *SYNONYM_L0,
@@ -204,6 +231,7 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
         + len(CLIMB09_SYNONYM_L0)
         + len(CLIMB10_SYNONYM_L0)
     )
+    ok_hits = frozen + syn06 + syn07 + syn08 + syn09 + syn10
     report = build_gen_path_prove_report(
         {
             "OK": frozen + syn06 + syn07 + syn08 + syn09 + syn10,
@@ -221,14 +249,14 @@ def test_unused_certified_leftover_raises_above_30(tmp_path: Path) -> None:
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 30
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == ok_hits
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True
     assert leftover_rise_not_ontology(cases) == []
-    assert leftover_ids_not_ontology(cases, CLIMB07_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB08_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB09_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS) == []
+    assert leftover_ids_not_ontology(cases, CLIMB07_RISE_IDS) == guarded_ids(CLIMB07_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB08_RISE_IDS) == guarded_ids(CLIMB08_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB09_RISE_IDS) == guarded_ids(CLIMB09_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS) == guarded_ids(CLIMB10_RISE_IDS)
     why = live_climb_gate(report)
     assert why is not None
     assert "climb-11" in why or "ontology_plan<=33" in why

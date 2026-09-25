@@ -187,9 +187,12 @@ def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert env["rows"]
-    for row in env["rows"]:
-        nums = [v for v in row.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
-        assert nums and max(float(v) for v in nums) > 90
+    # GRAIN-GUARD-01: a which-list ask returns the entities asked for; the
+    # unrequested utilisation figure is dropped, never shown under L2.
+    codes = sorted(str(v) for row in env["rows"] for v in row.values())
+    assert codes == ["WH-C", "WH-E"], env["rows"]
+    assert "utilisation_pct" not in str(env["rows"])
+    assert "WH-E" in env["text"] and "97.8" not in env["text"], env["text"]
 
 
 def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:

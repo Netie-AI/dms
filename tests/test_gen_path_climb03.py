@@ -285,13 +285,12 @@ def test_capacity_above_90_keep_gt_has_rows(tmp_path: Path) -> None:
     assert env.get("plan_source") == "ontology_plan"
     rows = env.get("rows") or []
     assert len(rows) >= 1
-    for row in rows:
-        nums = [
-            v
-            for v in row.values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
-        ]
-        assert nums and max(float(n) for n in nums) > 90
+    # GRAIN-GUARD-01: a which-list ask returns the entities asked for; the
+    # unrequested utilisation figure is dropped, never shown under L2.
+    codes = sorted(str(v) for row in env["rows"] for v in row.values())
+    assert codes == ["WH-C", "WH-E"], env["rows"]
+    assert "utilisation_pct" not in str(env["rows"])
+    assert "WH-E" in env["text"] and "97.8" not in env["text"], env["text"]
 
 
 def test_supplier_ranking_finance_not_ops(tmp_path: Path) -> None:

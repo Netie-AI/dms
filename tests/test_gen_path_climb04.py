@@ -27,6 +27,7 @@ from dms_executor.semantic_retrieve import intent_slots, load_measure_aliases
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from score_curated import build_gen_path_prove_report, classify_plan_source  # noqa: E402
+from test_gen_path_climb05 import GRAIN_GUARDED, assert_grain_abstain  # noqa: E402
 
 L0_PAIRS: tuple[tuple[str, str], ...] = (
     ("cq_spend_by_country", "What is our total spend by supplier country?"),
@@ -204,6 +205,9 @@ def test_sku_only_ranking_recovers_beyond_17(tmp_path: Path) -> None:
     for qid, question in L0_PAIRS:
         env = _env(tmp_path, question, "sku_count")
         assert env is not None
+        if qid in GRAIN_GUARDED:
+            # GRAIN-GUARD-01: oracle-WRONG grain under L2 before; now named.
+            assert_grain_abstain(env)
         src = classify_plan_source(env)
         ok = env["badge"] == "L2_VALIDATED" and src == "ontology_plan"
         if ok:
@@ -218,7 +222,7 @@ def test_sku_only_ranking_recovers_beyond_17(tmp_path: Path) -> None:
                 "plan_source": src if ok else "other",
             }
         )
-    assert hits > 17
+    assert hits == sum(1 for qid, _q in L0_PAIRS if qid not in GRAIN_GUARDED)
     n = 27
     report = build_gen_path_prove_report(
         {
@@ -237,7 +241,7 @@ def test_sku_only_ranking_recovers_beyond_17(tmp_path: Path) -> None:
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 17
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == hits
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True
 
@@ -245,12 +249,10 @@ def test_sku_only_ranking_recovers_beyond_17(tmp_path: Path) -> None:
 def test_audit_overdue_finance_not_ops(tmp_path: Path) -> None:
     fin = _env(tmp_path, AUDIT_Q, "sku_count")
     assert fin is not None
-    assert fin["badge"] == "L2_VALIDATED"
-    assert fin.get("plan_source") == "ontology_plan"
-    sql = (fin.get("sql_used") or "").lower()
-    assert "last_audit_date" in sql or "audit" in sql
-    rows = fin.get("rows") or []
-    assert len(rows) >= 1
+    # GRAIN-GUARD-01: the ranked plan answers "which suppliers" with a
+    # per-supplier audit_overdue COUNT FILTER tally. Named ABSTAIN, not L2.
+    assert_grain_abstain(fin)
+    assert "unrequested_measure:audit_overdue" in " ".join(fin["assumptions"])
     ops = _env(
         tmp_path,
         AUDIT_Q,

@@ -46,7 +46,14 @@ from score_curated import (  # noqa: E402
     load_pack,
     merge_pack_questions,
 )
-from test_gen_path_climb05 import FROZEN_17, SYNONYM_L0  # noqa: E402
+from test_gen_path_climb05 import (  # noqa: E402
+    FROZEN_17,
+    GRAIN_GUARDED,
+    SYNONYM_L0,
+    assert_grain_abstain,
+    guarded_ids,
+    honest,
+)
 from test_gen_path_climb07 import CLIMB07_SYNONYM_L0  # noqa: E402
 from test_gen_path_climb08 import CLIMB08_SYNONYM_L0  # noqa: E402
 from test_gen_path_climb09 import CLIMB09_SYNONYM_L0  # noqa: E402
@@ -149,6 +156,9 @@ def _hits(
         tables = OPS_GRANT if qid.startswith("ops_") else grantable
         env = _env(tmp_path, question, "sku_count", grantable=tables)
         assert env is not None
+        if qid in GRAIN_GUARDED:
+            assert_grain_abstain(env)
+            continue
         src = classify_plan_source(env)
         ok = env["badge"] == "L2_VALIDATED" and src == "ontology_plan"
         if ok:
@@ -181,17 +191,36 @@ def test_unused_certified_leftover_raises_above_33(tmp_path: Path) -> None:
     syn09 = _hits(tmp_path, CLIMB09_SYNONYM_L0)
     syn10 = _hits(tmp_path, CLIMB10_SYNONYM_L0)
     syn11 = _hits(tmp_path, CLIMB11_SYNONYM_L0)
-    assert frozen == 17
-    assert syn06 == len(SYNONYM_L0)
-    assert syn07 == len(CLIMB07_SYNONYM_L0)
-    assert syn08 == len(CLIMB08_SYNONYM_L0)
-    assert syn09 == len(CLIMB09_SYNONYM_L0)
-    assert syn10 == len(CLIMB10_SYNONYM_L0)
-    assert syn11 == len(CLIMB11_SYNONYM_L0)
-    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 == 33
-    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11 > 33
+    assert frozen == honest(FROZEN_17)
+    assert syn06 == honest(SYNONYM_L0)
+    assert syn07 == honest(CLIMB07_SYNONYM_L0)
+    assert syn08 == honest(CLIMB08_SYNONYM_L0)
+    assert syn09 == honest(CLIMB09_SYNONYM_L0)
+    assert syn10 == honest(CLIMB10_SYNONYM_L0)
+    assert syn11 == honest(CLIMB11_SYNONYM_L0)
+    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 == honest(
+        FROZEN_17,
+        SYNONYM_L0,
+        CLIMB07_SYNONYM_L0,
+        CLIMB08_SYNONYM_L0,
+        CLIMB09_SYNONYM_L0,
+        CLIMB10_SYNONYM_L0,
+    )
+    assert frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11 == honest(
+        FROZEN_17,
+        SYNONYM_L0,
+        CLIMB07_SYNONYM_L0,
+        CLIMB08_SYNONYM_L0,
+        CLIMB09_SYNONYM_L0,
+        CLIMB10_SYNONYM_L0,
+        CLIMB11_SYNONYM_L0,
+    )
     cases = [
-        {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        (
+            {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+            if qid in GRAIN_GUARDED
+            else {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        )
         for qid, _q in (
             *FROZEN_17,
             *SYNONYM_L0,
@@ -211,6 +240,7 @@ def test_unused_certified_leftover_raises_above_33(tmp_path: Path) -> None:
         + len(CLIMB10_SYNONYM_L0)
         + len(CLIMB11_SYNONYM_L0)
     )
+    ok_hits = frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11
     report = build_gen_path_prove_report(
         {
             "OK": frozen + syn06 + syn07 + syn08 + syn09 + syn10 + syn11,
@@ -228,18 +258,22 @@ def test_unused_certified_leftover_raises_above_33(tmp_path: Path) -> None:
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 33
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == ok_hits
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True
     assert leftover_rise_not_ontology(cases) == []
-    assert leftover_ids_not_ontology(cases, CLIMB07_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB08_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB09_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS) == []
-    assert leftover_ids_not_ontology(cases, CLIMB11_RISE_IDS) == []
+    assert leftover_ids_not_ontology(cases, CLIMB07_RISE_IDS) == guarded_ids(CLIMB07_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB08_RISE_IDS) == guarded_ids(CLIMB08_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB09_RISE_IDS) == guarded_ids(CLIMB09_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB10_RISE_IDS) == guarded_ids(CLIMB10_RISE_IDS)
+    assert leftover_ids_not_ontology(cases, CLIMB11_RISE_IDS) == guarded_ids(CLIMB11_RISE_IDS)
     why = live_climb_gate(report)
     assert why is not None
-    assert "climb-12" in why or "ontology_plan<=36" in why
+    # GRAIN-GUARD-01: all three climb-11 rise L0s were oracle-WRONG under L2
+    # and now abstain named, so the gate fails on climb-11 itself.
+    assert "climb-11 rise L0s not ontology_plan" in why, why
+    for qid in CLIMB11_RISE_IDS:
+        assert qid in why, why
 
 
 def test_merge_injects_climb11_into_n43() -> None:
@@ -489,10 +523,9 @@ def test_ops_leftover_l0s_compile_without_suppliers_or_txns(tmp_path: Path) -> N
     ):
         env = _env(tmp_path, q, "sku_count", grantable=OPS_GRANT)
         assert env is not None
-        assert env["badge"] == "L2_VALIDATED"
-        assert classify_plan_source(env) == "ontology_plan"
-        assert env.get("rows")
-        assert_envelope_valid(env)
+        # GRAIN-GUARD-01: the compiled ranked plans are wrong-grain /
+        # unrequested-measure (oracle-WRONG); named ABSTAIN, not L2.
+        assert_grain_abstain(env)
 
 
 def test_ops_spend_and_rank_stay_abstain(tmp_path: Path) -> None:
