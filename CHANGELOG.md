@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - PII-MASK-CHECK-01: free-text PII + NANP/intl phones (#303)
+
+- **Ticket.** [PII-MASK-CHECK-01 #303](https://github.com/Netie-AI/dms/issues/303) under dms#272 / parked EPIC-BANK-01 #267. Does not stamp COMPLETE. Does not merge. CI fixtures, not live. Does not lift Platform's BIRD exclusion.
+- **Change.** WIDEN-ONLY. `dms_core/pii.py` searches inside free text (not only fullmatch) for email, phone, card and date-of-birth shapes, and adds NANP/US plus spaced international phone shapes. A free-text column with any hit is dropped from retrieve sampling; export masks the match (or the cell). DOB column names (`birth_date` / `dob` / `birthday`) are classified before the `date$` metric skip. Scan fixture: `tests/fixtures/pii_hold/flagged_columns.csv` (counts only; source sha256 `878f664d1d920bee99b3859285dd669b86edc16945288a5251c2fa66fae0c330`). Checker: `scripts/pii_mask_check.py`.
+- **Gate.** `tests/test_pii_mask_check_01.py`. Synthetic values only (`example.invalid`, `555-01xx`, `4111...`). Fails on parent `0c81026` and prove `3f0353a6` (pii.py identical). Existing `tests/test_pii_01.py` unchanged. No skip/xfail. No BIRD database. Fake transport only.
+- **Not this ticket:** lifting the BIRD exclusion (needs every row PASS, a different-run Verify YES, and Gating GREEN); Cortex #268; live prove; COMPLETE; merge.
+
 ## 2026-09-25 - ORACLE-FIX-01: curated oracles use demo seed txn_type (#301)
 
 - **Ticket.** [ORACLE-FIX-01 #301](https://github.com/Netie-AI/dms/issues/301) under dms#231 / EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.

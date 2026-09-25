@@ -33,6 +33,12 @@ encodings; `build_answer_envelope` plus xlsx/BI export mask raw cells as
 `DMSMASK_*`. Detector errors fail closed. Regression: `tests/test_pii_01.py`.
 Live both-maskers run with Cortex #268 is leftover. Not #267 COMPLETE.
 
+PII-MASK-CHECK-01 (#303): free-text search for email/phone/card/dob plus
+NANP and spaced-intl phones (WIDEN-ONLY vs #272). Counts-only fixture
+`tests/fixtures/pii_hold/flagged_columns.csv`; checker
+`scripts/pii_mask_check.py`. Regression: `tests/test_pii_mask_check_01.py`.
+Does not lift the BIRD exclusion. Not COMPLETE.
+
 INSIGHTS-EXPORT-01 (#188): `packages/core/dms_core/xlsx_export.py` copies an
 existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`), then
 masks PII-01 cells. HTTP:

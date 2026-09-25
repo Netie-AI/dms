@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: MISS (no prior ORACLE-FIX-01 note).
+PREFLIGHT for this goal: PARTIAL (pii-01-local-masker exists; this ticket is the scan check + free-text/NANP widen).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-25 | pii-mask-check-01 | PII-MASK-CHECK-01, free-text, NANP, phone_intl, dob, flagged_columns, dms-303 | Widen dms#272: search inside free text for email/phone/card/dob; add NANP/intl phones. Counts-only scan fixture + per-column checker. Synthetic only. Does not lift BIRD exclusion. Not COMPLETE. | `2026-09-25_pii-mask-check-01.md` |
 | 2026-09-25 | oracle-fix-01 | ORACLE-FIX-01, txn_type, outbound, oracles.yaml, demo seed, dms-301 | Nine curated oracles filtered Cortex 'OUT'; DMS seed writes 'outbound'. Literal from seed source, not answers. cq_audit_overdue stays its own ORACLE_ERROR. Not COMPLETE. | `2026-09-25_oracle-fix-01.md` |
 | 2026-09-25 | grant-read-01 | GRANT-READ-01, generate context, extra_grants, default_readable, list_space_source_ids, dms-297 | Unticked uploads never enter Insights retrieve or cascade. Ask path uses demo_acl default_readable. Space bronze listing uses the Executor warehouse. | `2026-09-25_grant-read-01.md` |
 | 2026-09-25 | a2-06-scoped-ontology | A2-06, load_verified_ontology, failed subject, fk_intact, hop, dms-262 | One verify violation no longer drops the whole declared ontology. A hop through a failed fk_intact link is a use. No cardinality blessing. Demo/BIRD undeclared path unchanged. | `2026-09-25_a2-06-scoped-ontology.md` |
