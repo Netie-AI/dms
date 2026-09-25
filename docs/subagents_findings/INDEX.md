@@ -1,7 +1,8 @@
-PREFLIGHT for this goal: HIT (BEARER-01 #289 generate=true bearer; PII-01 #272 local masker landed).
+PREFLIGHT for this goal: HIT (QUAL-GUARD-01 #290 extractor + coverage; BEARER-01 #289 generate=true bearer; PII-01 #272 local masker landed).
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-09-25 | qual-guard-01 | qualifier, time_grain, unhonored_qualifier, ranked retry, generate_legs, dms-290 | Dropped time grain/group/filter is named ABSTAIN. Retry adds grain or skips. Route A/B notes. Scorer is #292. | `2026-09-25_qual-guard-01.md` |
 | 2026-09-25 | bearer-01 | BEARER-01, generate=true, Authorization Bearer, insights_bearer_missing, insights_bearer_insecure_transport, dms-289 | Generate=true refuses missing/demo key and plain http non-loopback. Named ABSTAIN. Ranked lanes and settings.py untouched. | `2026-09-25_bearer-01.md` |
 | 2026-09-25 | pii-01-local-masker | pii, mask, nric, encodings, DMSMASK, dms-272 | Local detector drops PII encodings and masks answers/exports. Cortex #268 both-maskers live run leftover. | `2026-09-25_pii-01-local-masker.md` |
 | 2026-09-25 | gen-restore-01 | GEN-RESTORE-01, Insights, compute_insights, /dms/query, plan_origin, chart_from_rows, setup fields, dms-276 | Reopen generative seam to Cortex Insights only (8s). Named ABSTAIN. plan_origin. Reuse chart_from_rows. Copy setup fields as received. WRONG pins stay. Not live score. | `2026-09-25_gen-restore-01.md` |

@@ -29,7 +29,8 @@ MAX_LINKS = 8
 MAX_SAMPLE = 6
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TIME = re.compile(
-    r"\b(last|this|next|month|week|year|yesterday|today|ago|ytd|qtd)\b",
+    r"\b(last|this|next|month|week|year|quarter|yesterday|today|ago|ytd|qtd|"
+    r"daily|weekly|monthly|quarterly|yearly|annually)\b",
     re.I,
 )
 _NEEDS_DIM = re.compile(r"\b(by|per|each|grouped|across)\b", re.I)
@@ -102,7 +103,15 @@ _DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("by sku", "selling sku", "skus by"), "product", "sku"),
     (("by supplier",), "supplier", "supplier_id"),
     (("by lane", "per lane"), "lane", "origin_plant_id"),
-    (("by day", "per day", "each day"), "day", "day"),
+    (("by day", "per day", "each day", "daily"), "day", "day"),
+    (("by week", "per week", "each week", "weekly"), "day", "week"),
+    (("by month", "per month", "each month", "monthly"), "day", "month"),
+    (
+        ("by quarter", "per quarter", "each quarter", "quarterly"),
+        "day",
+        "quarter",
+    ),
+    (("by year", "per year", "each year", "yearly"), "day", "year"),
 )
 _STOP = frozenset(
     {

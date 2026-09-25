@@ -29,9 +29,12 @@ from cortex_client.compute import (
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
     insights_fail_reason,
+    insights_query_sql,
     insights_was_reached,
     query_plan_from_insights_ranking,
+    typed_query_plan,
 )
+from cortex_client.qualifiers import unhonored_qualifier_reason
 
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
@@ -84,6 +87,9 @@ PLAN_SOURCE_OTHER = "other"
 PLAN_SOURCES = frozenset(
     {PLAN_SOURCE_ONTOLOGY, PLAN_SOURCE_BIND, PLAN_SOURCE_OTHER}
 )
+NOTE_INSIGHTS_RANKING = "insights_ranking:ontology_plan"
+NOTE_FALLBACK_GENERATE_EMPTY = "fallback:generate_empty"
+NOTE_FALLBACK_VALIDATE_PREFIX = "fallback:validate:"
 # Cortex#269 ROUTER-1 Insights fingerprint. Copy as received; never infer.
 SETUP_FIELD_KEYS: tuple[str, ...] = (
     "served_provider",
@@ -128,6 +134,46 @@ def with_plan_origin(env: dict[str, Any], origin: str) -> dict[str, Any]:
     if val:
         env["plan_origin"] = val
     return env
+
+
+def generate_legs_view(
+    payload: dict[str, Any] | None, *, validate_reason: str | None = None
+) -> dict[str, Any]:
+    """How many generate legs ran, and whether each returned SQL, a plan, or nothing."""
+    legs: list[dict[str, str]]
+    count: int
+    if isinstance(payload, dict) and isinstance(payload.get("generate_legs"), dict):
+        raw = payload["generate_legs"]
+        raw_legs = raw.get("legs") if isinstance(raw.get("legs"), list) else []
+        legs = []
+        for item in raw_legs:
+            if isinstance(item, dict):
+                got = str(item.get("returned") or "nothing").strip().lower()
+            else:
+                got = "nothing"
+            if got not in {"sql", "plan", "nothing"}:
+                got = "nothing"
+            legs.append({"returned": got})
+        count = int(raw.get("count") or len(legs))
+        if not validate_reason:
+            leftover = str(raw.get("validate_reason") or "").strip()
+            validate_reason = leftover or None
+    elif isinstance(payload, dict):
+        if insights_query_sql(payload) or query_sql_from_payload(payload):
+            got = "sql"
+        elif typed_query_plan(payload) is not None:
+            got = "plan"
+        else:
+            got = "nothing"
+        legs = [{"returned": got}]
+        count = 1
+    else:
+        legs = []
+        count = 0
+    out: dict[str, Any] = {"count": count, "legs": legs}
+    if validate_reason:
+        out["validate_reason"] = validate_reason
+    return out
 
 
 def with_setup_fields(
@@ -431,6 +477,7 @@ def _abstain(
     space_id: str | None,
     session_id: str | None,
     plan_source: str = PLAN_SOURCE_OTHER,
+    notes: Sequence[str] = (),
 ) -> dict[str, Any]:
     env = build_answer_envelope(
         answer_id="ans_gen01_abstain",
@@ -439,7 +486,7 @@ def _abstain(
         abstained=True,
         rows=[],
         sql_used=None,
-        assumptions=[f"GEN-01: {reason}"],
+        assumptions=[f"GEN-01: {reason}", *[n for n in notes if str(n).strip()]],
         as_of=_as_of(),
         space_id=space_id,
         session_id=session_id,
@@ -543,6 +590,17 @@ def _submit_validated(
             space_id=space_id,
             session_id=session_id,
             plan_source=plan_source,
+            notes=notes,
+        )
+    gap = unhonored_qualifier_reason(question, sql=sql)
+    if gap:
+        return _abstain(
+            question,
+            gap,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
         )
     ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
     if ccy_why:
@@ -824,12 +882,19 @@ def maybe_generative_ask(
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
     # or drop Cortex setup fields. Ranking merge keeps these keys.
     setup_src = payload if isinstance(payload, dict) else None
+    trail_notes: list[str] = []
+    validate_why: str | None = None
 
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
-        return with_setup_fields(env, setup_src)
+        env = with_setup_fields(env, setup_src)
+        if not isinstance(env, dict):
+            return env
+        env["generate_legs"] = generate_legs_view(
+            setup_src, validate_reason=validate_why
+        )
+        return env
 
     kind = parse_compute_plan(payload)
-    fallback_note: str | None = None
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     ranked_slots: dict[str, Any] | None = None
@@ -840,7 +905,7 @@ def maybe_generative_ask(
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_ONTOLOGY
         origin = PLAN_ORIGIN_ONTOLOGY_RANKING
-        fallback_note = "insights_ranking:ontology_plan"
+        trail_notes = [NOTE_INSIGHTS_RANKING, NOTE_FALLBACK_GENERATE_EMPTY]
     if kind == "miss" and ranked_slots is None:
         # GEN-PATH-REFUSE-01: Cortex ranked the intended metric, DMS cannot
         # compile it. Named ABSTAIN — do not bind_plan or Cortex.ask a guess.
@@ -918,14 +983,20 @@ def maybe_generative_ask(
                     _abstain(
                         q, f"validate:{why}",
                         space_id=space_id, session_id=session_id, plan_source=source,
+                        notes=trail_notes,
                     )
                 )
             # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
+            # Keep the reject reason on the envelope (QUAL-GUARD-01 route B).
+            validate_why = why
             payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
             kind = parse_compute_plan(payload)
             source = PLAN_SOURCE_ONTOLOGY
             origin = PLAN_ORIGIN_ONTOLOGY_RANKING
-            fallback_note = "insights_ranking:ontology_plan"
+            trail_notes = [
+                NOTE_INSIGHTS_RANKING,
+                f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
+            ]
         else:
             return _stamp(
                 _submit_validated(
@@ -1001,6 +1072,7 @@ def maybe_generative_ask(
                 )
             )
         fallback_note = "compute_fallback:bind_plan"
+        trail_notes = [fallback_note]
 
     assert isinstance(payload, dict)
     plan = plan_from_payload(payload)
@@ -1009,6 +1081,22 @@ def maybe_generative_ask(
             _abstain(
                 q, "query_plan was not typed",
                 space_id=space_id, session_id=session_id, plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    raw_plan = payload.get("query_plan")
+    gap = unhonored_qualifier_reason(
+        q, plan=raw_plan if isinstance(raw_plan, dict) else None
+    )
+    if gap:
+        return _stamp(
+            _abstain(
+                q,
+                gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
             )
         )
     if onto is None or not onto.verified:
@@ -1062,7 +1150,7 @@ def maybe_generative_ask(
     if not origin and source != PLAN_SOURCE_BIND:
         origin = (
             PLAN_ORIGIN_ONTOLOGY_RANKING
-            if fallback_note == "insights_ranking:ontology_plan"
+            if NOTE_INSIGHTS_RANKING in trail_notes
             else PLAN_ORIGIN_GENERATE_SQL
         )
     return _stamp(
@@ -1073,7 +1161,7 @@ def maybe_generative_ask(
             session_id=session_id,
             submit=submit,
             ledger_append=ledger_append,
-            notes=tuple([*compiled.notes, *([fallback_note] if fallback_note else [])]),
+            notes=tuple([*compiled.notes, *trail_notes]),
             plan_source=source,
             keep_gt=plan.keep_gt,
             measure=plan.measure,
