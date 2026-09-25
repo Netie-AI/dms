@@ -129,6 +129,9 @@ class DemoSessionStore:
     extra_grants: tuple[str, ...] = ()
     #: Read at call time, not construction time — uploads land after startup.
     uploads: Callable[[], tuple[str, ...]] = field(default=ingested_bronze_tables)
+    #: Executor warehouse. ``list_space_source_ids`` must not fall back to the
+    #: process default when the Executor was pointed at another file.
+    warehouse: Path | None = None
 
     def _uploaded(self) -> tuple[str, ...]:
         return tuple(self.uploads())
@@ -144,7 +147,7 @@ class DemoSessionStore:
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
         sid = canonical_space_id(space_id)
-        space_uploads = ingested_bronze_tables(space_id=sid)
+        space_uploads = ingested_bronze_tables(self.warehouse, space_id=sid)
         tables = (*self._tables_for(sid), *self.extra_grants, *space_uploads)
         return [source_id_for(t) for t in tables]
 

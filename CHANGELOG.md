@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-25 - GRANT-READ-01: generate context and cascade ignore unticked uploads (#297)
+
+- **Ticket.** [GRANT-READ-01 #297](https://github.com/Netie-AI/dms/issues/297) under EPIC-020 / dms#178. Does not stamp COMPLETE. Does not merge. CI fixtures, not live. No Cortex ranking claim.
+- **Claim.** uploads not selected by the caller never enter the generate context.
+- **Change.** Ask path only: with no `tables`, cascade and retrieve use `requested or default_readable` (the same set `demo_acl` mints: grantable intersect DEMO_TABLES). With `tables`, intersection with `granted` only. If `grantable_tables` cannot be read, the ask uses an empty context and never falls back to the whole space. `DemoSessionStore.list_space_source_ids` reads the Executor warehouse, not the process default. `demo_acl`, the manifest, bearer/transport, qualifier guard, scorer, invariants, import-linter, contract pin, WRONG pins, `.github/`, `settings.py`, and `cortex_read.py` untouched.
+- **Gate.** `tests/test_grant_read_01.py`. Fake httpx transport. Fails on parent `38f8924a` (R-0007). No skip/xfail. No existing-test edit.
+- **Not this ticket:** live prove; COMPLETE; merge.
+
+
 ## 2026-09-25 - A2-06: caller ontology stays unread; missing verify cache abstains (#262)
 
 - **Ticket.** [A2-06 #262](https://github.com/Netie-AI/dms/issues/262). Same PR. Does not merge. Does not stamp COMPLETE. CI fixtures, not live.
