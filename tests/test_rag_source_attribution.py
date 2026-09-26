@@ -133,6 +133,39 @@ def test_masker_still_masks_the_same_digits_outside_a_uuid() -> None:
     assert got["sources"][0]["ref_id"] == SRC_A
 
 
+@pytest.mark.parametrize(
+    "addr",
+    [
+        f"{SRC_A}@corp.com",
+        f"jane.{SRC_A}@corp.com",
+        f"{SRC_A}_ops@corp.com",
+        f"ops+{SRC_B}@corp.com",
+    ],
+)
+def test_masker_still_masks_an_email_with_a_uuid_local_part(addr: str) -> None:
+    """The UUID carve-out must not lift a UUID out of the email it belongs to."""
+    got = mask_payload(
+        text=f"mail {addr} now",
+        sources=[{"ref_id": SRC_A, "snippet": f"Contact {addr} for the loan"}],
+        rows=[{"contact": addr}],
+    )
+    assert addr not in got["text"]
+    assert "@corp.com" not in got["text"]
+    assert "DMSMASK_email_" in got["text"]
+    assert "@corp.com" not in got["sources"][0]["snippet"]
+    assert "DMSMASK_email_" in got["sources"][0]["snippet"]
+    assert got["rows"][0]["contact"] != addr
+    assert got["sources"][0]["ref_id"] == SRC_A
+
+
+def test_masker_does_not_skip_an_all_digit_uuid_shape() -> None:
+    """An 8-4-4-4-12 run of digits only is not a minted id; it stays scanned."""
+    raw = "12345678-1234-1234-1234-123456789012"
+    got = mask_payload(text=f"ref {raw} end", sources=[{"ref_id": SRC_A, "snippet": raw}])
+    assert raw not in got["text"]
+    assert raw not in got["sources"][0]["snippet"]
+
+
 def test_envelope_keeps_cited_ref_id_verbatim() -> None:
     env = build_answer_envelope(
         answer_id="ans_x",

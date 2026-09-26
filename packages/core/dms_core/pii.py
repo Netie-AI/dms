@@ -77,9 +77,16 @@ _DIGIT_RUN = re.compile(r"(?<!\d)(\d{10,16})(?!\d)")
 #: ``320-4502-9218``), and masking that rewrote a source's ``ref_id`` into a
 #: different id, attributing the answer to a source nobody cited. The scanners
 #: below skip whole UUIDs only; the same digits anywhere else are still masked.
+#: It must hold at least one hex letter: an all-digit 8-4-4-4-12 run is not
+#: something DMS or Cortex mints and stays subject to every scanner. It may not
+#: touch an email/identifier character (``@ . _ % +``) on its left or
+#: ``@ _ % +`` on its right, so a UUID-shaped email local part is never lifted
+#: out of the email it belongs to (emails are also scanned over the whole text
+#: before any UUID is set aside; see ``_scan_text``).
 _UUID_FIND = re.compile(
-    r"(?<![0-9A-Za-z-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"(?![0-9A-Za-z-])",
+    r"(?<![0-9A-Za-z._%+@-])(?=[0-9-]{0,35}[a-f])"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"(?![0-9A-Za-z_%+@-])",
     re.I,
 )
 
@@ -357,7 +364,16 @@ def _apply_map(text: str, pairs: list[tuple[str, str]]) -> str:
 
 
 def _scan_text(text: str, masker: Masker) -> str:
-    """Mask PII-shaped runs in free text. Whole UUIDs pass through unchanged."""
+    """Mask PII-shaped runs in free text. Whole UUIDs pass through unchanged.
+
+    Emails are masked over the whole text first, so an address whose local
+    part is (or ends in) a UUID is masked as an email, never split apart.
+    """
+
+    def _sub_email(match: re.Match[str]) -> str:
+        return masker.token("email", match.group(0))
+
+    text = _EMAIL_FIND.sub(_sub_email, text)
     parts: list[str] = []
     pos = 0
     for m in _UUID_FIND.finditer(text):
