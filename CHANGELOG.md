@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - INGEST-OPS repair: old-registry reads, table-only partial match, DMS 500 grades WRONG
+
+- **Old registry.** A warehouse whose `bronze._ingest_registry` predates `source_row_count` (the BIRD warehouse) failed every registry read; the `duckdb.Error` was swallowed into `[]`, so the Space still said `source_count: 0` and an empty `/sources` until an unrelated route (library tree, ask) widened the table. `_registry_rows` now reads the registry's columns and selects `NULL` for any it predates; only "no warehouse" / "no registry" read as empty. A registry older than `source_kind` classifies SQL pulls by filename. If the registry cannot be read at all, the answer carries `ingest row-cap check unavailable` instead of nothing.
+- **Partial line.** `truncation_notes` matches capped tables against the tables the SQL reads (`sql_currency.referenced_tables`, sqlglot), not any identifier; a column named like a capped table no longer adds the line. Unparseable SQL keeps the wide match.
+- **Harness.** A bare HTTP 500 is DMS crashing (upstream failures map to 502/503/504). It is still retried and never aborts the run, but if it persists it grades WRONG (counted in n and EX-on-answered), is printed as `DMS http_500=N graded WRONG`, and is no longer excluded as PROVIDER_ERROR. `--self-check` plants it.
+- **Gate.** 4 new tests in `tests/test_ingest_ops_sources.py` / `tests/test_bird_minidev_provider_error.py`; fail on `f412af4` (4 of 4) and on `ca63963`.
+
 ## 2026-09-26 - INGEST-OPS: SQL-source Space sources, visible row cap, harness PROVIDER_ERROR, bulk bronze load
 
 - **Evidence.** BIRD Mini-Dev local run (dms PR #312). Routed by prd-agent to dms#277 CONNECT-ASK-01 (connect step) and dms#264 A1-02. Does not close tickets. Not COMPLETE. Ask routing (`generative_ask.py`, `dms_executor/__init__.py` ask path) untouched: another lane owns it.

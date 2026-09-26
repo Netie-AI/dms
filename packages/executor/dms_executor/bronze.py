@@ -8,6 +8,7 @@ import re
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -324,17 +325,56 @@ def stamp_contributing_source_watermarks(
     return stamped
 
 
-def _registry_rows(sql: str, params: list[Any], *, path: Path | None) -> list[tuple[Any, ...]]:
-    """Read the ingest registry without seeding a warehouse. Missing file/column -> []."""
+#: Registry columns a read may name. Anything the warehouse's registry predates
+#: reads as NULL instead of failing the whole query.
+_REGISTRY_OPTIONAL = (
+    "space_id",
+    "row_count",
+    "truncated",
+    "extracted_at",
+    "source_kind",
+    "source_row_count",
+)
+
+
+def _registry_rows(
+    build: Callable[[Callable[[str], str]], str],
+    params: list[Any],
+    *,
+    path: Path | None,
+) -> list[tuple[Any, ...]]:
+    """Read the ingest registry without seeding a warehouse or widening it.
+
+    ``build(col)`` returns the SQL; ``col("x")`` yields ``r.x`` when the column
+    exists and ``NULL`` when this registry predates it. A warehouse written before
+    ``source_row_count`` existed (the BIRD warehouse) used to fail the whole
+    SELECT, the error was swallowed into ``[]``, and the Space read as holding no
+    sources until an unrelated route happened to widen the table. Only "no
+    warehouse" and "no registry yet" read as empty now.
+    """
     db = Path(path or warehouse_path())
     if not db.is_file():
         return []
     con = connect_file(db)
     try:
-        return [tuple(r) for r in con.execute(sql, params).fetchall()]
-    except duckdb.Error:
-        # No registry yet, or an old one without the widened columns.
-        return []
+        cols = {
+            str(r[0])
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'"
+            ).fetchall()
+        }
+        if not cols:
+            return []
+
+        def col(name: str) -> str:
+            if name in cols:
+                return f"r.{name}"
+            if name in _REGISTRY_OPTIONAL:
+                return "NULL"
+            raise KeyError(f"unknown registry column {name!r}")
+
+        return [tuple(r) for r in con.execute(build(col), params).fetchall()]
     finally:
         con.close()
 
@@ -376,13 +416,13 @@ def list_source_pulls(
     from dms_executor.demo_grants import canonical_space_id
 
     rows = _registry_rows(
-        f"""
-        SELECT r.table_name, r.filename, r.space_id, r.row_count, r.truncated,
-               r.source_row_count, r.extracted_at, r.ingest_id
+        lambda col: f"""
+        SELECT r.table_name, r.filename, {col("space_id")}, {col("row_count")},
+               {col("truncated")}, {col("source_row_count")}, {col("extracted_at")},
+               r.ingest_id, {col("source_kind")}
           FROM {_REGISTRY} r
           JOIN information_schema.tables t
             ON t.table_schema = 'bronze' AND t.table_name = r.table_name
-         WHERE r.source_kind = 'sql'
          ORDER BY r.table_name
         """,
         [],
@@ -390,7 +430,13 @@ def list_source_pulls(
     )
     want = canonical_space_id(space_id) if space_id else None
     out: list[dict[str, Any]] = []
-    for name, filename, row_space, row_count, truncated, total, extracted_at, ingest_id in rows:
+    for row in rows:
+        name, filename, row_space, row_count, truncated, total, extracted_at, ingest_id = row[:8]
+        # A registry older than ``source_kind`` still names a SQL pull by its
+        # SourceConfig.describe() filename; classify it the way ingest would.
+        kind = row[8] or classify_source_kind(None if filename is None else str(filename))
+        if kind != "sql":
+            continue
         canon = canonical_space_id(str(row_space)) if row_space else None
         if want is not None and canon != want:
             continue
@@ -423,12 +469,21 @@ def truncation_notes(
     1,056,320 rows reads as the whole ledger. Matching is on the bare bronze name
     in ``tables`` (sources / grounded tables) or as an identifier in ``sql``.
     """
-    rows = _registry_rows(
-        f"SELECT table_name, row_count, source_row_count FROM {_REGISTRY} "
-        "WHERE truncated",
-        [],
-        path=path,
-    )
+    try:
+        rows = _registry_rows(
+            lambda col: (
+                f"SELECT r.table_name, {col('row_count')}, {col('source_row_count')} "
+                f"FROM {_REGISTRY} r WHERE {col('truncated')}"
+            ),
+            [],
+            path=path,
+        )
+    except duckdb.Error:
+        # Could not read the registry: say so rather than imply full coverage.
+        return [
+            "ingest row-cap check unavailable (ingest registry unreadable); "
+            "this answer may cover a partial table"
+        ]
     if not rows:
         return []
     bare = set()
@@ -439,13 +494,25 @@ def truncation_notes(
         if label:
             bare.add(label.rsplit(".", 1)[-1].strip('"').lower())
     sql_l = (sql or "").lower()
+    # Table references only, so a column that shares a capped table's name is not
+    # a hit. Unparseable SQL falls back to the bare-identifier match: a spurious
+    # partial line is noise, a missing one is the silent lie.
+    read_tables = None
+    if sql_l:
+        from dms_executor.sql_currency import referenced_tables
+
+        read_tables = referenced_tables(sql or "")
     notes: list[str] = []
     for name, row_count, total in rows:
         key = str(name).lower()
-        hit = key in bare or (
-            bool(sql_l)
-            and re.search(rf'(?<![\w$]){re.escape(key)}(?![\w$])', sql_l) is not None
-        )
+        if key in bare:
+            hit = True
+        elif not sql_l:
+            hit = False
+        elif read_tables is not None:
+            hit = key in read_tables
+        else:
+            hit = re.search(rf'(?<![\w$]){re.escape(key)}(?![\w$])', sql_l) is not None
         if not hit:
             continue
         loaded = "?" if row_count is None else f"{int(row_count):,}"

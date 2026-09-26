@@ -301,3 +301,143 @@ def test_answer_over_whole_table_carries_no_partial_line(
     assert body["abstained"] is False, body
     assert body["rows"] == [{"total": 60.0}]
     assert not [a for a in body["assumptions"] if "partial table" in a]
+
+
+def _plant_old_registry(
+    path: Path, space_id: str, *, with_source_kind: bool = True
+) -> None:
+    """A warehouse written before ``source_row_count`` existed, holding one capped
+    SQL pull - the state of the BIRD warehouse this lane was measured on."""
+    import duckdb
+
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        con.execute("DROP TABLE IF EXISTS bronze._ingest_registry")
+        kind_col = ", source_kind VARCHAR" if with_source_kind else ""
+        con.execute(
+            "CREATE TABLE bronze._ingest_registry (table_name VARCHAR PRIMARY KEY, "
+            "filename VARCHAR, sha256 VARCHAR, ingest_id VARCHAR, created_at TIMESTAMPTZ, "
+            "space_id VARCHAR, row_count INTEGER, truncated BOOLEAN, extracted_at VARCHAR"
+            f"{kind_col})"
+        )
+        con.execute(
+            "CREATE OR REPLACE TABLE bronze.public_trans AS "
+            "SELECT * FROM (VALUES ('1', '10'), ('2', '20'), ('3', '30')) t(trans_id, amount)"
+        )
+        vals = [
+            "public_trans",
+            "postgresql://db.example.net:5432/sales#public.trans",
+            "sha",
+            "ing-old",
+            space_id,
+            3,
+            True,
+            "2026-09-01T00:00:00.000000Z",
+        ]
+        if with_source_kind:
+            vals.append("sql")
+        marks = ", ".join("?" for _ in vals)
+        cols = (
+            "table_name, filename, sha256, ingest_id, space_id, row_count, truncated, "
+            "extracted_at" + (", source_kind" if with_source_kind else "")
+        )
+        con.execute(f"INSERT INTO bronze._ingest_registry ({cols}) VALUES ({marks})", vals)
+    finally:
+        con.close()
+
+
+def _registry_cols(path: Path) -> set[str]:
+    import duckdb
+
+    con = duckdb.connect(str(path))
+    try:
+        return {
+            r[0]
+            for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+
+
+def test_pre_existing_registry_without_source_row_count_is_read_not_emptied(
+    warehouse: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter,  # noqa: F811 - pytest fixture
+) -> None:
+    """Verifier P3b: an old registry made every read fail, the error was swallowed
+    into [], and the Space said 0 sources until an unrelated route widened it.
+    No /v1/library/tree call here: the result must not depend on request order."""
+    client, space_id = _client_with_space()
+    _plant_old_registry(warehouse, space_id)
+
+    one = client.get(f"/v1/spaces/{space_id}")
+    assert one.status_code == 200, one.text
+    assert one.json()["source_count"] == 1
+
+    res = client.get(f"/v1/spaces/{space_id}/sources")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["count"] == 1
+    assert body["truncated_count"] == 1
+    src = body["sources"][0]
+    assert src["bronze_table"] == "bronze.public_trans"
+    assert src["truncated"] is True
+    assert src["loaded_rows"] == 3
+    assert src["source_row_count"] is None
+    assert src["partial"] == "partial: 3 of an unknown number of source rows (ingest row cap)"
+    # Tolerated on read, not fixed by a side effect of some other route.
+    assert "source_row_count" not in _registry_cols(warehouse)
+
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    get_settings.cache_clear()
+    cortex = _TransTotalCortex()
+    app = create_app()
+    app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+    app.state.cortex = cortex
+    env = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": "what is the total transaction amount", "session_id": "ses_old"},
+    ).json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env
+    assert env["rows"] == [{"total": 60.0}]
+    assert "60" in env["text"]
+    assert [a for a in env["assumptions"] if "partial table" in a] == [
+        "partial table: bronze.public_trans holds 3 of an unknown number of source rows "
+        "(ingest row cap); this answer covers the loaded rows only"
+    ], env["assumptions"]
+
+
+def test_registry_older_than_source_kind_classifies_sql_pulls_by_filename(
+    warehouse: Path,
+) -> None:
+    from dms_executor.bronze import list_source_pulls
+
+    _plant_old_registry(warehouse, "sp-bird", with_source_kind=False)
+    pulls = list_source_pulls(space_id="sp-bird", path=warehouse)
+    assert [p["bronze_table"] for p in pulls] == ["bronze.public_trans"]
+    assert pulls[0]["truncated"] is True
+
+
+def test_partial_line_only_for_tables_the_sql_reads(warehouse: Path) -> None:
+    """Verifier P8: a column sharing the capped table's name is not a read of it."""
+    from dms_executor.bronze import truncation_notes
+
+    _plant_old_registry(warehouse, "sp-bird")
+    assert truncation_notes(
+        tables=["orders"], sql="SELECT public_trans FROM orders", path=warehouse
+    ) == []
+    for sql in (
+        'SELECT SUM(amount) FROM "bronze"."public_trans"',
+        "SELECT o.id FROM orders o JOIN bronze.PUBLIC_TRANS t ON t.trans_id = o.id",
+        "WITH x AS (SELECT * FROM public_trans) SELECT COUNT(*) FROM x",
+    ):
+        notes = truncation_notes(tables=[], sql=sql, path=warehouse)
+        assert len(notes) == 1 and "bronze.public_trans" in notes[0], sql
+    # Unparseable SQL falls back to the wide match: noise over a silent miss.
+    assert len(truncation_notes(tables=[], sql="SELEC FROM (( public_trans", path=warehouse)) == 1

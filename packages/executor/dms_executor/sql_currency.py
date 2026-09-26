@@ -856,3 +856,21 @@ __all__ = [
     "currency_mismatch_reason",
     "is_currency_column",
 ]
+
+
+def referenced_tables(sql: str) -> frozenset[str] | None:
+    """Bare lower-case names of every table ``sql`` reads, or None if unparseable.
+
+    Used by the ingest row-cap note (bronze.truncation_notes) so a capped table's
+    name appearing as a *column* does not stamp a partial-table line on an answer
+    that never read it. None tells the caller to fall back to its wider match.
+    """
+    try:
+        tree = parse_one(sql or "", read=_DIALECT)
+    except Exception:  # noqa: BLE001 - any parser failure means "could not tell"
+        return None
+    if tree is None:
+        return None
+    return frozenset(
+        str(t.name).lower() for t in tree.find_all(exp.Table) if t.name
+    )

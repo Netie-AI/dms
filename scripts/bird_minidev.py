@@ -95,6 +95,12 @@ GoldFn = Callable[[str], tuple[list[dict[str, Any]] | None, str | None]]
 #: is printed so a run with holes cannot pass for a clean one. Before this one 429
 #: raised out of ``score_cases`` and aborted all 500 questions.
 PROVIDER_ERROR = "PROVIDER_ERROR"
+#: A bare HTTP 500 is DMS itself crashing, not the provider: DMS maps upstream
+#: failures to 502/503/504 (chat route). It is retried like a provider error so
+#: one crash cannot abort the run, but if it persists it grades WRONG - counted in
+#: n and in the EX-on-answered denominator - so a product bug on hard questions
+#: cannot raise EX by being excluded.
+APP_ERROR_KIND = "http_500"
 #: Attempts per question including the first; delays double from BACKOFF_S.
 PROVIDER_ATTEMPTS = 3
 BACKOFF_S = 2.0
@@ -658,6 +664,8 @@ def asked_text(question: Mapping[str, Any], *, with_evidence: bool) -> str:
 def provider_error_kind(exc: BaseException) -> str | None:
     """``http_429`` / ``http_5xx`` / ``transport``, or None for anything else.
 
+    ``http_500`` is retried too but is not a provider error: see APP_ERROR_KIND.
+
     Only failures of the provider or the wire are absorbed. A 4xx other than 429
     (bad request, Space not found) or a bug in the harness still raises: those are
     a broken setup, not one unlucky question, and must stop the run.
@@ -738,6 +746,8 @@ def score_cases(
         served = served_from_response(env)
         if gold_err:
             verdict = gold_error_dominating(gold_err, "OK")
+        elif provider_err == APP_ERROR_KIND:
+            verdict = "WRONG"
         elif provider_err:
             verdict = PROVIDER_ERROR
         else:
@@ -774,11 +784,14 @@ def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         PROVIDER_ERROR: 0,
     }
     retries = 0
+    app_errors = 0
     for row in rows:
         key = str(row.get("verdict") or "")
         if key in tallies:
             tallies[key] += 1
         retries += int(row.get("retries") or 0)
+        if row.get("provider_error") == APP_ERROR_KIND:
+            app_errors += 1
     n = tallies["OK"] + tallies["LAYER"] + tallies["ABSTAIN"] + tallies["WRONG"]
     answered = tallies["OK"] + tallies["LAYER"]
     wrong = tallies["WRONG"]
@@ -792,6 +805,7 @@ def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "gold_error": tallies["GOLD_ERROR"],
         "provider_error": tallies[PROVIDER_ERROR],
         "retries": retries,
+        "app_error": app_errors,
         "answered": answered,
         "right": tallies["OK"] + tallies["LAYER"],
         "ex_on_answered_pct": round(100.0 * answered / denom, 2) if denom else None,
@@ -835,7 +849,8 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
     )
     print(
         f"provider errors={summary.get('provider_error', 0)} after retry "
-        f"(retries={summary.get('retries', 0)}); never counted RIGHT"
+        f"(retries={summary.get('retries', 0)}); never counted RIGHT; "
+        f"DMS http_500={summary.get('app_error', 0)} graded WRONG"
     )
     print(f"EX on answered={ex_s} abstain rate={abs_txt}")
     print(f"  {bound_line(answered)}")
@@ -1237,6 +1252,20 @@ def _provider_error_self_check(
     graded = [c for c in cases if c["verdict"] not in {"GOLD_ERROR", PROVIDER_ERROR}]
     if summary["n"] != len(graded):
         errs.append("PROVIDER_ERROR must be excluded from n")
+
+    def crashes(question: str) -> dict[str, Any]:
+        raise _PlantedHTTPError(500)
+
+    try:
+        crashed = score_cases(
+            questions[:1], ask_fn=crashes, gold_fn=gold, sleep=slept.append
+        )
+    except Exception as exc:  # noqa: BLE001
+        return errs + [f"one DMS 500 aborted the run: {type(exc).__name__}"]
+    if not crashed or crashed[0]["verdict"] == PROVIDER_ERROR:
+        errs.append("a DMS 500 must grade WRONG, not be excluded as PROVIDER_ERROR")
+    elif _slice_tally(crashed)["n"] != 1:
+        errs.append("a DMS 500 must count in n")
 
     def teapot(question: str) -> dict[str, Any]:
         raise _PlantedHTTPError(400)

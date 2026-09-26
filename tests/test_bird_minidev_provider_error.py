@@ -137,3 +137,39 @@ def test_non_provider_error_still_stops_the_run(tmp_path: Path) -> None:
 
 def test_self_check_covers_provider_error() -> None:
     assert minidev_self_check() == []
+
+
+def test_dms_500_is_retried_then_graded_wrong_not_excluded(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bare 500 is DMS crashing (upstream failures map to 502/503/504). Excluding
+    it would let a product bug raise EX-on-answered; it must count as WRONG."""
+    questions = _questions()
+    gold = duck_gold_fn()
+    answers = {asked_text(q, with_evidence=False): _right_answer(gold, q) for q in questions}
+    unlucky = asked_text(questions[0], with_evidence=False)
+    calls: dict[str, int] = {}
+
+    def ask_fn(question: str) -> dict[str, Any]:
+        calls[question] = calls.get(question, 0) + 1
+        if question == unlucky:
+            raise _http_error(500)
+        return answers[question]
+
+    report = _run(ask_fn, questions, tmp_path)
+    cases, summary = report["cases"], report["summary"]
+    assert len(cases) == len(questions)
+    assert calls[unlucky] == PROVIDER_ATTEMPTS
+    assert cases[0]["verdict"] == "WRONG"
+    assert cases[0]["provider_error"] == "http_500"
+    assert summary["provider_error"] == 0
+    assert summary["wrong"] == 1
+    assert summary["app_error"] == 1
+    graded = [c for c in cases if c["verdict"] not in {"GOLD_ERROR", PROVIDER_ERROR}]
+    assert summary["n"] == len(graded)
+    assert summary["ex_on_answered_pct"] is not None and summary["ex_on_answered_pct"] < 100.0
+
+    print_summary(summary, limit=None, total=len(questions))
+    out = capsys.readouterr().out
+    assert "PROVIDER_ERROR=0 (excluded from n)" in out
+    assert "DMS http_500=1 graded WRONG" in out
