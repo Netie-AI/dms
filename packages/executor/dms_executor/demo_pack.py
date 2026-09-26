@@ -19,7 +19,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
-from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.envelope import (
+    assert_envelope_valid,
+    build_answer_envelope,
+    render_row_lines,
+)
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -296,9 +300,7 @@ def envelope_from_pack_submit(
         receipt = f"cortex_submit_{metric.metric_id}"
     text = f"Found {len(out_rows)} row(s)."
     if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
-        )
+        text += "\n" + render_row_lines(out_rows)
     env = build_answer_envelope(
         answer_id=f"ans_{metric.metric_id}",
         text=text,

@@ -856,6 +856,8 @@ def map_ask_response_to_envelope(
         foreign_space_sources,
         normalize_badge,
         normalize_contributing_sources,
+        normalize_rows,
+        numeric_cell,
         unmapped_badge,
     )
     from dms_executor.gen_path_refuse import REASON_CROSS_SPACE_SOURCE
@@ -916,20 +918,23 @@ def map_ask_response_to_envelope(
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
     values = list(resp.values or [])
+    # NUM-HONESTY: one number encoding for rows, values and text.
+    resp_rows = normalize_rows(list(resp.rows or []))
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
-    if resp.rows:
+    if resp_rows:
         seen = {
             float(v["value"])
             for v in values
             if isinstance(v, dict) and isinstance(v.get("value"), (int, float))
         }
         idx = len(values)
-        for row in list(resp.rows)[:50]:
+        for row in resp_rows[:50]:
             for key, val in row.items():
-                if not isinstance(val, (int, float)) or isinstance(val, bool):
+                cell = numeric_cell(val)
+                if cell is None:
                     continue
-                fv = float(val)
+                fv = cell
                 if any(abs(fv - s) < 1e-9 for s in seen):
                     continue
                 values.append({"id": f"v{idx}", "value": fv, "label": key})
@@ -939,9 +944,9 @@ def map_ask_response_to_envelope(
                     break
             if idx >= 80:
                 break
-    if not values and resp.rows:
-        values = [{"id": "v_count", "value": float(len(resp.rows)), "label": "row_count"}]
-    rows = list(resp.rows or [])
+    if not values and resp_rows:
+        values = [{"id": "v_count", "value": float(len(resp_rows)), "label": "row_count"}]
+    rows = resp_rows
     chart = None
     if rows and not abstained:
         chart = _chart_from_cortex_spec(resp.chart_spec) or _chart_from_rows(rows)

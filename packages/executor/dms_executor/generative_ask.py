@@ -49,6 +49,7 @@ from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
+    render_row_lines,
 )
 from dms_executor.gen_path_refuse import (
     cortex_refusal_gap,
@@ -704,9 +705,7 @@ def _l2_envelope(
     out_rows = rows_from_submit_result(result)
     text = f"Found {len(out_rows)} row(s)."
     if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
-        )
+        text += "\n" + render_row_lines(out_rows)
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
     env = build_answer_envelope(

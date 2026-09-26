@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - Batch 2: cited-source ids survive PII masking; NULL results abstain; one number format
+
+- **Cross-Space attribution (root cause of the 1-in-6 `test_rag_space_boundary` failure).** The PII masker read digit groups inside a source UUID (e.g. `320-4502-9218`) as an account/phone run and rewrote the cited `ref_id` into an id nobody cited. Whole canonical UUIDs (at least one hex letter, not part of an email) are now skipped; emails are masked across the text first. Sources that name another Space are dropped from the envelope. Boundary test 10/10 serially after the fix; deterministic reproduction in `tests/test_rag_source_attribution.py`.
+- **Named empty generation.** An empty Insights generation on a Space ask abstains with `cortex_empty_generation`, not generic text.
+- **Numeric honesty.** SUM/AVG/MAX over no matching rows (NULL) is a named ABSTAIN (`null_result`), never L2 `total=None`; COUNT over no rows still answers 0. Rows, values and text share one number format (Decimal -> float, -0.0 -> 0), so correct DECIMAL answers no longer false-abstain on E4. Known: DECIMAL beyond ~17 significant digits is rounded in rows; NaN/Infinity cells are not yet refused.
+- **Gate.** `tests/test_rag_source_attribution.py`, `tests/test_space_empty_generation.py`, `tests/test_num_honesty.py`; each fails on `76aa7bc`. Independent verifiers accepted all three. Loopback proof with Cortex (top-level WITH extraction): 5 of 6 asks as expected; a correct WITH with GROUP BY inside the CTE abstains `grain_unanalysable:nested_grouping` (fail closed, open).
+- **Found, not fixed.** SQL-source ingest lands every bronze column as VARCHAR, so a generated `SUM(numeric_col)` fails validation and abstains. Largest known BIRD accuracy cost after this batch.
+
 ## 2026-09-26 - SPACE-GEN-01: SQL-source Space questions reach generation; harness grading rule corrected
 
 - **Evidence.** BIRD Mini-Dev local run (dms PR #312) answered 0 of 500: ranking used the demo pack, the no-selection path read only demo tables, a table selection skipped generation. Routed by prd-agent to dms#277 CONNECT-ASK-01 (items 2, 3, 3b, 4a, 4b, 4c). Pairs with Cortex `/v1/insights` caller-ontology change (Cortex PR #277 branch). Measure step and raising the row cap stay NEEDS_FOUNDER. Not COMPLETE. No BIRD score claimed.

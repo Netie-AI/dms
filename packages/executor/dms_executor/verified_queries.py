@@ -21,7 +21,12 @@ import duckdb
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_grants import canonical_space_id
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
-from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.envelope import (
+    assert_envelope_valid,
+    build_answer_envelope,
+    normalize_cell,
+    render_row_lines,
+)
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 
 #: Leading underscore keeps this out of list_bronze_tables / Library tree.
@@ -84,6 +89,7 @@ def _connect(path: Path | None) -> duckdb.DuckDBPyConnection:
 
 
 def _cell(value: Any) -> Any:
+    value = normalize_cell(value)  # Decimal -> float, -0.0 -> 0.0 (NUM-HONESTY)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if hasattr(value, "isoformat"):
@@ -290,9 +296,7 @@ def envelope_from_verified_submit(
         receipt = f"cortex_submit_{asset_id}"
     text = f"Found {len(out_rows)} row(s)."
     if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
-        )
+        text += "\n" + render_row_lines(out_rows)
     env = build_answer_envelope(
         answer_id=f"ans_{asset_id}",
         text=text,
