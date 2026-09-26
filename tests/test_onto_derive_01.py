@@ -758,7 +758,6 @@ R2_MUST_PASS = {
     "ok_avg_parent_attr_group",
     "ok_case",
     "ok_count_child_col",
-    "ok_count_distinct_parent",
     "ok_count_star_parent_first",
     "ok_distinct_on",
     "ok_group_all",
@@ -825,3 +824,62 @@ def test_round2_contract_ask_cannot_carry_an_attack(
     monkeypatch.setattr(rig.cortex, "ask", _ask)
     env = rig.ask(VERIFIED_Q, {})
     _assert_abstain(env, "unverified_join")
+
+
+# --- adversary round 3 ------------------------------------------------------------
+
+R3_REFUSE = {
+    # An output alias named like the parent column hid it from the fan-trap check.
+    "alias_hides_parent": f"SELECT SUM(CAST(budget AS INT)) AS budget FROM {S} s JOIN {D} d ON {L}",
+    "alias_hides_count": f"SELECT COUNT(budget) AS budget FROM {S} s JOIN {D} d ON {L}",
+    # DuckDB two-argument min/max return a list: not idempotent.
+    "max_n_list": f"SELECT len(max(d.district_id, 100)) AS n FROM {D} d JOIN {S} s ON {L}",
+    "min_n_list": f"SELECT list_sum(list_transform(min(d.budget, 100), x -> CAST(x AS INT))) AS n FROM {D} d JOIN {S} s ON {L}",
+    # DISTINCT drops equal values, not repeated parent rows.
+    "sum_distinct_measure": f"SELECT SUM(DISTINCT d.budget_int) AS n FROM {S} s JOIN {D} d ON {L}",
+    "count_distinct_nonkey": f"SELECT COUNT(DISTINCT d.budget) AS n FROM {S} s JOIN {D} d ON {L}",
+    "count_distinct_name": f"SELECT COUNT(DISTINCT d.name) AS n FROM {D} d JOIN {S} s ON {L}",
+    # A filter inside a LEFT JOIN's ON filters nothing.
+    "bare_parent_list": f"SELECT d.name FROM {D} d JOIN {S} s ON {L} ORDER BY d.name LIMIT 2",
+    "left_on_filter": f"SELECT COUNT(*) AS school_count FROM {S} s LEFT JOIN {D} d ON {L} AND d.name = 'North'",
+    # A table function hides the join from the one-table shortcut.
+    "query_table_function": (
+        "SELECT * FROM query('SELECT COUNT(*) AS school_count FROM bronze.public_schools s "
+        "JOIN bronze.public_districts d ON s.school_id = d.district_id')"
+    ),
+}
+R3_PASS = {
+    "count_distinct_key": f"SELECT COUNT(DISTINCT d.district_id) AS n FROM {D} d JOIN {S} s ON {L}",
+    "min_one_arg": f"SELECT MIN(d.name) AS n FROM {S} s JOIN {D} d ON {L}",
+    "left_onto_parent": f"SELECT COUNT(*) AS school_count FROM {S} s LEFT JOIN {D} d ON {L} WHERE d.name = 'North'",
+}
+
+
+def test_round3_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    from dms_executor.space_ontology import load_space_ontology, relation_columns
+
+    rig = _space(tmp_path, monkeypatch, minter)
+    con = duckdb.connect(str(rig.lake))
+    try:
+        con.execute(f"ALTER TABLE {D} ADD COLUMN budget VARCHAR DEFAULT '100'")
+        con.execute(f"ALTER TABLE {D} ADD COLUMN budget_int INTEGER DEFAULT 100")
+        # The wrong figures are real: each would have been a green number.
+        assert con.execute(R3_REFUSE["sum_distinct_measure"]).fetchall() == [(100,)]  # truth 200
+        assert con.execute(R3_REFUSE["alias_hides_count"]).fetchall() == [(4,)]  # truth 2
+    finally:
+        con.close()
+    onto = load_space_ontology(rig.space_id)
+    assert onto is not None
+    con = duckdb.connect(str(rig.lake))
+    try:
+        violations = onto.verify(con)
+    finally:
+        con.close()
+    cols = relation_columns(onto, rig.lake)
+    for name, sql in R3_REFUSE.items():
+        why = unverified_join_reason(sql, onto, violations, columns_of=cols)
+        assert why is not None and why.startswith("unverified_join:"), (name, why)
+    for name, sql in R3_PASS.items():
+        assert unverified_join_reason(sql, onto, violations, columns_of=cols) is None, name

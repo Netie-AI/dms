@@ -890,6 +890,9 @@ class _JoinRule:
         scopes: Sequence[Scope],
     ) -> None:
         self.usable = usable_links(onto, violations)
+        self.keys = {
+            name.lower(): {k.lower() for k in obj.key} for name, obj in onto.objects.items()
+        }
         self.columns_of = columns_of
         self.scope_of = {id(s.expression): s for s in scopes}
         self.scopes = scopes
@@ -1016,6 +1019,10 @@ class _JoinRule:
         tables = [
             src for sc in self.scopes for src in sc.sources.values() if isinstance(src, exp.Table)
         ]
+        for t in root_expr.find_all(exp.Table):
+            if not isinstance(t.this, exp.Identifier):
+                # query('...'), read_csv(...): a table function can hide any join.
+                raise _Refuse("table_function")
         if len(tables) <= 1:
             return
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
@@ -1044,7 +1051,18 @@ class _JoinRule:
                 raise _Refuse("join_kind")
             if side == "LEFT":
                 left_joined.add(str(join.this.alias_or_name).lower())
-            conj.extend(_conjuncts(join.args.get("on")))
+            on = _conjuncts(join.args.get("on"))
+            if side == "LEFT":
+                # A filter in a LEFT JOIN's ON keeps every left row and only
+                # blanks the right side: it filters nothing (round 3).
+                for c in on:
+                    if not (
+                        isinstance(c, exp.EQ)
+                        and isinstance(c.this, exp.Column)
+                        and isinstance(c.expression, exp.Column)
+                    ):
+                        raise _Refuse("left_join_filter")
+            conj.extend(on)
         where = root_expr.args.get("where")
         where_conj = _conjuncts(where.this if where is not None else None)
 
@@ -1128,10 +1146,49 @@ class _JoinRule:
         self._fan_trap(root_expr, root, set(parent_of_child))
 
     def _node_or_alias(self, c: exp.Column, root: Scope, outputs: set[str]) -> _Node | None:
-        """A column's table, or None for a bare output alias (``HAVING n > 1``)."""
-        if not c.table and c.name.lower() in outputs:
-            return None
-        return self.col(c, root)[0]
+        """A column's table, or None for a bare output alias (``HAVING n > 1``).
+
+        The table column wins: DuckDB binds ``SUM(budget) AS budget`` to the
+        column, so an alias sharing its name must not hide it (round 3).
+        """
+        try:
+            return self.col(c, root)[0]
+        except _Refuse:
+            if not c.table and c.name.lower() in outputs:
+                return None
+            raise
+
+    def _safe_position(self, col: exp.Column, select: exp.Select, root: Scope, node: _Node) -> bool:
+        """Where a repeated parent value cannot change the result."""
+        cur: exp.Expression = col
+        parent = col.parent
+        while parent is not None and parent is not select:
+            if isinstance(parent, (exp.Predicate, exp.Group, exp.Order, exp.Ordered)):
+                return True
+            if isinstance(parent, (exp.Min, exp.Max)):
+                # DuckDB min(x, n) / max(x, n) return a list: not idempotent.
+                return not parent.expressions
+            if isinstance(parent, exp.Distinct):
+                agg = parent.parent
+                if not isinstance(agg, exp.AggFunc):
+                    return True  # SELECT DISTINCT / DISTINCT ON: listing
+                # DISTINCT drops equal VALUES, not repeated parent ROWS: only
+                # COUNT(DISTINCT <the parent's whole key>) counts parents.
+                label = _source_label(_sources(root)[node[1]]) or ""
+                cols = parent.expressions
+                return (
+                    isinstance(agg, exp.Count)
+                    and all(isinstance(c, exp.Column) for c in cols)
+                    and all(self.col(c, root)[0] == node for c in cols)
+                    and {c.name.lower() for c in cols} == self.keys.get(label, {""})
+                )
+            if isinstance(parent, exp.Window):
+                return cur is not parent.this
+            if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple)):
+                cur, parent = parent, parent.parent
+                continue
+            return False
+        return parent is select
 
     def _fan_trap(self, select: exp.Select, root: Scope, parents: set[_Node]) -> None:
         """A parent table's value may only be listed, grouped, compared or de-duplicated.
@@ -1147,34 +1204,33 @@ class _JoinRule:
         if not parents:
             return
         outputs = {str(p.alias).lower() for p in select.expressions if isinstance(p, exp.Alias)}
+        if not (
+            select.args.get("group")
+            or select.args.get("distinct")
+            or select.find(exp.AggFunc)
+            or select.find(exp.Window)
+        ):
+            projected = {
+                self._node_or_alias(c, root, outputs)
+                for p in select.expressions
+                for c in p.find_all(exp.Column)
+            } - {None}
+            if projected and projected <= parents:
+                # Only parent columns listed: each parent row repeats once per
+                # child row (North x3). Not a list of parents (round 3).
+                named = sorted(_source_label(_sources(root)[n[1]]) or n[1] for n in projected if n)
+                raise _Refuse(f"parent_rows_repeat ({', '.join(named)})")
         for c in select.find_all(exp.Column):
             if not _local(c, root):
                 continue
             node = self._node_or_alias(c, root, outputs)
-            if node is None or node not in parents or _safe_parent_position(c, select):
+            if node is None or node not in parents or self._safe_position(c, select, root, node):
                 continue
             label = _source_label(_sources(root)[node[1]]) or node[1]
             raise _Refuse(
                 f"fan_trap ({label} is the one side of the join; aggregate it "
-                "with DISTINCT or before joining)"
+                "before joining, or count its key with COUNT(DISTINCT key))"
             )
-
-
-def _safe_parent_position(col: exp.Column, select: exp.Select) -> bool:
-    node: exp.Expression = col
-    parent = col.parent
-    while parent is not None and parent is not select:
-        if isinstance(parent, (exp.Predicate, exp.Group, exp.Order, exp.Ordered, exp.Min, exp.Max)):
-            return True
-        if isinstance(parent, exp.Distinct):
-            return True
-        if isinstance(parent, exp.Window):
-            return node is not parent.this
-        if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple)):
-            node, parent = parent, parent.parent
-            continue
-        return False
-    return parent is select
 
 
 def _ancestors(node: exp.Expression) -> list[exp.Expression]:

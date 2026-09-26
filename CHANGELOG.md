@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - ONTO-DERIVE-01 round 3: allowlist holes closed
+
+- **Evidence.** A third independent adversary found 3 wrong green answers past the allowlist. An output alias named like the parent column (`SUM(budget) AS budget`) hid it from the fan-trap check (400, truth 200). DuckDB's list-returning `max(x, n)` / `min(x, n)` counted as idempotent. `SUM/COUNT(DISTINCT parent_value)` removes equal values, not repeated parent rows (100, truth 200). It also found 2 contract-path gaps: a filter inside a LEFT JOIN ON (4, truth 3), and a `query('...')` table function hiding a join.
+- **Change.** A column resolves before any alias fallback. MIN/MAX are safe only with one argument. Inside an aggregate, DISTINCT is safe only as `COUNT(DISTINCT <parent key>)`. A LEFT JOIN ON holds only link equalities. Table functions refuse. A projection listing only parent columns, with no grouping or DISTINCT, refuses `parent_rows_repeat`. The fan-trap refusal no longer suggests DISTINCT.
+- **Known, not fixed.** A per-row predicate can carry a parent value as a constant (`SUM(CASE WHEN d.budget = '100' THEN 100 END)`). The SQL is valid and matches the rule; whether it answers the question is semantic. `COUNT(DISTINCT d.name)` now refuses (a name is not a key).
+- **Gate.** `tests/test_onto_derive_01.py` 45 tests pin rounds 1 to 3. Full suite 1748 passed. Loopback passes.
+
 ## 2026-09-26 - ONTO-DERIVE-01 round 2: the Space join rule becomes an allowlist
 
 - **Evidence.** A second independent adversary found 7 wrong-answer classes past the round-1 rule, all green on the contract-ask path. They were: a chasm trap (9 schools, truth 3), a derived-table column list swap, `SELECT * REPLACE`, correlations in SELECT/FILTER/HAVING/QUALIFY, fan-out through an outer scope or an untyped aggregate (`list`, `fsum`), EXCEPT/INTERSECT value joins, and a scalar-subquery value join.
