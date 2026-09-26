@@ -836,7 +836,52 @@ def _inner_select(q: exp.Expression) -> exp.Select | None:
     return q if isinstance(q, exp.Select) else None
 
 
+_SET_OPS = (exp.Union, exp.Except, exp.Intersect)
+_COMPARISONS = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+
+
+def _unwrap(proj: exp.Expression) -> exp.Expression:
+    return proj.this if isinstance(proj, exp.Alias) else proj
+
+
+def _under_predicate(node: exp.Expression, stop: exp.Expression) -> bool:
+    parent = node.parent
+    while parent is not None and parent is not stop:
+        if isinstance(parent, exp.Predicate):
+            return True
+        parent = parent.parent
+    return False
+
+
 class _JoinRule:
+    """An allowlist, not a blocklist (adversary rounds 1 and 2, ONTO-DERIVE-01).
+
+    SQL reading one table reference has nothing to join and passes. SQL reading
+    two or more must be ONE flat SELECT over base tables:
+
+    * no set operation, no CTE, no derived table, no subquery outside the
+      top-level WHERE conjuncts;
+    * joins are inner, or LEFT onto the parent of a link; nothing else;
+    * every top-level ON/WHERE conjunct relating two tables is a plain column
+      equality, and the equalities between two tables spell exactly one
+      declared link that ``verify()`` measured many-to-one;
+    * the links form a child -> parent tree with one grain table: no parent
+      joined to two children (chasm), nothing unconnected;
+    * no other predicate anywhere (FILTER, CASE, HAVING, QUALIFY, projection)
+      relates two tables;
+    * an aggregate or unknown function over a parent table's value is a fan
+      trap unless it is MIN/MAX or DISTINCT; a parent column inside a per-row
+      predicate (``SUM(CASE WHEN d.name = 'North' ...)``) is not;
+    * WHERE may hold only these subqueries, each over ONE table with no
+      grouping or nesting: ``[NOT] EXISTS`` correlated only by verified-link
+      equalities; ``col IN (SELECT col ...)`` uncorrelated on a verified link;
+      ``col <op> (SELECT AGG(same col) ...)`` uncorrelated.
+
+    Anything else refuses. Some correct SQL refuses too (a derived table
+    grouped on the key, CAST on both join sides, USING); that is the price of
+    WRONG=0 until each shape is proven on its own.
+    """
+
     def __init__(
         self,
         onto: Ontology,
@@ -844,10 +889,10 @@ class _JoinRule:
         columns_of: Mapping[str, set[str]],
         scopes: Sequence[Scope],
     ) -> None:
-        self.onto = onto
         self.usable = usable_links(onto, violations)
         self.columns_of = columns_of
         self.scope_of = {id(s.expression): s for s in scopes}
+        self.scopes = scopes
         self.by_pair: dict[frozenset[str], list[tuple[str, Any]]] = {}
         for name, link in onto.links.items():
             key = frozenset({link.from_object.lower(), link.to_object.lower()})
@@ -858,12 +903,11 @@ class _JoinRule:
     def link_for(self, cols: set[tuple[str, str, str, str]]) -> Any:
         """The verified link every (relA, colA, relB, colB) pair together spells."""
         rels = {c[0] for c in cols} | {c[2] for c in cols}
-        pair = frozenset(rels)
         names = " x ".join(sorted(rels))
         if len(rels) != 2:
             raise _Refuse(f"{names} has no declared link")
         wanted = {frozenset({(a, b), (c, d)}) for (a, b, c, d) in cols}
-        candidates = self.by_pair.get(pair, [])
+        candidates = self.by_pair.get(frozenset(rels), [])
         if not candidates:
             raise _Refuse(f"{names} has no declared link")
         for name, link in candidates:
@@ -879,101 +923,143 @@ class _JoinRule:
                 return link
         raise _Refuse(f"{names} joined on columns no declared link names")
 
-    # -- subquery operands ------------------------------------------------
+    def col(self, c: exp.Column, scope: Scope) -> tuple[_Node, tuple[str, str]]:
+        sc, alias = _owner(c, scope, self.columns_of)
+        return (id(sc), alias), _real(sc, alias, c.name.lower(), self.columns_of)
 
-    def _uncorrelated(self, select: exp.Select) -> bool:
-        """No column inside ``select`` resolves to a source outside it."""
+    # -- subqueries allowed in WHERE --------------------------------------
 
-        def inside(node: exp.Expression | None) -> bool:
-            while node is not None:
-                if node is select:
-                    return True
-                node = node.parent
-            return False
+    def _simple_inner(self, q: exp.Expression) -> tuple[exp.Select, Scope]:
+        sub = _inner_select(q)
+        inner = self.scope_of.get(id(sub)) if sub is not None else None
+        if sub is None or inner is None:
+            raise _Refuse("subquery_shape")
+        if (
+            len(inner.sources) != 1
+            or not isinstance(next(iter(inner.sources.values())), exp.Table)
+            or sub.args.get("joins")
+            or sub.args.get("group")
+            or sub.args.get("having")
+            or sub.args.get("qualify")
+            or sub.args.get("with")
+            or _top_queries(sub.args.get("where") or exp.Null())
+            or any(_top_queries(p) for p in sub.expressions)
+            or sub.find(exp.Window)
+        ):
+            raise _Refuse("subquery_shape")
+        return sub, inner
 
-        for scope in self.scope_of.values():
-            if not inside(scope.expression):
-                continue
-            for col in scope.expression.find_all(exp.Column):
-                if not _local(col, scope):
-                    continue
-                owner, _alias = _owner(col, scope, self.columns_of)
-                if not inside(owner.expression):
-                    return False
-        return True
+    def _uncorrelated(self, sub: exp.Select, inner: Scope) -> None:
+        for c in sub.find_all(exp.Column):
+            sc, _alias = _owner(c, inner, self.columns_of)
+            if sc is not inner:
+                raise _Refuse("correlated_subquery")
 
-    def _subquery_conjunct(self, c: exp.Expression, scope: Scope) -> None:
-        """Allowed: EXISTS, ``col IN (SELECT col ...)`` on a link, one scalar aggregate."""
+    def where_subquery(self, c: exp.Expression, root: Scope) -> exp.Select:
         body = c.this if isinstance(c, exp.Not) else c
         if isinstance(body, exp.Exists):
-            return  # its own scope proves any correlation is a verified link
+            sub, inner = self._simple_inner(body.this)
+            if sub.find(exp.AggFunc):
+                raise _Refuse("subquery_shape")
+            inner_node = (id(inner), next(iter(_sources(inner))))
+            for proj in sub.expressions:
+                for col in proj.find_all(exp.Column):
+                    if self.col(col, inner)[0] != inner_node:
+                        raise _Refuse("correlated_subquery")
+            where = sub.args.get("where")
+            for conj in _conjuncts(where.this if where is not None else None):
+                owners = [self.col(x, inner) for x in conj.find_all(exp.Column)]
+                nodes = {o[0] for o in owners}
+                if nodes <= {inner_node}:
+                    continue
+                if (
+                    len(nodes) != 2
+                    or inner_node not in nodes
+                    or not isinstance(conj, exp.EQ)
+                    or not isinstance(conj.this, exp.Column)
+                    or not isinstance(conj.expression, exp.Column)
+                ):
+                    raise _Refuse("correlated_subquery")
+                (_na, ra), (_nb, rb) = self.col(conj.this, inner), self.col(conj.expression, inner)
+                self.link_for({(ra[0], ra[1], rb[0], rb[1])})
+            return sub
         if isinstance(c, exp.In) and c.args.get("query") is not None:
             left = c.this
-            sub = _inner_select(c.args["query"])
-            if not isinstance(left, exp.Column) or sub is None or len(sub.expressions) != 1:
-                raise _Refuse("subquery_comparison")
-            proj = sub.expressions[0]
-            inner_col = proj.this if isinstance(proj, exp.Alias) else proj
-            inner = self.scope_of.get(id(sub))
-            if not isinstance(inner_col, exp.Column) or inner is None:
-                raise _Refuse("subquery_comparison")
-            if not self._uncorrelated(sub) or len(inner.sources) != 1:
-                raise _Refuse("subquery_comparison")
-            osc, oalias = _owner(left, scope, self.columns_of)
-            a = _real(osc, oalias, left.name.lower(), self.columns_of)
-            isc, ialias = _owner(inner_col, inner, self.columns_of)
-            b = _real(isc, ialias, inner_col.name.lower(), self.columns_of)
-            self.link_for({(a[0], a[1], b[0], b[1])})
-            return
-        comparisons = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
-        if isinstance(c, comparisons):
-            sides = [c.this, c.expression]
-            subs = [x for x in sides if isinstance(x, exp.Subquery)]
-            if len(subs) == 1:
-                sub = _inner_select(subs[0])
-                if (
-                    sub is not None
-                    and len(sub.expressions) == 1
-                    and not sub.args.get("group")
-                    and isinstance(
-                        (
-                            sub.expressions[0].this
-                            if isinstance(sub.expressions[0], exp.Alias)
-                            else sub.expressions[0]
-                        ),
-                        exp.AggFunc,
-                    )
-                    and self._uncorrelated(sub)
-                ):
-                    return  # one uncorrelated scalar: a constant, not a join
-        raise _Refuse("subquery_comparison")
+            sub, inner = self._simple_inner(c.args["query"])
+            self._uncorrelated(sub, inner)
+            if not isinstance(left, exp.Column) or len(sub.expressions) != 1:
+                raise _Refuse("subquery_shape")
+            proj = _unwrap(sub.expressions[0])
+            if not isinstance(proj, exp.Column):
+                raise _Refuse("subquery_shape")
+            _n, ra = self.col(left, root)
+            _m, rb = self.col(proj, inner)
+            self.link_for({(ra[0], ra[1], rb[0], rb[1])})
+            return sub
+        if isinstance(c, _COMPARISONS):
+            subs = [x for x in (c.this, c.expression) if isinstance(x, exp.Subquery)]
+            other = c.expression if c.this in subs else c.this
+            if len(subs) == 1 and isinstance(other, exp.Column):
+                sub, inner = self._simple_inner(subs[0])
+                self._uncorrelated(sub, inner)
+                agg = _unwrap(sub.expressions[0]) if len(sub.expressions) == 1 else None
+                if isinstance(agg, exp.AggFunc) and isinstance(agg.this, exp.Column):
+                    _n, ra = self.col(other, root)
+                    _m, rb = self.col(agg.this, inner)
+                    if ra == rb:
+                        return sub  # a threshold over the same column, not a join
+        raise _Refuse("subquery_shape")
 
-    # -- one scope --------------------------------------------------------
+    # -- the whole statement ----------------------------------------------
 
-    def check_scope(self, scope: Scope) -> None:
-        select = scope.expression
-        if not isinstance(select, exp.Select):
+    def check(self, root_expr: exp.Expression) -> None:
+        tables = [
+            src for sc in self.scopes for src in sc.sources.values() if isinstance(src, exp.Table)
+        ]
+        if len(tables) <= 1:
             return
-        own = _sources(scope)
+        if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
+            raise _Refuse("set_operation")
+        if root_expr.find(exp.With):
+            raise _Refuse("cte_over_join")
+        root = self.scope_of.get(id(root_expr))
+        if root is None:
+            raise _Refuse("scope")
+        own = _sources(root)
+        if any(not isinstance(src, exp.Table) for src in own.values()):
+            raise _Refuse("derived_table_over_join")
+        rid = id(root)
+        order = {a: i for i, a in enumerate(own)}
+
+        left_joined: set[str] = set()
         conj: list[exp.Expression] = []
-        for join in select.args.get("joins") or []:
-            if join.args.get("using"):
-                raise _Refuse("join_using")
+        for join in root_expr.args.get("joins") or []:
+            side = str(join.args.get("side") or "").upper()
+            kind = str(join.args.get("kind") or "").upper()
+            if join.args.get("using") or join.args.get("method"):
+                raise _Refuse("join_kind")
+            if side not in ("", "LEFT") or kind not in ("", "INNER", "OUTER"):
+                raise _Refuse("join_kind")
+            if kind == "OUTER" and side != "LEFT":
+                raise _Refuse("join_kind")
+            if side == "LEFT":
+                left_joined.add(str(join.this.alias_or_name).lower())
             conj.extend(_conjuncts(join.args.get("on")))
-        where = select.args.get("where")
-        conj.extend(_conjuncts(where.this if where is not None else None))
+        where = root_expr.args.get("where")
+        where_conj = _conjuncts(where.this if where is not None else None)
 
-        Col = tuple[str, str]  # (real relation, column)
-        edges: dict[frozenset[_Node], list[tuple[_Node, Col, _Node, Col]]] = {}
-        for c in conj:
+        allowed_subs: list[exp.Select] = []
+        accepted: set[int] = set()
+        edges: dict[frozenset[_Node], list[tuple[_Node, tuple[str, str], _Node, tuple[str, str]]]]
+        edges = {}
+        for c in conj + where_conj:
             if _top_queries(c):
-                self._subquery_conjunct(c, scope)
-            cols = [col for col in c.find_all(exp.Column) if _local(col, scope)]
-            owners: dict[int, tuple[_Node, Scope]] = {}
-            for col in cols:
-                sc, alias = _owner(col, scope, self.columns_of)
-                owners[id(col)] = ((id(sc), alias), sc)
-            if len({o[0] for o in owners.values()}) < 2:
+                if c not in where_conj:
+                    raise _Refuse("subquery_shape")
+                allowed_subs.append(self.where_subquery(c, root))
+                continue
+            owners = [self.col(x, root) for x in c.find_all(exp.Column)]
+            if len({o[0] for o in owners}) < 2:
                 continue
             if not (
                 isinstance(c, exp.EQ)
@@ -981,62 +1067,123 @@ class _JoinRule:
                 and isinstance(c.expression, exp.Column)
             ):
                 raise _Refuse("non_link_predicate")
-            (na, sa), (nb, sb) = owners[id(c.this)], owners[id(c.expression)]
-            ra = _real(sa, na[1], c.this.name.lower(), self.columns_of)
-            rb = _real(sb, nb[1], c.expression.name.lower(), self.columns_of)
+            (na, ra), (nb, rb) = self.col(c.this, root), self.col(c.expression, root)
             edges.setdefault(frozenset({na, nb}), []).append((na, ra, nb, rb))
+            accepted.add(id(c))
 
-        parents: set[_Node] = set()
-        joined: list[frozenset[_Node]] = []
+        # No subquery anywhere else (SELECT list, FILTER, HAVING, QUALIFY, ORDER BY).
+        allowed_ids = {id(s) for s in allowed_subs}
+        for q in root_expr.find_all(exp.Select):
+            if q is root_expr:
+                continue
+            if id(q) not in allowed_ids and not any(
+                p is not None and id(p) in allowed_ids for p in _ancestors(q)
+            ):
+                raise _Refuse("subquery_shape")
+
+        # No other predicate relates two tables.
+        outputs = {str(p.alias).lower() for p in root_expr.expressions if isinstance(p, exp.Alias)}
+        for pred in root_expr.find_all(exp.Predicate):
+            if id(pred) in accepted or not _local(pred, root):
+                continue
+            nodes = {
+                self._node_or_alias(x, root, outputs)
+                for x in pred.find_all(exp.Column)
+                if _local(x, root)
+            } - {None}
+            if len(nodes) > 1:
+                raise _Refuse("non_link_predicate")
+
+        # The links form a child -> parent tree.
+        parent_of_child: dict[_Node, set[_Node]] = {}
+        undirected: list[frozenset[_Node]] = []
         for pair, rows in edges.items():
             link = self.link_for({(ra[0], ra[1], rb[0], rb[1]) for _na, ra, _nb, rb in rows})
-            parent_rel = link.to_object.lower()
-            for na, ra, nb, rb in rows:
-                if ra[0] == parent_rel:
-                    parents.add(na)
-                if rb[0] == parent_rel:
-                    parents.add(nb)
-            joined.append(pair)
+            na, ra, nb, rb = rows[0]
+            parent, child = (na, nb) if ra[0] == link.to_object.lower() else (nb, na)
+            parent_of_child.setdefault(parent, set()).add(child)
+            undirected.append(pair)
+            if parent[1] not in left_joined and child[1] in left_joined:
+                raise _Refuse("join_kind")  # LEFT JOIN onto a child adds unmatched rows
+            if child[1] in left_joined and order.get(parent[1], 0) > order.get(child[1], 0):
+                raise _Refuse("join_kind")
+        mine = {(rid, a) for a in own}
+        for parent, children in parent_of_child.items():
+            if len(children) > 1:
+                label = _source_label(own[parent[1]]) or parent[1]
+                raise _Refuse(f"chasm_trap ({label} joins two child tables)")
+        root_of = {n: n for n in mine}
 
-        mine = {(id(scope), a) for a in own}
-        if len(mine) > 1:
-            root = {n: n for n in mine}
+        def find(n: _Node) -> _Node:
+            while root_of[n] != n:
+                n = root_of[n]
+            return n
 
-            def find(n: _Node) -> _Node:
-                while root[n] != n:
-                    n = root[n]
-                return n
+        for pair in undirected:
+            a, b = sorted(pair)
+            root_of[find(a)] = find(b)
+        if len({find(n) for n in mine}) != 1:
+            named = sorted({lbl for src in own.values() if (lbl := _source_label(src))})
+            raise _Refuse(f"cross_product ({', '.join(named)} not joined by a verified link)")
+        self._fan_trap(root_expr, root, set(parent_of_child))
 
-            for pair in joined:
-                if pair <= mine:
-                    a, b = sorted(pair)
-                    root[find(a)] = find(b)
-            if len({find(n) for n in mine}) != 1:
-                named = sorted(
-                    {lbl for a in own if (lbl := _source_label(own[a])) is not None}
-                ) or ["derived tables"]
-                raise _Refuse(f"cross_product ({', '.join(named)} not joined by a verified link)")
-        self._fan_trap(scope, parents & mine)
+    def _node_or_alias(self, c: exp.Column, root: Scope, outputs: set[str]) -> _Node | None:
+        """A column's table, or None for a bare output alias (``HAVING n > 1``)."""
+        if not c.table and c.name.lower() in outputs:
+            return None
+        return self.col(c, root)[0]
 
-    def _fan_trap(self, scope: Scope, parents: set[_Node]) -> None:
-        """An aggregate over the one side of a join counts each parent once per child."""
+    def _fan_trap(self, select: exp.Select, root: Scope, parents: set[_Node]) -> None:
+        """A parent table's value may only be listed, grouped, compared or de-duplicated.
+
+        Each parent row repeats once per child row after the join. A parent
+        column is safe only where repetition cannot change the result: a
+        per-row predicate, GROUP BY / ORDER BY / a window partition, MIN/MAX,
+        a DISTINCT aggregate, or a bare projection. Anywhere else (COUNT, SUM,
+        list(), CAST inside an aggregate, an unknown function) it is a fan trap.
+        Position, not function name: a function sqlglot does not type as an
+        aggregate (``list``, ``fsum``) cannot slip through.
+        """
         if not parents:
             return
-        for agg in scope.expression.find_all(exp.AggFunc):
-            if not _local(agg, scope) or isinstance(agg, (exp.Min, exp.Max)):
+        outputs = {str(p.alias).lower() for p in select.expressions if isinstance(p, exp.Alias)}
+        for c in select.find_all(exp.Column):
+            if not _local(c, root):
                 continue
-            if isinstance(agg.this, exp.Distinct):
+            node = self._node_or_alias(c, root, outputs)
+            if node is None or node not in parents or _safe_parent_position(c, select):
                 continue
-            for col in agg.find_all(exp.Column):
-                if not _local(col, scope):
-                    continue
-                sc, alias = _owner(col, scope, self.columns_of)
-                if (id(sc), alias) in parents:
-                    label = _source_label(_sources(sc)[alias]) or "a derived table"
-                    raise _Refuse(
-                        f"fan_trap ({label} is the one side of the join; aggregate it "
-                        "with DISTINCT or before joining)"
-                    )
+            label = _source_label(_sources(root)[node[1]]) or node[1]
+            raise _Refuse(
+                f"fan_trap ({label} is the one side of the join; aggregate it "
+                "with DISTINCT or before joining)"
+            )
+
+
+def _safe_parent_position(col: exp.Column, select: exp.Select) -> bool:
+    node: exp.Expression = col
+    parent = col.parent
+    while parent is not None and parent is not select:
+        if isinstance(parent, (exp.Predicate, exp.Group, exp.Order, exp.Ordered, exp.Min, exp.Max)):
+            return True
+        if isinstance(parent, exp.Distinct):
+            return True
+        if isinstance(parent, exp.Window):
+            return node is not parent.this
+        if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple)):
+            node, parent = parent, parent.parent
+            continue
+        return False
+    return parent is select
+
+
+def _ancestors(node: exp.Expression) -> list[exp.Expression]:
+    out: list[exp.Expression] = []
+    parent = node.parent
+    while parent is not None:
+        out.append(parent)
+        parent = parent.parent
+    return out
 
 
 def unverified_join_reason(
@@ -1046,37 +1193,28 @@ def unverified_join_reason(
     *,
     columns_of: Mapping[str, set[str]],
 ) -> str | None:
-    """``unverified_join:<why>`` unless every join in ``sql`` is a verified link.
+    """``unverified_join:<why>`` unless ``sql`` is the allowlisted join shape.
 
-    Structural, fail closed. Per SELECT scope, every top-level AND conjunct of
-    JOIN ON / WHERE that relates two sources (aliases, so a second copy of a
-    relation is its own source) must be a plain column equality; the
-    equalities between two sources together must spell exactly one declared
-    link that ``verify()`` measured many-to-one with nothing failed. OR, NOT,
-    functions or any other shape relating two sources refuse. A conjunct with
-    a subquery operand is allowed only as EXISTS, ``col IN (SELECT col ...)``
-    on a verified link, or a comparison with one uncorrelated scalar
-    aggregate. Every source of a scope must be connected by verified links,
-    and an aggregate over the one side of a join (other than MIN/MAX or
-    DISTINCT) is a fan trap. A column that cannot be placed refuses.
+    See ``_JoinRule``. Fail closed: a statement the analysis cannot finish
+    proves nothing and refuses.
     """
     try:
         roots = [r for r in sqlglot.parse(sql, read=_DIALECT) if r is not None]
     except Exception:  # noqa: BLE001
         return f"{REASON_UNVERIFIED_JOIN}:parse"
-    for root in roots:
-        try:
-            scopes = traverse_scope(root)
-        except Exception:  # noqa: BLE001
-            return f"{REASON_UNVERIFIED_JOIN}:scope"
-        rule = _JoinRule(onto, violations, columns_of, scopes)
-        try:
-            for scope in scopes:
-                rule.check_scope(scope)
-        except _Refuse as why:
-            return f"{REASON_UNVERIFIED_JOIN}:{why}"
-        except Exception:  # noqa: BLE001 - an analysis we cannot finish proves nothing
-            return f"{REASON_UNVERIFIED_JOIN}:unanalysable"
+    if len(roots) != 1:
+        return f"{REASON_UNVERIFIED_JOIN}:statements"
+    root = roots[0]
+    try:
+        scopes = traverse_scope(root)
+    except Exception:  # noqa: BLE001
+        return f"{REASON_UNVERIFIED_JOIN}:scope"
+    try:
+        _JoinRule(onto, violations, columns_of, scopes).check(root)
+    except _Refuse as why:
+        return f"{REASON_UNVERIFIED_JOIN}:{why}"
+    except Exception:  # noqa: BLE001 - an analysis we cannot finish proves nothing
+        return f"{REASON_UNVERIFIED_JOIN}:unanalysable"
     return None
 
 
