@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -84,6 +85,7 @@ from dms_executor.envelope import (
 from dms_executor.generative_ask import (
     maybe_generative_ask,
     path_miss_envelope,
+    untyped_numeric_reason,
     with_served_attribution,
 )
 from dms_executor.library_tree import build_library_tree
@@ -144,12 +146,21 @@ from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
+    serving_sync_state,
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
 from dms_executor.xlsx_orch import run_crosscheck, run_extract, run_golden
 
 logger = logging.getLogger(__name__)
+
+# Cortex ``cortex_row_predicates`` accepts one or two identifier parts.
+_GRANT_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _grant_name_ok(name: str) -> bool:
+    parts = str(name).split(".")
+    return 1 <= len(parts) <= 2 and all(_GRANT_IDENT.fullmatch(p) for p in parts)
 
 #: The demo tenant and its single steward. Real multi-tenancy arrives with the
 #: Postgres control plane (P-DMS-2); until then every session is this user.
@@ -360,7 +371,19 @@ class Executor:
             session_id="_grantable_probe",
             pool_id="default",
         )
-        return sorted(resolve_session_acl(ctx).row_predicates)
+        granted = sorted(resolve_session_acl(ctx).row_predicates)
+        # F-c: one granted name that breaks the SHARED NAMING RULE (a legacy
+        # ``bronze.2024_sales``) made ``cortex_row_predicates`` refuse the whole
+        # Space's manifest, so every ask abstained ``submit_failed``. Such a table
+        # is not grantable (new ingests never create one); it is named, not hidden.
+        bad = [t for t in granted if not _grant_name_ok(t)]
+        if bad:
+            logger.warning(
+                "space %s: not granting %s (name breaks the naming rule; re-ingest to rename)",
+                space_id,
+                ", ".join(bad),
+            )
+        return [t for t in granted if t not in bad]
 
     def demo_acl(
         self,
@@ -883,6 +906,15 @@ class Executor:
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         sql_used = str(getattr(resp, "sql_used", None) or "")
+        if sql_used and not is_demo_space(space_id) and not getattr(resp, "abstained", False):
+            # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
+            num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
+            if num_why:
+                env = path_miss_envelope(
+                    question, num_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
             # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
             # Its SQL answers only if it passes the same rule generation does.
@@ -1194,6 +1226,7 @@ __all__ = [
     "is_demo_space",
     "default_readable_tables",
     "warehouse_path",
+    "serving_sync_state",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

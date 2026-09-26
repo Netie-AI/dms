@@ -47,6 +47,7 @@ GAP_REASONS = frozenset(
         "unverified_join",
         "no_declared_measure",
         "ontology_store_unavailable",
+        "untyped_numeric",
     }
 )
 
