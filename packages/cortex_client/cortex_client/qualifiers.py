@@ -317,40 +317,155 @@ def _plan_blob(plan: dict[str, Any] | None) -> str:
     return json.dumps(plan, default=str).lower()
 
 
-def _sql_group_blob(sql: str | None) -> str:
+# dms#290 R3: coverage is clause-scoped and word-bounded. A grain word in a
+# measure name, a filter value in the SELECT list, "day" inside lead_time_days,
+# or "last N months" over an unrelated WHERE no longer counts as honoured.
+_CLAUSE_START = {
+    "group": re.compile(r"\bgroup\s+by\b", re.I),
+    "where": re.compile(r"\bwhere\b", re.I),
+    "having": re.compile(r"\bhaving\b", re.I),
+    "select": re.compile(r"\bselect\b", re.I),
+}
+_CLAUSE_STOP = re.compile(
+    r"\b(?:group\s+by|order\s+by|having|limit|qualify|window|union|intersect|except|from)\b"
+    r"|;",
+    re.I,
+)
+_WHERE_STOP = re.compile(
+    r"\b(?:group\s+by|order\s+by|having|limit|qualify|window|union|intersect|except)\b|;",
+    re.I,
+)
+_ORDINAL_RE = re.compile(r"(?:^|,)\s*\d+\s*(?=,|$)")
+_CLOCK_ANCHOR_RE = re.compile(
+    r"\b(current_date|current_timestamp|now\s*\(|today\s*\(|get_current_timestamp\s*\()"
+    r"|\bdate\s*'\d{4}-\d{2}-\d{2}'|'\d{4}-\d{2}-\d{2}",
+    re.I,
+)
+_MONTH_NUM = {
+    name: i
+    for i, names in enumerate(
+        (
+            ("january", "jan"),
+            ("february", "feb"),
+            ("march", "mar"),
+            ("april", "apr"),
+            ("may",),
+            ("june", "jun"),
+            ("july", "jul"),
+            ("august", "aug"),
+            ("september", "sep", "sept"),
+            ("october", "oct"),
+            ("november", "nov"),
+            ("december", "dec"),
+        ),
+        start=1,
+    )
+    for name in names
+}
+
+
+def _word(hay: str, token: str) -> bool:
+    """Token as a whole identifier/word. ``day`` does not match ``lead_time_days``."""
+    t = token.lower()
+    if not t:
+        return False
+    return re.search(rf"(?<![a-z0-9_]){re.escape(t)}(?![a-z0-9_])", hay.lower()) is not None
+
+
+def _clauses(sql: str | None, kind: str) -> str:
+    """Every ``kind`` clause body, cut at the next clause keyword at its own depth.
+
+    Paren-aware: ``WHERE CAST(d AS DATE) < x`` keeps the whole predicate, and a
+    subquery's clause ends at its closing paren.
+    """
     if not sql:
         return ""
-    m = re.search(
-        r"\bgroup\s+by\b(.+?)(?:\border\s+by\b|\blimit\b|\bhaving\b|$)",
-        sql,
-        flags=re.I | re.S,
-    )
-    return (m.group(1) if m else "").lower()
+    stop = _WHERE_STOP if kind in {"where", "having"} else _CLAUSE_STOP
+    if kind == "having":
+        stop = re.compile(r"\b(?:order\s+by|limit|qualify|window|union|intersect|except)\b|;", re.I)
+    out: list[str] = []
+    for m in _CLAUSE_START[kind].finditer(sql):
+        i = m.end()
+        depth = 0
+        j = i
+        while j < len(sql):
+            ch = sql[j]
+            if ch == "'":
+                k = sql.find("'", j + 1)
+                j = len(sql) if k < 0 else k + 1
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and stop.match(sql, j) and (j == 0 or not sql[j - 1].isalnum()):
+                break
+            j += 1
+        out.append(sql[i:j])
+    return " ".join(out).lower()
+
+
+def _sql_group_blob(sql: str | None) -> str:
+    return _clauses(sql, "group")
 
 
 def _sql_where_blob(sql: str | None) -> str:
-    if not sql:
+    """Every WHERE and HAVING clause. Filters live there, not in SELECT."""
+    return (_clauses(sql, "where") + " " + _clauses(sql, "having")).strip()
+
+
+def _sql_select_blob(sql: str | None) -> str:
+    return _clauses(sql, "select")
+
+
+def _group_key_blob(sql: str | None) -> str:
+    """GROUP BY text, plus the SELECT list when GROUP BY uses ordinals or ALL."""
+    group = _sql_group_blob(sql)
+    if not group.strip():
         return ""
-    m = re.search(
-        r"\bwhere\b(.+?)(?:\bgroup\s+by\b|\border\s+by\b|\blimit\b|$)",
-        sql,
-        flags=re.I | re.S,
+    if _ORDINAL_RE.search(group) or _word(group, "all"):
+        return group + " " + _sql_select_blob(sql)
+    return group
+
+
+def _plan_group_blob(plan: dict[str, Any] | None) -> str:
+    if not isinstance(plan, dict):
+        return ""
+    return json.dumps(plan.get("group_by") or [], default=str).lower()
+
+
+def _plan_filter_blob(plan: dict[str, Any] | None) -> str:
+    if not isinstance(plan, dict):
+        return ""
+    return json.dumps(plan.get("filters") or [], default=str).lower()
+
+
+def _grain_expr(hay: str, grain: str) -> bool:
+    g = re.escape(grain.lower())
+    return (
+        re.search(rf"date_trunc\s*\(\s*['\"]{g}s?['\"]", hay, re.I) is not None
+        or re.search(rf"(?<![a-z0-9_]){g}\s*\(", hay, re.I) is not None
+        or re.search(rf"\b(?:extract|date_part|datepart)\s*\(\s*['\"]?{g}\b", hay, re.I)
+        is not None
+        or re.search(rf"time_bucket\s*\(\s*interval\s*'?\s*\d*\s*{g}", hay, re.I)
+        is not None
     )
-    return (m.group(1) if m else "").lower()
 
 
 def _honors_time_grain(grain: str, *, sql: str | None, plan: dict[str, Any] | None) -> bool:
     g = grain.lower()
-    sql_l = (sql or "").lower()
-    if re.search(rf"date_trunc\s*\(\s*['\"]?{re.escape(g)}\b", sql_l):
-        return True
-    if re.search(rf"\b{re.escape(g)}\s*\(", sql_l):
-        return True
-    if g in _sql_group_blob(sql):
-        return True
-    blob = _plan_blob(plan)
-    if g in blob:
-        return True
+    if sql:
+        keys = _group_key_blob(sql)
+        if keys and (_grain_expr(keys, g) or _word(keys, g)):
+            return True
+    if isinstance(plan, dict):
+        if _word(_plan_group_blob(plan), g):
+            return True
+        for key in ("time_grain", "grain"):
+            if str(plan.get(key) or "").strip().lower() == g:
+                return True
     return False
 
 
@@ -365,23 +480,8 @@ def _honors_group_by(dim: str, *, sql: str | None, plan: dict[str, Any] | None) 
         aliases.update({"location_code", "warehouse"})
     if token == "plant":
         aliases.update({"location_code", "plant_id"})
-    group_sql = _sql_group_blob(sql)
-    plan_l = _plan_blob(plan)
-    hay = group_sql + " " + plan_l
-    return any(a in hay for a in aliases)
-
-
-def _sql_select_blob(sql: str | None) -> str:
-    if not sql:
-        return ""
-    m = re.search(r"\bselect\b(.+?)\bfrom\b", sql, flags=re.I | re.S)
-    return (m.group(1) if m else "").lower()
-
-
-def _plan_group_blob(plan: dict[str, Any] | None) -> str:
-    if not isinstance(plan, dict):
-        return ""
-    return json.dumps(plan.get("group_by") or [], default=str).lower()
+    hay = _group_key_blob(sql) + " " + _plan_group_blob(plan)
+    return any(_word(hay, a) for a in aliases)
 
 
 def _honors_grain(grain: str, *, sql: str | None, plan: dict[str, Any] | None) -> bool:
@@ -401,36 +501,58 @@ def _honors_grain(grain: str, *, sql: str | None, plan: dict[str, Any] | None) -
         "sku": ("sku",),
     }.get(grain, (grain,))
     if sql:
-        hay = group_sql if group_sql.strip() else _sql_select_blob(sql)
-        if any(a in hay for a in aliases):
+        hay = _group_key_blob(sql) if group_sql.strip() else _sql_select_blob(sql)
+        if any(_word(hay, a) for a in aliases):
             return True
     if isinstance(plan, dict):
-        return any(a in plan_group for a in aliases)
+        return any(_word(plan_group, a) for a in aliases)
     return False
 
 
 def _honors_named_filter(value: str, *, sql: str | None, plan: dict[str, Any] | None) -> bool:
+    """The value is a predicate (WHERE/HAVING or plan filters), not a label."""
     aliases = [value]
     if _norm(value) in {_norm(a) for a in _WH_A_ALIASES}:
         aliases = list(_WH_A_ALIASES)
-    where = _sql_where_blob(sql) + " " + (sql or "").lower()
-    blob = _plan_blob(plan) + " " + where
-    return any(_norm(a) and _norm(a) in _norm(blob) for a in aliases)
+    hay = _norm(_sql_where_blob(sql) + " " + _plan_filter_blob(plan))
+    return any(_norm(a) and re.search(rf"\b{re.escape(_norm(a))}\b", hay) for a in aliases)
 
 
 def _honors_time_filter(value: str, *, sql: str | None, plan: dict[str, Any] | None) -> bool:
-    blob = ((sql or "") + " " + _plan_blob(plan)).lower()
-    if "where" not in blob and "filter" not in blob:
-        if not isinstance(plan, dict) or not plan.get("filters"):
-            if not _sql_where_blob(sql):
-                return False
+    where = _sql_where_blob(sql)
+    pfilt = _plan_filter_blob(plan)
     if value.startswith("year="):
-        return value.split("=", 1)[1] in blob
+        year = value.split("=", 1)[1]
+        return _word(where, year) or _word(pfilt, year)
     if value.startswith("month="):
         name = value.split("=", 1)[1]
-        return name in blob
+        num = _MONTH_NUM.get(name)
+        if _word(where, name) or _word(pfilt, name):
+            return True
+        if num is None:
+            return False
+        mm = f"{num:02d}"
+        return (
+            re.search(rf"'\d{{4}}-{mm}(?:-\d{{2}})?'", where) is not None
+            or re.search(
+                rf"(?:month\s*\([^)]*\)|(?:extract|date_part)\s*\(\s*'?month\b[^)]*\))"
+                rf"\s*=\s*'?0?{num}\b",
+                where,
+            )
+            is not None
+        )
+    # last/this/past N <unit>: a date predicate anchored on the clock or a
+    # date literal, windowed in that unit. Any WHERE is not enough.
     unit = value.rsplit("_", 1)[-1]
-    return bool(_sql_where_blob(sql)) or ("interval" in blob) or (unit in blob and "where" in blob)
+    if where and _CLOCK_ANCHOR_RE.search(where):
+        u = re.escape(unit)
+        if re.search(rf"\binterval\b\s*'?\s*\d*\s*{u}s?\b", where):
+            return True
+        if re.search(rf"date_trunc\s*\(\s*['\"]{u}s?['\"]", where):
+            return True
+        if re.search(rf"date_(?:sub|add|diff)\s*\(\s*['\"]{u}s?['\"]", where):
+            return True
+    return _word(pfilt, unit) or _word(pfilt, unit + "s")
 
 
 def unhonored_qualifier_reason(

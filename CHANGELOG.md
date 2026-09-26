@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - QUAL-GUARD-01 R3: qualifier coverage is clause-scoped (#290)
+
+- **Ticket.** [QUAL-GUARD-01 #290](https://github.com/Netie-AI/dms/issues/290), the Epic stamp's "not proven" list. CI fixtures, not live. Not a bar PASS.
+- **Change.** `cortex_client/qualifiers.py` coverage: grain/dimension only in GROUP BY (ordinals via SELECT) or plan `group_by`; named filter, year, month only in WHERE/HAVING or plan `filters`; "last N <unit>" needs a clock- or date-anchored predicate in that unit. Word-bounded and paren-aware. Extractor and abstain names unchanged.
+- **Gate.** `tests/test_qual_guard_02.py` (10 of 19 fail on f73b7ab, including envelope abstains with no chart). Offline 52-pack A/B, rows compared: 0 verdicts changed.
+
 ## 2026-09-26 - ORACLE-FIX-02: cq_audit_overdue judged at the engine date (#308)
 
 - **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) under dms#231. CI fixtures, not live. Not COMPLETE.
