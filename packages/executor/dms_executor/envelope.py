@@ -15,7 +15,7 @@ from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload
 
-from dms_executor.bronze import stamp_contributing_source_watermarks
+from dms_executor.bronze import stamp_contributing_source_watermarks, truncation_notes
 from dms_executor.demo_warehouse import DEMO_TABLES
 
 ALLOWED_BADGES = frozenset(
@@ -1662,6 +1662,18 @@ def build_answer_envelope(
             assumptions_list.append(
                 "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
+
+    # ROWCAP-VISIBLE — an answer read from a bronze table the ingest capped at
+    # DEFAULT_MAX_ROWS covers the rows that landed, not the source. Saying nothing
+    # is silent fallback: a total over 500,000 of 1,056,320 rows reads as the whole
+    # table. Name it on the envelope the customer receives.
+    if not abstained:
+        touched = [
+            str(s.get("container") or "") for s in sources if isinstance(s, dict)
+        ] + [str(t) for t in (grounded_tables or [])]
+        for note in truncation_notes(tables=touched, sql=sql_used):
+            if note not in assumptions_list:
+                assumptions_list.append(note)
 
     if abstained:
         values_out = []

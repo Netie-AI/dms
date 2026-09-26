@@ -111,6 +111,9 @@ class SourcePull:
     #: Set when the bronze name was suffixed because another source already held the
     #: sanitised stem. Reported, never silent.
     note: str | None = None
+    #: Rows the source table held when the pull was capped. ``None`` when the pull
+    #: was not truncated, or the source would not answer the count.
+    source_row_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -474,6 +477,24 @@ def _fetch(
         cur.close()
 
 
+def _count_rows(cfg: SourceConfig, con: Any, target: SourceTable) -> int | None:
+    """``COUNT(*)`` of a capped table, so the receipt can say N of M, not just "partial".
+
+    Only run after a pull came back truncated. A count the source refuses or returns
+    in a shape we cannot read is ``None`` - reported as unknown, never guessed.
+    """
+    ident = f"{_quote_ident(cfg, target.schema)}.{_quote_ident(cfg, target.name)}"
+    cur = con.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM {ident}")
+        row = cur.fetchone()
+        return None if row is None else int(row[0])
+    except Exception:  # noqa: BLE001 - a missing total must not fail a landed pull
+        return None
+    finally:
+        cur.close()
+
+
 def preview_source_table(
     cfg: SourceConfig,
     table: str,
@@ -516,6 +537,12 @@ def _pull_one(
     columns, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
     if not columns:
         raise ValueError(f"{target.qualified} exposed no columns")
+    source_row_count: int | None = None
+    if truncated:
+        counted = _count_rows(cfg, con, target)
+        # A count that does not exceed what landed contradicts truncated=True
+        # (the table changed under us, or the driver lied): unknown, not a number.
+        source_row_count = counted if counted is not None and counted > len(rows) else None
     source = f"{cfg.describe()}#{target.qualified}"
     # A caller-named bronze_table is taken as given. A derived one goes through the
     # registry's claim so two source tables one alnum-stem apart cannot overwrite each
@@ -543,6 +570,7 @@ def _pull_one(
         space_id=space_id,
         path=path,
         extracted_at=extracted_at,
+        source_row_count=source_row_count,
     )
     return SourcePull(
         bronze_table=landed,
@@ -554,6 +582,7 @@ def _pull_one(
         ref_id=ref_id,
         extracted_at=extracted_at,
         note=note,
+        source_row_count=source_row_count,
     )
 
 

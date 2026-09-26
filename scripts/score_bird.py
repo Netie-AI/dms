@@ -674,6 +674,19 @@ def main(argv: list[str]) -> int:
         help="No Cortex. Skips FreeRoute freeze. Synthetic/--self-check path.",
     )
     p.add_argument(
+        "--pace",
+        type=float,
+        default=0.0,
+        help="Mini-Dev: seconds to wait between questions (provider rate limits).",
+    )
+    p.add_argument(
+        "--provider-attempts",
+        type=int,
+        default=3,
+        help="Mini-Dev: attempts per question on HTTP 429/5xx/timeout before "
+        "PROVIDER_ERROR (excluded from n, never RIGHT).",
+    )
+    p.add_argument(
         "--compare",
         nargs=2,
         metavar=("A", "B"),

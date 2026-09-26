@@ -108,6 +108,58 @@ def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
     return _LockedConnection(con, lock)  # type: ignore[return-value]
 
 
+class WarehouseBusy(RuntimeError):
+    """A read could not attach the warehouse: another writer holds it, or it is
+    unreadable. Read routes turn this into a named degraded response, never 5xx."""
+
+    code = "warehouse_unavailable"
+
+
+#: How long a read waits for this process's own writer before reporting busy.
+READ_LOCK_TIMEOUT_S = 5.0
+
+
+def connect_file_readonly(
+    path: Path, *, lock_timeout_s: float | None = None
+) -> duckdb.DuckDBPyConnection:
+    """Read-only attach for read routes. Caller must close().
+
+    A GET must not take the warehouse's write lock: a SQL-source ingest in another
+    process holds that lock for minutes, and a Spaces read that opened RW failed
+    against it. ``read_only=True`` takes DuckDB's shared lock instead.
+
+    Waits (bounded) for this process's own per-file lock, so it does not meet an
+    in-process RW handle opened through ``connect_file``. It can still meet one
+    opened outside it (several executor paths call ``duckdb.connect`` directly), or
+    re-enter from a thread already holding the lock. DuckDB refuses a second
+    configuration of a file it already has open in-process; that case joins the
+    existing instance, which takes no new file lock because this process already
+    holds it. Anything else DuckDB refuses (another process's writer, an unreadable
+    file) raises ``WarehouseBusy``.
+    """
+    db = Path(path)
+    lock = _lock_for(db)
+    wait = READ_LOCK_TIMEOUT_S if lock_timeout_s is None else lock_timeout_s
+    if not lock.acquire(timeout=max(0.0, wait)):
+        raise WarehouseBusy(f"warehouse busy in this process: {db.name}")
+    try:
+        try:
+            con = duckdb.connect(str(db), read_only=True)
+        except duckdb.ConnectionException as exc:
+            if "different configuration" not in str(exc):
+                raise WarehouseBusy(f"warehouse unreadable: {exc}") from exc
+            try:
+                con = duckdb.connect(str(db))
+            except duckdb.Error as exc2:
+                raise WarehouseBusy(f"warehouse unreadable: {exc2}") from exc2
+        except duckdb.Error as exc:
+            raise WarehouseBusy(f"warehouse unreadable: {exc}") from exc
+    except BaseException:
+        lock.release()
+        raise
+    return _LockedConnection(con, lock)  # type: ignore[return-value]
+
+
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
     """Thin-reseed the DMS local demo file. Idempotent within one process.
 

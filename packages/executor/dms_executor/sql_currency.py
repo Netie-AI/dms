@@ -856,3 +856,31 @@ __all__ = [
     "currency_mismatch_reason",
     "is_currency_column",
 ]
+
+
+def referenced_tables(sql: str) -> frozenset[str] | None:
+    """Lower-case names of every table ``sql`` reads, or None if unparseable.
+
+    Each table appears bare (``x``) and, when the SQL qualified it, as
+    ``schema.x`` as well.
+
+    Used by the ingest row-cap note (bronze.truncation_notes) so a capped table's
+    name appearing as a *column* does not stamp a partial-table line on an answer
+    that never read it. None tells the caller to fall back to its wider match.
+    """
+    try:
+        tree = parse_one(sql or "", read=_DIALECT)
+    except Exception:  # noqa: BLE001 - any parser failure means "could not tell"
+        return None
+    if tree is None:
+        return None
+    names: set[str] = set()
+    for t in tree.find_all(exp.Table):
+        if not t.name:
+            continue
+        names.add(str(t.name).lower())
+        # The schema-qualified form too, so a caller can tell ``bronze.x`` from a
+        # bare ``x`` (the demo tables live unqualified).
+        if t.db:
+            names.add(f"{str(t.db).lower()}.{str(t.name).lower()}")
+    return frozenset(names)

@@ -28,6 +28,7 @@ from dms_executor.bronze import (
     IngestReceipt,
     ingest_csv_bytes,
     list_bronze_tables,
+    list_source_pulls,
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
@@ -47,6 +48,7 @@ from dms_executor.demo_ask import (
 from dms_executor.demo_grants import (
     DEMO_STEWARD_USER_ID,
     DemoSessionStore,
+    canonical_space_id,
     ingested_bronze_tables,
     is_demo_space,
 )
@@ -55,7 +57,12 @@ from dms_executor.demo_pack import (
     maybe_pack_ask,
     maybe_uncertified_refuse_ask,
 )
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    WarehouseBusy,
+    ensure_demo_warehouse,
+    execute_sql,
+)
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
@@ -1004,6 +1011,9 @@ __all__ = [
     "intersect_space_grants",
     "get_serving_engine",
     "list_bronze_tables",
+    "list_source_pulls",
+    "canonical_space_id",
+    "WarehouseBusy",
     "list_promote_targets",
     "list_warehouse_tables",
     "list_verified_queries",
