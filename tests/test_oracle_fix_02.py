@@ -204,6 +204,14 @@ def test_engine_clock_probes_only_clock_sql() -> None:
         "timezone": "UTC",
         "source": "answer_submit",
     }
+    # The bind compiler inlines "today" as a literal; that answer is dated too.
+    seen.clear()
+    literal = EngineClock(submit)
+    lit_sql = "SELECT sku FROM inventory f WHERE f.\"expiry_date\" < '2026-09-26'"
+    literal.submit(lit_sql)
+    assert seen == [PROBE_SQL, lit_sql, PROBE_SQL]
+    assert literal.stamp is not None and literal.stamp["status"] == "ok"
+
     abstain = {"badge": "ABSTAIN", "abstained": True, "rows": []}
     assert "engine_clock" not in (clocked.apply(abstain) or {})
 

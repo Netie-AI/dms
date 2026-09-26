@@ -6,8 +6,14 @@ not that date: prove can run in UTC while the harness runs in MYT. So the date
 is read through the same ``submit`` that ran the answer SQL, once before and
 once after it, and stamped on the envelope as ``engine_clock``.
 
-No clock in the SQL: no probe, no stamp. A probe that fails is stamped
-``status=unavailable`` with the reason, never a harness-side date.
+The same holds for SQL that carries an ISO date literal: the ask compiler
+inlines "today" from the DMS host clock for expiry and audit cutoffs, so the
+judge needs the engine's date to evaluate the oracle at. A host date that
+differs from the engine date then shows as a row mismatch, not a hidden one.
+
+No clock and no date literal in the SQL: no probe, no stamp. A probe that
+fails is stamped ``status=unavailable`` with the reason, never a harness-side
+date.
 
 Swap: a Cortex submit result that carries the engine date itself replaces the
 two probes; the envelope field stays the same.
@@ -29,6 +35,7 @@ CLOCK_SQL_RE = re.compile(
     r"get_current_timestamp\s*\(|localtimestamp|localtime)",
     re.I,
 )
+_DATE_LITERAL_RE = re.compile(r"'\d{4}-\d{2}-\d{2}")
 PROBE_SQL = (
     "SELECT CAST(CURRENT_DATE AS VARCHAR) AS engine_date, "
     "current_setting('TimeZone') AS engine_timezone"
@@ -37,6 +44,11 @@ PROBE_SQL = (
 
 def sql_reads_clock(sql: str | None) -> bool:
     return bool(CLOCK_SQL_RE.search(sql or ""))
+
+
+def sql_needs_engine_date(sql: str | None) -> bool:
+    """Clock call or ISO date literal: the answer is only judgeable at a date."""
+    return sql_reads_clock(sql) or bool(_DATE_LITERAL_RE.search(sql or ""))
 
 
 def _probe(submit: Callable[[str], Any]) -> tuple[str | None, str | None, str | None]:
@@ -58,14 +70,14 @@ def _probe(submit: Callable[[str], Any]) -> tuple[str | None, str | None, str | 
 
 
 class EngineClock:
-    """Wraps one ask's ``submit``. Probes around each clock-reading answer SQL."""
+    """Wraps one ask's ``submit``. Probes around each date-dependent answer SQL."""
 
     def __init__(self, submit: Callable[[str], Any]) -> None:
         self._submit = submit
         self.stamp: dict[str, Any] | None = None
 
     def submit(self, sql: str) -> Any:
-        if not sql_reads_clock(sql):
+        if not sql_needs_engine_date(sql):
             return self._submit(sql)
         before, tz, err_b = _probe(self._submit)
         result = self._submit(sql)
@@ -100,5 +112,6 @@ __all__ = [
     "NOTE_ENGINE_CLOCK_UNAVAILABLE",
     "PROBE_SQL",
     "EngineClock",
+    "sql_needs_engine_date",
     "sql_reads_clock",
 ]
