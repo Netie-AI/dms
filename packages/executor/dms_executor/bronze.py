@@ -592,3 +592,33 @@ def list_bronze_tables(
         return out
     finally:
         con.close()
+
+
+def list_source_pulls(
+    *,
+    space_id: str | None = None,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """SQL-source pulls for one Space: ``ref``, ``bronze_table``, ``truncated``.
+
+    Re-derive matches a connection to tables already landed from that source.
+    Only rows the registry classifies as SQL are returned.
+    """
+    out: list[dict[str, Any]] = []
+    for row in list_bronze_tables(path=path, space_id=space_id):
+        kind = row.get("source_kind") or classify_source_kind(
+            None if row.get("source") is None else str(row.get("source"))
+        )
+        if kind != "sql":
+            continue
+        table = str(row["table"])
+        bronze = table if "." in table else f"bronze.{table}"
+        out.append(
+            {
+                "ref": row.get("source"),
+                "bronze_table": bronze,
+                "truncated": bool(row.get("truncated")),
+                "space_id": row.get("space_id"),
+            }
+        )
+    return out

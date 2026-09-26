@@ -96,6 +96,15 @@ def space_name(space_id: str) -> str | None:
     return entry[0] if entry else None
 
 
+def is_demo_space(space_id: str | None) -> bool:
+    """A seeded DR-0002 Space, or no Space at all.
+
+    A Space created for its own SQL source is not one of these. Its ask reads
+    the tables that Space was granted, not the demo spine.
+    """
+    return space_id is None or canonical_space_id(space_id) in DEMO_SPACE_GRANTS
+
+
 def ingested_bronze_tables(
     path: Path | None = None,
     *,
@@ -141,9 +150,15 @@ class DemoSessionStore:
         return entry[1] if entry else ()
 
     def is_space_member(self, space_id: str, user_id: str) -> bool:
-        # The demo has one steward who belongs to every seeded Space. An id that
-        # is not seeded is not a Space you are a member of.
-        return canonical_space_id(space_id) in DEMO_SPACE_GRANTS
+        # The demo has one steward who belongs to every seeded Space. A Space
+        # that has bronze ingested into it is theirs too, so its own tables can
+        # be granted. An id with no seed and nothing ingested grants nothing.
+        sid = canonical_space_id(space_id)
+        if sid in DEMO_SPACE_GRANTS:
+            return True
+        if not str(sid or "").strip():
+            return False
+        return bool(ingested_bronze_tables(self.warehouse, space_id=sid))
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
         sid = canonical_space_id(space_id)

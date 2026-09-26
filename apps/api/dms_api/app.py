@@ -96,6 +96,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.space_store = store
     app.state.space_store_binding = binding
+    if binding.persistent and settings.database_url:
+        # ONTO-DERIVE-01: a Space that survives a restart keeps its ontology.
+        from dms_api.wiring import bind_ontology_store
+
+        bind_ontology_store(settings.database_url, str(settings.dms_tenant_id))
     cortex = CortexClient(
         settings.cortex_url,
         timeout=settings.cortex_timeout_seconds,
