@@ -16,12 +16,20 @@ The rule, per aggregate, by sqlglot scope analysis (no word rules):
 - Every other relation in the scope must be *determined* by the aggregated
   one: some equality in an ON clause or a top-level WHERE conjunct sets each
   of its key columns from relations already determined (or a constant), and
-  it is UNIQUE and NOT NULL on those columns. For a real table that is
+  it is UNIQUE on those columns among its rows with no NULL key (a NULL never
+  equals anything, so those rows never match). Both sides of each equality
+  must have the same type: a comparison that casts the key (VARCHAR '010'
+  against INTEGER 10) can match several rows unique as text, so it is
+  ``fan_out_unanalysable:key_type``. An equality in a LEFT JOIN's ON clause
+  keys only that join's own relation. For a real table that is
   checked against the data in the Space warehouse (read-only; cached per
   table + columns + ingest id + file stamp). A derived table is unique on its
   GROUP BY columns (pre-aggregated to the key), on its outputs when DISTINCT
   (or on a key the data shows determines the other DISTINCT outputs), and on
   anything when it is an ungrouped aggregate (one row).
+- An aggregate that reads a grouped / DISTINCT derived table's un-aggregated
+  output over a join inside it is ``fan_out_unanalysable:grouped_passthrough``:
+  the groups can be finer than that column's own rows.
 - A relation that is not determined names the join that repeats rows:
   ``fan_out:<relation>.<column>``. A join shape the analysis cannot read
   (RIGHT / FULL / NATURAL / ASOF join, a set operation, a column it cannot
@@ -71,6 +79,8 @@ FAN_OUT_UNANALYSABLE_WHY = frozenset(
         "derived_key",
         "no_warehouse",
         "data_check_failed",
+        "key_type",
+        "grouped_passthrough",
     }
 )
 
@@ -105,7 +115,8 @@ def _unanalysable(why: str) -> _Refuse:
 _CACHE_LOCK = threading.Lock()
 #: (warehouse, file stamp, relation, columns, ingest id) -> unique and not null.
 _UNIQUE_CACHE: dict[tuple[Any, ...], bool] = {}
-_COLUMNS_CACHE: dict[tuple[Any, ...], frozenset[str]] = {}
+#: (warehouse, file stamp, relation) -> lower-cased column name -> DuckDB type.
+_COLUMNS_CACHE: dict[tuple[Any, ...], dict[str, str]] = {}
 _CACHE_MAX = 4096
 
 
@@ -193,15 +204,19 @@ class _Probe:
         """Lower-cased column names, or None when there is no warehouse to ask."""
         if self.warehouse is None or not Path(self.warehouse).is_file():
             return None
-        key = self._key(table)
+        return frozenset(self.types(table))
+
+    def types(self, table: exp.Table) -> dict[str, str]:
+        """Lower-cased column name -> DuckDB type, as the warehouse declares it."""
+        key = self._key(table)  # raises no_warehouse when there is none
         with _CACHE_LOCK:
             hit = _COLUMNS_CACHE.get(key)
         if hit is not None:
             return hit
-        sql = f"SELECT * FROM {_bare_table(table).sql(dialect=_DIALECT)} LIMIT 0"
+        rel = _bare_table(table).sql(dialect=_DIALECT)
         try:
-            cur = self._connect().execute(sql)
-            names = frozenset(str(d[0]).lower() for d in (cur.description or []))
+            rows = self._connect().execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()
+            found = {str(r[0]).lower(): str(r[1]).upper() for r in rows}
         except _Refuse:
             raise
         except Exception as exc:  # noqa: BLE001 - a relation it cannot read is unproven
@@ -209,8 +224,8 @@ class _Probe:
         with _CACHE_LOCK:
             if len(_COLUMNS_CACHE) >= _CACHE_MAX:
                 _COLUMNS_CACHE.clear()
-            _COLUMNS_CACHE[key] = names
-        return names
+            _COLUMNS_CACHE[key] = found
+        return found
 
     def determines(self, table: exp.Table, keys: Iterable[str], cols: Iterable[str]) -> bool:
         """``keys`` are never NULL and functionally determine ``cols``, on the data."""
@@ -253,18 +268,24 @@ class _Probe:
             _UNIQUE_CACHE[key] = ok
         return ok
 
-    def unique_not_null(self, table: exp.Table, cols: Iterable[str]) -> bool:
-        """``COUNT(*) = COUNT(DISTINCT key)`` and no key column NULL, on the data."""
+    def unique_where_matchable(self, table: exp.Table, cols: Iterable[str]) -> bool:
+        """The rows whose key has no NULL are unique on the key, on the data.
+
+        Every key column is set by an equality, and ``NULL = x`` never holds (in
+        an inner join, a WHERE conjunct or a LEFT JOIN's ON), so a row with a
+        NULL key never matches and cannot repeat anything.
+        """
         names = tuple(sorted({c.lower() for c in cols}))
         rel = _bare_table(table).sql(dialect=_DIALECT)
         idents = [exp.to_identifier(c, quoted=True).sql(dialect=_DIALECT) for c in names]
-        any_null = " OR ".join(f"{i} IS NULL" for i in idents)
+        none_null = " AND ".join(f"{i} IS NOT NULL" for i in idents)
         sql = (
-            f"SELECT COUNT(*) FILTER (WHERE {any_null}), COUNT(*), "
-            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(idents)} FROM {rel})) "
+            f"SELECT 0, COUNT(*) FILTER (WHERE {none_null}), "
+            f"(SELECT COUNT(*) FROM (SELECT DISTINCT {', '.join(idents)} FROM {rel} "
+            f"WHERE {none_null})) "
             f"FROM {rel}"
         )
-        return self._cached_check(table, ("unique", names), sql)
+        return self._cached_check(table, ("unique_matchable", names), sql)
 
 
 # --- scope helpers -----------------------------------------------------------------
@@ -298,6 +319,40 @@ def _sensitive(agg: exp.Expression) -> bool:
     if isinstance(agg, _INSENSITIVE):
         return False
     return not (isinstance(agg, exp.Count) and isinstance(agg.this, exp.Distinct))
+
+
+_INTEGER_TYPES = frozenset(
+    {
+        "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+        "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT",
+    }
+)
+
+
+def _same_comparison_type(key_type: str | None, value_type: str | None) -> bool:
+    """An equality compares the key in its own values, never through a cast.
+
+    DuckDB casts a VARCHAR key to INTEGER to compare it with an INTEGER value,
+    so ``'10'``, ``'010'`` and ``' 10'`` (unique as text) all match 10. The
+    data check proves uniqueness in the key's own type only, so the two sides
+    must share it; integer widths widen exactly, so they count as one type.
+    Anything else is not proven.
+    """
+    if key_type is None or value_type is None:
+        return False
+    if key_type == value_type:
+        return True
+    return key_type in _INTEGER_TYPES and value_type in _INTEGER_TYPES
+
+
+def _is_aggregated(col: exp.Column, select: exp.Expression) -> bool:
+    """``col`` sits inside an aggregate that collapses ``select``'s rows."""
+    node = col.parent
+    while node is not None and node is not select:
+        if isinstance(node, exp.AggFunc) and _owner(node) is select:
+            return not isinstance(node.parent, exp.Window)
+        node = node.parent
+    return False
 
 
 def _conjuncts(node: exp.Expression | None) -> list[exp.Expression]:
@@ -364,17 +419,61 @@ class _Analysis:
 
     # -- which relations determine which ----------------------------------------
 
-    def _equalities(self, scope: Scope) -> tuple[list[tuple[str, str, frozenset[str]]], set[str]]:
+    def _type_of(self, scope: Scope, name: str, col: str) -> str | None:
+        """The DuckDB type of ``name.col`` in ``scope``, or None when not known."""
+        src = self._sources(scope)[name]
+        if isinstance(src, exp.Table):
+            return self.probe.types(src).get(col.lower())
+        select = src.expression
+        if not isinstance(select, exp.Select):
+            return None
+        inner: exp.Expression | None = None
+        for p in select.expressions:
+            if not _is_star(p) and str(p.alias_or_name).lower() == col.lower():
+                inner = _unalias(p)
+                break
+        if inner is None and any(_is_star(p) for p in select.expressions):
+            inner = exp.column(col)
+        return self._value_type(src, inner)
+
+    def _value_type(self, scope: Scope, value: exp.Expression | None) -> str | None:
+        if isinstance(value, exp.Column) and not isinstance(value.this, exp.Star):
+            src = self._resolve(scope, value)
+            return None if src == _EXTERNAL else self._type_of(scope, src, value.name)
+        if isinstance(value, exp.Cast):
+            to = value.to
+            if to.is_type(*(exp.DataType.INTEGER_TYPES - {exp.DataType.Type.BIT})):
+                return "INTEGER"
+            if to.is_type(*exp.DataType.TEXT_TYPES):
+                return "VARCHAR"
+            return to.sql(dialect=_DIALECT).upper()
+        if isinstance(value, exp.Literal):
+            if value.is_string:
+                return "VARCHAR"
+            return "INTEGER" if value.is_int else None
+        return None
+
+    def _equalities(
+        self, scope: Scope
+    ) -> tuple[list[tuple[str, str, frozenset[str]]], set[str], set[str]]:
         """``(source, key column, sources the value depends on)`` per usable equality.
 
-        Plus the sources joined SEMI / ANTI, which never add rows.
+        Plus the sources joined SEMI / ANTI, which never add rows, and the
+        sources an equality would have keyed but for a type the comparison casts.
+
+        An equality in a LEFT JOIN's ON clause filters nothing: it only chooses
+        that join's own right-hand rows, so it can key that relation alone.
         """
         select = scope.expression
         assert isinstance(select, exp.Select)
         sources = self._sources(scope)
-        conds: list[exp.Expression] = _conjuncts(
-            select.args["where"].this if select.args.get("where") is not None else None
-        )
+        conds: list[tuple[exp.Expression, str | None]] = [
+            (c, None)
+            for c in _conjuncts(
+                select.args["where"].this if select.args.get("where") is not None else None
+            )
+        ]
+        mismatched: set[str] = set()
         filtering: set[str] = set()
         seen: list[str] = [self._driving(scope)]
         eqs: list[tuple[str, str, frozenset[str]]] = []
@@ -393,17 +492,25 @@ class _Analysis:
             if kind in {"SEMI", "ANTI"}:
                 filtering.add(name)
                 continue
-            conds.extend(_conjuncts(join.args.get("on")))
+            only = name if side == "LEFT" else None
+            conds.extend((c, only) for c in _conjuncts(join.args.get("on")))
             for ident in join.args.get("using") or []:
                 key = str(ident.name).lower()
                 left = [
                     s for s in seen if key in (self._columns_of(sources[s]) or frozenset())
                 ]
-                if len(left) == 1:
-                    eqs.append((name, key, frozenset({left[0]})))
+                if len(left) != 1:
+                    continue
+                if not _same_comparison_type(
+                    self._type_of(scope, name, key), self._type_of(scope, left[0], key)
+                ):
+                    mismatched.update({name, left[0]})
+                    continue
+                eqs.append((name, key, frozenset({left[0]})))
+                if only is None:
                     eqs.append((left[0], key, frozenset({name})))
             seen.append(name)
-        for cond in conds:
+        for cond, only in conds:
             if not isinstance(cond, exp.EQ):
                 continue  # a filter: it can only remove matches
             for key_side, value in ((cond.this, cond.expression), (cond.expression, cond.this)):
@@ -412,21 +519,26 @@ class _Analysis:
                 if value.find(exp.Select, exp.AggFunc, exp.Window) is not None:
                     continue
                 src = self._resolve(scope, key_side)
-                if src == _EXTERNAL:
+                if src == _EXTERNAL or (only is not None and src != only):
                     continue
                 deps = {self._resolve(scope, c) for c in _own_columns(select, value)}
                 deps.discard(_EXTERNAL)
                 if src in deps:
                     continue
+                if not _same_comparison_type(
+                    self._type_of(scope, src, key_side.name), self._value_type(scope, value)
+                ):
+                    mismatched.add(src)
+                    continue
                 eqs.append((src, key_side.name.lower(), frozenset(deps)))
-        return eqs, filtering
+        return eqs, filtering, mismatched
 
     def _determined_from(self, scope: Scope, start: str) -> None:
         """Every row of ``start`` appears at most once in ``scope``'s rows, or raise."""
         sources = self._sources(scope)
         if len(sources) <= 1:
             return
-        eqs, filtering = self._equalities(scope)
+        eqs, filtering, mismatched = self._equalities(scope)
         covered = {start, *filtering}
 
         def keys_for(name: str) -> set[str]:
@@ -443,6 +555,8 @@ class _Analysis:
                     progress = True
         for name in sources:
             if name not in covered:
+                if name in mismatched:
+                    raise _unanalysable("key_type")
                 blame = self._unique(scope, name, keys_for(name))
                 raise _Refuse(blame or f"{REASON_FAN_OUT_UNANALYSABLE}:non_equi_join")
 
@@ -454,7 +568,7 @@ class _Analysis:
         if isinstance(src, exp.Table):
             if not keys:
                 return f"{REASON_FAN_OUT_UNANALYSABLE}:non_equi_join"
-            if self.probe.unique_not_null(src, keys):
+            if self.probe.unique_where_matchable(src, keys):
                 return None
             return f"{REASON_FAN_OUT}:{_label(src)}.{'+'.join(sorted(keys))}"
         try:
@@ -586,9 +700,14 @@ class _Analysis:
         select = sub.expression
         if not isinstance(select, exp.Select):
             raise _unanalysable("set_operation")
-        if select.args.get("group") is not None or select.args.get("distinct") is not None:
-            return  # its rows are its own: its aggregates are checked in its own scope
-        if any(_owner(a) is select for p in select.expressions for a in p.find_all(exp.AggFunc)):
+        if (
+            select.args.get("group") is not None
+            or select.args.get("distinct") is not None
+            or any(
+                _owner(a) is select for p in select.expressions for a in p.find_all(exp.AggFunc)
+            )
+        ):
+            self._through_grouped(sub, cols)
             return
         if cols is None:
             self._origin_ok(sub, self._driving(sub), None)
@@ -616,6 +735,44 @@ class _Analysis:
                 continue
             for src, names in by_src.items():
                 self._origin_ok(sub, src, names)
+
+    def _through_grouped(self, sub: Scope, cols: set[str] | None) -> None:
+        """A grouped / DISTINCT derived table: its rows are its groups.
+
+        Counting them (no column read) is counting groups, and its aggregates are
+        checked in its own scope. A column it passes through un-aggregated is
+        repeated once per group it lands in, and over a join that group can be
+        finer than the column's own row (``GROUP BY i.qty, o.order_id,
+        o.amount`` repeats each order once per distinct item qty). Not proven
+        over a join: fail closed. Over one relation each row lands in one group.
+        """
+        if cols is None:
+            return
+        select = sub.expression
+        assert isinstance(select, exp.Select)
+        passthrough: set[str] = set()
+        for name in cols:
+            expr: exp.Expression | None = None
+            for p in select.expressions:
+                if not _is_star(p) and str(p.alias_or_name).lower() == name:
+                    expr = _unalias(p)
+                    break
+            if expr is None:
+                if not any(_is_star(p) for p in select.expressions):
+                    raise _unanalysable("column_unresolved")
+                expr = exp.column(name)
+            if expr.find(exp.Select) is not None:
+                raise _unanalysable("scope")
+            cols_in = [expr] if isinstance(expr, exp.Column) else _own_columns(select, expr)
+            for c in cols_in:
+                if not _is_aggregated(c, select):
+                    passthrough.add(c.name.lower())
+        if not passthrough:
+            return
+        sources = self._sources(sub)
+        if len(sources) != 1:
+            raise _unanalysable("grouped_passthrough")
+        self._origin_ok(sub, next(iter(sources)), passthrough)
 
     def check_scope(self, scope: Scope) -> None:
         select = scope.expression

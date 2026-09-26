@@ -326,8 +326,18 @@ def lake(tmp_path: Path) -> Path:
             " t(customer_id, region)"
         )
         con.execute(
-            "CREATE TABLE bronze.nullkey AS SELECT * FROM (VALUES (10, 'N'), (NULL, 'S'))"
-            " t(customer_id, region)"
+            "CREATE TABLE bronze.nullkey AS SELECT * FROM (VALUES (10, 'N'), (NULL, 'S'), "
+            "(NULL, 'W'), (20, 'E')) t(customer_id, region)"
+        )
+        con.execute(
+            "CREATE TABLE bronze.nulldup AS SELECT * FROM (VALUES (10, 'N'), (NULL, 'S'), "
+            "(10, 'W')) t(customer_id, region)"
+        )
+        # Unique as text; DuckDB casts VARCHAR to INTEGER against an INTEGER key,
+        # so '10', '010' and ' 10' all match customer 10.
+        con.execute(
+            "CREATE TABLE bronze.custv AS SELECT * FROM (VALUES ('10', 'N'), ('010', 'N2'), "
+            "(' 10', 'N3'), ('20', 'S')) t(customer_id, region)"
         )
     finally:
         con.close()
@@ -348,9 +358,35 @@ def lake(tmp_path: Path) -> Path:
          "JOIN bronze.items i USING (order_id)) x", "fan_out:bronze.items.order_id"),
         ("SELECT COUNT(o.amount) FROM bronze.orders o JOIN bronze.items i "
          "ON o.order_id = i.order_id", "fan_out:bronze.items.order_id"),
-        # A NULL key is not a proven key.
+        # A NULL key never matches, so it cannot repeat a row; a repeated one can.
         ("SELECT SUM(o.amount) FROM bronze.orders o JOIN bronze.nullkey n "
-         "ON o.customer_id = n.customer_id", "fan_out:bronze.nullkey.customer_id"),
+         "ON n.customer_id = o.customer_id", None),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN bronze.nulldup n "
+         "ON o.customer_id = n.customer_id", "fan_out:bronze.nulldup.customer_id"),
+        # A key compared through a cast is not the key the data check proved.
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN bronze.custv c "
+         "ON o.customer_id = c.customer_id", "fan_out_unanalysable:key_type"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o, bronze.custv c "
+         "WHERE c.customer_id = o.customer_id", "fan_out_unanalysable:key_type"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN bronze.custv c "
+         "USING (customer_id)", "fan_out_unanalysable:key_type"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT customer_id FROM "
+         "bronze.custv GROUP BY customer_id) c ON o.customer_id = c.customer_id",
+         "fan_out_unanalysable:key_type"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN bronze.custv c "
+         "ON c.customer_id = 10", "fan_out_unanalysable:key_type"),
+        # A grouped wrapper finer than the summed column's rows repeats them.
+        ("WITH j AS (SELECT i.qty, o.order_id, o.amount FROM bronze.orders o "
+         "JOIN bronze.items i ON o.order_id = i.order_id "
+         "GROUP BY i.qty, o.order_id, o.amount) SELECT SUM(amount) FROM j",
+         "fan_out_unanalysable:grouped_passthrough"),
+        ("SELECT SUM(amount) FROM (SELECT DISTINCT i.qty, o.amount FROM bronze.orders o "
+         "JOIN bronze.items i ON o.order_id = i.order_id) j",
+         "fan_out_unanalysable:grouped_passthrough"),
+        # A LEFT JOIN's ON equality keys only its own relation, never a cross join.
+        ("SELECT SUM(o.amount) FROM bronze.orders o CROSS JOIN bronze.customers c2 "
+         "LEFT JOIN bronze.customers c3 ON c2.customer_id = o.customer_id "
+         "AND c3.customer_id = 10", "fan_out_unanalysable:non_equi_join"),
         # Joins the analysis cannot bound fail closed, by name.
         ("SELECT SUM(o.amount) FROM bronze.orders o CROSS JOIN bronze.customers c",
          "fan_out_unanalysable:non_equi_join"),
@@ -386,6 +422,14 @@ def lake(tmp_path: Path) -> Path:
         ("SELECT MAX(o.amount), MIN(o.amount) FROM bronze.orders o "
          "JOIN bronze.items i ON o.order_id = i.order_id", None),
         ("SELECT SUM(amount) FROM bronze.orders", None),
+        ("SELECT SUM(o.amount) FROM bronze.orders o LEFT JOIN bronze.customers c "
+         "ON c.customer_id = o.customer_id", None),
+        ("SELECT SUM(amount) FROM (SELECT order_id, amount FROM bronze.orders "
+         "GROUP BY order_id, amount) g", None),
+        ("SELECT COUNT(*) FROM (SELECT o.customer_id FROM bronze.orders o "
+         "JOIN bronze.items i ON o.order_id = i.order_id GROUP BY o.customer_id) g", None),
+        ("SELECT SUM(g.q) FROM (SELECT o.customer_id, SUM(i.qty) AS q FROM bronze.orders o "
+         "JOIN bronze.items i ON o.order_id = i.order_id GROUP BY o.customer_id) g", None),
     ],
 )
 def test_fan_out_reason_on_shapes(lake: Path, sql: str, reason: str | None) -> None:
@@ -400,12 +444,13 @@ def test_without_a_warehouse_a_join_is_unproven_and_a_single_table_is_not(tmp_pa
     assert fan_out_reason(join, None) == "fan_out_unanalysable:no_warehouse"
     assert fan_out_reason(join, tmp_path / "missing.duckdb") == "fan_out_unanalysable:no_warehouse"
     assert fan_out_reason("SELECT SUM(amount) FROM bronze.orders", None) is None
-    # Proven by structure alone: no data read needed.
+    # Even a pre-aggregated side needs the warehouse: the key types decide
+    # whether the equality compares the grouped key or a cast of it.
     assert fan_out_reason(
         "SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id FROM bronze.items "
         "GROUP BY order_id) i ON o.order_id = i.order_id",
         None,
-    ) is None
+    ) == "fan_out_unanalysable:no_warehouse"
 
 
 def test_the_data_check_follows_the_data_not_a_stale_cache(lake: Path) -> None:
