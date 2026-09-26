@@ -26,8 +26,10 @@ from typing import Any, Literal
 
 from dms_executor.bronze import (
     claim_source_table_name,
+    ident_safe,
     mint_extracted_at,
     record_source_pull,
+    type_bronze_columns,
     write_bronze_rows,
 )
 
@@ -114,6 +116,11 @@ class SourcePull:
     #: Rows the source table held when the pull was capped. ``None`` when the pull
     #: was not truncated, or the source would not answer the count.
     source_row_count: int | None = None
+    #: Landed DuckDB type per column, from the source's declared types.
+    column_types: dict[str, str] = field(default_factory=dict)
+    #: Columns that stayed VARCHAR, and why (undeclared type, unmapped type, or
+    #: values the declared type could not hold). Named on the receipt, never silent.
+    untyped_columns: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -511,7 +518,60 @@ def preview_source_table(
 
 def _bronze_name(target: SourceTable) -> str:
     stem = "".join(c if c.isalnum() else "_" for c in target.qualified)
-    return stem.strip("_").lower()[:60] or "source_table"
+    return ident_safe(stem.strip("_").lower()[:60] or "source_table")
+
+
+#: INFORMATION_SCHEMA.COLUMNS answers the same shape on all three sources.
+_COLUMN_TYPES_SQL = (
+    "SELECT COLUMN_NAME, DATA_TYPE, NUMERIC_PRECISION, NUMERIC_SCALE "
+    "FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = {p} AND TABLE_NAME = {p}"
+)
+
+
+def list_source_column_types(
+    cfg: SourceConfig, con: Any, target: SourceTable, columns: list[str]
+) -> dict[str, tuple[str, int | None, int | None]] | None:
+    """Declared type of each fetched column, from the source's own catalog.
+
+    ``None`` when the catalog will not say (no answer, an error, or rows that do
+    not name exactly the fetched columns): the pull then lands untyped and the
+    receipt says so. Declared, never inferred from the values.
+    """
+    placeholder = "?" if cfg.kind == "sqlserver" else "%s"
+    try:
+        rows = _run_query(
+            con,
+            _COLUMN_TYPES_SQL.format(p=placeholder),
+            (target.schema, target.name),
+        )
+    except Exception:  # noqa: BLE001 - an unreadable catalog is "undeclared"
+        return None
+    out: dict[str, tuple[str, int | None, int | None]] = {}
+    for row in rows:
+        if len(row) < 4 or not isinstance(row[0], str) or not isinstance(row[1], str):
+            return None
+        prec = int(row[2]) if isinstance(row[2], int) else None
+        scale = int(row[3]) if isinstance(row[3], int) else None
+        out[row[0]] = (row[1], prec, scale)
+    if set(out) != set(columns):
+        return None
+    return out
+
+
+def _distinct_columns(columns: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Column names unique case-insensitively; ``{original: landed}`` for the renamed."""
+    seen: set[str] = set()
+    out: list[str] = []
+    renamed: dict[str, str] = {}
+    for col in columns:
+        name, n = col, 2
+        while name.lower() in seen:
+            name, n = f"{col}_{n}", n + 1
+        seen.add(name.lower())
+        out.append(name)
+        if name != col:
+            renamed[col] = name
+    return out, renamed
 
 
 def _pull_one(
@@ -523,6 +583,7 @@ def _pull_one(
     path: Path | None,
     space_id: str | None,
     bronze_table: str | None = None,
+    claimed: tuple[str, str | None] | None = None,
 ) -> SourcePull:
     """Land one table in bronze with both halves of its provenance.
 
@@ -550,17 +611,28 @@ def _pull_one(
     note: str | None = None
     name = bronze_table
     if name is None:
-        name, note = claim_source_table_name(
-            stem=_bronze_name(target), source=source, path=path
+        name, note = claimed or claim_source_table_name(
+            stem=_bronze_name(target), source=source, path=path, space_id=space_id
         )
+    declared = list_source_column_types(cfg, con, target, columns)
+    landed_cols, renamed = _distinct_columns(columns)
+    if renamed:
+        # DuckDB column names are case-insensitive: ``Name`` and ``name`` in one
+        # source table were a CatalogException and a 500. The duplicate lands
+        # under a suffixed name and the receipt says which.
+        rename_note = "; ".join(f"column {a!r} landed as {b!r}" for a, b in renamed.items())
+        note = f"{note}; {rename_note}" if note else rename_note
+        if declared is not None:
+            declared = {renamed.get(c, c): v for c, v in declared.items()}
     landed = write_bronze_rows(
         table=name,
-        columns=columns,
+        columns=landed_cols,
         rows=rows,
         ref_id=ref_id,
         ingest_id=ingest_id,
         path=path,
     )
+    typing = type_bronze_columns(table=landed, declared=declared, path=path)
     record_source_pull(
         table_name=landed.split(".", 1)[-1],
         source=source,
@@ -571,6 +643,7 @@ def _pull_one(
         path=path,
         extracted_at=extracted_at,
         source_row_count=source_row_count,
+        untyped_numeric=typing["untyped_numeric"],
     )
     return SourcePull(
         bronze_table=landed,
@@ -583,6 +656,8 @@ def _pull_one(
         extracted_at=extracted_at,
         note=note,
         source_row_count=source_row_count,
+        column_types=typing["column_types"],
+        untyped_columns=typing["untyped_columns"],
     )
 
 
@@ -648,9 +723,29 @@ def ingest_source_database(
                 else:
                     skipped.append(req)
         keys = list_source_keys(cfg, con=con)
+        # Claim every bronze name before writing any rows: a claim refused for the
+        # third table used to leave the first two landed and granted with no
+        # receipt (adversary round 4).
+        claims: list[tuple[str, str | None]] = []
+        reserved: dict[str, tuple[Any, Any]] = {}
+        for t in wanted:
+            source = f"{cfg.describe()}#{t.qualified}"
+            claim = claim_source_table_name(
+                stem=_bronze_name(t),
+                source=source,
+                path=path,
+                space_id=space_id,
+                reserved=reserved,
+            )
+            # Nothing is registered until rows land, so two tables in this pull
+            # that sanitise alike (dbo.a-b, dbo.a_b) must see each other's claim.
+            reserved[claim[0]] = (source, space_id)
+            claims.append(claim)
         pulls = [
-            _pull_one(cfg, con, t, max_rows=max_rows, path=path, space_id=space_id)
-            for t in wanted
+            _pull_one(
+                cfg, con, t, max_rows=max_rows, path=path, space_id=space_id, claimed=claim
+            )
+            for t, claim in zip(wanted, claims, strict=True)
         ]
     source = cfg.describe()
     return SourceExtract(

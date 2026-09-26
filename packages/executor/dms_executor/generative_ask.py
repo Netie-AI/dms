@@ -26,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import sqlglot
 from cortex_client.compute import (
     INSIGHTS_FAIL_EMPTY,
     PLAN_ORIGIN_GENERATE_SQL,
@@ -39,6 +40,7 @@ from cortex_client.compute import (
     typed_query_plan,
 )
 from cortex_client.qualifiers import unhonored_qualifier_reason
+from sqlglot import exp
 
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
@@ -633,6 +635,52 @@ def validate_compiled_sql(
 REASON_SOURCE_TRUNCATED = "source_truncated"
 
 
+REASON_UNTYPED_NUMERIC = "untyped_numeric"
+
+
+def untyped_numeric_reason(sql: str, warehouse: Path | None) -> str | None:
+    """``untyped_numeric:<table>.<col>`` when the SQL reads a declared-numeric text column.
+
+    dms#277 F-e: a column the source declared numeric that could not land typed
+    (bare ``money`` with a currency symbol, a value that would not fit) is
+    VARCHAR, and text orders ``'9.50'`` above ``'100.25'``. MAX, ORDER BY, a
+    comparison or a SUM over it would be a confident wrong figure, so any SQL
+    naming it is refused, named, until the column is re-typed at the source.
+    A registry that cannot be read refuses too (fail closed).
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    labels = real_table_labels(sql) or []
+    read: set[str] = set()
+    for label in dict.fromkeys(str(x).strip().lower() for x in labels):
+        schema, _, bare = label.rpartition(".")
+        if schema == "bronze" or (not schema and bare not in DEMO_TABLES):
+            read.add(f"bronze.{bare}")
+    if not read:
+        return None
+    from dms_executor.bronze import untyped_numeric_columns
+
+    try:
+        flagged = untyped_numeric_columns(read, path=Path(warehouse))
+    except Exception:  # noqa: BLE001 - cannot vouch for the columns: refuse
+        return f"{REASON_UNTYPED_NUMERIC}:registry_unreadable"
+    if not flagged:
+        return None
+    try:
+        named = {
+            c.name.lower()
+            for root in sqlglot.parse(sql, read="duckdb")
+            if root is not None
+            for c in root.find_all(exp.Column)
+        }
+    except Exception:  # noqa: BLE001
+        return f"{REASON_UNTYPED_NUMERIC}:unparsed"
+    hits = sorted(f"{t}.{c}" for t, cols in flagged.items() for c in cols if c in named)
+    if not hits:
+        return None
+    return f"{REASON_UNTYPED_NUMERIC}:{','.join(hits)}"
+
+
 def truncated_source_reason(sql: str, warehouse: Path | None) -> str | None:
     """``source_truncated:<t>`` when the SQL reads a source the row cap cut short.
 
@@ -823,7 +871,9 @@ def _submit_validated(
     # SPACE-GEN-01: a source loaded under the row cap is not the whole table.
     # A COUNT / SUM / lookup over it would be stamped L2 on part of the data
     # (BIRD ``trans``: 500,000 of 1,056,320 rows). Named ABSTAIN, before submit.
-    trunc_why = truncated_source_reason(sql, warehouse)
+    trunc_why = truncated_source_reason(sql, warehouse) or untyped_numeric_reason(
+        sql, warehouse
+    )
     if trunc_why:
         return _abstain(
             question,

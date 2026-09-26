@@ -306,6 +306,11 @@ def sql_source_ingest(
     # the same outcome as one measured and found broken. The rows landed and
     # their provenance is real - only the join is in question.
     links = dms_executor.verify_source_links(extract)
+    # F-b: SQL-source bronze reaches Cortex's serving warehouse the same way a
+    # Studio upload does; before this only batch ingest synced it.
+    sync_state, sync_detail = (
+        dms_executor.serving_sync_state() if extract.pulls else ("not_attempted", "nothing landed")
+    )
     ontology = _derive_space_ontology(
         extract.manifest_entry, kind=kind, host=host, database=database, space_id=space_id
     )
@@ -334,9 +339,15 @@ def sql_source_ingest(
                     else None
                 ),
                 "extracted_at": p.extracted_at,
+                # F-e: landed types from the source's declared types; any column
+                # left VARCHAR is named with the reason.
+                "column_types": dict(p.column_types),
+                "untyped_columns": dict(p.untyped_columns),
+                "note": p.note,
             }
             for p in extract.pulls
         ],
+        "serving_sync": {"state": sync_state, "detail": sync_detail},
         "skipped": list(extract.skipped),
         "truncated_tables": [p.bronze_table for p in extract.pulls if p.truncated],
         "declared_primary_keys": len(extract.keys.primary_keys),

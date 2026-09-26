@@ -159,6 +159,16 @@ def test_real_postgres_source_end_to_end(
     try:
         rig = _pg_space(tmp_path, monkeypatch, minter, conn, two_tenants, source_db, migrated_db)
         assert rig.receipt["declared_foreign_keys"] == 2
+        # dms#277 F-e: the real psycopg catalog types land (INT -> BIGINT), none untyped.
+        enroll = next(
+            t for t in rig.receipt["tables"] if t["bronze_table"] == "bronze.public_enrollments"
+        )
+        assert enroll["column_types"] == {
+            "enrollment_id": "BIGINT",
+            "school_id": "BIGINT",
+            "students": "BIGINT",
+        }
+        assert enroll["untyped_columns"] == {}
         assert rig.receipt["ontology"]["derived"] is True, rig.receipt["ontology"]
 
         view = rig.client.get(f"/v1/spaces/{rig.space_id}/ontology").json()

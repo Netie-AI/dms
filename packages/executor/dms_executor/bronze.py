@@ -43,8 +43,22 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def ident_safe(stem: str) -> str:
+    """A bronze name every layer accepts: ASCII ``[A-Za-z_][A-Za-z0-9_]*``.
+
+    ``str.isalnum`` keeps ``é`` and a name may start with a digit
+    (``2024_sales``). Either breaks the SHARED NAMING RULE, and
+    ``cortex_row_predicates`` then refuses the whole Space's manifest, so one
+    such table made every ask on the Space abstain ``submit_failed``.
+    """
+    out = "".join(c if (c.isascii() and c.isalnum()) else "_" for c in stem)
+    if not out or not (out[0].isalpha() or out[0] == "_"):
+        out = f"t_{out}"
+    return out
+
+
 def _safe_table_stem(filename: str) -> str:
-    return "".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40]
+    return ident_safe("".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40])
 
 
 def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
@@ -52,7 +66,7 @@ def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
     stem = Path(filename).stem
     if sheet:
         stem = f"{stem}_{sheet}"
-    ident = "".join(c if c.isalnum() else "_" for c in stem)[:40]
+    ident = ident_safe("".join(c if c.isalnum() else "_" for c in stem)[:40])
     return f"bronze.{ident}"
 
 
@@ -120,10 +134,22 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         # the source would not say.
         if "source_row_count" not in cols:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_row_count BIGINT")
+        # Columns the source declared numeric that landed VARCHAR (dms#277 F-e),
+        # comma-separated. The ask path refuses SQL reading them: text compares
+        # '9.50' > '100.25'.
+        if "untyped_numeric" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN untyped_numeric VARCHAR")
 
 
 def _claim_table_name(
-    con: duckdb.DuckDBPyConnection, *, stem: str, filename: str, digest: str
+    con: duckdb.DuckDBPyConnection,
+    *,
+    stem: str,
+    filename: str,
+    digest: str,
+    space_scoped: bool = False,
+    space_id: str | None = None,
+    reserved: dict[str, tuple[Any, Any]] | None = None,
 ) -> tuple[str, str | None]:
     """Return (table_name, collision_note) for this file.
 
@@ -139,16 +165,38 @@ def _claim_table_name(
     rather than resolved in silence.
     """
     _ensure_registry(con)
-    row = con.execute(
-        f"SELECT filename FROM {_REGISTRY} WHERE table_name = ?", [stem]
-    ).fetchone()
-    if row is None or row[0] == filename:
+
+    def _owner(name: str) -> tuple[Any, Any] | None:
+        # Names claimed earlier in this same batch, not yet in the registry.
+        if reserved and name in reserved:
+            return reserved[name]
+        row = con.execute(
+            f"SELECT filename, space_id FROM {_REGISTRY} WHERE table_name = ?", [name]
+        ).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def _mine(owner: tuple[Any, Any] | None) -> bool:
+        if owner is None:
+            return True
+        if owner[0] != filename:
+            return False
+        # ONTO-DERIVE-01 (F-d): the same SQL source pulled into another Space is
+        # another owner. Keyed on the source alone, Space B's pull rewrote Space
+        # A's table and re-tagged it B's, so A's grant and stored ontology
+        # pointed at rows it no longer owned.
+        return not space_scoped or _canonical_space(owner[1]) == (space_id or None)
+
+    first = _owner(stem)
+    if _mine(first):
         return stem, None
-    suffix = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:8]
-    return (
-        f"{stem[:31]}_{suffix}",
-        f"name {stem!r} already holds {row[0]!r}; stored separately",
-    )
+    key = f"{filename}|{space_id or ''}" if space_scoped else filename
+    suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    alt = f"{stem[:31]}_{suffix}"
+    assert first is not None
+    held = first[0] if not space_scoped or first[0] != filename else f"{first[0]} (another Space)"
+    if not _mine(_owner(alt)):
+        raise ValueError(f"bronze names {stem!r} and {alt!r} are both held by other sources")
+    return alt, f"name {stem!r} already holds {held!r}; stored separately"
 
 
 def _record_ingest(
@@ -193,7 +241,12 @@ def _record_ingest(
 
 
 def claim_source_table_name(
-    *, stem: str, source: str, path: Path | None = None
+    *,
+    stem: str,
+    source: str,
+    path: Path | None = None,
+    space_id: str | None = None,
+    reserved: dict[str, tuple[Any, Any]] | None = None,
 ) -> tuple[str, str | None]:
     """Reserve a bronze name for a SQL-sourced table without taking another table's.
 
@@ -211,9 +264,25 @@ def claim_source_table_name(
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
-        return _claim_table_name(con, stem=stem, filename=source, digest="")
+        return _claim_table_name(
+            con,
+            stem=ident_safe(stem),
+            filename=source,
+            digest="",
+            space_scoped=True,
+            space_id=_canonical_space(space_id),
+            reserved=reserved,
+        )
     finally:
         con.close()
+
+
+def _canonical_space(space_id: str | None) -> str | None:
+    if not space_id:
+        return None
+    from dms_executor.demo_grants import canonical_space_id
+
+    return canonical_space_id(space_id)
 
 
 def record_source_pull(
@@ -227,6 +296,7 @@ def record_source_pull(
     path: Path | None = None,
     extracted_at: str | None = None,
     source_row_count: int | None = None,
+    untyped_numeric: list[str] | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -267,6 +337,10 @@ def record_source_pull(
             extracted_at=stamp,
             source_kind="sql",
             source_row_count=source_row_count,
+        )
+        con.execute(
+            f"UPDATE {_REGISTRY} SET untyped_numeric = ? WHERE table_name = ?",
+            [",".join(untyped_numeric or []) or None, table_name],
         )
     finally:
         con.close()
@@ -343,6 +417,7 @@ _REGISTRY_OPTIONAL = (
     "extracted_at",
     "source_kind",
     "source_row_count",
+    "untyped_numeric",
 )
 
 
@@ -863,6 +938,226 @@ def write_bronze_rows(
         return f"{schema}.{name}"
     finally:
         con.close()
+
+
+#: Source DATA_TYPE (lower-cased) -> DuckDB type. Declared types only; anything
+#: not listed stays VARCHAR and is named on the receipt.
+_INT_TYPES = frozenset(
+    {
+        "int",
+        "integer",
+        "int2",
+        "int4",
+        "int8",
+        "smallint",
+        "bigint",
+        "tinyint",
+        "mediumint",
+        "serial",
+        "bigserial",
+        "smallserial",
+    }
+)
+_FLOAT_TYPES = frozenset({"real", "float", "float4", "float8", "double", "double precision"})
+_TEXT_TYPES = frozenset(
+    {
+        "varchar",
+        "character varying",
+        "text",
+        "char",
+        "character",
+        "nvarchar",
+        "nchar",
+        "ntext",
+        "bpchar",
+        "citext",
+        "uuid",
+        "uniqueidentifier",
+        "longtext",
+        "mediumtext",
+        "tinytext",
+        "enum",
+    }
+)
+_DECIMAL_TYPES = frozenset({"numeric", "decimal", "money", "smallmoney", "number"})
+_SIMPLE_TYPES = {
+    "boolean": "BOOLEAN",
+    "bool": "BOOLEAN",
+    "bit": "BOOLEAN",
+    "date": "DATE",
+    "time": "TIME",
+    "time without time zone": "TIME",
+    "timestamp": "TIMESTAMP",
+    "timestamp without time zone": "TIMESTAMP",
+    "datetime": "TIMESTAMP",
+    "datetime2": "TIMESTAMP",
+    "smalldatetime": "TIMESTAMP",
+}
+#: Kept VARCHAR on purpose (adversary round 4): the driver writes these with the
+#: source session's offset (``05:00+08:00``) and a DuckDB TIMESTAMPTZ reads them in
+#: the server zone, so a day bucket moves (2024-01-01 becomes 2023-12-31). The text
+#: keeps the source's own clock, which is what the pre-typing answers used.
+_ZONED_TYPES = frozenset({"timestamptz", "timestamp with time zone", "datetimeoffset"})
+
+
+def duckdb_type_for(data_type: str, precision: int | None, scale: int | None) -> str | None:
+    """The DuckDB type a declared source type lands as, or None to stay VARCHAR."""
+    t = " ".join(str(data_type).lower().split())
+    if t in _TEXT_TYPES:
+        return "VARCHAR"
+    if t in _INT_TYPES:
+        return "BIGINT"
+    if t in _FLOAT_TYPES:
+        return "DOUBLE"
+    if t in {"money", "smallmoney"}:
+        return "DECIMAL(19,4)"
+    if t in _DECIMAL_TYPES:
+        # DuckDB DECIMAL holds 38 digits. Wider, or undeclared precision
+        # (Postgres bare NUMERIC), cannot be held exactly: stays VARCHAR.
+        if precision is None or not 1 <= precision <= 38:
+            return None
+        s = scale or 0
+        return f"DECIMAL({precision},{s})" if 0 <= s <= precision else None
+    return _SIMPLE_TYPES.get(t)
+
+
+_NUMERIC_TYPES = _INT_TYPES | _FLOAT_TYPES | _DECIMAL_TYPES
+
+
+def _bare_decimal(con: Any, rel: str, q: str) -> str | None:
+    """DECIMAL(38, s) for an undeclared-precision numeric, or None.
+
+    ``s`` is the largest scale the values carry. Plain decimal notation only (an
+    exponent is refused, not reinterpreted); the exactness check in the caller
+    still has to pass before anything is converted.
+    """
+    row = con.execute(
+        f"SELECT COUNT(*) FILTER (WHERE NOT regexp_full_match(trim({q}), '-?[0-9]+(\\.[0-9]+)?')), "
+        f"COALESCE(MAX(length(split_part(trim({q}), '.', 2))), 0), "
+        f"COALESCE(MAX(length(ltrim(split_part(trim({q}), '.', 1), '-'))), 0) "
+        f"FROM {rel} WHERE {q} IS NOT NULL"
+    ).fetchone()
+    if row is None or int(row[0]):
+        return None
+    scale, whole = int(row[1]), int(row[2])
+    if whole + scale > 38 or scale > 38:
+        return None
+    return f"DECIMAL(38,{scale})"
+
+
+def type_bronze_columns(
+    *,
+    table: str,
+    declared: dict[str, tuple[str, int | None, int | None]] | None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Give landed bronze columns their source-declared types (dms#277 F-e).
+
+    Rows land as VARCHAR (``write_bronze_rows``), which made every generated
+    ``SUM``/``AVG`` over a numeric SQL-source column fail validation: the
+    largest known BIRD cost. A column with a mapped declared type is converted
+    only if EVERY non-NULL value converts AND, for a numeric target, converts
+    to the same number (DuckDB rounds ``'1.5'`` to an integer 2 instead of
+    failing). Otherwise it stays VARCHAR and is named, never half-converted.
+
+    ``untyped_numeric`` lists columns declared numeric that stayed VARCHAR; the
+    ask path refuses SQL that reads them, because text compares ``'9.50' >
+    '100.25'``.
+    """
+    column_types: dict[str, str] = {}
+    untyped: dict[str, str] = {}
+    untyped_numeric: list[str] = []
+    schema, _, name = table.partition(".")
+    rel = f'"{schema}"."{name}"'
+    db = ensure_demo_warehouse(path or warehouse_path())
+    con = connect_file(db)
+    try:
+        cols = [
+            str(r[0])
+            for r in con.execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()
+            if str(r[0]) not in {"_src", "_ingest_id"}
+        ]
+        for col in cols:
+            column_types[col] = "VARCHAR"
+            if declared is None:
+                untyped[col] = "source did not declare column types"
+                continue
+            spec = declared.get(col)
+            if spec is None:
+                untyped[col] = "type not declared"
+                continue
+            kind = " ".join(str(spec[0]).lower().split())
+            numeric = kind in _NUMERIC_TYPES
+            q = '"' + col.replace('"', '""') + '"'
+            if kind in _ZONED_TYPES:
+                untyped[col] = (
+                    f"declared {spec[0]!r} kept as source text: a zoned timestamp "
+                    "read in the server's zone would move day boundaries"
+                )
+                continue
+            target = duckdb_type_for(*spec)
+            if target is None and kind in _DECIMAL_TYPES and spec[1] is None:
+                target = _bare_decimal(con, rel, q)
+            if target is None:
+                untyped[col] = f"declared type {spec[0]!r} has no exact DuckDB type"
+                if numeric or kind in {"money", "smallmoney"}:
+                    untyped_numeric.append(col)
+                continue
+            if target == "VARCHAR":
+                continue
+            exact = (
+                f" OR TRY_CAST(TRY_CAST({q} AS {target}) AS DECIMAL(38,18)) "
+                f"IS DISTINCT FROM TRY_CAST({q} AS DECIMAL(38,18))"
+                if target == "BIGINT" or target.startswith("DECIMAL")
+                else ""
+            )
+            bad = con.execute(
+                f"SELECT COUNT(*) FROM {rel} WHERE {q} IS NOT NULL "
+                f"AND (TRY_CAST({q} AS {target}) IS NULL{exact})"
+            ).fetchone()
+            if bad is None or int(bad[0]):
+                untyped[col] = (
+                    f"{int(bad[0]) if bad else '?'} value(s) do not fit declared {target} exactly"
+                )
+                if numeric or kind in {"money", "smallmoney"}:
+                    untyped_numeric.append(col)
+                continue
+            con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE {target} USING CAST({q} AS {target})")
+            column_types[col] = target
+    finally:
+        con.close()
+    return {
+        "column_types": column_types,
+        "untyped_columns": untyped,
+        "untyped_numeric": untyped_numeric,
+    }
+
+
+def untyped_numeric_columns(tables: set[str], *, path: Path | None = None) -> dict[str, set[str]]:
+    """``bronze.<t>`` -> declared-numeric columns that landed VARCHAR, for ``tables``.
+
+    Raises when the registry cannot be read; the caller refuses rather than
+    answering over columns it cannot vouch for.
+    """
+    bare = {t.split(".", 1)[-1].lower(): t for t in tables if t.lower().startswith("bronze.")}
+    if not bare:
+        return {}
+    # Read-only, never seeding the registry: "no warehouse" / "no registry" read
+    # as nothing flagged; an unreadable one raises WarehouseBusy.
+    rows = _registry_rows(
+        lambda col: (
+            f"SELECT r.table_name, {col('untyped_numeric')} FROM {_REGISTRY} r "
+            f"WHERE {col('untyped_numeric')} IS NOT NULL"
+        ),
+        [],
+        path=path,
+    )
+    out: dict[str, set[str]] = {}
+    for name, cols in rows:
+        key = str(name).lower()
+        if key in bare and cols:
+            out[f"bronze.{key}"] = {c.lower() for c in str(cols).split(",") if c}
+    return out
 
 
 def list_bronze_tables(

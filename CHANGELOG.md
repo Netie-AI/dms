@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - SQL-source ingest: declared types, safe names, per-Space tables, serving sync (dms#277)
+
+- **Routing.** The PRD Agent routed four defects as BUILD_NOW in open epic dms#277 (ledger rows F-TBD-6 to F-TBD-9, Netie PR #42). The learning-loop request (F-TBD-5) is a PROPOSED PRD amendment awaiting the founder. Not COMPLETE. No BIRD score claimed; the accuracy gain is to be measured under A1-02 #264.
+- **F-e types (the largest known BIRD cost).** SQL-source bronze landed every column as VARCHAR. The connector now reads `INFORMATION_SCHEMA.COLUMNS` and each column lands as its declared type (BIGINT, DECIMAL(p,s), DOUBLE, BOOLEAN, DATE, TIMESTAMP). A column is converted only when every value converts to the same value; anything else stays VARCHAR and is named on the receipt (`tables[].untyped_columns`).
+  - Bare Postgres `numeric` lands as DECIMAL(38, s) when exact.
+  - Zoned timestamps stay text: TIMESTAMPTZ read in the server's zone moved day buckets.
+  - A column declared numeric that stayed text (`money` with a symbol) is recorded in the registry. Generated or contract-ask SQL that reads it abstains `untyped_numeric:<table>.<col>`, because text MAX is `$9.50`.
+- **F-c names.** Bronze names are ASCII identifiers (`t_` prefix for a leading digit). A legacy name that breaks the rule is dropped from grants and logged, instead of failing the whole Space's manifest.
+- **F-d Spaces.** The same source pulled into a second Space lands under its own suffixed name, noted on the receipt. Every name in a pull is claimed before any row is written. Source columns that differ only by case land as `name_2` instead of a 500.
+- **F-b sync.** SQL-source ingest syncs bronze to the serving warehouse like batch ingest, and the receipt carries `serving_sync {state, detail}`.
+- **Gate.** `tests/test_ingest_fixes_277.py` (14 envelope/receipt tests), plus a real-Postgres typing assertion in `tests/control_plane/test_onto_derive_01_pg.py`. Each fix goes red when mutated. An independent adversary (round 4) found 2 P0s (the zoned-timestamp shift, text MAX on bare numeric) and 3 smaller holes; all are fixed and pinned. Full suite green; loopback over real HTTP 31/31.
+
 ## 2026-09-26 - ONTO-DERIVE-01 round 3: allowlist holes closed
 
 - **Evidence.** A third independent adversary found 3 wrong green answers past the allowlist. An output alias named like the parent column (`SUM(budget) AS budget`) hid it from the fan-trap check (400, truth 200). DuckDB's list-returning `max(x, n)` / `min(x, n)` counted as idempotent. `SUM/COUNT(DISTINCT parent_value)` removes equal values, not repeated parent rows (100, truth 200). It also found 2 contract-path gaps: a filter inside a LEFT JOIN ON (4, truth 3), and a `query('...')` table function hiding a join.

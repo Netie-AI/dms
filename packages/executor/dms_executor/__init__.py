@@ -80,6 +80,7 @@ from dms_executor.generative_ask import (
     is_empty_generation,
     maybe_generative_ask,
     path_miss_envelope,
+    untyped_numeric_reason,
 )
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -123,6 +124,7 @@ from dms_executor.space_ontology import (
     stored_catalogs,
     stored_catalogs_by_source,
 )
+from dms_executor.sql_grain import relation_name_parts
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -139,6 +141,7 @@ from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
+    serving_sync_state,
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
@@ -316,7 +319,19 @@ class Executor:
             session_id="_grantable_probe",
             pool_id="default",
         )
-        return sorted(resolve_session_acl(ctx).row_predicates)
+        granted = sorted(resolve_session_acl(ctx).row_predicates)
+        # F-c: one granted name that breaks the SHARED NAMING RULE (a legacy
+        # ``bronze.2024_sales``) made ``cortex_row_predicates`` refuse the whole
+        # Space's manifest, so every ask abstained ``submit_failed``. Such a table
+        # is not grantable (new ingests never create one); it is named, not hidden.
+        bad = [t for t in granted if relation_name_parts(t) is None]
+        if bad:
+            logger.warning(
+                "space %s: not granting %s (name breaks the naming rule; re-ingest to rename)",
+                space_id,
+                ", ".join(bad),
+            )
+        return [t for t in granted if t not in bad]
 
     def demo_acl(
         self,
@@ -771,6 +786,15 @@ class Executor:
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         sql_used = str(getattr(resp, "sql_used", None) or "")
+        if sql_used and not demo_space and not getattr(resp, "abstained", False):
+            # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
+            num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
+            if num_why:
+                env = path_miss_envelope(
+                    question, num_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
             # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
             # Its SQL answers only if it passes the same rule generation does.
@@ -1117,6 +1141,7 @@ __all__ = [
     "stored_catalogs_by_source",
     "list_source_keys",
     "warehouse_path",
+    "serving_sync_state",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
