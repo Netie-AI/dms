@@ -291,7 +291,10 @@ def test_capacity_above_90_keep_gt_has_rows(tmp_path: Path) -> None:
     )
     assert env is not None
     assert_grain_abstain(env)
-    assert "unrequested_measure:utilisation_pct" in env["text"], env["text"]
+    assert "gap: unrequested_measure" in env["text"], env["text"]
+    assert "utilisation_pct" not in env["text"], env["text"]
+    said = " ".join(str(a) for a in env.get("assumptions") or [])
+    assert "unrequested_measure:utilisation_pct" in said
     assert "WH-E" not in env["text"] and "97.8" not in env["text"], env["text"]
 
 

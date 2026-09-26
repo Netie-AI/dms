@@ -131,8 +131,9 @@ def test_customer_text_names_gap_not_generic() -> None:
     other = customer_abstain_text("submit_failed")
     assert "gap: submit_failed" in other
     named = customer_abstain_text("unknown_measure: no measure named 'profit'")
-    assert "gap:" in named
-    assert "profit" in named
+    assert "gap: unknown_measure" in named
+    # SPACE-GEN-01 round 3: a model-chosen name never reaches customer text.
+    assert "profit" not in named
     assert gap_reason_name("no_path: no chain from sale") == "no_path"
     assert gap_reason_name("coverage_invalid: missing include") == "coverage_invalid"
     assert gap_reason_name("submit_failed") is None
@@ -155,7 +156,9 @@ def test_unknown_measure_abstains_with_named_gap(tmp_path: Path) -> None:
         ontology=onto,
     )
     _assert_named_gap(env, "unknown_measure")
-    assert "profit" in str(env["text"])
+    # SPACE-GEN-01 round 3: the plan's measure name stays in assumptions.
+    assert "profit" not in str(env["text"])
+    assert "profit" in " ".join(str(a) for a in env.get("assumptions") or [])
 
 
 def test_no_path_abstains_with_named_gap(tmp_path: Path) -> None:
@@ -175,7 +178,8 @@ def test_no_path_abstains_with_named_gap(tmp_path: Path) -> None:
         ontology=onto,
     )
     _assert_named_gap(env, "no_path")
-    assert "orphan" in str(env["text"])
+    assert "orphan" not in str(env["text"])
+    assert "orphan" in " ".join(str(a) for a in env.get("assumptions") or [])
 
 
 def test_fanout_path_abstains_with_named_gap(tmp_path: Path) -> None:
@@ -263,7 +267,8 @@ def test_ranked_missing_metric_abstains_not_bind_plan(tmp_path: Path) -> None:
         bind_on_miss=True,
     )
     _assert_named_gap(env, "unknown_measure")
-    assert MISSING_METRIC_ID in str(env["text"])
+    assert MISSING_METRIC_ID not in str(env["text"])
+    assert MISSING_METRIC_ID in " ".join(str(a) for a in env.get("assumptions") or [])
     assert env.get("plan_source") != "bind_plan"
     assert not any("bind_plan" in str(a) for a in (env.get("assumptions") or []))
 

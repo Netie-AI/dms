@@ -34,7 +34,11 @@ from dms_executor import Executor
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
-from dms_executor.sql_grain import grain_mismatch_reason, scalar_rows_reason
+from dms_executor.sql_grain import (
+    grain_customer_label,
+    grain_mismatch_reason,
+    scalar_rows_reason,
+)
 from fastapi.testclient import TestClient
 
 CAPACITY_Q = "Show warehouse capacity utilisation"
@@ -235,7 +239,12 @@ def _assert_grain_abstain(env: dict[str, Any], prefix: str, *figures: str) -> No
     assert env["values"] == []
     assert env["rows"] == []
     text = str(env.get("text") or "")
-    assert f"gap: {prefix}" in text, text
+    # SPACE-GEN-01 round 3: the customer reads the DMS-named head; a column
+    # or alias the generated SQL chose stays in assumptions.
+    assert f"gap: {grain_customer_label(prefix)}" in text, text
+    head, _, tail = prefix.partition(":")
+    if head.startswith("unrequested_"):
+        assert tail not in text, (tail, text)
     assert prefix in _reasons(env), env.get("assumptions")
     for fig in figures:
         assert fig not in text, (fig, text)
@@ -268,7 +277,9 @@ def test_capacity_grouped_by_capacity_kg_abstains_unrequested_grain(
 ) -> None:
     env, cortex = _post(minter, lake, CAPACITY_Q, CAPACITY_BY_CAPACITY_KG_SQL)
     _assert_grain_abstain(env, "unrequested_grain:capacity_kg", "97.8", "90000", "72.0")
-    assert "capacity_kg" in env["text"]
+    # The column is named in the audit trail and the receipt, not the text.
+    assert "capacity_kg" not in env["text"]
+    assert "unrequested_grain:capacity_kg" in env["audit_receipt"]["unsure"]["why"]
     assert cortex.executed == [], "a wrong-grain query must not execute"
 
 

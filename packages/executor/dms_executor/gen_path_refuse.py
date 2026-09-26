@@ -10,6 +10,7 @@ Not GEN-03 ask_path 400 containment. Not COMPLETE.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from cortex_client.compute import (
@@ -20,7 +21,13 @@ from cortex_client.compute import (
 
 from dms_executor.ontology import Ontology
 from dms_executor.semantic_retrieve import intent_slots, load_measure_aliases
-from dms_executor.sql_grain import GRAIN_REASONS, grain_abstain_text
+from dms_executor.sql_grain import (
+    GRAIN_REASONS,
+    REASON_SQL_UNANALYSABLE,
+    SCOPE_REFUSALS,
+    grain_abstain_text,
+    grain_customer_label,
+)
 
 GAP_REASONS = frozenset(
     {
@@ -48,6 +55,72 @@ GAP_REASONS = frozenset(
 )
 
 
+#: Named gaps whose tail carries a name a model or a ranked plan chose (a
+#: measure id, an object, a column, a path). The customer reads the head only;
+#: the full reason stays in ``assumptions``.
+_MODEL_TAIL_GAPS = frozenset(
+    {
+        "unknown_measure",
+        "unknown_object",
+        "unknown_column",
+        "no_path",
+        "missing_metric",
+        "missing_join",
+        "fanout_refused",
+        "ambiguous_path",
+        "unknown_link",
+    }
+)
+
+#: SPACE-GEN-01 round 3: Cortex Insights refused the generated SQL and said
+#: why (``refuse_reason``). DMS names it from this closed set; the raw text,
+#: which can name a table the model invented, stays in ``assumptions``.
+REASON_CORTEX_REFUSED = "cortex_refused"
+_CORTEX_REFUSAL_CODES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"ambiguous in the caller catalog", re.I), "ambiguous_table"),
+    (re.compile(r"(not in|outside) the caller catalog", re.I), "table_not_in_catalog"),
+    (re.compile(r"is not declared (by the caller|for)", re.I), "column_not_declared"),
+    (re.compile(r"table function refused", re.I), "table_function"),
+    (re.compile(r"cross-catalog", re.I), "cross_catalog"),
+    (
+        re.compile(r"caller (catalog|ontology) names no tables|caller_ontology_empty", re.I),
+        "caller_ontology_empty",
+    ),
+    (re.compile(r"caller_ontology_invalid", re.I), "caller_ontology_invalid"),
+    (
+        re.compile(r"non-select|not a select|more than one statement|empty sql", re.I),
+        "not_a_select",
+    ),
+    (re.compile(r"sql parse error", re.I), "sql_parse_error"),
+    (re.compile(r"no ontology path or metric", re.I), "no_ontology_path"),
+)
+CORTEX_REFUSAL_CODES = frozenset(
+    {code for _pat, code in _CORTEX_REFUSAL_CODES} | {"unclassified"}
+)
+_RAW_REFUSAL_MAX = 300
+
+
+def cortex_refuse_reason(payload: dict[str, Any] | None) -> str:
+    """Cortex's own ``refuse_reason`` on an Insights payload, or ""."""
+    if not isinstance(payload, dict):
+        return ""
+    raw = str(payload.get("refuse_reason") or "").strip()
+    if not raw:
+        gen = payload.get("generative")
+        if isinstance(gen, dict):
+            raw = str(gen.get("refuse_reason") or "").strip()
+    return raw
+
+
+def cortex_refusal_gap(payload: dict[str, Any] | None) -> tuple[str, str] | None:
+    """``(cortex_refused:<code>, raw)`` when Cortex named why it refused."""
+    raw = cortex_refuse_reason(payload)
+    if not raw:
+        return None
+    code = next((c for pat, c in _CORTEX_REFUSAL_CODES if pat.search(raw)), "unclassified")
+    return f"{REASON_CORTEX_REFUSED}:{code}", raw[:_RAW_REFUSAL_MAX]
+
+
 def gap_reason_name(reason: str) -> str | None:
     """Head token of a compile/ranking refusal, or None if not a named gap."""
     head = str(reason or "").strip().split(":", 1)[0].strip()
@@ -63,6 +136,12 @@ def customer_abstain_text(reason: str) -> str:
             return body
     if gap.split(":", 1)[0].strip() in GRAIN_REASONS:
         return grain_abstain_text(gap)
+    if gap.split(":", 1)[0].strip() == REASON_CORTEX_REFUSED:
+        return (
+            "I cannot certify an answer to that question: the engine refused the "
+            "generated query against this Space's catalog "
+            f"(gap: {customer_gap_label(gap)}), so nothing was executed."
+        )
     if gap.startswith("source_truncated:"):
         tables = gap.split(":", 1)[1].strip() or "a source"
         return (
@@ -177,8 +256,23 @@ def customer_gap_label(reason: str) -> str:
         return prefix + _SAFE_HEADS[inner_head]
     if inner in _SAFE_FIXED_REASONS:
         return prefix + inner
-    if gap_reason_name(inner) is not None or inner_head in GRAIN_REASONS:
-        # Named compile / ranking / Insights gaps render as they always have.
+    tail = inner.partition(":")[2].strip()
+    if inner_head == REASON_SQL_UNANALYSABLE:
+        # The scope analysis writes its tail from a closed set.
+        return prefix + (f"{inner_head}:{tail}" if tail in SCOPE_REFUSALS else inner_head)
+    if inner_head == REASON_CORTEX_REFUSED:
+        return prefix + (
+            f"{inner_head}:{tail}" if tail in CORTEX_REFUSAL_CODES else inner_head
+        )
+    if inner_head in GRAIN_REASONS:
+        return prefix + grain_customer_label(inner)
+    if inner_head in _MODEL_TAIL_GAPS:
+        # SPACE-GEN-01 round 3: a measure id / column / object a model or a
+        # ranked plan chose never reaches the customer text.
+        return prefix + inner_head
+    if gap_reason_name(inner) is not None:
+        # Other named gaps carry DMS-derived tails (the question's qualifier,
+        # a declared ontology subject) or none.
         return prefix + inner
     if inner_head == "source_truncated":
         return prefix + inner
@@ -244,11 +338,15 @@ def ranking_missing_metric_gap(
 
 
 __all__ = [
+    "CORTEX_REFUSAL_CODES",
     "GAP_REASONS",
+    "REASON_CORTEX_REFUSED",
     "GAP_UNNAMED_REFUSAL",
     "REASON_SPACE_ID_EMPTY",
     "REASON_SPACE_NOT_FOUND",
     "customer_abstain_text",
+    "cortex_refusal_gap",
+    "cortex_refuse_reason",
     "customer_gap_label",
     "gap_reason_name",
     "ranking_missing_metric_gap",

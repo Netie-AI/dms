@@ -49,6 +49,7 @@ from dms_executor.envelope import (
     chart_from_rows,
 )
 from dms_executor.gen_path_refuse import (
+    cortex_refusal_gap,
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
@@ -73,6 +74,7 @@ from dms_executor.semantic_retrieve import (
     intent_slots,
     load_measure_aliases,
     retrieve_short_context,
+    retrieve_space_context,
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
@@ -555,7 +557,16 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
 
 
 def cited_relations(sql: str) -> set[str]:
-    return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
+    """Bare names of the real relations ``sql`` reads.
+
+    Scope analysis first (``real_table_labels``: a CTE name is not a relation,
+    a same-named real table in another scope is). The FROM/JOIN regex is the
+    fallback only for SQL the analysis refuses, which never reaches submit.
+    """
+    labels = real_table_labels(sql)
+    if labels is None:
+        labels = _sql_cited_labels(sql)
+    return {_relation_bare(n) for n in labels if _relation_bare(n)}
 
 
 def validate_compiled_sql(
@@ -1146,10 +1157,17 @@ def maybe_generative_ask(
             if declared_violations or not onto.verified:
                 declared = onto
                 onto = None
-    # Short retrieved context only -- not the full ontology dump.
-    ctx = retrieve_short_context(
-        q, warehouse=lake, grantable=allowed, ontology=onto
-    )
+    # Demo: short retrieved context only -- not the full ontology dump.
+    # Space (SPACE-GEN-01 round 3): Cortex treats the columns it is sent as
+    # the column allowlist, so the Space's whole granted catalog goes, every
+    # column of each table (capped with an explicit truncated flag), and no
+    # demo-pack measure_aliases / measures / bound lake values ride along.
+    if demo_ontology_allowed:
+        ctx = retrieve_short_context(
+            q, warehouse=lake, grantable=allowed, ontology=onto
+        )
+    else:
+        ctx = retrieve_space_context(q, warehouse=lake, grantable=allowed)
     try:
         payload = compute(generation_catalog(ctx, allowed, demo=demo_ontology_allowed))
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1304,6 +1322,29 @@ def maybe_generative_ask(
                 )
             )
     if kind != "plan":
+        # SPACE-GEN-01 round 3: on a Space, Cortex refusing the generated SQL
+        # against the caller catalog ("table X is not in the caller catalog")
+        # is the answer: a named gap, never a fall-through to the contract
+        # ask's generic text. The customer reads a DMS-named code; Cortex's
+        # raw words (which may name a table the model invented) stay in
+        # assumptions.
+        refusal = (
+            cortex_refusal_gap(payload if isinstance(payload, dict) else None)
+            if not demo_ontology_allowed
+            else None
+        )
+        if refusal is not None:
+            gap, raw = refusal
+            return _stamp(
+                _abstain(
+                    q,
+                    gap,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                    notes=[f"Cortex refuse_reason: {raw}"],
+                )
+            )
         # Named Insights fail-closed: never bind. Product Cortex.ask still
         # runs only on a transport miss (no insights_fail stamp).
         fail = insights_fail_reason(payload if isinstance(payload, dict) else None)

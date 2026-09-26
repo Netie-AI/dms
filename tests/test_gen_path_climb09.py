@@ -432,7 +432,10 @@ def test_ops_leftover_l0s_compile_without_suppliers_or_txns(tmp_path: Path) -> N
         if q == "List chemicals in inventory":
             # GRAIN-GUARD-01: compiled with an unrequested stock-value figure.
             assert_grain_abstain(env)
-            assert "unrequested_measure:stock_value_myr" in env["text"], env["text"]
+            assert "gap: unrequested_measure" in env["text"], env["text"]
+            assert "stock_value_myr" not in env["text"], env["text"]
+            said = " ".join(str(a) for a in env.get("assumptions") or [])
+            assert "unrequested_measure:stock_value_myr" in said
             continue
         assert env["badge"] == "L2_VALIDATED"
         assert classify_plan_source(env) == "ontology_plan"

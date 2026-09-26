@@ -49,6 +49,7 @@ from typing import Any
 
 import sqlglot
 from sqlglot import exp, parse_one
+from sqlglot.optimizer.scope import Scope, ScopeType, traverse_scope
 
 from dms_executor.semantic_retrieve import load_ontology_spine
 
@@ -602,33 +603,6 @@ def _outer_limit(sql: str) -> int | None:
     return None
 
 
-def cited_table_labels(sql: str) -> list[str] | None:
-    """Every relation the statement names, from the parse tree; None if unparseable.
-
-    SPACE-GEN-01: the FROM/JOIN regex in ``envelope._sql_cited_labels`` misses a
-    comma join (``FROM a, transactions``) and ``FROM/**/transactions``, so the
-    DMS grant check never saw those tables. The tree sees every ``exp.Table``
-    written as a name, wherever it sits. Labels keep their qualifier
-    (``bronze.financial_account``) so an exact ``schema.table`` grant can match.
-    Table functions (``read_csv_auto(...)``) are the hostile-SQL gate's job.
-    """
-    try:
-        roots = sqlglot.parse(sql, read=_DIALECT)
-    except Exception:  # noqa: BLE001 - any parse failure is "cannot analyse"
-        return None
-    labels: list[str] = []
-    for root in roots:
-        if root is None:
-            continue
-        for table in root.find_all(exp.Table):
-            if not isinstance(table.this, exp.Identifier):
-                continue
-            parts = [p for p in (table.catalog, table.db, table.name) if p]
-            if parts:
-                labels.append(".".join(parts))
-    return list(dict.fromkeys(labels))
-
-
 #: One part of a relation name on the DMS->Cortex wire (SHARED NAMING RULE).
 _REL_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -643,51 +617,130 @@ def relation_name_parts(name: str) -> tuple[str, ...] | None:
     return parts
 
 
-def _cte_in_scope(table: exp.Table) -> bool:
-    """True when this bare reference names a CTE visible where it is written.
+#: Head of a named refusal when scope analysis cannot prove which relations a
+#: statement reads (fail closed, like Cortex ``manifest.py``).
+REASON_SQL_UNANALYSABLE = "sql_unanalysable"
+#: The tails ``_scope_real_tables`` writes. A closed set, so the customer may
+#: read them: nothing a model chose is inside.
+SCOPE_REFUSALS = frozenset(
+    {
+        "parse",
+        "not_a_query",
+        "scope",
+        "recursive_cte",
+        "table_function",
+        "lateral",
+        "cte_name_case",
+        "unscoped_table",
+    }
+)
 
-    A non-recursive CTE's own body cannot see itself: ``WITH t AS (SELECT *
-    FROM t)`` reads the real table ``t``, so that inner reference is a table.
+
+def _scope_real_tables(root: exp.Expression) -> tuple[list[exp.Table], str | None]:
+    """Every real table ``root`` reads, from sqlglot scope analysis.
+
+    SPACE-GEN-01 round 3 (root cause of the CTE bypasses): "is this name a
+    CTE" used to be a hand-rolled walk up the tree. It had no notion of scope,
+    so a CTE declared inside a derived table hid a same-named real table in
+    the outer query, and a forward reference to a later CTE in the same WITH
+    list (DuckDB binds it to the real table) was exempted as a CTE.
+
+    Now a reference is a CTE only when the scope that holds it resolves it to
+    a CTE scope (``traverse_scope`` handles WITH order, nesting and derived
+    tables); every other ``exp.Table`` source is a real table. A construct
+    the analysis does not cover is ``(…, reason)`` from ``SCOPE_REFUSALS``:
+    WITH RECURSIVE, a table function / UNNEST / LATERAL, a CTE whose name
+    differs from the reference only in case (DuckDB binds case-insensitively,
+    sqlglot does not), and any table node no scope accounts for.
     """
-    name = table.name.lower()
-    node: exp.Expression = table
-    while node.parent is not None:
-        parent = node.parent
-        if isinstance(parent, exp.CTE) and str(parent.alias or "").lower() == name:
-            with_ = parent.parent
-            if not (isinstance(with_, exp.With) and with_.args.get("recursive")):
-                return False
-        with_arg = parent.args.get("with")
-        if isinstance(with_arg, exp.With) and any(
-            str(c.alias or "").lower() == name for c in with_arg.expressions
-        ):
-            return True
-        node = parent
-    return False
-
-
-def _real_tables(root: exp.Expression) -> list[exp.Table]:
-    out: list[exp.Table] = []
-    for table in root.find_all(exp.Table):
+    if not isinstance(root, exp.Query):
+        return [], "not_a_query"
+    for with_ in root.find_all(exp.With):
+        if with_.args.get("recursive"):
+            return [], "recursive_cte"
+    if root.find(exp.Lateral) is not None:
+        return [], "lateral"
+    if root.find(exp.Unnest) is not None:
+        return [], "table_function"
+    all_tables = list(root.find_all(exp.Table))
+    for table in all_tables:
         if not isinstance(table.this, exp.Identifier):
-            continue
-        if not table.db and not table.catalog and _cte_in_scope(table):
-            continue
-        out.append(table)
-    return out
+            return [], "table_function"
+    try:
+        scopes = traverse_scope(root)
+    except Exception:  # noqa: BLE001 - a scope sqlglot cannot build is not provable
+        return [], "scope"
+    if not scopes:
+        return [], "scope"
+    real: list[exp.Table] = []
+    seen: set[int] = set()
+    for scope in scopes:
+        if scope.scope_type == ScopeType.UDTF:
+            return [], "lateral"
+        visible_ctes = {
+            str(name).lower()
+            for name, src in scope.sources.items()
+            if isinstance(src, Scope) and src.is_cte
+        }
+        for table in scope.tables:
+            if id(table) in seen:
+                continue
+            seen.add(id(table))
+            src = scope.sources.get(table.alias_or_name)
+            qualified = bool(table.db or table.catalog)
+            if isinstance(src, Scope):
+                cte = src.expression.parent
+                if (
+                    qualified
+                    or not src.is_cte
+                    or not isinstance(cte, exp.CTE)
+                    or str(cte.alias or "") != table.name
+                ):
+                    return [], "scope"
+                continue
+            if src is not table:
+                return [], "scope"
+            if not qualified and table.name.lower() in visible_ctes:
+                # sqlglot matched no CTE (case differs); DuckDB would bind one.
+                return [], "cte_name_case"
+            real.append(table)
+    if any(id(t) not in seen for t in all_tables):
+        return [], "unscoped_table"
+    return real, None
 
 
-def real_table_labels(sql: str) -> list[str] | None:
-    """Relations the statement reads, CTE aliases excluded; None if unparseable."""
+def _parse_all(sql: str) -> list[exp.Expression] | None:
     try:
         roots = sqlglot.parse(sql, read=_DIALECT)
     except Exception:  # noqa: BLE001 - any parse failure is "cannot analyse"
         return None
+    out = [r for r in roots if r is not None]
+    return out or None
+
+
+def scope_refusal_reason(sql: str) -> str | None:
+    """``sql_unanalysable:<why>`` when scope analysis cannot vouch for ``sql``."""
+    roots = _parse_all(sql)
+    if roots is None:
+        return f"{REASON_SQL_UNANALYSABLE}:parse"
+    for root in roots:
+        _tables, why = _scope_real_tables(root)
+        if why:
+            return f"{REASON_SQL_UNANALYSABLE}:{why}"
+    return None
+
+
+def real_table_labels(sql: str) -> list[str] | None:
+    """Relations the statement reads, by scope analysis; None if not provable."""
+    roots = _parse_all(sql)
+    if roots is None:
+        return None
     labels: list[str] = []
     for root in roots:
-        if root is None:
-            continue
-        for table in _real_tables(root):
+        tables, why = _scope_real_tables(root)
+        if why:
+            return None
+        for table in tables:
             parts = [p for p in (table.catalog, table.db, table.name) if p]
             if parts:
                 labels.append(".".join(parts))
@@ -705,10 +758,12 @@ def resolve_declared_relations(
     one declared table has that bare name, and is then rewritten to that
     declared name, so ``FROM transactions`` in a Space that declared
     ``bronze.transactions`` reads the Space's upload, never the demo lake's
-    ``main.transactions``. CTE aliases are not tables. Anything else is a
-    named reason (``relation_name_invalid``, ``ungranted:<t>``,
-    ``ambiguous_table:<t>``, ``sql_unanalysable``); the SQL is returned unchanged unless a bare name
-    was resolved.
+    ``main.transactions``. A reference is a CTE only when sqlglot scope
+    analysis resolves it to one in the scope that holds it
+    (``_scope_real_tables``); every other table is checked here. Anything else
+    is a named reason (``relation_name_invalid``, ``ungranted:<t>``,
+    ``ambiguous_table:<t>``, ``sql_unanalysable:<why>``); the SQL is returned
+    unchanged unless a bare name was resolved.
     """
     by_full: dict[str, str] = {}
     by_bare: dict[str, list[str]] = {}
@@ -718,18 +773,20 @@ def resolve_declared_relations(
             continue
         by_full[".".join(parts).lower()] = ".".join(parts)
         by_bare.setdefault(parts[-1].lower(), []).append(".".join(parts))
-    try:
-        roots = sqlglot.parse(sql, read=_DIALECT)
-    except Exception:  # noqa: BLE001
-        return sql, "sql_unanalysable"
+    roots = _parse_all(sql)
+    if roots is None:
+        return sql, f"{REASON_SQL_UNANALYSABLE}:parse"
     missing: set[str] = set()
     ambiguous: set[str] = set()
     invalid = False
     changed = False
     for root in roots:
-        if root is None:
-            continue
-        for table in _real_tables(root):
+        tables, scope_why = _scope_real_tables(root)
+        if scope_why:
+            # Fail closed: a relation this cannot place in a scope is one it
+            # cannot prove granted.
+            return sql, f"{REASON_SQL_UNANALYSABLE}:{scope_why}"
+        for table in tables:
             name = table.name
             if any(
                 p and not _REL_PART.fullmatch(p) for p in (table.catalog, table.db, name)
@@ -777,7 +834,7 @@ def resolve_declared_relations(
         return sql, f"ambiguous_table:{','.join(sorted(ambiguous, key=str.lower))}"
     if not changed:
         return sql, None
-    out = "; ".join(r.sql(dialect=_DIALECT) for r in roots if r is not None)
+    out = "; ".join(r.sql(dialect=_DIALECT) for r in roots)
     return out, None
 
 
@@ -797,11 +854,25 @@ def rows_mismatch_reason(question: str, sql: str, rows: Sequence[Any]) -> str | 
     return None
 
 
+def grain_customer_label(reason: str) -> str:
+    """The grain reason as the customer reads it.
+
+    DMS-fixed reasons (``grain_mismatch:*``, ``grain_unanalysable:<why>``)
+    show whole. The tail of ``unrequested_*`` is a column or output alias the
+    generated SQL chose, so only the head is shown (SPACE-GEN-01 round 3);
+    the full reason stays in ``assumptions``.
+    """
+    head = str(reason).partition(":")[0].strip()
+    if head in (REASON_GRAIN_MISMATCH, REASON_UNANALYSABLE):
+        return str(reason)
+    return head
+
+
 def grain_abstain_text(reason: str) -> str:
-    """Rendered ABSTAIN text for a grain reason. States no figure."""
+    """Rendered ABSTAIN text for a grain reason. States no figure, echoes no name."""
     head, _, detail = str(reason).partition(":")
     if head == REASON_UNREQUESTED_GRAIN:
-        what = f"it was broken down by {detail}, which you did not ask for"
+        what = "it was broken down by a column you did not ask for"
     elif reason == SCALAR_EXPECTED:
         what = "you asked for a single figure and the query did not return exactly one total"
     elif reason == TOTAL_NOT_SUMMED:
@@ -809,9 +880,9 @@ def grain_abstain_text(reason: str) -> str:
     elif reason == TRUNCATED:
         what = "the query cut the result off at its row limit, so some of it may be missing"
     elif head == REASON_UNREQUESTED_MEASURE:
-        what = f"it adds a figure ({detail}) that you did not ask for"
+        what = "it adds a figure that you did not ask for"
     elif head == REASON_UNREQUESTED_COLUMN:
-        what = f"it adds a column ({detail}) that you did not ask for"
+        what = "it adds a column that you did not ask for"
     elif head == REASON_UNANALYSABLE:
         what = (
             "its shape could not be fully checked against your question "
@@ -821,5 +892,6 @@ def grain_abstain_text(reason: str) -> str:
         what = "its shape does not match what you asked"
     return (
         "I cannot certify that answer: "
-        f"{what} (gap: {reason}). I am not showing it as a validated result."
+        f"{what} (gap: {grain_customer_label(reason)}). "
+        "I am not showing it as a validated result."
     )

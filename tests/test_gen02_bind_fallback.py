@@ -158,7 +158,11 @@ def test_generative_cold_storage_validates(tmp_path: Path) -> None:
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert env["rows"] == [] and env["values"] == []
-    assert "gap: unrequested_measure:utilisation_pct" in env["text"], env["text"]
+    # Named in the text; the model's alias stays in assumptions only.
+    assert "gap: unrequested_measure" in env["text"], env["text"]
+    assert "utilisation_pct" not in env["text"], env["text"]
+    said = " ".join(str(a) for a in env.get("assumptions") or [])
+    assert "unrequested_measure:utilisation_pct" in said
     assert "WH-C" not in env["text"] and "96.7" not in env["text"]
     assert_envelope_valid(env)
 
@@ -196,7 +200,11 @@ def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert env["rows"] == [] and env["values"] == []
-    assert "gap: unrequested_measure:utilisation_pct" in env["text"], env["text"]
+    # Named in the text; the model's alias stays in assumptions only.
+    assert "gap: unrequested_measure" in env["text"], env["text"]
+    assert "utilisation_pct" not in env["text"], env["text"]
+    said = " ".join(str(a) for a in env.get("assumptions") or [])
+    assert "unrequested_measure:utilisation_pct" in said
     assert "WH-E" not in env["text"] and "97.8" not in env["text"], env["text"]
     assert_envelope_valid(env)
 

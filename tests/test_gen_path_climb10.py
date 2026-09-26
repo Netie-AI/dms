@@ -509,7 +509,8 @@ def test_ops_leftover_l0s_compile_without_suppliers_or_txns(tmp_path: Path) -> N
         # GRAIN-GUARD-01: each compiles with a figure the "which" ask never
         # named (stock value / utilisation): named ABSTAIN, not a trimmed L2.
         assert_grain_abstain(env)
-        assert "gap: unrequested_measure:" in env["text"], env["text"]
+        assert "gap: unrequested_measure" in env["text"], env["text"]
+        assert "unrequested_measure:" in " ".join(str(a) for a in env.get("assumptions") or [])
 
 
 def test_ops_spend_and_rank_stay_abstain(tmp_path: Path) -> None:
