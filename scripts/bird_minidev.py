@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -87,6 +88,41 @@ SYNTHETIC_SETUP: tuple[str, ...] = (
 
 AskFn = Callable[[str], dict[str, Any]]
 GoldFn = Callable[[str], tuple[list[dict[str, Any]] | None, str | None]]
+
+#: A model-provider failure on one question, after bounded retries. It is not a
+#: grade: never RIGHT, excluded from n and from EX-on-answered (like GOLD_ERROR),
+#: and printed so a run with holes cannot pass for a clean one.
+#:
+#: Only an error the ask route *names* as the provider's earns it: an HTTP error
+#: whose body carries ``detail.upstream == "provider"`` or a ``detail.code`` in
+#: PROVIDER_CODES (DMS chat route, ``_PROVIDER_FAILURES``). The status alone
+#: proves nothing - the chat route maps any DMS-internal exception to 503, so a
+#: status-based rule excluded DMS crashes from grading and let them raise
+#: EX-on-answered.
+PROVIDER_ERROR = "PROVIDER_ERROR"
+#: The codes the DMS chat route puts on an identified provider failure.
+PROVIDER_CODES = frozenset({"provider_rate_limited", "provider_unavailable"})
+#: Every other retryable failure (a 429/5xx without the provider marker, or a
+#: transport failure talking to DMS) is DMS failing. It is retried so one blip
+#: cannot abort the run, but if it persists it grades WRONG - counted in n and in
+#: the EX-on-answered denominator - and is printed on its own line. Never excluded.
+PROVIDER_KIND_PREFIX = "provider:"
+#: Attempts per question including the first; delays double from BACKOFF_S.
+PROVIDER_ATTEMPTS = 3
+BACKOFF_S = 2.0
+BACKOFF_CAP_S = 60.0
+_TRANSPORT_NAMES = frozenset(
+    {
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "TimeoutException",
+        "RemoteProtocolError",
+        "ReadError",
+    }
+)
 
 
 def git_sha(root: Path = ROOT) -> str:
@@ -631,21 +667,117 @@ def asked_text(question: Mapping[str, Any], *, with_evidence: bool) -> str:
     return text
 
 
+def _error_body(exc: BaseException) -> Mapping[str, Any]:
+    resp = getattr(exc, "response", None)
+    try:
+        body = resp.json() if resp is not None else None
+    except Exception:  # noqa: BLE001 - not JSON: nothing names the provider
+        return {}
+    if not isinstance(body, Mapping):
+        return {}
+    detail = body.get("detail")
+    return detail if isinstance(detail, Mapping) else body
+
+
+def provider_error_kind(exc: BaseException) -> str | None:
+    """Classify one failed ask, or None for a failure that must stop the run.
+
+    ``provider:<code>`` - the body names a provider failure (PROVIDER_CODES or
+    ``upstream: "provider"``): PROVIDER_ERROR, excluded.
+    ``http_<status>`` - a 429/5xx without that marker: DMS failing, graded WRONG.
+    ``transport`` - DMS did not answer (connect/read failure): graded WRONG.
+    None - any other 4xx (bad request, Space not found) or a harness bug: a
+    broken setup, which stops the run.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int):
+        detail = _error_body(exc)
+        code = str(detail.get("code") or "")
+        if code in PROVIDER_CODES or detail.get("upstream") == "provider":
+            return f"{PROVIDER_KIND_PREFIX}{code or f'http_{status}'}"
+        if status == 429 or 500 <= status <= 599:
+            return f"http_{status}"
+        return None
+    if type(exc).__name__ in _TRANSPORT_NAMES:
+        return "transport"
+    return None
+
+
+def is_provider_kind(kind: str | None) -> bool:
+    return bool(kind) and str(kind).startswith(PROVIDER_KIND_PREFIX)
+
+
+def _retry_after_s(exc: BaseException) -> float | None:
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    try:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except AttributeError:
+        return None
+    try:
+        return max(0.0, float(raw)) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def ask_with_retry(
+    ask_fn: AskFn,
+    question: str,
+    *,
+    attempts: int = PROVIDER_ATTEMPTS,
+    backoff_s: float = BACKOFF_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[dict[str, Any] | None, str | None, int]:
+    """(envelope, provider_error_kind, retries). Bounded; honours Retry-After."""
+    attempts = max(1, int(attempts))
+    kind: str | None = None
+    for attempt in range(attempts):
+        try:
+            return ask_fn(question), None, attempt
+        except Exception as exc:  # noqa: BLE001 - classified below, else re-raised
+            kind = provider_error_kind(exc)
+            if kind is None:
+                raise
+            if attempt + 1 < attempts:
+                wait = _retry_after_s(exc)
+                if wait is None:
+                    wait = backoff_s * (2**attempt)
+                sleep(min(BACKOFF_CAP_S, wait))
+    return None, kind, attempts - 1
+
+
 def score_cases(
     questions: Sequence[Mapping[str, Any]],
     *,
     ask_fn: AskFn,
     gold_fn: GoldFn,
     with_evidence: bool = False,
+    attempts: int = PROVIDER_ATTEMPTS,
+    backoff_s: float = BACKOFF_S,
+    pace_s: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for item in questions:
+    for index, item in enumerate(questions):
+        if pace_s > 0 and index:
+            sleep(pace_s)
         sql = gold_sql_of(item)
         gold_rows, gold_err = gold_fn(sql)
-        env = ask_fn(asked_text(item, with_evidence=with_evidence))
+        asked, error_kind, retries = ask_with_retry(
+            ask_fn,
+            asked_text(item, with_evidence=with_evidence),
+            attempts=attempts,
+            backoff_s=backoff_s,
+            sleep=sleep,
+        )
+        env: dict[str, Any] = asked if asked is not None else {}
         served = served_from_response(env)
         if gold_err:
             verdict = gold_error_dominating(gold_err, "OK")
+        elif is_provider_kind(error_kind):
+            verdict = PROVIDER_ERROR
+        elif error_kind:
+            # DMS failed (no provider marker): a product failure, graded WRONG.
+            verdict = "WRONG"
         else:
             verdict = gold_error_dominating(None, grade_envelope(env, gold_rows or []))
         got = envelope_rows(env)
@@ -661,6 +793,9 @@ def score_cases(
             "provider": served["provider"],
             "model": served["model"],
             "plan_origin": served["plan_origin"],
+            "provider_error": error_kind if is_provider_kind(error_kind) else None,
+            "dms_error": None if is_provider_kind(error_kind) else error_kind,
+            "retries": retries,
         }
         for key in SETUP_FIELD_KEYS:
             case[key] = served[key]
@@ -669,11 +804,23 @@ def score_cases(
 
 
 def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    tallies = {"OK": 0, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0, "GOLD_ERROR": 0}
+    tallies = {
+        "OK": 0,
+        "LAYER": 0,
+        "ABSTAIN": 0,
+        "WRONG": 0,
+        "GOLD_ERROR": 0,
+        PROVIDER_ERROR: 0,
+    }
+    retries = 0
+    app_errors: Counter[str] = Counter()
     for row in rows:
         key = str(row.get("verdict") or "")
         if key in tallies:
             tallies[key] += 1
+        retries += int(row.get("retries") or 0)
+        if row.get("dms_error"):
+            app_errors[str(row["dms_error"])] += 1
     n = tallies["OK"] + tallies["LAYER"] + tallies["ABSTAIN"] + tallies["WRONG"]
     answered = tallies["OK"] + tallies["LAYER"]
     wrong = tallies["WRONG"]
@@ -685,6 +832,10 @@ def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "abstain": tallies["ABSTAIN"],
         "wrong": wrong,
         "gold_error": tallies["GOLD_ERROR"],
+        "provider_error": tallies[PROVIDER_ERROR],
+        "retries": retries,
+        "app_error": sum(app_errors.values()),
+        "app_error_kinds": dict(sorted(app_errors.items())),
         "answered": answered,
         "right": tallies["OK"] + tallies["LAYER"],
         "ex_on_answered_pct": round(100.0 * answered / denom, 2) if denom else None,
@@ -723,7 +874,19 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
     print(
         f"n={n} answered={answered} RIGHT={summary['right']} "
         f"ABSTAIN={summary['abstain']} WRONG={summary['wrong']} "
-        f"GOLD_ERROR={summary['gold_error']} (excluded from n)"
+        f"GOLD_ERROR={summary['gold_error']} "
+        f"PROVIDER_ERROR={summary.get('provider_error', 0)} (excluded from n)"
+    )
+    print(
+        f"provider errors={summary.get('provider_error', 0)} after retry "
+        f"(retries={summary.get('retries', 0)}); named by the ask route as the "
+        "provider's; never counted RIGHT"
+    )
+    kinds = summary.get("app_error_kinds") or {}
+    kinds_s = " ".join(f"{k}={v}" for k, v in kinds.items()) or "none"
+    print(
+        f"DMS failures={summary.get('app_error', 0)} ({kinds_s}) graded WRONG, "
+        "counted in n and EX (no provider marker)"
     )
     print(f"EX on answered={ex_s} abstain rate={abs_txt}")
     print(f"  {bound_line(answered)}")
@@ -1073,7 +1236,97 @@ def minidev_self_check() -> list[str]:
     ):
         errs.append("Mini-Dev WRONG=0 line must carry n and bound")
 
+    errs.extend(_provider_error_self_check(questions, gold))
+
     _ = meta
+    return errs
+
+
+class _PlantedHTTPError(Exception):
+    """Stands in for httpx.HTTPStatusError: ``response.status_code`` and ``.json()``."""
+
+    def __init__(self, status: int, detail: Mapping[str, Any] | None = None) -> None:
+        super().__init__(f"HTTP {status}")
+        body = {"detail": dict(detail or {})}
+
+        class _Resp:
+            status_code = status
+            headers: dict[str, str] = {}
+
+            def json(self) -> dict[str, Any]:
+                return body
+
+        self.response = _Resp()
+
+
+def _provider_error_self_check(
+    questions: Sequence[Mapping[str, Any]], gold: GoldFn
+) -> list[str]:
+    """A named provider 429 is excluded, never RIGHT; an unnamed DMS 503 is WRONG."""
+    errs: list[str] = []
+    first_q = asked_text(questions[0], with_evidence=False)
+    calls: Counter[str] = Counter()
+
+    def flaky(question: str) -> dict[str, Any]:
+        calls[question] += 1
+        if question == first_q:
+            raise _PlantedHTTPError(
+                429, {"code": "provider_rate_limited", "upstream": "provider"}
+            )
+        return {"badge": "ABSTAIN", "abstained": True, "rows": [], "text": "no"}
+
+    slept: list[float] = []
+    try:
+        cases = score_cases(
+            questions, ask_fn=flaky, gold_fn=gold, sleep=slept.append
+        )
+    except Exception as exc:  # noqa: BLE001
+        return [f"one provider 429 aborted the run: {type(exc).__name__}"]
+    if len(cases) != len(questions):
+        errs.append("provider 429 on one question must still grade the rest")
+    if cases and cases[0]["verdict"] != PROVIDER_ERROR:
+        errs.append("a named provider 429 must be PROVIDER_ERROR")
+    if calls[first_q] != PROVIDER_ATTEMPTS or len(slept) != PROVIDER_ATTEMPTS - 1:
+        errs.append("provider 429 must be retried a bounded number of times")
+    summary = _slice_tally(cases)
+    if summary["provider_error"] != 1 or summary["right"] != 0:
+        errs.append("PROVIDER_ERROR must be counted and never RIGHT")
+    graded = [c for c in cases if c["verdict"] not in {"GOLD_ERROR", PROVIDER_ERROR}]
+    if summary["n"] != len(graded):
+        errs.append("PROVIDER_ERROR must be excluded from n")
+
+    for status, detail in (
+        (500, {}),
+        (503, {"code": "live_ask_failed", "message": "KeyError: 'x'"}),
+        (429, {"code": "pool_saturated"}),
+    ):
+
+        def crashes(question: str, _s: int = status, _d: Any = detail) -> dict[str, Any]:
+            raise _PlantedHTTPError(_s, _d)
+
+        try:
+            crashed = score_cases(
+                questions[:1], ask_fn=crashes, gold_fn=gold, sleep=slept.append
+            )
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"one DMS {status} aborted the run: {type(exc).__name__}")
+            continue
+        if not crashed or crashed[0]["verdict"] != "WRONG":
+            errs.append(
+                f"a DMS {status} without a provider marker must grade WRONG, "
+                "not be excluded as PROVIDER_ERROR"
+            )
+        elif _slice_tally(crashed)["n"] != 1 or _slice_tally(crashed)["app_error"] != 1:
+            errs.append(f"a DMS {status} must count in n and as a DMS failure")
+
+    def teapot(question: str) -> dict[str, Any]:
+        raise _PlantedHTTPError(400)
+
+    try:
+        score_cases(questions[:1], ask_fn=teapot, gold_fn=gold, sleep=slept.append)
+        errs.append("a 400 is a broken setup and must still stop the run")
+    except _PlantedHTTPError:
+        pass
     return errs
 
 
@@ -1089,6 +1342,9 @@ def run_minidev(
     env: Mapping[str, str] | None = None,
     started: str | None = None,
     write: bool = True,
+    pace_s: float = 0.0,
+    attempts: int = PROVIDER_ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[int, dict[str, Any] | None, str | None]:
     """Score Mini-Dev. On freeze/store failure returns CONFIG and no report."""
     env = env or os.environ
@@ -1103,7 +1359,13 @@ def run_minidev(
     if limit is not None:
         sliced = sliced[: max(limit, 0)]
     cases = score_cases(
-        sliced, ask_fn=ask_fn, gold_fn=gold_fn, with_evidence=with_evidence
+        sliced,
+        ask_fn=ask_fn,
+        gold_fn=gold_fn,
+        with_evidence=with_evidence,
+        attempts=attempts,
+        pace_s=pace_s,
+        sleep=sleep,
     )
     summary = summarize(cases)
     mix = summary["served_mix"]
@@ -1267,6 +1529,8 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
         env=env,
         started=started,
         write=True,
+        pace_s=float(getattr(args, "pace", 0.0) or 0.0),
+        attempts=int(getattr(args, "provider_attempts", PROVIDER_ATTEMPTS) or 1),
     )
     if err:
         print(err)

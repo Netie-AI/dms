@@ -28,6 +28,7 @@ from dms_executor.semantic_retrieve import load_measure_aliases
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from score_curated import build_gen_path_prove_report, classify_plan_source  # noqa: E402
+from test_gen_path_climb05 import GRAIN_GUARDED, assert_grain_abstain  # noqa: E402
 
 SALES_Q = "Top 5 selling SKUs by revenue"
 VOLUME_Q = "Top 3 SKUs by quantity sold"
@@ -169,8 +170,10 @@ def test_sku_noise_then_volume_is_ontology_plan(tmp_path: Path) -> None:
 def test_sku_noise_then_low_stock_is_ontology_plan(tmp_path: Path) -> None:
     env = _env(tmp_path, REORDER_Q, "sku_count", "cq_low_stock_wh_a")
     assert env is not None
-    assert env["badge"] == "L2_VALIDATED"
-    assert env.get("plan_source") == "ontology_plan"
+    # GRAIN-GUARD-01: the ranked plan is a per-SKU COUNT FILTER tally that
+    # lists a SKU not below reorder (oracle-WRONG). Named ABSTAIN, not L2.
+    assert_grain_abstain(env)
+    assert "unrequested_measure:below_reorder_lots" in " ".join(env["assumptions"])
 
 
 def test_supplier_ranking_is_ontology_plan_not_sku(tmp_path: Path) -> None:
@@ -369,22 +372,34 @@ def test_climb02_offline_prove_gt_eleven_not_complete(tmp_path: Path) -> None:
         ("cq_chemicals_list", "List chemicals in inventory", ("cq_chemicals_list",)),
     ]
     envs = [_env(tmp_path, q, *ids) for _qid, q, ids in pairs]
-    for env in envs:
+    for (qid, _q, _ids), env in zip(pairs, envs, strict=True):
         assert env is not None
+        if qid in GRAIN_GUARDED:
+            # GRAIN-GUARD-01: oracle-WRONG grain under L2 before; now named.
+            assert_grain_abstain(env)
+            continue
         assert env.get("plan_source") == "ontology_plan"
         assert env["badge"] == "L2_VALIDATED"
+    ok = sum(1 for qid, _q, _ids in pairs if qid not in GRAIN_GUARDED)
+    # GRAIN-GUARD-01 round 3: capacity, cold storage, expired and chemicals
+    # were oracle-WRONG under L2 on main and abstain named now (no trim).
+    assert ok == 7
     cases = [
-        {"id": qid, "verdict": "OK", "plan_source": classify_plan_source(env)}
+        (
+            {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+            if qid in GRAIN_GUARDED
+            else {"id": qid, "verdict": "OK", "plan_source": classify_plan_source(env)}
+        )
         for (qid, _q, _ids), env in zip(pairs, envs, strict=True)
     ] + [{"id": f"a{i}", "verdict": "ABSTAIN", "plan_source": "other"} for i in range(14)]
     report = build_gen_path_prove_report(
-        {"OK": 12, "LAYER": 0, "ABSTAIN": 14, "WRONG": 0},
+        {"OK": ok, "LAYER": 0, "ABSTAIN": 26 - ok, "WRONG": 0},
         cases=cases,
         mode="offline",
     )
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 11
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == ok
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True

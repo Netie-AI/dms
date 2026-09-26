@@ -26,9 +26,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from cortex_client.compute import (
+    INSIGHTS_FAIL_EMPTY,
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
+    classify_insights_fail,
     insights_fail_reason,
     insights_query_sql,
     insights_was_reached,
@@ -47,8 +49,10 @@ from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
+    render_row_lines,
 )
 from dms_executor.gen_path_refuse import (
+    cortex_refusal_gap,
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
@@ -73,9 +77,18 @@ from dms_executor.semantic_retrieve import (
     intent_slots,
     load_measure_aliases,
     retrieve_short_context,
+    retrieve_space_context,
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
+from dms_executor.sql_fanout import fan_out_reason
+from dms_executor.sql_grain import (
+    grain_mismatch_reason,
+    real_table_labels,
+    relation_name_parts,
+    resolve_declared_relations,
+    rows_mismatch_reason,
+)
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -476,6 +489,23 @@ def query_sql_from_payload(payload: dict[str, Any] | None) -> str | None:
     return sql or None
 
 
+def is_empty_generation(payload: dict[str, Any] | None) -> bool:
+    """Insights returned a payload with nothing in it to plan from.
+
+    Empty output (``{}``) or an empty ``query_sql``, with no typed plan, no
+    ranking, no refusal reason and no other named Insights failure. ``None``
+    (a transport miss: compute raised or was never wired) is not this.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if query_sql_from_payload(payload) or cortex_refusal_gap(payload) is not None:
+        return False
+    stamped = insights_fail_reason(payload)
+    if stamped is not None and stamped != INSIGHTS_FAIL_EMPTY:
+        return False
+    return classify_insights_fail(payload) == INSIGHTS_FAIL_EMPTY
+
+
 def parse_compute_plan(payload: dict[str, Any] | None) -> str:
     """Return miss | unsure | plan | sql. Plan body is payload['query_plan'] when plan."""
     if not isinstance(payload, dict):
@@ -548,7 +578,16 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
 
 
 def cited_relations(sql: str) -> set[str]:
-    return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
+    """Bare names of the real relations ``sql`` reads.
+
+    Scope analysis first (``real_table_labels``: a CTE name is not a relation,
+    a same-named real table in another scope is). The FROM/JOIN regex is the
+    fallback only for SQL the analysis refuses, which never reaches submit.
+    """
+    labels = real_table_labels(sql)
+    if labels is None:
+        labels = _sql_cited_labels(sql)
+    return {_relation_bare(n) for n in labels if _relation_bare(n)}
 
 
 def validate_compiled_sql(
@@ -562,10 +601,15 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
-    if missing:
-        return f"ungranted:{','.join(sorted(missing))}"
+    # SHARED NAMING RULE (SPACE-GEN-01 round 2): every relation must be one the
+    # grant declares, qualified exactly as declared, or a bare name exactly
+    # one declared table carries (resolved to it). CTE aliases are not
+    # tables. The parse tree reads a comma join and ``FROM/**/t``; a statement
+    # it cannot read is one this check cannot prove granted (fails closed).
+    resolved, why = resolve_declared_relations(sql, grantable)
+    if why:
+        return why
+    sql = resolved
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     con = connect_file(Path(warehouse))
@@ -576,6 +620,41 @@ def validate_compiled_sql(
     finally:
         con.close()
     return None
+
+
+REASON_SOURCE_TRUNCATED = "source_truncated"
+
+
+def truncated_source_reason(sql: str, warehouse: Path | None) -> str | None:
+    """``source_truncated:<t>`` when the SQL reads a source the row cap cut short.
+
+    The ingest registry records ``truncated`` per pulled table; this is the
+    only place the generative path reads it. A ``bronze.<t>`` relation is
+    matched by its table name; a bare name only when it is not a demo table,
+    so a demo ``transactions`` is never mistaken for a truncated upload.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    from dms_executor.bronze import lookup_ingest_watermarks
+
+    marks = {str(k).lower(): v for k, v in lookup_ingest_watermarks(path=Path(warehouse)).items()}
+    if not marks:
+        return None
+    # The parse tree's real relations: a CTE alias is not a pulled source.
+    labels = real_table_labels(sql) or []
+    cut: set[str] = set()
+    for label in dict.fromkeys(str(x).strip().lower() for x in labels):
+        schema, _, bare = label.rpartition(".")
+        if schema and schema != "bronze":
+            continue
+        if not schema and bare in DEMO_TABLES:
+            continue
+        rec = marks.get(f"bronze.{bare}") if schema else marks.get(bare)
+        if rec and rec.get("truncated") is True:
+            cut.add(bare)
+    if not cut:
+        return None
+    return f"{REASON_SOURCE_TRUNCATED}:{','.join(sorted(cut))}"
 
 
 def _as_of() -> str:
@@ -627,9 +706,7 @@ def _l2_envelope(
     out_rows = rows_from_submit_result(result)
     text = f"Found {len(out_rows)} row(s)."
     if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
-        )
+        text += "\n" + render_row_lines(out_rows)
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
     env = build_answer_envelope(
@@ -723,6 +800,45 @@ def _submit_validated(
             session_id=session_id,
             plan_source=plan_source,
         )
+    # GRAIN-GUARD-01: L2 only over the grain and columns the question asked,
+    # fail closed on a shape the gate cannot analyse. No rows are trimmed.
+    grain_why = grain_mismatch_reason(question, sql)
+    if grain_why:
+        return _abstain(
+            question,
+            grain_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
+    # FANOUT-GUARD-01: an aggregate over a join that repeats the aggregated
+    # relation's rows (SUM(orders.amount) over orders JOIN items) is not the
+    # figure the data holds. Keys are proven unique on the warehouse data or
+    # by a pre-aggregated side; anything unproven is a named ABSTAIN.
+    fan_why = fan_out_reason(sql, warehouse)
+    if fan_why:
+        return _abstain(
+            question,
+            fan_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
+    # SPACE-GEN-01: a source loaded under the row cap is not the whole table.
+    # A COUNT / SUM / lookup over it would be stamped L2 on part of the data
+    # (BIRD ``trans``: 500,000 of 1,056,320 rows). Named ABSTAIN, before submit.
+    trunc_why = truncated_source_reason(sql, warehouse)
+    if trunc_why:
+        return _abstain(
+            question,
+            trunc_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     try:
         result = submit(sql)
     except Exception:  # noqa: BLE001
@@ -747,6 +863,16 @@ def _submit_validated(
             status=getattr(result, "status", "ok"),
             run_id=getattr(result, "run_id", "") or "",
             output={"rows": kept},
+        )
+    scalar_why = rows_mismatch_reason(question, sql, rows_from_submit_result(result))
+    if scalar_why:
+        return _abstain(
+            question,
+            scalar_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
         )
     run_id = str(getattr(result, "run_id", None) or "")
     try:
@@ -911,6 +1037,33 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
     )
 
 
+#: ``ontology.source`` on the Insights body (SHARED NAMING RULE). Cortex uses
+#: its pack ranking and certified formulas only for ``demo``; for ``space`` it
+#: never consults ``packs/dms`` metrics.
+ONTOLOGY_SOURCE_DEMO = "demo"
+ONTOLOGY_SOURCE_SPACE = "space"
+
+
+def generation_catalog(
+    ctx: dict[str, Any], allowed: set[str], *, demo: bool
+) -> dict[str, Any]:
+    """The retrieved context as sent to Cortex, with the declared catalog.
+
+    ``tables`` is every relation this turn may read, each exactly as granted
+    (``bronze.schools`` qualified, a demo table bare); names that break the
+    naming rule are not sent. ``source`` is explicit: Cortex must not guess
+    the demo from column names. The retrieved context itself is unchanged.
+    """
+    tables = sorted(
+        {".".join(p) for p in (relation_name_parts(t) for t in allowed) if p}
+    )
+    return {
+        **ctx,
+        "source": ONTOLOGY_SOURCE_DEMO if demo else ONTOLOGY_SOURCE_SPACE,
+        "tables": tables,
+    }
+
+
 def maybe_generative_ask(
     question: str,
     *,
@@ -924,8 +1077,17 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    demo_ontology_allowed: bool = True,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
+
+    SPACE-GEN-01: ``tables`` (a user grounding selection) narrows ``grantable``
+    and the retrieved context; it no longer skips generation. A selection that
+    leaves nothing granted is a named ABSTAIN, never a wider read.
+    ``demo_ontology_allowed=False`` (a Space whose data is not the demo lake)
+    never loads the supply-chain demo ontology: its measures and links are not
+    this Space's, so ranking or a typed plan cannot compile against them, and a
+    typed plan with no Space ontology is ``missing_ontology``.
 
     Compute receives a short retrieved context, not the full ontology dump.
     Cortex Insights generate (ontology_plan) may return a typed plan or SELECT
@@ -951,9 +1113,8 @@ def maybe_generative_ask(
     short-circuit: ranked where-paths + importance on a *granted* join, or
     honest ABSTAIN naming ``missing_join`` / the grain (never bare
     ``validate:ungranted:...``). bind_plan is not that confident path.
-    File-grounded asks skip.
     """
-    if tables or compute is None or submit is None or ledger_append is None:
+    if compute is None or submit is None or ledger_append is None:
         return None
     q = normalize_ask_question(question)
     if not q:
@@ -988,6 +1149,19 @@ def maybe_generative_ask(
     if lake is not None and not lake.is_file():
         lake = None
 
+    allowed = set(grantable) if grantable is not None else set(_KNOWN)
+    selection = [str(t) for t in (tables or []) if t]
+    if selection:
+        picked = set(selection)
+        allowed = {t for t in allowed if t in picked}
+        if not allowed:
+            return _abstain(
+                q,
+                "ungranted: none of the selected tables is granted to this Space",
+                space_id=space_id,
+                session_id=session_id,
+            )
+
     onto = ontology
     # A2-02/A2-06: a caller-declared ontology that FAILED verify keeps its
     # evidence and stays loaded with failed subjects marked. The default
@@ -997,7 +1171,7 @@ def maybe_generative_ask(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake) if demo_ontology_allowed else None
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:
@@ -1016,13 +1190,19 @@ def maybe_generative_ask(
             if declared_violations or not onto.verified:
                 declared = onto
                 onto = None
-    allowed = grantable if grantable is not None else set(_KNOWN)
-    # Short retrieved context only -- not the full ontology dump.
-    ctx = retrieve_short_context(
-        q, warehouse=lake, grantable=allowed, ontology=onto
-    )
+    # Demo: short retrieved context only -- not the full ontology dump.
+    # Space (SPACE-GEN-01 round 3): Cortex treats the columns it is sent as
+    # the column allowlist, so the Space's whole granted catalog goes, every
+    # column of each table (capped with an explicit truncated flag), and no
+    # demo-pack measure_aliases / measures / bound lake values ride along.
+    if demo_ontology_allowed:
+        ctx = retrieve_short_context(
+            q, warehouse=lake, grantable=allowed, ontology=onto
+        )
+    else:
+        ctx = retrieve_space_context(q, warehouse=lake, grantable=allowed)
     try:
-        payload = compute(ctx)
+        payload = compute(generation_catalog(ctx, allowed, demo=demo_ontology_allowed))
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
         payload = None
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
@@ -1116,6 +1296,11 @@ def maybe_generative_ask(
                 )
             )
         why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        if not why:
+            # Submit what was validated: a bare name resolved to the declared
+            # ``schema.table`` (SHARED NAMING RULE), never the demo relation
+            # DuckDB would pick for the bare name.
+            sql = resolve_declared_relations(sql, allowed)[0]
         broken = (
             violations_cited_by_sql(sql, declared, declared_violations)
             if declared is not None and not why
@@ -1170,6 +1355,29 @@ def maybe_generative_ask(
                 )
             )
     if kind != "plan":
+        # SPACE-GEN-01 round 3: on a Space, Cortex refusing the generated SQL
+        # against the caller catalog ("table X is not in the caller catalog")
+        # is the answer: a named gap, never a fall-through to the contract
+        # ask's generic text. The customer reads a DMS-named code; Cortex's
+        # raw words (which may name a table the model invented) stay in
+        # assumptions.
+        refusal = (
+            cortex_refusal_gap(payload if isinstance(payload, dict) else None)
+            if not demo_ontology_allowed
+            else None
+        )
+        if refusal is not None:
+            gap, raw = refusal
+            return _stamp(
+                _abstain(
+                    q,
+                    gap,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                    notes=[f"Cortex refuse_reason: {raw}"],
+                )
+            )
         # Named Insights fail-closed: never bind. Product Cortex.ask still
         # runs only on a transport miss (no insights_fail stamp).
         fail = insights_fail_reason(payload if isinstance(payload, dict) else None)
@@ -1249,6 +1457,18 @@ def maybe_generative_ask(
             _abstain(
                 q,
                 gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if onto is None and not demo_ontology_allowed and declared is None:
+        return _stamp(
+            _abstain(
+                q,
+                "missing_ontology: this Space has no verified ontology, so a "
+                "typed plan cannot compile; only validated generated SQL can answer",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,

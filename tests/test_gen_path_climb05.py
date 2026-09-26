@@ -71,6 +71,63 @@ SYNONYM_L0: tuple[tuple[str, str], ...] = (
     ("cq_top3_category_syn_value", "top 3 categories by sales value"),
 )
 
+# GRAIN-GUARD-01 (dms#231): these L0s were counted as ontology_plan hits under
+# L2_VALIDATED while their rows were oracle-WRONG (GROUP BY capacity_kg; a
+# per-SKU COUNT FILTER tally incl. SKUs not below reorder; a utilisation figure
+# on "show the CCTV camera"; an audit_overdue tally). They now abstain with a
+# named grain reason, so they are not hits and the climb counts drop by them.
+# Round 3 removed the trim: the which/list asks answered with a ride-along
+# utilisation / stock-value figure (cold storage, above 90, expired,
+# chemicals) were oracle-WRONG on main and now abstain unrequested_measure
+# instead of being rewritten to their entity column.
+GRAIN_GUARDED: frozenset[str] = frozenset(
+    {
+        "cq_capacity_utilisation",
+        "ops_capacity_utilisation",
+        "cq_low_stock_wh_a",
+        "ops_low_stock_wh_a",
+        "cq_cctv_wh_a",
+        "ops_cctv_wh_a",
+        "cq_audit_overdue",
+        "cq_cold_storage",
+        "ops_cold_storage",
+        "cq_capacity_above_90",
+        "ops_capacity_above_90",
+        "cq_expired_items",
+        "ops_expired_items",
+        "cq_chemicals_list",
+        "ops_chemicals_list",
+    }
+)
+_GRAIN_PREFIXES = (
+    "unrequested_grain:",
+    "unrequested_measure:",
+    "unrequested_column:",
+    "grain_mismatch:",
+    "grain_unanalysable:",
+)
+
+
+def honest(*lists: tuple[tuple[str, str], ...]) -> int:
+    """Hits a list can honestly score: its ids minus the grain-guarded ones."""
+    return sum(1 for pairs in lists for qid, _q in pairs if qid not in GRAIN_GUARDED)
+
+
+def guarded_ids(ids: tuple[str, ...]) -> list[str]:
+    return [qid for qid in ids if qid in GRAIN_GUARDED]
+
+
+def assert_grain_abstain(env: dict[str, Any]) -> None:
+    """Customer envelope: named grain ABSTAIN, no rows, no figure."""
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("sql_used"))
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["values"] == []
+    said = " ".join(str(a) for a in env.get("assumptions") or [])
+    assert any(p in said for p in _GRAIN_PREFIXES), said
+    assert "gap: " in str(env.get("text") or "")
+    assert_envelope_valid(env)
+
 
 def _submit_sql(warehouse: Path) -> Any:
     def _run(sql: str) -> Any:
@@ -147,9 +204,12 @@ def _env(
 
 def _hits(tmp_path: Path, pairs: tuple[tuple[str, str], ...]) -> int:
     n = 0
-    for _qid, question in pairs:
+    for qid, question in pairs:
         env = _env(tmp_path, question, "sku_count")
         assert env is not None
+        if qid in GRAIN_GUARDED:
+            assert_grain_abstain(env)
+            continue
         src = classify_plan_source(env)
         ok = env["badge"] == "L2_VALIDATED" and src == "ontology_plan"
         if ok:
@@ -163,21 +223,26 @@ def _hits(tmp_path: Path, pairs: tuple[tuple[str, str], ...]) -> int:
 def test_frozen_17_is_saturated_without_leftover_asks(tmp_path: Path) -> None:
     """#212 diagnosis: scoring the frozen 17 L0s stays at 17."""
     assert len(FROZEN_17) == 17
-    assert _hits(tmp_path, FROZEN_17) == 17
+    assert _hits(tmp_path, FROZEN_17) == honest(FROZEN_17)
 
 
 def test_certified_synonyms_raise_above_17_without_audit(tmp_path: Path) -> None:
     """Rise does not depend on cq_audit_overdue / last_audit_date."""
     frozen = _hits(tmp_path, FROZEN_17)
     syn = _hits(tmp_path, SYNONYM_L0)
-    assert frozen == 17
-    assert syn == len(SYNONYM_L0)
-    assert frozen + syn > 17
+    assert frozen == honest(FROZEN_17)
+    assert syn == honest(SYNONYM_L0)
+    assert frozen + syn == honest(FROZEN_17, SYNONYM_L0)
     cases = [
-        {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        (
+            {"id": qid, "verdict": "ABSTAIN", "plan_source": "other"}
+            if qid in GRAIN_GUARDED
+            else {"id": qid, "verdict": "OK", "plan_source": "ontology_plan"}
+        )
         for qid, _q in (*FROZEN_17, *SYNONYM_L0)
     ]
     n = 26 + len(SYNONYM_L0)
+    ok_hits = frozen + syn
     report = build_gen_path_prove_report(
         {
             "OK": frozen + syn,
@@ -195,7 +260,7 @@ def test_certified_synonyms_raise_above_17_without_audit(tmp_path: Path) -> None
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert "99.95" not in blob
-    assert report["by_plan_source"]["ontology_plan"]["answered"] > 17
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == ok_hits
     assert report["by_plan_source"]["bind_plan"]["answered"] == 0
     assert report["passed_wrong_zero"] is True
 

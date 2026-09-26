@@ -28,6 +28,7 @@ from dms_executor.bronze import (
     IngestReceipt,
     ingest_csv_bytes,
     list_bronze_tables,
+    list_source_pulls,
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
@@ -44,20 +45,40 @@ from dms_executor.demo_ask import (
     normalize_ask_question,
     with_grounded_scope,
 )
-from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_grants import (
+    DEMO_STEWARD_USER_ID,
+    DemoSessionStore,
+    canonical_space_id,
+    ingested_bronze_tables,
+    is_demo_space,
+)
 from dms_executor.demo_pack import (
     is_uncertified_paraphrase,
     maybe_pack_ask,
     maybe_uncertified_refuse_ask,
 )
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    WarehouseBusy,
+    ensure_demo_warehouse,
+    execute_sql,
+)
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
     normalize_contributing_sources,
 )
-from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
+from dms_executor.gen_path_refuse import (
+    REASON_CORTEX_EMPTY_GENERATION,
+    REASON_SPACE_ID_EMPTY,
+    customer_abstain_text,
+)
+from dms_executor.generative_ask import (
+    is_empty_generation,
+    maybe_generative_ask,
+    path_miss_envelope,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -113,7 +134,22 @@ logger = logging.getLogger(__name__)
 #: The demo tenant and its single steward. Real multi-tenancy arrives with the
 #: Postgres control plane (P-DMS-2); until then every session is this user.
 DEMO_TENANT_ID = "tenant_demo"
-DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+DEMO_USER_ID = DEMO_STEWARD_USER_ID
+
+
+def default_readable_tables(granted: list[str], *, space_id: str | None) -> list[str]:
+    """What a turn reads when the user ticked nothing (SPACE-GEN-01).
+
+    The demo Space (and the personal no-Space context) reads the demo spine
+    only; an upload there stays opt-in. Any other Space reads what it is
+    granted - its own ingested sources. Reading only ``DEMO_TABLES`` there
+    left a SQL-source Space with nothing readable, so every BIRD question was
+    ranked against the supply-chain demo instead of the Space's data. Never
+    wider than ``granted``: the grant check is unchanged.
+    """
+    if is_demo_space(space_id):
+        return [t for t in granted if t in DEMO_TABLES]
+    return list(granted)
 
 
 def _insights_compute_seam(
@@ -305,7 +341,7 @@ class Executor:
         # An upload is grantable on request but is not part of the default
         # readable set: asking with nothing ticked must not quietly widen the
         # manifest to every file anyone has ever uploaded.
-        default_readable = [t for t in grantable if t in DEMO_TABLES]
+        default_readable = default_readable_tables(grantable, space_id=space_id)
         readable = selection or default_readable
         # A different manifest must be a different bound session — reusing the id
         # would serve the question under whatever manifest happened to be bound
@@ -449,6 +485,16 @@ class Executor:
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
             ladder = "product"
+        if space_id is not None and not str(space_id).strip():
+            # SPACE-GEN-01 round 2: an empty Space id names no Space, so it
+            # grants nothing. Named ABSTAIN before any grant, bind or Cortex
+            # call; never "no filter" over every Space's tables.
+            return path_miss_envelope(
+                question,
+                REASON_SPACE_ID_EMPTY,
+                space_id=space_id,
+                session_id=session_id,
+            )
         certified_first = ladder != "generative"
         allow_gen = ladder != "exact"
         allow_cortex = ladder == "product"
@@ -556,8 +602,9 @@ class Executor:
             self._store_turn(session_id, space_id, env)
             return env
 
-        # Narrow-only. demo_acl's default readable set is grantable intersect
-        # DEMO_TABLES; an upload is readable only when explicitly selected.
+        # Narrow-only. In the demo Space the default readable set is grantable
+        # intersect DEMO_TABLES and an upload is readable only when explicitly
+        # selected; any other Space reads its own grant (SPACE-GEN-01).
         # This path used ``requested or grantable_tables(...)``, so with
         # nothing ticked the cascade and retrieve opened every bronze upload
         # tagged to the Space and sent DISTINCT samples in the Insights body.
@@ -569,8 +616,15 @@ class Executor:
             granted = []
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
-        default_readable = [t for t in granted if t in DEMO_TABLES]
+        ungrantable = [t for t in selection if t not in set(granted)]
+        if ungrantable:
+            # Refused, not dropped, before generation reads anything: the same
+            # refusal ``demo_acl`` raises at bind, now that a selection narrows
+            # generation instead of skipping it (SPACE-GEN-01).
+            raise GroundingRefused(ungrantable=ungrantable, grantable=granted)
+        default_readable = default_readable_tables(granted, space_id=space_id)
         readable = requested or default_readable
+        demo_space = is_demo_space(space_id)
         cascade = (
             run_cascade(
                 question,
@@ -601,6 +655,21 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        # What Insights actually returned, so a contract-ask abstain after an
+        # empty generation can name that gap (CONNECT-ASK-01).
+        insights_seen: list[dict[str, Any] | None] = []
+
+        def _compute(catalog: dict[str, Any]) -> dict[str, Any] | None:
+            got = _insights_compute_seam(
+                self._cortex,
+                question,
+                session_id=session_id,
+                space_id=space_id,
+                ontology=catalog,
+            )
+            insights_seen.append(got)
+            return got
+
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -611,13 +680,7 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(readable),
                 tables=tables,
-                compute=lambda catalog: _insights_compute_seam(
-                    self._cortex,
-                    question,
-                    session_id=session_id,
-                    space_id=space_id,
-                    ontology=catalog,
-                ),
+                compute=_compute,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
@@ -629,6 +692,7 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                demo_ontology_allowed=demo_space,
             )
             if gen_env is not None:
                 env = attach_cascade(gen_env, cascade)
@@ -680,6 +744,13 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                abstain_gap=(
+                    REASON_CORTEX_EMPTY_GENERATION
+                    if not demo_space
+                    and insights_seen
+                    and is_empty_generation(insights_seen[-1])
+                    else None
+                ),
             ),
             cascade,
         )
@@ -770,16 +841,26 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    abstain_gap: str | None = None,
 ) -> dict[str, Any]:
-    """Map contract Answer-shaped AskResponse into UI envelope."""
+    """Map contract Answer-shaped AskResponse into UI envelope.
+
+    ``abstain_gap`` names why the ask reached the contract ask at all (e.g.
+    ``cortex_empty_generation``). It is used only if the contract ask abstains,
+    so the customer reads a named gap instead of the engine's generic text.
+    """
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,
         build_answer_envelope,
+        foreign_space_sources,
         normalize_badge,
         normalize_contributing_sources,
+        normalize_rows,
+        numeric_cell,
         unmapped_badge,
     )
+    from dms_executor.gen_path_refuse import REASON_CROSS_SPACE_SOURCE
 
     badge_raw = resp.badge
     route_l = (resp.route or "").lower()
@@ -804,7 +885,13 @@ def map_ask_response_to_envelope(
     # the engine sends, DMS does not put a confident badge on a refusal.
     refused = route_l in _REFUSAL_ROUTES
     engine_unsure = resp.unsure is True
-    if refused or engine_unsure:
+    # RAG-05: an answer that cites another Space's source is that Space's
+    # content under this Space's question. Dropping the card alone would leave
+    # the quoted text on screen with its provenance erased, so abstain, named.
+    foreign = foreign_space_sources(resp.contributing_sources, space_id=space_id)
+    if foreign:
+        abstain_gap = REASON_CROSS_SPACE_SOURCE
+    if refused or engine_unsure or foreign:
         badge_raw = "abstain"
     elif not badge_raw:
         badge_raw = "abstain" if resp.abstained else "l2_validated"
@@ -831,20 +918,23 @@ def map_ask_response_to_envelope(
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
     values = list(resp.values or [])
+    # NUM-HONESTY: one number encoding for rows, values and text.
+    resp_rows = normalize_rows(list(resp.rows or []))
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
-    if resp.rows:
+    if resp_rows:
         seen = {
             float(v["value"])
             for v in values
             if isinstance(v, dict) and isinstance(v.get("value"), (int, float))
         }
         idx = len(values)
-        for row in list(resp.rows)[:50]:
+        for row in resp_rows[:50]:
             for key, val in row.items():
-                if not isinstance(val, (int, float)) or isinstance(val, bool):
+                cell = numeric_cell(val)
+                if cell is None:
                     continue
-                fv = float(val)
+                fv = cell
                 if any(abs(fv - s) < 1e-9 for s in seen):
                     continue
                 values.append({"id": f"v{idx}", "value": fv, "label": key})
@@ -854,9 +944,9 @@ def map_ask_response_to_envelope(
                     break
             if idx >= 80:
                 break
-    if not values and resp.rows:
-        values = [{"id": "v_count", "value": float(len(resp.rows)), "label": "row_count"}]
-    rows = list(resp.rows or [])
+    if not values and resp_rows:
+        values = [{"id": "v_count", "value": float(len(resp_rows)), "label": "row_count"}]
+    rows = resp_rows
     chart = None
     if rows and not abstained:
         chart = _chart_from_cortex_spec(resp.chart_spec) or _chart_from_rows(rows)
@@ -867,6 +957,20 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
+    if abstained and abstain_gap and not unknown_badge:
+        # The named gap leads: audit_receipt.unsure.why reads the first line.
+        text = customer_abstain_text(abstain_gap)
+        assumptions.insert(0, f"ABSTAIN reason: {abstain_gap}")
+        if foreign:
+            assumptions.append(f"RAG-05 cross-Space source ref_ids: {','.join(foreign)}")
+        elif resp.answer:
+            assumptions.append(f"Cortex contract ask answer: {str(resp.answer)[:300]}")
+    if abstained:
+        # SPACE-GEN-01: every ABSTAIN names why. When the engine sent no reason
+        # of its own, say at least which path refused and on what route.
+        assumptions.append(
+            f"ABSTAIN reason: cortex_contract_ask_abstained (route={route_l or 'none'})"
+        )
     sources = normalize_contributing_sources(
         resp.contributing_sources, space_id=space_id
     )
@@ -929,6 +1033,7 @@ def get_serving_engine() -> ServingEnginePort:
 
 
 __all__ = [
+    "customer_abstain_text",
     "run_crosscheck",
     "run_extract",
     "run_golden",
@@ -957,6 +1062,9 @@ __all__ = [
     "intersect_space_grants",
     "get_serving_engine",
     "list_bronze_tables",
+    "list_source_pulls",
+    "canonical_space_id",
+    "WarehouseBusy",
     "list_promote_targets",
     "list_warehouse_tables",
     "list_verified_queries",

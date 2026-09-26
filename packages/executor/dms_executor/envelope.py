@@ -9,13 +9,15 @@ include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload
 
-from dms_executor.bronze import stamp_contributing_source_watermarks
+from dms_executor.bronze import stamp_contributing_source_watermarks, truncation_notes
 from dms_executor.demo_warehouse import DEMO_TABLES
 
 ALLOWED_BADGES = frozenset(
@@ -45,6 +47,84 @@ _BADGE_MAP = {
 _NUMBER_IN_TEXT = re.compile(
     r"(?<![A-Za-z0-9_])(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+\.\d+|-?\d+)(?![A-Za-z0-9_])"
 )
+
+#: A string cell that is a serialised DECIMAL (``str(Decimal)``): a figure the
+#: wire carried as text, e.g. ``"12.3400000000"`` or ``"0E-10"``. A plain
+#: integer string is not matched: ids and codes travel that way.
+_DECIMAL_STR = re.compile(r"-?\d+\.\d+|-?\d+(?:\.\d+)?[eE][-+]?\d+")
+
+
+def numeric_cell(val: Any) -> float | None:
+    """The figure a result cell holds, or None when it holds none.
+
+    int/float, ``Decimal`` and a serialised decimal string all count; bool,
+    NULL, NaN/inf and text do not. ``-0.0`` is 0.0 — the sign of zero is not a
+    figure a customer can be shown and then held to.
+    """
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, (int, float, Decimal)):
+        try:
+            fv = float(val)
+        except (OverflowError, ValueError, InvalidOperation):
+            return None
+    elif isinstance(val, str) and _DECIMAL_STR.fullmatch(val.strip()):
+        try:
+            fv = float(Decimal(val.strip()))
+        except (OverflowError, ValueError, InvalidOperation):
+            return None
+    else:
+        return None
+    if not math.isfinite(fv):
+        return None
+    return fv + 0.0 if fv == 0 else fv
+
+
+def normalize_cell(val: Any) -> Any:
+    """One encoding for a result cell across rows, values and rendered text.
+
+    ``Decimal`` becomes float (DECIMAL(38,10) ``Decimal('12.3400000000')`` is
+    12.34, ``Decimal('-0E-10')`` is 0.0) and ``-0.0`` becomes 0.0. Everything
+    else is returned unchanged: an int stays an int, text stays text.
+    """
+    if isinstance(val, Decimal):
+        fv = numeric_cell(val)
+        return str(val) if fv is None else fv
+    if isinstance(val, float) and val == 0:
+        return 0.0
+    return val
+
+
+def normalize_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [
+        {str(k): normalize_cell(v) for k, v in r.items()}
+        for r in (rows or [])
+        if isinstance(r, dict)
+    ]
+
+
+def format_cell(val: Any) -> str:
+    """Stable rendering of a (normalized) cell for answer text.
+
+    A float that ``repr`` would print in exponent form is printed positionally
+    so the text shows the same figure ``values[]`` holds.
+    """
+    val = normalize_cell(val)
+    if isinstance(val, float) and math.isfinite(val):
+        out = repr(val)
+        if "e" in out or "E" in out:
+            out = format(Decimal(out), "f")
+        return out
+    return f"{val}"
+
+
+def render_row_lines(rows: list[dict[str, Any]], *, limit: int = 12) -> str:
+    """``  - k=v, k=v`` lines for the first ``limit`` rows, cells via ``format_cell``."""
+    return "\n".join(
+        "  - " + ", ".join(f"{k}={format_cell(v)}" for k, v in row.items())
+        for row in rows[:limit]
+    )
+
 
 _EXT_KIND = {
     ".pdf": "pdf",
@@ -298,9 +378,10 @@ def _ranking_totals_present(
             figures.append(fv)
     for row in rows[:20]:
         for val in row.values():
-            if not isinstance(val, (int, float)) or isinstance(val, bool):
+            cell = numeric_cell(val)
+            if cell is None:
                 continue
-            fv = float(val)
+            fv = cell
             if abs(fv) >= 100.0:
                 figures.append(fv)
     return len({round(f, 2) for f in figures}) >= 2
@@ -899,8 +980,9 @@ def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
     for row in rows[:50]:
         nums: list[float] = []
         for val in row.values():
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                nums.append(float(val))
+            fv = numeric_cell(val)
+            if fv is not None:
+                nums.append(fv)
         out.extend(nums)
         for i, a in enumerate(nums):
             for b in nums[i + 1 :]:
@@ -1099,11 +1181,11 @@ def _full_numeric_column_sums(rows: list[dict[str, Any]]) -> list[float]:
         col: list[float] = []
         ok = True
         for row in rows:
-            val = row.get(key)
-            if isinstance(val, bool) or not isinstance(val, (int, float)):
+            fv = numeric_cell(row.get(key))
+            if fv is None:
                 ok = False
                 break
-            col.append(float(val))
+            col.append(fv)
         if ok and col:
             out.append(sum(col))
     return out
@@ -1269,6 +1351,36 @@ def normalize_badge(raw: str | None, *, abstained: bool) -> str:
     return _BADGE_MAP.get(key.lower(), "ABSTAIN")
 
 
+#: A quantity ask: one figure is expected back, so a NULL figure is no answer.
+_QUANTITY_ASK = re.compile(
+    r"\b(how\s+(?:many|much)|total|sum|count|number\s+of|average|avg|mean|"
+    r"min(?:imum)?|max(?:imum)?|highest|lowest)\b",
+    re.IGNORECASE,
+)
+
+
+def null_result_reason(question: str | None, rows: list[dict[str, Any]]) -> str | None:
+    """Named reason when executed rows carry no figure, else None.
+
+    * every cell of every row is NULL — nothing came back at all;
+    * a quantity ask ("how many / how much / total ...") got one row with no
+      numeric cell — the one figure it asked for is NULL (a grouping label may
+      still be present: ``district=Prague, total=None``).
+    """
+    if not rows:
+        return None
+    if all(v is None for r in rows for v in r.values()):
+        return "null_result: no matching rows (every returned cell is NULL)"
+    if (
+        len(rows) == 1
+        and _QUANTITY_ASK.search(question or "")
+        and any(v is None for v in rows[0].values())
+        and not any(numeric_cell(v) is not None for v in rows[0].values())
+    ):
+        return "null_result: no matching rows (the asked-for figure is NULL)"
+    return None
+
+
 def _ensure_values(
     values: list[dict[str, Any]] | None,
     rows: list[dict[str, Any]] | None,
@@ -1286,6 +1398,8 @@ def _ensure_values(
     out: list[dict[str, Any]] = [dict(v) for v in (values or []) if isinstance(v, dict)]
     seen: set[float] = set()
     for v in out:
+        if isinstance(v.get("value"), (Decimal, float)):
+            v["value"] = normalize_cell(v["value"])
         raw = v.get("value")
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             seen.add(float(raw))
@@ -1294,9 +1408,10 @@ def _ensure_values(
     idx = len(out)
     for row in rows[:50]:
         for key, val in row.items():
-            if not isinstance(val, (int, float)) or isinstance(val, bool):
+            cell = numeric_cell(val)
+            if cell is None:
                 continue
-            fv = float(val)
+            fv = cell
             if any(abs(fv - s) < 1e-9 for s in seen):
                 continue
             out.append({"id": f"v{idx}", "value": fv, "label": str(key)})
@@ -1385,7 +1500,8 @@ def build_answer_envelope(
         space_id=space_id,
     )
     sources = stamp_contributing_source_watermarks(sources)
-    rows_out = [dict(r) for r in (rows or []) if isinstance(r, dict)]
+    # One number encoding for rows, values and text (Decimal -> float, -0.0 -> 0.0).
+    rows_out = normalize_rows(rows)
     values_out = _ensure_values(values, rows_out, abstained=abstained)
 
     # CCA-01 — cascade path fails closed if the schema is missing or a later
@@ -1607,6 +1723,26 @@ def build_answer_envelope(
             "predict/forecast ask answered by historical SQL: history pad"
         )
 
+    # NUM-HONESTY — an executed query whose result holds no figure at all is
+    # not an answer. SUM / AVG / MAX over no matching rows returns one NULL row;
+    # rendering it as ``total=None`` under L2 certifies a non-answer, and
+    # rendering it as 0 invents a figure the query never returned. COUNT never
+    # returns NULL, so a COUNT over no rows still answers 0.
+    null_why = (
+        None if abstained or not _executed_query(sql_used)
+        else null_result_reason(question, rows_out)
+    )
+    if null_why:
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "The query ran, but it returned no value for that: no rows matched, "
+            "so the total is empty rather than zero (gap: null_result). Rather "
+            "than show an empty result as a figure, I'm stopping here. Check the "
+            "filter values against the data, or widen the question."
+        )
+        assumptions_list.append(f"ABSTAIN reason: {null_why}")
+
     # PII-01 before E4: IC/phone digits in k=v prose must not look like uncited money.
     # Detector errors fail closed (string cells become DMSMASK_unknown_00).
     masked = fail_closed_mask_payload(
@@ -1662,6 +1798,18 @@ def build_answer_envelope(
             assumptions_list.append(
                 "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
+
+    # ROWCAP-VISIBLE — an answer read from a bronze table the ingest capped at
+    # DEFAULT_MAX_ROWS covers the rows that landed, not the source. Saying nothing
+    # is silent fallback: a total over 500,000 of 1,056,320 rows reads as the whole
+    # table. Name it on the envelope the customer receives.
+    if not abstained:
+        touched = [
+            str(s.get("container") or "") for s in sources if isinstance(s, dict)
+        ] + [str(t) for t in (grounded_tables or [])]
+        for note in truncation_notes(tables=touched, sql=sql_used):
+            if note not in assumptions_list:
+                assumptions_list.append(note)
 
     if abstained:
         values_out = []
@@ -1743,8 +1891,13 @@ def normalize_contributing_sources(
     *,
     space_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Map Cortex doc-RAG / SQL provenance into DMS Source panel cards (RAG-04)."""
-    items = list(raw or [])
+    """Map Cortex doc-RAG / SQL provenance into DMS Source panel cards (RAG-04).
+
+    Exactly the sources Cortex cited, in the order it cited them. A source that
+    names a Space other than the asking one is dropped, never re-stamped with
+    the asking Space's id (see ``foreign_space_sources``).
+    """
+    items = [item for item in list(raw or []) if not _is_foreign(item, space_id)]
     out: list[dict[str, Any]] = []
     for i, item in enumerate(items):
         if isinstance(item, str):
@@ -1799,6 +1952,40 @@ def normalize_contributing_sources(
             src["space_id"] = space_id
         out.append(src)
     return out
+
+
+def _source_space(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    sid = item.get("space_id")
+    return str(sid) if sid not in (None, "") else None
+
+
+def _source_ref(item: Any, i: int) -> str:
+    d = item if isinstance(item, dict) else {}
+    return str(d.get("ref_id") or d.get("source_id") or d.get("id") or f"src_{i}")
+
+
+def _is_foreign(item: Any, space_id: str | None) -> bool:
+    from dms_executor.demo_grants import canonical_space_id
+
+    other = _source_space(item)
+    if not space_id or other is None:
+        return False
+    return canonical_space_id(other) != canonical_space_id(str(space_id))
+
+
+def foreign_space_sources(raw: list[Any] | None, *, space_id: str | None) -> list[str]:
+    """Ref ids of cited sources that name a Space other than ``space_id``.
+
+    An answer built from such a source is Space A's content under Space B's
+    question; DMS must abstain rather than show it (RAG-05).
+    """
+    return [
+        _source_ref(item, i)
+        for i, item in enumerate(list(raw or []))
+        if _is_foreign(item, space_id)
+    ]
 
 
 def _parse_numbers(text: str) -> list[float]:
@@ -1942,9 +2129,16 @@ __all__ = [
     "build_audit_receipt",
     "chart_from_rows",
     "competing_category_scopes",
+    "format_cell",
     "invented_totals",
     "normalize_badge",
+    "foreign_space_sources",
+    "normalize_cell",
     "normalize_contributing_sources",
+    "normalize_rows",
+    "null_result_reason",
+    "numeric_cell",
     "orphan_money_figures",
+    "render_row_lines",
     "unbacked_numbers",
 ]

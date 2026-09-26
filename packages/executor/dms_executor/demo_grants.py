@@ -96,6 +96,19 @@ def space_name(space_id: str) -> str | None:
     return entry[0] if entry else None
 
 
+def is_demo_space(space_id: str | None) -> bool:
+    """The personal no-Space context or a seeded DR-0002 demo Space.
+
+    Only these read the demo spine by default. Any other Space's data is its
+    own ingested sources (SPACE-GEN-01).
+    """
+    return space_id is None or canonical_space_id(space_id) in DEMO_SPACE_GRANTS
+
+
+#: Same id as ``dms_executor.DEMO_USER_ID`` and the control-plane seed user.
+DEMO_STEWARD_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
 def ingested_bronze_tables(
     path: Path | None = None,
     *,
@@ -111,8 +124,14 @@ def ingested_bronze_tables(
     """
     from dms_executor.bronze import list_bronze_tables
 
+    if space_id is not None and not str(space_id).strip():
+        # SPACE-GEN-01 round 2: an empty Space id names no Space. It used to
+        # read as "no filter", so ``space_id=""`` granted every Space's
+        # uploads. Only ``None`` (the caller asked for no Space filter) lists
+        # them all.
+        return ()
     try:
-        if space_id:
+        if space_id is not None:
             return tuple(t["table"] for t in list_bronze_tables(path=path, space_id=space_id))
         return tuple(t["table"] for t in list_bronze_tables(path=path))
     except Exception as exc:  # noqa: BLE001
@@ -132,6 +151,9 @@ class DemoSessionStore:
     #: Executor warehouse. ``list_space_source_ids`` must not fall back to the
     #: process default when the Executor was pointed at another file.
     warehouse: Path | None = None
+    #: The one demo principal (DR-0004 Option A). Membership of a Space it
+    #: ingested into is granted to it alone; P-DMS-2 replaces this with rows.
+    steward_user_id: str = DEMO_STEWARD_USER_ID
 
     def _uploaded(self) -> tuple[str, ...]:
         return tuple(self.uploads())
@@ -141,12 +163,28 @@ class DemoSessionStore:
         return entry[1] if entry else ()
 
     def is_space_member(self, space_id: str, user_id: str) -> bool:
-        # The demo has one steward who belongs to every seeded Space. An id that
-        # is not seeded is not a Space you are a member of.
-        return canonical_space_id(space_id) in DEMO_SPACE_GRANTS
+        # The demo has one steward who belongs to every seeded Space. A Space
+        # that steward created and ingested sources into (SQL source, upload
+        # tagged ``space_id``) is theirs too: before SPACE-GEN-01 such a Space
+        # was never a member, so its grant named no sources and Cortex refused
+        # "nothing grants Space" (44 of 500 BIRD asks). An id with no seed and
+        # nothing ingested into it is still not a Space you are a member of,
+        # and membership grants only the sources tagged to it (below).
+        # Only the steward: that membership is the steward's, never "anyone who
+        # can name a Space that has data in it" (DR-0004 Option A).
+        sid = canonical_space_id(space_id)
+        if not str(sid or "").strip():
+            return False
+        if sid in DEMO_SPACE_GRANTS:
+            return True
+        if str(user_id) != self.steward_user_id:
+            return False
+        return bool(ingested_bronze_tables(self.warehouse, space_id=sid))
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
         sid = canonical_space_id(space_id)
+        if not str(sid or "").strip():
+            return []
         space_uploads = ingested_bronze_tables(self.warehouse, space_id=sid)
         tables = (*self._tables_for(sid), *self.extra_grants, *space_uploads)
         return [source_id_for(t) for t in tables]

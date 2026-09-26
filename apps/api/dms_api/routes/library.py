@@ -8,7 +8,7 @@ from uuid import UUID
 import psycopg
 from cortex_client import compliance_gate
 from dms_core.control_plane.session import set_tenant_context
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
@@ -18,6 +18,7 @@ from dms_api.wiring import (
     bronze_preview,
     reveal_origin_uri,
     search_document_chunks,
+    space_source_pulls,
     warehouse_preview,
     warehouse_tables,
 )
@@ -35,6 +36,13 @@ def _hide_offline_fixtures(settings: SettingsDep) -> bool:
 
 
 def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list[dict[str, Any]]:
+    return _list_sources_status(settings, space_id=space_id)[0]
+
+
+def _list_sources_status(
+    settings: SettingsDep, *, space_id: str | None = None
+) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+    """``(sources, degraded)``. ``degraded`` names a warehouse that could not be read."""
     if not settings.database_url:
         # Offline fixture tree so Library is usable without Postgres.
         sources: list[dict[str, Any]] = [
@@ -65,6 +73,11 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
         ]
         if _hide_offline_fixtures(settings):
             sources = [s for s in sources if s.get("space_id")]
+    elif space_id and _as_uuid(space_id) is None:
+        # dms.data_sources.space_id is a uuid. A non-uuid Space id (the memory
+        # store's compat ids) cannot own a row there, and ``UUID()`` on it was an
+        # unhandled ValueError: a 500 on a read route instead of an empty list.
+        sources = []
     else:
         with psycopg.connect(settings.database_url) as conn:
             set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
@@ -104,15 +117,56 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
         ]
     if space_id:
         sources = [s for s in sources if s.get("space_id") == space_id]
-    return sources
+    # SQL-source pulls live in the bronze ingest registry, not dms.data_sources:
+    # ``POST /v1/studio/sources/sql`` never wrote a data_sources row, so a Space
+    # holding 75 landed tables listed none of them. Each pull carries its
+    # truncation (loaded vs source rows) so a capped table is visible here.
+    #
+    # Unscoped, only company-scope pulls are listed, and without the connection
+    # string: the unscoped listing is not a Space's view, and it used to hand every
+    # Space's SQL host/database/table to any caller. A Space's pulls, with their
+    # source, are on the Space-scoped listing (``?space_id=`` / the Space route).
+    pulls, degraded = space_source_pulls(space_id=space_id)
+    if not space_id:
+        pulls = [_without_connection(p) for p in pulls if not p.get("space_id")]
+    known = {str(s.get("id")) for s in sources}
+    for pull in pulls:
+        if str(pull.get("id")) not in known:
+            sources.append(pull)
+    return sources, degraded
+
+
+def _without_connection(pull: dict[str, Any]) -> dict[str, Any]:
+    """A pull with its source connection (host / port / database / table) removed."""
+    out = dict(pull)
+    out["ref"] = out.get("bronze_table")
+    out["connection_redacted"] = True
+    return out
+
+
+def _as_uuid(value: str) -> UUID | None:
+    try:
+        return UUID(value)
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 @router.get("/sources")
 def list_sources(
     settings: SettingsDep,
+    response: Response,
     space_id: str | None = Query(None),
 ) -> list[dict[str, Any]]:
-    return _list_sources(settings, space_id=space_id)
+    sources, degraded = _list_sources_status(settings, space_id=space_id)
+    if degraded:
+        # The body is a bare list (existing consumers), so the degraded state rides
+        # a header: the listing is partial, and says so rather than 5xx or pretend.
+        response.headers[DEGRADED_HEADER] = degraded["code"]
+    return sources
+
+
+#: Set on a read that answered without the warehouse (``warehouse_unavailable``).
+DEGRADED_HEADER = "X-DMS-Degraded"
 
 
 @router.get("/chunks/search")

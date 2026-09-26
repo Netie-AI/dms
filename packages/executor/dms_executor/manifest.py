@@ -186,7 +186,7 @@ class ManifestMinter:
             pool_id=acl.pool_id,
             issued_at=issued.isoformat(),
             issuer_key_id=key.kid,
-            row_predicates=dict(acl.row_predicates),
+            row_predicates=cortex_row_predicates(acl.row_predicates),
         )
         payload = canonical_manifest_bytes(unsigned)
         sig = key.private_key.sign(payload)
@@ -194,6 +194,39 @@ class ManifestMinter:
         manifest = unsigned.model_copy(update={"signature": signature})
         self._cache[acl.session_id] = _CacheEntry(manifest=manifest, expires_at=expires)
         return manifest
+
+
+_KEY_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def cortex_row_predicates(predicates: dict[str, str]) -> dict[str, str]:
+    """``row_predicates`` as they cross the wire: keys exactly as granted.
+
+    SHARED NAMING RULE (SPACE-GEN-01 round 2). A grant key is the relation's
+    exact name, ``schema.table`` (``bronze.transactions``) or bare for the demo
+    lake (``transactions``). Round 1 stripped the schema so the Cortex
+    bare-name matcher would resolve ``FROM bronze.<t>``; that made a grant on
+    ``bronze.transactions`` mint the same signed key as the demo
+    ``transactions``, so an upload named like a demo table was a grant on the
+    demo table. Keys now stay qualified end to end; Cortex matches them
+    exactly.
+
+    Every key part must be a plain SQL identifier (no quotes, no dots inside a
+    part, at most ``schema.table``). A key that is not is refused, never
+    rewritten into some other relation's name.
+    """
+    out: dict[str, str] = {}
+    for table, pred in predicates.items():
+        key = str(table)
+        parts = key.split(".")
+        if len(parts) not in (1, 2) or not all(_KEY_PART.fullmatch(p) for p in parts):
+            logger.error("%s manifest_key_invalid", _SECURITY)
+            raise SecurityEvent(
+                "manifest_key_invalid",
+                "a granted relation name is not schema.table or a bare identifier",
+            )
+        out[key] = pred
+    return out
 
 
 def _assert_minting_invariant(acl: SessionAcl) -> None:

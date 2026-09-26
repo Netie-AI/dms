@@ -181,19 +181,50 @@ def _safe_ident(name: str) -> str | None:
     return name if _IDENT.match(name) else None
 
 
+def _safe_relation(name: str) -> tuple[str | None, str] | None:
+    """``(schema, table)`` for ``table`` or ``schema.table``; None if unsafe.
+
+    A SQL-source Space grants ``bronze.<table>``. Rejecting every dotted name
+    here left such a Space with an empty retrieved schema, so generation had
+    nothing of the Space's own data to ground on.
+    """
+    parts = str(name or "").split(".")
+    if len(parts) == 1 and _safe_ident(parts[0]):
+        return None, parts[0]
+    if len(parts) == 2 and _safe_ident(parts[0]) and _safe_ident(parts[1]):
+        return parts[0], parts[1]
+    return None
+
+
+def _relation_sql(label: str) -> str | None:
+    rel = _safe_relation(label)
+    if rel is None:
+        return None
+    schema, table = rel
+    return f'"{schema}"."{table}"' if schema else table
+
+
 def retrieve_schema_sql(
     warehouse: Path | None,
     grantable: set[str],
     toks: set[str],
 ) -> list[dict[str, Any]]:
     """SQL-filter: granted tables/columns from information_schema, scored in Python."""
-    tables = sorted(t for t in grantable if _safe_ident(t))
-    if warehouse is None or not Path(warehouse).is_file() or not tables:
+    rels = [r for r in (_safe_relation(t) for t in sorted(grantable)) if r]
+    bare = sorted({t for s, t in rels if s is None})
+    qualified = sorted({(s, t) for s, t in rels if s is not None})
+    if warehouse is None or not Path(warehouse).is_file() or not rels:
         return []
-    listed = ", ".join("'" + t.replace("'", "''") + "'" for t in tables)
+    clauses: list[str] = []
+    if bare:
+        listed = ", ".join("'" + t.replace("'", "''") + "'" for t in bare)
+        clauses.append(f"table_name IN ({listed})")
+    # A granted ``schema.table`` matches that relation only, never a same-named
+    # table in another schema.
+    clauses.extend(f"(table_schema = '{s}' AND table_name = '{t}')" for s, t in qualified)
     sql = (
-        "SELECT table_name, column_name FROM information_schema.columns "
-        f"WHERE table_name IN ({listed})"
+        "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+        f"WHERE {' OR '.join(clauses)}"
     )
     con = connect_file(Path(warehouse))
     try:
@@ -202,13 +233,16 @@ def retrieve_schema_sql(
         return []
     finally:
         con.close()
+    qual_set = set(qualified)
     by_table: dict[str, list[str]] = {}
     table_score: dict[str, int] = {}
-    for table_name, column_name in rows:
-        table = _safe_ident(str(table_name))
+    for table_schema, table_name, column_name in rows:
+        name = _safe_ident(str(table_name))
         col = _safe_ident(str(column_name))
-        if not table or not col:
+        if not name or not col:
             continue
+        schema_s = str(table_schema)
+        table = f"{schema_s}.{name}" if (schema_s, name) in qual_set else name
         sc = _score(table, toks) + _score(col, toks)
         if sc <= 0 and _score(table, toks) <= 0:
             continue
@@ -238,8 +272,9 @@ def retrieve_value_encodings(
     con = connect_file(Path(warehouse))
     try:
         for item in schema:
-            table = _safe_ident(str(item.get("table") or ""))
-            if not table:
+            table = str(item.get("table") or "")
+            relation = _relation_sql(table)
+            if not relation:
                 continue
             for col in item.get("columns") or []:
                 name = _safe_ident(str(col))
@@ -251,7 +286,7 @@ def retrieve_value_encodings(
                 key = f"{table}.{name}"
                 try:
                     fetched = con.execute(
-                        f"SELECT DISTINCT CAST({name} AS VARCHAR) FROM {table} "
+                        f"SELECT DISTINCT CAST({name} AS VARCHAR) FROM {relation} "
                         f"WHERE {name} IS NOT NULL LIMIT {MAX_SAMPLE}"
                     ).fetchall()
                 except Exception:  # noqa: BLE001
@@ -558,6 +593,151 @@ def retrieve_short_context(
     return summarize_context(parts)
 
 
+#: SPACE-GEN-01 round 3: caps for a ``source="space"`` catalog. Cortex
+#: treats the columns it is sent as the column allowlist and refuses an
+#: ontology over 64 KiB, 64 tables or 256 columns per table, so DMS sends
+#: every column up to these caps and says so when it cuts (never a silent drop).
+SPACE_MAX_TABLES = 64
+SPACE_MAX_COLS = 256
+SPACE_MAX_BYTES = 48 * 1024
+_SPACE_MIN_COLS = 8
+
+
+def retrieve_space_schema(
+    warehouse: Path | None,
+    grantable: set[str],
+    toks: set[str],
+) -> list[dict[str, Any]]:
+    """Every column of each granted table, in ordinal order. No question filter.
+
+    A Space's catalog is the whole universe Cortex may generate over. Sending
+    only the columns the question named made Cortex refuse a GROUP BY on any
+    column the question did not name. ``score`` still ranks the tables;
+    ``unsendable`` counts columns whose names are not plain identifiers
+    (they cannot cross the boundary under the naming rule).
+    """
+    rels = [r for r in (_safe_relation(t) for t in sorted(grantable)) if r]
+    if warehouse is None or not Path(warehouse).is_file() or not rels:
+        return []
+    bare = sorted({t for s, t in rels if s is None})
+    qualified = sorted({(s, t) for s, t in rels if s is not None})
+    clauses: list[str] = []
+    if bare:
+        listed = ", ".join("'" + t.replace("'", "''") + "'" for t in bare)
+        clauses.append(f"(table_name IN ({listed}) AND table_schema = 'main')")
+    clauses.extend(f"(table_schema = '{s}' AND table_name = '{t}')" for s, t in qualified)
+    sql = (
+        "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+        f"WHERE {' OR '.join(clauses)} ORDER BY table_schema, table_name, ordinal_position"
+    )
+    con = connect_file(Path(warehouse))
+    try:
+        rows = con.execute(sql).fetchall()
+    except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
+        return []
+    finally:
+        con.close()
+    qual_set = set(qualified)
+    by_table: dict[str, list[str]] = {}
+    unsendable: dict[str, int] = {}
+    for table_schema, table_name, column_name in rows:
+        name = _safe_ident(str(table_name))
+        if not name:
+            continue
+        schema_s = str(table_schema)
+        table = f"{schema_s}.{name}" if (schema_s, name) in qual_set else name
+        cols = by_table.setdefault(table, [])
+        col = _safe_ident(str(column_name))
+        if not col:
+            unsendable[table] = unsendable.get(table, 0) + 1
+            continue
+        if col not in cols:
+            cols.append(col)
+    out: list[dict[str, Any]] = []
+    for table, cols in by_table.items():
+        score = _score(table, toks) + sum(_score(c, toks) for c in cols)
+        row: dict[str, Any] = {
+            "table": table,
+            "columns": list(cols),
+            "score": score,
+            "column_count": len(cols),
+        }
+        if unsendable.get(table):
+            row["unsendable_columns"] = unsendable[table]
+        out.append(row)
+    out.sort(key=lambda r: (-int(r["score"]), str(r["table"])))
+    return out
+
+
+def _cap_columns(row: dict[str, Any], cap: int, toks: set[str]) -> dict[str, Any]:
+    cols = list(row.get("columns") or [])
+    if len(cols) <= cap:
+        return {**row, "columns": cols, "columns_truncated": False}
+    named = [c for c in cols if _score(c, toks) > 0]
+    keep = set(named[:cap])
+    for c in cols:
+        if len(keep) >= cap:
+            break
+        keep.add(c)
+    return {**row, "columns": [c for c in cols if c in keep], "columns_truncated": True}
+
+
+def retrieve_space_context(
+    question: str,
+    *,
+    warehouse: Path | None = None,
+    grantable: set[str] | None = None,
+) -> dict[str, Any]:
+    """The ``source="space"`` context: the Space's full granted catalog.
+
+    Every column of every granted table (up to ``SPACE_MAX_COLS`` per table
+    and ``SPACE_MAX_TABLES`` tables, within ``SPACE_MAX_BYTES``), question-
+    matched value samples from the Space's own tables, and nothing of the
+    demo pack: no ``measure_aliases``, no demo measures, objects, bound lake
+    values or locked demo measure. A cut is explicit: ``columns_truncated``
+    per table and ``schema_truncated`` / ``tables_omitted`` overall. Value
+    samples are dropped before any column is.
+    """
+    toks = question_tokens(question)
+    full = retrieve_space_schema(warehouse, grantable or set(), toks)
+    omitted = max(0, len(full) - SPACE_MAX_TABLES)
+    tables = full[:SPACE_MAX_TABLES]
+    encodings = retrieve_value_encodings(warehouse, tables, toks)
+    encodings = sanitize_retrieve_parts({"encodings": encodings, "bound_values": {}}).get(
+        "encodings"
+    ) or {}
+    slots = {
+        k: v for k, v in intent_slots(question, None).items() if k in ("limit", "keep_gt")
+    }
+    cap = SPACE_MAX_COLS
+    while True:
+        schema = [_cap_columns(r, cap, toks) for r in tables]
+        truncated = bool(omitted) or any(r["columns_truncated"] for r in schema)
+        methods = ["schema_full"]
+        if encodings:
+            methods.insert(0, "sql_filter_values")
+        parts: dict[str, Any] = {
+            "verified": False,
+            "methods": methods,
+            "schema": schema,
+            "encodings": encodings,
+            "bound_values": {},
+            "intent_slots": slots,
+            "schema_truncated": truncated,
+        }
+        if omitted:
+            parts["tables_omitted"] = omitted
+        size = len(json.dumps(parts, default=str, sort_keys=True))
+        if size <= SPACE_MAX_BYTES:
+            return parts
+        if encodings:
+            encodings = {}
+            continue
+        if cap <= _SPACE_MIN_COLS:
+            return parts
+        cap = max(_SPACE_MIN_COLS, cap // 2)
+
+
 def _locked_measure(question: str) -> str | None:
     """One measure the question names, or None. Not a certified-pack lookup."""
     qn = (question or "").lower()
@@ -795,6 +975,8 @@ __all__ = [
     "load_ontology_spine",
     "question_tokens",
     "retrieve_short_context",
+    "retrieve_space_context",
+    "retrieve_space_schema",
     "shape_from_metric_id",
     "slots_for_measure",
 ]

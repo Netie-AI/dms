@@ -28,8 +28,9 @@ from dms_executor.bronze import (
     claim_source_table_name,
     mint_extracted_at,
     record_source_pull,
-    write_bronze_rows,
+    write_typed_bronze_rows,
 )
+from dms_executor.source_types import ColumnType, as_text, map_description
 
 SourceKind = Literal["sqlserver", "mysql", "postgresql"]
 
@@ -111,6 +112,15 @@ class SourcePull:
     #: Set when the bronze name was suffixed because another source already held the
     #: sanitised stem. Reported, never silent.
     note: str | None = None
+    #: Rows the source table held when the pull was capped. ``None`` when the pull
+    #: was not truncated, or the source would not answer the count.
+    source_row_count: int | None = None
+    #: column -> DuckDB type it landed as. Source types are kept (dms#277); a column
+    #: that is VARCHAR here is either text at the source or named in ``type_notes``.
+    column_types: dict[str, str] = field(default_factory=dict)
+    #: One per column that could not keep its source type and landed VARCHAR. Also
+    #: recorded on the source in the ingest registry.
+    type_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -459,17 +469,41 @@ def _fetch(
     target: SourceTable,
     *,
     max_rows: int,
-) -> tuple[list[str], list[list[Any]], bool]:
+) -> tuple[list[ColumnType], list[list[Any]], bool]:
+    """Column types from ``cursor.description`` and the rows as the driver returned them.
+
+    Values stay native (``int``, ``Decimal``, ``date``, ...) so bronze can land them in
+    the source's type; ``dms_executor.source_types`` does the mapping, and a column it
+    cannot keep exactly falls back to the ``str()`` text this function used to produce.
+    """
     ident = f"{_quote_ident(cfg, target.schema)}.{_quote_ident(cfg, target.name)}"
     cur = con.cursor()
     try:
         cur.execute(f"SELECT * FROM {ident}")
-        columns = [str(d[0]) for d in cur.description]
+        types = map_description(cfg.kind, cur.description)
         # Ask for one extra row: if it arrives, the pull was capped.
         fetched = list(cur.fetchmany(max_rows + 1))
         truncated = len(fetched) > max_rows
-        rows = [[None if v is None else str(v) for v in row] for row in fetched[:max_rows]]
-        return columns, rows, truncated
+        rows = [list(row) for row in fetched[:max_rows]]
+        return types, rows, truncated
+    finally:
+        cur.close()
+
+
+def _count_rows(cfg: SourceConfig, con: Any, target: SourceTable) -> int | None:
+    """``COUNT(*)`` of a capped table, so the receipt can say N of M, not just "partial".
+
+    Only run after a pull came back truncated. A count the source refuses or returns
+    in a shape we cannot read is ``None`` - reported as unknown, never guessed.
+    """
+    ident = f"{_quote_ident(cfg, target.schema)}.{_quote_ident(cfg, target.name)}"
+    cur = con.cursor()
+    try:
+        cur.execute(f"SELECT COUNT(*) FROM {ident}")
+        row = cur.fetchone()
+        return None if row is None else int(row[0])
+    except Exception:  # noqa: BLE001 - a missing total must not fail a landed pull
+        return None
     finally:
         cur.close()
 
@@ -484,8 +518,10 @@ def preview_source_table(
     """Read the first ``limit`` rows without writing anything to bronze."""
     with connect(cfg) as con:
         target = _resolve(cfg, con, schema, table)
-        columns, rows, _ = _fetch(cfg, con, target, max_rows=max(1, limit))
-    return columns, rows
+        types, rows, _ = _fetch(cfg, con, target, max_rows=max(1, limit))
+    return [t.name for t in types], [
+        [None if v is None else as_text(v) for v in row] for row in rows
+    ]
 
 
 def _bronze_name(target: SourceTable) -> str:
@@ -513,9 +549,16 @@ def _pull_one(
     ingest_id = str(uuid.uuid4())
     ref_id = str(uuid.uuid4())
     extracted_at = mint_extracted_at()
-    columns, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
+    types, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
+    columns = [t.name for t in types]
     if not columns:
         raise ValueError(f"{target.qualified} exposed no columns")
+    source_row_count: int | None = None
+    if truncated:
+        counted = _count_rows(cfg, con, target)
+        # A count that does not exceed what landed contradicts truncated=True
+        # (the table changed under us, or the driver lied): unknown, not a number.
+        source_row_count = counted if counted is not None and counted > len(rows) else None
     source = f"{cfg.describe()}#{target.qualified}"
     # A caller-named bronze_table is taken as given. A derived one goes through the
     # registry's claim so two source tables one alnum-stem apart cannot overwrite each
@@ -526,14 +569,15 @@ def _pull_one(
         name, note = claim_source_table_name(
             stem=_bronze_name(target), source=source, path=path
         )
-    landed = write_bronze_rows(
+    typed = write_typed_bronze_rows(
         table=name,
-        columns=columns,
+        column_types=types,
         rows=rows,
         ref_id=ref_id,
         ingest_id=ingest_id,
         path=path,
     )
+    landed = typed.table
     record_source_pull(
         table_name=landed.split(".", 1)[-1],
         source=source,
@@ -543,6 +587,8 @@ def _pull_one(
         space_id=space_id,
         path=path,
         extracted_at=extracted_at,
+        source_row_count=source_row_count,
+        type_notes=typed.type_notes,
     )
     return SourcePull(
         bronze_table=landed,
@@ -554,6 +600,9 @@ def _pull_one(
         ref_id=ref_id,
         extracted_at=extracted_at,
         note=note,
+        source_row_count=source_row_count,
+        column_types=typed.column_types,
+        type_notes=typed.type_notes,
     )
 
 

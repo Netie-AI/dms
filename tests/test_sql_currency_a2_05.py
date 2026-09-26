@@ -287,8 +287,15 @@ def test_round2_derived_comments_scalar_literal_abstain(tmp_path: Path) -> None:
 def test_round3_plain_column_quoted_dot_words_and_ccy_cols(tmp_path: Path) -> None:
     lake = tmp_path / "r3.duckdb"
     _seed_myr(lake)
-    for _name, sql in _ROUND3.items():
+    for name, sql in _ROUND3.items():
         env = _ask(lake, USD_Q, _sql_path(sql))
+        if name == "quoted_dot_identifier":
+            # SPACE-GEN-01 SHARED NAMING RULE: an identifier holding a dot is
+            # not a relation name, so it is refused before the currency gate.
+            assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+            assert env["rows"] == [] and env["values"] == []
+            assert "gap: validate:relation_name_invalid" in str(env.get("text") or "")
+            continue
         _assert_currency_abstain(env, sql)
     myr_sum = _sql_path("SELECT SUM(amount_myr) FROM orders")
     env = _ask(lake, "What is total revenue in dollars?", myr_sum)

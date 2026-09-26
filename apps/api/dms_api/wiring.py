@@ -39,6 +39,50 @@ def bronze_list(*, space_id: str | None = None):
     return dms_executor.list_bronze_tables(space_id=space_id)
 
 
+def canonical_space_id(space_id: str) -> str:
+    """Memory-store compat ids (``sp_q3_audit``) to the id the registry records."""
+    return dms_executor.canonical_space_id(space_id)
+
+
+#: Named degraded state for a read route that could not read the warehouse (an
+#: ingest in another process holds its write lock, or the file is unreadable).
+#: The route still answers 200 with what it could read, and says what it could not.
+def _warehouse_degraded(exc: Exception) -> dict[str, str]:
+    return {
+        "code": str(getattr(exc, "code", "warehouse_unavailable")),
+        "message": (
+            "SQL-source tables could not be read from the warehouse just now "
+            "(an ingest may be holding it); counts and lists omit them. Retry shortly."
+        ),
+        "detail": str(exc)[:200],
+    }
+
+
+def space_source_pulls(
+    *, space_id: str | None = None
+) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+    """SQL-source tables landed for a Space (ingest registry), truncation included.
+
+    Read-only. ``(pulls, degraded)``: ``degraded`` names why the registry could not
+    be read (``warehouse_unavailable``) instead of raising a 5xx on a GET.
+    """
+    try:
+        return dms_executor.list_source_pulls(space_id=space_id), None
+    except dms_executor.WarehouseBusy as exc:
+        return [], _warehouse_degraded(exc)
+
+
+def space_source_pull_counts() -> tuple[dict[str, int], dict[str, str] | None]:
+    """Landed SQL-source tables per canonical Space id, one read-only registry read."""
+    pulls, degraded = space_source_pulls()
+    counts: dict[str, int] = {}
+    for pull in pulls:
+        sid = pull.get("space_id")
+        if sid:
+            counts[str(sid)] = counts.get(str(sid), 0) + 1
+    return counts, degraded
+
+
 def warehouse_tables(*, space_id: str | None = None):
     return dms_executor.list_warehouse_tables(space_id=space_id)
 
@@ -120,6 +164,11 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     env = dms_executor.build_answer_envelope(**kwargs)
     dms_executor.assert_envelope_valid(env)
     return env
+
+
+def customer_abstain_text(reason: str) -> str:
+    """Named ABSTAIN text for ``reason`` (the executor's customer wording)."""
+    return dms_executor.customer_abstain_text(reason)
 
 
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
@@ -262,11 +311,32 @@ def sql_source_ingest(
                 "source": p.source,
                 "row_count": p.row_count,
                 "truncated": p.truncated,
+                # N of M, not a bare boolean: a capped pull is a partial table,
+                # and the steward has to be able to see how partial.
+                "source_row_count": p.source_row_count,
+                "partial": (
+                    (
+                        f"partial: {p.row_count:,} of "
+                        + (
+                            f"{p.source_row_count:,}"
+                            if p.source_row_count is not None
+                            else "an unknown number of"
+                        )
+                        + f" source rows (row cap {cap:,})"
+                    )
+                    if p.truncated
+                    else None
+                ),
                 "extracted_at": p.extracted_at,
+                # Source types are kept (dms#277). A column that could not be kept
+                # exactly landed VARCHAR and is named here, not silently retyped.
+                "column_types": dict(p.column_types),
+                "type_notes": list(p.type_notes),
             }
             for p in extract.pulls
         ],
         "skipped": list(extract.skipped),
+        "truncated_tables": [p.bronze_table for p in extract.pulls if p.truncated],
         "declared_primary_keys": len(extract.keys.primary_keys),
         "declared_foreign_keys": len(extract.keys.foreign_keys),
         "links": links,

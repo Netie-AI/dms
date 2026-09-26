@@ -352,6 +352,19 @@ def _blocked_kind(exc: BaseException) -> str | None:
     return None
 
 
+def _blocked_envelope_kind(env: dict[str, Any]) -> str | None:
+    """``space_not_found`` / ``space_id_empty`` ABSTAIN envelopes block the run.
+
+    SPACE-GEN-01 round 2: an unknown or empty Space id is a named ABSTAIN
+    envelope (200), no longer a 404.
+    """
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    for kind in ("space_not_found", "space_id_empty"):
+        if f"ABSTAIN reason: {kind}" in notes:
+            return kind
+    return None
+
+
 def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[str]]:
     """Measured bronze names for the Space. Snapshot on failure, never invent 75."""
     import httpx
@@ -458,6 +471,12 @@ def run_live(
                 rows.append({"id": qid, "generative": "WRONG", "generative_badge": "ERROR"})
                 continue
             print(f"{qid}\tlive\tGRANT_REFUSE\t{type(exc).__name__}")
+        blocked_env = _blocked_envelope_kind(env)
+        if blocked_env:
+            # The Space is missing: every case would ABSTAIN for the same
+            # reason, which is a blocked run, not 500 scored refusals.
+            print(f"{qid}\tlive\tBLOCKED\terror.type={blocked_env}\tenvelope")
+            return "blocked", tallies, rows, skipped
         verdict = judge(scored, env)
         tallies[verdict] += 1
         n = len(env.get("rows") or env.get("values") or [])
@@ -653,6 +672,19 @@ def main(argv: list[str]) -> int:
         "--offline",
         action="store_true",
         help="No Cortex. Skips FreeRoute freeze. Synthetic/--self-check path.",
+    )
+    p.add_argument(
+        "--pace",
+        type=float,
+        default=0.0,
+        help="Mini-Dev: seconds to wait between questions (provider rate limits).",
+    )
+    p.add_argument(
+        "--provider-attempts",
+        type=int,
+        default=3,
+        help="Mini-Dev: attempts per question on HTTP 429/5xx/timeout before "
+        "PROVIDER_ERROR (excluded from n, never RIGHT).",
     )
     p.add_argument(
         "--compare",

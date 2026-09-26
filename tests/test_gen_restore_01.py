@@ -45,7 +45,12 @@ from dms_executor.ontology import Ontology
 _PREDICT_Q = "Predict how much revenue we will make"
 _REVENUE_2099_Q = "What was revenue in 2099?"
 _NOT_COLD_Q = "Which locations are not cold storage?"
-_GENERATE_SQL = "SELECT sku, SUM(amount) AS revenue FROM sales GROUP BY sku"
+_GENERATE_SQL = (
+    # GRAIN-GUARD-01: grouped by the category the question names, not by sku.
+    'SELECT l."category" AS "product_category", SUM(s.amount) AS "revenue" FROM sales s '
+    "LEFT JOIN (SELECT sku, ANY_VALUE(category) AS category FROM lots GROUP BY sku) l "
+    'ON s."sku" = l."sku" GROUP BY l."category"'
+)
 # Distinctive Cortex#269 values. Must not match any DMS default or guess.
 _SETUP_PRESENT = {
     "served_provider": "ov_free_llama_unique",
