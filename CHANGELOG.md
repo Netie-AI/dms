@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - ONTO-DERIVE-01 round 2: the Space join rule becomes an allowlist
+
+- **Evidence.** A second independent adversary found 7 wrong-answer classes past the round-1 rule, all green on the contract-ask path. They were: a chasm trap (9 schools, truth 3), a derived-table column list swap, `SELECT * REPLACE`, correlations in SELECT/FILTER/HAVING/QUALIFY, fan-out through an outer scope or an untyped aggregate (`list`, `fsum`), EXCEPT/INTERSECT value joins, and a scalar-subquery value join.
+- **Change.** SQL reading two or more table references must be one flat SELECT over base tables with inner joins, or a LEFT JOIN onto a parent. Its verified-link equalities must form a child-to-parent tree with no chasm. Beyond those equalities, no predicate may relate two tables, and subqueries are allowed only at the top level of WHERE (EXISTS on a link, `IN (SELECT col)` on a link, a threshold over the same column). A parent column may appear only in a per-row predicate, GROUP BY/ORDER BY/partition, MIN/MAX, a DISTINCT aggregate or a bare projection. Everything else refuses `unverified_join:<why>`.
+- **Known false refusals (correct SQL that now abstains).** CTEs, derived tables, set operations and CAST or USING join conditions, once more than one table is read. NOT IN over a link, LEFT JOIN onto a child, and a correlated scalar subquery in the SELECT list. Each needs its own proof before it is allowed.
+- **Gate.** `tests/test_onto_derive_01.py` (44 tests) pins all 53 round-2 shapes: every attack refuses and 15 correct shapes still answer. Full suite 1747 passed. Loopback over real HTTP still passes.
+
 ## 2026-09-26 - ONTO-DERIVE-01: a SQL-source Space derives, verifies, stores and uses its own ontology (dms#277)
 
 - **Evidence.** Routed BUILD_NOW by prd-agent as dms#277 CONNECT-ASK-01 change 1 (item 3b). `verify_source_links` measured a Space's declared links once and dropped the result into the receipt. `OntologyStore` had no non-test caller, and the Space ask path ran with no ontology. That let a join over an orphaned FK (inner join reports 55 of 107 students) or on the wrong column pair (returns 1, truth 3) answer L2. Does not close tickets. Not COMPLETE. No BIRD score claimed.

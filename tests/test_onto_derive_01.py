@@ -467,13 +467,15 @@ def test_join_rule_units(
         is None
     )
     # Derived table over the key, correlated EXISTS, IN-subquery on the link: all the link.
+    # A derived table over a join is refused wholesale (allowlist); correct
+    # SQL of this shape is the price of WRONG=0 until the shape is proven.
     assert (
         why(
             "SELECT d.name, x.n FROM bronze.public_districts d JOIN (SELECT district_id, "
             "COUNT(*) AS n FROM bronze.public_schools GROUP BY district_id) x "
             "ON x.district_id = d.district_id"
         )
-        is None
+        == "unverified_join:derived_table_over_join"
     )
     assert (
         why(
@@ -684,3 +686,142 @@ def test_ontology_payload_stays_inside_cortex_limits() -> None:
     assert 40 * 1024 + len(_json.dumps(out)) <= WIRE_MAX_BYTES + 1024
     assert len(out["links"]) <= 256
     assert out["space_truncated"] is True
+
+
+# --- adversary round 2: the allowlist -------------------------------------------
+
+L = "s.district_id = d.district_id"
+#: Round 2 (second independent agent). ``ok_*`` are correct SQL; the rest are
+#: attacks. Truth: 3 schools in North, 2 districts with schools.
+R2_SHAPES = {
+    # P0 candidates: attacks (truth for VERIFIED_Q = 3)
+    "chasm_two_children": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON {L} JOIN {S} s2 ON s2.district_id = d.district_id WHERE d.name='North'",
+    "cte_collist_swap": f"WITH t(school_id, district_id) AS (SELECT district_id, school_id FROM {S}) SELECT COUNT(*) AS school_count FROM t s JOIN {D} d ON {L} WHERE d.name='North'",
+    "derived_collist_swap": f"SELECT COUNT(*) AS school_count FROM (SELECT district_id, school_id FROM {S}) AS s(school_id, district_id) JOIN {D} d ON {L} WHERE d.name='North'",
+    "star_replace": f"SELECT COUNT(*) AS school_count FROM (SELECT * REPLACE (school_id AS district_id) FROM {S}) s JOIN {D} d ON {L} WHERE d.name='North'",
+    "dup_proj_name": f"SELECT COUNT(*) AS school_count FROM (SELECT district_id, school_id AS district_id FROM {S}) s JOIN {D} d ON {L} WHERE d.name='North'",
+    "dup_proj_star": f"SELECT COUNT(*) AS school_count FROM (SELECT school_id AS district_id, * FROM {S}) s JOIN {D} d ON {L} WHERE d.name='North'",
+    "corr_filter_select": f"SELECT (SELECT COUNT(*) FILTER (WHERE s.school_id = d.district_id) FROM {S} s) AS school_count FROM {D} d WHERE d.name='North'",
+    "corr_case_select": f"SELECT (SELECT SUM(CASE WHEN s.school_id = d.district_id THEN 1 ELSE 0 END) FROM {S} s) AS school_count FROM {D} d WHERE d.name='North'",
+    "exists_having": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS (SELECT 1 FROM {D} d GROUP BY d.district_id, d.name HAVING d.district_id = s.school_id AND d.name='North')",
+    "exists_qualify": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS (SELECT 1 FROM {D} d WHERE d.name='North' QUALIFY d.district_id = s.school_id)",
+    "in_subq_in_filter": f"SELECT COUNT(*) FILTER (WHERE s.school_id IN (SELECT district_id FROM {D} WHERE name='North')) AS school_count FROM {S} s",
+    "in_subq_in_having": f"SELECT COUNT(*) AS school_count FROM {S} s GROUP BY s.school_id HAVING s.school_id IN (SELECT district_id FROM {D} WHERE name='North')",
+    "unnest_fanout": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON {L}, unnest([1,2]) WHERE d.name='North'",
+    "range_fanout": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON {L} CROSS JOIN range(2) WHERE d.name='North'",
+    "values_fanout": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON {L} CROSS JOIN (VALUES (1),(2)) v(x) WHERE d.name='North'",
+    "lambda_subq": f"SELECT list_sum(list_transform([1], x -> (SELECT COUNT(*) FROM {S} s JOIN {D} d ON s.school_id = d.district_id WHERE d.name='North'))) AS school_count",
+    "range_arg_subq": f"SELECT COUNT(*) AS school_count FROM range((SELECT COUNT(*) FROM {S} s JOIN {D} d ON s.school_id = d.district_id WHERE d.name='North'))",
+    "scalar_eq_ok": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.school_id = (SELECT MAX(district_id) FROM {D} WHERE name='North')",
+    "scalar_in_select_join": f"SELECT (SELECT COUNT(*) FROM {S} s WHERE s.school_id = (SELECT MAX(district_id) FROM {D} WHERE name = 'North')) AS school_count",
+    "orderby_corr": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE (SELECT d.name FROM {D} d ORDER BY d.district_id = s.school_id DESC LIMIT 1) = 'North'",
+    # fan trap bypasses (question: how many districts have schools; truth 2)
+    "fan_outer_derived": f"SELECT COUNT(x.district_id) AS school_count FROM (SELECT d.district_id FROM {D} d JOIN {S} s ON {L}) x",
+    "fan_fsum": f"SELECT fsum(CAST(d.district_id AS INT)) AS school_count FROM {D} d JOIN {S} s ON {L}",
+    "fan_count_if": f"SELECT count_if(d.name='North') AS school_count FROM {D} d JOIN {S} s ON {L}",
+    "fan_list_len": f"SELECT len(list(d.district_id)) AS school_count FROM {D} d JOIN {S} s ON {L}",
+    "fan_product": f"SELECT product(CAST(d.district_id AS INT)) AS school_count FROM {D} d JOIN {S} s ON {L}",
+    "fan_window_rownum": f"SELECT MAX(rn) AS school_count FROM (SELECT row_number() OVER () AS rn FROM {D} d JOIN {S} s ON {L})",
+    "fan_arg_max": f"SELECT arg_max(d.district_id, d.name) AS school_count FROM {D} d JOIN {S} s ON {L}",
+    "fan_sum_distinct_expr": f"SELECT SUM(DISTINCT CAST(d.district_id AS INT)) AS school_count FROM {D} d JOIN {S} s ON {L}",
+    # legit shapes (should answer)
+    "ok_group_parent_count": f"SELECT d.name, COUNT(*) AS school_count FROM {S} s JOIN {D} d ON {L} GROUP BY d.name ORDER BY school_count DESC LIMIT 5",
+    "ok_count_child_col": f"SELECT d.name, COUNT(s.school_id) AS school_count FROM {D} d JOIN {S} s ON {L} GROUP BY d.name HAVING COUNT(s.school_id) > 0",
+    "ok_cte_collist": f"WITH t(did, dname) AS (SELECT district_id, name FROM {D}) SELECT COUNT(*) AS school_count FROM {S} s JOIN t ON s.district_id = t.did WHERE t.dname='North'",
+    "ok_cte_plain": f"WITH t AS (SELECT district_id AS did, name FROM {D} WHERE name='North') SELECT COUNT(*) AS school_count FROM {S} s JOIN t ON s.district_id = t.did",
+    "ok_cast_both": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON CAST(s.district_id AS INT) = CAST(d.district_id AS INT) WHERE d.name='North'",
+    "ok_window": f"SELECT DISTINCT d.name, COUNT(*) OVER (PARTITION BY d.name) AS school_count FROM {S} s JOIN {D} d ON {L} WHERE d.name='North'",
+    "ok_rank": f"SELECT s.name, RANK() OVER (PARTITION BY d.name ORDER BY s.name) AS r FROM {S} s JOIN {D} d ON {L}",
+    "ok_case": f"SELECT SUM(CASE WHEN d.name='North' THEN 1 ELSE 0 END) AS school_count FROM {S} s JOIN {D} d ON {L}",
+    "ok_nested_derived": f"SELECT school_count FROM (SELECT d.name, COUNT(*) AS school_count FROM (SELECT * FROM {S}) s JOIN (SELECT * FROM {D}) d ON {L} GROUP BY d.name) x WHERE name='North'",
+    "ok_not_in": f"SELECT COUNT(*) AS school_count FROM {D} d WHERE d.district_id NOT IN (SELECT district_id FROM {S})",
+    "ok_left_join_null": f"SELECT COUNT(*) AS school_count FROM {D} d LEFT JOIN {S} s ON {L} WHERE s.school_id IS NULL",
+    "ok_group_all": f"SELECT d.name, COUNT(*) AS school_count FROM {S} s JOIN {D} d ON {L} GROUP BY ALL",
+    "ok_distinct_on": f"SELECT DISTINCT ON (d.name) d.name, s.name AS school FROM {S} s JOIN {D} d ON {L} ORDER BY d.name, s.name",
+    "ok_qualify": f"SELECT d.name, s.name AS school FROM {S} s JOIN {D} d ON {L} QUALIFY row_number() OVER (PARTITION BY d.name ORDER BY s.name) = 1",
+    "ok_corr_scalar": f"SELECT d.name, (SELECT COUNT(*) FROM {S} s WHERE {L}) AS school_count FROM {D} d",
+    "ok_count_distinct_parent": f"SELECT COUNT(DISTINCT d.name) AS school_count FROM {D} d JOIN {S} s ON {L}",
+    "ok_unqualified_cols": f"SELECT COUNT(*) AS school_count FROM {S} JOIN {D} ON {S}.district_id = {D}.district_id WHERE {D}.name='North'",
+    "ok_paren_on": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON (s.district_id = d.district_id) WHERE d.name='North'",
+    "ok_in_with_where": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.district_id IN (SELECT district_id FROM {D} WHERE name = 'North')",
+    "ok_join_derived_agg": f"SELECT d.name, x.n AS school_count FROM {D} d JOIN (SELECT district_id, COUNT(*) AS n FROM {S} GROUP BY 1) x ON x.district_id = d.district_id",
+    "ok_avg_parent_attr_group": f"SELECT d.name, COUNT(*) AS school_count, MIN(d.name) AS m FROM {S} s JOIN {D} d ON {L} GROUP BY d.name",
+    "ok_sum_child_by_parent": f"SELECT d.name, SUM(CAST(s.school_id AS INT)) AS school_count FROM {S} s JOIN {D} d ON {L} GROUP BY d.name",
+    "ok_count_star_parent_first": f"SELECT COUNT(*) AS school_count FROM {D} d INNER JOIN {S} s ON d.district_id = s.district_id WHERE d.name = 'North'",
+    "ok_union_in_cte": f"WITH t AS (SELECT district_id FROM {D} WHERE name='North' UNION SELECT district_id FROM {D} WHERE name='North') SELECT COUNT(*) AS school_count FROM {S} s JOIN t ON s.district_id = t.district_id",
+    "ok_const_subq_noagg": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN (SELECT district_id FROM {D} WHERE name='North' LIMIT 1) d ON {L}",
+}
+
+#: Correct shapes the allowlist must keep answering (a control that blocks
+#: legitimate work is itself a failure).
+R2_MUST_PASS = {
+    "ok_avg_parent_attr_group",
+    "ok_case",
+    "ok_count_child_col",
+    "ok_count_distinct_parent",
+    "ok_count_star_parent_first",
+    "ok_distinct_on",
+    "ok_group_all",
+    "ok_group_parent_count",
+    "ok_in_with_where",
+    "ok_paren_on",
+    "ok_rank",
+    "ok_sum_child_by_parent",
+    "ok_unqualified_cols",
+    "ok_window",
+    # A per-row predicate over the parent: counts North schools, correctly.
+    "fan_count_if",
+}
+
+
+def test_round2_allowlist_refuses_every_attack_and_keeps_correct_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    from dms_executor.space_ontology import load_space_ontology, relation_columns
+
+    rig = _space(tmp_path, monkeypatch, minter)
+    onto = load_space_ontology(rig.space_id)
+    assert onto is not None
+    con = duckdb.connect(str(rig.lake))
+    try:
+        violations = onto.verify(con)
+    finally:
+        con.close()
+    cols = relation_columns(onto, rig.lake)
+    passed = {
+        name
+        for name, sql in R2_SHAPES.items()
+        if unverified_join_reason(sql, onto, violations, columns_of=cols) is None
+    }
+    assert passed == R2_MUST_PASS, (sorted(passed - R2_MUST_PASS), sorted(R2_MUST_PASS - passed))
+
+
+@pytest.mark.parametrize("name", ["chasm_two_children", "star_replace", "corr_filter_select"])
+def test_round2_contract_ask_cannot_carry_an_attack(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    from cortex_client.models import AskResponse
+
+    rig = _space(tmp_path, monkeypatch, minter)
+    sql = R2_SHAPES[name]
+    wrong = _oracle(rig.lake, sql)
+    assert wrong != [{"school_count": 3}], wrong
+
+    def _ask(req: Any) -> AskResponse:
+        rig.cortex.asks.append(req)
+        return AskResponse(
+            answer="answer",
+            abstained=False,
+            badge="generated",
+            route="generated",
+            sql_used=sql,
+            rows=wrong,
+        )
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask)
+    env = rig.ask(VERIFIED_Q, {})
+    _assert_abstain(env, "unverified_join")
