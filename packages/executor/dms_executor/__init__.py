@@ -59,7 +59,11 @@ from dms_executor.envelope import (
     chart_from_rows,
     normalize_contributing_sources,
 )
-from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
+from dms_executor.generative_ask import (
+    maybe_generative_ask,
+    path_miss_envelope,
+    with_served_attribution,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -146,6 +150,14 @@ def _insights_compute_seam(
         )
     except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
         return None
+
+
+def _seen(
+    seen: list[dict[str, Any] | None], payload: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Record the Insights payload for SERVED-ATTR-01, then pass it on."""
+    seen.append(payload)
+    return payload
 
 
 class Executor:
@@ -428,6 +440,35 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
     ) -> dict[str, Any]:
+        """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
+
+        Every ask envelope carries ``served_attribution``. When the Insights
+        generate seam ran, its setup fields reach the envelope on every path,
+        including the contract-ask fallback after a generative miss.
+        """
+        seen: list[dict[str, Any] | None] = []
+        env = self._live_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            tables=tables,
+            ask_path=ask_path,
+            seen=seen,
+        )
+        payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
+        stamped = with_served_attribution(env, payload)
+        return stamped if stamped is not None else env
+
+    def _live_ask(
+        self,
+        question: str,
+        *,
+        space_id: str | None = None,
+        session_id: str | None = None,
+        tables: list[str] | None = None,
+        ask_path: str | None = None,
+        seen: list[dict[str, Any] | None],
+    ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
         ``tables`` narrows the manifest to the files the user grounded the
@@ -618,12 +659,15 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(readable),
                 tables=tables,
-                compute=lambda catalog: _insights_compute_seam(
-                    self._cortex,
-                    question,
-                    session_id=session_id,
-                    space_id=space_id,
-                    ontology=catalog,
+                compute=lambda catalog: _seen(
+                    seen,
+                    _insights_compute_seam(
+                        self._cortex,
+                        question,
+                        session_id=session_id,
+                        space_id=space_id,
+                        ontology=catalog,
+                    ),
                 ),
                 submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(

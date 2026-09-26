@@ -31,6 +31,8 @@ from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
+    SERVED_LEG_KEYS,
+    generate_model_called,
     insights_fail_reason,
     insights_query_sql,
     insights_was_reached,
@@ -103,6 +105,10 @@ SETUP_FIELD_KEYS: tuple[str, ...] = (
     "learn_source",
     "route_store_id",
 )
+SERVED_ATTR_REPORTED = "reported"
+SERVED_ATTR_MISSING = "missing"
+SERVED_ATTR_NONE = "none"
+SERVED_ATTR_DIAG_ENV = "DMS_SERVED_ATTR_DIAG"
 
 
 def normalize_plan_source(raw: Any) -> str:
@@ -144,7 +150,7 @@ def generate_legs_view(
     payload: dict[str, Any] | None, *, validate_reason: str | None = None
 ) -> dict[str, Any]:
     """How many generate legs ran, and whether each returned SQL, a plan, or nothing."""
-    legs: list[dict[str, str]]
+    legs: list[dict[str, Any]]
     count: int
     if isinstance(payload, dict) and isinstance(payload.get("generate_legs"), dict):
         raw = payload["generate_legs"]
@@ -157,7 +163,13 @@ def generate_legs_view(
                 got = "nothing"
             if got not in {"sql", "plan", "nothing", "timeout"}:
                 got = "nothing"
-            legs.append({"returned": got})
+            leg: dict[str, Any] = {"returned": got}
+            if isinstance(item, dict):
+                # SERVED-ATTR-01: per-leg attribution, as Cortex reported it.
+                for key in SERVED_LEG_KEYS:
+                    if key in item:
+                        leg[key] = item[key]
+            legs.append(leg)
         count = int(raw.get("count") or len(legs))
         if not validate_reason:
             leftover = str(raw.get("validate_reason") or "").strip()
@@ -193,6 +205,66 @@ def with_setup_fields(
     for key in SETUP_FIELD_KEYS:
         if key in payload:
             env[key] = payload[key]
+    return env
+
+
+def served_attribution(payload: dict[str, Any] | None) -> str:
+    """SERVED-ATTR-01 (dms#305): reported / missing / none for one ask.
+
+    ``reported``: Cortex sent both ``served_provider`` and ``served_model``.
+    ``missing``: a generate call may have reached a model and either is
+    absent or null - the grid runner labels that attempt INVALID.
+    ``none``: no model was called. Never inferred from logs, config or SQL.
+    """
+    if not isinstance(payload, dict):
+        return SERVED_ATTR_NONE
+    raw = payload.get("generate_legs")
+    legs = raw.get("legs") if isinstance(raw, dict) else None
+    # Per call: one leg without attribution (a retry, a timeout) is missing
+    # even when the last leg's stamp reached the top level.
+    legs_ok = not isinstance(legs, list) or all(
+        isinstance(leg, dict) and leg.get("served_provider") and leg.get("served_model")
+        for leg in legs
+    )
+    if payload.get("served_provider") and payload.get("served_model") and legs_ok:
+        return SERVED_ATTR_REPORTED
+    if (
+        generate_model_called(payload)
+        or payload.get("served_provider")
+        or payload.get("served_model")
+    ):
+        return SERVED_ATTR_MISSING
+    return SERVED_ATTR_NONE
+
+
+def served_diag_enabled() -> bool:
+    """Swap: a prove run turns on ``DMS_SERVED_ATTR_DIAG`` to see which side
+    dropped ``served_*``; customer deploys never set it. Read per call."""
+    import os
+
+    raw = os.environ.get(SERVED_ATTR_DIAG_ENV, "0")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def with_served_attribution(
+    env: dict[str, Any] | None, payload: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Stamp ``served_attribution`` on any ask envelope.
+
+    When a generate call ran, its setup fields and ``generate_legs`` are
+    copied onto envelopes that lack them (the Cortex contract-ask fallback
+    after a generative miss). The diagnostic flag adds the Insights payload's
+    top-level key names and their count, never a value.
+    """
+    if not isinstance(env, dict):
+        return env
+    if isinstance(payload, dict):
+        with_setup_fields(env, payload)
+        env.setdefault("generate_legs", generate_legs_view(payload))
+        if served_diag_enabled():
+            keys = sorted(str(k) for k in payload)
+            env["served_payload_keys"] = {"count": len(keys), "keys": keys}
+    env["served_attribution"] = served_attribution(payload)
     return env
 
 
@@ -1052,7 +1124,7 @@ def maybe_generative_ask(
         env["generate_legs"] = generate_legs_view(
             setup_src, validate_reason=validate_why
         )
-        return env
+        return with_served_attribution(env, setup_src)
 
     if verify_cache_missing:
         return _stamp(

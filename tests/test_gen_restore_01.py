@@ -257,7 +257,9 @@ def test_compute_insights_calls_insights_never_dms_query() -> None:
         ontology={"phase": "ontology", "ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     urls = [str(p["url"]) for p in posts]
     assert any(u.endswith(INSIGHTS_PATH) for u in urls), urls
     assert all(COMPUTE_PATH not in u for u in urls), urls
@@ -271,7 +273,8 @@ def test_compute_insights_calls_insights_never_dms_query() -> None:
     assert ":5000" not in str(gen)
     assert "sk-" not in str(gen)
     headers = posts[0]["headers"] or {}
-    assert "Authorization" not in headers
+    # KEY-01: the configured fake key is forwarded exactly; nothing is invented.
+    assert headers["Authorization"] == "Bearer " + "fake-key01-test-token"
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_EMPTY
 
@@ -286,7 +289,7 @@ def test_compute_query_still_posts_dms_query() -> None:
         ontology={"ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        compute_query("http://127.0.0.1:8010", question="hello")
+        compute_query("http://127.0.0.1:8010", question="hello", api_key="fake-key01-test-token")
     urls = [str(p["url"]) for p in posts]
     assert any(u.endswith(COMPUTE_PATH) for u in urls), urls
 
@@ -372,7 +375,9 @@ def test_http_401_is_unauthorized_never_dms_query() -> None:
         generate_status=401,
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_UNAUTHORIZED
     assert all(COMPUTE_PATH not in str(p["url"]) for p in posts)
@@ -383,7 +388,9 @@ def test_http_timeout_is_insights_timeout_never_dms_query() -> None:
     timeouts: list[Any] = []
     fake = _FakeHttp(posts=posts, timeouts=timeouts, timeout=True)
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_TIMEOUT
     assert timeouts == [INSIGHTS_ASK_TIMEOUT_SECONDS]
@@ -730,7 +737,9 @@ def test_cortex_client_compute_insights_uses_insights_bound_timeout() -> None:
         ontology={"ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        client = CortexClient("http://127.0.0.1:8010", timeout=120.0)
+        client = CortexClient(
+            "http://127.0.0.1:8010", timeout=120.0, api_key="fake-key01-test-token"
+        )
         client.compute_insights("how many skus?")
     assert timeouts == [INSIGHTS_ASK_TIMEOUT_SECONDS]
     assert all(COMPUTE_PATH not in str(p["url"]) for p in posts)

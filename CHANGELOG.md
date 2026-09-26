@@ -15,6 +15,23 @@ Append-only. Never edited, only added to. Newest first.
 - **Change.** `dms_executor/engine_clock.py`: a clock-reading answer SQL is bracketed by a `CURRENT_DATE`/`TimeZone` probe on the same submit; the envelope carries `engine_clock`. `score_curated.py` binds the oracle's `CURRENT_DATE` to that date; missing is ORACLE_ERROR, before != after is INVALID (new category, fails the live run). Comparator in `oracle_row_match.py` untouched. No oracle SQL changed.
 - **Gate.** `tests/test_oracle_fix_02.py` (two dates, INVALID, missing date, HTTP envelope). `tests/test_oracle_fix_01.py`: exemption removed, zero-row check covers every answer oracle (tightens only).
 
+## 2026-09-26 - KEY-01: DMS API fails closed on a missing Cortex key (#273)
+
+- **Ticket.** [KEY-01 #273](https://github.com/Netie-AI/dms/issues/273), pairs with Cortex TRUST-02 under #263. Does not close tickets. Does not clear the pilot security bar: Platform shows live that an unkeyed DMS API refuses.
+- **Change.** `settings.cortex_api_key` has no default (was Cortex's published demo key). `cortex_read.DEFAULT_VIEWER_KEY` and its fallback are gone; a missing key refuses with `cortex_key_missing` before any request. The app lifespan refuses to start in `DMS_ASK_MODE=live` without `DMS_DEMO_FALLBACK=1` when no usable key is set; demo mode and the bannered fallback start with no Cortex client. `cortex_key_missing()` treats None, blank and the demo key as missing. `generate_bearer_refuse` lost `missing_none`: `api_key=None` now makes no generate call on `compute_insights` and on the leftover `compute_query(dms_query=True)` lane (Epic 17:33 item 2: same refusals applied, no POST at all).
+- **Correction** to the BEARER-01 entry below: "Empty or demo-viewer keys make no generate call" was accurate, but `docs/ACTIVE.md` said "missing" too; an unset key (None) still generated on `compute_insights` until this entry.
+- **Denylist.** The literal `dms-demo-viewer-key` stays once in `apps/`+`packages/`: `cortex_client.insights.DEMO_VIEWER_KEY`, the value the refusals compare against (dms#289 tests import it). It is no default and no fallback; `tests/test_key_01.py` pins that it is the only occurrence.
+- **Test edits (tighten only, each named in the PR).** Frozen GEN-RESTORE / GEN-PATH-PROVE / climb / PII client tests move onto a seeded fake token (`fake-key01-test-token`); `test_insights_bearer_01.py` None-key assertion becomes a strict refuse and the removed kwarg must raise `TypeError`; `test_gen01` unkeyed `compute_query` now asserts zero HTTP calls. Nothing deleted, skipped or xfailed.
+- **Gate.** `tests/test_key_01.py`, 25 tests; 19 fail on `42d8c62` (the parent), 6 are guards that pass there by design (positive control with a key, and dms#289 refusals).
+
+## 2026-09-26 - SERVED-ATTR-01: per-call served attribution on every ask envelope (#305)
+
+- **Ticket.** [SERVED-ATTR-01 #305](https://github.com/Netie-AI/dms/issues/305) under dms#231. Does not close tickets. Not COMPLETE. No live figures.
+- **Change.** Every ask envelope from `Executor.live_ask` carries `served_attribution`: `reported` (Cortex sent `served_provider` and `served_model` for every generate leg), `missing` (a generate call may have reached a model and attribution is absent or null, including a timeout leg or one unattributed retry), `none` (no model call: pre-gate abstain, certified hit, bearer refuse with zero HTTP calls, 401/403, or a climb Cortex reports as UNARMED/NO_KEY/REFUSED_AUTH). `generate_legs[].served_provider`/`served_model` are copied per leg as received. The contract-ask fallback after a generative miss now keeps the setup fields and `generate_legs` (it dropped them). Nothing is inferred from logs, config or SQL.
+- **Diagnostic.** `DMS_SERVED_ATTR_DIAG=1` (off by default; swap: a prove run turns it on) adds `served_payload_keys` = top-level key names of the Insights payload and their count, never values.
+- **Gate.** `tests/test_served_attr_01.py`, 17 tests on the envelope (`assert_envelope_valid`, rows, text), three through `POST /v1/chat/ask`. 16 fail on the base `f73b7ab`; the diag-off guard passes by design. No existing test edited, no skip/xfail.
+- **Not this ticket:** Cortex code (Cortex#269); the grid runner's INVALID label (dms#299).
+
 ## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
 
 - **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.

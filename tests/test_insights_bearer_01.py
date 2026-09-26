@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from cortex_client import CortexClient
 from cortex_client.compute import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
@@ -200,8 +201,10 @@ def test_guard_names_and_transport_units() -> None:
     assert (
         generate_bearer_refuse(_FAKE, _REMOTE_HTTP) == INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT
     )
-    assert generate_bearer_refuse(_FAKE, _LOOPBACK, missing_none=False) is None
-    assert generate_bearer_refuse(None, _LOOPBACK, missing_none=False) is None
+    # KEY-01 (dms#273): the missing_none escape hatch is gone; None is missing.
+    with pytest.raises(TypeError):
+        generate_bearer_refuse(_FAKE, _LOOPBACK, missing_none=False)  # type: ignore[call-arg]
+    assert generate_bearer_refuse(None, _LOOPBACK) == INSIGHTS_FAIL_BEARER_MISSING
 
 
 def test_loopback_generate_sends_bearer_header() -> None:

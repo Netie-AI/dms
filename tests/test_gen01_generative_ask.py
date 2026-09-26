@@ -457,8 +457,8 @@ def test_compute_http_does_not_invent_a_key() -> None:
     with patch("cortex_client.compute.httpx.Client", _Client):
         out = compute_query("http://127.0.0.1:8010", question="hello")
     assert out is None
-    assert seen, "Insights generate must be attempted"
-    assert any(str(row["url"]).endswith("/v1/insights") for row in seen)
+    # KEY-01 (dms#273): no key means no HTTP call at all, so none is invented.
+    assert seen == [], "KEY-01: an unkeyed compute_query must not call Cortex"
     for row in seen:
         headers = row["headers"] or {}
         assert "Authorization" not in headers

@@ -16,9 +16,11 @@ from urllib.parse import urlparse
 import httpx
 
 INSIGHTS_PATH = "/v1/insights"
-#: Cortex's published demo viewer key (also the DMS settings default). Not a
-#: secret. Generate=true must not send it; KEY-01 (dms#273) removes the default.
+#: Cortex's published demo viewer key. Not a secret, so never a credential:
+#: DMS refuses to send it (KEY-01, dms#273). Kept only as this denylist entry.
 DEMO_VIEWER_KEY = "dms-demo-viewer-key"
+#: KEY-01: named refusal when no usable Cortex key is configured.
+CORTEX_KEY_MISSING = "cortex_key_missing"
 INSIGHTS_FAIL_BEARER_MISSING = "insights_bearer_missing"
 INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT = "insights_bearer_insecure_transport"
 
@@ -82,26 +84,22 @@ def generate_transport_is_safe(base_url: str) -> bool:
     return bool(ip.is_loopback)
 
 
-def generate_bearer_refuse(
-    api_key: str | None,
-    base_url: str,
-    *,
-    missing_none: bool = True,
-) -> str | None:
+def cortex_key_missing(api_key: str | None) -> bool:
+    """True when ``api_key`` is not a usable Cortex key: None, blank, or demo."""
+    if api_key is None:
+        return True
+    key = str(api_key).strip()
+    return not key or key == DEMO_VIEWER_KEY
+
+
+def generate_bearer_refuse(api_key: str | None, base_url: str) -> str | None:
     """Named generate=true refuse, or None if the call may go out.
 
-    Empty / demo-viewer keys never generate. Plain http to a non-loopback
-    host never generates. ``api_key is None`` is missing unless
-    ``missing_none=False`` (compute_insights default used by frozen
-    GEN-RESTORE client tests).
+    Missing (None), empty and demo-viewer keys never generate (KEY-01 removed
+    the None exception). Plain http to a non-loopback host never generates.
     """
-    if api_key is None:
-        if missing_none:
-            return INSIGHTS_FAIL_BEARER_MISSING
-    else:
-        key = str(api_key).strip()
-        if not key or key == DEMO_VIEWER_KEY:
-            return INSIGHTS_FAIL_BEARER_MISSING
+    if cortex_key_missing(api_key):
+        return INSIGHTS_FAIL_BEARER_MISSING
     if not generate_transport_is_safe(base_url):
         return INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT
     return None
@@ -251,6 +249,7 @@ def insights_post(
 
 
 __all__ = [
+    "CORTEX_KEY_MISSING",
     "DEMO_VIEWER_KEY",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
@@ -258,6 +257,7 @@ __all__ = [
     "InsightsError",
     "auth_headers",
     "generate_abstain_payload",
+    "cortex_key_missing",
     "generate_bearer_refuse",
     "generate_transport_is_safe",
     "honest_envelope",

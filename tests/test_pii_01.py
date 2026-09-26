@@ -393,6 +393,7 @@ def test_insights_ontology_body_has_no_seeded_values(tmp_path: Path) -> None:
             "http://127.0.0.1:8010",
             question=LIST_Q,
             ontology=catalog,
+            api_key="fake-key01-test-token",
         )
 
     with patch("cortex_client.compute.httpx.Client", _CaptureHttp):
