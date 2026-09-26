@@ -17,6 +17,7 @@ Does not expand certified exact-match packs. Does not invent provider keys.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import sqlglot
 from cortex_client.compute import (
     INSIGHTS_FAIL_EMPTY,
     PLAN_ORIGIN_GENERATE_SQL,
@@ -38,6 +40,7 @@ from cortex_client.compute import (
     typed_query_plan,
 )
 from cortex_client.qualifiers import unhonored_qualifier_reason
+from sqlglot import exp
 
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
@@ -79,6 +82,14 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     retrieve_space_context,
     slots_for_measure,
+)
+from dms_executor.space_ontology import (
+    REASON_NO_DECLARED_MEASURE,
+    REASON_UNVERIFIED_JOIN,
+    budget_space_block,
+    relation_columns,
+    space_catalog,
+    unverified_join_reason,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
 from dms_executor.sql_grain import (
@@ -624,6 +635,52 @@ def validate_compiled_sql(
 REASON_SOURCE_TRUNCATED = "source_truncated"
 
 
+REASON_UNTYPED_NUMERIC = "untyped_numeric"
+
+
+def untyped_numeric_reason(sql: str, warehouse: Path | None) -> str | None:
+    """``untyped_numeric:<table>.<col>`` when the SQL reads a declared-numeric text column.
+
+    dms#277 F-e: a column the source declared numeric that could not land typed
+    (bare ``money`` with a currency symbol, a value that would not fit) is
+    VARCHAR, and text orders ``'9.50'`` above ``'100.25'``. MAX, ORDER BY, a
+    comparison or a SUM over it would be a confident wrong figure, so any SQL
+    naming it is refused, named, until the column is re-typed at the source.
+    A registry that cannot be read refuses too (fail closed).
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    labels = real_table_labels(sql) or []
+    read: set[str] = set()
+    for label in dict.fromkeys(str(x).strip().lower() for x in labels):
+        schema, _, bare = label.rpartition(".")
+        if schema == "bronze" or (not schema and bare not in DEMO_TABLES):
+            read.add(f"bronze.{bare}")
+    if not read:
+        return None
+    from dms_executor.bronze import untyped_numeric_columns
+
+    try:
+        flagged = untyped_numeric_columns(read, path=Path(warehouse))
+    except Exception:  # noqa: BLE001 - cannot vouch for the columns: refuse
+        return f"{REASON_UNTYPED_NUMERIC}:registry_unreadable"
+    if not flagged:
+        return None
+    try:
+        named = {
+            c.name.lower()
+            for root in sqlglot.parse(sql, read="duckdb")
+            if root is not None
+            for c in root.find_all(exp.Column)
+        }
+    except Exception:  # noqa: BLE001
+        return f"{REASON_UNTYPED_NUMERIC}:unparsed"
+    hits = sorted(f"{t}.{c}" for t, cols in flagged.items() for c in cols if c in named)
+    if not hits:
+        return None
+    return f"{REASON_UNTYPED_NUMERIC}:{','.join(hits)}"
+
+
 def truncated_source_reason(sql: str, warehouse: Path | None) -> str | None:
     """``source_truncated:<t>`` when the SQL reads a source the row cap cut short.
 
@@ -814,7 +871,9 @@ def _submit_validated(
     # SPACE-GEN-01: a source loaded under the row cap is not the whole table.
     # A COUNT / SUM / lookup over it would be stamped L2 on part of the data
     # (BIRD ``trans``: 500,000 of 1,056,320 rows). Named ABSTAIN, before submit.
-    trunc_why = truncated_source_reason(sql, warehouse)
+    trunc_why = truncated_source_reason(sql, warehouse) or untyped_numeric_reason(
+        sql, warehouse
+    )
     if trunc_why:
         return _abstain(
             question,
@@ -1030,7 +1089,11 @@ ONTOLOGY_SOURCE_SPACE = "space"
 
 
 def generation_catalog(
-    ctx: dict[str, Any], allowed: set[str], *, demo: bool
+    ctx: dict[str, Any],
+    allowed: set[str],
+    *,
+    demo: bool,
+    space: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The retrieved context as sent to Cortex, with the declared catalog.
 
@@ -1042,11 +1105,18 @@ def generation_catalog(
     tables = sorted(
         {".".join(p) for p in (relation_name_parts(t) for t in allowed) if p}
     )
-    return {
+    out = {
         **ctx,
         "source": ONTOLOGY_SOURCE_DEMO if demo else ONTOLOGY_SOURCE_SPACE,
         "tables": tables,
     }
+    if space is not None and not demo:
+        # ONTO-DERIVE-01: the Space's stored, re-measured ontology. Objects
+        # with keys, only links that verified, measures only if declared.
+        # Budgeted inside Cortex's caller-ontology limits: an ontology Cortex
+        # rejects would 4xx every ask on the Space. A cut is marked.
+        out.update(budget_space_block(space, used=len(json.dumps(out, default=str))))
+    return out
 
 
 def maybe_generative_ask(
@@ -1186,8 +1256,20 @@ def maybe_generative_ask(
         )
     else:
         ctx = retrieve_space_context(q, warehouse=lake, grantable=allowed)
+    # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
+    # generated SQL must follow. Measured just above, against the lake as it is.
+    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    space_block = (
+        space_catalog(space_onto, declared_violations, allowed)
+        if space_onto is not None
+        else None
+    )
     try:
-        payload = compute(generation_catalog(ctx, allowed, demo=demo_ontology_allowed))
+        payload = compute(
+            generation_catalog(
+                ctx, allowed, demo=demo_ontology_allowed, space=space_block
+            )
+        )
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
         payload = None
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
@@ -1298,6 +1380,30 @@ def maybe_generative_ask(
                 _abstain(
                     q,
                     violation_reason(broken),
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
+            )
+        join_why: str | None = None
+        if space_onto is not None and not why:
+            try:
+                cols = relation_columns(space_onto, lake, sorted(allowed))
+            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+                join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            else:
+                join_why = unverified_join_reason(
+                    sql, space_onto, declared_violations, columns_of=cols
+                )
+        if join_why:
+            # No guessed joins: on a Space with a derived ontology, generated
+            # SQL may join two relations only over a link the source declared
+            # and verify() measured. A confident join on anything else is the
+            # plausible wrong number this layer exists to refuse.
+            return _stamp(
+                _abstain(
+                    q,
+                    join_why,
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
@@ -1442,6 +1548,24 @@ def maybe_generative_ask(
             _abstain(
                 q,
                 gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if (
+        space_onto is not None
+        and plan.measure
+        and plan.measure not in space_onto.measures
+    ):
+        # Measures are never derived for a SQL-source Space (NEEDS_FOUNDER):
+        # a plan that needs one the Space has not declared is a named gap.
+        return _stamp(
+            _abstain(
+                q,
+                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not a measure this "
+                "Space declares",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,
