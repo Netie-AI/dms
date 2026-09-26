@@ -71,6 +71,17 @@ _PHONE_FIND = re.compile(
 )
 _ACCOUNT_FIND = re.compile(r"(?<!\d)(\d{3,4}[-\s]\d{3,4}[-\s]\d{4,8})(?!\d)")
 _DIGIT_RUN = re.compile(r"(?<!\d)(\d{10,16})(?!\d)")
+#: A canonical 8-4-4-4-12 hex UUID. It is an identifier DMS or Cortex minted
+#: (source_id, audit_id, space_id), never personal data. Its digit groups can
+#: look like an account/IC/phone run (``91cc8921-b320-4502-9218-...`` holds
+#: ``320-4502-9218``), and masking that rewrote a source's ``ref_id`` into a
+#: different id, attributing the answer to a source nobody cited. The scanners
+#: below skip whole UUIDs only; the same digits anywhere else are still masked.
+_UUID_FIND = re.compile(
+    r"(?<![0-9A-Za-z-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"(?![0-9A-Za-z-])",
+    re.I,
+)
 
 _KEEP_KEYS = frozenset(
     {
@@ -168,6 +179,8 @@ def _kind_from_one_value(raw: object) -> Kind | None:
         return None
     text = str(raw).strip()
     if not text or is_mask_token(text):
+        return None
+    if _UUID_FIND.fullmatch(text):
         return None
     if _EMAIL_VALUE.fullmatch(text):
         return "email"
@@ -344,6 +357,18 @@ def _apply_map(text: str, pairs: list[tuple[str, str]]) -> str:
 
 
 def _scan_text(text: str, masker: Masker) -> str:
+    """Mask PII-shaped runs in free text. Whole UUIDs pass through unchanged."""
+    parts: list[str] = []
+    pos = 0
+    for m in _UUID_FIND.finditer(text):
+        parts.append(_scan_segment(text[pos : m.start()], masker))
+        parts.append(m.group(0))
+        pos = m.end()
+    parts.append(_scan_segment(text[pos:], masker))
+    return "".join(parts)
+
+
+def _scan_segment(text: str, masker: Masker) -> str:
     out = text
 
     def _sub_email(match: re.Match[str]) -> str:

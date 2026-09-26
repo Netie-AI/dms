@@ -1755,8 +1755,13 @@ def normalize_contributing_sources(
     *,
     space_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Map Cortex doc-RAG / SQL provenance into DMS Source panel cards (RAG-04)."""
-    items = list(raw or [])
+    """Map Cortex doc-RAG / SQL provenance into DMS Source panel cards (RAG-04).
+
+    Exactly the sources Cortex cited, in the order it cited them. A source that
+    names a Space other than the asking one is dropped, never re-stamped with
+    the asking Space's id (see ``foreign_space_sources``).
+    """
+    items = [item for item in list(raw or []) if not _is_foreign(item, space_id)]
     out: list[dict[str, Any]] = []
     for i, item in enumerate(items):
         if isinstance(item, str):
@@ -1811,6 +1816,40 @@ def normalize_contributing_sources(
             src["space_id"] = space_id
         out.append(src)
     return out
+
+
+def _source_space(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    sid = item.get("space_id")
+    return str(sid) if sid not in (None, "") else None
+
+
+def _source_ref(item: Any, i: int) -> str:
+    d = item if isinstance(item, dict) else {}
+    return str(d.get("ref_id") or d.get("source_id") or d.get("id") or f"src_{i}")
+
+
+def _is_foreign(item: Any, space_id: str | None) -> bool:
+    from dms_executor.demo_grants import canonical_space_id
+
+    other = _source_space(item)
+    if not space_id or other is None:
+        return False
+    return canonical_space_id(other) != canonical_space_id(str(space_id))
+
+
+def foreign_space_sources(raw: list[Any] | None, *, space_id: str | None) -> list[str]:
+    """Ref ids of cited sources that name a Space other than ``space_id``.
+
+    An answer built from such a source is Space A's content under Space B's
+    question; DMS must abstain rather than show it (RAG-05).
+    """
+    return [
+        _source_ref(item, i)
+        for i, item in enumerate(list(raw or []))
+        if _is_foreign(item, space_id)
+    ]
 
 
 def _parse_numbers(text: str) -> list[float]:
@@ -1956,6 +1995,7 @@ __all__ = [
     "competing_category_scopes",
     "invented_totals",
     "normalize_badge",
+    "foreign_space_sources",
     "normalize_contributing_sources",
     "orphan_money_figures",
     "unbacked_numbers",

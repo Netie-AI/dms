@@ -69,8 +69,16 @@ from dms_executor.envelope import (
     chart_from_rows,
     normalize_contributing_sources,
 )
-from dms_executor.gen_path_refuse import REASON_SPACE_ID_EMPTY, customer_abstain_text
-from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
+from dms_executor.gen_path_refuse import (
+    REASON_CORTEX_EMPTY_GENERATION,
+    REASON_SPACE_ID_EMPTY,
+    customer_abstain_text,
+)
+from dms_executor.generative_ask import (
+    is_empty_generation,
+    maybe_generative_ask,
+    path_miss_envelope,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -647,6 +655,21 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        # What Insights actually returned, so a contract-ask abstain after an
+        # empty generation can name that gap (CONNECT-ASK-01).
+        insights_seen: list[dict[str, Any] | None] = []
+
+        def _compute(catalog: dict[str, Any]) -> dict[str, Any] | None:
+            got = _insights_compute_seam(
+                self._cortex,
+                question,
+                session_id=session_id,
+                space_id=space_id,
+                ontology=catalog,
+            )
+            insights_seen.append(got)
+            return got
+
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -657,13 +680,7 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(readable),
                 tables=tables,
-                compute=lambda catalog: _insights_compute_seam(
-                    self._cortex,
-                    question,
-                    session_id=session_id,
-                    space_id=space_id,
-                    ontology=catalog,
-                ),
+                compute=_compute,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
@@ -727,6 +744,13 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                abstain_gap=(
+                    REASON_CORTEX_EMPTY_GENERATION
+                    if not demo_space
+                    and insights_seen
+                    and is_empty_generation(insights_seen[-1])
+                    else None
+                ),
             ),
             cascade,
         )
@@ -817,16 +841,24 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    abstain_gap: str | None = None,
 ) -> dict[str, Any]:
-    """Map contract Answer-shaped AskResponse into UI envelope."""
+    """Map contract Answer-shaped AskResponse into UI envelope.
+
+    ``abstain_gap`` names why the ask reached the contract ask at all (e.g.
+    ``cortex_empty_generation``). It is used only if the contract ask abstains,
+    so the customer reads a named gap instead of the engine's generic text.
+    """
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,
         build_answer_envelope,
+        foreign_space_sources,
         normalize_badge,
         normalize_contributing_sources,
         unmapped_badge,
     )
+    from dms_executor.gen_path_refuse import REASON_CROSS_SPACE_SOURCE
 
     badge_raw = resp.badge
     route_l = (resp.route or "").lower()
@@ -851,7 +883,13 @@ def map_ask_response_to_envelope(
     # the engine sends, DMS does not put a confident badge on a refusal.
     refused = route_l in _REFUSAL_ROUTES
     engine_unsure = resp.unsure is True
-    if refused or engine_unsure:
+    # RAG-05: an answer that cites another Space's source is that Space's
+    # content under this Space's question. Dropping the card alone would leave
+    # the quoted text on screen with its provenance erased, so abstain, named.
+    foreign = foreign_space_sources(resp.contributing_sources, space_id=space_id)
+    if foreign:
+        abstain_gap = REASON_CROSS_SPACE_SOURCE
+    if refused or engine_unsure or foreign:
         badge_raw = "abstain"
     elif not badge_raw:
         badge_raw = "abstain" if resp.abstained else "l2_validated"
@@ -914,6 +952,14 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
+    if abstained and abstain_gap and not unknown_badge:
+        # The named gap leads: audit_receipt.unsure.why reads the first line.
+        text = customer_abstain_text(abstain_gap)
+        assumptions.insert(0, f"ABSTAIN reason: {abstain_gap}")
+        if foreign:
+            assumptions.append(f"RAG-05 cross-Space source ref_ids: {','.join(foreign)}")
+        elif resp.answer:
+            assumptions.append(f"Cortex contract ask answer: {str(resp.answer)[:300]}")
     if abstained:
         # SPACE-GEN-01: every ABSTAIN names why. When the engine sent no reason
         # of its own, say at least which path refused and on what route.

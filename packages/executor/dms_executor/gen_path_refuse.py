@@ -165,6 +165,19 @@ def customer_abstain_text(reason: str) -> str:
             "I can't answer that: that Space does not exist, so no tables are "
             f"granted to it and nothing was read (gap: {REASON_SPACE_NOT_FOUND})."
         )
+    if head == REASON_CORTEX_EMPTY_GENERATION:
+        return (
+            "I cannot certify an answer to that question: the engine's query "
+            "generator returned no SQL for this Space, and no governed document or "
+            f"metric answered it either (gap: {REASON_CORTEX_EMPTY_GENERATION}), "
+            "so nothing was executed."
+        )
+    if head == REASON_CROSS_SPACE_SOURCE:
+        return (
+            "I can't show that answer: the engine cited a source that belongs to "
+            "a different Space, so it is not grounded in this Space's data "
+            f"(gap: {REASON_CROSS_SPACE_SOURCE})."
+        )
     if head.startswith("insights_"):
         return (
             "I cannot certify an ontology-grounded query for that question: the "
@@ -178,6 +191,13 @@ def customer_abstain_text(reason: str) -> str:
         f"(gap: {customer_gap_label(gap)}), so I am not executing one."
     )
 
+
+#: CONNECT-ASK-01: Cortex Insights answered a Space ask with no SQL (empty
+#: output or an empty ``query_sql``), no typed plan, no ranking and no refusal
+#: reason, and the contract ask that followed abstained too.
+REASON_CORTEX_EMPTY_GENERATION = "cortex_empty_generation"
+#: RAG-05: Cortex cited a source belonging to a Space other than the asking one.
+REASON_CROSS_SPACE_SOURCE = "cross_space_source"
 
 #: SPACE-GEN-01 round 2: a request whose ``space_id`` is empty names no Space.
 REASON_SPACE_ID_EMPTY = "space_id_empty"
@@ -211,6 +231,8 @@ _SAFE_FIXED_REASONS = frozenset(
         "year 2099 is not a certified period; all-time history is not that year",
         REASON_SPACE_ID_EMPTY,
         REASON_SPACE_NOT_FOUND,
+        REASON_CORTEX_EMPTY_GENERATION,
+        REASON_CROSS_SPACE_SOURCE,
     }
 )
 

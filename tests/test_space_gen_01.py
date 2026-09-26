@@ -602,10 +602,18 @@ def test_generation_miss_fallthrough_abstain_names_its_reason(
 
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
-    assert "Cortex refused" in str(env.get("text") or "")
+    # CONNECT-ASK-01: Insights returned empty output, so the customer reads that
+    # named gap, not the engine's generic "no governed answer" prose (which
+    # stays in assumptions for the audit trail).
+    text = str(env.get("text") or "")
+    assert "gap: cortex_empty_generation" in text, text
+    assert "no governed answer" not in text
+    assert env["audit_receipt"]["unsure"]["why"] == "ABSTAIN reason: cortex_empty_generation"
     assert "ABSTAIN reason: cortex_contract_ask_abstained" in _reasons(env), env.get(
         "assumptions"
     )
+    # The contract ask (doc RAG) still ran; only its abstain is renamed.
+    assert len(rig.cortex.asks) == 1
 
 
 def test_ingested_space_membership_is_the_stewards_only(tmp_path: Path) -> None:

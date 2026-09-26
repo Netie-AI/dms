@@ -26,9 +26,11 @@ from types import SimpleNamespace
 from typing import Any
 
 from cortex_client.compute import (
+    INSIGHTS_FAIL_EMPTY,
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
+    classify_insights_fail,
     insights_fail_reason,
     insights_query_sql,
     insights_was_reached,
@@ -483,6 +485,23 @@ def query_sql_from_payload(payload: dict[str, Any] | None) -> str | None:
         return None
     sql = str(payload.get("query_sql") or "").strip()
     return sql or None
+
+
+def is_empty_generation(payload: dict[str, Any] | None) -> bool:
+    """Insights returned a payload with nothing in it to plan from.
+
+    Empty output (``{}``) or an empty ``query_sql``, with no typed plan, no
+    ranking, no refusal reason and no other named Insights failure. ``None``
+    (a transport miss: compute raised or was never wired) is not this.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if query_sql_from_payload(payload) or cortex_refusal_gap(payload) is not None:
+        return False
+    stamped = insights_fail_reason(payload)
+    if stamped is not None and stamped != INSIGHTS_FAIL_EMPTY:
+        return False
+    return classify_insights_fail(payload) == INSIGHTS_FAIL_EMPTY
 
 
 def parse_compute_plan(payload: dict[str, Any] | None) -> str:
