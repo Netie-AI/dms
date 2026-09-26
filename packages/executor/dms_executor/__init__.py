@@ -45,6 +45,7 @@ from dms_executor.demo_ask import (
     with_grounded_scope,
 )
 from dms_executor.demo_grants import (
+    DEMO_STEWARD_USER_ID,
     DemoSessionStore,
     ingested_bronze_tables,
     is_demo_space,
@@ -117,7 +118,7 @@ logger = logging.getLogger(__name__)
 #: The demo tenant and its single steward. Real multi-tenancy arrives with the
 #: Postgres control plane (P-DMS-2); until then every session is this user.
 DEMO_TENANT_ID = "tenant_demo"
-DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+DEMO_USER_ID = DEMO_STEWARD_USER_ID
 
 
 def default_readable_tables(granted: list[str], *, space_id: str | None) -> list[str]:
@@ -895,6 +896,12 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
+    if abstained:
+        # SPACE-GEN-01: every ABSTAIN names why. When the engine sent no reason
+        # of its own, say at least which path refused and on what route.
+        assumptions.append(
+            f"ABSTAIN reason: cortex_contract_ask_abstained (route={route_l or 'none'})"
+        )
     sources = normalize_contributing_sources(
         resp.contributing_sources, space_id=space_id
     )

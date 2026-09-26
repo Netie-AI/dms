@@ -76,7 +76,11 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
-from dms_executor.sql_grain import grain_mismatch_reason, rows_mismatch_reason
+from dms_executor.sql_grain import (
+    cited_table_labels,
+    grain_mismatch_reason,
+    rows_mismatch_reason,
+)
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -567,8 +571,14 @@ def validate_compiled_sql(
     # that exact qualified relation. Bare names keep the old rule. Nothing is
     # admitted that the grant does not name.
     qualified = {str(g).strip().lower() for g in grantable if "." in str(g)}
+    # The regex labels and the parse tree's, both: the regex alone missed a
+    # comma join and ``FROM/**/t`` (SPACE-GEN-01 P1/P1b). A statement the tree
+    # cannot read is one this check cannot prove granted, so it fails closed.
+    tree_labels = cited_table_labels(sql)
+    if tree_labels is None:
+        return "sql_unanalysable"
     missing: set[str] = set()
-    for label in _sql_cited_labels(sql):
+    for label in dict.fromkeys([*_sql_cited_labels(sql), *tree_labels]):
         bare = _relation_bare(label)
         if not bare:
             continue
@@ -589,6 +599,40 @@ def validate_compiled_sql(
     finally:
         con.close()
     return None
+
+
+REASON_SOURCE_TRUNCATED = "source_truncated"
+
+
+def truncated_source_reason(sql: str, warehouse: Path | None) -> str | None:
+    """``source_truncated:<t>`` when the SQL reads a source the row cap cut short.
+
+    The ingest registry records ``truncated`` per pulled table; this is the
+    only place the generative path reads it. A ``bronze.<t>`` relation is
+    matched by its table name; a bare name only when it is not a demo table,
+    so a demo ``transactions`` is never mistaken for a truncated upload.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    from dms_executor.bronze import lookup_ingest_watermarks
+
+    marks = {str(k).lower(): v for k, v in lookup_ingest_watermarks(path=Path(warehouse)).items()}
+    if not marks:
+        return None
+    labels = [*_sql_cited_labels(sql), *(cited_table_labels(sql) or [])]
+    cut: set[str] = set()
+    for label in dict.fromkeys(str(x).strip().lower() for x in labels):
+        schema, _, bare = label.rpartition(".")
+        if schema and schema != "bronze":
+            continue
+        if not schema and bare in DEMO_TABLES:
+            continue
+        rec = marks.get(f"bronze.{bare}") if schema else marks.get(bare)
+        if rec and rec.get("truncated") is True:
+            cut.add(bare)
+    if not cut:
+        return None
+    return f"{REASON_SOURCE_TRUNCATED}:{','.join(sorted(cut))}"
 
 
 def _as_of() -> str:
@@ -743,6 +787,19 @@ def _submit_validated(
         return _abstain(
             question,
             grain_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
+    # SPACE-GEN-01: a source loaded under the row cap is not the whole table.
+    # A COUNT / SUM / lookup over it would be stamped L2 on part of the data
+    # (BIRD ``trans``: 500,000 of 1,056,320 rows). Named ABSTAIN, before submit.
+    trunc_why = truncated_source_reason(sql, warehouse)
+    if trunc_why:
+        return _abstain(
+            question,
+            trunc_why,
             space_id=space_id,
             session_id=session_id,
             plan_source=plan_source,

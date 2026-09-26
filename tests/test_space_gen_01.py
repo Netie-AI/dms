@@ -15,28 +15,43 @@ call. On a Space holding only SQL-source bronze tables:
 Every case posts ``POST /v1/chat/ask`` and asserts on the customer envelope
 (``assert_envelope_valid``, badge, rendered text, rows). The fake Cortex
 records what DMS sent and executes submits on the test lake, so rows are real.
+
+Round 2 (verifier): the first fake executed submitted SQL without enforcing
+the manifest, which hid that Cortex grants by *bare* table name while DMS
+minted ``bronze.<t>`` keys, so every Space query would be refused live. The
+fake now runs the Cortex ``enforce_manifest`` grant rule (deny any named table
+whose bare lowercased name is not a ``row_predicates`` key, CTEs exempt,
+three-part names refused, each granted table wrapped in its predicate) and the
+real ``ManifestMinter.mint_manifest`` signs the manifest it sees. DMS may not
+import CortexOS, so the rule is mirrored here; the round-2 report ran the same
+manifests through the real enforcer.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
+import sqlglot
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from dms_api.app import create_app
 from dms_api.settings import Settings, get_settings
 from dms_executor import Executor
 from dms_executor.bronze import record_source_pull, write_bronze_rows
+from dms_executor.demo_grants import DemoSessionStore
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text
-from dms_executor.manifest import ManifestMinter, SessionAcl
+from dms_executor.manifest import IntermediateKey, ManifestMinter
 from fastapi.testclient import TestClient
+from sqlglot import exp
 
 ACCOUNT = "bronze.financial_account"
 DISTRICT = "bronze.financial_district"
@@ -54,17 +69,66 @@ COUNT_ORACLE = (
 )
 #: Cites a demo-lake table this Space is not granted.
 UNGRANTED_SQL = "SELECT COUNT(*) AS n FROM transactions"
+#: What Cortex's grant check matches ``FROM bronze.<t>`` against.
+BARE_KEYS = {"financial_account", "financial_district"}
+
+
+class _CortexRefusal(Exception):
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {detail}")
+
+
+def _cortex_enforce(sql: str, row_predicates: dict[str, str]) -> str:
+    """Mirror of Cortex ``enforce_manifest``'s table grant and predicate wrap.
+
+    ``CortexOS/execution/manifest.py``: ``_refuse_cross_catalog``,
+    ``_refuse_ungranted_tables`` (``table.name.lower()`` against the lowercased
+    ``row_predicates`` keys, CTE names exempt) and ``_wrap_with_predicate``.
+    """
+    root = sqlglot.parse_one(sql, read="duckdb")
+    for table in root.find_all(exp.Table):
+        if isinstance(table.this, exp.Identifier) and table.catalog:
+            raise _CortexRefusal("path_not_allowed", "cross-catalog reference")
+    predicates = {k.lower(): v for k, v in row_predicates.items()}
+    ctes = {c.alias.lower() for c in root.find_all(exp.CTE) if c.alias}
+    named = [t for t in root.find_all(exp.Table) if isinstance(t.this, exp.Identifier)]
+    for table in named:
+        name = table.name.lower()
+        if name and name not in ctes and name not in predicates:
+            raise _CortexRefusal(
+                "path_not_allowed", f"table {table.name!r} is not named by this manifest"
+            )
+    for table in list(named):
+        pred = predicates.get(table.name.lower())
+        if pred is None:
+            continue
+        inner = table.copy()
+        inner.set("alias", None)
+        alias = table.args.get("alias") or exp.TableAlias(
+            this=exp.to_identifier(table.name, quoted=table.this.quoted)
+        )
+        table.replace(
+            exp.Subquery(
+                this=exp.select("*").from_(inner).where(pred, dialect="duckdb"), alias=alias
+            )
+        )
+    return root.sql(dialect="duckdb")
 
 
 @dataclass
 class _RecordingCortex:
-    """Insights returns a fixed payload and records the request body fields."""
+    """Insights returns a fixed payload and records the request body fields.
+
+    ``submit`` enforces the manifest the way Cortex does before executing.
+    """
 
     warehouse: Path
     payload: dict[str, Any] = field(default_factory=dict)
     insights: list[dict[str, Any]] = field(default_factory=list)
     manifests: list[Manifest] = field(default_factory=list)
     executed: list[str] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
     asks: list[Any] = field(default_factory=list)
 
     def compute_insights(self, question: str, **kw: Any) -> dict[str, Any]:
@@ -76,15 +140,21 @@ class _RecordingCortex:
 
     def submit(self, req: Any) -> QueryResult:
         self.manifests.append(req.manifest)
+        assert req.manifest.signature, "manifest was not signed"
         plan = getattr(req, "plan", None)
         kind = plan.get("kind") if isinstance(plan, dict) else getattr(plan, "kind", None)
         if kind != "sql":
             return QueryResult(ok=True, status="bound", run_id="run_space_bind")
         sql = str((getattr(req, "body", None) or {}).get("sql") or "")
+        try:
+            enforced = _cortex_enforce(sql, dict(req.manifest.row_predicates or {}))
+        except _CortexRefusal:
+            self.refused.append(sql)
+            raise
         self.executed.append(sql)
         con = duckdb.connect(str(self.warehouse), read_only=True)
         try:
-            cur = con.execute(sql)
+            cur = con.execute(enforced)
             cols = [str(c[0]) for c in (cur.description or [])]
             rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         finally:
@@ -107,37 +177,35 @@ class _RecordingCortex:
 
 @pytest.fixture()
 def minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
+    """The real ``mint_manifest`` (keys, canonical bytes, signature) on a local key."""
     m = ManifestMinter()
-
-    def _mint(acl: SessionAcl) -> Manifest:
-        return Manifest(
-            session_id=acl.session_id,
-            org_id=acl.org_id,
-            space_id=acl.space_id,
-            pool_id=acl.pool_id,
-            issuer_key_id="test-kid",
-            allowed_paths=list(acl.allowed_paths),
-            row_predicates=dict(acl.row_predicates),
-            issued_at="2026-09-26T00:00:00+00:00",
-            expires_at="2026-09-26T01:00:00+00:00",
-            signature="dGVzdHNpZw",
-        )
-
-    monkeypatch.setattr(m, "mint_manifest", _mint)
-    monkeypatch.setattr(m, "fetch_intermediate", lambda: None)
+    key = IntermediateKey(
+        kid="test-kid",
+        private_key=Ed25519PrivateKey.generate(),
+        not_after=datetime.now(UTC) + timedelta(hours=1),
+    )
+    monkeypatch.setattr(m, "_ensure_key", lambda: key)
+    monkeypatch.setattr(m, "fetch_intermediate", lambda: key)
     monkeypatch.setattr(m, "close", lambda: None)
-    monkeypatch.setattr(m, "invalidate", lambda *_a, **_k: None)
     return m
 
 
-def _land(lake: Path, table: str, columns: list[str], rows: list[list[Any]], space: str) -> None:
+def _land(
+    lake: Path,
+    table: str,
+    columns: list[str],
+    rows: list[list[Any]],
+    space: str,
+    *,
+    truncated: bool = False,
+) -> None:
     landed = write_bronze_rows(table=table, columns=columns, rows=rows, path=lake)
     record_source_pull(
         table_name=landed.split(".", 1)[-1],
         source=f"postgresql://bird/financial#{table}",
         ingest_id=f"ing_{table}",
         row_count=len(rows),
-        truncated=False,
+        truncated=truncated,
         space_id=space,
         path=lake,
     )
@@ -256,9 +324,12 @@ def test_correct_sql_on_space_tables_is_l2_with_oracle_rows(
     assert rig.cortex.asks == []
 
     # The grant names the Space's tables and nothing of the demo lake: the
-    # "nothing grants Space" refusal came from an empty grant here.
+    # "nothing grants Space" refusal came from an empty grant here. Keys are
+    # the bare names Cortex resolves ``FROM bronze.<t>`` to; the SQL passed
+    # the Cortex grant rule, so none was refused.
     sql_manifest = rig.cortex.manifests[-1]
-    assert set(sql_manifest.row_predicates) == {ACCOUNT, DISTRICT}
+    assert set(sql_manifest.row_predicates) == BARE_KEYS
+    assert rig.cortex.refused == []
 
 
 def test_table_selection_narrows_generation_instead_of_skipping_it(
@@ -272,7 +343,8 @@ def test_table_selection_narrows_generation_instead_of_skipping_it(
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
     assert env["rows"] == _oracle(rig.lake, sql) == [{"account_count": 4}]
     assert "account_count=4" in str(env.get("text") or "")
-    assert set(rig.cortex.manifests[-1].row_predicates) == {ACCOUNT}
+    assert set(rig.cortex.manifests[-1].row_predicates) == {"financial_account"}
+    assert rig.cortex.refused == []
 
 
 def test_selection_does_not_widen_generated_sql(tmp_path: Path, minter: ManifestMinter) -> None:
@@ -334,7 +406,7 @@ def test_generation_miss_falls_through_under_the_space_grant_only(
     assert len(rig.cortex.asks) == 1
     # The bound manifest names this Space's tables: never empty ("nothing
     # grants Space"), never the demo lake.
-    assert set(rig.cortex.manifests[-1].row_predicates) == {ACCOUNT, DISTRICT}
+    assert set(rig.cortex.manifests[-1].row_predicates) == BARE_KEYS
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert env["rows"] == []
@@ -361,14 +433,129 @@ def test_ungrantable_selection_is_refused_before_generation(
 
 
 def test_every_abstain_text_names_its_reason() -> None:
-    for reason in (
-        "query_sql was empty",
-        "compute abstained (unsure)",
-        "submit_failed",
-        "validate:explain:ParserException",
-        "",
+    for reason, shown in (
+        ("query_sql was empty", "query_sql was empty"),
+        ("compute abstained (unsure)", "compute abstained (unsure)"),
+        ("submit_failed", "submit_failed"),
+        # Named, without the engine exception class or the guard's code.
+        ("validate:explain:ParserException", "validate:sql_does_not_run"),
+        ("validate:hostile_sql:path_not_allowed", "validate:unsafe_sql"),
+        ("source_truncated:trans", "source_truncated:trans"),
+        ("", "abstain_reason_missing"),
     ):
         text = customer_abstain_text(reason)
-        assert "gap:" in text, (reason, text)
-        if reason:
-            assert reason in text
+        assert f"gap: {shown}" in text, (reason, text)
+        assert "ParserException" not in text
+        assert "path_not_allowed" not in text
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Comma join: the FROM/JOIN regex saw only the first relation.
+        "SELECT COUNT(*) AS n FROM bronze.financial_account a, transactions t",
+        # Block comment where the regex wanted whitespace.
+        "SELECT COUNT(*) AS n FROM/**/transactions",
+        # Bare demo name while only bronze.transactions-like names are granted.
+        "SELECT COUNT(*) AS n FROM bronze.financial_account "
+        "WHERE account_id IN (SELECT 1 FROM\ninventory)",
+    ],
+)
+def test_ungranted_table_the_regex_missed_is_named_abstain(
+    tmp_path: Path, minter: ManifestMinter, sql: str
+) -> None:
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    env = _ask(rig, "How many accounts are there?")
+
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"))
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["values"] == []
+    text = str(env.get("text") or "")
+    assert "gap: validate:ungranted:" in text, text
+    assert "validate:ungranted:" in _reasons(env)
+    # Refused by DMS before submit, not left to the engine.
+    assert rig.cortex.executed == []
+    assert rig.cortex.refused == []
+
+
+def test_truncated_source_is_named_abstain_not_l2(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    sql = "SELECT COUNT(*) AS trans_count FROM bronze.trans"
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    # The row cap cut the source short: 5 rows landed of many more.
+    _land(
+        rig.lake,
+        "bronze.trans",
+        ["trans_id", "account_id"],
+        [[str(i), "1"] for i in range(5)],
+        rig.space_id,
+        truncated=True,
+    )
+    env = _ask(rig, "How many transactions are there in trans?")
+
+    assert rig.cortex.insights, "generation was never reached"
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"), env.get("rows"))
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["values"] == []
+    text = str(env.get("text") or "")
+    assert "gap: source_truncated:trans" in text, text
+    assert "partly loaded" in text
+    assert "trans_count=5" not in text
+    assert "source_truncated:trans" in _reasons(env)
+    assert rig.cortex.executed == []
+
+
+def test_untruncated_source_still_answers(tmp_path: Path, minter: ManifestMinter) -> None:
+    # The truncation gate reads the registry flag; a complete pull is not caught.
+    sql = "SELECT COUNT(*) AS account_count FROM bronze.financial_account"
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    env = _ask(rig, "How many accounts are there?")
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"))
+    assert env["rows"] == [{"account_count": 4}]
+
+
+def test_hostile_sql_abstain_text_does_not_name_the_guard(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    sql = "SELECT * FROM read_csv_auto('/etc/passwd')"
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    env = _ask(rig, "How many accounts are there?")
+
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    text = str(env.get("text") or "")
+    assert "gap: validate:unsafe_sql" in text, text
+    assert "path_not_allowed" not in text
+    # The audit trail keeps the full reason.
+    assert "validate:hostile_sql:" in _reasons(env)
+    assert rig.cortex.executed == []
+
+
+def test_generation_miss_fallthrough_abstain_names_its_reason(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    rig = _rig(tmp_path, minter, {})
+    env = _ask(rig, "How many accounts are there?")
+
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert "Cortex refused" in str(env.get("text") or "")
+    assert "ABSTAIN reason: cortex_contract_ask_abstained" in _reasons(env), env.get(
+        "assumptions"
+    )
+
+
+def test_ingested_space_membership_is_the_stewards_only(tmp_path: Path) -> None:
+    lake = tmp_path / "member.duckdb"
+    ensure_demo_warehouse(lake)
+    space = "12345678-1234-4234-8234-123456789abc"
+    _land(lake, ACCOUNT, ["account_id"], [["1"]], space)
+    store = DemoSessionStore(warehouse=lake)
+    assert store.is_space_member(space, store.steward_user_id) is True
+    assert store.is_space_member(space, "99999999-9999-9999-9999-999999999999") is False
+    # Nothing ingested: not a member, steward or not.
+    other = "87654321-4321-4321-8321-cba987654321"
+    assert store.is_space_member(other, store.steward_user_id) is False

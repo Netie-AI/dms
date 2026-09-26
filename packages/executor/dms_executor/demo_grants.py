@@ -105,6 +105,10 @@ def is_demo_space(space_id: str | None) -> bool:
     return space_id is None or canonical_space_id(space_id) in DEMO_SPACE_GRANTS
 
 
+#: Same id as ``dms_executor.DEMO_USER_ID`` and the control-plane seed user.
+DEMO_STEWARD_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
 def ingested_bronze_tables(
     path: Path | None = None,
     *,
@@ -141,6 +145,9 @@ class DemoSessionStore:
     #: Executor warehouse. ``list_space_source_ids`` must not fall back to the
     #: process default when the Executor was pointed at another file.
     warehouse: Path | None = None
+    #: The one demo principal (DR-0004 Option A). Membership of a Space it
+    #: ingested into is granted to it alone; P-DMS-2 replaces this with rows.
+    steward_user_id: str = DEMO_STEWARD_USER_ID
 
     def _uploaded(self) -> tuple[str, ...]:
         return tuple(self.uploads())
@@ -157,9 +164,13 @@ class DemoSessionStore:
         # "nothing grants Space" (44 of 500 BIRD asks). An id with no seed and
         # nothing ingested into it is still not a Space you are a member of,
         # and membership grants only the sources tagged to it (below).
+        # Only the steward: that membership is the steward's, never "anyone who
+        # can name a Space that has data in it" (DR-0004 Option A).
         sid = canonical_space_id(space_id)
         if sid in DEMO_SPACE_GRANTS:
             return True
+        if str(user_id) != self.steward_user_id:
+            return False
         return bool(ingested_bronze_tables(self.warehouse, space_id=sid))
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:

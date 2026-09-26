@@ -47,6 +47,7 @@ from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any
 
+import sqlglot
 from sqlglot import exp, parse_one
 
 from dms_executor.semantic_retrieve import load_ontology_spine
@@ -599,6 +600,33 @@ def _outer_limit(sql: str) -> int | None:
     if isinstance(node, exp.Literal) and node.is_int:
         return int(node.this)
     return None
+
+
+def cited_table_labels(sql: str) -> list[str] | None:
+    """Every relation the statement names, from the parse tree; None if unparseable.
+
+    SPACE-GEN-01: the FROM/JOIN regex in ``envelope._sql_cited_labels`` misses a
+    comma join (``FROM a, transactions``) and ``FROM/**/transactions``, so the
+    DMS grant check never saw those tables. The tree sees every ``exp.Table``
+    written as a name, wherever it sits. Labels keep their qualifier
+    (``bronze.financial_account``) so an exact ``schema.table`` grant can match.
+    Table functions (``read_csv_auto(...)``) are the hostile-SQL gate's job.
+    """
+    try:
+        roots = sqlglot.parse(sql, read=_DIALECT)
+    except Exception:  # noqa: BLE001 - any parse failure is "cannot analyse"
+        return None
+    labels: list[str] = []
+    for root in roots:
+        if root is None:
+            continue
+        for table in root.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                continue
+            parts = [p for p in (table.catalog, table.db, table.name) if p]
+            if parts:
+                labels.append(".".join(parts))
+    return list(dict.fromkeys(labels))
 
 
 def rows_mismatch_reason(question: str, sql: str, rows: Sequence[Any]) -> str | None:

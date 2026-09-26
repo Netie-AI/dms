@@ -63,6 +63,13 @@ def customer_abstain_text(reason: str) -> str:
             return body
     if gap.split(":", 1)[0].strip() in GRAIN_REASONS:
         return grain_abstain_text(gap)
+    if gap.startswith("source_truncated:"):
+        tables = gap.split(":", 1)[1].strip() or "a source"
+        return (
+            f"I cannot certify that answer: {tables} was only partly loaded (the "
+            "ingest row cap cut it short), so a figure over it would describe part "
+            f"of the data as all of it (gap: {gap}). I am not executing it."
+        )
     if not gap:
         # SPACE-GEN-01: an ABSTAIN always names why. An empty reason is itself
         # the defect, so say so rather than render the unnamed sentence.
@@ -71,8 +78,26 @@ def customer_abstain_text(reason: str) -> str:
     # The unnamed "cannot certify" text hid 110 of 500 BIRD refusals' causes.
     return (
         "I cannot certify an ontology-grounded query for that question "
-        f"(gap: {gap}), so I am not executing one."
+        f"(gap: {customer_gap_label(gap)}), so I am not executing one."
     )
+
+
+def customer_gap_label(reason: str) -> str:
+    """The reason as a customer reads it: named, without guard internals.
+
+    The full reason stays in the envelope ``assumptions`` (``GEN-01: ...``) for
+    the audit trail. The rendered text must not tell a caller which security
+    guard tripped (``hostile_sql:path_not_allowed``) or which engine exception
+    class a probe produced (``explain:BinderException``).
+    """
+    gap = str(reason or "").strip()
+    head, _, rest = gap.partition(":")
+    inner = rest if head == "validate" else gap
+    if inner.startswith("hostile_sql"):
+        return f"{head}:unsafe_sql" if head == "validate" else "unsafe_sql"
+    if inner.startswith("explain:"):
+        return f"{head}:sql_does_not_run" if head == "validate" else "sql_does_not_run"
+    return gap
 
 
 def ranking_missing_metric_gap(
@@ -136,6 +161,7 @@ def ranking_missing_metric_gap(
 __all__ = [
     "GAP_REASONS",
     "customer_abstain_text",
+    "customer_gap_label",
     "gap_reason_name",
     "ranking_missing_metric_gap",
 ]

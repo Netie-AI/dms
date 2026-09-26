@@ -186,7 +186,7 @@ class ManifestMinter:
             pool_id=acl.pool_id,
             issued_at=issued.isoformat(),
             issuer_key_id=key.kid,
-            row_predicates=dict(acl.row_predicates),
+            row_predicates=cortex_row_predicates(acl.row_predicates),
         )
         payload = canonical_manifest_bytes(unsigned)
         sig = key.private_key.sign(payload)
@@ -194,6 +194,42 @@ class ManifestMinter:
         manifest = unsigned.model_copy(update={"signature": signature})
         self._cache[acl.session_id] = _CacheEntry(manifest=manifest, expires_at=expires)
         return manifest
+
+
+def cortex_row_predicates(predicates: dict[str, str]) -> dict[str, str]:
+    """Key ``row_predicates`` the way the Cortex enforcer resolves a table.
+
+    Cortex ``enforce_manifest`` grants and wraps by the *bare* table name
+    (``exp.Table.name``, lowercased): ``FROM bronze.financial_account`` is
+    checked against the key ``financial_account``. DMS grants a SQL-source or
+    uploaded table as ``bronze.<t>``, so a manifest keyed ``bronze.<t>`` made
+    Cortex refuse every query over it (``table ... is not named by this
+    manifest``). The exact ``schema.table`` stays DMS's own check
+    (``validate_compiled_sql``); the wire carries the name Cortex can match.
+
+    Two grants that collapse to one bare name keep a single key only when their
+    predicates agree. Different predicates are refused: Cortex cannot tell
+    the two relations apart, so either predicate could filter the other table.
+    """
+    out: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for table, pred in predicates.items():
+        key = str(table).rsplit(".", 1)[-1].strip().strip('"')
+        if not key:
+            continue
+        folded = key.lower()  # Cortex lowercases before matching
+        if folded in seen:
+            prior = out[seen[folded]]
+            if prior.strip() != str(pred).strip():
+                logger.error("%s manifest_key_collision table=%s", _SECURITY, key)
+                raise SecurityEvent(
+                    "manifest_key_collision",
+                    f"two granted relations named {key!r} carry different row predicates",
+                )
+            continue
+        seen[folded] = key
+        out[key] = pred
+    return out
 
 
 def _assert_minting_invariant(acl: SessionAcl) -> None:
