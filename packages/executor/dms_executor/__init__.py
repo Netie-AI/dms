@@ -31,6 +31,7 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
+from dms_executor.chart_recommend import recommend_chart
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -51,13 +52,18 @@ from dms_executor.demo_pack import (
     maybe_uncertified_refuse_ask,
 )
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.engine_clock import EngineClock
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
     normalize_contributing_sources,
 )
-from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
+from dms_executor.generative_ask import (
+    maybe_generative_ask,
+    path_miss_envelope,
+    with_served_attribution,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -144,6 +150,14 @@ def _insights_compute_seam(
         )
     except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
         return None
+
+
+def _seen(
+    seen: list[dict[str, Any] | None], payload: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Record the Insights payload for SERVED-ATTR-01, then pass it on."""
+    seen.append(payload)
+    return payload
 
 
 class Executor:
@@ -426,6 +440,35 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
     ) -> dict[str, Any]:
+        """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
+
+        Every ask envelope carries ``served_attribution``. When the Insights
+        generate seam ran, its setup fields reach the envelope on every path,
+        including the contract-ask fallback after a generative miss.
+        """
+        seen: list[dict[str, Any] | None] = []
+        env = self._live_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            tables=tables,
+            ask_path=ask_path,
+            seen=seen,
+        )
+        payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
+        stamped = with_served_attribution(env, payload)
+        return stamped if stamped is not None else env
+
+    def _live_ask(
+        self,
+        question: str,
+        *,
+        space_id: str | None = None,
+        session_id: str | None = None,
+        tables: list[str] | None = None,
+        ask_path: str | None = None,
+        seen: list[dict[str, Any] | None],
+    ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
         ``tables`` narrows the manifest to the files the user grounded the
@@ -482,6 +525,13 @@ class Executor:
             run_cascade,
         )
 
+        # ORACLE-FIX-02 (dms#308): a clock-reading answer SQL carries the
+        # engine's own date, read through this same submit before and after.
+        clock = EngineClock(
+            lambda sql: self._submit_verified_sql(
+                sql, space_id=space_id, session_id=session_id, tables=tables
+            )
+        )
         key = turn_key(session_id, space_id)
         if allow_follow:
             follow = maybe_followup(
@@ -504,9 +554,7 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(self.grantable_tables(space_id=space_id)),
                 tables=tables,
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
+                submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(
                     asset_sql=str(payload.get("sql") or ""),
                     run_id=str(payload.get("run_id") or ""),
@@ -515,6 +563,7 @@ class Executor:
                 ),
             )
             if verified_env is not None:
+                clock.apply(verified_env)
                 self._store_turn(session_id, space_id, verified_env)
                 return verified_env
 
@@ -524,9 +573,7 @@ class Executor:
                 session_id=session_id,
                 grantable=set(self.grantable_tables(space_id=space_id)),
                 tables=tables,
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
+                submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(
                     asset_sql=str(payload.get("sql") or ""),
                     run_id=str(payload.get("run_id") or ""),
@@ -536,6 +583,7 @@ class Executor:
                 ),
             )
             if pack_env is not None:
+                clock.apply(pack_env)
                 self._store_turn(session_id, space_id, pack_env)
                 return pack_env
 
@@ -611,16 +659,17 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(readable),
                 tables=tables,
-                compute=lambda catalog: _insights_compute_seam(
-                    self._cortex,
-                    question,
-                    session_id=session_id,
-                    space_id=space_id,
-                    ontology=catalog,
+                compute=lambda catalog: _seen(
+                    seen,
+                    _insights_compute_seam(
+                        self._cortex,
+                        question,
+                        session_id=session_id,
+                        space_id=space_id,
+                        ontology=catalog,
+                    ),
                 ),
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
+                submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(
                     asset_sql=str(payload.get("sql") or ""),
                     run_id=str(payload.get("run_id") or ""),
@@ -631,7 +680,7 @@ class Executor:
                 bind_on_miss=False,
             )
             if gen_env is not None:
-                env = attach_cascade(gen_env, cascade)
+                env = attach_cascade(clock.apply(gen_env) or gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
         if not allow_cortex:
@@ -859,7 +908,19 @@ def map_ask_response_to_envelope(
     rows = list(resp.rows or [])
     chart = None
     if rows and not abstained:
-        chart = _chart_from_cortex_spec(resp.chart_spec) or _chart_from_rows(rows)
+        # DMS-VIZ-01 — the rule-based recommender reads the rows the customer
+        # sees; the engine's chart_spec only names the title. The Cortex spec
+        # is the fallback when the recommender has nothing (no rows).
+        spec_title = (
+            resp.chart_spec.get("title") if isinstance(resp.chart_spec, dict) else None
+        )
+        chart = recommend_chart(
+            rows,
+            question or "",
+            title_hint=str(spec_title) if spec_title else None,
+        )
+        if chart is None:
+            chart = _chart_from_cortex_spec(resp.chart_spec)
     assumptions: list[str] = []
     if resp.assumptions:
         if isinstance(resp.assumptions, str):
@@ -944,6 +1005,7 @@ __all__ = [
     "normalize_contributing_sources",
     "build_library_tree",
     "classify_bytes",
+    "recommend_chart",
     "classify_grid",
     "ingest_batch",
     "DEFAULT_MAX_ROWS",

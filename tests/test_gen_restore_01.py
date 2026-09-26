@@ -1,7 +1,8 @@
 """GEN-RESTORE-01 (dms#276): Insights-only compute seam, fail closed, WRONG=0.
 
 Does not stamp COMPLETE. Does not invent a live #231 score. Platform owns
-the Studio re-prove. Timeout bound is INSIGHTS_ASK_TIMEOUT_SECONDS (8s).
+the Studio re-prove. Timeout bound is INSIGHTS_ASK_TIMEOUT_SECONDS (60s default,
+``DMS_INSIGHTS_ASK_TIMEOUT_SECONDS`` override); see test_insights_timeout_fallback.py.
 """
 
 from __future__ import annotations
@@ -240,8 +241,10 @@ class _FakeHttp:
         return self._resp(body, 200)
 
 
-def test_insights_timeout_bound_is_eight_seconds() -> None:
-    assert INSIGHTS_ASK_TIMEOUT_SECONDS == 8.0
+def test_insights_timeout_bound_default_clears_a_generate() -> None:
+    # 8s was shorter than a measured Cortex generate (13-53s): 13/52 asks
+    # died as insights_timeout on the live prove.
+    assert INSIGHTS_ASK_TIMEOUT_SECONDS == 60.0
 
 
 def test_compute_insights_calls_insights_never_dms_query() -> None:
@@ -254,7 +257,9 @@ def test_compute_insights_calls_insights_never_dms_query() -> None:
         ontology={"phase": "ontology", "ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     urls = [str(p["url"]) for p in posts]
     assert any(u.endswith(INSIGHTS_PATH) for u in urls), urls
     assert all(COMPUTE_PATH not in u for u in urls), urls
@@ -268,7 +273,8 @@ def test_compute_insights_calls_insights_never_dms_query() -> None:
     assert ":5000" not in str(gen)
     assert "sk-" not in str(gen)
     headers = posts[0]["headers"] or {}
-    assert "Authorization" not in headers
+    # KEY-01: the configured fake key is forwarded exactly; nothing is invented.
+    assert headers["Authorization"] == "Bearer " + "fake-key01-test-token"
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_EMPTY
 
@@ -283,7 +289,7 @@ def test_compute_query_still_posts_dms_query() -> None:
         ontology={"ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        compute_query("http://127.0.0.1:8010", question="hello")
+        compute_query("http://127.0.0.1:8010", question="hello", api_key="fake-key01-test-token")
     urls = [str(p["url"]) for p in posts]
     assert any(u.endswith(COMPUTE_PATH) for u in urls), urls
 
@@ -369,7 +375,9 @@ def test_http_401_is_unauthorized_never_dms_query() -> None:
         generate_status=401,
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_UNAUTHORIZED
     assert all(COMPUTE_PATH not in str(p["url"]) for p in posts)
@@ -380,7 +388,9 @@ def test_http_timeout_is_insights_timeout_never_dms_query() -> None:
     timeouts: list[Any] = []
     fake = _FakeHttp(posts=posts, timeouts=timeouts, timeout=True)
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_TIMEOUT
     assert timeouts == [INSIGHTS_ASK_TIMEOUT_SECONDS]
@@ -469,13 +479,14 @@ def test_answered_envelope_attaches_chart_from_fitting_rows(
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
     assert env.get("chart") == chart_from_rows(rows)
-    assert env["chart"]["kind"] == "hbar"
-    assert env["chart"]["x"] == "product_category"
+    # DMS-VIZ-01: one row x one measure (+ a label) -> big number over the cell.
+    assert env["chart"]["kind"] == "bignum"
     assert env["chart"]["y"] == "revenue"
+    assert env["chart"]["value"] == 100.0
     assert_envelope_valid(env)
 
 
-def test_answered_envelope_has_no_chart_when_rows_do_not_fit(
+def test_answered_envelope_has_table_chart_when_rows_do_not_fit(
     warehouse: Path, onto: Ontology
 ) -> None:
     rows = [{"sku": "SKU-1"}]
@@ -492,8 +503,9 @@ def test_answered_envelope_has_no_chart_when_rows_do_not_fit(
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
-    assert env.get("chart") is None
-    assert chart_from_rows(rows) is None
+    # DMS-VIZ-01: no measure -> ``table`` (the rows table is the view), no spec.
+    assert env.get("chart") == {"kind": "table", "title": "Result"}
+    assert chart_from_rows(rows) == {"kind": "table", "title": "Result"}
     assert_envelope_valid(env)
 
 
@@ -715,7 +727,7 @@ def test_live_ask_uses_compute_insights_never_compute_query(
     assert cortex.asks == []
 
 
-def test_cortex_client_compute_insights_uses_eight_second_timeout() -> None:
+def test_cortex_client_compute_insights_uses_insights_bound_timeout() -> None:
     posts: list[dict[str, Any]] = []
     timeouts: list[Any] = []
     fake = _FakeHttp(
@@ -725,7 +737,9 @@ def test_cortex_client_compute_insights_uses_eight_second_timeout() -> None:
         ontology={"ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        client = CortexClient("http://127.0.0.1:8010", timeout=120.0)
+        client = CortexClient(
+            "http://127.0.0.1:8010", timeout=120.0, api_key="fake-key01-test-token"
+        )
         client.compute_insights("how many skus?")
     assert timeouts == [INSIGHTS_ASK_TIMEOUT_SECONDS]
     assert all(COMPUTE_PATH not in str(p["url"]) for p in posts)

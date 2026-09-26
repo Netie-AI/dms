@@ -5,6 +5,8 @@ must call ``build_answer_envelope``. AST invariants fail the build otherwise.
 
 E1–E9 live in ``assert_envelope_valid``. E13 (ONTOLOGY-AUDIT-01) stamps
 include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
+E14 (DMS-VIZ-01) — no chart on an abstention; a chart encodes only columns of
+``rows``, never inlines data, and a ``bignum`` value is a cited row cell.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from typing import Any
 from dms_core.pii import fail_closed_mask_payload
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
+from dms_executor.chart_recommend import chart_fields, recommend_chart
 from dms_executor.demo_warehouse import DEMO_TABLES
 
 ALLOWED_BADGES = frozenset(
@@ -1314,27 +1317,18 @@ def _ensure_values(
     return [{"id": "v_count", "value": float(len(rows)), "label": "row_count"}]
 
 
-def chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Fallback when Cortex omits chart_spec: category + measure → hbar.
+def chart_from_rows(
+    rows: list[dict[str, Any]],
+    question: str | None = "",
+    title_hint: str | None = None,
+) -> dict[str, Any] | None:
+    """Chart for an answer's rows — delegates to ``recommend_chart`` (DMS-VIZ-01).
 
-    Same builder the Cortex contract path uses. None when rows do not fit
-    (no string category plus numeric measure). Do not invent a shell.
+    Kept under this name so every caller (the contract map, the generative
+    path) gets the rule-based recommender. None only when there are no rows;
+    rows that fit no chart come back as ``{"kind": "table"}``.
     """
-    if not rows:
-        return None
-    keys = list(rows[0].keys())
-    num_key = next(
-        (
-            k
-            for k in keys
-            if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
-        ),
-        None,
-    )
-    cat_key = next((k for k in keys if k != num_key and isinstance(rows[0].get(k), str)), None)
-    if num_key and cat_key:
-        return {"kind": "hbar", "x": cat_key, "y": num_key, "title": "Result"}
-    return None
+    return recommend_chart(rows, question or "", title_hint=title_hint)
 
 
 def build_answer_envelope(
@@ -1663,7 +1657,8 @@ def build_answer_envelope(
                 "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
 
-    if abstained:
+    if abstained or badge_out == "ABSTAIN":
+        # E14 — never a chart (and never a green tile) over an abstention.
         values_out = []
         sources = []
         drillthrough_token = None
@@ -1812,8 +1807,22 @@ def _parse_numbers(text: str) -> list[float]:
     return found
 
 
+def _is_chart_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
 def assert_envelope_valid(envelope: dict[str, Any]) -> None:
-    """E1–E9 property assertions. Raises AssertionError on violation."""
+    """Envelope property assertions. Raises AssertionError on violation.
+
+    E1 abstained <=> badge ABSTAIN. E2 abstain carries no values / sources /
+    token. E3 an answer carries values, sql_used and audit_id. E4 no orphan
+    money figure in prose. E5 badge vocabulary. E6 demo fallback is bannered.
+    E7 sources need a drillthrough token. E8 as_of present and not future.
+    E9 no executed query, no computed figure. E13 audit receipt.
+    E14 (DMS-VIZ-01) abstained => chart is None; a chart's x / y /
+    vega_lite encoding fields are keys of rows[0]; a bignum value is a cell of
+    rows and an entry of values[]; vega_lite never inlines data.values.
+    """
     badge = envelope.get("badge")
     abstained = bool(envelope.get("abstained"))
     values = envelope.get("values") or []
@@ -1918,6 +1927,50 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
                 f"E13: invented totals {extras} not in include rows "
                 "(silent pad forbidden)"
             )
+
+    # E14 (DMS-VIZ-01) — a chart is drawn from the rows, never beside them.
+    chart = envelope.get("chart")
+    if abstained:
+        assert chart is None, "E14: abstain must not carry a chart"
+    if chart is not None:
+        assert isinstance(chart, dict), "E14: chart must be an object"
+        chart_rows = envelope.get("rows") or []
+        row_keys = (
+            set(chart_rows[0].keys())
+            if chart_rows and isinstance(chart_rows[0], dict)
+            else set()
+        )
+        missing = [f for f in chart_fields(chart) if f not in row_keys]
+        assert not missing, (
+            f"E14: chart encodes field(s) {missing} not in rows[0] keys {sorted(row_keys)}"
+        )
+        vl = chart.get("vega_lite")
+        if vl is not None:
+            assert isinstance(vl, dict), "E14: vega_lite must be an object"
+            data = vl.get("data")
+            assert not (isinstance(data, dict) and "values" in data), (
+                "E14: vega_lite must reference the rows dataset, not inline data.values"
+            )
+        if chart.get("kind") == "bignum":
+            raw_bv = chart.get("value")
+            assert isinstance(raw_bv, (int, float)) and not isinstance(raw_bv, bool), (
+                f"E14: bignum value {raw_bv!r} is not a number"
+            )
+            bv = float(raw_bv)
+            cells = [
+                float(v)
+                for r in chart_rows
+                if isinstance(r, dict)
+                for v in r.values()
+                if _is_chart_num(v)
+            ]
+            assert any(_close(bv, c) for c in cells), (
+                f"E14: bignum value {bv!r} is not a cell of rows"
+            )
+            assert any(
+                _close(bv, n)
+                for n in _value_nums(values if isinstance(values, list) else [])
+            ), f"E14: bignum value {bv!r} is not in values[]"
 
     # E8
     assert isinstance(as_of, str) and as_of.strip(), "E8: as_of required"

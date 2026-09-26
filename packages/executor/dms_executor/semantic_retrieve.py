@@ -35,6 +35,18 @@ _TIME = re.compile(
 )
 _NEEDS_DIM = re.compile(r"\b(by|per|each|grouped|across)\b", re.I)
 _ENTITY_PREFIX = re.compile(r"^\s*(which|list|rank)\b", re.I)
+# "which X ..." / "list X ..." name a set of entities, not figures. Rank keeps
+# its measure: "rank suppliers by score" wants the score it ranked on.
+_LIST_PREFIX = re.compile(r"^\s*(which|list)\b", re.I)
+# Measures that ARE the qualifier's quantity: "which SKUs are below reorder"
+# is answered by the SKU and its below-reorder on-hand kg, so the measure stays
+# projected beside the key (qualifying_only still drops zero rows).
+_LIST_EVIDENCE_MEASURES = frozenset({"below_reorder_kg"})
+# Measure inputs are never an answer grain: grouping "warehouse capacity
+# utilisation" by capacity_kg is a different question.
+_MEASURE_INPUT_COL = re.compile(
+    r"(amount|qty|quantity|cost|kg|myr|score|load|capacity|pct|percent)$", re.I
+)
 _SPINE_PATH = Path(__file__).with_name("ontology_spine.yaml")
 _WH_A = re.compile(r"\b(warehouse a|wh-a)\b", re.I)
 _COLD = re.compile(r"cold[\s-]?storage", re.I)
@@ -462,7 +474,9 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
         context, "location", "cctv_camera_id"
     ):
         return None
-    if "reorder" in qn and "below_reorder_lots" not in (context.get("measures") or {}):
+    if "reorder" in qn and not (
+        {"below_reorder_lots", "below_reorder_kg"} & set(context.get("measures") or {})
+    ):
         return None
     return filters
 
@@ -576,6 +590,8 @@ def _locked_measure(question: str) -> str | None:
     if "cctv" in qn or "camera" in qn:
         return "utilisation_pct"
     if "reorder" in qn:
+        if _LIST_PREFIX.search(question or "") or "low stock" in qn:
+            return "below_reorder_kg"
         return "below_reorder_lots"
     if re.search(r"\brank(?:ing)?\b", qn) and "supplier" in qn:
         return "supplier_rank_score"
@@ -591,7 +607,7 @@ def _locked_measure(question: str) -> str | None:
     ):
         return "stock_value_myr"
     if "total spend" in qn or "spend by" in qn:
-        return "stock_value_myr"
+        return "spend_myr"
     if "revenue" in qn or "selling sku" in qn:
         return "outbound_value_myr"
     if "categoty" in qn or (
@@ -674,8 +690,9 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     group_by: list[list[str]] = []
     qn = q.lower()
     if "cctv" in qn or "camera" in qn:
+        # Attribute lookup: the location and its camera, not a utilisation.
         if _has_col(context, "location", "cctv_camera_id"):
-            group_by = [["location", "cctv_camera_id"]]
+            group_by = [["location", "location_code"], ["location", "cctv_camera_id"]]
     elif _COLD.search(q) or (entity and "location" in qn):
         if _has_col(context, "location", "location_code"):
             group_by = [["location", "location_code"]]
@@ -695,6 +712,8 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
                 cols = set(keys) | set(columns.get(obj_name) or [])
                 for col in cols:
                     col_s = str(col)
+                    if _MEASURE_INPUT_COL.search(col_s):
+                        continue
                     col_sc = _score(col_s, toks)
                     if col_sc <= 0:
                         continue
@@ -729,7 +748,34 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     above = _ABOVE_PCT.search(q)
     if above:
         plan["keep_gt"] = float(above.group(1))
+    plan.update(list_projection(q, measure, group_by))
     return {"query_plan": plan, "plan_source": "bind_plan"}
+
+
+def list_projection(
+    question: str, measure: str, group_by: list[list[str]] | None
+) -> dict[str, Any]:
+    """Projection slots for list / attribute-lookup asks. {} = measure answer.
+
+    "Which locations are cold storage?" is a set of location codes: project
+    the key only, qualifiers stay in WHERE/HAVING. "Show the CCTV camera for
+    warehouse A" is an attribute lookup: key + attribute, no measure. A list
+    ask also drops groups with no qualifying row (COUNT FILTER = 0).
+    """
+    if not group_by:
+        return {}
+    q = question or ""
+    qn = q.lower()
+    out: dict[str, Any] = {}
+    listing = bool(_LIST_PREFIX.search(q))
+    lookup = ("cctv" in qn or "camera" in qn) and any(
+        list(pair) == ["location", "cctv_camera_id"] for pair in group_by
+    )
+    if listing:
+        out["qualifying_only"] = True
+    if (listing and measure not in _LIST_EVIDENCE_MEASURES) or lookup:
+        out["project"] = "keys"
+    return out
 
 
 def slots_for_measure(
@@ -772,6 +818,10 @@ def slots_for_measure(
             out["limit"] = shape["limit"]
         if out.get("keep_gt") is None and shape.get("keep_gt") is not None:
             out["keep_gt"] = shape["keep_gt"]
+        # Which/list asks: entity keys only (qualifiers in WHERE/HAVING).
+        out.pop("project", None)
+        out.pop("qualifying_only", None)
+        out.update(list_projection(q, mid, out.get("group_by")))
         return out
 
     if not isinstance(bound, dict) or bound.get("unsure") is True:
@@ -791,6 +841,7 @@ __all__ = [
     "MAX_CONTEXT_CHARS",
     "bind_plan",
     "intent_slots",
+    "list_projection",
     "load_measure_aliases",
     "load_ontology_spine",
     "question_tokens",

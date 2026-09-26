@@ -157,7 +157,9 @@ def test_compute_client_stamps_ontology_plan_on_typed_plan() -> None:
             return _Resp()
 
     with patch("cortex_client.compute.httpx.Client", _Client):
-        out = compute_query("http://127.0.0.1:8010", question="revenue?")
+        out = compute_query(
+            "http://127.0.0.1:8010", question="revenue?", api_key="fake-key01-test-token"
+        )
     assert out is not None
     assert out["plan_source"] == "ontology_plan"
 
@@ -405,7 +407,7 @@ def test_compute_client_401_is_insights_reached_not_transport_miss() -> None:
         out = compute_query(
             "http://127.0.0.1:8010",
             question="how many skus?",
-            api_key="dms-demo-viewer-key",
+            api_key="fake-key01-test-token",
         )
     assert out is not None
     assert insights_was_reached(out)

@@ -66,11 +66,20 @@ closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
 Live hosted walk = Platform after merge. Not COMPLETE.
 
 BEARER-01 (#289): generate=true `/v1/insights` (hosted + `compute_insights`)
-refuses a missing/empty/demo-viewer key and plain http to a non-loopback
-host. Named ABSTAIN `insights_bearer_missing` /
-`insights_bearer_insecure_transport`. Ranked lanes unchanged. KEY-01
-(#273) removes the settings default. Regression:
-`tests/test_insights_bearer_01.py`. Not COMPLETE.
+refuses an empty/demo-viewer key and plain http to a non-loopback host.
+Named ABSTAIN `insights_bearer_missing` /
+`insights_bearer_insecure_transport`. Ranked lanes unchanged. (Correction:
+at #289 an unset key, `api_key=None`, still generated on `compute_insights`;
+KEY-01 closed that.) Regression: `tests/test_insights_bearer_01.py`. Not COMPLETE.
+
+KEY-01 (#273): no Cortex key default and no fallback. `cortex_api_key`
+comes only from `CORTEX_API_KEY` (OpenVault-issued) or explicit config;
+Cortex's published demo key counts as unset. Live mode without the bannered
+demo fallback refuses to start (`cortex_key_missing`); demo mode and the
+fallback start with no Cortex client. `cortex_read` refuses before any
+request. `compute_query`/`compute_insights` with a missing key make zero HTTP
+calls on both lanes (`dms_query=True` included). Regression:
+`tests/test_key_01.py`. Pilot security bar = Platform live, not this merge.
 
 SCALE-FREE-AI-01 (#233): FreeRoute free+normal providers resolve through
 OpenVault API only (`dms_core.freeroute`, `GET /v1/freeroute/providers`).

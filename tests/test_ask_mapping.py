@@ -26,7 +26,9 @@ def test_ask_response_flattens_provenance():
     assert env["badge"] == "L1_GOVERNED_METRIC"
     assert env["abstained"] is False
     assert env["sql_used"] == "SELECT 1"
-    assert env["chart"]["kind"] == "hbar"
+    # DMS-VIZ-01: one row, one measure, a label column -> big number.
+    assert env["chart"]["kind"] == "bignum"
+    assert env["chart"]["value"] == 10.0
     assert env.get("drillthrough_token") is None
     assert_envelope_valid(env)
 
@@ -124,8 +126,8 @@ def test_chart_spec_bignum_and_line_shapes():
     assert_envelope_valid(env_l)
 
 
-def test_null_chart_spec_falls_back_to_row_hbar():
-    """INS-03: null chart_spec uses row inference; Cortex bar spec wins when present."""
+def test_null_chart_spec_falls_back_to_row_chart():
+    """INS-03 / DMS-VIZ-01: null chart_spec uses row inference (2 short labels -> bar)."""
     resp = AskResponse.model_validate(
         {
             "answer": "By category.",
@@ -138,14 +140,14 @@ def test_null_chart_spec_falls_back_to_row_hbar():
         }
     )
     env = map_ask_response_to_envelope(resp)
-    assert env["chart"]["kind"] == "hbar"
+    assert env["chart"]["kind"] == "bar"
     assert env["chart"]["x"] == "category"
     assert env["chart"]["y"] == "qty"
     assert_envelope_valid(env)
 
 
-def test_null_chart_spec_no_chart_when_rows_not_inferrable():
-    """INS-03: no chart shell when Cortex omits spec and rows lack cat+measure."""
+def test_null_chart_spec_table_when_rows_not_inferrable():
+    """INS-03 / DMS-VIZ-01: rows with no measure get ``table`` - no drawn chart, no spec."""
     resp = AskResponse.model_validate(
         {
             "answer": "One label row.",
@@ -158,7 +160,8 @@ def test_null_chart_spec_no_chart_when_rows_not_inferrable():
         }
     )
     env = map_ask_response_to_envelope(resp)
-    assert env.get("chart") is None
+    assert env.get("chart") == {"kind": "table", "title": "Result"}
+    assert env["rows"] == [{"label": "only"}]
     assert_envelope_valid(env)
 
 

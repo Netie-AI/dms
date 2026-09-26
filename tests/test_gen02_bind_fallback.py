@@ -130,7 +130,12 @@ def test_bind_plan_types_cold_storage_and_wh_a(tmp_path: Path) -> None:
     ctx2 = retrieve_short_context(q2, warehouse=db, grantable=grants, ontology=onto)
     out2 = bind_plan(q2, ctx2)
     assert out2 is not None
-    assert out2["query_plan"]["group_by"] == [["location", "cctv_camera_id"]]
+    # Attribute lookup: the location and its camera, keys only (no utilisation).
+    assert out2["query_plan"]["group_by"] == [
+        ["location", "location_code"],
+        ["location", "cctv_camera_id"],
+    ]
+    assert out2["query_plan"]["project"] == "keys"
     assert any(
         f[0] == "location" and f[1] == "location_code" for f in out2["query_plan"]["filters"]
     )
@@ -187,9 +192,24 @@ def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert env["rows"]
-    for row in env["rows"]:
-        nums = [v for v in row.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
-        assert nums and max(float(v) for v in nums) > 90
+    # "Which locations ..." answers location codes only; the threshold is SQL.
+    con = connect_file(db)
+    try:
+        want = {
+            r[0]
+            for r in con.execute(
+                "SELECT location_code FROM locations "
+                "WHERE 100.0 * current_load_kg / capacity_kg > 90"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+    assert want
+    assert all(set(row) == {"location_location_code"} for row in env["rows"])
+    assert {row["location_location_code"] for row in env["rows"]} == want
+    for code in want:
+        assert code in env["text"]
+    assert "HAVING" in (env.get("sql_used") or "")
 
 
 def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:

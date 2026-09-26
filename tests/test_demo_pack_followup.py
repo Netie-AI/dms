@@ -36,6 +36,7 @@ from dms_executor.demo_pack import (
     lookup_pack_metric,
 )
 from dms_executor.demo_warehouse import execute_sql
+from dms_executor.engine_clock import PROBE_SQL
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
@@ -558,8 +559,16 @@ def test_vq03_finance_ops_asks_are_governed_metric(
         if isinstance(getattr(s, "plan", None), dict) and s.plan.get("kind") == "sql"
     ]
     assert sql_submits, metric_id
-    body = sql_submits[0].body
-    submitted = body.get("sql") if isinstance(body, dict) else getattr(body, "sql", None)
+    texts = [
+        s.body.get("sql") if isinstance(s.body, dict) else getattr(s.body, "sql", None)
+        for s in sql_submits
+    ]
+    # dms#308: a date-dependent answer is bracketed by the engine-date probe.
+    # Every other SQL submit must be the governed metric SQL, exactly once.
+    answer_sql = [t for t in texts if t != PROBE_SQL]
+    assert len(answer_sql) == 1, texts
+    assert texts.count(PROBE_SQL) in (0, 2), texts
+    submitted = answer_sql[0]
     hit = lookup_pack_metric(
         question,
         grantable=(

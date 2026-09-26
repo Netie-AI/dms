@@ -16,11 +16,13 @@ measures:
   - outbound_kg
   - net_movement_kg
   - stock_value_myr
+  - spend_myr
   - shipping_cost_myr
   - shipment_count
   - sku_count
   - utilisation_pct
   - below_reorder_lots
+  - below_reorder_kg
   - supplier_rank_score
   - audit_overdue
 # Cortex Insights ranking uses pack metric ids. Same-intent only onto
@@ -39,8 +41,8 @@ grains:
   day: day
 measure_aliases:
   stock_value_by_category: stock_value_myr
-  spend_by_country: stock_value_myr
-  total_spend: stock_value_myr
+  spend_by_country: spend_myr
+  total_spend: spend_myr
   cq_capacity_utilisation: utilisation_pct
   capacity_utilisation: utilisation_pct
   cq_capacity_above_90: utilisation_pct
@@ -52,8 +54,8 @@ measure_aliases:
   cq_cost_by_destination: shipping_cost_myr
   cost_by_destination: shipping_cost_myr
   shipment_cost_by_destination: shipping_cost_myr
-  cq_low_stock_wh_a: below_reorder_lots
-  low_stock_wh_a: below_reorder_lots
+  cq_low_stock_wh_a: below_reorder_kg
+  low_stock_wh_a: below_reorder_kg
   cq_sku_count_by_category: sku_count
   sku_count_by_category: sku_count
   sku_count_per_category: sku_count

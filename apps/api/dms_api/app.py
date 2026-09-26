@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cortex_client import CortexClient
+from cortex_client.insights import CORTEX_KEY_MISSING, cortex_key_missing
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,6 +75,16 @@ def _build_space_store(settings) -> tuple[object, StoreBinding]:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    # KEY-01 (dms#273): no Cortex key means no Cortex client, never a default.
+    # Live mode without the bannered demo fallback has nothing to answer with,
+    # so the API refuses to start rather than reach Cortex unkeyed.
+    key_missing = cortex_key_missing(settings.cortex_api_key)
+    if key_missing and settings.dms_ask_mode == "live" and not settings.dms_demo_fallback:
+        raise RuntimeError(
+            f"{CORTEX_KEY_MISSING}: DMS_ASK_MODE=live needs CORTEX_API_KEY set to the "
+            "Cortex key OpenVault issued (Cortex's published demo key does not count). "
+            "DMS will not start and call Cortex without one."
+        )
     migrate_error: str | None = None
     if settings.database_url:
         try:
@@ -96,11 +107,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.space_store = store
     app.state.space_store_binding = binding
-    cortex = CortexClient(
-        settings.cortex_url,
-        timeout=settings.cortex_timeout_seconds,
-        api_key=settings.cortex_api_key,
-    )
+    cortex: CortexClient | None = None
+    if key_missing:
+        logger.warning(
+            "%s: no Cortex client (DMS_ASK_MODE=%s, DMS_DEMO_FALLBACK=%s)",
+            CORTEX_KEY_MISSING,
+            settings.dms_ask_mode,
+            settings.dms_demo_fallback,
+        )
+    else:
+        cortex = CortexClient(
+            settings.cortex_url,
+            timeout=settings.cortex_timeout_seconds,
+            api_key=settings.cortex_api_key,
+            insights_timeout=settings.dms_insights_ask_timeout_seconds,
+        )
     app.state.cortex = cortex
     ask = build_ask_service(cortex)
     app.state.ask_service = ask
@@ -108,7 +129,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         ask.close()
-        cortex.close()
+        if cortex is not None:
+            cortex.close()
 
 
 def create_app() -> FastAPI:

@@ -34,13 +34,17 @@ export type ContributingSource = {
 };
 
 export type ChartSpec = {
-  kind: "bar" | "hbar" | "line" | "bignum";
+  /** DMS-VIZ-01 — ``table`` means "the rows table is the view": no drawn chart. */
+  kind: "bar" | "hbar" | "line" | "bignum" | "pie" | "scatter" | "table";
   x?: string;
   y?: string;
   title?: string;
   /** bignum only — scalar already present in rows */
   value?: number | string;
   label?: string;
+  /** Portable Vega-Lite v5 spec over the named ``rows`` dataset (BI / export).
+   *  Never inlines numbers — the UI draws from ``rows``, not from this. */
+  vega_lite?: Record<string, unknown>;
 };
 
 export type AuditReceiptPart = {

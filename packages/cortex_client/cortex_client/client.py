@@ -13,13 +13,13 @@ from cortex_contract.execution import QueryResult as ContractQueryResult
 from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 
 from cortex_client.compute import (
-    INSIGHTS_ASK_TIMEOUT_SECONDS,
-)
-from cortex_client.compute import (
     compute_insights as post_compute_insights,
 )
 from cortex_client.compute import (
     compute_query as post_compute_query,
+)
+from cortex_client.compute import (
+    insights_ask_timeout_seconds,
 )
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
@@ -91,8 +91,12 @@ class CortexClient:
         *,
         timeout: float = 30.0,
         api_key: str | None = None,
+        insights_timeout: float | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        #: Insights ask bound. None = env ``DMS_INSIGHTS_ASK_TIMEOUT_SECONDS``
+        #: or ``INSIGHTS_ASK_TIMEOUT_SECONDS`` (60s), read at call time.
+        self.insights_timeout = insights_timeout
         # Viewer/mutation key for off-contract F5. Never invent one when unset.
         self.api_key = api_key
         self.timeout = timeout
@@ -203,11 +207,15 @@ class CortexClient:
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
-        Timeout is min(INSIGHTS_ASK_TIMEOUT_SECONDS, this client's timeout) so
-        the product lane cannot stall on a 45s leftover /dms/query or the 120s
-        contract timeout. OpenVault keys stay in Cortex.
+        Timeout is min(Insights bound, this client's timeout). The Insights
+        bound is ``insights_timeout`` when set, else
+        ``DMS_INSIGHTS_ASK_TIMEOUT_SECONDS``, else INSIGHTS_ASK_TIMEOUT_SECONDS
+        (60s) - long enough for a FreeRoute generate (13-53s measured) while
+        still bounded. OpenVault keys stay in Cortex.
         """
-        bound = min(INSIGHTS_ASK_TIMEOUT_SECONDS, float(self.timeout))
+        bound = min(
+            insights_ask_timeout_seconds(self.insights_timeout), float(self.timeout)
+        )
         return post_compute_insights(
             self.base_url,
             question=question,

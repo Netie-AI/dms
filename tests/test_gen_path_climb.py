@@ -395,7 +395,9 @@ def test_generate_sql_still_fetches_ranking() -> None:
             return _Onto()
 
     with patch("cortex_client.compute.httpx.Client", _Client):
-        out = compute_query("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_query(
+            "http://127.0.0.1:8010", question="how many skus?", api_key="fake-key01-test-token"
+        )
     assert out is not None
     assert str(out.get("query_sql") or "").upper().startswith("SELECT")
     metrics = (out.get("ontology") or {}).get("metrics") or []
