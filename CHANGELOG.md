@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - INGEST-OPS: SQL-source Space sources, visible row cap, harness PROVIDER_ERROR, bulk bronze load
+
+- **Evidence.** BIRD Mini-Dev local run (dms PR #312). Routed by prd-agent to dms#277 CONNECT-ASK-01 (connect step) and dms#264 A1-02. Does not close tickets. Not COMPLETE. Ask routing (`generative_ask.py`, `dms_executor/__init__.py` ask path) untouched: another lane owns it.
+- **Space sources.** `GET /v1/spaces/{id}/sources` called the `/v1/library/sources` endpoint function directly, so `space_id` kept its `Query(None)` FieldInfo default (truthy); with `DATABASE_URL` set that reached `UUID(<FieldInfo>)` and answered 500. It now calls `_list_sources(settings, space_id=...)`, and a non-uuid Space id returns an empty list, not a 500. SQL-source pulls are read back from the bronze ingest registry (`list_source_pulls`), where `record_source_pull` already recorded `space_id`; `source_count` on `GET /v1/spaces` and `GET /v1/spaces/{id}` adds them.
+- **Row cap visible.** A capped pull now counts the source table (`SELECT COUNT(*)`, only when truncated) and records `source_row_count` in the registry (new column, widen-if-missing). The ingest receipt, `/v1/spaces/{id}/sources` and `/v1/library/sources` carry `truncated`, `loaded_rows`, `source_row_count` and `partial: N of M source rows`. `build_answer_envelope` appends `partial table: bronze.<t> holds N of M source rows (ingest row cap); this answer covers the loaded rows only` to any non-abstained answer whose SQL, sources or grounded tables read a capped table. `DEFAULT_MAX_ROWS` unchanged (500,000).
+- **Harness.** `scripts/bird_minidev.py` retries HTTP 429/5xx/transport errors (3 attempts, doubling backoff, `Retry-After` honoured), then grades the question `PROVIDER_ERROR`: never RIGHT, excluded from n and EX-on-answered, printed. Other 4xx still stop the run. `--pace` and `--provider-attempts` on `score_bird.py`. `--self-check` plants one persistent 429.
+- **Bulk load.** `write_bronze_rows` loaded rows with `executemany` (~550 rows/s). It now writes a temp CSV (every non-NULL value quoted, `allow_quoted_nulls=false`) and scans it; any non-str value, ragged row or reader error falls back to the per-row INSERT. 200,000-row, 8-column Postgres table via `ingest_source_database`: 356.7 s on parent, 2.7 s after (local PG 16).
+- **Gate.** `tests/test_ingest_ops_sources.py`, `tests/test_bird_minidev_provider_error.py`, `tests/test_bronze_bulk_load.py`. Fail on parent `ca63963`.
+- **Not this ticket (routing):** Cortex InsightsAskIn fields (Cortex ticket); ask-path table reads (#277 other lane); measure step and raising the cap (NEEDS_FOUNDER); background ingest job (PARK); serving sync of SQL-source bronze.
+
 ## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
 
 - **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.

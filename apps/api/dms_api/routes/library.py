@@ -18,6 +18,7 @@ from dms_api.wiring import (
     bronze_preview,
     reveal_origin_uri,
     search_document_chunks,
+    space_source_pulls,
     warehouse_preview,
     warehouse_tables,
 )
@@ -65,6 +66,11 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
         ]
         if _hide_offline_fixtures(settings):
             sources = [s for s in sources if s.get("space_id")]
+    elif space_id and _as_uuid(space_id) is None:
+        # dms.data_sources.space_id is a uuid. A non-uuid Space id (the memory
+        # store's compat ids) cannot own a row there, and ``UUID()`` on it was an
+        # unhandled ValueError: a 500 on a read route instead of an empty list.
+        sources = []
     else:
         with psycopg.connect(settings.database_url) as conn:
             set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
@@ -104,7 +110,22 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
         ]
     if space_id:
         sources = [s for s in sources if s.get("space_id") == space_id]
+    # SQL-source pulls live in the bronze ingest registry, not dms.data_sources:
+    # ``POST /v1/studio/sources/sql`` never wrote a data_sources row, so a Space
+    # holding 75 landed tables listed none of them. Each pull carries its
+    # truncation (loaded vs source rows) so a capped table is visible here.
+    known = {str(s.get("id")) for s in sources}
+    for pull in space_source_pulls(space_id=space_id):
+        if str(pull.get("id")) not in known:
+            sources.append(pull)
     return sources
+
+
+def _as_uuid(value: str) -> UUID | None:
+    try:
+        return UUID(value)
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 @router.get("/sources")

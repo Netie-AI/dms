@@ -28,6 +28,7 @@ from dms_executor.bronze import (
     IngestReceipt,
     ingest_csv_bytes,
     list_bronze_tables,
+    list_source_pulls,
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
@@ -44,7 +45,11 @@ from dms_executor.demo_ask import (
     normalize_ask_question,
     with_grounded_scope,
 )
-from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_grants import (
+    DemoSessionStore,
+    canonical_space_id,
+    ingested_bronze_tables,
+)
 from dms_executor.demo_pack import (
     is_uncertified_paraphrase,
     maybe_pack_ask,
@@ -957,6 +962,8 @@ __all__ = [
     "intersect_space_grants",
     "get_serving_engine",
     "list_bronze_tables",
+    "list_source_pulls",
+    "canonical_space_id",
     "list_promote_targets",
     "list_warehouse_tables",
     "list_verified_queries",

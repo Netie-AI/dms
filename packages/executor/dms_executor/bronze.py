@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass
@@ -13,6 +16,7 @@ from typing import Any
 import duckdb
 
 from dms_executor.demo_warehouse import (
+    connect_file,
     connect_readonly,
     ensure_demo_warehouse,
     warehouse_path,
@@ -107,6 +111,12 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN extracted_at VARCHAR")
         if "source_kind" not in cols:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_kind VARCHAR")
+        # How many rows the SOURCE held when a pull was capped (DEFAULT_MAX_ROWS).
+        # ``truncated`` alone said "partial" without saying how partial; a steward
+        # cannot judge 500,000 of 1,056,320 from a boolean. NULL = not capped, or
+        # the source would not say.
+        if "source_row_count" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_row_count BIGINT")
 
 
 def _claim_table_name(
@@ -150,6 +160,7 @@ def _record_ingest(
     truncated: bool | None = None,
     extracted_at: str | None = None,
     source_kind: str | None = None,
+    source_row_count: int | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
     kind = source_kind or classify_source_kind(filename)
@@ -160,8 +171,8 @@ def _record_ingest(
     con.execute(
         f"INSERT INTO {_REGISTRY} "
         "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, "
-        "truncated, extracted_at, source_kind) "
-        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?)",
+        "truncated, extracted_at, source_kind, source_row_count) "
+        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, ?)",
         [
             table_name,
             filename,
@@ -173,6 +184,7 @@ def _record_ingest(
             truncated,
             stamp,
             kind,
+            source_row_count,
         ],
     )
 
@@ -211,6 +223,7 @@ def record_source_pull(
     space_id: str | None = None,
     path: Path | None = None,
     extracted_at: str | None = None,
+    source_row_count: int | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -250,6 +263,7 @@ def record_source_pull(
             truncated=truncated,
             extracted_at=stamp,
             source_kind="sql",
+            source_row_count=source_row_count,
         )
     finally:
         con.close()
@@ -308,6 +322,139 @@ def stamp_contributing_source_watermarks(
         item["source_kind"] = rec["source_kind"] if rec else None
         stamped.append(item)
     return stamped
+
+
+def _registry_rows(sql: str, params: list[Any], *, path: Path | None) -> list[tuple[Any, ...]]:
+    """Read the ingest registry without seeding a warehouse. Missing file/column -> []."""
+    db = Path(path or warehouse_path())
+    if not db.is_file():
+        return []
+    con = connect_file(db)
+    try:
+        return [tuple(r) for r in con.execute(sql, params).fetchall()]
+    except duckdb.Error:
+        # No registry yet, or an old one without the widened columns.
+        return []
+    finally:
+        con.close()
+
+
+def _truncation_fields(
+    row_count: Any, truncated: Any, source_row_count: Any
+) -> dict[str, Any]:
+    """``truncated`` / ``loaded_rows`` / ``source_row_count`` / ``partial`` for one pull."""
+    loaded = None if row_count is None else int(row_count)
+    total = None if source_row_count is None else int(source_row_count)
+    is_trunc = bool(truncated)
+    partial = None
+    if is_trunc:
+        got = "?" if loaded is None else f"{loaded:,}"
+        of = "an unknown number of" if total is None else f"{total:,}"
+        partial = f"partial: {got} of {of} source rows (ingest row cap)"
+    return {
+        "truncated": is_trunc,
+        "loaded_rows": loaded,
+        "source_row_count": total,
+        "partial": partial,
+    }
+
+
+def list_source_pulls(
+    *,
+    space_id: str | None = None,
+    path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """SQL-source pulls in the ingest registry, as Space sources.
+
+    ``POST /v1/studio/sources/sql`` records every landed table here with its
+    ``space_id`` (``record_source_pull``), and nothing read it back for the Space:
+    a Space holding 75 landed tables reported ``source_count: 0``. This is that
+    read. Only tables that still exist in bronze are listed, and ``truncated``
+    rides along with the loaded and source row counts, so a capped pull is
+    visible on the sources API rather than only on the one ingest receipt.
+    """
+    from dms_executor.demo_grants import canonical_space_id
+
+    rows = _registry_rows(
+        f"""
+        SELECT r.table_name, r.filename, r.space_id, r.row_count, r.truncated,
+               r.source_row_count, r.extracted_at, r.ingest_id
+          FROM {_REGISTRY} r
+          JOIN information_schema.tables t
+            ON t.table_schema = 'bronze' AND t.table_name = r.table_name
+         WHERE r.source_kind = 'sql'
+         ORDER BY r.table_name
+        """,
+        [],
+        path=path,
+    )
+    want = canonical_space_id(space_id) if space_id else None
+    out: list[dict[str, Any]] = []
+    for name, filename, row_space, row_count, truncated, total, extracted_at, ingest_id in rows:
+        canon = canonical_space_id(str(row_space)) if row_space else None
+        if want is not None and canon != want:
+            continue
+        entry: dict[str, Any] = {
+            "id": f"bronze:{name}",
+            "kind": "sql",
+            "ref": None if filename is None else str(filename),
+            "scope": "team" if canon else "company",
+            "space_id": canon,
+            "space_name": None,
+            "bronze_table": f"bronze.{name}",
+            "extracted_at": None if extracted_at is None else str(extracted_at),
+            "ingest_id": None if ingest_id is None else str(ingest_id),
+        }
+        entry.update(_truncation_fields(row_count, truncated, total))
+        out.append(entry)
+    return out
+
+
+def truncation_notes(
+    *,
+    tables: list[str],
+    sql: str | None = None,
+    path: Path | None = None,
+) -> list[str]:
+    """Assumption lines for every capped bronze table an answer read.
+
+    A table landed under the row cap answers over the rows that landed, not the
+    source. Saying nothing is the silent-fallback lie: a total over 500,000 of
+    1,056,320 rows reads as the whole ledger. Matching is on the bare bronze name
+    in ``tables`` (sources / grounded tables) or as an identifier in ``sql``.
+    """
+    rows = _registry_rows(
+        f"SELECT table_name, row_count, source_row_count FROM {_REGISTRY} "
+        "WHERE truncated",
+        [],
+        path=path,
+    )
+    if not rows:
+        return []
+    bare = set()
+    for t in tables:
+        label = str(t or "").strip().strip('"')
+        for prefix in ("bronze:", "bronze."):
+            label = label.removeprefix(prefix)
+        if label:
+            bare.add(label.rsplit(".", 1)[-1].strip('"').lower())
+    sql_l = (sql or "").lower()
+    notes: list[str] = []
+    for name, row_count, total in rows:
+        key = str(name).lower()
+        hit = key in bare or (
+            bool(sql_l)
+            and re.search(rf'(?<![\w$]){re.escape(key)}(?![\w$])', sql_l) is not None
+        )
+        if not hit:
+            continue
+        loaded = "?" if row_count is None else f"{int(row_count):,}"
+        of = "an unknown number of" if total is None else f"{int(total):,}"
+        notes.append(
+            f"partial table: bronze.{name} holds {loaded} of {of} source rows "
+            "(ingest row cap); this answer covers the loaded rows only"
+        )
+    return notes
 
 
 def ingest_csv_bytes(
@@ -465,6 +612,65 @@ def ingest_csv_bytes(
     )
 
 
+class _NotText(Exception):
+    """A non-str value: DuckDB's VARCHAR cast, not str(), must decide its text."""
+
+
+def _csv_field(value: Any) -> str:
+    """NULL is an empty unquoted field; every value is quoted, so '' stays ''."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise _NotText
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _load_raw_rows(
+    con: duckdb.DuckDBPyConnection, columns: list[str], rows: list[list[Any]]
+) -> None:
+    """Bulk-load ``rows`` into the ``_bronze_raw`` temp table.
+
+    ``executemany`` binds one row per call: about 550 rows/s here, so a 1,056,320
+    row table spent ~30 minutes in this loop alone and a ~1 GB SQL-source ingest
+    took ~2 h in one request. Writing a temp CSV and letting DuckDB scan it lands
+    200,000 rows in well under a second.
+
+    Same bytes land either way. NULL vs empty string survives because every
+    non-NULL field is quoted and ``allow_quoted_nulls=false``; every column is read
+    as VARCHAR, which is what the INSERT produced. Anything the fast path is not
+    sure of - a non-str value (the connector only passes str/None), a ragged row,
+    a byte DuckDB's CSV reader rejects - falls back to the old per-row INSERT, so
+    this can make ingest faster but never lossier or differently typed.
+    """
+    width = len(columns)
+    fd, tmp = tempfile.mkstemp(prefix="dms_bronze_", suffix=".csv")
+    try:
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+                for row in rows:
+                    fh.write(",".join(_csv_field(v) for v in row))
+                    fh.write("\n")
+            spec = "{" + ", ".join(f"'f{i}': 'VARCHAR'" for i in range(width)) + "}"
+            con.execute(
+                "INSERT INTO _bronze_raw SELECT * FROM read_csv(?, header=false, "
+                "delim=',', quote='\"', escape='\"', allow_quoted_nulls=false, "
+                f"auto_detect=false, strict_mode=true, columns={spec})",
+                [tmp],
+            )
+            return
+        except (_NotText, UnicodeEncodeError, duckdb.Error):
+            con.execute("DELETE FROM _bronze_raw")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    con.executemany(
+        f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * width)})",
+        rows,
+    )
+
+
 def write_bronze_rows(
     *,
     table: str,
@@ -491,10 +697,7 @@ def write_bronze_rows(
         col_defs = ", ".join(f'"{c}" VARCHAR' for c in columns)
         con.execute(f'CREATE TEMP TABLE _bronze_raw ({col_defs})')
         if rows:
-            con.executemany(
-                f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
-                rows,
-            )
+            _load_raw_rows(con, columns, rows)
         con.execute(
             f"""
             CREATE TABLE "{schema}"."{name}" AS

@@ -39,6 +39,26 @@ def bronze_list(*, space_id: str | None = None):
     return dms_executor.list_bronze_tables(space_id=space_id)
 
 
+def canonical_space_id(space_id: str) -> str:
+    """Memory-store compat ids (``sp_q3_audit``) to the id the registry records."""
+    return dms_executor.canonical_space_id(space_id)
+
+
+def space_source_pulls(*, space_id: str | None = None) -> list[dict[str, Any]]:
+    """SQL-source tables landed for a Space (ingest registry), truncation included."""
+    return dms_executor.list_source_pulls(space_id=space_id)
+
+
+def space_source_pull_counts() -> dict[str, int]:
+    """Landed SQL-source tables per canonical Space id, one registry read."""
+    counts: dict[str, int] = {}
+    for pull in dms_executor.list_source_pulls():
+        sid = pull.get("space_id")
+        if sid:
+            counts[str(sid)] = counts.get(str(sid), 0) + 1
+    return counts
+
+
 def warehouse_tables(*, space_id: str | None = None):
     return dms_executor.list_warehouse_tables(space_id=space_id)
 
@@ -262,11 +282,28 @@ def sql_source_ingest(
                 "source": p.source,
                 "row_count": p.row_count,
                 "truncated": p.truncated,
+                # N of M, not a bare boolean: a capped pull is a partial table,
+                # and the steward has to be able to see how partial.
+                "source_row_count": p.source_row_count,
+                "partial": (
+                    (
+                        f"partial: {p.row_count:,} of "
+                        + (
+                            f"{p.source_row_count:,}"
+                            if p.source_row_count is not None
+                            else "an unknown number of"
+                        )
+                        + f" source rows (row cap {cap:,})"
+                    )
+                    if p.truncated
+                    else None
+                ),
                 "extracted_at": p.extracted_at,
             }
             for p in extract.pulls
         ],
         "skipped": list(extract.skipped),
+        "truncated_tables": [p.bronze_table for p in extract.pulls if p.truncated],
         "declared_primary_keys": len(extract.keys.primary_keys),
         "declared_foreign_keys": len(extract.keys.foreign_keys),
         "links": links,
