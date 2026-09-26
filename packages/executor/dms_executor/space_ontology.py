@@ -29,6 +29,7 @@ source names (``public.schools``) ride along as ``source_table`` for display.
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 from collections.abc import Mapping, Sequence
@@ -544,6 +545,38 @@ def load_space_ontology(
 # --------------------------------------------------------------------------
 
 
+#: Cortex ``caller_ontology`` limits (MAX_ONTOLOGY_BYTES, MAX_LINKS), with headroom.
+WIRE_MAX_BYTES = 60 * 1024
+WIRE_MAX_LINKS = 256
+
+
+def budget_space_block(space: Mapping[str, Any], *, used: int) -> dict[str, Any]:
+    """Objects, then links, while the whole body stays inside Cortex's limits.
+
+    The DMS join rule still reads the full ontology; only what Cortex is told
+    shrinks, and ``space_truncated`` says so.
+    """
+    out: dict[str, Any] = {
+        "objects": {},
+        "links": {},
+        "measures": dict(space.get("measures") or {}),
+        "verified": bool(space.get("verified")),
+    }
+    size = used + len(json.dumps(out)) + 64
+    cut = False
+    for key, limit in (("objects", None), ("links", WIRE_MAX_LINKS)):
+        for name, spec in (space.get(key) or {}).items():
+            cost = len(json.dumps({name: spec})) + 2
+            if size + cost > WIRE_MAX_BYTES or (limit is not None and len(out[key]) >= limit):
+                cut = True
+                continue
+            out[key][name] = spec
+            size += cost
+    if cut:
+        out["space_truncated"] = True
+    return out
+
+
 def _wire_id(name: str) -> str | None:
     """A link id Cortex will accept (one identifier part), or None."""
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", name)
@@ -594,6 +627,9 @@ def space_catalog(
         wire = _wire_id(name)
         if wire is None or link.from_object not in objects or link.to_object not in objects:
             continue
+        base, n = wire, 2
+        while wire in links:  # fk-a / fk_a / fk.a must not overwrite one another
+            wire, n = f"{base}_{n}", n + 1
         links[wire] = {
             "from": link.from_object,
             "to": link.to_object,
@@ -624,83 +660,53 @@ def _source_label(src: Any) -> str | None:
     return None
 
 
-def _scope_chain(scope: Scope) -> list[Scope]:
-    chain: list[Scope] = []
+def relation_columns(
+    onto: Ontology, warehouse: Path | None, extra: Sequence[str] = ()
+) -> dict[str, set[str]]:
+    """Lower-cased columns of every object's relation (and ``extra``), read now.
+
+    Raises when the lake cannot be opened; the caller names that abstain.
+    """
+    out: dict[str, set[str]] = {}
+    if warehouse is None or not Path(warehouse).is_file():
+        return out
+    relations = {obj.name.lower(): obj.relation for obj in onto.objects.values()}
+    for name in extra:
+        relations.setdefault(str(name).lower(), str(name))
+    con = connect_file(Path(warehouse))
+    try:
+        for label, relation in relations.items():
+            try:
+                rows = con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()
+            except Exception:  # noqa: BLE001 - unresolvable columns fail closed later
+                continue
+            out[label] = {str(r[0]).lower() for r in rows}
+    finally:
+        con.close()
+    return out
+
+
+class _Refuse(Exception):
+    """One join-rule refusal; ``str()`` is the tail after ``unverified_join:``."""
+
+
+#: A node is one source of one scope: (id(scope), lower-cased alias). A second
+#: copy of a relation under another alias is another node (self-join fan-out).
+_Node = tuple[int, str]
+
+
+def _sources(scope: Scope) -> dict[str, Any]:
+    """Scope sources by lower-cased alias (DuckDB binds aliases case-insensitively)."""
+    return {str(k).lower(): v for k, v in scope.sources.items()}
+
+
+def _chain(scope: Scope) -> list[Scope]:
+    out: list[Scope] = []
     cur: Scope | None = scope
     while cur is not None:
-        chain.append(cur)
+        out.append(cur)
         cur = cur.parent
-    return chain
-
-
-def _resolve_column(
-    col: exp.Column, scope: Scope, columns_of: Mapping[str, set[str]], depth: int = 0
-) -> tuple[str, str] | None:
-    """``(real relation, column)`` a column reads, through derived tables/CTEs.
-
-    Qualified: the source named by its qualifier in this scope or an outer one
-    (correlation). Unqualified: the only source in scope that has the column.
-    A derived source resolves through its projection when that projection is a
-    plain column; anything else (an expression, an aggregate) is None.
-    """
-    if depth > 8:
-        return None
-    name = col.name.lower()
-    qualifier = col.table
-    candidates: list[tuple[Scope, Any]] = []
-    for sc in _scope_chain(scope):
-        if qualifier:
-            src = sc.sources.get(qualifier)
-            if src is not None:
-                candidates = [(sc, src)]
-                break
-        else:
-            hits = []
-            for src in sc.sources.values():
-                label = _source_label(src)
-                if label is not None and name in columns_of.get(label, set()):
-                    hits.append((sc, src))
-                elif isinstance(src, Scope) and name in _projection_names(src):
-                    hits.append((sc, src))
-            if hits:
-                candidates = hits
-                break
-            if sc is scope and len(sc.sources) == 1:
-                # One source: an unqualified column can only be its column.
-                candidates = list((sc, src) for src in sc.sources.values())
-                break
-    if len(candidates) != 1:
-        return None
-    _sc, src = candidates[0]
-    label = _source_label(src)
-    if label is not None:
-        return label, name
-    if isinstance(src, Scope):
-        return _through_projection(src, name, columns_of, depth + 1)
-    return None
-
-
-def _projection_names(scope: Scope) -> set[str]:
-    select = scope.expression
-    if not isinstance(select, exp.Select):
-        return set()
-    return {str(p.alias_or_name).lower() for p in select.expressions}
-
-
-def _through_projection(
-    scope: Scope, name: str, columns_of: Mapping[str, set[str]], depth: int
-) -> tuple[str, str] | None:
-    select = scope.expression
-    if not isinstance(select, exp.Select):
-        return None
-    for proj in select.expressions:
-        if str(proj.alias_or_name).lower() != name:
-            continue
-        inner = proj.this if isinstance(proj, exp.Alias) else proj
-        if isinstance(inner, exp.Column):
-            return _resolve_column(inner, scope, columns_of, depth)
-        return None
-    return None
+    return out
 
 
 def _local(node: exp.Expression, scope: Scope) -> bool:
@@ -713,79 +719,324 @@ def _local(node: exp.Expression, scope: Scope) -> bool:
     return False
 
 
-def _pairs_in_scope(
-    scope: Scope, columns_of: Mapping[str, set[str]]
-) -> tuple[list[tuple[tuple[str, str], tuple[str, str]]], str | None]:
-    """Cross-relation column equalities in this scope (JOIN ON, WHERE, IN (SELECT col))."""
-    select = scope.expression
-    pairs: list[tuple[tuple[str, str], tuple[str, str]]] = []
-    for node in select.find_all(exp.Predicate):
-        if not _local(node, scope):
+def _star_table(inner: Scope) -> str | None:
+    """The one real relation a ``SELECT *`` derived source exposes, else None."""
+    select = inner.expression
+    if not isinstance(select, exp.Select):
+        return None
+    if not any(isinstance(p, exp.Star) for p in select.expressions):
+        return None
+    srcs = list(inner.sources.values())
+    if len(srcs) != 1:
+        return None
+    return _source_label(srcs[0])
+
+
+def _may_have(src: Any, name: str, columns_of: Mapping[str, set[str]]) -> bool | None:
+    """True/False when known, None when this source's columns cannot be known."""
+    label = _source_label(src)
+    if label is not None:
+        cols = columns_of.get(label)
+        return None if cols is None else name in cols
+    if isinstance(src, Scope):
+        select = src.expression
+        if not isinstance(select, exp.Select):
+            return None
+        names = {str(p.alias_or_name).lower() for p in select.expressions}
+        if name in names:
+            return True
+        star = _star_table(src)
+        if any(isinstance(p, exp.Star) for p in select.expressions):
+            if star is None or star not in columns_of:
+                return None
+            return name in columns_of[star]
+        return False
+    return None
+
+
+def _owner(col: exp.Column, scope: Scope, columns_of: Mapping[str, set[str]]) -> tuple[Scope, str]:
+    """The (scope, alias) a column reads. Raises ``_Refuse`` when not provable."""
+    name = col.name.lower()
+    qualifier = str(col.table or "").lower()
+    for sc in _chain(scope):
+        srcs = _sources(sc)
+        if qualifier:
+            if qualifier in srcs:
+                return sc, qualifier
             continue
-        if isinstance(node, exp.In) and node.args.get("query") is not None:
-            query = node.args["query"]
-            sub = query.this if isinstance(query, exp.Subquery) else query
-            left = node.this
-            if not isinstance(left, exp.Column) or not isinstance(sub, exp.Select):
+        known = [a for a, src in srcs.items() if _may_have(src, name, columns_of) is True]
+        unknown = [a for a, src in srcs.items() if _may_have(src, name, columns_of) is None]
+        if len(known) == 1 and not unknown:
+            return sc, known[0]
+        if known or unknown:
+            if len(srcs) == 1:
+                return sc, next(iter(srcs))
+            raise _Refuse("column_unresolved")
+    raise _Refuse("column_unresolved")
+
+
+def _real(
+    sc: Scope, alias: str, name: str, columns_of: Mapping[str, set[str]], depth: int = 0
+) -> tuple[str, str]:
+    """(real relation, column) behind ``alias.name``, through derived tables/CTEs."""
+    if depth > 8:
+        raise _Refuse("column_unresolved")
+    src = _sources(sc)[alias]
+    label = _source_label(src)
+    if label is not None:
+        if name not in columns_of.get(label, set()):
+            raise _Refuse("column_unresolved")
+        return label, name
+    if isinstance(src, Scope) and isinstance(src.expression, exp.Select):
+        for proj in src.expression.expressions:
+            if isinstance(proj, exp.Star):
                 continue
-            if len(sub.expressions) != 1:
+            if str(proj.alias_or_name).lower() != name:
                 continue
-            proj = sub.expressions[0]
             inner = proj.this if isinstance(proj, exp.Alias) else proj
-            sub_scope = next((s for s in traverse_scope(sub) if s.expression is sub), None)
-            if not isinstance(inner, exp.Column) or sub_scope is None:
-                return [], "in_subquery_not_a_column"
-            a = _resolve_column(left, scope, columns_of)
-            b = _resolve_column(inner, sub_scope, columns_of)
-            if a is None or b is None:
-                return [], "column_unresolved"
-            if a[0] != b[0]:
-                pairs.append((a, b))
-            continue
-        cols = [c for c in (node.args.get("this"), node.args.get("expression")) if c is not None]
-        refs = [c for c in node.find_all(exp.Column) if _local(c, scope) or c.parent is node]
-        if not refs:
-            continue
-        resolved = [_resolve_column(c, scope, columns_of) for c in refs]
-        if any(r is None for r in resolved):
-            relations = {r[0] for r in resolved if r is not None}
-            if len(refs) > 1 and len(relations) != 1:
-                return [], "column_unresolved"
-            continue
-        relations = {r[0] for r in resolved if r is not None}
-        if len(relations) < 2:
-            continue
-        if (
-            isinstance(node, exp.EQ)
-            and len(cols) == 2
-            and all(isinstance(c, exp.Column) for c in cols)
-        ):
-            a = _resolve_column(cols[0], scope, columns_of)  # type: ignore[arg-type]
-            b = _resolve_column(cols[1], scope, columns_of)  # type: ignore[arg-type]
-            if a is None or b is None:
-                return [], "column_unresolved"
-            pairs.append((a, b))
-            continue
-        return [], "non_equality_join"
-    return pairs, None
+            if not isinstance(inner, exp.Column):
+                raise _Refuse("column_unresolved")
+            osc, oalias = _owner(inner, src, columns_of)
+            return _real(osc, oalias, inner.name.lower(), columns_of, depth + 1)
+        star = _star_table(src)
+        if star is not None and name in columns_of.get(star, set()):
+            return star, name
+    raise _Refuse("column_unresolved")
 
 
-def relation_columns(onto: Ontology, warehouse: Path | None) -> dict[str, set[str]]:
-    """Lower-cased columns of every object's relation, read from the lake now."""
-    out: dict[str, set[str]] = {}
-    if warehouse is None or not Path(warehouse).is_file():
-        return out
-    con = connect_file(Path(warehouse))
-    try:
-        for obj in onto.objects.values():
-            try:
-                rows = con.execute(f"DESCRIBE SELECT * FROM {obj.relation}").fetchall()
-            except Exception:  # noqa: BLE001 - unresolvable columns fail closed later
-                continue
-            out[obj.name.lower()] = {str(r[0]).lower() for r in rows}
-    finally:
-        con.close()
+def _conjuncts(node: exp.Expression | None) -> list[exp.Expression]:
+    if node is None:
+        return []
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.And):
+        return _conjuncts(node.this) + _conjuncts(node.expression)
+    return [node]
+
+
+def _top_queries(node: exp.Expression) -> list[exp.Expression]:
+    """Subqueries directly inside ``node`` (not nested in another subquery)."""
+    out: list[exp.Expression] = []
+    for q in node.find_all(exp.Query):
+        parent = q.parent
+        nested = False
+        while parent is not None and parent is not node:
+            if isinstance(parent, exp.Query):
+                nested = True
+                break
+            parent = parent.parent
+        if not nested:
+            out.append(q)
     return out
+
+
+def _inner_select(q: exp.Expression) -> exp.Select | None:
+    while isinstance(q, exp.Subquery):
+        q = q.this
+    return q if isinstance(q, exp.Select) else None
+
+
+class _JoinRule:
+    def __init__(
+        self,
+        onto: Ontology,
+        violations: Sequence[Violation],
+        columns_of: Mapping[str, set[str]],
+        scopes: Sequence[Scope],
+    ) -> None:
+        self.onto = onto
+        self.usable = usable_links(onto, violations)
+        self.columns_of = columns_of
+        self.scope_of = {id(s.expression): s for s in scopes}
+        self.by_pair: dict[frozenset[str], list[tuple[str, Any]]] = {}
+        for name, link in onto.links.items():
+            key = frozenset({link.from_object.lower(), link.to_object.lower()})
+            self.by_pair.setdefault(key, []).append((name, link))
+
+    # -- one link ---------------------------------------------------------
+
+    def link_for(self, cols: set[tuple[str, str, str, str]]) -> Any:
+        """The verified link every (relA, colA, relB, colB) pair together spells."""
+        rels = {c[0] for c in cols} | {c[2] for c in cols}
+        pair = frozenset(rels)
+        names = " x ".join(sorted(rels))
+        if len(rels) != 2:
+            raise _Refuse(f"{names} has no declared link")
+        wanted = {frozenset({(a, b), (c, d)}) for (a, b, c, d) in cols}
+        candidates = self.by_pair.get(pair, [])
+        if not candidates:
+            raise _Refuse(f"{names} has no declared link")
+        for name, link in candidates:
+            declared = {
+                frozenset(
+                    {(link.from_object.lower(), f.lower()), (link.to_object.lower(), t.lower())}
+                )
+                for f, t in zip(link.from_columns, link.to_columns, strict=True)
+            }
+            if wanted == declared:
+                if name not in self.usable:
+                    raise _Refuse(f"link {name} is not verified")
+                return link
+        raise _Refuse(f"{names} joined on columns no declared link names")
+
+    # -- subquery operands ------------------------------------------------
+
+    def _uncorrelated(self, select: exp.Select) -> bool:
+        """No column inside ``select`` resolves to a source outside it."""
+
+        def inside(node: exp.Expression | None) -> bool:
+            while node is not None:
+                if node is select:
+                    return True
+                node = node.parent
+            return False
+
+        for scope in self.scope_of.values():
+            if not inside(scope.expression):
+                continue
+            for col in scope.expression.find_all(exp.Column):
+                if not _local(col, scope):
+                    continue
+                owner, _alias = _owner(col, scope, self.columns_of)
+                if not inside(owner.expression):
+                    return False
+        return True
+
+    def _subquery_conjunct(self, c: exp.Expression, scope: Scope) -> None:
+        """Allowed: EXISTS, ``col IN (SELECT col ...)`` on a link, one scalar aggregate."""
+        body = c.this if isinstance(c, exp.Not) else c
+        if isinstance(body, exp.Exists):
+            return  # its own scope proves any correlation is a verified link
+        if isinstance(c, exp.In) and c.args.get("query") is not None:
+            left = c.this
+            sub = _inner_select(c.args["query"])
+            if not isinstance(left, exp.Column) or sub is None or len(sub.expressions) != 1:
+                raise _Refuse("subquery_comparison")
+            proj = sub.expressions[0]
+            inner_col = proj.this if isinstance(proj, exp.Alias) else proj
+            inner = self.scope_of.get(id(sub))
+            if not isinstance(inner_col, exp.Column) or inner is None:
+                raise _Refuse("subquery_comparison")
+            if not self._uncorrelated(sub) or len(inner.sources) != 1:
+                raise _Refuse("subquery_comparison")
+            osc, oalias = _owner(left, scope, self.columns_of)
+            a = _real(osc, oalias, left.name.lower(), self.columns_of)
+            isc, ialias = _owner(inner_col, inner, self.columns_of)
+            b = _real(isc, ialias, inner_col.name.lower(), self.columns_of)
+            self.link_for({(a[0], a[1], b[0], b[1])})
+            return
+        comparisons = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+        if isinstance(c, comparisons):
+            sides = [c.this, c.expression]
+            subs = [x for x in sides if isinstance(x, exp.Subquery)]
+            if len(subs) == 1:
+                sub = _inner_select(subs[0])
+                if (
+                    sub is not None
+                    and len(sub.expressions) == 1
+                    and not sub.args.get("group")
+                    and isinstance(
+                        (
+                            sub.expressions[0].this
+                            if isinstance(sub.expressions[0], exp.Alias)
+                            else sub.expressions[0]
+                        ),
+                        exp.AggFunc,
+                    )
+                    and self._uncorrelated(sub)
+                ):
+                    return  # one uncorrelated scalar: a constant, not a join
+        raise _Refuse("subquery_comparison")
+
+    # -- one scope --------------------------------------------------------
+
+    def check_scope(self, scope: Scope) -> None:
+        select = scope.expression
+        if not isinstance(select, exp.Select):
+            return
+        own = _sources(scope)
+        conj: list[exp.Expression] = []
+        for join in select.args.get("joins") or []:
+            if join.args.get("using"):
+                raise _Refuse("join_using")
+            conj.extend(_conjuncts(join.args.get("on")))
+        where = select.args.get("where")
+        conj.extend(_conjuncts(where.this if where is not None else None))
+
+        Col = tuple[str, str]  # (real relation, column)
+        edges: dict[frozenset[_Node], list[tuple[_Node, Col, _Node, Col]]] = {}
+        for c in conj:
+            if _top_queries(c):
+                self._subquery_conjunct(c, scope)
+            cols = [col for col in c.find_all(exp.Column) if _local(col, scope)]
+            owners: dict[int, tuple[_Node, Scope]] = {}
+            for col in cols:
+                sc, alias = _owner(col, scope, self.columns_of)
+                owners[id(col)] = ((id(sc), alias), sc)
+            if len({o[0] for o in owners.values()}) < 2:
+                continue
+            if not (
+                isinstance(c, exp.EQ)
+                and isinstance(c.this, exp.Column)
+                and isinstance(c.expression, exp.Column)
+            ):
+                raise _Refuse("non_link_predicate")
+            (na, sa), (nb, sb) = owners[id(c.this)], owners[id(c.expression)]
+            ra = _real(sa, na[1], c.this.name.lower(), self.columns_of)
+            rb = _real(sb, nb[1], c.expression.name.lower(), self.columns_of)
+            edges.setdefault(frozenset({na, nb}), []).append((na, ra, nb, rb))
+
+        parents: set[_Node] = set()
+        joined: list[frozenset[_Node]] = []
+        for pair, rows in edges.items():
+            link = self.link_for({(ra[0], ra[1], rb[0], rb[1]) for _na, ra, _nb, rb in rows})
+            parent_rel = link.to_object.lower()
+            for na, ra, nb, rb in rows:
+                if ra[0] == parent_rel:
+                    parents.add(na)
+                if rb[0] == parent_rel:
+                    parents.add(nb)
+            joined.append(pair)
+
+        mine = {(id(scope), a) for a in own}
+        if len(mine) > 1:
+            root = {n: n for n in mine}
+
+            def find(n: _Node) -> _Node:
+                while root[n] != n:
+                    n = root[n]
+                return n
+
+            for pair in joined:
+                if pair <= mine:
+                    a, b = sorted(pair)
+                    root[find(a)] = find(b)
+            if len({find(n) for n in mine}) != 1:
+                named = sorted(
+                    {lbl for a in own if (lbl := _source_label(own[a])) is not None}
+                ) or ["derived tables"]
+                raise _Refuse(f"cross_product ({', '.join(named)} not joined by a verified link)")
+        self._fan_trap(scope, parents & mine)
+
+    def _fan_trap(self, scope: Scope, parents: set[_Node]) -> None:
+        """An aggregate over the one side of a join counts each parent once per child."""
+        if not parents:
+            return
+        for agg in scope.expression.find_all(exp.AggFunc):
+            if not _local(agg, scope) or isinstance(agg, (exp.Min, exp.Max)):
+                continue
+            if isinstance(agg.this, exp.Distinct):
+                continue
+            for col in agg.find_all(exp.Column):
+                if not _local(col, scope):
+                    continue
+                sc, alias = _owner(col, scope, self.columns_of)
+                if (id(sc), alias) in parents:
+                    label = _source_label(_sources(sc)[alias]) or "a derived table"
+                    raise _Refuse(
+                        f"fan_trap ({label} is the one side of the join; aggregate it "
+                        "with DISTINCT or before joining)"
+                    )
 
 
 def unverified_join_reason(
@@ -797,136 +1048,51 @@ def unverified_join_reason(
 ) -> str | None:
     """``unverified_join:<why>`` unless every join in ``sql`` is a verified link.
 
-    A join is a column equality between two relations (JOIN ON, WHERE, or
-    ``col IN (SELECT col ...)``). It passes only when the relation pair and
-    every column pair match one link the Space declared AND ``verify()``
-    measured many-to-one with nothing failed on it or its ends. Relations in
-    one scope that no such predicate connects (a cross product) fail too.
-    Anything the analysis cannot resolve fails closed.
+    Structural, fail closed. Per SELECT scope, every top-level AND conjunct of
+    JOIN ON / WHERE that relates two sources (aliases, so a second copy of a
+    relation is its own source) must be a plain column equality; the
+    equalities between two sources together must spell exactly one declared
+    link that ``verify()`` measured many-to-one with nothing failed. OR, NOT,
+    functions or any other shape relating two sources refuse. A conjunct with
+    a subquery operand is allowed only as EXISTS, ``col IN (SELECT col ...)``
+    on a verified link, or a comparison with one uncorrelated scalar
+    aggregate. Every source of a scope must be connected by verified links,
+    and an aggregate over the one side of a join (other than MIN/MAX or
+    DISTINCT) is a fan trap. A column that cannot be placed refuses.
     """
     try:
         roots = [r for r in sqlglot.parse(sql, read=_DIALECT) if r is not None]
     except Exception:  # noqa: BLE001
         return f"{REASON_UNVERIFIED_JOIN}:parse"
-    usable = usable_links(onto, violations)
-    by_pair: dict[frozenset[str], list[Any]] = {}
-    for name, link in onto.links.items():
-        by_pair.setdefault(
-            frozenset({link.from_object.lower(), link.to_object.lower()}), []
-        ).append((name, link))
     for root in roots:
         try:
             scopes = traverse_scope(root)
         except Exception:  # noqa: BLE001
             return f"{REASON_UNVERIFIED_JOIN}:scope"
-        for scope in scopes:
-            if not isinstance(scope.expression, exp.Select):
-                continue
-            pairs, why = _pairs_in_scope(scope, columns_of)
-            if why:
-                return f"{REASON_UNVERIFIED_JOIN}:{why}"
-            grouped: dict[frozenset[str], set[tuple[str, str, str, str]]] = {}
-            for (ra, ca), (rb, cb) in pairs:
-                grouped.setdefault(frozenset({ra, rb}), set()).add((ra, ca, rb, cb))
-            joined: list[frozenset[str]] = []
-            for pair, cols in grouped.items():
-                reason = _check_pair(pair, cols, by_pair, usable)
-                if reason:
-                    return f"{REASON_UNVERIFIED_JOIN}:{reason}"
-                joined.append(pair)
-            real = {
-                label for src in scope.sources.values() if (label := _source_label(src)) is not None
-            }
-            own = real | {
-                f"derived:{alias}" for alias, src in scope.sources.items() if isinstance(src, Scope)
-            }
-            if len(own) > 1 and not _connected(own, joined, scope, columns_of):
-                # Real relation names only: a derived table's alias is model text.
-                named = ", ".join(sorted(real)) or "derived tables"
-                return (
-                    f"{REASON_UNVERIFIED_JOIN}:cross_product "
-                    f"({named} not joined by a verified link)"
-                )
+        rule = _JoinRule(onto, violations, columns_of, scopes)
+        try:
+            for scope in scopes:
+                rule.check_scope(scope)
+        except _Refuse as why:
+            return f"{REASON_UNVERIFIED_JOIN}:{why}"
+        except Exception:  # noqa: BLE001 - an analysis we cannot finish proves nothing
+            return f"{REASON_UNVERIFIED_JOIN}:unanalysable"
     return None
 
 
-def _check_pair(
-    pair: frozenset[str],
-    cols: set[tuple[str, str, str, str]],
-    by_pair: Mapping[frozenset[str], list[Any]],
-    usable: Mapping[str, Any],
+def check_sql_against_space(
+    sql: str, onto: Ontology, warehouse: Path | None, extra: Sequence[str] = ()
 ) -> str | None:
-    names = " x ".join(sorted(pair))
-    candidates = by_pair.get(pair, [])
-    if not candidates:
-        return f"{names} has no declared link"
-    wanted = {
-        (child.lower(), cc, parent.lower(), pc) for (child, cc, parent, pc) in _oriented(cols)
-    }
-    for name, link in candidates:
-        declared = {
-            (link.from_object.lower(), f.lower(), link.to_object.lower(), t.lower())
-            for f, t in zip(link.from_columns, link.to_columns, strict=True)
-        }
-        # Either orientation of each equality is the same predicate.
-        flipped = {(p, pc, c, cc) for (c, cc, p, pc) in declared}
-        if wanted <= (declared | flipped) and _covers(wanted, declared, flipped):
-            if name not in usable:
-                return f"link {name} is not verified"
-            return None
-    return f"{names} joined on columns no declared link names"
-
-
-def _oriented(cols: set[tuple[str, str, str, str]]) -> set[tuple[str, str, str, str]]:
-    return {(ra, ca.lower(), rb, cb.lower()) for (ra, ca, rb, cb) in cols}
-
-
-def _covers(
-    wanted: set[tuple[str, str, str, str]],
-    declared: set[tuple[str, str, str, str]],
-    flipped: set[tuple[str, str, str, str]],
-) -> bool:
-    """Every column pair of the link is present: a partial composite key fans out."""
-    norm_w = {frozenset({(a, b), (c, d)}) for (a, b, c, d) in wanted}
-    norm_d = {frozenset({(a, b), (c, d)}) for (a, b, c, d) in declared}
-    return norm_d <= norm_w
-
-
-def _connected(
-    own: set[str],
-    joined: Sequence[frozenset[str]],
-    scope: Scope,
-    columns_of: Mapping[str, set[str]],
-) -> bool:
-    """Whether the scope's sources form one component over verified-link joins.
-
-    A derived source joins through the relation its column resolved to, so a
-    pair naming that relation connects the ``derived:`` node too.
-    """
-    alias_of: dict[str, str] = {}
-    for alias, src in scope.sources.items():
-        if isinstance(src, Scope):
-            alias_of[f"derived:{alias}"] = alias
-    parent = {n: n for n in own}
-
-    def find(n: str) -> str:
-        while parent.setdefault(n, n) != n:
-            n = parent[n]
-        return n
-
-    def union(a: str, b: str) -> None:
-        parent[find(a)] = find(b)
-
-    for pair in joined:
-        a, b = sorted(pair)
-        union(a, b)
-    # A derived source's own relations were resolved to real ones; attach it to them.
-    for node, alias in alias_of.items():
-        inner = scope.sources[alias]
-        assert isinstance(inner, Scope)
-        for src in inner.sources.values():
-            label = _source_label(src)
-            if label is not None:
-                union(node, label)
-    roots = {find(n) for n in own}
-    return len(roots) == 1
+    """Verify ``onto`` against the lake now, then the join rule. Fail closed."""
+    try:
+        con = connect_file(Path(warehouse)) if warehouse is not None else None
+        if con is None:
+            return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+        try:
+            violations = onto.verify(con)
+        finally:
+            con.close()
+        cols = relation_columns(onto, warehouse, extra)
+    except Exception:  # noqa: BLE001
+        return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+    return unverified_join_reason(sql, onto, violations, columns_of=cols)

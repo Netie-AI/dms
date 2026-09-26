@@ -17,6 +17,7 @@ Does not expand certified exact-match packs. Does not invent provider keys.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -86,6 +87,8 @@ from dms_executor.semantic_retrieve import (
 )
 from dms_executor.space_ontology import (
     REASON_NO_DECLARED_MEASURE,
+    REASON_UNVERIFIED_JOIN,
+    budget_space_block,
     relation_columns,
     space_catalog,
     unverified_join_reason,
@@ -1038,12 +1041,14 @@ def _space_insights_body(allowed: set[str], space: dict[str, Any]) -> dict[str, 
     from the stored ontology. Demo retrieve context is not mixed in.
     """
     tables = sorted(t for t in allowed if _space_table_ok(t))
-    return {
+    out: dict[str, Any] = {
         "source": "space",
         "tables": tables,
         "schema": [{"table": t} for t in tables],
-        **space,
     }
+    # Budgeted inside Cortex's caller-ontology limits. A cut is marked.
+    out.update(budget_space_block(space, used=len(json.dumps(out, default=str))))
+    return out
 
 
 def maybe_generative_ask(
@@ -1299,16 +1304,16 @@ def maybe_generative_ask(
                     question=q,
                 )
             )
-        join_why = (
-            unverified_join_reason(
-                sql,
-                space_onto,
-                declared_violations,
-                columns_of=relation_columns(space_onto, lake),
-            )
-            if space_onto is not None and not why
-            else None
-        )
+        join_why: str | None = None
+        if space_onto is not None and not why:
+            try:
+                cols = relation_columns(space_onto, lake, sorted(allowed))
+            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+                join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            else:
+                join_why = unverified_join_reason(
+                    sql, space_onto, declared_violations, columns_of=cols
+                )
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
             # SQL may join two relations only over a link the source declared
