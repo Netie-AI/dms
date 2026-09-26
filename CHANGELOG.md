@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - SERVED-ATTR-01: per-call served attribution on every ask envelope (#305)
+
+- **Ticket.** [SERVED-ATTR-01 #305](https://github.com/Netie-AI/dms/issues/305) under dms#231. Does not close tickets. Not COMPLETE. No live figures.
+- **Change.** Every ask envelope from `Executor.live_ask` carries `served_attribution`: `reported` (Cortex sent `served_provider` and `served_model` for every generate leg), `missing` (a generate call may have reached a model and attribution is absent or null, including a timeout leg or one unattributed retry), `none` (no model call: pre-gate abstain, certified hit, bearer refuse with zero HTTP calls, 401/403, or a climb Cortex reports as UNARMED/NO_KEY/REFUSED_AUTH). `generate_legs[].served_provider`/`served_model` are copied per leg as received. The contract-ask fallback after a generative miss now keeps the setup fields and `generate_legs` (it dropped them). Nothing is inferred from logs, config or SQL.
+- **Diagnostic.** `DMS_SERVED_ATTR_DIAG=1` (off by default; swap: a prove run turns it on) adds `served_payload_keys` = top-level key names of the Insights payload and their count, never values.
+- **Gate.** `tests/test_served_attr_01.py`, 17 tests on the envelope (`assert_envelope_valid`, rows, text), three through `POST /v1/chat/ask`. 16 fail on the base `f73b7ab`; the diag-off guard passes by design. No existing test edited, no skip/xfail.
+- **Not this ticket:** Cortex code (Cortex#269); the grid runner's INVALID label (dms#299).
+
 ## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
 
 - **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.

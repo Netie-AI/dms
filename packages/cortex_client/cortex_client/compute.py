@@ -845,6 +845,62 @@ def _leg_kind(payload: dict[str, Any] | None) -> str:
     return "nothing"
 
 
+#: SERVED-ATTR-01 (dms#305). Per-call attribution Cortex stamps on each
+#: generate response (its RouteStamp through ``served_*``). Copied as received.
+SERVED_LEG_KEYS: tuple[str, ...] = ("served_provider", "served_model")
+_NO_MODEL_CLIMB = frozenset({"UNARMED", "NO_KEY", "REFUSED_AUTH"})
+
+
+def _leg(payload: dict[str, Any] | None, returned: str) -> dict[str, Any]:
+    """One generate leg: what it returned, plus its served_* when reported."""
+    leg: dict[str, Any] = {"returned": returned}
+    if isinstance(payload, dict):
+        for key in SERVED_LEG_KEYS:
+            if key in payload:
+                leg[key] = payload[key]
+    return leg
+
+
+def generate_model_called(payload: dict[str, Any] | None) -> bool:
+    """True when an Insights generate call may have reached a model.
+
+    False only on wire evidence that no model ran: no payload (transport miss
+    or no call), a DMS-side bearer refuse (no HTTP call), a 401/403, or a
+    climb Cortex reports as UNARMED / NO_KEY / REFUSED_AUTH. Anything else
+    that reached generate - SQL, a plan, a timeout, an empty answer - counts
+    as called, so missing attribution shows as missing, never as none.
+    """
+    if not isinstance(payload, dict):
+        return False
+    gen = payload.get("generative")
+    gen_d = gen if isinstance(gen, dict) else {}
+    if isinstance(gen_d.get("stamp"), dict):
+        return True
+    if str(payload.get("insights_fail") or "") in {
+        INSIGHTS_FAIL_BEARER_MISSING,
+        INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
+    }:
+        return False
+    raw_legs = payload.get("generate_legs")
+    if isinstance(raw_legs, dict):
+        got = raw_legs.get("legs")
+        legs: list[Any] = got if isinstance(got, list) else []
+        if not legs and not int(raw_legs.get("count") or 0):
+            return False
+        if any(
+            isinstance(leg, dict) and leg.get("returned") in {"sql", "plan", "timeout"}
+            for leg in legs
+        ):
+            return True
+    elif insights_query_sql(payload) or typed_query_plan(payload):
+        return True
+    if int(payload.get(_HTTP_STATUS_KEY) or 0) in {401, 403}:
+        return False
+    climb = gen_d.get("climb")
+    final = str((climb if isinstance(climb, dict) else {}).get("final") or "").upper()
+    return final not in _NO_MODEL_CLIMB
+
+
 def _run_insights_legs(
     http: httpx.Client,
     root: str,
@@ -867,12 +923,12 @@ def _run_insights_legs(
     from cortex_client.qualifiers import retry_plan_covers_qualifiers
 
     started = time.monotonic()
-    legs: list[dict[str, str]] = []
+    legs: list[dict[str, Any]] = []
     insights_payload: dict[str, Any] | None = None
     gen_timed_out = False
     try:
         insights_payload = _insights_generate_post(http, root, insights_body, headers)
-        legs.append({"returned": _leg_kind(insights_payload)})
+        legs.append(_leg(insights_payload, _leg_kind(insights_payload)))
     except httpx.TimeoutException:
         gen_timed_out = True
         legs.append({"returned": "timeout"})
@@ -916,7 +972,7 @@ def _run_insights_legs(
         retry_body["generate_retry"] = "ranked_slots"
         try:
             retry_payload = _insights_generate_post(http, root, retry_body, headers)
-            legs.append({"returned": _leg_kind(retry_payload)})
+            legs.append(_leg(retry_payload, _leg_kind(retry_payload)))
         except httpx.TimeoutException:
             retry_payload = None
             legs.append({"returned": "timeout"})
@@ -1125,11 +1181,13 @@ __all__ = [
     "PLAN_ORIGIN_GENERATE_SQL",
     "PLAN_ORIGIN_ONTOLOGY_RANKING",
     "PLAN_SOURCES",
+    "SERVED_LEG_KEYS",
     "attach_compute_plan_source",
     "classify_insights_fail",
     "compute_insights",
     "compute_query",
     "first_ranked_metric_id",
+    "generate_model_called",
     "generate_retry_eligible",
     "insights_fail_payload",
     "insights_ask_timeout_seconds",
