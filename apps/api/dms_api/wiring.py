@@ -44,19 +44,43 @@ def canonical_space_id(space_id: str) -> str:
     return dms_executor.canonical_space_id(space_id)
 
 
-def space_source_pulls(*, space_id: str | None = None) -> list[dict[str, Any]]:
-    """SQL-source tables landed for a Space (ingest registry), truncation included."""
-    return dms_executor.list_source_pulls(space_id=space_id)
+#: Named degraded state for a read route that could not read the warehouse (an
+#: ingest in another process holds its write lock, or the file is unreadable).
+#: The route still answers 200 with what it could read, and says what it could not.
+def _warehouse_degraded(exc: Exception) -> dict[str, str]:
+    return {
+        "code": str(getattr(exc, "code", "warehouse_unavailable")),
+        "message": (
+            "SQL-source tables could not be read from the warehouse just now "
+            "(an ingest may be holding it); counts and lists omit them. Retry shortly."
+        ),
+        "detail": str(exc)[:200],
+    }
 
 
-def space_source_pull_counts() -> dict[str, int]:
-    """Landed SQL-source tables per canonical Space id, one registry read."""
+def space_source_pulls(
+    *, space_id: str | None = None
+) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+    """SQL-source tables landed for a Space (ingest registry), truncation included.
+
+    Read-only. ``(pulls, degraded)``: ``degraded`` names why the registry could not
+    be read (``warehouse_unavailable``) instead of raising a 5xx on a GET.
+    """
+    try:
+        return dms_executor.list_source_pulls(space_id=space_id), None
+    except dms_executor.WarehouseBusy as exc:
+        return [], _warehouse_degraded(exc)
+
+
+def space_source_pull_counts() -> tuple[dict[str, int], dict[str, str] | None]:
+    """Landed SQL-source tables per canonical Space id, one read-only registry read."""
+    pulls, degraded = space_source_pulls()
     counts: dict[str, int] = {}
-    for pull in dms_executor.list_source_pulls():
+    for pull in pulls:
         sid = pull.get("space_id")
         if sid:
             counts[str(sid)] = counts.get(str(sid), 0) + 1
-    return counts
+    return counts, degraded
 
 
 def warehouse_tables(*, space_id: str | None = None):

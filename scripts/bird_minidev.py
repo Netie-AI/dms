@@ -89,18 +89,24 @@ SYNTHETIC_SETUP: tuple[str, ...] = (
 AskFn = Callable[[str], dict[str, Any]]
 GoldFn = Callable[[str], tuple[list[dict[str, Any]] | None, str | None]]
 
-#: A provider/transport failure on one question (HTTP 429 or 5xx from the ask
-#: route, or a transport timeout) after bounded retries. It is not a grade: it is
-#: never RIGHT, is excluded from n and from EX-on-answered (like GOLD_ERROR), and
-#: is printed so a run with holes cannot pass for a clean one. Before this one 429
-#: raised out of ``score_cases`` and aborted all 500 questions.
+#: A model-provider failure on one question, after bounded retries. It is not a
+#: grade: never RIGHT, excluded from n and from EX-on-answered (like GOLD_ERROR),
+#: and printed so a run with holes cannot pass for a clean one.
+#:
+#: Only an error the ask route *names* as the provider's earns it: an HTTP error
+#: whose body carries ``detail.upstream == "provider"`` or a ``detail.code`` in
+#: PROVIDER_CODES (DMS chat route, ``_PROVIDER_FAILURES``). The status alone
+#: proves nothing - the chat route maps any DMS-internal exception to 503, so a
+#: status-based rule excluded DMS crashes from grading and let them raise
+#: EX-on-answered.
 PROVIDER_ERROR = "PROVIDER_ERROR"
-#: A bare HTTP 500 is DMS itself crashing, not the provider: DMS maps upstream
-#: failures to 502/503/504 (chat route). It is retried like a provider error so
-#: one crash cannot abort the run, but if it persists it grades WRONG - counted in
-#: n and in the EX-on-answered denominator - so a product bug on hard questions
-#: cannot raise EX by being excluded.
-APP_ERROR_KIND = "http_500"
+#: The codes the DMS chat route puts on an identified provider failure.
+PROVIDER_CODES = frozenset({"provider_rate_limited", "provider_unavailable"})
+#: Every other retryable failure (a 429/5xx without the provider marker, or a
+#: transport failure talking to DMS) is DMS failing. It is retried so one blip
+#: cannot abort the run, but if it persists it grades WRONG - counted in n and in
+#: the EX-on-answered denominator - and is printed on its own line. Never excluded.
+PROVIDER_KIND_PREFIX = "provider:"
 #: Attempts per question including the first; delays double from BACKOFF_S.
 PROVIDER_ATTEMPTS = 3
 BACKOFF_S = 2.0
@@ -661,23 +667,44 @@ def asked_text(question: Mapping[str, Any], *, with_evidence: bool) -> str:
     return text
 
 
+def _error_body(exc: BaseException) -> Mapping[str, Any]:
+    resp = getattr(exc, "response", None)
+    try:
+        body = resp.json() if resp is not None else None
+    except Exception:  # noqa: BLE001 - not JSON: nothing names the provider
+        return {}
+    if not isinstance(body, Mapping):
+        return {}
+    detail = body.get("detail")
+    return detail if isinstance(detail, Mapping) else body
+
+
 def provider_error_kind(exc: BaseException) -> str | None:
-    """``http_429`` / ``http_5xx`` / ``transport``, or None for anything else.
+    """Classify one failed ask, or None for a failure that must stop the run.
 
-    ``http_500`` is retried too but is not a provider error: see APP_ERROR_KIND.
-
-    Only failures of the provider or the wire are absorbed. A 4xx other than 429
-    (bad request, Space not found) or a bug in the harness still raises: those are
-    a broken setup, not one unlucky question, and must stop the run.
+    ``provider:<code>`` - the body names a provider failure (PROVIDER_CODES or
+    ``upstream: "provider"``): PROVIDER_ERROR, excluded.
+    ``http_<status>`` - a 429/5xx without that marker: DMS failing, graded WRONG.
+    ``transport`` - DMS did not answer (connect/read failure): graded WRONG.
+    None - any other 4xx (bad request, Space not found) or a harness bug: a
+    broken setup, which stops the run.
     """
     status = getattr(getattr(exc, "response", None), "status_code", None)
     if isinstance(status, int):
+        detail = _error_body(exc)
+        code = str(detail.get("code") or "")
+        if code in PROVIDER_CODES or detail.get("upstream") == "provider":
+            return f"{PROVIDER_KIND_PREFIX}{code or f'http_{status}'}"
         if status == 429 or 500 <= status <= 599:
             return f"http_{status}"
         return None
     if type(exc).__name__ in _TRANSPORT_NAMES:
         return "transport"
     return None
+
+
+def is_provider_kind(kind: str | None) -> bool:
+    return bool(kind) and str(kind).startswith(PROVIDER_KIND_PREFIX)
 
 
 def _retry_after_s(exc: BaseException) -> float | None:
@@ -735,7 +762,7 @@ def score_cases(
             sleep(pace_s)
         sql = gold_sql_of(item)
         gold_rows, gold_err = gold_fn(sql)
-        asked, provider_err, retries = ask_with_retry(
+        asked, error_kind, retries = ask_with_retry(
             ask_fn,
             asked_text(item, with_evidence=with_evidence),
             attempts=attempts,
@@ -746,10 +773,11 @@ def score_cases(
         served = served_from_response(env)
         if gold_err:
             verdict = gold_error_dominating(gold_err, "OK")
-        elif provider_err == APP_ERROR_KIND:
-            verdict = "WRONG"
-        elif provider_err:
+        elif is_provider_kind(error_kind):
             verdict = PROVIDER_ERROR
+        elif error_kind:
+            # DMS failed (no provider marker): a product failure, graded WRONG.
+            verdict = "WRONG"
         else:
             verdict = gold_error_dominating(None, grade_envelope(env, gold_rows or []))
         got = envelope_rows(env)
@@ -765,7 +793,8 @@ def score_cases(
             "provider": served["provider"],
             "model": served["model"],
             "plan_origin": served["plan_origin"],
-            "provider_error": provider_err,
+            "provider_error": error_kind if is_provider_kind(error_kind) else None,
+            "dms_error": None if is_provider_kind(error_kind) else error_kind,
             "retries": retries,
         }
         for key in SETUP_FIELD_KEYS:
@@ -784,14 +813,14 @@ def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         PROVIDER_ERROR: 0,
     }
     retries = 0
-    app_errors = 0
+    app_errors: Counter[str] = Counter()
     for row in rows:
         key = str(row.get("verdict") or "")
         if key in tallies:
             tallies[key] += 1
         retries += int(row.get("retries") or 0)
-        if row.get("provider_error") == APP_ERROR_KIND:
-            app_errors += 1
+        if row.get("dms_error"):
+            app_errors[str(row["dms_error"])] += 1
     n = tallies["OK"] + tallies["LAYER"] + tallies["ABSTAIN"] + tallies["WRONG"]
     answered = tallies["OK"] + tallies["LAYER"]
     wrong = tallies["WRONG"]
@@ -805,7 +834,8 @@ def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "gold_error": tallies["GOLD_ERROR"],
         "provider_error": tallies[PROVIDER_ERROR],
         "retries": retries,
-        "app_error": app_errors,
+        "app_error": sum(app_errors.values()),
+        "app_error_kinds": dict(sorted(app_errors.items())),
         "answered": answered,
         "right": tallies["OK"] + tallies["LAYER"],
         "ex_on_answered_pct": round(100.0 * answered / denom, 2) if denom else None,
@@ -849,8 +879,14 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
     )
     print(
         f"provider errors={summary.get('provider_error', 0)} after retry "
-        f"(retries={summary.get('retries', 0)}); never counted RIGHT; "
-        f"DMS http_500={summary.get('app_error', 0)} graded WRONG"
+        f"(retries={summary.get('retries', 0)}); named by the ask route as the "
+        "provider's; never counted RIGHT"
+    )
+    kinds = summary.get("app_error_kinds") or {}
+    kinds_s = " ".join(f"{k}={v}" for k, v in kinds.items()) or "none"
+    print(
+        f"DMS failures={summary.get('app_error', 0)} ({kinds_s}) graded WRONG, "
+        "counted in n and EX (no provider marker)"
     )
     print(f"EX on answered={ex_s} abstain rate={abs_txt}")
     print(f"  {bound_line(answered)}")
@@ -1207,14 +1243,18 @@ def minidev_self_check() -> list[str]:
 
 
 class _PlantedHTTPError(Exception):
-    """Stands in for httpx.HTTPStatusError: carries ``response.status_code``."""
+    """Stands in for httpx.HTTPStatusError: ``response.status_code`` and ``.json()``."""
 
-    def __init__(self, status: int) -> None:
+    def __init__(self, status: int, detail: Mapping[str, Any] | None = None) -> None:
         super().__init__(f"HTTP {status}")
+        body = {"detail": dict(detail or {})}
 
         class _Resp:
             status_code = status
             headers: dict[str, str] = {}
+
+            def json(self) -> dict[str, Any]:
+                return body
 
         self.response = _Resp()
 
@@ -1222,7 +1262,7 @@ class _PlantedHTTPError(Exception):
 def _provider_error_self_check(
     questions: Sequence[Mapping[str, Any]], gold: GoldFn
 ) -> list[str]:
-    """One persistent 429 must not abort the run, and must never grade RIGHT."""
+    """A named provider 429 is excluded, never RIGHT; an unnamed DMS 503 is WRONG."""
     errs: list[str] = []
     first_q = asked_text(questions[0], with_evidence=False)
     calls: Counter[str] = Counter()
@@ -1230,7 +1270,9 @@ def _provider_error_self_check(
     def flaky(question: str) -> dict[str, Any]:
         calls[question] += 1
         if question == first_q:
-            raise _PlantedHTTPError(429)
+            raise _PlantedHTTPError(
+                429, {"code": "provider_rate_limited", "upstream": "provider"}
+            )
         return {"badge": "ABSTAIN", "abstained": True, "rows": [], "text": "no"}
 
     slept: list[float] = []
@@ -1243,7 +1285,7 @@ def _provider_error_self_check(
     if len(cases) != len(questions):
         errs.append("provider 429 on one question must still grade the rest")
     if cases and cases[0]["verdict"] != PROVIDER_ERROR:
-        errs.append("persistent 429 must be PROVIDER_ERROR")
+        errs.append("a named provider 429 must be PROVIDER_ERROR")
     if calls[first_q] != PROVIDER_ATTEMPTS or len(slept) != PROVIDER_ATTEMPTS - 1:
         errs.append("provider 429 must be retried a bounded number of times")
     summary = _slice_tally(cases)
@@ -1253,19 +1295,29 @@ def _provider_error_self_check(
     if summary["n"] != len(graded):
         errs.append("PROVIDER_ERROR must be excluded from n")
 
-    def crashes(question: str) -> dict[str, Any]:
-        raise _PlantedHTTPError(500)
+    for status, detail in (
+        (500, {}),
+        (503, {"code": "live_ask_failed", "message": "KeyError: 'x'"}),
+        (429, {"code": "pool_saturated"}),
+    ):
 
-    try:
-        crashed = score_cases(
-            questions[:1], ask_fn=crashes, gold_fn=gold, sleep=slept.append
-        )
-    except Exception as exc:  # noqa: BLE001
-        return errs + [f"one DMS 500 aborted the run: {type(exc).__name__}"]
-    if not crashed or crashed[0]["verdict"] == PROVIDER_ERROR:
-        errs.append("a DMS 500 must grade WRONG, not be excluded as PROVIDER_ERROR")
-    elif _slice_tally(crashed)["n"] != 1:
-        errs.append("a DMS 500 must count in n")
+        def crashes(question: str, _s: int = status, _d: Any = detail) -> dict[str, Any]:
+            raise _PlantedHTTPError(_s, _d)
+
+        try:
+            crashed = score_cases(
+                questions[:1], ask_fn=crashes, gold_fn=gold, sleep=slept.append
+            )
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"one DMS {status} aborted the run: {type(exc).__name__}")
+            continue
+        if not crashed or crashed[0]["verdict"] != "WRONG":
+            errs.append(
+                f"a DMS {status} without a provider marker must grade WRONG, "
+                "not be excluded as PROVIDER_ERROR"
+            )
+        elif _slice_tally(crashed)["n"] != 1 or _slice_tally(crashed)["app_error"] != 1:
+            errs.append(f"a DMS {status} must count in n and as a DMS failure")
 
     def teapot(question: str) -> dict[str, Any]:
         raise _PlantedHTTPError(400)

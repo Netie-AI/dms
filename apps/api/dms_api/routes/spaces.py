@@ -25,6 +25,9 @@ class SpaceOut(BaseModel):
     name: str
     source_count: int
     member_count: int
+    #: Set only when the warehouse could not be read (``warehouse_unavailable``):
+    #: ``source_count`` then omits SQL-source tables, and says so.
+    degraded: dict[str, str] | None = None
 
 
 class SpaceCreate(BaseModel):
@@ -49,22 +52,25 @@ def _source_count(record_count: int, space_id: str, pulls: dict[str, int]) -> in
 
 @router.get("")
 def list_spaces(store: SpaceStoreDep, binding: StoreBindingDep) -> dict[str, Any]:
-    pulls = space_source_pull_counts()
+    pulls, degraded = space_source_pull_counts()
     spaces = [
         SpaceOut(
             id=s.id,
             name=s.name,
             source_count=_source_count(s.source_count, s.id, pulls),
             member_count=s.member_count,
-        ).model_dump()
+        ).model_dump(exclude_none=True)
         for s in store.list_spaces()
     ]
-    return {
+    out: dict[str, Any] = {
         "spaces": spaces,
         "persisted": binding.persistent,
         "storage": binding.as_dict(),
         "hint": binding.hint,
     }
+    if degraded:
+        out["degraded"] = degraded
+    return out
 
 
 @router.post("", status_code=201)
@@ -95,7 +101,7 @@ def create_space(
             name=record.name,
             source_count=record.source_count,
             member_count=record.member_count,
-        ).model_dump(),
+        ).model_dump(exclude_none=True),
         # From the store that actually bound, never from the setting: with
         # DATABASE_URL set and Postgres unreachable this used to answer
         # persisted=true for a Space living in process memory.
@@ -105,16 +111,18 @@ def create_space(
     }
 
 
-@router.get("/{space_id}")
+@router.get("/{space_id}", response_model_exclude_none=True)
 def get_space(space_id: str, store: SpaceStoreDep) -> SpaceOut:
     s = store.get(space_id)
     if s is None:
         raise HTTPException(status_code=404, detail="space_not_found")
+    pulls, degraded = space_source_pull_counts()
     return SpaceOut(
         id=s.id,
         name=s.name,
-        source_count=_source_count(s.source_count, s.id, space_source_pull_counts()),
+        source_count=_source_count(s.source_count, s.id, pulls),
         member_count=s.member_count,
+        degraded=degraded,
     )
 
 
@@ -130,13 +138,16 @@ def space_sources(space_id: str, store: SpaceStoreDep, settings: SettingsDep) ->
     """
     if store.get(space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
-    from dms_api.routes.library import _list_sources
+    from dms_api.routes.library import _list_sources_status
 
-    sources = _list_sources(settings, space_id=space_id)
+    sources, degraded = _list_sources_status(settings, space_id=space_id)
     truncated = [s for s in sources if s.get("truncated")]
-    return {
+    out: dict[str, Any] = {
         "space_id": space_id,
         "sources": sources,
         "count": len(sources),
         "truncated_count": len(truncated),
     }
+    if degraded:
+        out["degraded"] = degraded
+    return out

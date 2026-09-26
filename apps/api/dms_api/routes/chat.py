@@ -92,6 +92,44 @@ _STATUS_BY_CODE: dict[str, int] = {
 
 _TIMEOUT_HINTS = ("timed out", "timeout", "deadline exceeded")
 
+#: Model-provider failures, by the reason strings Cortex's FreeRoute/OpenVault
+#: integration puts on them. Only these are named ``upstream: "provider"`` on the
+#: error body. A benchmark harness excludes a provider failure from grading, so the
+#: marker has to be earned by an identified provider error: every other non-200
+#: (a DMS or engine crash mapped to 503) stays a product failure.
+_PROVIDER_FAILURES: tuple[tuple[str, str, int], ...] = (
+    ("freeroute token budget exceeded", "provider_rate_limited", 429),
+    ("freeroute pack budget exhausted", "provider_rate_limited", 429),
+    ("freeroute fallback exhausted", "provider_unavailable", 503),
+    ("freeroute has no candidate hop", "provider_unavailable", 503),
+    ("openvault unreachable", "provider_unavailable", 503),
+)
+PROVIDER_ERROR_CODES = frozenset(code for _m, code, _s in _PROVIDER_FAILURES)
+
+
+def _provider_failure(*parts: str | None) -> tuple[str, int] | None:
+    blob = " ".join(p for p in parts if p).lower()
+    for marker, code, status in _PROVIDER_FAILURES:
+        if marker in blob:
+            return code, status
+    return None
+
+
+def _provider_http_error(exc: BaseException, *parts: str | None) -> HTTPException | None:
+    hit = _provider_failure(*parts)
+    if hit is None:
+        return None
+    code, status = hit
+    return HTTPException(
+        status_code=status,
+        detail={
+            "code": code,
+            "upstream": "provider",
+            "message": " ".join(p for p in parts if p)[:400],
+            "retryable": True,
+        },
+    )
+
 
 def _looks_like_timeout(*parts: str | None) -> bool:
     blob = " ".join(p for p in parts if p).lower()
@@ -324,6 +362,9 @@ def chat_ask(
                 session_id=body.session_id,
             )
 
+        provider = _provider_http_error(exc, exc.code, exc.detail)
+        if provider is not None and not settings.dms_demo_fallback:
+            raise provider from exc
         # Never mask policy refusals with demo numbers (0 confidently wrong).
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)
@@ -343,6 +384,9 @@ def chat_ask(
         # prints "Cortex ok" the moment /health responds, which is before the
         # first submit can actually complete, so on a cold start this branch is
         # reached by a timeout more often than by a real outage.
+        provider = _provider_http_error(exc, str(exc))
+        if provider is not None:
+            raise provider from exc
         timed_out = _looks_like_timeout(str(exc), type(exc).__name__)
         raise HTTPException(
             status_code=504 if timed_out else 503,

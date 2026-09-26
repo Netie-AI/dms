@@ -31,10 +31,26 @@ from bird_minidev import (  # noqa: E402
 )
 
 
-def _http_error(status: int, headers: dict[str, str] | None = None) -> httpx.HTTPStatusError:
+def _http_error(
+    status: int,
+    headers: dict[str, str] | None = None,
+    detail: dict[str, Any] | None = None,
+) -> httpx.HTTPStatusError:
     req = httpx.Request("POST", "http://dms.test/v1/chat/ask")
-    resp = httpx.Response(status, request=req, headers=headers or {})
+    resp = httpx.Response(
+        status,
+        request=req,
+        headers=headers or {},
+        json={"detail": detail if detail is not None else {"code": "live_ask_failed"}},
+    )
     return httpx.HTTPStatusError(f"HTTP {status}", request=req, response=resp)
+
+
+#: What the DMS chat route puts on an identified provider failure.
+_PROVIDER = {
+    429: {"code": "provider_rate_limited", "upstream": "provider"},
+    503: {"code": "provider_unavailable", "upstream": "provider"},
+}
 
 
 def _questions() -> list[dict[str, Any]]:
@@ -66,7 +82,7 @@ def _run(ask_fn: Any, questions: list[dict[str, Any]], tmp_path: Path) -> dict[s
 
 
 @pytest.mark.parametrize("status", [429, 503])
-def test_one_provider_error_still_grades_the_rest(
+def test_one_named_provider_error_is_excluded_and_grades_the_rest(
     status: int, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     questions = _questions()
@@ -78,7 +94,7 @@ def test_one_provider_error_still_grades_the_rest(
     def ask_fn(question: str) -> dict[str, Any]:
         calls[question] = calls.get(question, 0) + 1
         if question == unlucky:
-            raise _http_error(status)
+            raise _http_error(status, detail=_PROVIDER[status])
         return answers[question]
 
     report = _run(ask_fn, questions, tmp_path)
@@ -87,7 +103,8 @@ def test_one_provider_error_still_grades_the_rest(
 
     assert len(cases) == len(questions)
     assert cases[0]["verdict"] == PROVIDER_ERROR
-    assert cases[0]["provider_error"] == f"http_{status}"
+    assert cases[0]["provider_error"] == f"provider:{_PROVIDER[status]['code']}"
+    assert cases[0]["dms_error"] is None
     assert calls[unlucky] == PROVIDER_ATTEMPTS  # bounded retry, then give up
     assert len(report["_slept"]) == PROVIDER_ATTEMPTS - 1
     # Everything else graded exactly as it would have without the error.
@@ -104,6 +121,7 @@ def test_one_provider_error_still_grades_the_rest(
     out = capsys.readouterr().out
     assert "PROVIDER_ERROR=1 (excluded from n)" in out
     assert "provider errors=1 after retry" in out
+    assert "DMS failures=0 (none)" in out
 
 
 def test_retry_that_succeeds_is_graded_normally(tmp_path: Path) -> None:
@@ -115,7 +133,7 @@ def test_retry_that_succeeds_is_graded_normally(tmp_path: Path) -> None:
     def ask_fn(question: str) -> dict[str, Any]:
         if question == first and failed["n"] == 0:
             failed["n"] += 1
-            raise _http_error(429, {"retry-after": "7"})
+            raise _http_error(429, {"retry-after": "7"}, detail=_PROVIDER[429])
         item = next(q for q in questions if asked_text(q, with_evidence=False) == question)
         return _right_answer(gold, item)
 
@@ -139,11 +157,27 @@ def test_self_check_covers_provider_error() -> None:
     assert minidev_self_check() == []
 
 
-def test_dms_500_is_retried_then_graded_wrong_not_excluded(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("status", "detail"),
+    [
+        (500, {}),
+        # The chat route maps any DMS-internal exception to 503 live_ask_failed.
+        (503, {"code": "live_ask_failed", "message": "KeyError: 'rows'"}),
+        (502, {"code": "submit_failed"}),
+        (504, {"code": "live_ask_timeout"}),
+        # Cortex pool load is the product under load, not the model provider.
+        (429, {"code": "pool_saturated"}),
+    ],
+)
+def test_dms_failure_without_provider_marker_is_graded_wrong_not_excluded(
+    status: int,
+    detail: dict[str, Any],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A bare 500 is DMS crashing (upstream failures map to 502/503/504). Excluding
-    it would let a product bug raise EX-on-answered; it must count as WRONG."""
+    """Round-1 verifier: 502/503/504 were excluded as "upstream", but DMS crashes
+    arrive as 503. Only a failure the body names as the provider's is excluded;
+    anything else counts as WRONG so a product bug cannot raise EX-on-answered."""
     questions = _questions()
     gold = duck_gold_fn()
     answers = {asked_text(q, with_evidence=False): _right_answer(gold, q) for q in questions}
@@ -153,7 +187,7 @@ def test_dms_500_is_retried_then_graded_wrong_not_excluded(
     def ask_fn(question: str) -> dict[str, Any]:
         calls[question] = calls.get(question, 0) + 1
         if question == unlucky:
-            raise _http_error(500)
+            raise _http_error(status, detail=detail)
         return answers[question]
 
     report = _run(ask_fn, questions, tmp_path)
@@ -161,10 +195,12 @@ def test_dms_500_is_retried_then_graded_wrong_not_excluded(
     assert len(cases) == len(questions)
     assert calls[unlucky] == PROVIDER_ATTEMPTS
     assert cases[0]["verdict"] == "WRONG"
-    assert cases[0]["provider_error"] == "http_500"
+    assert cases[0]["provider_error"] is None
+    assert cases[0]["dms_error"] == f"http_{status}"
     assert summary["provider_error"] == 0
     assert summary["wrong"] == 1
     assert summary["app_error"] == 1
+    assert summary["app_error_kinds"] == {f"http_{status}": 1}
     graded = [c for c in cases if c["verdict"] not in {"GOLD_ERROR", PROVIDER_ERROR}]
     assert summary["n"] == len(graded)
     assert summary["ex_on_answered_pct"] is not None and summary["ex_on_answered_pct"] < 100.0
@@ -172,4 +208,19 @@ def test_dms_500_is_retried_then_graded_wrong_not_excluded(
     print_summary(summary, limit=None, total=len(questions))
     out = capsys.readouterr().out
     assert "PROVIDER_ERROR=0 (excluded from n)" in out
-    assert "DMS http_500=1 graded WRONG" in out
+    assert f"DMS failures=1 (http_{status}=1) graded WRONG" in out
+
+
+def test_transport_failure_talking_to_dms_is_graded_wrong(tmp_path: Path) -> None:
+    """DMS not answering is not a provider error either."""
+    questions = _questions()
+
+    def ask_fn(question: str) -> dict[str, Any]:
+        raise httpx.ReadTimeout("read timed out")
+
+    report = _run(ask_fn, questions[:1], tmp_path)
+    case = report["cases"][0]
+    assert case["verdict"] == "WRONG"
+    assert case["dms_error"] == "transport"
+    assert report["summary"]["provider_error"] == 0
+    assert report["summary"]["n"] == 1

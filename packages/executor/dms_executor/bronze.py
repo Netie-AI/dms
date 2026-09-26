@@ -17,7 +17,9 @@ from typing import Any
 import duckdb
 
 from dms_executor.demo_warehouse import (
+    WarehouseBusy,
     connect_file,
+    connect_file_readonly,
     connect_readonly,
     ensure_demo_warehouse,
     warehouse_path,
@@ -205,7 +207,7 @@ def claim_source_table_name(
     Returns ``(table_name, collision_note)``. The note is ``None`` when nothing collided.
     """
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db)
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
@@ -249,7 +251,7 @@ def record_source_pull(
     ).hexdigest()
     stamp = extracted_at or mint_extracted_at()
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db)
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
@@ -268,6 +270,13 @@ def record_source_pull(
         )
     finally:
         con.close()
+    _note_recorded_pull(
+        path,
+        table_name,
+        truncated=truncated,
+        row_count=row_count,
+        source_row_count=source_row_count,
+    )
     return fingerprint
 
 
@@ -276,7 +285,7 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
     db = path or warehouse_path()
     if not Path(db).is_file():
         return {}
-    con = duckdb.connect(str(db))
+    con = connect_file(Path(db))
     try:
         rows = con.execute(
             f"SELECT table_name, filename, extracted_at, truncated, source_kind "
@@ -343,38 +352,46 @@ def _registry_rows(
     *,
     path: Path | None,
 ) -> list[tuple[Any, ...]]:
-    """Read the ingest registry without seeding a warehouse or widening it.
+    """Read the ingest registry read-only, without seeding or widening it.
 
     ``build(col)`` returns the SQL; ``col("x")`` yields ``r.x`` when the column
     exists and ``NULL`` when this registry predates it. A warehouse written before
     ``source_row_count`` existed (the BIRD warehouse) used to fail the whole
-    SELECT, the error was swallowed into ``[]``, and the Space read as holding no
-    sources until an unrelated route happened to widen the table. Only "no
-    warehouse" and "no registry yet" read as empty now.
+    SELECT. "No warehouse" and "no registry yet" read as empty.
+
+    Opens read-only (``connect_file_readonly``): these back GET routes, and a GET
+    must not take the write lock an ingest in another process may hold. When the
+    warehouse cannot be read - a writer holds it, the file is unreadable - this
+    raises ``WarehouseBusy`` (named, ``code = "warehouse_unavailable"``) for the
+    caller to degrade on. It never returns ``[]`` for "could not look": that is
+    how a Space with 75 landed tables read as holding none.
     """
     db = Path(path or warehouse_path())
     if not db.is_file():
         return []
-    con = connect_file(db)
+    con = connect_file_readonly(db)
     try:
-        cols = {
-            str(r[0])
-            for r in con.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'"
-            ).fetchall()
-        }
-        if not cols:
-            return []
+        try:
+            cols = {
+                str(r[0])
+                for r in con.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'bronze' AND table_name = '_ingest_registry'"
+                ).fetchall()
+            }
+            if not cols:
+                return []
 
-        def col(name: str) -> str:
-            if name in cols:
-                return f"r.{name}"
-            if name in _REGISTRY_OPTIONAL:
-                return "NULL"
-            raise KeyError(f"unknown registry column {name!r}")
+            def col(name: str) -> str:
+                if name in cols:
+                    return f"r.{name}"
+                if name in _REGISTRY_OPTIONAL:
+                    return "NULL"
+                raise KeyError(f"unknown registry column {name!r}")
 
-        return [tuple(r) for r in con.execute(build(col), params).fetchall()]
+            return [tuple(r) for r in con.execute(build(col), params).fetchall()]
+        except duckdb.Error as exc:
+            raise WarehouseBusy(f"ingest registry unreadable: {exc}") from exc
     finally:
         con.close()
 
@@ -456,19 +473,44 @@ def list_source_pulls(
     return out
 
 
-def truncation_notes(
-    *,
-    tables: list[str],
-    sql: str | None = None,
-    path: Path | None = None,
-) -> list[str]:
-    """Assumption lines for every capped bronze table an answer read.
+#: Last complete read of the capped tables, per warehouse file:
+#: ``{bare_name: (loaded_rows, source_rows)}``. Lets an answer that cites a capped
+#: table still say so while an ingest in another process holds the file.
+_TRUNC_SNAPSHOT: dict[str, dict[str, tuple[Any, Any]]] = {}
+#: Pulls this process recorded since that snapshot (None = no longer capped).
+_TRUNC_RECENT: dict[str, dict[str, tuple[Any, Any] | None]] = {}
+_TRUNC_GUARD = threading.Lock()
 
-    A table landed under the row cap answers over the rows that landed, not the
-    source. Saying nothing is the silent-fallback lie: a total over 500,000 of
-    1,056,320 rows reads as the whole ledger. Matching is on the bare bronze name
-    in ``tables`` (sources / grounded tables) or as an identifier in ``sql``.
+ROWCAP_UNAVAILABLE_NOTE = (
+    "ingest row-cap check unavailable (ingest registry busy or unreadable); "
+    "this answer reads bronze table(s) that may be partial"
+)
+
+
+def _trunc_key(path: Path | None) -> str:
+    return str(Path(path or warehouse_path()).resolve())
+
+
+def _note_recorded_pull(
+    path: Path | None, table: str, *, truncated: bool | None, row_count: int | None,
+    source_row_count: int | None,
+) -> None:
+    """Keep the row-cap view current for pulls this process just recorded."""
+    with _TRUNC_GUARD:
+        recent = _TRUNC_RECENT.setdefault(_trunc_key(path), {})
+        recent[str(table).lower()] = (row_count, source_row_count) if truncated else None
+
+
+def _capped_tables(
+    path: Path | None,
+) -> tuple[dict[str, tuple[Any, Any]], frozenset[str] | None]:
+    """(capped tables, names whose state is known).
+
+    The second item is None when the registry was read (every table's state is
+    known), else the names this process recorded since the last read it could not
+    make - a busy warehouse with no snapshot knows only those.
     """
+    key = _trunc_key(path)
     try:
         rows = _registry_rows(
             lambda col: (
@@ -478,21 +520,55 @@ def truncation_notes(
             [],
             path=path,
         )
-    except duckdb.Error:
-        # Could not read the registry: say so rather than imply full coverage.
-        return [
-            "ingest row-cap check unavailable (ingest registry unreadable); "
-            "this answer may cover a partial table"
-        ]
-    if not rows:
-        return []
-    bare = set()
+    except WarehouseBusy:
+        with _TRUNC_GUARD:
+            snap = _TRUNC_SNAPSHOT.get(key)
+            known = dict(snap or {})
+            for name, val in (_TRUNC_RECENT.get(key) or {}).items():
+                if val is None:
+                    known.pop(name, None)
+                else:
+                    known[name] = val
+            recent_names = frozenset(_TRUNC_RECENT.get(key) or {})
+        return known, None if snap is not None else recent_names
+    fresh = {str(r[0]).lower(): (r[1], r[2]) for r in rows}
+    with _TRUNC_GUARD:
+        _TRUNC_SNAPSHOT[key] = fresh
+        _TRUNC_RECENT.pop(key, None)
+    return fresh, None
+
+
+def truncation_notes(
+    *,
+    tables: list[str],
+    sql: str | None = None,
+    path: Path | None = None,
+) -> list[str]:
+    """Assumption lines for every capped bronze table an answer read - and only those.
+
+    A table landed under the row cap answers over the rows that landed, not the
+    source. Saying nothing is the silent-fallback lie: a total over 500,000 of
+    1,056,320 rows reads as the whole ledger. Matching is on the bare bronze name
+    in ``tables`` (sources / grounded tables) or on a table the SQL reads.
+
+    When the registry is busy (an ingest in another process holds the file) the
+    last complete read, plus pulls this process recorded since, still decides. Only
+    if nothing was ever read *and* the answer reads an explicitly ``bronze.``-
+    qualified table does it say the check was unavailable: an answer over the demo
+    tables or any uncapped table carries no row-cap line, busy or not.
+    """
+    bare: set[str] = set()
+    bronze_named: set[str] = set()
     for t in tables:
         label = str(t or "").strip().strip('"')
+        qualified = label.lower().startswith(("bronze.", "bronze:"))
         for prefix in ("bronze:", "bronze."):
             label = label.removeprefix(prefix)
         if label:
-            bare.add(label.rsplit(".", 1)[-1].strip('"').lower())
+            name = label.rsplit(".", 1)[-1].strip('"').lower()
+            bare.add(name)
+            if qualified:
+                bronze_named.add(name)
     sql_l = (sql or "").lower()
     # Table references only, so a column that shares a capped table's name is not
     # a hit. Unparseable SQL falls back to the bare-identifier match: a spurious
@@ -502,9 +578,16 @@ def truncation_notes(
         from dms_executor.sql_currency import referenced_tables
 
         read_tables = referenced_tables(sql or "")
+        if read_tables is not None:
+            bronze_named |= {
+                t.split(".", 1)[1] for t in read_tables if t.startswith("bronze.")
+            }
+    if not bare and not sql_l:
+        return []
+    capped, known_only = _capped_tables(path)
     notes: list[str] = []
-    for name, row_count, total in rows:
-        key = str(name).lower()
+    for key in sorted(capped):
+        row_count, total = capped[key]
         if key in bare:
             hit = True
         elif not sql_l:
@@ -518,9 +601,11 @@ def truncation_notes(
         loaded = "?" if row_count is None else f"{int(row_count):,}"
         of = "an unknown number of" if total is None else f"{int(total):,}"
         notes.append(
-            f"partial table: bronze.{name} holds {loaded} of {of} source rows "
+            f"partial table: bronze.{key} holds {loaded} of {of} source rows "
             "(ingest row cap); this answer covers the loaded rows only"
         )
+    if known_only is not None and not notes and (bronze_named - known_only):
+        notes.append(ROWCAP_UNAVAILABLE_NOTE)
     return notes
 
 
@@ -588,7 +673,7 @@ def ingest_csv_bytes(
     if not text.endswith("\n"):
         text += "\n"
     tmp.write_text(text, encoding="utf-8")
-    con = duckdb.connect(str(db))
+    con = connect_file(db)
     try:
         ensure_lake_schemas(con)
         # The registry has to exist before *any* path that renames a table into
@@ -757,7 +842,7 @@ def write_bronze_rows(
     if not columns:
         raise ValueError("columns required")
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db)
     try:
         ensure_lake_schemas(con)
         con.execute(f'DROP TABLE IF EXISTS "{schema}"."{name}"')

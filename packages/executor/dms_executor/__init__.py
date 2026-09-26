@@ -55,7 +55,12 @@ from dms_executor.demo_pack import (
     maybe_pack_ask,
     maybe_uncertified_refuse_ask,
 )
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    WarehouseBusy,
+    ensure_demo_warehouse,
+    execute_sql,
+)
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
@@ -964,6 +969,7 @@ __all__ = [
     "list_bronze_tables",
     "list_source_pulls",
     "canonical_space_id",
+    "WarehouseBusy",
     "list_promote_targets",
     "list_warehouse_tables",
     "list_verified_queries",
