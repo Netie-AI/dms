@@ -21,6 +21,11 @@ from cortex_client.compute import (
 
 from dms_executor.ontology import Ontology
 from dms_executor.semantic_retrieve import intent_slots, load_measure_aliases
+from dms_executor.sql_fanout import (
+    FAN_OUT_REASONS,
+    fan_out_abstain_text,
+    fan_out_customer_label,
+)
 from dms_executor.sql_grain import (
     GRAIN_REASONS,
     REASON_SQL_UNANALYSABLE,
@@ -136,6 +141,8 @@ def customer_abstain_text(reason: str) -> str:
             return body
     if gap.split(":", 1)[0].strip() in GRAIN_REASONS:
         return grain_abstain_text(gap)
+    if gap.split(":", 1)[0].strip() in FAN_OUT_REASONS:
+        return fan_out_abstain_text(gap)
     if gap.split(":", 1)[0].strip() == REASON_CORTEX_REFUSED:
         return (
             "I cannot certify an answer to that question: the engine refused the "
@@ -288,6 +295,8 @@ def customer_gap_label(reason: str) -> str:
         )
     if inner_head in GRAIN_REASONS:
         return prefix + grain_customer_label(inner)
+    if inner_head in FAN_OUT_REASONS:
+        return prefix + fan_out_customer_label(inner)
     if inner_head in _MODEL_TAIL_GAPS:
         # SPACE-GEN-01 round 3: a measure id / column / object a model or a
         # ranked plan chose never reaches the customer text.

@@ -81,6 +81,7 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
+from dms_executor.sql_fanout import fan_out_reason
 from dms_executor.sql_grain import (
     grain_mismatch_reason,
     real_table_labels,
@@ -806,6 +807,20 @@ def _submit_validated(
         return _abstain(
             question,
             grain_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
+    # FANOUT-GUARD-01: an aggregate over a join that repeats the aggregated
+    # relation's rows (SUM(orders.amount) over orders JOIN items) is not the
+    # figure the data holds. Keys are proven unique on the warehouse data or
+    # by a pre-aggregated side; anything unproven is a named ABSTAIN.
+    fan_why = fan_out_reason(sql, warehouse)
+    if fan_why:
+        return _abstain(
+            question,
+            fan_why,
             space_id=space_id,
             session_id=session_id,
             plan_source=plan_source,
