@@ -563,8 +563,20 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    # A granted ``schema.table`` (a SQL-source Space's ``bronze.<t>``) admits
+    # that exact qualified relation. Bare names keep the old rule. Nothing is
+    # admitted that the grant does not name.
+    qualified = {str(g).strip().lower() for g in grantable if "." in str(g)}
+    missing: set[str] = set()
+    for label in _sql_cited_labels(sql):
+        bare = _relation_bare(label)
+        if not bare:
+            continue
+        if bare in grantable or f"warehouse_{bare}" in grantable:
+            continue
+        if label.strip().lower() in qualified:
+            continue
+        missing.add(bare)
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
@@ -947,8 +959,17 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    demo_ontology_allowed: bool = True,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
+
+    SPACE-GEN-01: ``tables`` (a user grounding selection) narrows ``grantable``
+    and the retrieved context; it no longer skips generation. A selection that
+    leaves nothing granted is a named ABSTAIN, never a wider read.
+    ``demo_ontology_allowed=False`` (a Space whose data is not the demo lake)
+    never loads the supply-chain demo ontology: its measures and links are not
+    this Space's, so ranking or a typed plan cannot compile against them, and a
+    typed plan with no Space ontology is ``missing_ontology``.
 
     Compute receives a short retrieved context, not the full ontology dump.
     Cortex Insights generate (ontology_plan) may return a typed plan or SELECT
@@ -974,9 +995,8 @@ def maybe_generative_ask(
     short-circuit: ranked where-paths + importance on a *granted* join, or
     honest ABSTAIN naming ``missing_join`` / the grain (never bare
     ``validate:ungranted:...``). bind_plan is not that confident path.
-    File-grounded asks skip.
     """
-    if tables or compute is None or submit is None or ledger_append is None:
+    if compute is None or submit is None or ledger_append is None:
         return None
     q = normalize_ask_question(question)
     if not q:
@@ -1011,6 +1031,19 @@ def maybe_generative_ask(
     if lake is not None and not lake.is_file():
         lake = None
 
+    allowed = set(grantable) if grantable is not None else set(_KNOWN)
+    selection = [str(t) for t in (tables or []) if t]
+    if selection:
+        picked = set(selection)
+        allowed = {t for t in allowed if t in picked}
+        if not allowed:
+            return _abstain(
+                q,
+                "ungranted: none of the selected tables is granted to this Space",
+                space_id=space_id,
+                session_id=session_id,
+            )
+
     onto = ontology
     # A2-02/A2-06: a caller-declared ontology that FAILED verify keeps its
     # evidence and stays loaded with failed subjects marked. The default
@@ -1020,7 +1053,7 @@ def maybe_generative_ask(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake) if demo_ontology_allowed else None
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:
@@ -1039,7 +1072,6 @@ def maybe_generative_ask(
             if declared_violations or not onto.verified:
                 declared = onto
                 onto = None
-    allowed = grantable if grantable is not None else set(_KNOWN)
     # Short retrieved context only -- not the full ontology dump.
     ctx = retrieve_short_context(
         q, warehouse=lake, grantable=allowed, ontology=onto
@@ -1272,6 +1304,18 @@ def maybe_generative_ask(
             _abstain(
                 q,
                 gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if onto is None and not demo_ontology_allowed and declared is None:
+        return _stamp(
+            _abstain(
+                q,
+                "missing_ontology: this Space has no verified ontology, so a "
+                "typed plan cannot compile; only validated generated SQL can answer",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,

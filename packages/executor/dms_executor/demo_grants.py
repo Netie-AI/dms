@@ -96,6 +96,15 @@ def space_name(space_id: str) -> str | None:
     return entry[0] if entry else None
 
 
+def is_demo_space(space_id: str | None) -> bool:
+    """The personal no-Space context or a seeded DR-0002 demo Space.
+
+    Only these read the demo spine by default. Any other Space's data is its
+    own ingested sources (SPACE-GEN-01).
+    """
+    return space_id is None or canonical_space_id(space_id) in DEMO_SPACE_GRANTS
+
+
 def ingested_bronze_tables(
     path: Path | None = None,
     *,
@@ -141,9 +150,17 @@ class DemoSessionStore:
         return entry[1] if entry else ()
 
     def is_space_member(self, space_id: str, user_id: str) -> bool:
-        # The demo has one steward who belongs to every seeded Space. An id that
-        # is not seeded is not a Space you are a member of.
-        return canonical_space_id(space_id) in DEMO_SPACE_GRANTS
+        # The demo has one steward who belongs to every seeded Space. A Space
+        # that steward created and ingested sources into (SQL source, upload
+        # tagged ``space_id``) is theirs too: before SPACE-GEN-01 such a Space
+        # was never a member, so its grant named no sources and Cortex refused
+        # "nothing grants Space" (44 of 500 BIRD asks). An id with no seed and
+        # nothing ingested into it is still not a Space you are a member of,
+        # and membership grants only the sources tagged to it (below).
+        sid = canonical_space_id(space_id)
+        if sid in DEMO_SPACE_GRANTS:
+            return True
+        return bool(ingested_bronze_tables(self.warehouse, space_id=sid))
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
         sid = canonical_space_id(space_id)

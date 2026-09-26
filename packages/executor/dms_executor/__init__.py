@@ -44,7 +44,11 @@ from dms_executor.demo_ask import (
     normalize_ask_question,
     with_grounded_scope,
 )
-from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_grants import (
+    DemoSessionStore,
+    ingested_bronze_tables,
+    is_demo_space,
+)
 from dms_executor.demo_pack import (
     is_uncertified_paraphrase,
     maybe_pack_ask,
@@ -114,6 +118,21 @@ logger = logging.getLogger(__name__)
 #: Postgres control plane (P-DMS-2); until then every session is this user.
 DEMO_TENANT_ID = "tenant_demo"
 DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def default_readable_tables(granted: list[str], *, space_id: str | None) -> list[str]:
+    """What a turn reads when the user ticked nothing (SPACE-GEN-01).
+
+    The demo Space (and the personal no-Space context) reads the demo spine
+    only; an upload there stays opt-in. Any other Space reads what it is
+    granted - its own ingested sources. Reading only ``DEMO_TABLES`` there
+    left a SQL-source Space with nothing readable, so every BIRD question was
+    ranked against the supply-chain demo instead of the Space's data. Never
+    wider than ``granted``: the grant check is unchanged.
+    """
+    if is_demo_space(space_id):
+        return [t for t in granted if t in DEMO_TABLES]
+    return list(granted)
 
 
 def _insights_compute_seam(
@@ -305,7 +324,7 @@ class Executor:
         # An upload is grantable on request but is not part of the default
         # readable set: asking with nothing ticked must not quietly widen the
         # manifest to every file anyone has ever uploaded.
-        default_readable = [t for t in grantable if t in DEMO_TABLES]
+        default_readable = default_readable_tables(grantable, space_id=space_id)
         readable = selection or default_readable
         # A different manifest must be a different bound session — reusing the id
         # would serve the question under whatever manifest happened to be bound
@@ -556,8 +575,9 @@ class Executor:
             self._store_turn(session_id, space_id, env)
             return env
 
-        # Narrow-only. demo_acl's default readable set is grantable intersect
-        # DEMO_TABLES; an upload is readable only when explicitly selected.
+        # Narrow-only. In the demo Space the default readable set is grantable
+        # intersect DEMO_TABLES and an upload is readable only when explicitly
+        # selected; any other Space reads its own grant (SPACE-GEN-01).
         # This path used ``requested or grantable_tables(...)``, so with
         # nothing ticked the cascade and retrieve opened every bronze upload
         # tagged to the Space and sent DISTINCT samples in the Insights body.
@@ -569,8 +589,15 @@ class Executor:
             granted = []
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
-        default_readable = [t for t in granted if t in DEMO_TABLES]
+        ungrantable = [t for t in selection if t not in set(granted)]
+        if ungrantable:
+            # Refused, not dropped, before generation reads anything: the same
+            # refusal ``demo_acl`` raises at bind, now that a selection narrows
+            # generation instead of skipping it (SPACE-GEN-01).
+            raise GroundingRefused(ungrantable=ungrantable, grantable=granted)
+        default_readable = default_readable_tables(granted, space_id=space_id)
         readable = requested or default_readable
+        demo_space = is_demo_space(space_id)
         cascade = (
             run_cascade(
                 question,
@@ -629,6 +656,7 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                demo_ontology_allowed=demo_space,
             )
             if gen_env is not None:
                 env = attach_cascade(gen_env, cascade)

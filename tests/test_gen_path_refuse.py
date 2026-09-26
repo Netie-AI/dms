@@ -126,8 +126,10 @@ def _assert_named_gap(env: dict[str, Any], token: str) -> None:
 
 
 def test_customer_text_names_gap_not_generic() -> None:
-    generic = customer_abstain_text("submit_failed")
-    assert "gap:" not in generic.lower()
+    # SPACE-GEN-01: a reason outside GAP_REASONS is still named in the text;
+    # the unnamed sentence hid 110 of 500 BIRD refusals' causes.
+    other = customer_abstain_text("submit_failed")
+    assert "gap: submit_failed" in other
     named = customer_abstain_text("unknown_measure: no measure named 'profit'")
     assert "gap:" in named
     assert "profit" in named

@@ -47,11 +47,6 @@ GAP_REASONS = frozenset(
     }
 )
 
-_GENERIC_ABSTAIN = (
-    "I cannot certify an ontology-grounded query for that question, "
-    "so I am not executing one."
-)
-
 
 def gap_reason_name(reason: str) -> str | None:
     """Head token of a compile/ranking refusal, or None if not a named gap."""
@@ -64,11 +59,16 @@ def customer_abstain_text(reason: str) -> str:
     gap = str(reason or "").strip()
     if gap.startswith("currency_mismatch:"):
         body = gap.split(":", 1)[1].strip()
-        return body if body else _GENERIC_ABSTAIN
+        if body:
+            return body
     if gap.split(":", 1)[0].strip() in GRAIN_REASONS:
         return grain_abstain_text(gap)
-    if not gap or gap_reason_name(gap) is None:
-        return _GENERIC_ABSTAIN
+    if not gap:
+        # SPACE-GEN-01: an ABSTAIN always names why. An empty reason is itself
+        # the defect, so say so rather than render the unnamed sentence.
+        gap = "abstain_reason_missing"
+    # Named gaps and every other refusal reason alike appear in the sentence.
+    # The unnamed "cannot certify" text hid 110 of 500 BIRD refusals' causes.
     return (
         "I cannot certify an ontology-grounded query for that question "
         f"(gap: {gap}), so I am not executing one."
