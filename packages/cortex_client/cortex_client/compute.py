@@ -1017,15 +1017,12 @@ def compute_query(
     An empty key is not replaced with a guessed secret. ``live_5000_ci`` is
     never claimed here.
     """
-    # ponytail: Ask-lane only (dms_query=False / compute_insights). Leftover
-    # compute_query still posts generate so frozen GEN-PATH-PROVE 401 +
-    # GEN-RESTORE client tests stay green. Product live_ask uses
-    # compute_insights; hosted generate uses insights_post. Empty/demo/insecure
-    # still refuse there. missing_none=False: api_key=None is the unconfigured
-    # Python default those frozen tests use.
-    refuse = generate_bearer_refuse(api_key, base_url, missing_none=False)
-    if refuse and not dms_query:
-        return insights_fail_payload(refuse)
+    # KEY-01 (dms#273): missing (None), empty, demo and insecure-transport
+    # keys make no HTTP call on either lane. The ask lane abstains named; the
+    # leftover dms_query=True lane misses (None) without posting anything.
+    refuse = generate_bearer_refuse(api_key, base_url)
+    if refuse:
+        return None if dms_query else insights_fail_payload(refuse)
     headers = _auth_headers(api_key)
     root = base_url.rstrip("/")
     insights_body = _insights_body(

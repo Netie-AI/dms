@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - KEY-01: DMS API fails closed on a missing Cortex key (#273)
+
+- **Ticket.** [KEY-01 #273](https://github.com/Netie-AI/dms/issues/273), pairs with Cortex TRUST-02 under #263. Does not close tickets. Does not clear the pilot security bar: Platform shows live that an unkeyed DMS API refuses.
+- **Change.** `settings.cortex_api_key` has no default (was Cortex's published demo key). `cortex_read.DEFAULT_VIEWER_KEY` and its fallback are gone; a missing key refuses with `cortex_key_missing` before any request. The app lifespan refuses to start in `DMS_ASK_MODE=live` without `DMS_DEMO_FALLBACK=1` when no usable key is set; demo mode and the bannered fallback start with no Cortex client. `cortex_key_missing()` treats None, blank and the demo key as missing. `generate_bearer_refuse` lost `missing_none`: `api_key=None` now makes no generate call on `compute_insights` and on the leftover `compute_query(dms_query=True)` lane (Epic 17:33 item 2: same refusals applied, no POST at all).
+- **Correction** to the BEARER-01 entry below: "Empty or demo-viewer keys make no generate call" was accurate, but `docs/ACTIVE.md` said "missing" too; an unset key (None) still generated on `compute_insights` until this entry.
+- **Denylist.** The literal `dms-demo-viewer-key` stays once in `apps/`+`packages/`: `cortex_client.insights.DEMO_VIEWER_KEY`, the value the refusals compare against (dms#289 tests import it). It is no default and no fallback; `tests/test_key_01.py` pins that it is the only occurrence.
+- **Test edits (tighten only, each named in the PR).** Frozen GEN-RESTORE / GEN-PATH-PROVE / climb / PII client tests move onto a seeded fake token (`fake-key01-test-token`); `test_insights_bearer_01.py` None-key assertion becomes a strict refuse and the removed kwarg must raise `TypeError`; `test_gen01` unkeyed `compute_query` now asserts zero HTTP calls. Nothing deleted, skipped or xfailed.
+- **Gate.** `tests/test_key_01.py`, 25 tests; 19 fail on `42d8c62` (the parent), 6 are guards that pass there by design (positive control with a key, and dms#289 refusals).
+
 ## 2026-09-26 - SERVED-ATTR-01: per-call served attribution on every ask envelope (#305)
 
 - **Ticket.** [SERVED-ATTR-01 #305](https://github.com/Netie-AI/dms/issues/305) under dms#231. Does not close tickets. Not COMPLETE. No live figures.

@@ -35,10 +35,12 @@ class Settings(BaseSettings):
     #: turned 13/52 asks into insights_timeout. On a generate timeout the
     #: no-model ontology ranking still runs. Capped by cortex_timeout_seconds.
     dms_insights_ask_timeout_seconds: float = 60.0
-    # Viewer key for Cortex's read-only ontology/eval surfaces (off-contract, see
-    # cortex_read.py). Matches Cortex's built-in demo key so local bring-up works;
-    # set CORTEX_API_KEY wherever DMS_API_KEYS is set.
-    cortex_api_key: str = "dms-demo-viewer-key"
+    # Cortex key (viewer+) for Insights, F5 and the read-only ontology/eval
+    # surfaces. KEY-01 (dms#273): no default. It comes only from CORTEX_API_KEY
+    # (the OpenVault-issued key) or explicit config. Unset in live mode, the API
+    # refuses to start; read surfaces refuse with ``cortex_key_missing``. Cortex's
+    # published demo key counts as unset.
+    cortex_api_key: str | None = None
     openvault_url: str = "http://127.0.0.1:5000"
     database_url: str | None = None
     # Product default = live (Cortex bind→ask). demo = offline fallback only.

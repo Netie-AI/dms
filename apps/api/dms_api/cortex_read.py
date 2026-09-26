@@ -21,10 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-
-#: Cortex's own default demo viewer key (packs/dms/security/api_auth._DEMO_KEYS).
-#: Overridden by CORTEX_API_KEY in any deployment that sets DMS_API_KEYS.
-DEFAULT_VIEWER_KEY = "dms-demo-viewer-key"
+from cortex_client.insights import CORTEX_KEY_MISSING, cortex_key_missing
 
 
 class CortexReadResult(dict[str, Any]):
@@ -45,7 +42,20 @@ def cortex_get(
     reason is carried as ``error`` plus a ``hint`` the UI can print verbatim.
     """
     url = f"{base_url.rstrip('/')}{path}"
-    headers = {"X-API-Key": api_key or DEFAULT_VIEWER_KEY}
+    if api_key is None or cortex_key_missing(api_key):
+        # KEY-01 (dms#273): no fallback key. Refuse before any request.
+        return CortexReadResult(
+            ok=False,
+            source="cortex",
+            url=url,
+            error=CORTEX_KEY_MISSING,
+            hint=(
+                "No Cortex key is configured, so DMS did not call Cortex. "
+                "Set CORTEX_API_KEY to the viewer key OpenVault issued."
+            ),
+            data=None,
+        )
+    headers = {"X-API-Key": api_key}
     try:
         with httpx.Client(timeout=timeout) as client:
             res = client.get(url, headers=headers, params=params)
@@ -95,4 +105,4 @@ def cortex_get(
     return CortexReadResult(ok=True, source="cortex", url=url, data=payload)
 
 
-__all__ = ["DEFAULT_VIEWER_KEY", "CortexReadResult", "cortex_get"]
+__all__ = ["CortexReadResult", "cortex_get"]
