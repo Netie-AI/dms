@@ -62,6 +62,7 @@ from dms_executor.envelope import (
     chart_from_rows,
     normalize_contributing_sources,
 )
+from dms_executor.gen_path_refuse import REASON_SPACE_ID_EMPTY, customer_abstain_text
 from dms_executor.generative_ask import maybe_generative_ask, path_miss_envelope
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -469,6 +470,16 @@ class Executor:
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
             ladder = "product"
+        if space_id is not None and not str(space_id).strip():
+            # SPACE-GEN-01 round 2: an empty Space id names no Space, so it
+            # grants nothing. Named ABSTAIN before any grant, bind or Cortex
+            # call; never "no filter" over every Space's tables.
+            return path_miss_envelope(
+                question,
+                REASON_SPACE_ID_EMPTY,
+                space_id=space_id,
+                session_id=session_id,
+            )
         certified_first = ladder != "generative"
         allow_gen = ladder != "exact"
         allow_cortex = ladder == "product"
@@ -964,6 +975,7 @@ def get_serving_engine() -> ServingEnginePort:
 
 
 __all__ = [
+    "customer_abstain_text",
     "run_crosscheck",
     "run_extract",
     "run_golden",

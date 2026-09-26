@@ -629,6 +629,158 @@ def cited_table_labels(sql: str) -> list[str] | None:
     return list(dict.fromkeys(labels))
 
 
+#: One part of a relation name on the DMS->Cortex wire (SHARED NAMING RULE).
+_REL_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def relation_name_parts(name: str) -> tuple[str, ...] | None:
+    """``("t",)`` or ``("schema", "t")`` when ``name`` follows the naming rule."""
+    parts = tuple(str(name).split("."))
+    if len(parts) not in (1, 2):
+        return None
+    if not all(_REL_PART.fullmatch(p) for p in parts):
+        return None
+    return parts
+
+
+def _cte_in_scope(table: exp.Table) -> bool:
+    """True when this bare reference names a CTE visible where it is written.
+
+    A non-recursive CTE's own body cannot see itself: ``WITH t AS (SELECT *
+    FROM t)`` reads the real table ``t``, so that inner reference is a table.
+    """
+    name = table.name.lower()
+    node: exp.Expression = table
+    while node.parent is not None:
+        parent = node.parent
+        if isinstance(parent, exp.CTE) and str(parent.alias or "").lower() == name:
+            with_ = parent.parent
+            if not (isinstance(with_, exp.With) and with_.args.get("recursive")):
+                return False
+        with_arg = parent.args.get("with")
+        if isinstance(with_arg, exp.With) and any(
+            str(c.alias or "").lower() == name for c in with_arg.expressions
+        ):
+            return True
+        node = parent
+    return False
+
+
+def _real_tables(root: exp.Expression) -> list[exp.Table]:
+    out: list[exp.Table] = []
+    for table in root.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            continue
+        if not table.db and not table.catalog and _cte_in_scope(table):
+            continue
+        out.append(table)
+    return out
+
+
+def real_table_labels(sql: str) -> list[str] | None:
+    """Relations the statement reads, CTE aliases excluded; None if unparseable."""
+    try:
+        roots = sqlglot.parse(sql, read=_DIALECT)
+    except Exception:  # noqa: BLE001 - any parse failure is "cannot analyse"
+        return None
+    labels: list[str] = []
+    for root in roots:
+        if root is None:
+            continue
+        for table in _real_tables(root):
+            parts = [p for p in (table.catalog, table.db, table.name) if p]
+            if parts:
+                labels.append(".".join(parts))
+    return list(dict.fromkeys(labels))
+
+
+def resolve_declared_relations(
+    sql: str, declared: Sequence[str] | set[str]
+) -> tuple[str, str | None]:
+    """``(sql, None)`` when every relation is a declared one, else ``(sql, reason)``.
+
+    SHARED NAMING RULE (SPACE-GEN-01 round 2). The generated SQL may name a
+    table only as the caller declared it: a qualified reference must equal a
+    declared ``schema.table``; a bare reference is accepted only when exactly
+    one declared table has that bare name, and is then rewritten to that
+    declared name, so ``FROM transactions`` in a Space that declared
+    ``bronze.transactions`` reads the Space's upload, never the demo lake's
+    ``main.transactions``. CTE aliases are not tables. Anything else is a
+    named reason (``relation_name_invalid``, ``ungranted:<t>``,
+    ``ambiguous_table:<t>``, ``sql_unanalysable``); the SQL is returned unchanged unless a bare name
+    was resolved.
+    """
+    by_full: dict[str, str] = {}
+    by_bare: dict[str, list[str]] = {}
+    for name in declared:
+        parts = relation_name_parts(str(name))
+        if parts is None:
+            continue
+        by_full[".".join(parts).lower()] = ".".join(parts)
+        by_bare.setdefault(parts[-1].lower(), []).append(".".join(parts))
+    try:
+        roots = sqlglot.parse(sql, read=_DIALECT)
+    except Exception:  # noqa: BLE001
+        return sql, "sql_unanalysable"
+    missing: set[str] = set()
+    ambiguous: set[str] = set()
+    invalid = False
+    changed = False
+    for root in roots:
+        if root is None:
+            continue
+        for table in _real_tables(root):
+            name = table.name
+            if any(
+                p and not _REL_PART.fullmatch(p) for p in (table.catalog, table.db, name)
+            ):
+                # ``"usd.book"`` is one identifier holding a dot: not a relation
+                # name either side of the boundary can carry.
+                invalid = True
+                continue
+            if table.catalog:
+                missing.add(".".join(p for p in (table.catalog, table.db, name) if p))
+                continue
+            if table.db:
+                label = f"{table.db}.{name}"
+                if label.lower() in by_full:
+                    continue
+                # ``main.t`` is what a bare declared ``t`` resolves to (the
+                # Cortex grant rule reads it the same way).
+                if table.db.lower() == "main" and name.lower() in by_full:
+                    continue
+                missing.add(label)
+                continue
+            cands = by_bare.get(name.lower(), [])
+            if len(cands) > 1:
+                ambiguous.add(name)
+                continue
+            if not cands:
+                # Legacy Cortex alias grant for the demo lake.
+                if f"warehouse_{name.lower()}" in by_full:
+                    continue
+                missing.add(name)
+                continue
+            target = relation_name_parts(cands[0]) or (name,)
+            if len(target) == 2:
+                table.set("db", exp.to_identifier(target[0]))
+                table.set("this", exp.to_identifier(target[1]))
+                if table.args.get("alias") is None:
+                    # Keep ``transactions.col`` references resolving.
+                    table.set("alias", exp.TableAlias(this=exp.to_identifier(name)))
+                changed = True
+    if invalid:
+        return sql, "relation_name_invalid"
+    if missing:
+        return sql, f"ungranted:{','.join(sorted(missing, key=str.lower))}"
+    if ambiguous:
+        return sql, f"ambiguous_table:{','.join(sorted(ambiguous, key=str.lower))}"
+    if not changed:
+        return sql, None
+    out = "; ".join(r.sql(dialect=_DIALECT) for r in roots if r is not None)
+    return out, None
+
+
 def rows_mismatch_reason(question: str, sql: str, rows: Sequence[Any]) -> str | None:
     """Post-execution grain check on the rows the answer would show.
 

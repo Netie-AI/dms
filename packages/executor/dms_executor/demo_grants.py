@@ -124,8 +124,14 @@ def ingested_bronze_tables(
     """
     from dms_executor.bronze import list_bronze_tables
 
+    if space_id is not None and not str(space_id).strip():
+        # SPACE-GEN-01 round 2: an empty Space id names no Space. It used to
+        # read as "no filter", so ``space_id=""`` granted every Space's
+        # uploads. Only ``None`` (the caller asked for no Space filter) lists
+        # them all.
+        return ()
     try:
-        if space_id:
+        if space_id is not None:
             return tuple(t["table"] for t in list_bronze_tables(path=path, space_id=space_id))
         return tuple(t["table"] for t in list_bronze_tables(path=path))
     except Exception as exc:  # noqa: BLE001
@@ -167,6 +173,8 @@ class DemoSessionStore:
         # Only the steward: that membership is the steward's, never "anyone who
         # can name a Space that has data in it" (DR-0004 Option A).
         sid = canonical_space_id(space_id)
+        if not str(sid or "").strip():
+            return False
         if sid in DEMO_SPACE_GRANTS:
             return True
         if str(user_id) != self.steward_user_id:
@@ -175,6 +183,8 @@ class DemoSessionStore:
 
     def list_space_source_ids(self, space_id: str) -> list[uuid.UUID]:
         sid = canonical_space_id(space_id)
+        if not str(sid or "").strip():
+            return []
         space_uploads = ingested_bronze_tables(self.warehouse, space_id=sid)
         tables = (*self._tables_for(sid), *self.extra_grants, *space_uploads)
         return [source_id_for(t) for t in tables]

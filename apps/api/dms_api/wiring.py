@@ -122,6 +122,11 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
+def customer_abstain_text(reason: str) -> str:
+    """Named ABSTAIN text for ``reason`` (the executor's customer wording)."""
+    return dms_executor.customer_abstain_text(reason)
+
+
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 

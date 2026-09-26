@@ -182,6 +182,23 @@ def _space_refusal_envelope(
     )
 
 
+def _unknown_space_envelope(body: AskBody) -> dict[str, Any]:
+    """Named ABSTAIN for a ``space_id`` that names no Space: nothing granted."""
+    from dms_api.wiring import build_validated_envelope, customer_abstain_text
+
+    reason = "space_id_empty" if not str(body.space_id or "").strip() else "space_not_found"
+    return build_validated_envelope(
+        answer_id=f"ans_{reason}",
+        text=customer_abstain_text(reason),
+        badge="ABSTAIN",
+        abstained=True,
+        assumptions=[f"ABSTAIN reason: {reason}", "no tables granted"],
+        ask_mode="live",
+        space_id=body.space_id,
+        session_id=body.session_id,
+    )
+
+
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     """E6 — demo_fallback_used must set an unmissable banner flag."""
     from dms_api.wiring import build_validated_envelope
@@ -237,8 +254,14 @@ def chat_ask(
             },
         )
 
-    if body.space_id and store.get(body.space_id) is None:
-        raise HTTPException(status_code=404, detail="space_not_found")
+    # SPACE-GEN-01 round 2: an empty or unknown Space id grants nothing. It is
+    # a named ABSTAIN with no rows, before the gate, any grant or Cortex call.
+    # ``""`` used to skip this check and read as "no Space filter", granting
+    # every Space's ingested tables.
+    if body.space_id is not None and (
+        not body.space_id.strip() or store.get(body.space_id) is None
+    ):
+        return _unknown_space_envelope(body)
 
     decision = compliance_gate(
         action="chat.ask",

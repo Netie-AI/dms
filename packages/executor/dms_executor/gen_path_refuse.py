@@ -74,12 +74,80 @@ def customer_abstain_text(reason: str) -> str:
         # SPACE-GEN-01: an ABSTAIN always names why. An empty reason is itself
         # the defect, so say so rather than render the unnamed sentence.
         gap = "abstain_reason_missing"
+    head = gap.split(":", 1)[0].strip()
+    if head == REASON_SPACE_ID_EMPTY:
+        return (
+            "I can't answer that: the request named no Space (an empty Space id), "
+            "so no tables are granted to it and nothing was read "
+            f"(gap: {REASON_SPACE_ID_EMPTY})."
+        )
+    if head == REASON_SPACE_NOT_FOUND:
+        return (
+            "I can't answer that: that Space does not exist, so no tables are "
+            f"granted to it and nothing was read (gap: {REASON_SPACE_NOT_FOUND})."
+        )
+    if head.startswith("insights_"):
+        return (
+            "I cannot certify an ontology-grounded query for that question: the "
+            "engine's query generator returned nothing usable "
+            f"(gap: {customer_gap_label(gap)}), so I am not executing one."
+        )
     # Named gaps and every other refusal reason alike appear in the sentence.
     # The unnamed "cannot certify" text hid 110 of 500 BIRD refusals' causes.
     return (
         "I cannot certify an ontology-grounded query for that question "
         f"(gap: {customer_gap_label(gap)}), so I am not executing one."
     )
+
+
+#: SPACE-GEN-01 round 2: a request whose ``space_id`` is empty names no Space.
+REASON_SPACE_ID_EMPTY = "space_id_empty"
+#: A ``space_id`` the Space store does not hold.
+REASON_SPACE_NOT_FOUND = "space_not_found"
+
+#: Reasons DMS writes itself, verbatim, with nothing a caller or a model chose
+#: inside them. Safe to show the customer as written.
+_SAFE_FIXED_REASONS = frozenset(
+    {
+        "abstain_reason_missing",
+        "compile_failed",
+        "compute abstained (unsure)",
+        "existential many-to-many filter: ask path will not choose a reading",
+        "exact-match miss: not a certified VQ/pack hit",
+        "insights generate did not return a typed plan or SQL",
+        "keep_gt_empty",
+        "ledger_append_failed",
+        "ledger_entry_missing",
+        "ledger_hash_missing",
+        "predictive: history is not a forecast",
+        "query_plan was not typed",
+        "query_sql was empty",
+        "question is too vague or time-unbounded to ground",
+        "retrieve bind abstained (unsure)",
+        "sql_unanalysable",
+        "submit_failed",
+        "submit_had_no_rows",
+        "uncertified paraphrase: not a generative certify boundary",
+        "warehouse_missing",
+        "year 2099 is not a certified period; all-time history is not that year",
+        REASON_SPACE_ID_EMPTY,
+        REASON_SPACE_NOT_FOUND,
+    }
+)
+
+#: Heads of DMS-written reasons whose tail carries runtime detail (the retrieve
+#: method list, the lane's own explanation). The head is shown; the tail stays
+#: in ``assumptions``.
+_SAFE_HEADS = {
+    "query_plan was not typed after retrieve": "query_plan was not typed",
+    "generative miss": "generative miss",
+    "ungranted": "ungranted_table",
+    "ambiguous_table": "ambiguous_table",
+    "relation_name_invalid": "relation_name_invalid",
+}
+
+#: What the customer reads for a reason DMS did not write itself.
+GAP_UNNAMED_REFUSAL = "generation_refused"
 
 
 def customer_gap_label(reason: str) -> str:
@@ -89,15 +157,32 @@ def customer_gap_label(reason: str) -> str:
     the audit trail. The rendered text must not tell a caller which security
     guard tripped (``hostile_sql:path_not_allowed``) or which engine exception
     class a probe produced (``explain:BinderException``).
+
+    SPACE-GEN-01 round 2: nor may it echo a relation a generated query invented
+    (``ungranted:secret_salary`` renders ``ungranted_table``). A reason that is
+    neither a named gap nor a string DMS writes verbatim renders the named
+    ``generation_refused``; it is never passed through.
     """
     gap = str(reason or "").strip()
     head, _, rest = gap.partition(":")
-    inner = rest if head == "validate" else gap
+    validate = head.strip() == "validate"
+    prefix = "validate:" if validate else ""
+    inner = rest.strip() if validate else gap
     if inner.startswith("hostile_sql"):
-        return f"{head}:unsafe_sql" if head == "validate" else "unsafe_sql"
+        return f"{prefix}unsafe_sql"
     if inner.startswith("explain:"):
-        return f"{head}:sql_does_not_run" if head == "validate" else "sql_does_not_run"
-    return gap
+        return f"{prefix}sql_does_not_run"
+    inner_head = inner.split(":", 1)[0].split("(", 1)[0].strip()
+    if inner_head in _SAFE_HEADS:
+        return prefix + _SAFE_HEADS[inner_head]
+    if inner in _SAFE_FIXED_REASONS:
+        return prefix + inner
+    if gap_reason_name(inner) is not None or inner_head in GRAIN_REASONS:
+        # Named compile / ranking / Insights gaps render as they always have.
+        return prefix + inner
+    if inner_head == "source_truncated":
+        return prefix + inner
+    return prefix + GAP_UNNAMED_REFUSAL
 
 
 def ranking_missing_metric_gap(
@@ -160,6 +245,9 @@ def ranking_missing_metric_gap(
 
 __all__ = [
     "GAP_REASONS",
+    "GAP_UNNAMED_REFUSAL",
+    "REASON_SPACE_ID_EMPTY",
+    "REASON_SPACE_NOT_FOUND",
     "customer_abstain_text",
     "customer_gap_label",
     "gap_reason_name",

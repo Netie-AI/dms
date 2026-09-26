@@ -196,38 +196,35 @@ class ManifestMinter:
         return manifest
 
 
+_KEY_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def cortex_row_predicates(predicates: dict[str, str]) -> dict[str, str]:
-    """Key ``row_predicates`` the way the Cortex enforcer resolves a table.
+    """``row_predicates`` as they cross the wire: keys exactly as granted.
 
-    Cortex ``enforce_manifest`` grants and wraps by the *bare* table name
-    (``exp.Table.name``, lowercased): ``FROM bronze.financial_account`` is
-    checked against the key ``financial_account``. DMS grants a SQL-source or
-    uploaded table as ``bronze.<t>``, so a manifest keyed ``bronze.<t>`` made
-    Cortex refuse every query over it (``table ... is not named by this
-    manifest``). The exact ``schema.table`` stays DMS's own check
-    (``validate_compiled_sql``); the wire carries the name Cortex can match.
+    SHARED NAMING RULE (SPACE-GEN-01 round 2). A grant key is the relation's
+    exact name, ``schema.table`` (``bronze.transactions``) or bare for the demo
+    lake (``transactions``). Round 1 stripped the schema so the Cortex
+    bare-name matcher would resolve ``FROM bronze.<t>``; that made a grant on
+    ``bronze.transactions`` mint the same signed key as the demo
+    ``transactions``, so an upload named like a demo table was a grant on the
+    demo table. Keys now stay qualified end to end; Cortex matches them
+    exactly.
 
-    Two grants that collapse to one bare name keep a single key only when their
-    predicates agree. Different predicates are refused: Cortex cannot tell
-    the two relations apart, so either predicate could filter the other table.
+    Every key part must be a plain SQL identifier (no quotes, no dots inside a
+    part, at most ``schema.table``). A key that is not is refused, never
+    rewritten into some other relation's name.
     """
     out: dict[str, str] = {}
-    seen: dict[str, str] = {}
     for table, pred in predicates.items():
-        key = str(table).rsplit(".", 1)[-1].strip().strip('"')
-        if not key:
-            continue
-        folded = key.lower()  # Cortex lowercases before matching
-        if folded in seen:
-            prior = out[seen[folded]]
-            if prior.strip() != str(pred).strip():
-                logger.error("%s manifest_key_collision table=%s", _SECURITY, key)
-                raise SecurityEvent(
-                    "manifest_key_collision",
-                    f"two granted relations named {key!r} carry different row predicates",
-                )
-            continue
-        seen[folded] = key
+        key = str(table)
+        parts = key.split(".")
+        if len(parts) not in (1, 2) or not all(_KEY_PART.fullmatch(p) for p in parts):
+            logger.error("%s manifest_key_invalid", _SECURITY)
+            raise SecurityEvent(
+                "manifest_key_invalid",
+                "a granted relation name is not schema.table or a bare identifier",
+            )
         out[key] = pred
     return out
 

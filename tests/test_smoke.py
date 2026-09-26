@@ -107,7 +107,14 @@ def test_chat_ask_unknown_space():
         "/v1/chat/ask",
         json={"question": "hi", "space_id": "sp_missing"},
     )
-    assert r.status_code == 404
+    # SPACE-GEN-01 round 2: an unknown Space is a named ABSTAIN envelope that
+    # grants nothing (was a bare 404).
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert "gap: space_not_found" in env["text"]
 
 
 def _gate_allows(monkeypatch) -> None:

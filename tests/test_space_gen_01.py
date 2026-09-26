@@ -25,10 +25,19 @@ three-part names refused, each granted table wrapped in its predicate) and the
 real ``ManifestMinter.mint_manifest`` signs the manifest it sees. DMS may not
 import CortexOS, so the rule is mirrored here; the round-2 report ran the same
 manifests through the real enforcer.
+
+Round 3 (SHARED NAMING RULE): a table crosses the boundary as its exact
+qualified name. Manifest keys stay ``bronze.<t>`` (stripping them made an
+upload named like a demo table mint the demo table's grant), the fake mirrors
+the Cortex exact-key grant rule (a qualified key grants only ``schema.table``;
+a bare key grants the bare or ``main.`` reference), the fake Insights parses
+the ontology DMS sends and asserts its ``source`` and qualified names, and an
+empty or unknown ``space_id`` grants nothing.
 """
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -69,8 +78,9 @@ COUNT_ORACLE = (
 )
 #: Cites a demo-lake table this Space is not granted.
 UNGRANTED_SQL = "SELECT COUNT(*) AS n FROM transactions"
-#: What Cortex's grant check matches ``FROM bronze.<t>`` against.
-BARE_KEYS = {"financial_account", "financial_district"}
+#: The manifest keys: exactly as granted, schema kept (SHARED NAMING RULE).
+SPACE_KEYS = {ACCOUNT, DISTRICT}
+_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 
 
 class _CortexRefusal(Exception):
@@ -79,28 +89,44 @@ class _CortexRefusal(Exception):
         super().__init__(f"{code}: {detail}")
 
 
+def _grant_key(table: exp.Table, granted: set[str]) -> str | None:
+    """Mirror of Cortex ``_grant_key``: a key grants only the relation it names."""
+    name = table.name.lower()
+    schema = (table.db or "").lower()
+    if schema:
+        if f"{schema}.{name}" in granted:
+            return f"{schema}.{name}"
+        if schema == "main" and name in granted:
+            return name
+        return None
+    return name if name in granted else None
+
+
 def _cortex_enforce(sql: str, row_predicates: dict[str, str]) -> str:
-    """Mirror of Cortex ``enforce_manifest``'s table grant and predicate wrap.
+    """Mirror of Cortex ``enforce_manifest`` under the SHARED NAMING RULE.
 
     ``CortexOS/execution/manifest.py``: ``_refuse_cross_catalog``,
-    ``_refuse_ungranted_tables`` (``table.name.lower()`` against the lowercased
-    ``row_predicates`` keys, CTE names exempt) and ``_wrap_with_predicate``.
+    ``_refuse_ungranted_tables`` (each reference matched to a key exactly, an
+    unqualified CTE name exempt) and ``_wrap_with_predicate``.
     """
     root = sqlglot.parse_one(sql, read="duckdb")
     for table in root.find_all(exp.Table):
         if isinstance(table.this, exp.Identifier) and table.catalog:
             raise _CortexRefusal("path_not_allowed", "cross-catalog reference")
     predicates = {k.lower(): v for k, v in row_predicates.items()}
+    granted = set(predicates)
     ctes = {c.alias.lower() for c in root.find_all(exp.CTE) if c.alias}
     named = [t for t in root.find_all(exp.Table) if isinstance(t.this, exp.Identifier)]
     for table in named:
-        name = table.name.lower()
-        if name and name not in ctes and name not in predicates:
+        if not table.db and table.name.lower() in ctes:
+            continue
+        if _grant_key(table, granted) is None:
             raise _CortexRefusal(
-                "path_not_allowed", f"table {table.name!r} is not named by this manifest"
+                "path_not_allowed", f"table {table.sql()!r} is not named by this manifest"
             )
     for table in list(named):
-        pred = predicates.get(table.name.lower())
+        key = _grant_key(table, granted)
+        pred = predicates.get(key) if key else None
         if pred is None:
             continue
         inner = table.copy()
@@ -114,6 +140,26 @@ def _cortex_enforce(sql: str, row_predicates: dict[str, str]) -> str:
             )
         )
     return root.sql(dialect="duckdb")
+
+
+def _parse_ontology(onto: Any) -> dict[str, Any]:
+    """What a Cortex caller-ontology parser reads, asserted, not trusted.
+
+    ``source`` is explicit (``demo`` | ``space``); every table name, in the
+    schema rows and the declared catalog, is ``table`` or ``schema.table``
+    with each part an identifier.
+    """
+    assert isinstance(onto, dict), onto
+    source = onto.get("source")
+    assert source in {"demo", "space"}, source
+    names = [str(r.get("table")) for r in onto.get("schema") or []]
+    declared = list(onto.get("tables") or [])
+    for name in (*names, *declared):
+        parts = name.split(".")
+        assert len(parts) in (1, 2), name
+        assert all(re.fullmatch(_IDENT, p) for p in parts), name
+    assert set(names) <= set(declared), (names, declared)
+    return {"source": source, "schema": names, "tables": declared}
 
 
 @dataclass
@@ -132,7 +178,8 @@ class _RecordingCortex:
     asks: list[Any] = field(default_factory=list)
 
     def compute_insights(self, question: str, **kw: Any) -> dict[str, Any]:
-        self.insights.append({"question": question, **kw})
+        parsed = _parse_ontology(kw.get("ontology"))
+        self.insights.append({"question": question, "parsed": parsed, **kw})
         return dict(self.payload)
 
     def compute_query(self, question: str, **_kw: Any) -> None:
@@ -325,10 +372,13 @@ def test_correct_sql_on_space_tables_is_l2_with_oracle_rows(
 
     # The grant names the Space's tables and nothing of the demo lake: the
     # "nothing grants Space" refusal came from an empty grant here. Keys are
-    # the bare names Cortex resolves ``FROM bronze.<t>`` to; the SQL passed
-    # the Cortex grant rule, so none was refused.
+    # the exact qualified names (SHARED NAMING RULE); the SQL passed the
+    # Cortex exact-key grant rule, so none was refused.
     sql_manifest = rig.cortex.manifests[-1]
-    assert set(sql_manifest.row_predicates) == BARE_KEYS
+    assert set(sql_manifest.row_predicates) == SPACE_KEYS
+    parsed = sent["parsed"]
+    assert parsed["source"] == "space"
+    assert set(parsed["tables"]) == SPACE_KEYS
     assert rig.cortex.refused == []
 
 
@@ -343,7 +393,7 @@ def test_table_selection_narrows_generation_instead_of_skipping_it(
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
     assert env["rows"] == _oracle(rig.lake, sql) == [{"account_count": 4}]
     assert "account_count=4" in str(env.get("text") or "")
-    assert set(rig.cortex.manifests[-1].row_predicates) == {"financial_account"}
+    assert set(rig.cortex.manifests[-1].row_predicates) == {ACCOUNT}
     assert rig.cortex.refused == []
 
 
@@ -356,7 +406,9 @@ def test_selection_does_not_widen_generated_sql(tmp_path: Path, minter: Manifest
     assert env["abstained"] is True
     assert env["rows"] == []
     text = str(env.get("text") or "")
-    assert "gap: validate:ungranted:financial_district" in text, text
+    assert "gap: validate:ungranted_table" in text, text
+    assert "financial_district" not in text, text
+    assert "validate:ungranted:bronze.financial_district" in _reasons(env)
     assert rig.cortex.executed == []
 
 
@@ -370,7 +422,8 @@ def test_sql_over_ungranted_table_is_named_abstain(tmp_path: Path, minter: Manif
     assert env["rows"] == []
     assert env["values"] == []
     text = str(env.get("text") or "")
-    assert "gap: validate:ungranted:transactions" in text, text
+    assert "gap: validate:ungranted_table" in text, text
+    assert "transactions" not in text, text
     assert "validate:ungranted:transactions" in _reasons(env)
     assert rig.cortex.executed == []
     assert rig.cortex.asks == []
@@ -406,7 +459,7 @@ def test_generation_miss_falls_through_under_the_space_grant_only(
     assert len(rig.cortex.asks) == 1
     # The bound manifest names this Space's tables: never empty ("nothing
     # grants Space"), never the demo lake.
-    assert set(rig.cortex.manifests[-1].row_predicates) == BARE_KEYS
+    assert set(rig.cortex.manifests[-1].row_predicates) == SPACE_KEYS
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert env["rows"] == []
@@ -442,11 +495,17 @@ def test_every_abstain_text_names_its_reason() -> None:
         ("validate:hostile_sql:path_not_allowed", "validate:unsafe_sql"),
         ("source_truncated:trans", "source_truncated:trans"),
         ("", "abstain_reason_missing"),
+        # Invented relations and free text never reach the customer.
+        ("validate:ungranted:secret_salary", "validate:ungranted_table"),
+        ("ungranted: none of the selected tables", "ungranted_table"),
+        ("some raw engine text naming secret_salary", "generation_refused"),
+        ("insights_unarmed", "insights_unarmed"),
     ):
         text = customer_abstain_text(reason)
         assert f"gap: {shown}" in text, (reason, text)
         assert "ParserException" not in text
         assert "path_not_allowed" not in text
+        assert "secret_salary" not in text
 
 
 @pytest.mark.parametrize(
@@ -472,7 +531,8 @@ def test_ungranted_table_the_regex_missed_is_named_abstain(
     assert env["rows"] == []
     assert env["values"] == []
     text = str(env.get("text") or "")
-    assert "gap: validate:ungranted:" in text, text
+    assert "gap: validate:ungranted_table" in text, text
+    assert "transactions" not in text and "inventory" not in text, text
     assert "validate:ungranted:" in _reasons(env)
     # Refused by DMS before submit, not left to the engine.
     assert rig.cortex.executed == []
@@ -559,3 +619,239 @@ def test_ingested_space_membership_is_the_stewards_only(tmp_path: Path) -> None:
     # Nothing ingested: not a member, steward or not.
     other = "87654321-4321-4321-8321-cba987654321"
     assert store.is_space_member(other, store.steward_user_id) is False
+
+
+# ── Round 3: SHARED NAMING RULE, empty / unknown Space, CTEs ────────────────
+
+
+def _assert_named_space_abstain(env: dict[str, Any], reason: str) -> None:
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"))
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["values"] == []
+    assert not env.get("drillthrough_token")
+    text = str(env.get("text") or "")
+    assert f"gap: {reason}" in text, text
+    assert "no tables are granted" in text, text
+    assert f"ABSTAIN reason: {reason}" in _reasons(env), env.get("assumptions")
+
+
+@pytest.mark.parametrize(
+    ("space_id", "reason"),
+    [("", "space_id_empty"), ("   ", "space_id_empty"), ("sp_never_created", "space_not_found")],
+)
+def test_empty_or_unknown_space_grants_nothing(
+    tmp_path: Path, minter: ManifestMinter, space_id: str, reason: str
+) -> None:
+    # Generation would answer from the Space's tables if anything were granted.
+    rig = _rig(tmp_path, minter, {"query_sql": COUNT_SQL, "plan_source": "ontology_plan"})
+    r = rig.client.post(
+        "/v1/chat/ask",
+        json={"question": COUNT_Q, "session_id": "ses_space_gen_01", "space_id": space_id},
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    _assert_named_space_abstain(env, reason)
+    assert "account_count" not in str(env.get("text") or "")
+    # Nothing granted, bound, generated, executed or asked.
+    assert rig.cortex.manifests == []
+    assert rig.cortex.insights == []
+    assert rig.cortex.executed == []
+    assert rig.cortex.asks == []
+
+
+def test_empty_space_id_grants_nothing_below_the_route(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    # The executor itself, not only the route: "" is not "no Space filter".
+    rig = _rig(tmp_path, minter, {"query_sql": COUNT_SQL, "plan_source": "ontology_plan"})
+    exe = rig.client.app.state.ask_service  # type: ignore[attr-defined]
+    assert exe.grantable_tables(space_id="") == []
+    store = DemoSessionStore(warehouse=rig.lake)
+    assert store.is_space_member("", store.steward_user_id) is False
+    assert store.list_space_source_ids("") == []
+    from dms_executor.demo_grants import ingested_bronze_tables
+
+    assert ingested_bronze_tables(rig.lake, space_id="") == ()
+    # ``None`` still means "no filter" for the registry listing itself.
+    assert set(ingested_bronze_tables(rig.lake)) >= SPACE_KEYS
+    env = exe.live_ask(COUNT_Q, space_id="", session_id="ses_x")
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert "gap: space_id_empty" in str(env.get("text") or "")
+    assert rig.cortex.manifests == []
+    assert rig.cortex.insights == []
+
+
+def _demo_count(lake: Path, table: str) -> int:
+    rows = _oracle(lake, f"SELECT COUNT(*) AS n FROM main.{table}")
+    return int(rows[0]["n"])
+
+
+def test_bronze_upload_named_like_a_demo_table_cannot_read_the_demo_table(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    # The Space ingests its own ``transactions``. A generated bare
+    # ``FROM transactions`` must read that upload, never demo main.transactions.
+    sql = "SELECT COUNT(*) AS n FROM transactions"
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    _land(
+        rig.lake,
+        "bronze.transactions",
+        ["trans_id"],
+        [["t1"], ["t2"]],
+        rig.space_id,
+    )
+    demo_n = _demo_count(rig.lake, "transactions")
+    assert demo_n != 2, "fixture must tell the two tables apart"
+    env = _ask(rig, "How many transactions are there?")
+
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["rows"] == [{"n": 2}]
+    text = str(env.get("text") or "")
+    assert "n=2" in text, text
+    assert f"n={demo_n}" not in text
+    # Submitted qualified, under a qualified key: not the demo table's grant.
+    assert rig.cortex.executed, "nothing reached Cortex"
+    assert "bronze.transactions" in rig.cortex.executed[-1]
+    keys = set(rig.cortex.manifests[-1].row_predicates)
+    assert "bronze.transactions" in keys
+    assert "transactions" not in keys
+    parsed = rig.cortex.insights[-1]["parsed"]
+    assert parsed["source"] == "space"
+    assert "bronze.transactions" in parsed["tables"]
+    assert "transactions" not in parsed["tables"]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS n FROM main.transactions",
+        'SELECT COUNT(*) AS n FROM "main"."transactions"',
+    ],
+)
+def test_space_sql_naming_the_demo_relation_is_named_abstain(
+    tmp_path: Path, minter: ManifestMinter, sql: str
+) -> None:
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    _land(rig.lake, "bronze.transactions", ["trans_id"], [["t1"], ["t2"]], rig.space_id)
+    env = _ask(rig, "How many transactions are there?")
+
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"))
+    assert env["rows"] == []
+    assert env["values"] == []
+    text = str(env.get("text") or "")
+    assert "gap: validate:ungranted_table" in text, text
+    assert "main.transactions" in _reasons(env)
+    assert rig.cortex.executed == []
+
+
+def test_cte_over_granted_tables_answers(tmp_path: Path, minter: ManifestMinter) -> None:
+    sql = (
+        "WITH prague AS (SELECT district_id FROM bronze.financial_district "
+        "WHERE a2 = 'Prague'), accts AS (SELECT a.account_id FROM "
+        "bronze.financial_account a JOIN prague p ON a.district_id = p.district_id) "
+        "SELECT COUNT(*) AS account_count FROM accts"
+    )
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    env = _ask(rig, COUNT_Q)
+
+    oracle = _oracle(rig.lake, COUNT_ORACLE)
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["abstained"] is False
+    assert _multiset(env["rows"]) == _multiset(oracle) == _multiset([{"account_count": 3}])
+    assert "account_count=3" in str(env.get("text") or "")
+    assert rig.cortex.refused == []
+    assert set(rig.cortex.manifests[-1].row_predicates) == SPACE_KEYS
+
+
+def test_cte_does_not_hide_a_real_ungranted_table(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    # A CTE named like a real table, whose own body reads that real table:
+    # the inner reference is the table, and it is not granted.
+    sql = (
+        "WITH secret_salary AS (SELECT * FROM secret_salary) "
+        "SELECT COUNT(*) AS n FROM secret_salary"
+    )
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    env = _ask(rig, "How many accounts are there?")
+
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"))
+    assert env["rows"] == []
+    text = str(env.get("text") or "")
+    assert "gap: validate:ungranted_table" in text, text
+    assert "validate:ungranted:secret_salary" in _reasons(env)
+    assert rig.cortex.executed == []
+
+
+def test_customer_text_never_names_an_invented_table(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    sql = "SELECT SUM(amount) AS total FROM secret_salary JOIN bronze.financial_account USING (x)"
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    env = _ask(rig, "What is the total salary?")
+
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env["values"] == []
+    text = str(env.get("text") or "")
+    assert "secret_salary" not in text, text
+    assert "gap: validate:ungranted_table" in text, text
+    # The audit trail keeps the raw reason.
+    assert "validate:ungranted:secret_salary" in _reasons(env)
+
+
+def test_demo_space_sends_source_demo_and_keeps_bare_keys(
+    tmp_path: Path, minter: ManifestMinter
+) -> None:
+    # A demo-Space ask that is not certified reaches generation: the body says
+    # ``source: demo`` and the grant keys stay the demo lake's bare names.
+    sql = "SELECT COUNT(*) AS n FROM suppliers"
+    rig = _rig(tmp_path, minter, {"query_sql": sql, "plan_source": "ontology_plan"})
+    rig.space_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"  # seeded Finance
+    env = _ask(rig, "How many suppliers are on file?", ask_path="generative")
+
+    assert rig.cortex.insights, ("generation was never reached", env.get("text"))
+    parsed = rig.cortex.insights[-1]["parsed"]
+    assert parsed["source"] == "demo"
+    assert all("." not in t for t in parsed["tables"]), parsed["tables"]
+    assert "suppliers" in parsed["tables"]
+    oracle = _oracle(rig.lake, "SELECT COUNT(*) AS n FROM suppliers")
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    assert f"n={oracle[0]['n']}" in str(env.get("text") or "")
+    keys = set(rig.cortex.manifests[-1].row_predicates)
+    assert keys and all("." not in k for k in keys), keys
+    assert rig.cortex.executed == [sql]
+
+
+def test_resolve_declared_relations_follows_the_naming_rule() -> None:
+    from dms_executor.sql_grain import resolve_declared_relations
+
+    space = {"bronze.transactions", ACCOUNT}
+    out, why = resolve_declared_relations("SELECT COUNT(*) FROM transactions", space)
+    assert why is None
+    assert "bronze.transactions" in out
+    # Exactly as declared, or refused by name.
+    assert resolve_declared_relations("SELECT 1 FROM other.transactions", space)[1] == (
+        "ungranted:other.transactions"
+    )
+    assert resolve_declared_relations("SELECT 1 FROM c.bronze.transactions", space)[1] == (
+        "ungranted:c.bronze.transactions"
+    )
+    # Two declared tables share the bare name: a bare reference is ambiguous.
+    both = {"bronze.transactions", "silver.transactions"}
+    assert resolve_declared_relations("SELECT 1 FROM transactions", both)[1] == (
+        "ambiguous_table:transactions"
+    )
+    # The demo lake: bare names unchanged, byte for byte.
+    demo = {"transactions", "suppliers"}
+    sql = "SELECT COUNT(*) FROM transactions t JOIN suppliers s ON t.x = s.x"
+    assert resolve_declared_relations(sql, demo) == (sql, None)
+    assert resolve_declared_relations("SELECT 1 FROM main.suppliers", demo)[1] is None
+    assert customer_abstain_text("validate:ambiguous_table:transactions").count(
+        "transactions"
+    ) == 0
