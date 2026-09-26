@@ -676,6 +676,10 @@ def _scope_real_tables(root: exp.Expression) -> tuple[list[exp.Table], str | Non
     seen: set[int] = set()
     for scope in scopes:
         if scope.scope_type == ScopeType.UDTF:
+            if isinstance(scope.expression, exp.Values):
+                # An inline VALUES list reads no table; any subquery inside it
+                # gets its own scope, and unscoped tables still refuse below.
+                continue
             return [], "lateral"
         visible_ctes = {
             str(name).lower()
