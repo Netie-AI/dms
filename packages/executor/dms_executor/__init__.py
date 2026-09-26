@@ -113,6 +113,7 @@ from dms_executor.source_links import verify_source_links
 from dms_executor.space_ontology import (
     REASON_STORE_UNAVAILABLE,
     bronze_catalog,
+    check_sql_against_space,
     derive_and_store,
     load_space_ontology,
     ontology_store,
@@ -769,6 +770,19 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        sql_used = str(getattr(resp, "sql_used", None) or "")
+        if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
+            # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
+            # Its SQL answers only if it passes the same rule generation does.
+            join_why = check_sql_against_space(
+                sql_used, space_onto, self._warehouse or warehouse_path(), readable
+            )
+            if join_why:
+                env = path_miss_envelope(
+                    question, join_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,

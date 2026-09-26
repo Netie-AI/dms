@@ -376,7 +376,10 @@ def _derive_space_ontology(
 
 def space_ontology(space_id: str) -> dict[str, Any]:
     """GET view: every source's ontology for the Space, status per object and link."""
-    views = dms_executor.space_ontology_views(canonical_space_id(space_id))
+    try:
+        views = dms_executor.space_ontology_views(canonical_space_id(space_id))
+    except Exception as exc:  # noqa: BLE001 - named, never a bare 500
+        raise _store_unavailable(exc) from None
     return {
         "space_id": space_id,
         "derived": bool(views),
@@ -406,14 +409,46 @@ def space_ontology_rederive(
     """
     canon = canonical_space_id(space_id)
     warehouse = dms_executor.warehouse_path()
+    try:
+        return _rederive(space_id, canon, warehouse, source)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the store, never a bare 500
+        raise _store_unavailable(exc) from None
+
+
+def _store_unavailable(exc: Exception) -> HTTPException:
+    logger.warning("ontology store unavailable: %s", exc)
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "ontology_store_unavailable",
+            "message": "the Space ontology store could not be read or written just now",
+        },
+    )
+
+
+def _rederive(
+    space_id: str, canon: str, warehouse: Any, source: dict[str, Any] | None
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     if source is not None:
-        cfg = dms_executor.SourceConfig(**source)
+        try:
+            cfg = dms_executor.SourceConfig(**source)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": "bad_request", "message": str(exc)}
+            ) from None
         try:
             keys = dms_executor.list_source_keys(cfg)
-        except dms_executor.SourceConnectionError as exc:
+        except Exception as exc:  # noqa: BLE001 - any driver failure is the source's
+            message = (
+                str(exc)
+                if isinstance(exc, dms_executor.SourceConnectionError)
+                else f"could not read keys from {cfg.describe()} ({type(exc).__name__})"
+            )
             raise HTTPException(
-                status_code=502, detail={"code": "source_unreachable", "message": str(exc)}
+                status_code=502, detail={"code": "source_unreachable", "message": message}
             ) from None
         prefix = cfg.describe() + "#"
         tables = []

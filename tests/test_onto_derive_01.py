@@ -1,3 +1,4 @@
+# ruff: noqa: E501 - the adversary SQL shapes read best one per line
 """ONTO-DERIVE-01 (dms#277 CONNECT-ASK-01 change 1): a SQL-source Space's own ontology.
 
 Before: nothing derived or stored an ontology for a SQL-source Space;
@@ -499,7 +500,7 @@ def test_join_rule_units(
             "ON s.district_id > d.district_id"
         )
         or ""
-    ) == "unverified_join:non_equality_join"
+    ) == "unverified_join:non_link_predicate"
     # Enrollments to districts: no declared link at all.
     assert "has no declared link" in (
         why(
@@ -564,3 +565,122 @@ def test_snapshot_cannot_claim_verified_with_violations() -> None:
     assert s.active_for_space(uuid.uuid4()) == []
     with pytest.raises(KeyError):
         s.record_snapshot(uuid.uuid4(), body={}, violations=[], verified=True)
+
+
+# --- adversary round 1: no shape of wrong join answers ---------------------------
+
+S = SCHOOLS
+D = DISTRICTS
+BASE = f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON s.district_id = d.district_id"
+#: Adversary round 1 (independent agent): every shape joins schools to districts
+#: on something other than the verified link. None may answer a wrong number.
+JOIN_ATTACKS = {
+    "self_join_fanout": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {S} s2 ON s.district_id = s2.district_id JOIN {D} d ON s.district_id = d.district_id WHERE d.name = 'North'",
+    "second_alias_cross": f"{BASE}, {D} d2 WHERE d.name = 'North'",
+    "second_alias_wrong_on": f"{BASE} JOIN {D} d2 ON s.school_id = d2.district_id WHERE d.name = 'North'",
+    "derived_star_wrong_col": f"{BASE} JOIN (SELECT * FROM {D}) t ON t.district_id = s.school_id WHERE d.name = 'North'",
+    "cte_star_wrong_col": f"WITH t AS (SELECT * FROM {D}) {BASE} JOIN t ON t.district_id = s.school_id WHERE d.name = 'North'",
+    "derived_expr_cross": f"{BASE} JOIN (SELECT district_id + 0 AS k FROM {D}) t ON t.k = s.school_id WHERE d.name = 'North'",
+    "or_true": f"SELECT COUNT(*) AS school_count FROM {S} s, {D} d WHERE (s.district_id = d.district_id OR d.name IS NOT NULL) AND d.name = 'North'",
+    "not_eq_antijoin": f"SELECT COUNT(*) AS school_count FROM {S} s, {D} d WHERE NOT (s.district_id = d.district_id) AND d.name = 'North'",
+    "eq_any_subq": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.school_id = ANY (SELECT district_id FROM {D} WHERE name = 'North')",
+    "scalar_subq_eq": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.school_id = (SELECT MIN(district_id) FROM {D} WHERE name = 'North')",
+    "in_union": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.school_id IN (SELECT district_id FROM {D} WHERE name = 'North' UNION SELECT district_id FROM {D} WHERE name = 'North')",
+    "in_expr_left": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.school_id || '' IN (SELECT district_id FROM {D} WHERE name = 'North')",
+    "in_wrong_col": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.school_id IN (SELECT district_id FROM {D} WHERE name = 'North')",
+    "exists_wrong_col": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS (SELECT 1 FROM {D} d WHERE d.district_id = s.school_id AND d.name = 'North')",
+    "using_wrong": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d USING (name) WHERE d.name = 'North'",
+    "natural": f"SELECT COUNT(*) AS school_count FROM {S} NATURAL JOIN {D} WHERE name = 'North'",
+    "case_alias_extra_pred": f"SELECT COUNT(*) AS school_count FROM {S} S JOIN {D} d ON S.district_id = d.district_id AND s.school_id = d.district_id WHERE d.name = 'North'",
+    "upper_relation_wrong": "SELECT COUNT(*) AS school_count FROM BRONZE.PUBLIC_SCHOOLS s JOIN BRONZE.PUBLIC_DISTRICTS d ON s.school_id = d.district_id WHERE d.name = 'North'",
+    "quoted_alias_wrong": f'SELECT COUNT(*) AS school_count FROM {S} "S" JOIN {D} d ON "S".school_id = d.district_id WHERE d.name = \'North\'',
+    "union_branch_wrong": f"SELECT SUM(c) AS school_count FROM ({VERIFIED_SQL.replace('COUNT(*) AS school_count', 'COUNT(*) AS c')} UNION ALL SELECT COUNT(*) FROM {S} s JOIN {D} d ON s.school_id = d.district_id WHERE d.name='North') u",
+    "lateral_wrong": f"SELECT COUNT(*) AS school_count FROM {S} s, LATERAL (SELECT * FROM {D} d WHERE d.district_id = s.school_id) x WHERE x.name = 'North'",
+    "join_on_function": f"{BASE} JOIN {D} d2 ON list_contains([d2.district_id], s.school_id) WHERE d.name = 'North'",
+    "positional_or_asof": f"SELECT COUNT(*) AS school_count FROM {S} s POSITIONAL JOIN {D} d WHERE d.name = 'North'",
+    "in_tuple": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE (s.school_id, 'x') IN (SELECT district_id, 'x' FROM {D} WHERE name = 'North')",
+    "ne_disguise_between": f"SELECT COUNT(*) AS school_count FROM {S} s JOIN {D} d ON s.school_id BETWEEN d.district_id AND d.district_id WHERE d.name = 'North'",
+    "semi_join_duckdb": f"SELECT COUNT(*) AS school_count FROM {S} s SEMI JOIN {D} d ON s.school_id = d.district_id AND d.name='North'",
+}
+
+
+@pytest.mark.parametrize("name", sorted(JOIN_ATTACKS))
+def test_no_wrong_join_shape_answers(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    rig = _space(tmp_path, monkeypatch, minter)
+    env = rig.ask(VERIFIED_Q, {"query_sql": JOIN_ATTACKS[name], "plan_source": "ontology_plan"})
+    if env["abstained"] is False:
+        # Answering is allowed only with the true figure.
+        assert _multiset(env["rows"]) == _multiset([{"school_count": 3}]), (name, env["rows"])
+    else:
+        assert env["badge"] == "ABSTAIN" and env["rows"] == []
+        assert "gap: " in str(env.get("text") or "")
+
+
+def test_fan_trap_over_the_verified_link_abstains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    rig = _space(tmp_path, monkeypatch, minter)
+    sql = f"SELECT COUNT(d.district_id) AS district_count FROM {D} d JOIN {S} s ON s.district_id = d.district_id"
+    assert _oracle(rig.lake, sql) == [{"district_count": 4}]  # truth is 2
+    env = rig.ask(
+        "How many districts have schools?", {"query_sql": sql, "plan_source": "ontology_plan"}
+    )
+    _assert_abstain(env, "unverified_join")
+    assert "fan_trap (bronze.public_districts" in _reasons(env)
+    fixed = sql.replace("COUNT(d.district_id)", "COUNT(DISTINCT d.district_id)")
+    env = rig.ask(
+        "How many districts have schools?", {"query_sql": fixed, "plan_source": "ontology_plan"}
+    )
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert _multiset(env["rows"]) == _multiset([{"district_count": 2}])
+
+
+def test_contract_ask_sql_obeys_the_space_join_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    """Generation misses; the contract ask's own SQL must pass the same rule."""
+    from cortex_client.models import AskResponse
+
+    rig = _space(tmp_path, monkeypatch, minter)
+
+    def _ask(req: Any) -> AskResponse:
+        rig.cortex.asks.append(req)
+        return AskResponse(
+            answer="There is 1 school.",
+            abstained=False,
+            badge="generated",
+            route="generated",
+            sql_used=WRONG_JOIN_SQL,
+            rows=[{"school_count": 1}],
+        )
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask)
+    env = rig.ask(VERIFIED_Q, {})
+    assert rig.cortex.asks, "the contract ask was not reached"
+    _assert_abstain(env, "unverified_join")
+
+
+def test_ontology_payload_stays_inside_cortex_limits() -> None:
+    from dms_executor.space_ontology import WIRE_MAX_BYTES, budget_space_block
+
+    space = {
+        "objects": {f"bronze.t{i}": {"key": [f"id_{i}"]} for i in range(400)},
+        "links": {
+            f"fk_{i}": {"from": f"bronze.t{i}", "to": "bronze.t0", "cardinality": "many_to_one"}
+            for i in range(400)
+        },
+        "measures": {},
+        "verified": True,
+    }
+    out = budget_space_block(space, used=40 * 1024)
+    import json as _json
+
+    assert 40 * 1024 + len(_json.dumps(out)) <= WIRE_MAX_BYTES + 1024
+    assert len(out["links"]) <= 256
+    assert out["space_truncated"] is True
