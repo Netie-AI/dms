@@ -975,28 +975,20 @@ class _Analysis:
     def _aggregate_ok(
         self, scope: Scope, by_src: dict[str, set[str]], null_rows_ignored: bool
     ) -> None:
-        """Some relation the aggregate reads determines every other one, or raise.
+        """Every relation the aggregate reads is un-repeated in ``scope``, or raise.
 
-        The start relation's rows each appear at most once, and every other
-        relation (including the others the argument reads) is joined
-        many-to-one onto it by proven-unique keys, so the argument is a
-        function of one start row: ``SUM(l.qty * p.price)`` over lines JOIN a
-        product dimension counts each line once. With one relation read this
-        is the plain rule. The first candidate's refusal is the one named.
+        Round 3 briefly accepted "some relation determines the others", so
+        ``SUM(l.qty * p.price)`` over lines JOIN products could answer. The
+        verifier showed a one-side measure could then be summed at the many
+        side's grain just by adding a many-side column to the argument. Every
+        source must stand on its own: that revenue shape abstains (a named
+        over-refusal), never a confident wrong figure.
         """
-        first: _Refuse | None = None
-        for start, names in by_src.items():
-            try:
-                self._determined_from(scope, start, null_rows_ignored)
-                src = self._sources(scope)[start]
-                if isinstance(src, Scope):
-                    self._through_derived(src, names)
-            except _Refuse as exc:
-                first = first or exc
-                continue
-            return
-        assert first is not None
-        raise first
+        for name, names in by_src.items():
+            self._determined_from(scope, name, null_rows_ignored)
+            src = self._sources(scope)[name]
+            if isinstance(src, Scope):
+                self._through_derived(src, names)
 
     def check_scope(self, scope: Scope) -> None:
         select = scope.expression

@@ -190,6 +190,14 @@ FAN_OUT_CASES = [
         f"fan_out:{SEGMENTS}.customer_id",
         id="dimension_key_duplicated_in_data",
     ),
+    # Round-3 verifier bypass: padding an order-level measure with a line
+    # column let the line side count as the "start" relation (L2 400 vs 200).
+    pytest.param(
+        f"SELECT SUM(o.amount + i.qty * 0) AS total_amount FROM {ORDERS} o "
+        f"JOIN {ITEMS} i ON i.order_id = o.order_id",
+        f"fan_out:{ITEMS}.order_id",
+        id="one_side_measure_padded_with_many_side_column",
+    ),
 ]
 
 
@@ -387,16 +395,6 @@ L2_CASES = [
         ORDERS_TOTAL,
         id="dimension_left_join_fact",
     ),
-    # Parent (5e48639): fan_out:bronze.public_lines.product_id. Each line meets
-    # one product, so line revenue counts each line once.
-    pytest.param(
-        "What is the total line revenue?",
-        f"SELECT SUM(l.qty * p.price) AS revenue FROM {LINES} l "
-        f"JOIN {PRODUCTS} p ON p.product_id = l.product_id",
-        "revenue",
-        LINE_REVENUE,
-        id="qty_times_dimension_price",
-    ),
 ]
 
 
@@ -581,9 +579,12 @@ def lake(tmp_path: Path) -> Path:
         ("SELECT COUNT(COALESCE(o.amount, 0)) FROM bronze.customers c "
          "LEFT JOIN bronze.orders o ON o.customer_id = c.customer_id",
          "fan_out_unanalysable:non_equi_join"),
-        # The start relation determines the others the argument reads.
+        # Every relation the argument reads must be un-repeated on its own, so
+        # line revenue over a product dimension is a named over-refusal.
         ("SELECT SUM(l.qty * p.price) FROM bronze.lines l JOIN bronze.products p "
-         "ON p.product_id = l.product_id", None),
+         "ON p.product_id = l.product_id", "fan_out:bronze.lines.product_id"),
+        ("SELECT SUM(o.amount + i.qty) FROM bronze.orders o JOIN bronze.items i "
+         "ON i.order_id = o.order_id", "fan_out:bronze.items.order_id"),
         ("SELECT SUM(c.customer_id) FROM bronze.orders o JOIN bronze.customers c "
          "ON c.customer_id = o.customer_id", "fan_out:bronze.orders.customer_id"),
         ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id, SUM(qty) AS q "
