@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - Typed SQL-source ingest, with a data-checked fan-out guard
+
+- **Typed ingest.** SQL-source pulls keep source column types (INTEGER, BIGINT, DECIMAL(p,s), DOUBLE, BOOLEAN, DATE, TIMESTAMP). Values round-trip exactly. A column that cannot be carried exactly lands VARCHAR with a note visible on the receipt, the Space sources list and the preview. Existing bronze tables become typed on the next pull. 200k rows: about 3.0 s (was 2.7 s, all VARCHAR).
+- **Why it ships only with the guard.** Once columns are numeric, a generated `SUM(orders.amount)` over `orders JOIN items` answered L2 with the inflated total (400 vs 200). Before, the VARCHAR SUM failed and abstained.
+- **Fan-out guard** (`sql_fanout.py`, generated-SQL path, before submit and ledger). Every relation an aggregate reads must be un-repeated in its scope: joins must match keys proven unique and not null on the Space data (read-only, cached per ingest), or a derived side must be one of three provable shapes (plain columns of one base table; `GROUP BY` exactly the key with no shadowing alias, set-returning or window function; a one-row aggregate). Otherwise a named ABSTAIN `fan_out:<relation>.<column>` or `fan_out_unanalysable:<why>`, no figure. `COUNT(DISTINCT)` and single-table aggregates are never refused.
+- **Known over-refusals (safe).** `SUM(qty * price)` over a product dimension, RIGHT JOIN mirrors, and pre-aggregated joins that the grain gate refuses as nested grouping.
+- **Verification.** Three independent adversarial rounds; the round-3 bypass (`SUM(o.amount + i.qty*0)`) is a regression test. Loopback proof (real HTTP, stub model): SUM 850 and AVG 563.33 match psql; the fan-out join abstains; a many-to-one SUM answers 10. Full suite 1759 passed (31 Postgres control-plane tests skipped, no local Postgres).
+- **Parked.** Grouped-CTE grain narrowing: three rejected rounds, stays `grain_unanalysable:nested_grouping`.
+
 ## 2026-09-26 - Batch 2: cited-source ids survive PII masking; NULL results abstain; one number format
 
 - **Cross-Space attribution (root cause of the 1-in-6 `test_rag_space_boundary` failure).** The PII masker read digit groups inside a source UUID (e.g. `320-4502-9218`) as an account/phone run and rewrote the cited `ref_id` into an id nobody cited. Whole canonical UUIDs (at least one hex letter, not part of an email) are now skipped; emails are masked across the text first. Sources that name another Space are dropped from the envelope. Boundary test 10/10 serially after the fix; deterministic reproduction in `tests/test_rag_source_attribution.py`.
