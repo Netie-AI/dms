@@ -21,12 +21,21 @@ The rule, per aggregate, by sqlglot scope analysis (no word rules):
   must have the same type: a comparison that casts the key (VARCHAR '010'
   against INTEGER 10) can match several rows unique as text, so it is
   ``fan_out_unanalysable:key_type``. An equality in a LEFT JOIN's ON clause
-  keys only that join's own relation. For a real table that is
-  checked against the data in the Space warehouse (read-only; cached per
-  table + columns + ingest id + file stamp). A derived table is unique on its
-  GROUP BY columns (pre-aggregated to the key), on its outputs when DISTINCT
-  (or on a key the data shows determines the other DISTINCT outputs), and on
-  anything when it is an ungrouped aggregate (one row).
+  keys only that join's own relation, unless that relation is the aggregated
+  one and the aggregate skips NULL rows (SUM / AVG / COUNT of plain
+  arithmetic): an unmatched left row then carries only NULLs for it, so
+  ``dimension LEFT JOIN fact`` summing the fact answers. For a real table that
+  is checked against the data in the Space warehouse (read-only; cached per
+  table + columns + ingest id + file stamp). A derived table or CTE is unique
+  only in an allowlisted shape, and ``fan_out_unanalysable:derived_shape``
+  otherwise (fail closed): plain columns of one base table with a proven key;
+  GROUP BY plain, unshadowed input columns (one row per key); an ungrouped
+  aggregate (one row); DISTINCT on the key (or plain columns of one table the
+  data shows the key determines). None with a set-returning call (``unnest``)
+  or a window in its projection.
+- An aggregate reading several relations needs one of them (the start) to
+  determine all the others: ``SUM(l.qty * p.price)`` over lines joined
+  many-to-one to products counts each line once.
 - An aggregate that reads a grouped / DISTINCT derived table's un-aggregated
   output over a join inside it is ``fan_out_unanalysable:grouped_passthrough``:
   the groups can be finer than that column's own rows.
@@ -81,6 +90,7 @@ FAN_OUT_UNANALYSABLE_WHY = frozenset(
         "data_check_failed",
         "key_type",
         "grouped_passthrough",
+        "derived_shape",
     }
 )
 
@@ -345,6 +355,82 @@ def _same_comparison_type(key_type: str | None, value_type: str | None) -> bool:
     return key_type in _INTEGER_TYPES and value_type in _INTEGER_TYPES
 
 
+#: Functions that return a set of rows: in a projection they repeat the row
+#: they sit on (DuckDB ``unnest``), so the relation has more rows than its FROM.
+_SET_RETURNING: tuple[type[exp.Expression], ...] = (
+    exp.Explode,
+    exp.Unnest,
+    exp.GenerateSeries,
+    exp.Inline,
+    exp.UDTF,
+)
+_SET_RETURNING_NAMES = frozenset(
+    {
+        "unnest", "explode", "explode_outer", "posexplode", "inline",
+        "generate_series", "range", "generate_subscripts", "json_each", "json_tree",
+        "flatten",
+    }
+)
+
+
+def _set_returning(node: exp.Expression) -> bool:
+    """``node`` holds a set-returning call anywhere (fail closed: any depth)."""
+    for n in node.walk():
+        if isinstance(n, _SET_RETURNING):
+            return True
+        if isinstance(n, exp.Anonymous) and str(n.name).lower() in _SET_RETURNING_NAMES:
+            return True
+    return False
+
+
+def _in_window(agg: exp.Expression) -> bool:
+    return isinstance(agg.find_ancestor(exp.Window, exp.Select, exp.SetOperation), exp.Window)
+
+
+def _collapses(select: exp.Select) -> bool:
+    """``select`` has an aggregate that collapses its rows (a window one does not)."""
+    return any(
+        _owner(a) is select and not _in_window(a)
+        for p in select.expressions
+        for a in p.find_all(exp.AggFunc)
+    )
+
+
+#: Nodes an aggregate argument may hold and still be NULL whenever any column
+#: in it is NULL (arithmetic and casts propagate NULL; COALESCE / CASE do not).
+_NULL_PROPAGATING: tuple[type[exp.Expression], ...] = (
+    exp.Column,
+    exp.Identifier,
+    exp.Literal,
+    exp.Paren,
+    exp.Neg,
+    exp.Add,
+    exp.Sub,
+    exp.Mul,
+    exp.Div,
+    exp.Mod,
+    exp.Cast,
+    exp.DataType,
+    exp.DataTypeParam,
+)
+
+
+def _ignores_null_rows(agg: exp.Expression) -> bool:
+    """SUM / AVG / COUNT of an argument that is NULL when any of its columns is.
+
+    Such an aggregate skips a row whose columns from one relation are all
+    NULL, as a LEFT JOIN's unmatched left row carries for its right side.
+    """
+    if not isinstance(agg, (exp.Sum, exp.Avg, exp.Count)):
+        return False
+    arg = agg.this
+    if not isinstance(arg, exp.Expression) or isinstance(arg, (exp.Star, exp.Distinct)):
+        return False
+    if agg.args.get("expressions"):
+        return False
+    return all(isinstance(n, _NULL_PROPAGATING) for n in arg.walk())
+
+
 def _is_aggregated(col: exp.Column, select: exp.Expression) -> bool:
     """``col`` sits inside an aggregate that collapses ``select``'s rows."""
     node = col.parent
@@ -454,7 +540,7 @@ class _Analysis:
         return None
 
     def _equalities(
-        self, scope: Scope
+        self, scope: Scope, start: str | None = None, null_rows_ignored: bool = False
     ) -> tuple[list[tuple[str, str, frozenset[str]]], set[str], set[str]]:
         """``(source, key column, sources the value depends on)`` per usable equality.
 
@@ -463,6 +549,11 @@ class _Analysis:
 
         An equality in a LEFT JOIN's ON clause filters nothing: it only chooses
         that join's own right-hand rows, so it can key that relation alone.
+        Except when that right-hand relation is ``start`` and the aggregate
+        skips rows where its columns are NULL (``null_rows_ignored``): every
+        row carrying a ``start`` row satisfied the whole ON clause, and an
+        unmatched left row carries only NULLs for ``start``, so the ON
+        equalities may key the left relations too.
         """
         select = scope.expression
         assert isinstance(select, exp.Select)
@@ -492,7 +583,11 @@ class _Analysis:
             if kind in {"SEMI", "ANTI"}:
                 filtering.add(name)
                 continue
-            only = name if side == "LEFT" else None
+            only = (
+                name
+                if side == "LEFT" and not (null_rows_ignored and name == start)
+                else None
+            )
             conds.extend((c, only) for c in _conjuncts(join.args.get("on")))
             for ident in join.args.get("using") or []:
                 key = str(ident.name).lower()
@@ -533,12 +628,14 @@ class _Analysis:
                 eqs.append((src, key_side.name.lower(), frozenset(deps)))
         return eqs, filtering, mismatched
 
-    def _determined_from(self, scope: Scope, start: str) -> None:
+    def _determined_from(
+        self, scope: Scope, start: str, null_rows_ignored: bool = False
+    ) -> None:
         """Every row of ``start`` appears at most once in ``scope``'s rows, or raise."""
         sources = self._sources(scope)
         if len(sources) <= 1:
             return
-        eqs, filtering, mismatched = self._equalities(scope)
+        eqs, filtering, mismatched = self._equalities(scope, start, null_rows_ignored)
         covered = {start, *filtering}
 
         def keys_for(name: str) -> set[str]:
@@ -577,54 +674,168 @@ class _Analysis:
             return exc.reason
 
     def _unique_derived(self, sub: Scope, keys: set[str]) -> str | None:
+        """None when derived table ``sub`` is provably unique on ``keys``.
+
+        Only an allowlisted shape is provable; anything else is
+        ``fan_out_unanalysable:derived_shape`` (fail closed, not recognition):
+
+        (a) plain columns of ONE base table whose key columns the data shows
+            unique and not null;
+        (b) ``SELECT k.., aggregates FROM <anything> GROUP BY k..`` where every
+            GROUP BY entry is a plain input column (or an ordinal naming one)
+            that no projection alias shadows (DuckDB binds GROUP BY to the
+            input column, not to an alias of the same name): an alias named
+            like an input column but projecting something else is not
+            provable when that name is grouped on or joined on (the
+            compiler's ``ANY_VALUE(category) AS category`` beside the key
+            is neither), nor are two outputs of one name; no
+            GROUPING SETS / ROLLUP / CUBE / ALL;
+        (c) an ungrouped aggregate (one row);
+        (d) DISTINCT on the key, or DISTINCT plain columns of one base table
+            whose key the data shows determines the rest.
+
+        None of them may carry a set-returning call (``unnest`` repeats the row
+        it sits on) or a window (a windowed aggregate is not one row) in its
+        projection. A provable shape unique on other columns than the join key
+        is ``derived_key``.
+        """
         select = sub.expression
-        if not isinstance(select, exp.Select):
+        if isinstance(select, exp.SetOperation):
             return f"{REASON_FAN_OUT_UNANALYSABLE}:set_operation"
-        derived_key = f"{REASON_FAN_OUT_UNANALYSABLE}:derived_key"
+        shape = f"{REASON_FAN_OUT_UNANALYSABLE}:derived_shape"
+        if not isinstance(select, exp.Select) or select.args.get("laterals"):
+            return shape
         projs = list(select.expressions)
+        if any(_set_returning(p) or p.find(exp.Window) is not None for p in projs):
+            return shape
         group = select.args.get("group")
         if group is not None:
-            if any(group.args.get(k) for k in ("all", "rollup", "cube", "grouping_sets")):
-                return derived_key
-            outs: set[str] = set()
-            for g in group.expressions:
-                out = self._group_output(projs, g)
-                if out is None:
-                    return derived_key
-                outs.add(out)
-            # Pre-aggregated to the join key: one row per key.
-            return None if outs <= keys else derived_key
-        if any(
-            _owner(a) is select for p in projs for a in p.find_all(exp.AggFunc)
-        ):
-            return None  # an ungrouped aggregate: exactly one row
+            return self._unique_grouped(sub, projs, group, keys)
+        if _collapses(select):
+            return None  # (c) an ungrouped aggregate: exactly one row
         distinct = select.args.get("distinct")
         if distinct is not None:
             if distinct.args.get("on") is not None or any(_is_star(p) for p in projs):
-                return derived_key
+                return shape
             outs = {str(p.alias_or_name).lower() for p in projs}
             if outs <= keys:
                 return None
             return self._distinct_key(sub, projs, keys)
+        return self._unique_plain(sub, projs, keys)
+
+    def _base_table(self, sub: Scope) -> exp.Table | None:
+        """The one base table ``sub`` reads, with no join and no table function."""
+        select = sub.expression
+        if not isinstance(select, exp.Select) or select.args.get("joins"):
+            return None
+        from_ = select.args.get("from")
+        if from_ is None or not isinstance(from_.this, exp.Table):
+            return None
+        sources = self._sources(sub)
+        if len(sources) != 1:
+            return None
+        src = next(iter(sources.values()))
+        if not isinstance(src, exp.Table) or not isinstance(src.this, exp.Identifier):
+            return None
+        return src
+
+    def _unique_plain(
+        self, sub: Scope, projs: list[exp.Expression], keys: set[str]
+    ) -> str | None:
+        """(a) Plain columns of one base table: unique iff its key is, on the data."""
         if not keys:
             return f"{REASON_FAN_OUT_UNANALYSABLE}:non_equi_join"
-        origin: str | None = None
+        shape = f"{REASON_FAN_OUT_UNANALYSABLE}:derived_shape"
+        table = self._base_table(sub)
+        if table is None:
+            return shape
+        for p in projs:
+            inner = _unalias(p)
+            if not _is_star(p) and not (
+                isinstance(inner, exp.Column) and not isinstance(inner.this, exp.Star)
+            ):
+                return shape
         mapped: set[str] = set()
         for key in keys:
             col = self._output_column(sub, key)
             if col is None:
-                return derived_key
-            src = self._resolve(sub, col)
-            if src == _EXTERNAL or (origin is not None and src != origin):
-                return derived_key
-            origin = src
+                return f"{REASON_FAN_OUT_UNANALYSABLE}:derived_key"
             mapped.add(col.name.lower())
-        assert origin is not None
-        blame = self._unique(sub, origin, mapped)
-        if blame:
-            return blame
-        self._determined_from(sub, origin)
-        return None
+        if self.probe.unique_where_matchable(table, mapped):
+            return None
+        return f"{REASON_FAN_OUT}:{_label(table)}.{'+'.join(sorted(mapped))}"
+
+    def _unique_grouped(
+        self, sub: Scope, projs: list[exp.Expression], group: exp.Group, keys: set[str]
+    ) -> str | None:
+        """(b) Grouped exactly on plain, unshadowed input columns it outputs."""
+        shape = f"{REASON_FAN_OUT_UNANALYSABLE}:derived_shape"
+        derived_key = f"{REASON_FAN_OUT_UNANALYSABLE}:derived_key"
+        if any(group.args.get(k) for k in ("all", "rollup", "cube", "grouping_sets")):
+            return shape
+        if group.find(exp.Rollup, exp.Cube, exp.GroupingSets) is not None:
+            return shape
+        inputs: set[str] = set()
+        for src in self._sources(sub).values():
+            cols = self._columns_of(src)
+            if cols is None:
+                return shape
+            inputs |= cols
+        grouped_names = {
+            g.name.lower() for g in group.expressions if isinstance(g, exp.Column)
+        }
+        out_names = [str(p.alias_or_name).lower() for p in projs]
+        if len(set(out_names)) != len(out_names):
+            return shape  # two outputs of one name: which one the join reads is unproven
+        for p in projs:
+            if _is_star(p):
+                return shape
+            if (
+                isinstance(p, exp.Alias)
+                and p.alias.lower() in inputs
+                and (p.alias.lower() in grouped_names or p.alias.lower() in keys)
+            ):
+                inner = p.this
+                if not (
+                    isinstance(inner, exp.Column)
+                    and not isinstance(inner.this, exp.Star)
+                    and inner.name.lower() == p.alias.lower()
+                ):
+                    return shape  # an alias shadowing an input column
+        outs: set[str] = set()
+        for g in group.expressions:
+            if isinstance(g, exp.Literal) and g.is_int:
+                idx = int(g.this) - 1
+                if not 0 <= idx < len(projs):
+                    return shape
+                inner = _unalias(projs[idx])
+                if not isinstance(inner, exp.Column) or isinstance(inner.this, exp.Star):
+                    return shape
+                outs.add(str(projs[idx].alias_or_name).lower())
+                continue
+            if not isinstance(g, exp.Column) or isinstance(g.this, exp.Star):
+                return shape
+            if g.name.lower() not in inputs:
+                return shape  # binds to an alias or an outer column, not an input
+            g_src = self._resolve(sub, g)
+            if g_src == _EXTERNAL:
+                return shape
+            out: str | None = None
+            for p in projs:
+                inner = _unalias(p)
+                if (
+                    isinstance(inner, exp.Column)
+                    and not isinstance(inner.this, exp.Star)
+                    and inner.name.lower() == g.name.lower()
+                    and self._resolve(sub, inner) == g_src
+                ):
+                    out = str(p.alias_or_name).lower()
+                    break
+            if out is None:
+                return derived_key  # grouped finer than what it outputs
+            outs.add(out)
+        # Pre-aggregated to the join key: one row per key.
+        return None if outs <= keys else derived_key
 
     def _distinct_key(
         self, sub: Scope, projs: list[exp.Expression], keys: set[str]
@@ -640,8 +851,8 @@ class _Analysis:
         if len(sources) != 1:
             return derived_key
         src = next(iter(sources.values()))
-        if not isinstance(src, exp.Table):
-            return derived_key
+        if not isinstance(src, exp.Table) or not isinstance(src.this, exp.Identifier):
+            return f"{REASON_FAN_OUT_UNANALYSABLE}:derived_shape"
         by_out: dict[str, str] = {}
         for p in projs:
             inner = _unalias(p)
@@ -654,22 +865,6 @@ class _Analysis:
         if self.probe.determines(src, key_cols, set(by_out.values())):
             return None
         return f"{REASON_FAN_OUT}:{_label(src)}.{'+'.join(sorted(key_cols))}"
-
-    @staticmethod
-    def _group_output(projs: list[exp.Expression], g: exp.Expression) -> str | None:
-        """The output name a GROUP BY key is projected as, or None."""
-        if isinstance(g, exp.Literal) and g.is_int:
-            idx = int(g.this) - 1
-            return str(projs[idx].alias_or_name).lower() if 0 <= idx < len(projs) else None
-        for p in projs:
-            if isinstance(p, exp.Alias) and isinstance(g, exp.Column) and not g.table and (
-                p.alias.lower() == g.name.lower()
-            ):
-                return p.alias.lower()
-        for p in projs:
-            if _unalias(p) == g:
-                return str(p.alias_or_name).lower()
-        return None
 
     def _output_column(self, sub: Scope, name: str) -> exp.Column | None:
         """The bare column an output of a plain derived table passes through."""
@@ -698,14 +893,17 @@ class _Analysis:
 
     def _through_derived(self, sub: Scope, cols: set[str] | None) -> None:
         select = sub.expression
-        if not isinstance(select, exp.Select):
+        if isinstance(select, exp.SetOperation):
             raise _unanalysable("set_operation")
+        if not isinstance(select, exp.Select):
+            raise _unanalysable("derived_shape")
+        if any(_set_returning(p) for p in select.expressions):
+            # unnest in a projection repeats the row it sits on.
+            raise _unanalysable("derived_shape")
         if (
             select.args.get("group") is not None
             or select.args.get("distinct") is not None
-            or any(
-                _owner(a) is select for p in select.expressions for a in p.find_all(exp.AggFunc)
-            )
+            or _collapses(select)
         ):
             self._through_grouped(sub, cols)
             return
@@ -774,6 +972,32 @@ class _Analysis:
             raise _unanalysable("grouped_passthrough")
         self._origin_ok(sub, next(iter(sources)), passthrough)
 
+    def _aggregate_ok(
+        self, scope: Scope, by_src: dict[str, set[str]], null_rows_ignored: bool
+    ) -> None:
+        """Some relation the aggregate reads determines every other one, or raise.
+
+        The start relation's rows each appear at most once, and every other
+        relation (including the others the argument reads) is joined
+        many-to-one onto it by proven-unique keys, so the argument is a
+        function of one start row: ``SUM(l.qty * p.price)`` over lines JOIN a
+        product dimension counts each line once. With one relation read this
+        is the plain rule. The first candidate's refusal is the one named.
+        """
+        first: _Refuse | None = None
+        for start, names in by_src.items():
+            try:
+                self._determined_from(scope, start, null_rows_ignored)
+                src = self._sources(scope)[start]
+                if isinstance(src, Scope):
+                    self._through_derived(src, names)
+            except _Refuse as exc:
+                first = first or exc
+                continue
+            return
+        assert first is not None
+        raise first
+
     def check_scope(self, scope: Scope) -> None:
         select = scope.expression
         if not isinstance(select, exp.Select):
@@ -790,8 +1014,7 @@ class _Analysis:
                 # COUNT(*), SUM(1): the rows counted are the FROM relation's.
                 self._origin_ok(scope, self._driving(scope), None)
                 continue
-            for src, names in by_src.items():
-                self._origin_ok(scope, src, names)
+            self._aggregate_ok(scope, by_src, _ignores_null_rows(agg))
 
 
 def fan_out_reason(sql: str, warehouse: Path | None) -> str | None:

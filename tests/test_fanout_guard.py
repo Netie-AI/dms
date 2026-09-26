@@ -25,6 +25,7 @@ from typing import Any
 import duckdb
 import pytest
 from dms_executor import db_connector as dbc
+from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text, customer_gap_label
 from dms_executor.manifest import ManifestMinter
 from dms_executor.sql_fanout import clear_fan_out_cache, fan_out_reason
@@ -69,11 +70,29 @@ TABLES: dict[str, tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]] = {
         ],
         [(10, "Retail"), (10, "Wholesale"), (20, "Retail")],
     ),
+    "products": (
+        [
+            ("product_id", 23, None, 4, None, None, None),
+            ("price", 1700, None, None, 12, 2, None),
+        ],
+        [(1, Decimal("10.00")), (2, Decimal("5.00"))],
+    ),
+    "lines": (
+        [
+            ("order_id", 23, None, 4, None, None, None),
+            ("product_id", 23, None, 4, None, None, None),
+            ("qty", 23, None, 4, None, None, None),
+        ],
+        [(1, 1, 2), (1, 2, 1), (2, 1, 3)],
+    ),
 }
 ORDERS = "bronze.public_orders"
 ITEMS = "bronze.public_items"
 CUSTOMERS = "bronze.public_customers"
 SEGMENTS = "bronze.public_segments"
+PRODUCTS = "bronze.public_products"
+LINES = "bronze.public_lines"
+LINE_REVENUE = Decimal("55.00")  # 2 x 10.00 + 1 x 5.00 + 3 x 10.00
 
 
 class _Cursor:
@@ -222,6 +241,91 @@ def test_count_star_over_a_join_counts_the_from_relation_and_abstains(
     assert rig.cortex.executed == []
 
 
+#: A derived table the join reads as unique, in a shape that is not provably so.
+#: The guard names each ``derived_shape``. Parent (5e48639): the first two were
+#: L2_VALIDATED with the inflated figure shown (400.00; 3 customers for 2); the
+#: grain gate, which runs first, already abstains on the other three, so their
+#: envelope gap is the grain one and the guard's own verdict is asserted too.
+_SHAPE = "fan_out_unanalysable:derived_shape"
+DERIVED_SHAPE_CASES = [
+    pytest.param(
+        "What is the total order amount?",
+        f"SELECT SUM(o.amount) AS total_amount FROM {ORDERS} o "
+        f"JOIN (SELECT customer_id, unnest([1, 2]) AS u FROM {CUSTOMERS}) c "
+        "ON c.customer_id = o.customer_id",
+        ORDERS_TOTAL,
+        _SHAPE,
+        id="unnest_repeats_a_unique_dimension",
+    ),
+    pytest.param(
+        "What is the total order amount?",
+        f"SELECT SUM(o.amount) AS total_amount FROM {ORDERS} o "
+        f"JOIN (SELECT order_id, unnest([1, 2]) AS u FROM {ITEMS} GROUP BY order_id) t "
+        "ON t.order_id = o.order_id",
+        ORDERS_TOTAL,
+        "grain_unanalysable:nested_grouping",
+        id="unnest_repeats_a_grouped_side",
+    ),
+    pytest.param(
+        "What is the total order amount?",
+        f"SELECT SUM(o.amount) AS total_amount FROM {ORDERS} o "
+        f"CROSS JOIN (SELECT SUM(qty) AS s, unnest([1, 2]) AS u FROM {ITEMS}) t",
+        ORDERS_TOTAL,
+        "grain_unanalysable:nested_grouping",
+        id="unnest_repeats_a_one_row_aggregate",
+    ),
+    pytest.param(
+        "How many customers are there?",
+        f"SELECT COUNT(*) AS customer_count FROM {CUSTOMERS} c "
+        f"JOIN (SELECT customer_id AS order_id FROM {ORDERS} "
+        "GROUP BY order_id, customer_id) t ON t.order_id = c.customer_id",
+        2,
+        _SHAPE,
+        id="group_by_binds_the_input_not_the_shadowing_alias",
+    ),
+    pytest.param(
+        "What is the total order amount?",
+        f"SELECT SUM(o.amount) AS total_amount FROM {ORDERS} o "
+        f"CROSS JOIN (SELECT SUM(qty) OVER () AS s FROM {ITEMS}) w",
+        ORDERS_TOTAL,
+        "grain_unanalysable:window_function",
+        id="window_aggregate_is_not_one_row",
+    ),
+]
+
+
+@pytest.mark.parametrize(("question", "sql", "oracle", "gap"), DERIVED_SHAPE_CASES)
+def test_derived_side_not_provably_unique_abstains_with_no_figure(
+    tmp_path: Path,
+    minter: ManifestMinter,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    sql: str,
+    oracle: Any,
+    gap: str,
+) -> None:
+    rig = _space(tmp_path, minter, monkeypatch, sql)
+    # The SQL really repeats rows: its figure is not the oracle.
+    [(wrong,)] = _truth(rig.lake, sql)
+    assert Decimal(str(wrong)) != Decimal(str(oracle))
+    # The guard's own verdict on the landed Space, whichever gate speaks first.
+    assert fan_out_reason(sql, rig.lake) == _SHAPE
+
+    env = _ask(rig, question)
+    assert_envelope_valid(env)
+
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"), env.get("rows"))
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["values"] == []
+    text = str(env.get("text") or "")
+    assert f"gap: {gap}" in text, text
+    assert "I am not showing" in text
+    assert str(wrong) not in text, (wrong, text)
+    assert gap in _reasons(env)
+    assert rig.cortex.executed == []
+
+
 # --- the customer envelope: safe joins still answer at L2 with the oracle ---------------
 
 L2_CASES = [
@@ -273,6 +377,26 @@ L2_CASES = [
         ORDERS_TOTAL,
         id="single_table",
     ),
+    # Parent (5e48639): fan_out_unanalysable:non_equi_join. Unmatched customers
+    # carry only NULL amounts, which SUM skips; each order meets one customer.
+    pytest.param(
+        "What is the total order amount?",
+        f"SELECT SUM(o.amount) AS total_amount FROM {CUSTOMERS} c "
+        f"LEFT JOIN {ORDERS} o ON o.customer_id = c.customer_id",
+        "total_amount",
+        ORDERS_TOTAL,
+        id="dimension_left_join_fact",
+    ),
+    # Parent (5e48639): fan_out:bronze.public_lines.product_id. Each line meets
+    # one product, so line revenue counts each line once.
+    pytest.param(
+        "What is the total line revenue?",
+        f"SELECT SUM(l.qty * p.price) AS revenue FROM {LINES} l "
+        f"JOIN {PRODUCTS} p ON p.product_id = l.product_id",
+        "revenue",
+        LINE_REVENUE,
+        id="qty_times_dimension_price",
+    ),
 ]
 
 
@@ -291,6 +415,7 @@ def test_join_that_keeps_each_row_once_answers_at_l2_with_the_oracle(
     assert Decimal(str(truth)) == Decimal(str(oracle))
 
     env = _ask(rig, question)
+    assert_envelope_valid(env)
 
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
     assert env["abstained"] is False
@@ -335,6 +460,14 @@ def lake(tmp_path: Path) -> Path:
         )
         # Unique as text; DuckDB casts VARCHAR to INTEGER against an INTEGER key,
         # so '10', '010' and ' 10' all match customer 10.
+        con.execute(
+            "CREATE TABLE bronze.products AS SELECT * FROM (VALUES (1, 10.00), (2, 5.00)) "
+            "t(product_id, price)"
+        )
+        con.execute(
+            "CREATE TABLE bronze.lines AS SELECT * FROM (VALUES (1, 1, 2), (1, 2, 1), "
+            "(2, 1, 3)) t(order_id, product_id, qty)"
+        )
         con.execute(
             "CREATE TABLE bronze.custv AS SELECT * FROM (VALUES ('10', 'N'), ('010', 'N2'), "
             "(' 10', 'N3'), ('20', 'S')) t(customer_id, region)"
@@ -399,6 +532,64 @@ def lake(tmp_path: Path) -> Path:
         ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id, qty "
          "FROM bronze.items GROUP BY order_id, qty) i ON o.order_id = i.order_id",
          "fan_out_unanalysable:derived_key"),
+        # A derived side is unique only in an allowlisted shape; else derived_shape.
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT customer_id, "
+         "unnest([1, 2]) AS u FROM bronze.customers) c ON c.customer_id = o.customer_id",
+         "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id, "
+         "unnest([1, 2]) AS u FROM bronze.items GROUP BY order_id) t "
+         "ON t.order_id = o.order_id", "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o CROSS JOIN (SELECT SUM(qty) AS s, "
+         "unnest([1, 2]) AS u FROM bronze.items) t", "fan_out_unanalysable:derived_shape"),
+        ("SELECT COUNT(*) FROM bronze.customers c JOIN (SELECT customer_id AS order_id "
+         "FROM bronze.orders GROUP BY order_id, customer_id) t "
+         "ON t.order_id = c.customer_id", "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT customer_id AS order_id "
+         "FROM bronze.orders GROUP BY customer_id) t ON t.order_id = o.order_id",
+         "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT customer_id, "
+         "MIN(region) AS customer_id FROM bronze.customers GROUP BY customer_id) c "
+         "ON c.customer_id = o.customer_id", "fan_out_unanalysable:derived_shape"),
+        # The ontology compiler's dimension: an aggregate aliased like its input,
+        # neither grouped on nor joined on, keeps one row per key.
+        ("SELECT SUM(o.amount) FROM bronze.orders o LEFT JOIN (SELECT customer_id, "
+         "ANY_VALUE(region) AS region FROM bronze.customers GROUP BY customer_id) c "
+         "ON o.customer_id = c.customer_id", None),
+        ("SELECT SUM(o.amount) FROM bronze.orders o CROSS JOIN (SELECT SUM(qty) OVER () "
+         "AS s FROM bronze.items) w", "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id, SUM(qty) OVER "
+         "(PARTITION BY order_id) AS q FROM bronze.items) w ON w.order_id = o.order_id",
+         "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT c.customer_id FROM "
+         "bronze.customers c JOIN bronze.customers c2 ON c.customer_id = c2.customer_id) c "
+         "ON c.customer_id = o.customer_id", "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id FROM "
+         "bronze.items GROUP BY ROLLUP (order_id)) i ON i.order_id = o.order_id",
+         "fan_out_unanalysable:derived_shape"),
+        ("SELECT SUM(amount) FROM (SELECT amount, unnest([1, 2]) AS u "
+         "FROM bronze.orders) x", "fan_out_unanalysable:derived_shape"),
+        # A window aggregate does not collapse a wrapper: COUNT(*) sees the join.
+        ("SELECT COUNT(*) FROM (SELECT o.order_id, SUM(i.qty) OVER () AS s "
+         "FROM bronze.orders o JOIN bronze.items i ON o.order_id = i.order_id) x",
+         "fan_out:bronze.items.order_id"),
+        # Dimension LEFT JOIN fact: the ON keys the dimension from the fact only
+        # for an aggregate that skips the NULL rows of unmatched customers.
+        ("SELECT SUM(o.amount) FROM bronze.customers c LEFT JOIN bronze.orders o "
+         "ON o.customer_id = c.customer_id", None),
+        ("SELECT COUNT(*) FROM bronze.customers c LEFT JOIN bronze.orders o "
+         "ON o.customer_id = c.customer_id", "fan_out:bronze.orders.customer_id"),
+        ("SELECT COUNT(COALESCE(o.amount, 0)) FROM bronze.customers c "
+         "LEFT JOIN bronze.orders o ON o.customer_id = c.customer_id",
+         "fan_out_unanalysable:non_equi_join"),
+        # The start relation determines the others the argument reads.
+        ("SELECT SUM(l.qty * p.price) FROM bronze.lines l JOIN bronze.products p "
+         "ON p.product_id = l.product_id", None),
+        ("SELECT SUM(c.customer_id) FROM bronze.orders o JOIN bronze.customers c "
+         "ON c.customer_id = o.customer_id", "fan_out:bronze.orders.customer_id"),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT order_id, SUM(qty) AS q "
+         "FROM bronze.items GROUP BY 1) i ON o.order_id = i.order_id", None),
+        ("SELECT SUM(o.amount) FROM bronze.orders o JOIN (SELECT customer_id, region "
+         "FROM bronze.customers) c ON c.customer_id = o.customer_id", None),
         # Safe: many-to-one, pre-aggregated, DISTINCT, one-row side, semi-join,
         # insensitive aggregates, a single table.
         ("SELECT SUM(i.qty) FROM bronze.orders o JOIN bronze.items i "
