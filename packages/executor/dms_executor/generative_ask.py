@@ -80,6 +80,12 @@ from dms_executor.semantic_retrieve import (
     retrieve_space_context,
     slots_for_measure,
 )
+from dms_executor.space_ontology import (
+    REASON_NO_DECLARED_MEASURE,
+    relation_columns,
+    space_catalog,
+    unverified_join_reason,
+)
 from dms_executor.sql_currency import currency_mismatch_reason
 from dms_executor.sql_grain import (
     grain_mismatch_reason,
@@ -1030,7 +1036,11 @@ ONTOLOGY_SOURCE_SPACE = "space"
 
 
 def generation_catalog(
-    ctx: dict[str, Any], allowed: set[str], *, demo: bool
+    ctx: dict[str, Any],
+    allowed: set[str],
+    *,
+    demo: bool,
+    space: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The retrieved context as sent to Cortex, with the declared catalog.
 
@@ -1042,11 +1052,16 @@ def generation_catalog(
     tables = sorted(
         {".".join(p) for p in (relation_name_parts(t) for t in allowed) if p}
     )
-    return {
+    out = {
         **ctx,
         "source": ONTOLOGY_SOURCE_DEMO if demo else ONTOLOGY_SOURCE_SPACE,
         "tables": tables,
     }
+    if space is not None and not demo:
+        # ONTO-DERIVE-01: the Space's stored, re-measured ontology. Objects
+        # with keys, only links that verified, measures only if declared.
+        out.update(space)
+    return out
 
 
 def maybe_generative_ask(
@@ -1186,8 +1201,20 @@ def maybe_generative_ask(
         )
     else:
         ctx = retrieve_space_context(q, warehouse=lake, grantable=allowed)
+    # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
+    # generated SQL must follow. Measured just above, against the lake as it is.
+    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    space_block = (
+        space_catalog(space_onto, declared_violations, allowed)
+        if space_onto is not None
+        else None
+    )
     try:
-        payload = compute(generation_catalog(ctx, allowed, demo=demo_ontology_allowed))
+        payload = compute(
+            generation_catalog(
+                ctx, allowed, demo=demo_ontology_allowed, space=space_block
+            )
+        )
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
         payload = None
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
@@ -1298,6 +1325,30 @@ def maybe_generative_ask(
                 _abstain(
                     q,
                     violation_reason(broken),
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
+            )
+        join_why = (
+            unverified_join_reason(
+                sql,
+                space_onto,
+                declared_violations,
+                columns_of=relation_columns(space_onto, lake),
+            )
+            if space_onto is not None and not why
+            else None
+        )
+        if join_why:
+            # No guessed joins: on a Space with a derived ontology, generated
+            # SQL may join two relations only over a link the source declared
+            # and verify() measured. A confident join on anything else is the
+            # plausible wrong number this layer exists to refuse.
+            return _stamp(
+                _abstain(
+                    q,
+                    join_why,
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
@@ -1442,6 +1493,24 @@ def maybe_generative_ask(
             _abstain(
                 q,
                 gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if (
+        space_onto is not None
+        and plan.measure
+        and plan.measure not in space_onto.measures
+    ):
+        # Measures are never derived for a SQL-source Space (NEEDS_FOUNDER):
+        # a plan that needs one the Space has not declared is a named gap.
+        return _stamp(
+            _abstain(
+                q,
+                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not a measure this "
+                "Space declares",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,

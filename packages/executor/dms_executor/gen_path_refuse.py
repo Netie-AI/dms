@@ -51,6 +51,10 @@ GAP_REASONS = frozenset(
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",
         "unhonored_qualifier",
+        # ONTO-DERIVE-01 (dms#277): a SQL-source Space's own ontology.
+        "unverified_join",
+        "no_declared_measure",
+        "ontology_store_unavailable",
     }
 )
 
@@ -69,6 +73,7 @@ _MODEL_TAIL_GAPS = frozenset(
         "fanout_refused",
         "ambiguous_path",
         "unknown_link",
+        "no_declared_measure",
     }
 )
 

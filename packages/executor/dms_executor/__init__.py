@@ -39,6 +39,7 @@ from dms_executor.db_connector import (
     SourceConnectionError,
     UnknownSourceTable,
     ingest_source_database,
+    list_source_keys,
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
@@ -62,6 +63,7 @@ from dms_executor.demo_warehouse import (
     WarehouseBusy,
     ensure_demo_warehouse,
     execute_sql,
+    warehouse_path,
 )
 from dms_executor.envelope import (
     assert_envelope_valid,
@@ -108,6 +110,18 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_ontology import (
+    REASON_STORE_UNAVAILABLE,
+    bronze_catalog,
+    derive_and_store,
+    load_space_ontology,
+    ontology_store,
+    set_ontology_store,
+    source_identity,
+    space_ontology_views,
+    stored_catalogs,
+    stored_catalogs_by_source,
+)
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -670,6 +684,25 @@ class Executor:
             insights_seen.append(got)
             return got
 
+        space_onto = None
+        if allow_gen and not demo_space:
+            # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
+            # one and never another Space's. A store that cannot be read is a
+            # named ABSTAIN: answering without the join rules it holds would
+            # be a silent downgrade.
+            try:
+                space_onto = load_space_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology store unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the Space ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -693,6 +726,7 @@ class Executor:
                 ),
                 bind_on_miss=False,
                 demo_ontology_allowed=demo_space,
+                ontology=space_onto,
             )
             if gen_env is not None:
                 env = attach_cascade(gen_env, cascade)
@@ -1058,6 +1092,17 @@ __all__ = [
     "ingest_csv_bytes",
     "ingest_source_database",
     "verify_source_links",
+    "bronze_catalog",
+    "derive_and_store",
+    "load_space_ontology",
+    "ontology_store",
+    "set_ontology_store",
+    "source_identity",
+    "space_ontology_views",
+    "stored_catalogs",
+    "stored_catalogs_by_source",
+    "list_source_keys",
+    "warehouse_path",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import dms_executor
@@ -10,6 +11,8 @@ from dms_core.ask import AskServicePort
 from dms_core.pipelines import GoldMetricDef
 from dms_ledger import append_event
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 def build_ask_service(
@@ -303,6 +306,9 @@ def sql_source_ingest(
     # the same outcome as one measured and found broken. The rows landed and
     # their provenance is real - only the join is in question.
     links = dms_executor.verify_source_links(extract)
+    ontology = _derive_space_ontology(
+        extract.manifest_entry, kind=kind, host=host, database=database, space_id=space_id
+    )
     return {
         "source": extract.source,
         "tables": [
@@ -336,7 +342,153 @@ def sql_source_ingest(
         "declared_primary_keys": len(extract.keys.primary_keys),
         "declared_foreign_keys": len(extract.keys.foreign_keys),
         "links": links,
+        "ontology": ontology,
     }
+
+
+def _derive_space_ontology(
+    entry: dict[str, Any],
+    *,
+    kind: str,
+    host: str,
+    database: str,
+    space_id: str | None,
+) -> dict[str, Any]:
+    """ONTO-DERIVE-01: derive, verify, store the Space's ontology from this pull.
+
+    Never fails the ingest (the rows landed and their provenance is real), and
+    never hides a failure: the receipt says ``derived: false`` and why.
+    """
+    if not space_id:
+        return {"derived": False, "reason": "no space_id: an ontology belongs to a Space"}
+    try:
+        catalog = dms_executor.bronze_catalog(entry)
+        return dms_executor.derive_and_store(
+            catalog,
+            space_id=canonical_space_id(space_id),
+            identity=dms_executor.source_identity(kind, host, database, catalog),
+            warehouse=dms_executor.warehouse_path(),
+        )
+    except Exception as exc:  # noqa: BLE001 - named on the receipt, never raised
+        logger.warning("ontology derive failed for %s: %s", space_id, exc)
+        return {"derived": False, "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
+def space_ontology(space_id: str) -> dict[str, Any]:
+    """GET view: every source's ontology for the Space, status per object and link."""
+    views = dms_executor.space_ontology_views(canonical_space_id(space_id))
+    return {
+        "space_id": space_id,
+        "derived": bool(views),
+        "ontologies": views,
+        **(
+            {}
+            if views
+            else {
+                "reason": "no ontology has been derived for this Space; ingest a SQL "
+                "source into it or POST .../ontology/derive"
+            }
+        ),
+    }
+
+
+def space_ontology_rederive(
+    space_id: str,
+    *,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Re-derive for an existing Space. Never pulls rows.
+
+    With ``source`` (a SQL connection): read the source catalog (keys only) and
+    match it to the tables already landed for this Space from that source.
+    Without: re-measure every stored catalog against the bronze rows as they
+    are now. A Space with neither is a named 409.
+    """
+    canon = canonical_space_id(space_id)
+    warehouse = dms_executor.warehouse_path()
+    results: list[dict[str, Any]] = []
+    if source is not None:
+        cfg = dms_executor.SourceConfig(**source)
+        try:
+            keys = dms_executor.list_source_keys(cfg)
+        except dms_executor.SourceConnectionError as exc:
+            raise HTTPException(
+                status_code=502, detail={"code": "source_unreachable", "message": str(exc)}
+            ) from None
+        prefix = cfg.describe() + "#"
+        tables = []
+        for pull in dms_executor.list_source_pulls(space_id=canon):
+            ref = str(pull.get("ref") or "")
+            if not ref.startswith(prefix):
+                continue
+            schema, _, name = ref[len(prefix):].partition(".")
+            tables.append(
+                {
+                    "schema": schema,
+                    "table": name,
+                    "path": pull["bronze_table"],
+                    "truncated": bool(pull.get("truncated")),
+                }
+            )
+        if not tables:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_landed_tables",
+                    "message": f"nothing from {cfg.describe()} has been ingested into this Space",
+                },
+            )
+        catalog = dms_executor.bronze_catalog(
+            {
+                "source": cfg.describe(),
+                "tables": tables,
+                "primary_keys": {k: list(v) for k, v in keys.primary_keys.items()},
+                "foreign_keys": [
+                    {
+                        "name": fk.name,
+                        "from_table": fk.from_table,
+                        "from_column": fk.from_column,
+                        "to_table": fk.to_table,
+                        "to_column": fk.to_column,
+                    }
+                    for fk in sorted(keys.foreign_keys, key=lambda f: (f.name, f.ordinal))
+                ],
+            }
+        )
+        results.append(
+            dms_executor.derive_and_store(
+                catalog,
+                space_id=canon,
+                identity=dms_executor.source_identity(
+                    cfg.kind, cfg.host, cfg.database, catalog
+                ),
+                warehouse=warehouse,
+            )
+        )
+    else:
+        for identity, catalog in dms_executor.stored_catalogs_by_source(canon):
+            results.append(
+                dms_executor.derive_and_store(
+                    catalog, space_id=canon, identity=identity, warehouse=warehouse
+                )
+            )
+        if not results:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_catalog",
+                    "message": "this Space has no stored source catalog; send the source "
+                    "connection to read its keys",
+                },
+            )
+    return {"space_id": space_id, "rederived": len(results), "ontologies": results}
+
+
+def bind_ontology_store(database_url: str, tenant_id: str) -> None:
+    """Durable ontology store for a Postgres-bound API (same tenant as Spaces)."""
+    from dms_core.control_plane.onto_store import PostgresOntologyStore
+
+    dms_executor.set_ontology_store(PostgresOntologyStore(database_url, tenant_id=tenant_id))
 
 
 def xlsx_orch_golden(
