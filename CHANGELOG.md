@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-26 - ORACLE-FIX-02: cq_audit_overdue judged at the engine date (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) under dms#231. CI fixtures, not live. Not COMPLETE.
+- **Cause.** On the DMS seeded lake the certified oracle runs (no error). It reads `CURRENT_DATE`, so the judge evaluated it at the harness date: a correct answer at a different engine date judged WRONG.
+- **Change.** `dms_executor/engine_clock.py`: a clock-reading answer SQL is bracketed by a `CURRENT_DATE`/`TimeZone` probe on the same submit; the envelope carries `engine_clock`. `score_curated.py` binds the oracle's `CURRENT_DATE` to that date; missing is ORACLE_ERROR, before != after is INVALID (new category, fails the live run). Comparator in `oracle_row_match.py` untouched. No oracle SQL changed.
+- **Gate.** `tests/test_oracle_fix_02.py` (two dates, INVALID, missing date, HTTP envelope). `tests/test_oracle_fix_01.py`: exemption removed, zero-row check covers every answer oracle (tightens only).
+
 ## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
 
 - **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.

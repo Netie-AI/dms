@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -597,6 +598,47 @@ def _judge_badge(case: dict[str, Any], env: dict[str, Any]) -> str:
     return "OK"
 
 
+# ORACLE-FIX-02 (dms#308): a clock-reading oracle is evaluated at the date the
+# answer engine read on the connection that ran the answer (envelope
+# engine_clock), never the harness clock. CURRENT_DATE is the one bindable
+# token; any other clock call in an oracle is unbindable, so ORACLE_ERROR.
+_ORACLE_CURRENT_DATE_RE = re.compile(r"\bCURRENT_DATE\b", re.I)
+_ORACLE_OTHER_CLOCK_RE = re.compile(
+    r"\b(current_timestamp|current_time|now\s*\(|today\s*\(|"
+    r"get_current_timestamp\s*\(|localtimestamp|localtime)",
+    re.I,
+)
+_ISO_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+REASON_ENGINE_DATE_MISSING = "oracle_error:engine_date_missing"
+REASON_ENGINE_DATE_CROSSED = "invalid:engine_date_changed_during_round"
+REASON_ORACLE_CLOCK_UNBINDABLE = "oracle_error:unbindable_clock"
+
+
+def oracle_reads_clock(sql: str) -> bool:
+    return bool(_ORACLE_CURRENT_DATE_RE.search(sql) or _ORACLE_OTHER_CLOCK_RE.search(sql))
+
+
+def engine_as_of(env: Mapping[str, Any]) -> tuple[str | None, str]:
+    """(engine date, '') or (None, reason). Reason is ORACLE_ERROR or INVALID."""
+    clock = env.get("engine_clock")
+    if not isinstance(clock, Mapping) or clock.get("status") != "ok":
+        return None, REASON_ENGINE_DATE_MISSING
+    before = str(clock.get("date_before") or "")
+    after = str(clock.get("date_after") or "")
+    if not (_ISO_DAY_RE.fullmatch(before) and _ISO_DAY_RE.fullmatch(after)):
+        return None, REASON_ENGINE_DATE_MISSING
+    if before != after:
+        return None, REASON_ENGINE_DATE_CROSSED
+    return before, ""
+
+
+def bind_oracle_as_of(sql: str, as_of: str) -> str:
+    """CURRENT_DATE -> DATE '<as_of>'. as_of must be an ISO day."""
+    if not _ISO_DAY_RE.fullmatch(as_of):
+        raise ValueError(f"as_of is not an ISO day: {as_of!r}")
+    return _ORACLE_CURRENT_DATE_RE.sub(f"DATE '{as_of}'", sql)
+
+
 def _lookup_oracle_sql(
     case: dict[str, Any],
     oracles: Mapping[str, Any] | None,
@@ -629,6 +671,17 @@ def judge_detailed(
         return JudgeResult(legacy, "", legacy)
     if not sql:
         return JudgeResult("ORACLE_ERROR", "oracle_error:missing_sql", legacy)
+    if oracle_reads_clock(sql):
+        if _ORACLE_OTHER_CLOCK_RE.search(sql):
+            return JudgeResult("ORACLE_ERROR", REASON_ORACLE_CLOCK_UNBINDABLE, legacy)
+        if not is_confident(env):
+            # No answer SQL ran, so there is no engine date to bind; nothing to compare.
+            return JudgeResult("ABSTAIN", "", legacy)
+        as_of, why = engine_as_of(env)
+        if as_of is None:
+            verdict = "INVALID" if why == REASON_ENGINE_DATE_CROSSED else "ORACLE_ERROR"
+            return JudgeResult(verdict, why, legacy)
+        sql = bind_oracle_as_of(sql, as_of)
     gold, err = run_oracle_select(oracle_db, sql)
     if err is not None:
         return JudgeResult("ORACLE_ERROR", f"oracle_error:{err}", legacy)
@@ -718,8 +771,9 @@ def pack_category_report(
     abstain = int(tallies.get("ABSTAIN") or 0)
     wrong = int(tallies.get("WRONG") or 0)
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
+    invalid = int(tallies.get("INVALID") or 0)
     answered = ok + layer
-    accounted = ok + layer + abstain + wrong + oracle_error
+    accounted = ok + layer + abstain + wrong + oracle_error + invalid
     denom = max(PACK_DENOMINATOR, accounted)
     excluded = denom - accounted
 
@@ -739,6 +793,8 @@ def pack_category_report(
         "layer_of": frac(layer),
         "oracle_error": oracle_error,
         "oracle_error_of": frac(oracle_error),
+        "invalid": invalid,
+        "invalid_of": frac(invalid),
         "excluded_pending_scan": excluded,
         "excluded_pending_scan_of": frac(excluded),
     }
@@ -749,6 +805,7 @@ def print_category_report(cats: Mapping[str, Any]) -> None:
         f"answered {cats['answered_of']}  abstained {cats['abstained_of']}  "
         f"WRONG {cats['wrong_of']}  LAYER {cats['layer_of']}  "
         f"ORACLE_ERROR {cats['oracle_error_of']}  "
+        f"INVALID {cats.get('invalid_of', '0')}  "
         f"excluded-pending-scan {cats['excluded_pending_scan_of']}"
     )
     print(str(cats["figure_label"]))
@@ -1780,6 +1837,7 @@ def score_pack_live(
                 "reason": result.reason,
                 LEGACY_JUDGE_LABEL: result.scorer_ok_rows_not_compared,
                 "oracle_schema_version": schema_ver,
+                "engine_clock": env.get("engine_clock"),
             }
         )
     return tallies, cases_out
@@ -1795,6 +1853,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     n = sum(tallies.values())
     wrong = tallies["WRONG"]
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
+    invalid = int(tallies.get("INVALID") or 0)
     answered_ok = tallies["OK"] + tallies["LAYER"]
     precision = 100.0 if answered_ok + wrong == 0 else (
         100.0 * answered_ok / (answered_ok + wrong)
@@ -1820,9 +1879,10 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "answered": tallies["OK"] + tallies["LAYER"],
                 "wrong": wrong,
                 "oracle_error": oracle_error,
+                "invalid": invalid,
                 "total": n,
                 "abstained": tallies["ABSTAIN"],
-                "passed": wrong == 0 and oracle_error == 0,
+                "passed": wrong == 0 and oracle_error == 0 and invalid == 0,
                 "oracle_db": str(oracle_db),
                 "schema_version": read_schema_version(oracle_db),
                 "categories": cats,
@@ -1834,6 +1894,9 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     )
     if oracle_error:
         print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
+    if invalid:
+        print("FAIL: INVALID>0 (engine date changed during a round). Re-run; never WRONG.")
         return EXIT_FAIL
     if wrong:
         print("FAIL: confidently wrong or transport error")
@@ -1863,7 +1926,14 @@ def _ab_seed(path: Path) -> Any:
 
 
 def _tally() -> dict[str, int]:
-    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0, "ORACLE_ERROR": 0}
+    return {
+        "OK": 0,
+        "ABSTAIN": 0,
+        "LAYER": 0,
+        "WRONG": 0,
+        "ORACLE_ERROR": 0,
+        "INVALID": 0,
+    }
 
 
 def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
@@ -1901,6 +1971,7 @@ def run_ab_curated(
 
     from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
     from dms_executor.demo_pack import maybe_pack_ask, maybe_uncertified_refuse_ask
+    from dms_executor.engine_clock import EngineClock
     from dms_executor.generative_ask import maybe_generative_ask
     from dms_executor.semantic_retrieve import bind_plan
 
@@ -1939,12 +2010,16 @@ def run_ab_curated(
         space = resolve_space(case, pack["spaces"])
         entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space))
         grants = set(entry[1]) if entry else set()
-        exact_env = maybe_uncertified_refuse_ask(q, space_id=space) or maybe_pack_ask(
-            q,
-            space_id=space,
-            grantable=grants,
-            submit=submit,
-            ledger_append=ledger,
+        exact_clock = EngineClock(submit)
+        gen_clock = EngineClock(submit)
+        exact_env = maybe_uncertified_refuse_ask(q, space_id=space) or exact_clock.apply(
+            maybe_pack_ask(
+                q,
+                space_id=space,
+                grantable=grants,
+                submit=exact_clock.submit,
+                ledger_append=ledger,
+            )
         )
         exact_env = exact_env if exact_env is not None else _ab_miss()
         gen_env = maybe_generative_ask(
@@ -1953,10 +2028,11 @@ def run_ab_curated(
             warehouse=tmp,
             grantable=grants,
             compute=lambda ctx, _q=q: bind_plan(_q, ctx),
-            submit=submit,
+            submit=gen_clock.submit,
             ledger_append=ledger,
             ontology=onto,
         )
+        gen_env = gen_clock.apply(gen_env)
         gen_env = gen_env if gen_env is not None else _ab_miss()
         exact_r = judge_detailed(
             case, exact_env, oracle_db=compare_db, oracles=oracles

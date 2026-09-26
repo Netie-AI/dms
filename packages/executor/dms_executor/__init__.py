@@ -52,6 +52,7 @@ from dms_executor.demo_pack import (
     maybe_uncertified_refuse_ask,
 )
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.engine_clock import EngineClock
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
@@ -483,6 +484,13 @@ class Executor:
             run_cascade,
         )
 
+        # ORACLE-FIX-02 (dms#308): a clock-reading answer SQL carries the
+        # engine's own date, read through this same submit before and after.
+        clock = EngineClock(
+            lambda sql: self._submit_verified_sql(
+                sql, space_id=space_id, session_id=session_id, tables=tables
+            )
+        )
         key = turn_key(session_id, space_id)
         if allow_follow:
             follow = maybe_followup(
@@ -505,9 +513,7 @@ class Executor:
                 warehouse=self._warehouse,
                 grantable=set(self.grantable_tables(space_id=space_id)),
                 tables=tables,
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
+                submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(
                     asset_sql=str(payload.get("sql") or ""),
                     run_id=str(payload.get("run_id") or ""),
@@ -516,6 +522,7 @@ class Executor:
                 ),
             )
             if verified_env is not None:
+                clock.apply(verified_env)
                 self._store_turn(session_id, space_id, verified_env)
                 return verified_env
 
@@ -525,9 +532,7 @@ class Executor:
                 session_id=session_id,
                 grantable=set(self.grantable_tables(space_id=space_id)),
                 tables=tables,
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
+                submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(
                     asset_sql=str(payload.get("sql") or ""),
                     run_id=str(payload.get("run_id") or ""),
@@ -537,6 +542,7 @@ class Executor:
                 ),
             )
             if pack_env is not None:
+                clock.apply(pack_env)
                 self._store_turn(session_id, space_id, pack_env)
                 return pack_env
 
@@ -619,9 +625,7 @@ class Executor:
                     space_id=space_id,
                     ontology=catalog,
                 ),
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
+                submit=clock.submit,
                 ledger_append=lambda payload: self._ledger_verified_query(
                     asset_sql=str(payload.get("sql") or ""),
                     run_id=str(payload.get("run_id") or ""),
@@ -632,7 +636,7 @@ class Executor:
                 bind_on_miss=False,
             )
             if gen_env is not None:
-                env = attach_cascade(gen_env, cascade)
+                env = attach_cascade(clock.apply(gen_env) or gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
         if not allow_cortex:
