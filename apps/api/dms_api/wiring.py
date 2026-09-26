@@ -328,6 +328,10 @@ def sql_source_ingest(
                     else None
                 ),
                 "extracted_at": p.extracted_at,
+                # Source types are kept (dms#277). A column that could not be kept
+                # exactly landed VARCHAR and is named here, not silently retyped.
+                "column_types": dict(p.column_types),
+                "type_notes": list(p.type_notes),
             }
             for p in extract.pulls
         ],

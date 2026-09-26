@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -26,6 +27,7 @@ from dms_executor.demo_warehouse import (
 )
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
+from dms_executor.source_types import ColumnType, prepare_columns
 
 
 @dataclass
@@ -120,6 +122,11 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         # the source would not say.
         if "source_row_count" not in cols:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_row_count BIGINT")
+        # Columns of a SQL pull that could not keep their source type and landed
+        # VARCHAR, one note per column, JSON array. NULL = typed cleanly, or a file
+        # ingest / a pull older than typed landing (dms#277).
+        if "type_notes" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN type_notes VARCHAR")
 
 
 def _claim_table_name(
@@ -164,6 +171,7 @@ def _record_ingest(
     extracted_at: str | None = None,
     source_kind: str | None = None,
     source_row_count: int | None = None,
+    type_notes: list[str] | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
     kind = source_kind or classify_source_kind(filename)
@@ -174,8 +182,8 @@ def _record_ingest(
     con.execute(
         f"INSERT INTO {_REGISTRY} "
         "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, "
-        "truncated, extracted_at, source_kind, source_row_count) "
-        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, ?)",
+        "truncated, extracted_at, source_kind, source_row_count, type_notes) "
+        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, ?, ?)",
         [
             table_name,
             filename,
@@ -188,6 +196,7 @@ def _record_ingest(
             stamp,
             kind,
             source_row_count,
+            json.dumps(type_notes) if type_notes else None,
         ],
     )
 
@@ -227,6 +236,7 @@ def record_source_pull(
     path: Path | None = None,
     extracted_at: str | None = None,
     source_row_count: int | None = None,
+    type_notes: list[str] | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -267,6 +277,7 @@ def record_source_pull(
             extracted_at=stamp,
             source_kind="sql",
             source_row_count=source_row_count,
+            type_notes=type_notes,
         )
     finally:
         con.close()
@@ -278,6 +289,17 @@ def record_source_pull(
         source_row_count=source_row_count,
     )
     return fingerprint
+
+
+def parse_type_notes(raw: Any) -> list[str]:
+    """The registry's ``type_notes`` JSON array, read back. Unreadable reads as none."""
+    if not raw:
+        return []
+    try:
+        got = json.loads(str(raw))
+    except ValueError:
+        return [str(raw)]
+    return [str(n) for n in got] if isinstance(got, list) else [str(got)]
 
 
 def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -343,6 +365,7 @@ _REGISTRY_OPTIONAL = (
     "extracted_at",
     "source_kind",
     "source_row_count",
+    "type_notes",
 )
 
 
@@ -436,7 +459,7 @@ def list_source_pulls(
         lambda col: f"""
         SELECT r.table_name, r.filename, {col("space_id")}, {col("row_count")},
                {col("truncated")}, {col("source_row_count")}, {col("extracted_at")},
-               r.ingest_id, {col("source_kind")}
+               r.ingest_id, {col("source_kind")}, {col("type_notes")}
           FROM {_REGISTRY} r
           JOIN information_schema.tables t
             ON t.table_schema = 'bronze' AND t.table_name = r.table_name
@@ -469,6 +492,7 @@ def list_source_pulls(
             "ingest_id": None if ingest_id is None else str(ingest_id),
         }
         entry.update(_truncation_fields(row_count, truncated, total))
+        entry["type_notes"] = parse_type_notes(row[9])
         out.append(entry)
     return out
 
@@ -861,6 +885,107 @@ def write_bronze_rows(
             """
         )
         return f"{schema}.{name}"
+    finally:
+        con.close()
+
+
+@dataclass
+class TypedLanding:
+    """What ``write_typed_bronze_rows`` landed: the table, each column's type, the notes."""
+
+    table: str
+    #: column -> DuckDB type it landed as, in column order.
+    column_types: dict[str, str]
+    #: One per column that could not keep its source type and landed VARCHAR.
+    type_notes: list[str]
+
+
+def write_typed_bronze_rows(
+    *,
+    table: str,
+    column_types: list[ColumnType],
+    rows: list[list[Any]],
+    ref_id: str | None = None,
+    ingest_id: str | None = None,
+    path: Path | None = None,
+) -> TypedLanding:
+    """Land SQL-source rows in bronze.<table> with the source's column types (dms#277).
+
+    ``write_bronze_rows`` landed every column VARCHAR, so ``SUM(amount)`` over a source
+    ``numeric(12,4)`` failed to bind and the ask abstained. Here each column is:
+
+    1. serialised in Python to text DuckDB casts back exactly (``source_types``) - a
+       value the mapped type cannot carry exactly (NaN numeric, scale overflow, a
+       zero date a driver returned as text) sends that column to VARCHAR;
+    2. bulk-loaded as text through the same temp-CSV fast path as ``write_bronze_rows``;
+    3. checked with ``TRY_CAST`` in DuckDB - any non-NULL value that does not cast
+       sends that column to VARCHAR too;
+    4. created with ``CAST`` to its final type in one ``CREATE TABLE AS``.
+
+    A column that fell back carries a note, returned here and recorded on the source
+    by ``record_source_pull`` - visible, never silently wrong. Provenance (``_src``,
+    ``_ingest_id``) is identical to ``write_bronze_rows``.
+    """
+    ingest_id = ingest_id or str(uuid.uuid4())
+    ref_id = ref_id or str(uuid.uuid4())
+    if "." in table:
+        schema, name = table.split(".", 1)
+    else:
+        schema, name = "bronze", table
+    if not column_types:
+        raise ValueError("columns required")
+    width = len(column_types)
+    for r in rows:
+        if len(r) != width:
+            raise ValueError(f"row has {len(r)} values for {width} columns")
+    prepared = prepare_columns(column_types, rows)
+    text_rows: list[list[Any]] = [list(r) for r in zip(*(c.values for c in prepared), strict=True)]
+    columns = [c.name for c in prepared]
+    db = ensure_demo_warehouse(path or warehouse_path())
+    con = connect_file(db)
+    try:
+        ensure_lake_schemas(con)
+        col_defs = ", ".join(f'"{c}" VARCHAR' for c in columns)
+        con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
+        if text_rows:
+            _load_raw_rows(con, columns, text_rows)
+        typed = [c for c in prepared if c.duck_type != "VARCHAR"]
+        if typed and text_rows:
+            probes = ", ".join(
+                f'COUNT(*) FILTER (WHERE "{c.name}" IS NOT NULL '
+                f'AND TRY_CAST("{c.name}" AS {c.duck_type}) IS NULL)'
+                for c in typed
+            )
+            bad = con.execute(f"SELECT {probes} FROM _bronze_raw").fetchone() or ()
+            for c, n in zip(typed, bad, strict=True):
+                if n:
+                    c.note = (
+                        f"{c.name}: source type {c.source_type} could not be kept "
+                        f"({int(n)} value(s) did not cast to {c.duck_type}); landed VARCHAR"
+                    )
+                    c.duck_type = "VARCHAR"
+        select = ", ".join(
+            f'"{c.name}"'
+            if c.duck_type == "VARCHAR"
+            else f'CAST("{c.name}" AS {c.duck_type}) AS "{c.name}"'
+            for c in prepared
+        )
+        con.execute(f'DROP TABLE IF EXISTS "{schema}"."{name}"')
+        con.execute(
+            f"""
+            CREATE TABLE "{schema}"."{name}" AS
+            SELECT
+              {select},
+              [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
+              '{ingest_id}'::VARCHAR AS _ingest_id
+            FROM _bronze_raw AS src
+            """
+        )
+        return TypedLanding(
+            table=f"{schema}.{name}",
+            column_types={c.name: c.duck_type for c in prepared},
+            type_notes=[c.note for c in prepared if c.note],
+        )
     finally:
         con.close()
 

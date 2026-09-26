@@ -203,11 +203,12 @@ def preview_bronze_table(
         extracted_at = None
         truncated: bool | None = None
         source_kind: str | None = None
+        type_notes: list[str] = []
         try:
             # filename is the file path for a CSV ingest, and the credential-free
             # source string for a SQL pull (DR-0005 part 4). extracted_at is the
             # Python-minted watermark, not DuckDB now().
-            from dms_executor.bronze import classify_source_kind
+            from dms_executor.bronze import classify_source_kind, parse_type_notes
 
             reg = con.execute(
                 "SELECT filename, extracted_at, truncated, source_kind "
@@ -219,6 +220,16 @@ def preview_bronze_table(
                 extracted_at = None if reg[1] is None else str(reg[1])
                 truncated = None if reg[2] is None else bool(reg[2])
                 source_kind = reg[3] or classify_source_kind(source)
+            # Separate read: a registry that predates the column must not blank the
+            # provenance fields above.
+            try:
+                tn = con.execute(
+                    "SELECT type_notes FROM bronze._ingest_registry WHERE table_name = ?",
+                    [name],
+                ).fetchone()
+                type_notes = parse_type_notes(tn[0]) if tn is not None else []
+            except Exception:  # noqa: BLE001 - registry older than type_notes
+                type_notes = []
         except Exception:  # noqa: BLE001 - registry may not exist yet
             source = None
             extracted_at = None
@@ -246,5 +257,8 @@ def preview_bronze_table(
             if truncated
             else None
         ),
+        # Columns of a SQL pull that could not keep their source type and landed
+        # VARCHAR (dms#277). Empty when every column kept its type.
+        "type_notes": type_notes,
         "note": "Read-only bronze lake preview — provenance columns attached at ingest.",
     }
