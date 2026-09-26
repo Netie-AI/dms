@@ -31,6 +31,7 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
+from dms_executor.chart_recommend import recommend_chart
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -859,7 +860,19 @@ def map_ask_response_to_envelope(
     rows = list(resp.rows or [])
     chart = None
     if rows and not abstained:
-        chart = _chart_from_cortex_spec(resp.chart_spec) or _chart_from_rows(rows)
+        # DMS-VIZ-01 — the rule-based recommender reads the rows the customer
+        # sees; the engine's chart_spec only names the title. The Cortex spec
+        # is the fallback when the recommender has nothing (no rows).
+        spec_title = (
+            resp.chart_spec.get("title") if isinstance(resp.chart_spec, dict) else None
+        )
+        chart = recommend_chart(
+            rows,
+            question or "",
+            title_hint=str(spec_title) if spec_title else None,
+        )
+        if chart is None:
+            chart = _chart_from_cortex_spec(resp.chart_spec)
     assumptions: list[str] = []
     if resp.assumptions:
         if isinstance(resp.assumptions, str):
@@ -944,6 +957,7 @@ __all__ = [
     "normalize_contributing_sources",
     "build_library_tree",
     "classify_bytes",
+    "recommend_chart",
     "classify_grid",
     "ingest_batch",
     "DEFAULT_MAX_ROWS",

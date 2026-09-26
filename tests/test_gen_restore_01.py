@@ -472,13 +472,14 @@ def test_answered_envelope_attaches_chart_from_fitting_rows(
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
     assert env.get("chart") == chart_from_rows(rows)
-    assert env["chart"]["kind"] == "hbar"
-    assert env["chart"]["x"] == "product_category"
+    # DMS-VIZ-01: one row x one measure (+ a label) -> big number over the cell.
+    assert env["chart"]["kind"] == "bignum"
     assert env["chart"]["y"] == "revenue"
+    assert env["chart"]["value"] == 100.0
     assert_envelope_valid(env)
 
 
-def test_answered_envelope_has_no_chart_when_rows_do_not_fit(
+def test_answered_envelope_has_table_chart_when_rows_do_not_fit(
     warehouse: Path, onto: Ontology
 ) -> None:
     rows = [{"sku": "SKU-1"}]
@@ -495,8 +496,9 @@ def test_answered_envelope_has_no_chart_when_rows_do_not_fit(
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
-    assert env.get("chart") is None
-    assert chart_from_rows(rows) is None
+    # DMS-VIZ-01: no measure -> ``table`` (the rows table is the view), no spec.
+    assert env.get("chart") == {"kind": "table", "title": "Result"}
+    assert chart_from_rows(rows) == {"kind": "table", "title": "Result"}
     assert_envelope_valid(env)
 
 
