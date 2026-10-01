@@ -2,6 +2,40 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - OVERMASK-01: served-path star test, live schema leftovers (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Verify and Gating on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** `test_select_star_transactions_through_envelope` calls `build_answer_envelope` with `column_schema`. `SELECT *` over transactions keeps `created_at` and `ts` visible. That test fails on `de4c6df`. No live entry point passes a connection schema. Typed dates behind a star on those paths stay masked. That is a dms#284 leftover, not a fix in this PR.
+- **Not this ticket:** wiring a schema into live ask; `load_active` intersected with grants (dms#284); COMPLETE; merge.
+
+## 2026-10-01 - OVERMASK-01: qualify stars before lineage (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Gating and Epic ruling on PR #322, plus the PRD synthetic-schema case. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** `served_column_sources` runs sqlglot qualify before lineage when the caller passes the connection schema on `build_answer_envelope` (`column_schema`). `SELECT *`, `t.*`, a star CTE, and UNION branches then trace to real source columns. No schema, a schema qualify cannot use, or a column that is still untraced: that column stays masked. This does not load a schema and does not read `DEMO_TABLES`. No ask path supplies a schema today, so production stars stay masked. A clock time is not a DOB shape by itself; a birth cue still masks it.
+- **Gate.** Checker re-run: 258 PASS / 27 FAIL / 285. Untraced-default: 0. Parent `cdd3ae2a` 169 PASS stay PASS. `tests/test_pii_mask_02.py` matches `ca34419d`.
+- **Not this ticket:** a schema loader; `load_active` intersected with grants (dms#284); Presidio; dms#304 deny file; COMPLETE; merge.
+
+## 2026-10-01 - OVERMASK-01: gating, free-text dates stay masked (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Gating ruling on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** A whole-value date in a free-text cell stays masked with no cue. A person or birth table does the same when the column is not a typed date (`enrolled` on `patient`). Typed date and timestamp columns, and answer prose, still need a birth cue. `sql_currency.py` keeps sqlglot: it is the only importer, the envelope loads `served_column_sources` lazily, and a parse failure, UNION, or `SELECT *` leaves the column untraced so it stays masked. `tests/test_pii_mask_02.py` matches `ca34419d`.
+- **Gate.** Checker re-run: 258 PASS / 27 FAIL / 285. Untraced-default: 0. Parent `cdd3ae2a` 169 PASS stay PASS.
+- **Not this ticket:** Presidio; dms#304 deny file; COMPLETE; merge.
+
+## 2026-10-01 - OVERMASK-01: passport split by lineage source (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) correction on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** A passport-shaped value in a data cell stays masked without a cue, unless sqlglot lineage proves every source column is a non-PII code (`sku`, `code`, `ref`, `order_id`). The served alias is not proof. Answer prose still needs a passport cue. An untraceable column gets no exemption. Lineage stays in the ask envelope. `sql_currency.py` is unchanged versus `ca34419d`.
+- **Gate.** Checker re-run: 258 PASS / 27 FAIL / 285. The 11 `passport_generic_like_low` cells stay PASS. Parent `cdd3ae2a` 169 PASS stay PASS. Untraced-default columns on that re-run: 0, not added to the pass count.
+- **Not this ticket:** Presidio; dms#304 deny file; COMPLETE; merge.
+
+## 2026-10-01 - OVERMASK-01: birth and passport cues, lineage fail-closed (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) follow-up. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** A date is a DOB only with a birth cue (column, table, nearby prose, or a sqlglot source column). A passport-shaped code needs a nearby passport cue. Served SQL that cannot name a source column masks that date column. No SQL keeps the cue rule. `scripts/pii_mask_check.py` is untouched.
+- **Gate.** Checker re-run: 247 PASS / 38 FAIL / 285. The 11 new FAILs are `passport_generic_like_low` cells whose synthetic text is `note A12345678 end` (no passport cue). Parent `cdd3ae2a` 169 PASS stay PASS. Untraced-default columns on that re-run: 0, not added to the pass count. 52-pack offline: exact 0/16/36/0/0, generative 0/26/11/15/0 (OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR).
+- **Not this ticket:** Presidio; dms#304 deny file; COMPLETE; merge.
+
 ## 2026-10-01 - PII-MASK-02: drop checker EXCLUDE relabel (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Epic ruling on PR #320. dms#318 stays open. Does not stamp COMPLETE. Does not merge.

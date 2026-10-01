@@ -1365,6 +1365,7 @@ def build_answer_envelope(
     constraint_trace: list[dict[str, Any]] | None = None,
     cascade_path: bool = False,
     exclude_reasons: list[Any] | None = None,
+    column_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -1609,6 +1610,19 @@ def build_answer_envelope(
 
     # PII-01 before E4: IC/phone digits in k=v prose must not look like uncited money.
     # Detector errors fail closed (string cells become DMSMASK_unknown_00).
+    # Dates: sqlglot lineage carries a birth cue through an alias.
+    # Passport shapes: a code exemption needs the source column, not the alias.
+    # No SQL keeps the birth-cue rule and does not exempt codes.
+    # column_schema is the connection the answer ran against. The caller
+    # passes it in. This constructor does not load a schema and does not
+    # read DEMO_TABLES. No schema, or a schema qualify cannot use, leaves
+    # a star untraced, and an untraced column stays masked.
+    # Unresolved lineage fails closed. sqlglot stays in sql_currency.
+    column_sources = None
+    if _executed_query(sql_used):
+        from dms_executor.sql_currency import served_column_sources
+
+        column_sources = served_column_sources(str(sql_used), schema=column_schema)
     masked = fail_closed_mask_payload(
         text=text or "",
         rows=rows_out,
@@ -1616,6 +1630,7 @@ def build_answer_envelope(
         sources=sources,
         chart=chart,
         sql_used=sql_used,
+        column_sources=column_sources,
     )
     text = masked["text"]
     rows_out = masked["rows"]

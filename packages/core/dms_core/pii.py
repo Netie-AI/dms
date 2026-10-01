@@ -5,6 +5,13 @@ names, Malaysian IC numbers, phones (MY mobile / landline / NANP / intl),
 emails, account/card numbers, passports, street addresses, and dates of birth.
 Value checks search inside free text as well as whole values (dms#303, dms#318).
 WIDEN-ONLY vs dms#272 and dms#303: nothing previously caught is dropped.
+OVERMASK-01: a whole-value date on a typed date or timestamp column, and a
+date in answer prose, need a birth cue. A whole-value date in a free-text cell
+stays masked with no cue. A person or birth table does the same when the
+column is not a typed date. A passport-shaped value in a data cell stays
+masked without a cue, unless lineage proves every source column is a non-PII
+code (sku, code, ref, order_id). Answer prose still needs a passport cue.
+An untraceable column gets no exemption. Name signals stay.
 
 Swap: Cortex HTTP PII-MASK (#268) or a vendor DLP call behind these functions.
 Not a sixth port: this is a local classifier, same class as xlsx_ooxml.
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any
 
 Kind = str
@@ -63,14 +71,29 @@ _DOB_COL = re.compile(
     r"|(?:^|_)(?:date_?of_?births?|born_on|born|birth|yob|year_of_birth|dob)(?:_|$)"
     r")"
 )
-# Event/business dates and calendar grains stay visible. birth_date is _DOB_COL first.
-# ponytail: a whole-value date on any other column is treated as DOB.
-# Ceiling: an event date whose name does not end in date/month/year/week/day.
-_EVENT_DATE_COL = re.compile(
-    r"(?i)(?:^|_)(?:date|months?|years?|quarters?|weeks?|days?|periods?|as_of)$"
-    r"|(?<=[A-Za-z])date$"
+# A date is a DOB only with a birth cue nearby, same idea as Presidio context
+# words. No Presidio dependency: that comparison is a separate dms#318 spike.
+# ponytail: 18 characters either side. Covers "date of birth is" and
+# "passport number". Ceiling: a cue in the next clause, inside 18 characters,
+# masks the neighbouring value. Upgrade: the Presidio spike on the 285 table.
+_CUE_WINDOW = 18
+_BIRTH_CUE = re.compile(
+    r"(?i)\b(?:d\.?o\.?b|date\s+of\s+birth|birth\s*dates?|birthdays?|born)\b"
+)
+_PASSPORT_CUE = re.compile(r"(?i)\bpassports?\b")
+# Last segment of a lineage leaf. "barcode" does not match: "code" needs
+# a start or underscore boundary, not a suffix inside another word.
+_CODE_SOURCE = re.compile(r"(?i)(?:^|_)(?:skus?|codes?|refs?|order_ids?)$")
+_TIME_TAIL = re.compile(
+    r"[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$"
 )
 _FREE_TEXT_COL = re.compile(r"(?i)(?:text|body|comment|about_?me|title|notes|note)$")
+# Typed date and timestamp columns are the over-mask fix. Birth names are
+# _DOB_COL and are not in this set. Free-text cells are not in this set.
+_TYPED_DATE_COL = re.compile(
+    r"(?i)(?:^|_)(?:ts|timestamps?|datetimes?|expiry|expires|as_of|months?|quarters?|weeks?)$"
+    r"|(?:_at|_date|_time|_ts|_due)$"
+)
 _ADDRESS_COL = re.compile(
     r"(?i)(?:^|_)(?:street|streets|mailstreet|mail_street|streetabr|street_abr|"
     r"mailstrabr|mail_str_abr|address|addresses|addr)$"
@@ -123,10 +146,9 @@ _PLACE_CODE = re.compile(r"^[A-Z][a-z]{2,} [A-Z]{2}$")
 _PERSON_NAME_FIND = re.compile(
     r"\b[A-Z][a-z]{1,24}(?:[ '\-][A-Z][a-z]{1,24}){1,3}\b"
 )
-# dms#318: every 4-digit year, not only 1900-2019. 1900-2019 still matches.
-# ponytail: a whole-value date is DOB on a person table or free-text column,
-# never on an event *date column. Ceiling: an event date whose name does not
-# end in "date". Upgrade: Cortex #268 date NER.
+# Any 4-digit year. A prose date is masked only when a birth cue is nearby.
+# A whole-value date is masked only when the column, table, or SQL source
+# column points at birth, or SQL lineage cannot prove it does not.
 _DOB_YEAR = r"\d{4}"
 _DOB_YMD = re.compile(
     rf"\b({_DOB_YEAR})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b"
@@ -137,6 +159,10 @@ _DOB_DMY = re.compile(
 _DOB_MDY = re.compile(
     rf"\b(0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])[-/]({_DOB_YEAR})\b"
 )
+
+# Columns masked as DOB because served SQL could not name a source column.
+# Reported beside the 285-row PASS count. Not added into that count.
+_UNTRACED_DATE_COLUMNS = 0
 
 _KEEP_KEYS = frozenset(
     {
@@ -214,11 +240,181 @@ def _dob_match(text: str) -> re.Match[str] | None:
     return None
 
 
-def _dob_in_free_text(text: str) -> bool:
+def _cue_near(text: str, start: int, end: int, cue: re.Pattern[str]) -> bool:
+    lo = max(0, start - _CUE_WINDOW)
+    hi = min(len(text), end + _CUE_WINDOW)
+    return cue.search(text[lo:hi]) is not None
+
+
+def _cell_is_date(raw: object) -> bool:
+    """True for a date, a datetime, or a whole-value date/timestamp string."""
+    if raw is None or isinstance(raw, bool) or isinstance(raw, (int, float)):
+        return False
+    if isinstance(raw, date):
+        return True
+    text = str(raw).strip()
+    if not text or is_mask_token(text):
+        return False
     hit = _dob_match(text)
     if hit is None:
         return False
-    return hit.group(0) != text.strip()
+    if hit.group(0) == text:
+        return True
+    tail = text[hit.end() :]
+    return text.startswith(hit.group(0)) and _TIME_TAIL.fullmatch(tail) is not None
+
+
+def _dob_in_free_text(text: str) -> bool:
+    hit = _dob_match(text)
+    if hit is None or hit.group(0) == text.strip():
+        return False
+    return _cue_near(text, hit.start(), hit.end(), _BIRTH_CUE)
+
+
+def _passport_hit(text: str) -> re.Match[str] | None:
+    return _PASSPORT_FIND.search(text)
+
+
+def _passport_has_cue(text: str) -> bool:
+    hit = _passport_hit(text)
+    if hit is None:
+        return False
+    return _cue_near(text, hit.start(), hit.end(), _PASSPORT_CUE)
+
+
+def reset_untraced_date_column_count() -> None:
+    """Zero the untraced-lineage counter before a 285-row re-run."""
+    global _UNTRACED_DATE_COLUMNS
+    _UNTRACED_DATE_COLUMNS = 0
+
+
+def untraced_date_column_count() -> int:
+    """Date columns masked because SQL lineage could not name a source."""
+    return _UNTRACED_DATE_COLUMNS
+
+
+def _table_points_to_birth(table: str | None) -> bool:
+    bare = str(table or "").replace('"', "").replace("`", "").split(".")[-1]
+    if not bare:
+        return False
+    return _DOB_COL.search(bare) is not None or _PERSON_TABLE.search(bare) is not None
+
+
+def _typed_date_column(column: str) -> bool:
+    """True for ts / created_at / order_date. False for birth names and notes."""
+    col = str(column or "").strip()
+    if not col or _DOB_COL.search(col):
+        return False
+    return _TYPED_DATE_COL.search(col) is not None
+
+
+def _whole_date_is_dob(column: str, table: str | None) -> bool:
+    """Whole-value date with no SQL lineage.
+
+    Free-text cells stay masked. A person or birth table stays masked when
+    the column is not a typed date. Typed date and timestamp columns stay
+    visible. Any other column stays masked: it is not the over-mask fix.
+    """
+    col = str(column or "").strip()
+    if _FREE_TEXT_COL.fullmatch(col):
+        return True
+    if _table_points_to_birth(table) and not _typed_date_column(col):
+        return True
+    return not _typed_date_column(col)
+
+
+def _source_is_birth(source: str) -> bool:
+    for part in str(source).split("."):
+        if part and _DOB_COL.search(part):
+            return True
+    return False
+
+
+def _date_lineage_status(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]] | None,
+) -> str:
+    """birth | clear | untraced | no_sql.
+
+    no_sql keeps the birth-cue rule. A present map with a missing or empty
+    source set is untraced: a date in that column stays masked.
+    """
+    if column_sources is None:
+        return "no_sql"
+    sources = _lookup_sources(column, column_sources)
+    if not sources:
+        return "untraced"
+    if any(_source_is_birth(src) for src in sources):
+        return "birth"
+    return "clear"
+
+
+def _leaf_column(source: str) -> str:
+    return str(source).replace('"', "").replace("`", "").split(".")[-1]
+
+
+def _source_is_code(source: str) -> bool:
+    name = _leaf_column(source)
+    return bool(name) and _CODE_SOURCE.search(name) is not None
+
+
+def _lookup_sources(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]],
+) -> frozenset[str] | None:
+    key = str(column or "").casefold()
+    sources = column_sources.get(key)
+    if sources is None and "." in key:
+        sources = column_sources.get(key.rsplit(".", 1)[-1])
+    return sources
+
+
+def _proven_code_column(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]] | None,
+) -> bool:
+    """True only when every lineage source column is a non-PII code name.
+
+    None (no SQL), a missing key, or an empty set is not proof. The served
+    alias is not consulted. One non-code source (notes beside sku) blocks it.
+    """
+    if column_sources is None:
+        return False
+    sources = _lookup_sources(column, column_sources)
+    if not sources:
+        return False
+    return all(_source_is_code(src) for src in sources)
+
+
+def _traced_date_stays_visible(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]],
+) -> bool:
+    """True when every source column is a typed date, not free text.
+
+    A person table does not override that. A free-text or other source does
+    not become visible just because the served alias looks like order_date.
+    """
+    sources = _lookup_sources(column, column_sources)
+    if not sources:
+        return False
+    for src in sources:
+        col = _leaf_column(src)
+        if _FREE_TEXT_COL.fullmatch(col) or not _typed_date_column(col):
+            return False
+    return True
+
+
+def _code_source_skips_passport(
+    column: str,
+    value: object,
+    column_sources: Mapping[str, frozenset[str]] | None,
+) -> bool:
+    """Proven code column with no passport cue: leave the cell visible."""
+    if not _proven_code_column(column, column_sources):
+        return False
+    text = value if isinstance(value, str) else ""
+    return not _passport_has_cue(text)
 
 
 def _card_in_text(text: str) -> bool:
@@ -255,6 +451,9 @@ def _kind_from_name(table: str | None, column: str) -> Kind | None:
 
 def _kind_from_one_value(raw: object) -> Kind | None:
     if raw is None or isinstance(raw, bool):
+        return None
+    # A date object is a whole value, not prose. Birth cue decides, not the shape.
+    if isinstance(raw, date):
         return None
     if isinstance(raw, (int, float)):
         if isinstance(raw, float) and not raw.is_integer():
@@ -296,7 +495,9 @@ def _kind_from_one_value(raw: object) -> Kind | None:
         return "phone"
     if _ACCOUNT_FIND.search(text) or _URL_ACCOUNT.search(text):
         return "account"
-    if _PASSPORT_FIND.search(text):
+    # Data cells: the shape is enough. Prose and proven code columns are
+    # decided later, and those still require a passport cue.
+    if _passport_hit(text):
         return "passport"
     if _PLACE_CODE.fullmatch(text) or _ADDRESS_VALUE.search(text):
         return "address"
@@ -324,15 +525,14 @@ def _kind_from_values(values: Sequence[object]) -> Kind | None:
 
 
 def _values_look_like_dob(values: Sequence[object]) -> bool:
+    """Every non-empty value is a date, datetime, or timestamp. Not a DOB verdict."""
     seen = 0
     for raw in values:
         if raw is None or isinstance(raw, bool):
             continue
         if isinstance(raw, str) and not raw.strip():
             continue
-        text = str(raw).strip()
-        hit = _dob_match(text)
-        if hit is None or hit.group(0) != text:
+        if not _cell_is_date(raw):
             return False
         seen += 1
     return seen > 0
@@ -363,7 +563,9 @@ def classify_column(
         return valued
     if _free_text_has_name(col, values):
         return "name"
-    if _values_look_like_dob(values) and _EVENT_DATE_COL.search(col) is None:
+    # Shape alone is not a cue on a typed date or timestamp column.
+    # Free-text cells and a person/birth table still mask a whole-value date.
+    if _values_look_like_dob(values) and _whole_date_is_dob(col, table):
         return "dob"
     return None
 
@@ -387,6 +589,10 @@ class Masker:
     def __init__(self) -> None:
         self._seen: dict[tuple[str, str], str] = {}
         self._n: dict[str, int] = {}
+        self.untraced: set[str] = set()
+
+    def note_untraced(self, column: str) -> None:
+        self.untraced.add(str(column or "").casefold())
 
     def token(self, kind: str, raw: object) -> str:
         text = str(raw)
@@ -443,7 +649,11 @@ def sanitize_retrieve_parts(parts: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _column_kinds(rows: Sequence[Mapping[str, Any]]) -> dict[str, Kind]:
+def _column_kinds(
+    rows: Sequence[Mapping[str, Any]],
+    column_sources: Mapping[str, frozenset[str]] | None,
+    masker: Masker,
+) -> dict[str, Kind]:
     kinds: dict[str, Kind] = {}
     if not rows:
         return kinds
@@ -460,7 +670,27 @@ def _column_kinds(rows: Sequence[Mapping[str, Any]]) -> dict[str, Kind]:
         table, col = _split_key(key)
         kind = None
         try:
-            kind = classify_column(col, sample, table=table)
+            dates = _values_look_like_dob(sample)
+            if column_sources is not None and dates:
+                status = _date_lineage_status(col, column_sources)
+                if status == "birth":
+                    kind = "dob"
+                elif status == "untraced":
+                    kind = "dob"
+                    masker.note_untraced(col)
+                elif _traced_date_stays_visible(key, column_sources):
+                    # Typed date source: drop a name-only DOB on the alias.
+                    named = _kind_from_name(table, col)
+                    if named and named != "dob":
+                        kind = named
+                    else:
+                        valued = _kind_from_values(sample)
+                        if valued and valued != "dob":
+                            kind = valued
+                else:
+                    kind = "dob"
+            else:
+                kind = classify_column(col, sample, table=table)
         except Exception:
             kind = "unknown"
         if kind:
@@ -468,12 +698,34 @@ def _column_kinds(rows: Sequence[Mapping[str, Any]]) -> dict[str, Kind]:
     return kinds
 
 
-def _should_mask_cell(column: str, value: object, kinds: Mapping[str, Kind]) -> Kind | None:
+def _should_mask_cell(
+    column: str,
+    value: object,
+    kinds: Mapping[str, Kind],
+    column_sources: Mapping[str, frozenset[str]] | None = None,
+    masker: Masker | None = None,
+) -> Kind | None:
     if value is None or isinstance(value, bool):
         return None
     if is_mask_token(value):
         return None
+    if _cell_is_date(value) and column_sources is not None:
+        status = _date_lineage_status(column, column_sources)
+        if status == "birth":
+            return "dob"
+        if status == "untraced":
+            if masker is not None:
+                masker.note_untraced(column)
+            return "dob"
+        if status == "clear":
+            # Typed date source stays visible. Free-text, a non-date column,
+            # and a person-table column that is not a typed date stay masked.
+            if _traced_date_stays_visible(column, column_sources):
+                return None
+            return "dob"
     kind = kinds.get(column)
+    if kind == "passport" and _code_source_skips_passport(column, value, column_sources):
+        kind = None
     if kind:
         if isinstance(value, (int, float)) and kind == "name":
             return None
@@ -482,6 +734,8 @@ def _should_mask_cell(column: str, value: object, kinds: Mapping[str, Kind]) -> 
         got = _kind_from_one_value(value)
     except Exception:
         return "unknown"
+    if got == "passport" and _code_source_skips_passport(column, value, column_sources):
+        got = None
     if got:
         return got
     if isinstance(value, str) and _free_text_has_name(column, [value]):
@@ -535,6 +789,8 @@ def _scan_text(text: str, masker: Masker) -> str:
     out = _DIGIT_RUN.sub(_sub_run, out)
 
     def _sub_passport(match: re.Match[str]) -> str:
+        if not _cue_near(out, match.start(), match.end(), _PASSPORT_CUE):
+            return match.group(0)
         return masker.token("passport", match.group(0))
 
     out = _PASSPORT_FIND.sub(_sub_passport, out)
@@ -554,6 +810,8 @@ def _scan_text(text: str, masker: Masker) -> str:
     def _sub_dob(match: re.Match[str]) -> str:
         if match.group(0) == out.strip():
             return match.group(0)
+        if not _cue_near(out, match.start(), match.end(), _BIRTH_CUE):
+            return match.group(0)
         return masker.token("dob", match.group(0))
 
     out = _DOB_YMD.sub(_sub_dob, out)
@@ -561,21 +819,26 @@ def _scan_text(text: str, masker: Masker) -> str:
     return _DOB_MDY.sub(_sub_dob, out)
 
 
-def _mask_walk(obj: Any, masker: Masker, kinds: Mapping[str, Kind]) -> Any:
+def _mask_walk(
+    obj: Any,
+    masker: Masker,
+    kinds: Mapping[str, Kind],
+    column_sources: Mapping[str, frozenset[str]] | None,
+) -> Any:
     if isinstance(obj, dict):
         out: dict[str, Any] = {}
         for key, val in obj.items():
             if key in _KEEP_KEYS:
                 out[key] = val
                 continue
-            kind = _should_mask_cell(str(key), val, kinds)
+            kind = _should_mask_cell(str(key), val, kinds, column_sources, masker)
             if kind and not isinstance(val, (dict, list)):
                 out[key] = masker.token(kind, val)
             else:
-                out[key] = _mask_walk(val, masker, kinds)
+                out[key] = _mask_walk(val, masker, kinds, column_sources)
         return out
     if isinstance(obj, list):
-        return [_mask_walk(item, masker, kinds) for item in obj]
+        return [_mask_walk(item, masker, kinds, column_sources) for item in obj]
     if isinstance(obj, str) and not is_mask_token(obj):
         kind = _kind_from_one_value(obj)
         if kind:
@@ -592,17 +855,25 @@ def mask_payload(
     sources: Sequence[Mapping[str, Any]] | None = None,
     chart: Any = None,
     sql_used: str | None = None,
+    column_sources: Mapping[str, frozenset[str]] | None = None,
 ) -> dict[str, Any]:
-    """Mask PII in customer-visible fields. Numeric aggregates stay numbers."""
+    """Mask PII in customer-visible fields. Numeric aggregates stay numbers.
+
+    ``column_sources`` is None when the answer has no SQL (birth-cue rule,
+    and no code-column exemption). A dict maps each served column to source
+    column names from sqlglot lineage. An empty source set means that column
+    could not be traced: a date stays masked, and a passport shape is not exempt.
+    """
+    global _UNTRACED_DATE_COLUMNS
     row_list = [dict(r) for r in (rows or []) if isinstance(r, dict)]
-    kinds = _column_kinds(row_list)
     masker = Masker()
+    kinds = _column_kinds(row_list, column_sources, masker)
     masked_rows: list[dict[str, Any]] = []
     pairs: list[tuple[str, str]] = []
     for row in row_list:
         new_row: dict[str, Any] = {}
         for key, val in row.items():
-            kind = _should_mask_cell(str(key), val, kinds)
+            kind = _should_mask_cell(str(key), val, kinds, column_sources, masker)
             if kind:
                 token = masker.token(kind, val)
                 new_row[key] = token
@@ -619,9 +890,10 @@ def mask_payload(
 
     masked_text = _mask_str(text or "")
     masked_sql = None if sql_used is None else _mask_str(str(sql_used))
-    masked_values = _mask_walk(list(values or []), masker, kinds)
-    masked_sources = _mask_walk(list(sources or []), masker, kinds)
-    masked_chart = _mask_walk(chart, masker, kinds)
+    masked_values = _mask_walk(list(values or []), masker, kinds, column_sources)
+    masked_sources = _mask_walk(list(sources or []), masker, kinds, column_sources)
+    masked_chart = _mask_walk(chart, masker, kinds, column_sources)
+    _UNTRACED_DATE_COLUMNS += len(masker.untraced)
     return {
         "text": masked_text,
         "rows": masked_rows,
