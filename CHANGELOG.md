@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-01: rebase onto OVERMASK-01 (#308)
+
+- **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321) / [dms#308](https://github.com/Netie-AI/dms/issues/308). Stays a draft. Does not stamp COMPLETE. Does not close the issue.
+- **Change.** Rebased onto main `dd4162ec` (OVERMASK-01 #322). Conflict was changelog and status only. No test was weakened. `pii.py` still untouched by this PR.
+- **Counts.** `python scripts/score_curated.py --ab` on this head: exact 0/16/36/0/0, generative 0/26/11/15/0 (ok/layer/abstain/wrong/oracle_error), INVALID 0, n 52, n_without_invalid 52. Exit 1 is the existing generative WRONG pin.
+- **Gate.** `tests/test_engine_date_01.py` on parent `dd4162ec`: 22 failed, 0 passed. On this head: 22 passed.
+- **Not this ticket:** dms#284 live schema; the full dms#299 grid runner; protected paths.
+
 ## 2026-10-01 - ENGINE-DATE-01 gate: sqlglot placeholder, per-entry INVALID (#308)
 
 - **Ticket.** Same draft PR as the section below ([#321](https://github.com/Netie-AI/dms/pull/321), [dms#308](https://github.com/Netie-AI/dms/issues/308)). Stays a draft. Does not rebase (OVERMASK-01 is not on main). Does not touch `pii.py`. Does not stamp COMPLETE. Does not close the issue. CI fixtures, not live.
