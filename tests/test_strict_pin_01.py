@@ -57,6 +57,17 @@ def _report(tmp_path: Path) -> dict[str, Any]:
     return json.loads((tmp_path / "score_curated.json").read_text(encoding="utf-8"))
 
 
+def _record_line(report: dict[str, Any], qid: str) -> dict[str, Any]:
+    path = Path(str(report["case_record"]))
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("id") == qid:
+            return row
+    raise AssertionError(qid)
+
+
 class _Http:
     def __init__(self, status: int, body: dict[str, Any], headers: dict[str, str] | None):
         self.status_code = status
@@ -435,6 +446,7 @@ def test_live_quota_exhausted_is_pin_abstain_not_rate_limit(
         and first["verdict"] != "RATE_LIMIT"
     )
     assert int(report.get("rate_limit") or 0) == 0
+    assert "pin_preflight_unavailable" not in report["baseline_ineligible_reasons"]
     assert report["n"] == n_pack
 
 
@@ -574,6 +586,14 @@ def test_live_body_and_header_disagree_is_invalid(
     assert row["served_provider_body"] == "google"
     assert row["served_model_header"] == _PIN
     assert row["served_provider_header"] == _PROVIDER
+    rec = _record_line(report, "cq_spend_by_country")
+    assert rec["outcome"] == "INVALID"
+    assert rec["served_model"] == "unknown"
+    assert rec["served_provider"] == "unknown"
+    assert rec["served_model_body"] == "gemini-3.5-flash"
+    assert rec["served_provider_body"] == "google"
+    assert rec["served_model_header"] == _PIN
+    assert rec["served_provider_header"] == _PROVIDER
     assert report["n"] == n_pack
     assert report["invalid"] == 1
 
@@ -604,8 +624,35 @@ def test_live_body_pin_header_other_is_invalid(
     )
     assert row["served_model_body"] == _PIN
     assert row["served_model_header"] == "gemini-3.5-flash"
+    rec = _record_line(report, "cq_spend_by_country")
+    assert rec["served_model"] == "unknown"
+    assert rec["served_model_body"] == _PIN
+    assert rec["served_provider_body"] == _PROVIDER
+    assert rec["served_model_header"] == "gemini-3.5-flash"
+    assert rec["served_provider_header"] == "google"
     assert report["n"] == n_pack
     assert report["invalid"] == 1
+
+
+def test_live_pin_preflight_unavailable_blocks_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blocked pin preflight sets pin_preflight_unavailable on baseline_eligibility."""
+    db = _oracle_db(tmp_path)
+    asks, _script = _arm(monkeypatch, tmp_path, repeat=_down("parked", _PIN))
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    reasons = report["baseline_ineligible_reasons"]
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert (
+        "pin_preflight_unavailable" in reasons
+        and report["baseline_eligible"] is False
+        and report["reason"] == name
+        and report["round_label"] == "INVALID"
+        and report["n"] == 0
+    )
+    assert asks == []
 
 
 @pytest.mark.parametrize("model", _CALLER_ERRORS)

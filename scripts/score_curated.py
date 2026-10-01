@@ -2226,6 +2226,8 @@ def score_pack_live(
         clock["n"] = 0
         clock["n_without_invalid"] = 0
         clock["case_records"] = []
+        if str(pin_round.reason or "").startswith("pin_unavailable:"):
+            clock["pin_preflight_unavailable"] = True
         return _tally(), [], clock
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
@@ -2265,11 +2267,15 @@ def score_pack_live(
                         shot=shot,
                     )
                 )
-                records.append(
-                    _case_record(
-                        qid, verdict, shot.name, None, verdict, None, "round_health"
-                    )
+                rec = _case_record(
+                    qid, verdict, shot.name, None, verdict, None, "round_health"
                 )
+                # Neither side is the record's served model. Both pairs are stored.
+                rec["served_provider_body"] = shot.body_provider
+                rec["served_model_body"] = shot.body_model
+                rec["served_provider_header"] = shot.header_provider
+                rec["served_model_header"] = shot.header_model
+                records.append(rec)
                 continue
         try:
             env = _ask(url, str(case["question"]), space, timeout, ask_path=ask_path)
@@ -2565,11 +2571,12 @@ def baseline_eligibility(
     unidentified: bool,
     round_label: str | None,
     round_reason: str | None,
+    pin_preflight_unavailable: bool = False,
 ) -> tuple[bool, list[str]]:
     """The only baseline gate. Eligible is true exactly when the list is empty.
 
-    pin_unavailable is still a later PR. round_end_unread is a round INVALID
-    reason and is listed here.
+    pin_preflight_unavailable is a blocked pin preflight. An in-round 503 does
+    not set it. round_end_unread is a round INVALID reason and is listed here.
     """
     reasons: list[str] = []
     if path_block:
@@ -2578,6 +2585,8 @@ def baseline_eligibility(
         reasons.append("record_write_failed")
     if unidentified:
         reasons.append("record_unidentified")
+    if pin_preflight_unavailable:
+        reasons.append("pin_preflight_unavailable")
     if round_reason == "round_end_unread" and "round_end_unread" not in reasons:
         reasons.append("round_end_unread")
     if round_label == "INVALID":
@@ -2683,6 +2692,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         unidentified=unidentified,
         round_label=round_label if isinstance(round_label, str) else None,
         round_reason=reason if isinstance(reason, str) else None,
+        pin_preflight_unavailable=bool(clock.get("pin_preflight_unavailable")),
     )
     print(f"case_record={abs_record}")
     print(

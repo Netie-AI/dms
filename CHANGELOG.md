@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: pin preflight is one baseline reason
+
+- **Gate.** `baseline_eligibility` takes `pin_preflight_unavailable`. A blocked preflight whose reason starts with `pin_unavailable:` appends that reason and `baseline_eligible` is false. An in-round 503 `quota_exhausted` stays ABSTAIN `pin_unavailable:<provider>/<model>` with `pin_reason=quota_exhausted` and `rate_limit` 0. It does not append the preflight reason. HTTP 429 remains the only `RATE_LIMIT`.
+- **Record.** When body and header served ids disagree, the per-case JSONL keeps both pairs (`served_*_body`, `served_*_header`). The record's `served_model` stays `unknown`.
+- **Contract.** OpenVault #81 `0d0ef3f0`.
+
 ## 2026-10-01 - dms#317 Part A: pin fixture scores, neither served side wins
 
 - **Why the old fixture abstained.** The ask mock used `badge: ABSTAIN` and `abstained: true`. `is_confident` is false, so `judge_detailed` returns ABSTAIN after the oracle runs and never compares rows. A parent result of ABSTAIN==INVALID does not prove the pin. The mock is now `L0_CERTIFIED` with one row against empty gold, so the parent judge returns WRONG (`rows_mismatch`). Refuse and abstain expects with that badge are WRONG via `_judge_badge`.
