@@ -58,6 +58,12 @@ NANP and spaced-intl phones (WIDEN-ONLY vs #272). Counts-only fixture
 `scripts/pii_mask_check.py`. Regression: `tests/test_pii_mask_check_01.py`.
 Does not lift the BIRD exclusion. Not COMPLETE.
 
+PII-MASK-02 (#318): widens that masker for names, MY landlines, passports,
+street addresses, account numbers in text/URLs, and DOB years (WIDEN-ONLY
+vs #303). Named excludes for dms#304 live on `EXCLUDE_FOR_304` in
+`scripts/pii_mask_check.py` (not the BIRD allowlist). Regression:
+`tests/test_pii_mask_02.py`. Does not lift BIRD or dms#284. Not COMPLETE.
+
 INSIGHTS-EXPORT-01 (#188): `packages/core/dms_core/xlsx_export.py` copies an
 existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`), then
 masks PII-01 cells. HTTP:

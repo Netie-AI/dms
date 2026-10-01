@@ -1,10 +1,10 @@
 """PII-01 — local deterministic personal-data detector and masker (dms#272).
 
 No network, no model. Column-name signals plus value-pattern checks for person
-names, Malaysian IC numbers, phones (MY / NANP / intl), emails, account/card
-numbers, and date-of-birth column names. Value checks search inside free text
-as well as whole values (dms#303). WIDEN-ONLY vs dms#272: nothing previously
-caught is dropped.
+names, Malaysian IC numbers, phones (MY mobile / landline / NANP / intl),
+emails, account/card numbers, passports, street addresses, and dates of birth.
+Value checks search inside free text as well as whole values (dms#303, dms#318).
+WIDEN-ONLY vs dms#272 and dms#303: nothing previously caught is dropped.
 
 Swap: Cortex HTTP PII-MASK (#268) or a vendor DLP call behind these functions.
 Not a sixth port: this is a local classifier, same class as xlsx_ooxml.
@@ -13,8 +13,10 @@ Placeholders are ``DMSMASK_<kind>_<nn>`` — letters, underscores, a 2-digit
 counter. They are not email/phone/IC/account/dob-shaped, so a second regex
 masker (Cortex #268 kinds without NER) must leave them unchanged.
 
-ponytail: names are column-name only (no NER). Ceiling: a free-text notes
-column of person names. Upgrade: Cortex #268 NER at the FreeRoute choke.
+ponytail: free-text names are a Title-Case pattern on free-text columns only
+(no NER). Ceiling: a person name in a column that is neither a name column
+nor free text — those columns are named excludes for dms#304, not an unmasked
+pass. Upgrade: Cortex #268 NER at the FreeRoute choke.
 """
 
 from __future__ import annotations
@@ -24,11 +26,14 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 Kind = str
-KINDS = frozenset({"name", "nric", "phone", "email", "account", "dob", "unknown"})
+KINDS = frozenset(
+    {"name", "nric", "phone", "email", "account", "dob", "passport", "address", "unknown"}
+)
 
 # Stable, non-PII-shaped. No '@', no 6-2-4 IC, no +60 / 01x / NANP phone, no 10-16 digit run.
+# passport/address added in dms#318. Old kinds still match (widen-only).
 MASK_TOKEN_RE = re.compile(
-    r"DMSMASK_(?:name|nric|phone|email|account|dob|unknown)_\d{2,}"
+    r"DMSMASK_(?:name|nric|phone|email|account|dob|passport|address|unknown)_\d{2,}"
 )
 
 _METRIC_SKIP = re.compile(
@@ -47,12 +52,28 @@ _NAME_COL = re.compile(
     r"(?:^|_)(?:(?:customer|person|people|employee|staff|user|contact|client|"
     r"patient|member|holder|beneficiary|applicant|signatory|director|owner|"
     r"payee|payer|full|first|last|given|family|middle|maiden|preferred|legal|"
-    r"pic|player|driver)_?names?|nama(?:_penuh|_pemegang|_pengguna)?)$)",
+    r"pic|player|driver)_?names?|nama(?:_penuh|_pemegang|_pengguna)?)$|"
+    r"(?:^|_)adm_?[fl]_?names?\d*$)",
     re.I,
 )
+# First alternative is the dms#303 name set, unchanged. The rest widens (dms#318).
 _DOB_COL = re.compile(
-    r"(?:^|_)(?:dob|date_of_birth|birth_?dates?|birthdays?)$",
-    re.I,
+    r"(?i)(?:"
+    r"(?:^|_)(?:dob|date_of_birth|birth_?dates?|birthdays?)$"
+    r"|(?:^|_)(?:date_?of_?births?|born_on|born|birth|yob|year_of_birth|dob)(?:_|$)"
+    r")"
+)
+# Event/business dates and calendar grains stay visible. birth_date is _DOB_COL first.
+# ponytail: a whole-value date on any other column is treated as DOB.
+# Ceiling: an event date whose name does not end in date/month/year/week/day.
+_EVENT_DATE_COL = re.compile(
+    r"(?i)(?:^|_)(?:date|months?|years?|quarters?|weeks?|days?|periods?|as_of)$"
+    r"|(?<=[A-Za-z])date$"
+)
+_FREE_TEXT_COL = re.compile(r"(?i)(?:text|body|comment|about_?me|title|notes|note)$")
+_ADDRESS_COL = re.compile(
+    r"(?i)(?:^|_)(?:street|streets|mailstreet|mail_street|streetabr|street_abr|"
+    r"mailstrabr|mail_str_abr|address|addresses|addr)$"
 )
 _EMAIL_COL = re.compile(
     r"(?:e_?mails?\d*$|(?:^|_)(?:e_?mails?\d*|email_addr(?:ess)?s?)$)",
@@ -77,21 +98,36 @@ _ACCOUNT_COL = re.compile(
 _EMAIL_VALUE = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}$", re.I)
 _EMAIL_FIND = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
 _NRIC_FIND = re.compile(r"\b(\d{6})-?(\d{2})-?(\d{4})\b")
-# MY + compact E.164 first (dms#272). Then spaced intl and NANP/US (dms#303).
+# MY mobile + compact E.164 (dms#272). Spaced intl and NANP/US (dms#303).
+# MY landline 0[3-9] (dms#318). Old alternatives are unchanged.
 _PHONE_FIND = re.compile(
     r"(?:"
     r"(?<!\d)\+?60\s*1\d(?:[-\s]?\d){7,8}(?!\d)|"
     r"(?<!\d)01\d(?:[-\s]?\d){7,8}(?!\d)|"
     r"(?<!\d)\+[1-9]\d{9,14}(?!\d)|"
     r"(?<!\d)\+[1-9]\d{0,2}(?:[\s.-]+\d{2,8}){1,4}(?!\d)|"
-    r"(?<!\d)(?:\+?1[\s.-]*)?\(?[2-9]\d{2}\)?[\s.-]*[2-9]\d{2}[\s.-]*\d{4}(?!\d)"
+    r"(?<!\d)(?:\+?1[\s.-]*)?\(?[2-9]\d{2}\)?[\s.-]*[2-9]\d{2}[\s.-]*\d{4}(?!\d)|"
+    r"(?<!\d)0[3-9](?:[-\s]?\d){7,8}(?!\d)"
     r")"
 )
 _ACCOUNT_FIND = re.compile(r"(?<!\d)(\d{3,4}[-\s]\d{3,4}[-\s]\d{4,8})(?!\d)")
+_URL_ACCOUNT = re.compile(r"(?i)[?&][a-z0-9_]+=\d{10,16}(?!\d)")
 _DIGIT_RUN = re.compile(r"(?<!\d)(\d{10,16})(?!\d)")
-# ponytail: in-text DOB years 1900-2019 so 2026 as_of stamps in prose stay.
-# Ceiling: a 2020+ birth date inside notes. Upgrade: Cortex #268 date NER.
-_DOB_YEAR = r"(?:19\d{2}|20[01]\d)"
+_PASSPORT_FIND = re.compile(r"\b[A-Z]{1,2}\d{7,9}\b")
+_ADDRESS_VALUE = re.compile(
+    r"\b\d{1,5}\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\s+"
+    r"(?:Street|St|Road|Rd|Avenue|Ave|Lane|Drive|Jalan|Lorong)\b"
+)
+# Whole value only. "Kuala Lumpur" and "Warehouse A" do not match.
+_PLACE_CODE = re.compile(r"^[A-Z][a-z]{2,} [A-Z]{2}$")
+_PERSON_NAME_FIND = re.compile(
+    r"\b[A-Z][a-z]{1,24}(?:[ '\-][A-Z][a-z]{1,24}){1,3}\b"
+)
+# dms#318: every 4-digit year, not only 1900-2019. 1900-2019 still matches.
+# ponytail: a whole-value date is DOB on a person table or free-text column,
+# never on an event *date column. Ceiling: an event date whose name does not
+# end in "date". Upgrade: Cortex #268 date NER.
+_DOB_YEAR = r"\d{4}"
 _DOB_YMD = re.compile(
     rf"\b({_DOB_YEAR})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b"
 )
@@ -208,6 +244,8 @@ def _kind_from_name(table: str | None, column: str) -> Kind | None:
         return "phone"
     if _ACCOUNT_COL.search(col):
         return "account"
+    if _ADDRESS_COL.search(col):
+        return "address"
     if _NAME_COL.search(col):
         return "name"
     if _PERSON_TABLE.search(str(table or "")) and re.fullmatch(r"name", col, re.I):
@@ -256,8 +294,12 @@ def _kind_from_one_value(raw: object) -> Kind | None:
     phone_hit = _PHONE_FIND.search(text)
     if phone_hit and _phone_ok(phone_hit):
         return "phone"
-    if _ACCOUNT_FIND.fullmatch(text):
+    if _ACCOUNT_FIND.search(text) or _URL_ACCOUNT.search(text):
         return "account"
+    if _PASSPORT_FIND.search(text):
+        return "passport"
+    if _PLACE_CODE.fullmatch(text) or _ADDRESS_VALUE.search(text):
+        return "address"
     if digits == text.replace(" ", "").replace("-", "") and 10 <= len(digits) <= 16:
         if len(digits) == 12 and _valid_yymmdd(digits[:6]):
             return "nric"
@@ -281,6 +323,30 @@ def _kind_from_values(values: Sequence[object]) -> Kind | None:
     return max(hits, key=lambda k: (hits[k], k))
 
 
+def _values_look_like_dob(values: Sequence[object]) -> bool:
+    seen = 0
+    for raw in values:
+        if raw is None or isinstance(raw, bool):
+            continue
+        if isinstance(raw, str) and not raw.strip():
+            continue
+        text = str(raw).strip()
+        hit = _dob_match(text)
+        if hit is None or hit.group(0) != text:
+            return False
+        seen += 1
+    return seen > 0
+
+
+def _free_text_has_name(column: str, values: Sequence[object]) -> bool:
+    if _FREE_TEXT_COL.fullmatch(str(column or "").strip()) is None:
+        return False
+    for raw in values:
+        if isinstance(raw, str) and _PERSON_NAME_FIND.search(raw):
+            return True
+    return False
+
+
 def classify_column(
     column: str,
     values: Sequence[object] = (),
@@ -291,7 +357,15 @@ def classify_column(
     named = _kind_from_name(table, column)
     if named:
         return named
-    return _kind_from_values(values)
+    col = str(column or "").strip()
+    valued = _kind_from_values(values)
+    if valued:
+        return valued
+    if _free_text_has_name(col, values):
+        return "name"
+    if _values_look_like_dob(values) and _EVENT_DATE_COL.search(col) is None:
+        return "dob"
+    return None
 
 
 def column_is_pii(
@@ -405,9 +479,14 @@ def _should_mask_cell(column: str, value: object, kinds: Mapping[str, Kind]) -> 
             return None
         return kind
     try:
-        return _kind_from_one_value(value)
+        got = _kind_from_one_value(value)
     except Exception:
         return "unknown"
+    if got:
+        return got
+    if isinstance(value, str) and _free_text_has_name(column, [value]):
+        return "name"
+    return None
 
 
 def _apply_map(text: str, pairs: list[tuple[str, str]]) -> str:
@@ -454,6 +533,23 @@ def _scan_text(text: str, masker: Masker) -> str:
         return match.group(0)
 
     out = _DIGIT_RUN.sub(_sub_run, out)
+
+    def _sub_passport(match: re.Match[str]) -> str:
+        return masker.token("passport", match.group(0))
+
+    out = _PASSPORT_FIND.sub(_sub_passport, out)
+
+    def _sub_address(match: re.Match[str]) -> str:
+        return masker.token("address", match.group(0))
+
+    out = _ADDRESS_VALUE.sub(_sub_address, out)
+    if _PLACE_CODE.fullmatch(out.strip()):
+        return masker.token("address", out.strip())
+
+    def _sub_url_account(match: re.Match[str]) -> str:
+        return masker.token("account", match.group(0))
+
+    out = _URL_ACCOUNT.sub(_sub_url_account, out)
 
     def _sub_dob(match: re.Match[str]) -> str:
         if match.group(0) == out.strip():

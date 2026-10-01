@@ -74,6 +74,30 @@ _FREE_TEXT_COLS = frozenset(
     }
 )
 
+# Not an unmasked pass. dms#304 keeps these columns off the BIRD allowlist.
+# Geo columns (city, location) stay visible: masking every city/location would
+# hide governed answers such as "Kuala Lumpur" and demo "Warehouse A".
+# Category columns are not person-name columns. Diagnosis / nationality /
+# position are not in the dms#318 kind list; they stay blocked via this name.
+EXCLUDE_FOR_304 = frozenset(
+    {
+        ("drivers", "nationality"),
+        ("member", "position"),
+        ("patient", "diagnosis"),
+        ("schools", "city"),
+        ("schools", "county"),
+        ("schools", "district"),
+        ("schools", "doctype"),
+        ("schools", "edopsname"),
+        ("schools", "eilname"),
+        ("schools", "mailcity"),
+        ("schools", "school"),
+        ("schools", "soctype"),
+        ("users", "location"),
+    }
+)
+
+
 # Obviously fake shapes. Never real BIRD rows.
 SYNTH_BY_PATTERN: dict[str, str] = {
     "email": "pii.mask.check@example.invalid",
@@ -262,6 +286,19 @@ def check_cell(cell: FlaggedCell, warehouse: Path) -> CheckResult:
         return CheckResult(
             cell, synth, "FAIL", "FAIL", "FAIL", f"error:{type(exc).__name__}"
         )
+    if "FAIL" in (path_a, path_b, path_c) and (
+        table,
+        column.lower(),
+    ) in EXCLUDE_FOR_304:
+        # Named exclude for dms#304. Not PASS: the raw value is still unmasked.
+        return CheckResult(
+            cell,
+            synth,
+            "EXCLUDE",
+            "EXCLUDE",
+            "EXCLUDE",
+            f"exclude_for_304:{table}.{column.lower()}",
+        )
     return CheckResult(cell, synth, path_a, path_b, path_c, note)
 
 
@@ -279,9 +316,9 @@ def check_all(path: Path = FLAGGED_CSV) -> list[CheckResult]:
 
 def summary(rows: list[CheckResult]) -> dict[str, dict[str, int]]:
     tally = {
-        "a": {"PASS": 0, "FAIL": 0},
-        "b": {"PASS": 0, "FAIL": 0},
-        "c": {"PASS": 0, "FAIL": 0},
+        "a": {"PASS": 0, "FAIL": 0, "EXCLUDE": 0},
+        "b": {"PASS": 0, "FAIL": 0, "EXCLUDE": 0},
+        "c": {"PASS": 0, "FAIL": 0, "EXCLUDE": 0},
     }
     for row in rows:
         tally["a"][row.path_a] = tally["a"].get(row.path_a, 0) + 1
@@ -303,9 +340,12 @@ def render_markdown(rows: list[CheckResult]) -> str:
         [
             "",
             (
-                f"summary: a PASS {tallied['a']['PASS']} FAIL {tallied['a']['FAIL']}; "
-                f"b PASS {tallied['b']['PASS']} FAIL {tallied['b']['FAIL']}; "
-                f"c PASS {tallied['c']['PASS']} FAIL {tallied['c']['FAIL']}; "
+                f"summary: a PASS {tallied['a']['PASS']} FAIL {tallied['a']['FAIL']} "
+                f"EXCLUDE {tallied['a'].get('EXCLUDE', 0)}; "
+                f"b PASS {tallied['b']['PASS']} FAIL {tallied['b']['FAIL']} "
+                f"EXCLUDE {tallied['b'].get('EXCLUDE', 0)}; "
+                f"c PASS {tallied['c']['PASS']} FAIL {tallied['c']['FAIL']} "
+                f"EXCLUDE {tallied['c'].get('EXCLUDE', 0)}; "
                 f"n={len(rows)}"
             ),
         ]
