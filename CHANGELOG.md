@@ -2,6 +2,24 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SERVING-PRECHECK-01: round-record keys are one interface
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Scope comment 5938840371.
+- **Change.** `SERVING_PATH`, `SERVING_INODE`, `SERVING_MTIME`, `SERVING_SNAPSHOT_HASH`, and `SERVING_ROW_COUNTS` are the only key names. mtime is ISO-8601 UTC with a numeric offset. The snapshot hash is sha256 hex of the copy. Row counts are keyed by bare table name.
+- **Gate.** `tests/test_serving_precheck_01.py` imports those constants.
+
+## 2026-10-01 - SERVING-PRECHECK-01: unparsed correct SQL is not a baseline
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Scope amendment 5938769006.
+- **Change.** The serving table set is the FROM/JOIN parse of each scored question's correct oracle SQL. A blank statement or one that names no table makes the round ineligible with `serving_precheck_missing`. It does not pass.
+- **Gate.** `tests/test_serving_precheck_01.py` adds the unlisted-table and unparsed-SQL must-fail cases. On `fee155e4` each is eligible and fails on its own assert.
+
+## 2026-10-01 - SERVING-PRECHECK-01: serving file precheck gates baseline eligibility
+
+- **Ticket.** Follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** `baseline_eligibility` appends `serving_precheck_missing` when the round summary lacks the Cortex serving path, inode, mtime, snapshot hash, or a positive row count for a table the 52 questions use. Tables are FROM/JOIN names in pack oracle SQL, skipping `expect: refuse`. `live()` writes those fields on `score_curated.json`.
+- **Gate.** `tests/test_serving_precheck_01.py` goes through `live()`. On `fee155e4` each must-fail test is eligible and fails on its own assert. No live scored round.
+
 ## 2026-10-01 - PIN-STRIP-01: preflight matches served ids exactly (Refs dms#317)
 
 - **Ticket.** Follow-up under [dms#317](https://github.com/Netie-AI/dms/issues/317). Does not close the issue. Does not stamp COMPLETE.
