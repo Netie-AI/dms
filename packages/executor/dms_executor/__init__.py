@@ -500,7 +500,10 @@ class Executor:
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
-        return stamped if stamped is not None else env
+        out = stamped if stamped is not None else env
+        from dms_core.pii import mask_unknown_keys
+
+        return mask_unknown_keys(out)
 
     def _live_ask(
         self,

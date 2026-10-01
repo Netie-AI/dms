@@ -12,6 +12,9 @@ column is not a typed date. A passport-shaped value in a data cell stays
 masked without a cue, unless lineage proves every source column is a non-PII
 code (sku, code, ref, order_id). Answer prose still needs a passport cue.
 An untraceable column gets no exemption. Name signals stay.
+A whole-value date in ``values`` is masked. Any envelope key not on
+``SAFE_ENVELOPE_KEYS`` is scanned the same way as answer text, and a
+whole-value date there is masked too. Rows keep the lineage rule.
 
 Swap: Cortex HTTP PII-MASK (#268) or a vendor DLP call behind these functions.
 Not a sixth port: this is a local classifier, same class as xlsx_ooxml.
@@ -177,6 +180,33 @@ _KEEP_KEYS = frozenset(
         "route",
         "plan_source",
         "drillthrough_token",
+    }
+)
+
+# Top-level envelope keys copied unchanged by the generic scan.
+# Clock fields stay here so a masker call with no round does not invent a
+# /health read. The round applies mask_unkept_clock_fields. Do not add a key
+# to skip a scan.
+SAFE_ENVELOPE_KEYS = _KEEP_KEYS | frozenset(
+    {
+        "engine_as_of",
+        "engine_as_of_after",
+        "engine_timezone",
+        "engine_timezone_after",
+    }
+)
+
+# Already masked by mask_payload. The generic scan must not replace that walk:
+# rows and text keep the birth-cue rule.
+_HANDLED_KEYS = frozenset(
+    {
+        "text",
+        "rows",
+        "values",
+        "contributing_sources",
+        "chart",
+        "sql_used",
+        "audit_receipt",
     }
 )
 
@@ -890,7 +920,11 @@ def mask_payload(
 
     masked_text = _mask_str(text or "")
     masked_sql = None if sql_used is None else _mask_str(str(sql_used))
-    masked_values = _mask_walk(list(values or []), masker, kinds, column_sources)
+    # Whole-value dates in values are DOB. Rows keep the lineage rule.
+    masked_values = _mask_bare_dates(
+        _mask_walk(list(values or []), masker, kinds, column_sources),
+        masker,
+    )
     masked_sources = _mask_walk(list(sources or []), masker, kinds, column_sources)
     masked_chart = _mask_walk(chart, masker, kinds, column_sources)
     _UNTRACED_DATE_COLUMNS += len(masker.untraced)
@@ -909,9 +943,104 @@ def _blank_strings(obj: Any) -> Any:
         return {k: v if k in _KEEP_KEYS else _blank_strings(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_blank_strings(item) for item in obj]
+    if isinstance(obj, date):
+        return "DMSMASK_unknown_00"
     if isinstance(obj, str) and not is_mask_token(obj):
         return "DMSMASK_unknown_00"
     return obj
+
+
+def _mask_bare_dates(obj: Any, masker: Masker) -> Any:
+    """Whole-value dates become DOB tokens. Nested dicts and lists recurse.
+
+    Used for ``values`` only. A row cell keeps the lineage rule.
+    """
+    if isinstance(obj, dict):
+        return {key: _mask_bare_dates(val, masker) for key, val in obj.items()}
+    if isinstance(obj, list):
+        return [_mask_bare_dates(item, masker) for item in obj]
+    if isinstance(obj, tuple):
+        return [_mask_bare_dates(item, masker) for item in obj]
+    if _cell_is_date(obj) and not is_mask_token(obj):
+        return masker.token("dob", obj)
+    return obj
+
+
+def _scan_closed_value(obj: Any, masker: Masker) -> Any:
+    """Scan like answer text. A whole-value date is a DOB. Nested containers recurse."""
+    if isinstance(obj, dict):
+        return {str(key): _scan_closed_value(val, masker) for key, val in obj.items()}
+    if isinstance(obj, list):
+        return [_scan_closed_value(item, masker) for item in obj]
+    if isinstance(obj, tuple):
+        return [_scan_closed_value(item, masker) for item in obj]
+    if is_mask_token(obj):
+        return str(obj).strip()
+    if _cell_is_date(obj):
+        return masker.token("dob", obj)
+    if isinstance(obj, str):
+        return _scan_text(obj, masker)
+    return obj
+
+
+def _scan_closed(obj: Any, masker: Masker) -> Any:
+    try:
+        return _scan_closed_value(obj, masker)
+    except Exception:
+        return _blank_strings(obj)
+
+
+CLOCK_FIELD_KEYS = (
+    "engine_as_of",
+    "engine_as_of_after",
+    "engine_timezone",
+    "engine_timezone_after",
+)
+
+
+def mask_unkept_clock_fields(
+    payload: Mapping[str, Any],
+    allowed: Mapping[str, str | None],
+) -> tuple[dict[str, Any], bool]:
+    """Mask top-level clock fields whose value is not the allowed /health value.
+
+    ``None`` means that read is missing, so the field is masked. A mask token
+    is not a date and is left as-is. Nested keys are not this function.
+    """
+    masker = Masker()
+    out = dict(payload)
+    masked = False
+    for key in CLOCK_FIELD_KEYS:
+        if key not in payload:
+            continue
+        val = payload[key]
+        if is_mask_token(val):
+            continue
+        allow = allowed.get(key)
+        text = str(val).strip() if val is not None else ""
+        if allow is not None and text == allow:
+            continue
+        if _cell_is_date(val):
+            out[key] = masker.token("dob", val)
+        else:
+            scanned = _scan_closed_value(val, masker)
+            out[key] = scanned if scanned != val else masker.token("unknown", val)
+        masked = True
+    return out, masked
+
+
+def mask_unknown_keys(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Scan every top-level key that is not safe and not already masked.
+
+    Fails closed: a scanner error blanks that key. Safe keys are copied.
+    """
+    masker = Masker()
+    out = dict(payload)
+    for key, val in payload.items():
+        if key in SAFE_ENVELOPE_KEYS or key in _HANDLED_KEYS:
+            continue
+        out[key] = _scan_closed(val, masker)
+    return out
 
 
 def mask_envelope(envelope: Mapping[str, Any]) -> dict[str, Any]:
@@ -945,7 +1074,7 @@ def mask_envelope(envelope: Mapping[str, Any]) -> dict[str, Any]:
             inc["rows"] = got["rows"]
             rec["include"] = inc
         env["audit_receipt"] = rec
-    return env
+    return mask_unknown_keys(env)
 
 
 def fail_closed_mask_envelope(envelope: Mapping[str, Any]) -> dict[str, Any]:
@@ -953,9 +1082,10 @@ def fail_closed_mask_envelope(envelope: Mapping[str, Any]) -> dict[str, Any]:
         return mask_envelope(envelope)
     except Exception:
         env = dict(envelope)
-        for key in ("text", "rows", "values", "contributing_sources", "chart", "sql_used"):
-            if key in env:
-                env[key] = _blank_strings(env[key])
+        for key in list(env):
+            if key in SAFE_ENVELOPE_KEYS:
+                continue
+            env[key] = _blank_strings(env[key])
         return env
 
 

@@ -2,6 +2,36 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - MASK-VALUES-01: empty log keeps a /health clock (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** When the scorer's connection log is empty, a case clock stays literal only if both dates and both zones equal that round's /health start or end. `round_spans_midnight` is the other keep. Anything else is masked and INVALID, kept in n. A recorded `_publish_engine_clock` read still keeps only an equal clock. Carrying the read over the wire is a later ticket.
+- **Gate.** `tests/test_mask_clock_04.py` fails on `c0ca540a` on its own assert, n=52.
+
+## 2026-10-01 - MASK-VALUES-01: no connection read is a missing read (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** A case clock with no connection read is masked. Shape is not a keep by itself. An existing `engine_timezone_*` or `round_spans_midnight` reason stays, and the round still records `engine_clock_masked`. A missing end `/health` records both `round_end_unread` and `engine_clock_masked`.
+- **Gate.** `tests/test_mask_clock_03.py` fails on `86b7771a` on its own assert. The two ENGINE-DATE-02 `round_end_unread` lists are the only existing assertion edit, approved in ruling 4.
+
+## 2026-10-01 - MASK-VALUES-01: case clock must equal its connection read (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** A case clock stays literal only when its date and zone equal that case's own connection read (`_read_con_clock` in `packages/executor/dms_executor/demo_warehouse.py`). The other keep is the existing next-day end, `round_spans_midnight`. A planted date, any other mismatch, or a missing read is masked. That case is INVALID `engine_clock_masked` and stays in n. A case that never connected still uses the four-field shape keep, so ENGINE-DATE-02 clocks that equal their own read stay, including `test_live_sql_nosql_sql_records_keep_own_clocks`.
+- **Gate.** `tests/test_mask_clock_02.py` fails on the ruling-2 shape keep (effabd24) on its own assert, n=52. No live scored round.
+
+## 2026-10-01 - MASK-VALUES-01: clock keep is the round /health read (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** Top-level `engine_as_of`, `engine_as_of_after`, `engine_timezone`, and `engine_timezone_after` stay literal only when they equal that round's /health reads. A missing end read masks any clock that is not an ENGINE-DATE-02 case clock and records both `engine_clock_masked` and `round_end_unread`. A matched next-day end uses the existing `round_spans_midnight` reason (`scripts/score_curated.py` `_mark_round_health_midnight`). A mask token is not a date match. The same key nested in `values` stays on the values scan.
+- **Gate.** `tests/test_mask_clock_01.py` (a) (b) (c) fail on `87a94978` on their own assert, n=52. No live scored round.
+
+## 2026-10-01 - MASK-VALUES-01: mask values and unknown envelope keys (#303)
+
+- **Ticket.** Follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** `mask_payload` masks a whole-value date in `values`. Any envelope key not on `SAFE_ENVELOPE_KEYS` is scanned like answer text, including nested dicts and lists, and a whole-value date there is masked. A scanner error blanks that key. The served constructor and the case-record copy both use it. Rows keep the lineage rule. Engine clocks stay literal.
+- **Gate.** `tests/test_mask_values_01.py` fails on `87a94978` on its own assert. 52-pack unchanged. No live scored round.
+
 ## 2026-10-01 - dms#317 Part A: nvidia pin is refused at setup
 
 - **Contract.** Allowed models stay the catalog strings. OpenRouter `google/gemma-4-31b-it:free` (providers.py 150 and 156). Google `gemini-3.5-flash` (205, 212, 220). Groq `openai/gpt-oss-120b` (176 and 182).

@@ -101,6 +101,26 @@ def _health(day: str, *, after: str | None = None) -> dict[str, Any]:
     }
 
 
+def _publish_generated_clock(env: dict[str, Any]) -> None:
+    """Connection read for a case_clock_at clock. Constants, not the envelope.
+
+    Only the generated 2024-06-15/UTC pair. A mutate or a planted date
+    does not match, so it records nothing.
+    """
+    generated = (
+        env.get("engine_as_of"),
+        env.get("engine_as_of_after"),
+        env.get("engine_timezone"),
+        env.get("engine_timezone_after"),
+    )
+    if generated != (_CASE_DAY, _CASE_DAY, _TZ, _TZ):
+        return
+    from dms_executor.demo_warehouse import _publish_engine_clock, clear_engine_clock
+
+    _publish_engine_clock(_CASE_DAY, _TZ, _CASE_DAY, _TZ)
+    clear_engine_clock()
+
+
 def _install(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -111,6 +131,9 @@ def _install(
     mutate: Any = None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Stub score_http. health_bodies[0] is the open read. Later bodies are later GETs."""
+    from dms_executor.demo_warehouse import clear_engine_clock
+
+    clear_engine_clock()
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     asks: list[dict[str, Any]] = []
     health_gets: list[int] = []
@@ -141,6 +164,11 @@ def _install(
             env = _envelope(case_clock=idx in case_clock_at)
             if mutate is not None:
                 mutate(idx, env)
+            end_missing = health_error_at is not None or any(
+                body is None for body in health_bodies
+            )
+            if idx in case_clock_at and not end_missing:
+                _publish_generated_clock(env)
             return _Resp(env)
         raise RuntimeError(f"unexpected {method} {url}")
 
@@ -276,7 +304,14 @@ def test_live_end_health_failure_is_round_end_unread(
         report.get("baseline_ineligible_reasons"),
         report.get("n"),
         report.get("reason") == "UNCONFIRMED",
-    ) == ("round_end_unread", "INVALID", False, ["round_end_unread"], _pack_n(), False)
+    ) == (
+        "round_end_unread",
+        "INVALID",
+        False,
+        ["round_end_unread", "engine_clock_masked"],
+        _pack_n(),
+        False,
+    )
 
 
 def test_live_end_health_empty_is_round_end_unread(
@@ -297,7 +332,7 @@ def test_live_end_health_empty_is_round_end_unread(
         report.get("round_label"),
         report.get("baseline_ineligible_reasons"),
         report.get("n"),
-    ) == ("round_end_unread", "INVALID", ["round_end_unread"], _pack_n())
+    ) == ("round_end_unread", "INVALID", ["round_end_unread", "engine_clock_masked"], _pack_n())
 
 
 def test_live_one_timezone_reading_is_unread(
