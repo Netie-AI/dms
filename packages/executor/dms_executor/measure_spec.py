@@ -11,6 +11,7 @@ snapshot body. Each failure is ``(code, field)``; all are returned together.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -117,7 +118,12 @@ def description_failures(description: str) -> bool:
         return True
     if d.strip() == "":
         return True
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in d):
+    if any(
+        ord(ch) < 32
+        or 0x7F <= ord(ch) <= 0x9F
+        or unicodedata.category(ch) in ("Cc", "Zl", "Zp")
+        for ch in d
+    ):
         return True
     if any(b in d for b in _DESC_BANNED):
         return True
@@ -206,7 +212,7 @@ def validate_measure_spec(
 
     # R6
     name = draft.name
-    if not isinstance(name, str) or not NAME_RE.match(name):
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         out.append(("name_invalid", "name"))
     else:
         low = name.lower()

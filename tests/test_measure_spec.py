@@ -126,6 +126,11 @@ SQLISH_MISSES = [
 ]
 
 
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029", "\u0085", "\x9f", "\n", "\t"])
+def test_description_rejects_unicode_line_separators_and_controls(sep: str) -> None:
+    assert description_failures(f"Total amount{sep}per sale")
+
+
 @pytest.mark.parametrize("text", SQLISH_HITS)
 def test_sqlish_vectors_hit(text: str) -> None:
     assert measure_spec.SQLISH_COPY.search(text)
@@ -234,6 +239,8 @@ def test_r5_key_columns() -> None:
         ("a" * 49, "name_invalid"),
         ("a b", "name_invalid"),
         ("x;y", "name_invalid"),
+        ("amt_total\n", "name_invalid"),
+        ("ab\n", "name_invalid"),
         ("budget", "name_reserved"),  # a column
         ("district_id", "name_reserved"),
         ("public_schools", "name_reserved"),  # object tail

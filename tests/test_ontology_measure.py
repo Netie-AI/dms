@@ -127,6 +127,17 @@ def test_compile_refuses_a_tampered_expression_and_emits_no_sql(con, evil: str) 
     assert con.execute("SELECT COUNT(*) FROM sales").fetchone() == (3,)
 
 
+def test_compile_refuses_provenance_grain_or_name_that_differs_from_the_slot(con) -> None:  # noqa: ANN001
+    for p in (
+        dataclasses.replace(_prov(), grain="other"),
+        dataclasses.replace(_prov(), name="different"),
+    ):
+        o = _onto(con)
+        o.add_measure("revenue_sum", "sale", measure_expression("sum", "amount"), provenance=p)
+        out = o.compile("revenue_sum")
+        assert isinstance(out, Refusal) and out.reason == "measure_expression_invalid"
+
+
 def test_compile_refuses_a_provenance_outside_the_enum(con) -> None:  # noqa: ANN001
     o = _onto(con)
     p = dataclasses.replace(_prov(), aggregate="median")
