@@ -2164,9 +2164,13 @@ def _pin_case(
     schema_ver: str | None,
     as_of: str | None,
     tz: str | None,
+    shot: Any = None,
 ) -> dict[str, Any]:
-    """One pinned case. ABSTAIN or INVALID. Rows stay empty. Not WRONG."""
-    return {
+    """One pinned case. ABSTAIN or INVALID. Rows stay empty. Not WRONG.
+
+    Body and header served ids are both kept. A disagreement does not pick one.
+    """
+    row = {
         "id": str(case["id"]),
         "verdict": verdict,
         "badge": "ABSTAIN" if verdict == "ABSTAIN" else None,
@@ -2182,7 +2186,12 @@ def _pin_case(
         "oracle_schema_version": schema_ver,
         "oracle_as_of": as_of,
         "oracle_timezone": tz,
+        "served_provider_body": getattr(shot, "body_provider", None),
+        "served_model_body": getattr(shot, "body_model", None),
+        "served_provider_header": getattr(shot, "header_provider", None),
+        "served_model_header": getattr(shot, "header_model", None),
     }
+    return row
 
 
 def score_pack_live(
@@ -2253,6 +2262,7 @@ def score_pack_live(
                         schema_ver=schema_ver,
                         as_of=as_of,
                         tz=oracle_tz,
+                        shot=shot,
                     )
                 )
                 records.append(

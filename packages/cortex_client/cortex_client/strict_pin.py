@@ -51,13 +51,21 @@ class PinConfig:
 
 @dataclass(frozen=True)
 class PinShot:
-    """One vault answer. ``kind`` is ok, unavailable, mismatch, or caller_error."""
+    """One vault answer. ``kind`` is ok, unavailable, mismatch, or caller_error.
+
+    Body and header are kept apart. When both are present and they disagree,
+    neither side is the served model.
+    """
 
     kind: str
     name: str = ""
     vault_reason: str = ""
     served_provider: str | None = None
     served_model: str | None = None
+    body_provider: str | None = None
+    body_model: str | None = None
+    header_provider: str | None = None
+    header_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,17 +145,38 @@ def _body_field(body: Mapping[str, Any], key: str) -> str | None:
     return text or None
 
 
-def _served(
+def _sides(
     body: Mapping[str, Any] | None,
     headers: Mapping[str, str] | None,
-    key: str,
-    header: str,
-) -> str | None:
-    if isinstance(body, Mapping):
-        found = _body_field(body, key)
-        if found:
-            return found
-    return _header(headers, header)
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Body fields and header fields. A null body field is absent."""
+    payload = body if isinstance(body, Mapping) else {}
+    return (
+        _body_field(payload, "served_provider"),
+        _body_field(payload, "served_model"),
+        _header(headers, SERVED_PROVIDER_HEADER),
+        _header(headers, SERVED_MODEL_HEADER),
+    )
+
+
+def _disagree(
+    body_provider: str | None,
+    body_model: str | None,
+    header_provider: str | None,
+    header_model: str | None,
+) -> bool:
+    if body_model and header_model and body_model != header_model:
+        return True
+    if body_provider and header_provider and body_provider != header_provider:
+        return True
+    return False
+
+
+def _mismatch_name(
+    provider: str | None,
+    model: str | None,
+) -> str:
+    return f"pin_mismatch:{provider or 'missing'}/{model or 'missing'}"
 
 
 def interpret(
@@ -156,7 +185,11 @@ def interpret(
     headers: Mapping[str, str] | None = None,
     cfg: PinConfig | None = None,
 ) -> PinShot:
-    """Classify one OpenVault chat response. Does not map 503 onto RATE_LIMIT."""
+    """Classify one OpenVault chat response. Does not map 503 onto RATE_LIMIT.
+
+    One side present: that side is the served model. Both present and equal:
+    that value. Both present and different: INVALID, and neither value is chosen.
+    """
     pin = cfg or pin_config()
     payload = body if isinstance(body, Mapping) else {}
     err = payload.get("error") if isinstance(payload, Mapping) else None
@@ -168,21 +201,33 @@ def interpret(
             name=f"pin_unavailable:{pin.provider}/{pin.model}",
             vault_reason=vault_reason,
         )
-    served_model = _served(payload, headers, "served_model", SERVED_MODEL_HEADER)
-    served_provider = _served(payload, headers, "served_provider", SERVED_PROVIDER_HEADER)
+    body_provider, body_model, header_provider, header_model = _sides(payload, headers)
+    sides = dict(
+        body_provider=body_provider,
+        body_model=body_model,
+        header_provider=header_provider,
+        header_model=header_model,
+    )
+    if _disagree(body_provider, body_model, header_provider, header_model):
+        # Neither side is chosen. Both pairs stay in the name and on the shot.
+        left = f"{body_provider or 'missing'}/{body_model or 'missing'}"
+        right = f"{header_provider or 'missing'}/{header_model or 'missing'}"
+        return PinShot(kind="mismatch", name=f"pin_mismatch:{left}+{right}", **sides)
+    served_model = body_model or header_model
+    served_provider = body_provider or header_provider
     if status == 200 and served_model == pin.model:
         return PinShot(
             kind="ok",
             served_provider=served_provider,
             served_model=served_model,
+            **sides,
         )
     return PinShot(
         kind="mismatch",
-        name=(
-            f"pin_mismatch:{served_provider or 'missing'}/{served_model or 'missing'}"
-        ),
+        name=_mismatch_name(served_provider, served_model),
         served_provider=served_provider,
         served_model=served_model,
+        **sides,
     )
 
 

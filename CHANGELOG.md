@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: pin fixture scores, neither served side wins
+
+- **Why the old fixture abstained.** The ask mock used `badge: ABSTAIN` and `abstained: true`. `is_confident` is false, so `judge_detailed` returns ABSTAIN after the oracle runs and never compares rows. A parent result of ABSTAIN==INVALID does not prove the pin. The mock is now `L0_CERTIFIED` with one row against empty gold, so the parent judge returns WRONG (`rows_mismatch`). Refuse and abstain expects with that badge are WRONG via `_judge_badge`.
+- **Served ids.** When body `served_model` / `served_provider` and `X-OpenVault-Served-*` are both present and they differ, the case is INVALID `pin_mismatch` with both pairs, kept in n. Neither side is chosen. One side present uses that side. OpenVault #81 `0d0ef3f0`.
+- **Gate.** `tests/test_strict_pin_01.py`. The body-wins test was this PR's own test; it is now the disagree test. A second test has the body on the pin and the header on another model.
+
 ## 2026-10-01 - dms#317 Part A: parent failures are the pin rule
 
 - **Ticket.** Same draft as the section below. OpenVault #81 `0d0ef3f0` is the field contract (`strict` boolean, `X-OpenVault-Strict`, 503 `pin_unavailable`, `served_provider` / `served_model`).

@@ -208,14 +208,16 @@ def _install_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[s
             )
         if method == "POST" and url.rstrip("/").endswith("/v1/chat/ask"):
             asks.append(dict(json_body or {}))
+            # Confident L0 with a row. Gold is empty, so the judge returns WRONG.
+            # badge ABSTAIN never reaches that compare (is_confident is false).
             return _Http(
                 200,
                 {
-                    "badge": "ABSTAIN",
-                    "abstained": True,
-                    "rows": [],
-                    "values": [],
-                    "text": "abstain",
+                    "badge": "L0_CERTIFIED",
+                    "abstained": False,
+                    "rows": [{"country": "MY", "spend": 1}],
+                    "values": [{"country": "MY", "spend": 1}],
+                    "text": "1",
                     "engine_as_of": _ENGINE_DAY,
                     "engine_as_of_after": _ENGINE_DAY,
                     "engine_timezone": _TZ,
@@ -250,7 +252,7 @@ def _arm(
     else:
         monkeypatch.setenv("DMS_STRICT_PROVIDER", provider)
     asks = _install_ask(monkeypatch, tmp_path)
-    # Gold rows come back. The judge scores ABSTAIN. It does not ORACLE_ERROR.
+    # Empty gold against the L0 row is a row mismatch, so the judge returns WRONG.
     monkeypatch.setattr("score_curated.run_oracle_select", lambda *_a, **_k: ([], None))
     script = _patch_pin(monkeypatch, shots=shots, repeat=repeat)
     return asks, script
@@ -385,7 +387,7 @@ def test_live_case_pin_unavailable_stays_in_n(
     report = _report(tmp_path)
     name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    assert report["cases"][1]["verdict"] == "WRONG"
     first = report["cases"][0]
     assert (
         first["verdict"] == "ABSTAIN"
@@ -400,13 +402,40 @@ def test_live_case_pin_unavailable_stays_in_n(
     assert report["n"] == n_pack
     assert report["invalid"] == 0
     assert report["n_without_invalid"] == n_pack
-    assert report["wrong"] == 0
+    assert report["wrong"] == n_pack - 1
     assert len(asks) == n_pack - 1
     assert len(script.calls) == n_pack + 1
     models = {call["json"]["model"] for call in script.calls}
     assert models == {_PIN}
     assert all(call["json"]["strict"] is True for call in script.calls)
     assert report["cases"][1]["verdict"] != "RATE_LIMIT"
+    assert int(report.get("rate_limit") or 0) == 0
+
+
+def test_live_quota_exhausted_is_pin_abstain_not_rate_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """503 quota_exhausted is the pin abstain. It is not the 429 RATE_LIMIT path."""
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    shots = [_ok(_PIN), _down("quota_exhausted", _PIN)] + [
+        _ok(_PIN) for _ in range(n_pack - 1)
+    ]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    first = report["cases"][0]
+    assert (
+        first["verdict"] == "ABSTAIN"
+        and first["reason"] == name
+        and first.get("pin_reason") == "quota_exhausted"
+        and first["verdict"] != "RATE_LIMIT"
+    )
+    assert int(report.get("rate_limit") or 0) == 0
+    assert report["n"] == n_pack
 
 
 def test_live_body_pin_mismatch_is_invalid(
@@ -420,7 +449,7 @@ def test_live_body_pin_mismatch_is_invalid(
     code = live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    assert report["cases"][1]["verdict"] == "WRONG"
     row = report["cases"][0]
     assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
     assert code != 0
@@ -428,7 +457,7 @@ def test_live_body_pin_mismatch_is_invalid(
     assert report["n"] == n_pack
     assert report["invalid"] == 1
     assert report["n_without_invalid"] == n_pack - 1
-    assert report["wrong"] == 0
+    assert report["wrong"] == n_pack - 1
     assert len(asks) == n_pack - 1
     assert len(script.calls) == n_pack + 1
     assert all(item["verdict"] != "INVALID" for item in report["cases"][1:])
@@ -450,13 +479,13 @@ def test_live_missing_served_model_is_invalid(
     code = live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    assert report["cases"][1]["verdict"] == "WRONG"
     row = report["cases"][0]
     assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:missing/missing"
     assert code != 0
     assert report["n"] == n_pack
     assert report["invalid"] == 1
-    assert report["wrong"] == 0
+    assert report["wrong"] == n_pack - 1
 
 
 def test_live_header_mismatch_is_invalid(
@@ -477,7 +506,7 @@ def test_live_header_mismatch_is_invalid(
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    assert report["cases"][1]["verdict"] == "WRONG"
     row = report["cases"][0]
     assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
     assert report["n"] == n_pack
@@ -503,7 +532,7 @@ def test_live_header_match_is_judged(
     report = _report(tmp_path)
     wire, hdr = _wire(script)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][0]["verdict"] == "ABSTAIN"
+    assert report["cases"][0]["verdict"] == "WRONG"
     assert (
         wire.get("strict") is True
         and wire.get("model") == _PIN
@@ -513,13 +542,14 @@ def test_live_header_match_is_judged(
     assert len(script.calls) == n_pack + 1
     assert report["invalid"] == 0
     assert report["n"] == n_pack
-    assert report["wrong"] == 0
+    assert report["wrong"] == n_pack
     assert all(row["verdict"] != "INVALID" for row in report["cases"])
 
 
-def test_live_body_mismatch_wins_over_matching_header(
+def test_live_body_and_header_disagree_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Edited in place. Both sides are present and they disagree. Neither wins."""
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
     bad = {
@@ -535,9 +565,47 @@ def test_live_body_mismatch_wins_over_matching_header(
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    assert report["cases"][1]["verdict"] == "WRONG"
     row = report["cases"][0]
-    assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
+    assert row["verdict"] == "INVALID" and row["reason"] == (
+        "pin_mismatch:google/gemini-3.5-flash+groq/openai/gpt-oss-120b"
+    )
+    assert row["served_model_body"] == "gemini-3.5-flash"
+    assert row["served_provider_body"] == "google"
+    assert row["served_model_header"] == _PIN
+    assert row["served_provider_header"] == _PROVIDER
+    assert report["n"] == n_pack
+    assert report["invalid"] == 1
+
+
+def test_live_body_pin_header_other_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Body names the pin. The header does not. That is still INVALID."""
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    bad = {
+        "status": 200,
+        "headers": {
+            "X-OpenVault-Served-Provider": "google",
+            "X-OpenVault-Served-Model": "gemini-3.5-flash",
+        },
+        "body": {"served_provider": _PROVIDER, "served_model": _PIN},
+    }
+    shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    row = report["cases"][0]
+    assert row["verdict"] == "INVALID" and row["reason"] == (
+        f"pin_mismatch:{_PROVIDER}/{_PIN}+google/gemini-3.5-flash"
+    )
+    assert row["served_model_body"] == _PIN
+    assert row["served_model_header"] == "gemini-3.5-flash"
+    assert report["n"] == n_pack
+    assert report["invalid"] == 1
 
 
 @pytest.mark.parametrize("model", _CALLER_ERRORS)
@@ -722,7 +790,7 @@ def test_live_generate_posts_send_strict_once(
     gen_json = seen.get("gen_json") or {}
     gen_headers = seen.get("gen_headers") or {}
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][0]["verdict"] == "ABSTAIN"
+    assert report["cases"][0]["verdict"] == "WRONG"
     assert (
         body.get("strict") is True
         and body.get("model") == _PIN
