@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - MASK-VALUES-01: case clock must equal its connection read (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** A case clock stays literal only when its date and zone equal that case's own connection read (`_read_con_clock` in `packages/executor/dms_executor/demo_warehouse.py`). The other keep is the existing next-day end, `round_spans_midnight`. A planted date, any other mismatch, or a missing read is masked. That case is INVALID `engine_clock_masked` and stays in n. A case that never connected still uses the four-field shape keep, so ENGINE-DATE-02 clocks that equal their own read stay, including `test_live_sql_nosql_sql_records_keep_own_clocks`.
+- **Gate.** `tests/test_mask_clock_02.py` fails on the ruling-2 shape keep (effabd24) on its own assert, n=52. No live scored round.
+
 ## 2026-10-01 - MASK-VALUES-01: clock keep is the round /health read (#303)
 
 - **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.

@@ -60,6 +60,34 @@ def clear_engine_clock() -> None:
     _CLOCK_PENDING = False
 
 
+# Survives clear_engine_clock. stamp copies the clock onto the envelope and
+# then drops the process clock, so the scorer reads this log instead.
+_CONNECTION_LOG: list[dict[str, str] | None] = []
+
+
+def clear_connection_log() -> None:
+    _CONNECTION_LOG.clear()
+
+
+def connection_log_len() -> int:
+    return len(_CONNECTION_LOG)
+
+
+def case_connection_read(start: int) -> dict[str, str] | str | None:
+    """Connection read published since ``start``.
+
+    None: this case did not connect. ``missing``: ``_read_con_clock`` returned
+    no date. A dict is that read (date plus zone).
+    """
+    new = _CONNECTION_LOG[start:]
+    if not new:
+        return None
+    last = new[-1]
+    if last is None:
+        return "missing"
+    return last
+
+
 def current_engine_clock() -> dict[str, str] | None:
     if not _ENGINE_CLOCK:
         return None
@@ -108,6 +136,7 @@ def _publish_engine_clock(
 ) -> None:
     global _ENGINE_CLOCK, _CLOCK_PENDING
     if not before or not after:
+        _CONNECTION_LOG.append(None)
         return
     clock = {
         "engine_as_of": before,
@@ -117,6 +146,7 @@ def _publish_engine_clock(
     }
     _ENGINE_CLOCK = {k: v for k, v in clock.items() if v}
     _CLOCK_PENDING = True
+    _CONNECTION_LOG.append(dict(_ENGINE_CLOCK))
 
 
 def read_health_engine_clock() -> dict[str, str]:

@@ -2137,9 +2137,9 @@ def _iso_day(value: str | None) -> date | None:
 
 
 def _preserved_case_clock(env: Mapping[str, Any] | None) -> bool:
-    """ENGINE-DATE-02 case clock. Four fields, equal zones, same day or the next.
+    """Four-field shape. Used only when this case recorded no connection read.
 
-    That answer's connection clock is not the round /health point-read.
+    A recorded read, including a missing date, is not kept for this shape.
     ``_case_invalid_reason`` still owns a before/after split on this shape.
     """
     if not env:
@@ -2176,6 +2176,14 @@ def _retag_case(
     rec["oracle_verdict"] = "INVALID"
 
 
+def _clock_equals_read(env: Mapping[str, Any], read: Mapping[str, Any]) -> bool:
+    """True when the four top-level clock fields equal this case's connection read."""
+    for key in _CLOCK_KEYS:
+        if _clock_text(env.get(key)) != _clock_text(read.get(key)):
+            return False
+    return True
+
+
 def _health_clock_match(
     env: Mapping[str, Any],
     *,
@@ -2204,6 +2212,7 @@ def _apply_clock_keep(
     tallies: dict[str, int],
     cases_out: list[dict[str, Any]],
     records: list[dict[str, Any]],
+    reads: list[dict[str, str] | str | None],
     *,
     start: str | None,
     end: str | None,
@@ -2211,10 +2220,13 @@ def _apply_clock_keep(
     end_tz: str | None,
     end_ok: bool,
 ) -> bool:
-    """Mask top-level clocks that are not this round's /health values.
+    """Mask a top-level clock that is not this case's own connection read.
 
-    A missing end read masks every clock that is not an ENGINE-DATE-02 case
-    clock. A mask token is not a date match. Returns whether any field was masked.
+    The clock stays when its date and zone equal the read recorded at connect
+    time. The other keep is a /health next-day end (``round_spans_midnight``).
+    A planted date, any other mismatch, or a missing read is masked. A case
+    that never connected still uses the four-field shape keep. A mask token
+    is not a date match. Returns whether any field was masked.
     """
     from dms_core.pii import mask_unkept_clock_fields
 
@@ -2228,15 +2240,26 @@ def _apply_clock_keep(
     else:
         allowed = {key: None for key in _CLOCK_KEYS}
     any_masked = False
-    for case, rec in zip(cases_out, records, strict=True):
+    for case, rec, read in zip(cases_out, records, reads, strict=True):
         env = rec.get("envelope")
         if not isinstance(env, dict):
             continue
-        if _preserved_case_clock(env):
-            if end_ok and end and start and end != start and _health_clock_match(
+        if (
+            end_ok
+            and end
+            and start
+            and end != start
+            and _health_clock_match(
                 env, start=start, end=end, start_tz=start_tz, end_tz=end_tz
-            ):
-                _retag_case(tallies, case, rec, "round_spans_midnight")
+            )
+        ):
+            _retag_case(tallies, case, rec, "round_spans_midnight")
+            continue
+        if isinstance(read, dict) and _clock_equals_read(env, read):
+            continue
+        if read == "missing" or isinstance(read, dict):
+            pass
+        elif _preserved_case_clock(env):
             continue
         if case.get("reason") in (
             "engine_timezone_unread",
@@ -2370,6 +2393,11 @@ def score_pack_live(
         clock["n_planned"] = planned
         return _tally(), [], clock
     from cortex_client.strict_pin import envelope_mismatch, next_answer, open_round
+    from dms_executor.demo_warehouse import (
+        case_connection_read,
+        clear_connection_log,
+        connection_log_len,
+    )
 
     pin_round = open_round()
     if pin_round.blocked:
@@ -2392,11 +2420,20 @@ def score_pack_live(
     schema_ver = read_schema_version(oracle_db) if oracle_db is not None else None
     as_of = engine_as_of
     oracle_tz = engine_timezone
+    clear_connection_log()
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
+    reads: list[dict[str, str] | str | None] = []
     overmask = 0
+    read_at = 0
+
+    def _push(rec: dict[str, Any]) -> None:
+        records.append(rec)
+        reads.append(case_connection_read(read_at))
+
     for case in pack["questions"]:
+        read_at = connection_log_len()
         qid = str(case["id"])
         space = resolve_space(case, pack["spaces"])
         if pin_round.active:
@@ -2432,7 +2469,7 @@ def score_pack_live(
                 rec["served_model_body"] = shot.body_model
                 rec["served_provider_header"] = shot.header_provider
                 rec["served_model_header"] = shot.header_model
-                records.append(rec)
+                _push(rec)
                 continue
         try:
             env = _ask(url, str(case["question"]), space, timeout, ask_path=ask_path)
@@ -2460,7 +2497,7 @@ def score_pack_live(
                         LEGACY_JUDGE_LABEL: "",
                     }
                 )
-                records.append(
+                _push(
                     _case_record(qid, verdict, reason, None, verdict, None, "round_health")
                 )
                 continue
@@ -2484,7 +2521,7 @@ def score_pack_live(
                         tz=oracle_tz,
                     )
                 )
-                records.append(
+                _push(
                     _case_record(
                         qid,
                         "INVALID",
@@ -2524,7 +2561,7 @@ def score_pack_live(
                     "oracle_timezone": case_tz,
                 }
             )
-            records.append(
+            _push(
                 _case_record(
                     qid,
                     "INVALID",
@@ -2578,7 +2615,7 @@ def score_pack_live(
                 "oracle_timezone": case_tz,
             }
         )
-        records.append(
+        _push(
             _case_record(
                 qid, verdict, result.reason, env, result.verdict, _own_engine_date(env), source
             )
@@ -2604,6 +2641,7 @@ def score_pack_live(
         tallies,
         cases_out,
         records,
+        reads,
         start=as_of,
         end=end_day,
         start_tz=oracle_tz,
