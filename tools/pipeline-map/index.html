@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DMS question to answer</title>
+<style>
+:root {
+  --paper: #f3eee4;
+  --ink: #1c1915;
+  --muted: #5c564c;
+  --line: #d9d0c2;
+  --card: #fffdf8;
+  --verified: #1f4d3a;
+  --partial: #8a5a12;
+  --absent: #8c3a32;
+  --select: #1c1915;
+  --chip: #efe7d8;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); }
+.top { display: flex; justify-content: space-between; gap: 24px; padding: 28px 32px 8px; align-items: flex-end; }
+h1 { font-size: 34px; font-weight: 600; margin: 0; letter-spacing: -0.02em; }
+.kicker, .sha, .order, .legend { font-family: ui-sans-serif, system-ui, sans-serif; }
+.kicker { margin: 0 0 4px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
+.sha { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.order { margin: 0 32px 12px; max-width: 920px; color: var(--muted); font-size: 14px; line-height: 1.45; }
+.legend { display: flex; gap: 8px; flex-wrap: wrap; }
+.legend button, .pill {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--card); padding: 4px 10px; cursor: pointer; color: var(--ink);
+}
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; padding: 0 24px 32px; }
+#flow { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-content: start; }
+.stage { border: 1px solid var(--line); border-radius: 14px; padding: 12px; min-width: 0; }
+.stage h2 {
+  font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px;
+  letter-spacing: 0.06em; text-transform: uppercase; margin: 0 0 8px;
+  color: var(--muted); font-weight: 650;
+}
+.node {
+  display: block; width: 100%; text-align: left; background: var(--card);
+  border: 1px solid var(--line); border-left: 4px solid var(--verified);
+  border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; cursor: pointer;
+  color: inherit; font: inherit;
+}
+.node.partial { border-left-color: var(--partial); }
+.node.absent, .node.unverified { border-left-color: var(--absent); border-style: dashed; border-left-style: solid; }
+.node.selected { background: var(--select); color: #f6f1e7; }
+.node .title { display: block; font-size: 15px; }
+.node .meta { display: block; margin-top: 3px; font-family: ui-sans-serif, system-ui, sans-serif; font-size: 11px; opacity: 0.75; }
+#detail {
+  position: sticky; top: 12px; align-self: start; background: var(--card);
+  border: 1px solid var(--line); border-radius: 14px; padding: 16px 16px 20px;
+  max-height: calc(100vh - 24px); overflow: auto;
+}
+#detail h3 { margin: 0 0 8px; font-size: 22px; }
+#detail .why { margin: 0 0 12px; line-height: 1.45; }
+#detail h4 {
+  font-family: ui-sans-serif, system-ui, sans-serif; font-size: 11px;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 14px 0 6px;
+}
+.cite, .reason, .edge {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px; background: var(--chip); border-radius: 8px; padding: 6px 8px;
+  margin: 0 0 6px; line-height: 1.4; word-break: break-word; white-space: pre-wrap;
+}
+.cite button, .edge button {
+  font: inherit; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; text-align: left;
+}
+.note { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; color: var(--absent); }
+@media (max-width: 980px) {
+  .layout, #flow, .top { display: block; }
+  #detail { position: static; max-height: none; margin-top: 12px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="kicker">Read-only map. No runtime calls.</p>
+    <h1>One question through DMS</h1>
+    <p class="sha" id="sha">commit loading</p>
+  </div>
+  <div class="legend" id="legend"></div>
+</header>
+<p class="order" id="order"></p>
+<div class="layout">
+  <main id="flow"></main>
+  <aside id="detail" aria-live="polite"></aside>
+</div>
+<script src="inventory.js"></script>
+<script src="map.js"></script>
+</body>
+</html>
