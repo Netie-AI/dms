@@ -30,7 +30,6 @@ if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 from oracle_row_match import (  # noqa: E402
     envelope_rows,
-    read_engine_clock,
     read_schema_version,
     rows_mismatch_reason,
     run_oracle_select,
@@ -775,13 +774,6 @@ def require_oracle_db(path: Path | None) -> str | None:
     return None
 
 
-def _oracle_clock(oracle_db: Path | str | None) -> tuple[str | None, str | None]:
-    """Engine CURRENT_DATE + TimeZone from the oracle DuckDB. Not harness clock."""
-    if oracle_db is None:
-        return None, None
-    return read_engine_clock(oracle_db)
-
-
 def read_engine_clock_from_con(con: Any) -> tuple[str | None, str | None]:
     """CURRENT_DATE + TimeZone on this connection. Not datetime.now()."""
     try:
@@ -798,8 +790,12 @@ def read_engine_clock_from_con(con: Any) -> tuple[str | None, str | None]:
 
 
 def round_date_label(before: str | None, after: str | None) -> str | None:
-    """INVALID when the engine date crossed midnight. Never WRONG."""
-    if before and after and before != after:
+    """INVALID when the engine date is missing or crossed midnight. Never WRONG.
+
+    The date is the answer engine CURRENT_DATE. A live round with no recorded
+    engine date is INVALID and must not fall back to the oracle DuckDB clock.
+    """
+    if not before or not after or before != after:
         return "INVALID"
     return None
 
@@ -837,8 +833,8 @@ def _round_clock(
 def _invalid_round_exit(round_label: str | None) -> int | None:
     if round_label == "INVALID":
         print(
-            "INVALID: engine CURRENT_DATE crossed midnight during this round. "
-            "Not WRONG."
+            "INVALID: no recorded answer-engine CURRENT_DATE, or the engine "
+            "date crossed midnight during this round. Not WRONG."
         )
         return EXIT_FAIL
     return None
@@ -1795,6 +1791,9 @@ def self_check() -> int:
     if round_date_label("2026-09-25", "2026-09-25") is not None:
         print("FAIL: matching engine dates must not be INVALID")
         return 1
+    if round_date_label(None, None) != "INVALID":
+        print("FAIL: missing engine date must be INVALID")
+        return 1
     print(f"PASS: curated pack {len(ids)} cases, judge fail-closed on green trap")
     return 0
 
@@ -1805,12 +1804,24 @@ def score_pack_live(
     ask_path: str | None = None,
     *,
     oracle_db: Path | None = None,
+    engine_as_of: str | None = None,
+    engine_as_of_after: str | None = None,
+    engine_timezone: str | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]], dict[str, Any]]:
+    """Live HTTP pack. Bind date is the answer-engine CURRENT_DATE only.
+
+    Never falls back to --oracle-db CURRENT_DATE. No recorded engine date:
+    round INVALID, not judged.
+    """
+    clock = _round_clock(engine_as_of, engine_as_of_after, engine_timezone)
+    if clock["round_label"] == "INVALID":
+        return _tally(), [], clock
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
     oracles = load_oracles() if oracle_db is not None else None
     schema_ver = read_schema_version(oracle_db) if oracle_db is not None else None
-    as_of, oracle_tz = _oracle_clock(oracle_db)
+    as_of = engine_as_of
+    oracle_tz = engine_timezone
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
     for case in pack["questions"]:
@@ -1883,8 +1894,8 @@ def score_pack_live(
                 "oracle_timezone": oracle_tz,
             }
         )
-    after, tz_after = _oracle_clock(oracle_db)
-    clock = _round_clock(as_of, after, oracle_tz or tz_after)
+    after = engine_as_of_after if engine_as_of_after is not None else as_of
+    clock = _round_clock(as_of, after, oracle_tz)
     return tallies, cases_out, clock
 
 

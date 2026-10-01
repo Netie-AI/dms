@@ -321,8 +321,8 @@ def execute_sql(
         bind: dict[str, Any] = dict(params) if params else {}
         if "$as_of" in sql and "as_of" not in bind:
             # ponytail: omitted as_of uses this connection's CURRENT_DATE.
-            # Ceiling: midnight crossing vs an earlier report stamp.
-            # Upgrade: pass the recorded run date from the harness.
+            # Offline only (same DuckDB file as submit()). Live must pass the
+            # recorded answer-engine date; missing live date is INVALID.
             row = con.execute("SELECT CURRENT_DATE").fetchone()
             bind["as_of"] = row[0] if row else None
         rel = con.execute(sql, bind) if bind else con.execute(sql)

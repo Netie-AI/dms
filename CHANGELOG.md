@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ORACLE-FIX-02 gating: live missing engine date is INVALID (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) / PR #310. Gating conditions before merge. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
+- **Change.** A live round with no recorded answer-engine `CURRENT_DATE` is `INVALID` and is not judged. It never falls back to `--oracle-db` `CURRENT_DATE`. Offline `bind_oracle_params` / `execute_sql` auto-fill remains the same DuckDB file `submit()` uses. `rows_mismatch_reason` and `judge_detailed` comparison unchanged.
+- **Gate.** `tests/test_oracle_fix_02.py::test_live_round_without_engine_date_is_invalid_not_judged`. Two-date and midnight tests stay. `test_oracle_fix_01.py` not edited this round.
+- **Not this ticket:** other oracles; COMPLETE; merge.
+
 ## 2026-10-01 - SERVED-ATTR-01: per-call served attribution on every ask envelope (#305)
 
 - **Ticket.** [SERVED-ATTR-01 #305](https://github.com/Netie-AI/dms/issues/305) under dms#231. Does not close tickets. Not COMPLETE. No live figures.

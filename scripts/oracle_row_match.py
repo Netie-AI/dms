@@ -187,12 +187,16 @@ def bind_oracle_params(
     sql: str,
     params: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Named binds for oracle SQL. Auto-fill $as_of from this connection."""
+    """Named binds for oracle SQL. Auto-fill $as_of from this connection.
+
+    Offline only: this connection is the same DuckDB file submit() uses.
+    Live rounds must pass as_of from the answer engine; they must not rely
+    on this fallback.
+    """
     bind: dict[str, Any] = dict(params) if params else {}
     if "$as_of" in sql and "as_of" not in bind:
         # ponytail: omitted as_of uses this connection's CURRENT_DATE.
-        # Ceiling: a midnight crossing can disagree with an earlier report stamp.
-        # Upgrade: always pass the recorded run date from the harness.
+        # Offline only (same DuckDB file as submit()). Live must pass as_of.
         row = con.execute("SELECT CURRENT_DATE").fetchone()
         bind["as_of"] = row[0] if row else None
     return bind or None

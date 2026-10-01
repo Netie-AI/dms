@@ -22,11 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from oracle_row_match import run_oracle_select  # noqa: E402
-from score_curated import (  # noqa: E402
-    read_engine_clock_from_con,
-    round_date_label,
-    stamp_round_clock,
-)
 
 ORACLES_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 SEED_PATH = ROOT / "packages" / "executor" / "dms_executor" / "demo_warehouse.py"
@@ -116,6 +111,8 @@ def test_cq_audit_overdue_bound_as_of_two_dates(tmp_path: Path) -> None:
 
 def test_round_invalid_when_engine_date_crosses_midnight() -> None:
     """Mismatched before/after is INVALID, never WRONG. Matching dates are not."""
+    from score_curated import round_date_label, stamp_round_clock
+
     mismatched = round_date_label("2026-09-24", "2026-09-25")
     assert mismatched == "INVALID"
     assert mismatched != "WRONG"
@@ -139,8 +136,43 @@ def test_round_invalid_when_engine_date_crosses_midnight() -> None:
     assert ok["wrong"] == 0
 
 
+def test_live_round_without_engine_date_is_invalid_not_judged(tmp_path: Path) -> None:
+    """Live with no answer-engine date is INVALID, never the oracle DuckDB clock."""
+    import duckdb
+    from oracle_row_match import read_engine_clock
+    from score_curated import round_date_label, score_pack_live
+
+    db = tmp_path / "oracle.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE meta (key VARCHAR, value VARCHAR)")
+    finally:
+        con.close()
+    file_date, _tz = read_engine_clock(db)
+    assert file_date, "oracle DuckDB must have a CURRENT_DATE so fallback would be visible"
+
+    missing = round_date_label(None, None)
+    assert missing == "INVALID"
+    assert missing != "WRONG"
+
+    tallies, cases, clock = score_pack_live(
+        "http://127.0.0.1:1",
+        0.1,
+        oracle_db=db,
+    )
+    assert clock["round_label"] == "INVALID"
+    assert clock["round_label"] != "WRONG"
+    assert clock["oracle_as_of"] is None
+    assert clock["oracle_as_of"] != file_date
+    assert clock["oracle_as_of_after"] is None
+    assert sum(tallies.values()) == 0
+    assert cases == []
+
+
 def test_engine_date_comes_from_answer_connection(tmp_path: Path) -> None:
     """CURRENT_DATE is read on the same connection, not datetime.now()."""
+    from score_curated import read_engine_clock_from_con
+
     warehouse = _load_demo_warehouse()
     db = tmp_path / "dms_demo.duckdb"
     warehouse.ensure_demo_warehouse(db)
