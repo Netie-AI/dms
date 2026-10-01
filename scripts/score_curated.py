@@ -630,7 +630,13 @@ def judge_detailed(
         return JudgeResult(legacy, "", legacy)
     if not sql:
         return JudgeResult("ORACLE_ERROR", "oracle_error:missing_sql", legacy)
-    params = {"as_of": as_of} if as_of is not None and "$as_of" in sql else None
+    from dms_executor.demo_warehouse import sql_has_reserved_as_of
+
+    params = (
+        {"as_of": as_of}
+        if as_of is not None and sql_has_reserved_as_of(sql)
+        else None
+    )
     gold, err = run_oracle_select(oracle_db, sql, params=params)
     if err is not None:
         return JudgeResult("ORACLE_ERROR", f"oracle_error:{err}", legacy)

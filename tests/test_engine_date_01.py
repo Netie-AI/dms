@@ -184,17 +184,12 @@ def test_live_one_midnight_case_is_invalid(
     )
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
-    invalid = [row for row in report["cases"] if row["verdict"] == "INVALID"]
     assert len(asks) == 52
     assert report["n"] == 52
     assert report["invalid"] == 1
     assert report["n_without_invalid"] == 51
-    assert len(invalid) == 1
-    assert invalid[0]["reason"] == "engine_date_mismatch"
-    assert invalid[0]["verdict"] != "WRONG"
-    others = [row for row in report["cases"] if row["verdict"] != "INVALID"]
-    assert len(others) == 51
     assert report["passed"] is False
+    _assert_one_invalid_rest_judged(report["cases"], db)
 
 
 def test_live_timezone_mismatch_is_invalid(
@@ -305,6 +300,29 @@ def test_ab_offline_counts_unchanged(
     assert gen["n_without_invalid"] == gen["n"]
 
 
+def _assert_one_invalid_rest_judged(
+    cases: list[dict[str, Any]], db: Path
+) -> None:
+    """One engine-date mismatch is INVALID. Every other case is the judge's verdict."""
+    questions = {str(q["id"]): q for q in _questions()}
+    oracles = load_oracles()
+    invalid = [row for row in cases if row["verdict"] == "INVALID"]
+    assert len(invalid) == 1
+    assert invalid[0]["reason"] == "engine_date_mismatch"
+    assert invalid[0]["verdict"] != "WRONG"
+    rest = [row for row in cases if row["verdict"] != "INVALID"]
+    assert len(rest) == len(cases) - 1
+    for row in rest:
+        expected = judge_envelope_detailed(
+            questions[str(row["id"])],
+            _envelope(),
+            oracle_db=db,
+            oracles=oracles,
+            as_of=_ENGINE_DAY,
+        )
+        assert row["verdict"] == expected.verdict
+
+
 def _patch_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "score_curated.probe_climb_host", lambda *_a, **_k: ("ok", "up")
@@ -341,6 +359,27 @@ def test_climb_passes_envelope_engine_date(
     assert report["n_without_invalid"] == report["measured"]["n"]
 
 
+def test_climb_one_midnight_case_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from score_curated import climb
+
+    db = _oracle_db(tmp_path)
+
+    def mutate(idx: int, _case: dict[str, Any], env: dict[str, Any]) -> None:
+        if idx == 0:
+            env["engine_as_of_after"] = "2024-06-16"
+
+    _install_ask(monkeypatch, tmp_path, health=_health_open(), mutate=mutate)
+    _patch_probe(monkeypatch)
+    climb("http://score.test", 1.0, db)
+    cases = json.loads((tmp_path / "score_climb_cases.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "score_climb.json").read_text(encoding="utf-8"))
+    assert report["invalid"] == 1
+    assert report["n_without_invalid"] == report["measured"]["n"] - 1
+    _assert_one_invalid_rest_judged(cases, db)
+
+
 def test_climb_ab_live_passes_envelope_engine_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -364,6 +403,33 @@ def test_climb_ab_live_passes_envelope_engine_date(
     assert report["generative"]["invalid"] == 0
     assert report["exact_match"]["n_without_invalid"] == report["exact_match"]["n"]
     assert report["reason"] is None
+
+
+def test_climb_ab_live_one_midnight_case_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from score_curated import climb_ab_live
+
+    db = _oracle_db(tmp_path)
+
+    def mutate(idx: int, _case: dict[str, Any], env: dict[str, Any]) -> None:
+        if idx == 0:
+            env["engine_as_of_after"] = "2024-06-16"
+
+    _install_ask(monkeypatch, tmp_path, health=_health_open(), mutate=mutate)
+    _patch_probe(monkeypatch)
+    climb_ab_live("http://score.test", 1.0, db)
+    blob = json.loads(
+        (tmp_path / "score_climb_ab_cases.json").read_text(encoding="utf-8")
+    )
+    report = json.loads((tmp_path / "score_climb_ab.json").read_text(encoding="utf-8"))
+    assert report["invalid"] == 1
+    assert report["exact_match"]["invalid"] == 1
+    assert report["exact_match"]["n"] == 52
+    assert report["exact_match"]["n_without_invalid"] == 51
+    assert report["generative"]["invalid"] == 0
+    assert report["generative"]["n_without_invalid"] == report["generative"]["n"]
+    _assert_one_invalid_rest_judged(blob["exact"], db)
 
 
 def test_prove_path_live_passes_envelope_engine_date(
@@ -391,6 +457,32 @@ def test_prove_path_live_passes_envelope_engine_date(
     assert report["n_without_invalid"] == report["n"]
 
 
+def test_prove_path_live_one_midnight_case_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from score_curated import prove_path_live
+
+    db = _oracle_db(tmp_path)
+
+    def mutate(idx: int, _case: dict[str, Any], env: dict[str, Any]) -> None:
+        if idx == 0:
+            env["engine_as_of_after"] = "2024-06-16"
+
+    _install_ask(monkeypatch, tmp_path, health=_health_open(), mutate=mutate)
+    _patch_probe(monkeypatch)
+    prove_path_live("http://score.test", 1.0, db)
+    cases = json.loads(
+        (tmp_path / "score_gen_path_prove_cases.json").read_text(encoding="utf-8")
+    )
+    report = json.loads(
+        (tmp_path / "score_gen_path_prove.json").read_text(encoding="utf-8")
+    )
+    assert report["invalid"] == 1
+    assert report["n"] == 52
+    assert report["n_without_invalid"] == 51
+    _assert_one_invalid_rest_judged(cases, db)
+
+
 def test_grid_hook_counts_one_invalid_case(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -412,7 +504,7 @@ def test_grid_hook_counts_one_invalid_case(
     assert row["invalid"] == 1
     assert row["n_without_invalid"] == 51
     assert row["passed"] is False
-    assert sum(1 for case in row["cases"] if case["verdict"] == "INVALID") == 1
+    _assert_one_invalid_rest_judged(row["cases"], db)
 
 
 def test_grid_hook_unread_asks_nothing(
@@ -575,21 +667,48 @@ def test_followup_sql_reserved_as_of_abstains(tmp_path: Path) -> None:
     assert env["route"] == "followup"
 
 
-def test_as_of_inside_string_or_comment_runs(tmp_path: Path) -> None:
+def _bound_as_of(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """SQL texts that were executed with an as_of bind."""
+    seen: list[str] = []
+    real = duckdb.DuckDBPyConnection.execute
+
+    def wrapped(self: Any, sql: str, *args: Any, **kwargs: Any) -> Any:
+        params = args[0] if args else kwargs.get("parameters")
+        if isinstance(params, dict) and "as_of" in params:
+            seen.append(str(sql))
+        return real(self, sql, *args, **kwargs)
+
+    monkeypatch.setattr(duckdb.DuckDBPyConnection, "execute", wrapped)
+    return seen
+
+
+def test_executor_literal_and_comment_as_of_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from dms_executor import Executor
+
+    bound = _bound_as_of(monkeypatch)
+    exe = Executor(warehouse_path=tmp_path / "lit.duckdb")
+    literal = exe.answer_user_sql("SELECT '$as_of' AS x", session_id="ses_lit")
+    assert literal["rows"] == [{"x": "$as_of"}]
+    assert literal.get("abstain_reason") != "reserved_param:as_of"
+    assert "$as_of" in str(literal.get("sql_used"))
+    commented = exe.answer_user_sql("SELECT 1 AS n -- $as_of", session_id="ses_c")
+    assert commented["rows"] == [{"n": 1}]
+    assert commented.get("abstain_reason") != "reserved_param:as_of"
+    assert bound == []
+
+
+def test_followup_literal_and_comment_as_of_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from dms_executor.demo_warehouse import ensure_demo_warehouse
     from dms_executor.session_followup import run_followup_sql
 
-    exe = Executor(warehouse_path=tmp_path / "lit.duckdb")
-    literal = exe.execute("SELECT '$as_of' AS label")
-    assert literal == [{"label": "$as_of"}]
-    commented = exe.execute("SELECT 1 AS n -- $as_of")
-    assert commented == [{"n": 1}]
-    blocked = exe.execute("SELECT 1 AS n /* $as_of */")
-    assert blocked == [{"n": 1}]
+    bound = _bound_as_of(monkeypatch)
     db = ensure_demo_warehouse(tmp_path / "follow_lit.duckdb")
-    env = run_followup_sql(
-        "SELECT '$as_of' AS label",
+    literal = run_followup_sql(
+        "SELECT '$as_of' AS x",
         warehouse=db,
         space_id=None,
         session_id="ses_lit",
@@ -597,10 +716,10 @@ def test_as_of_inside_string_or_comment_runs(tmp_path: Path) -> None:
         why="literal",
         text="literal stays",
     )
-    assert env.get("abstain_reason") != "reserved_param:as_of"
-    assert env["rows"][0]["label"] == "$as_of"
-    env_c = run_followup_sql(
-        "SELECT 2 AS n -- $as_of",
+    assert literal["rows"] == [{"x": "$as_of"}]
+    assert literal.get("abstain_reason") != "reserved_param:as_of"
+    commented = run_followup_sql(
+        "SELECT 1 AS n -- $as_of",
         warehouse=db,
         space_id=None,
         session_id="ses_c",
@@ -608,4 +727,34 @@ def test_as_of_inside_string_or_comment_runs(tmp_path: Path) -> None:
         why="comment",
         text="comment stays",
     )
-    assert env_c["rows"][0]["n"] == 2
+    assert commented["rows"] == [{"n": 1}]
+    assert commented.get("abstain_reason") != "reserved_param:as_of"
+    assert bound == []
+
+
+def test_dollar_string_beside_real_as_of_placeholder(
+    tmp_path: Path,
+) -> None:
+    """A `$` string next to a real $as_of is not the placeholder. The placeholder is."""
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import execute_sql
+    from dms_executor.envelope import RESERVED_PARAM_AS_OF, assert_envelope_valid
+
+    sql = "SELECT '$' AS buck, CAST($as_of AS VARCHAR) AS day"
+    exe = Executor(warehouse_path=tmp_path / "mix.duckdb")
+    refused = exe.answer_user_sql(sql, session_id="ses_mix")
+    assert_envelope_valid(refused)
+    assert refused["abstain_reason"] == RESERVED_PARAM_AS_OF
+    assert refused["rows"] == []
+    rows = execute_sql(sql, path=tmp_path / "serve.duckdb")
+    assert rows[0]["buck"] == "$"
+    assert rows[0]["day"] not in {"$", "$as_of"}
+    assert str(rows[0]["day"])[:4].isdigit()
+
+
+def test_serving_execute_sql_ignores_as_of_plain_text(tmp_path: Path) -> None:
+    from dms_executor.demo_warehouse import execute_sql
+
+    db = tmp_path / "plain.duckdb"
+    assert execute_sql("SELECT '$as_of' AS x", path=db) == [{"x": "$as_of"}]
+    assert execute_sql("SELECT 1 AS n -- $as_of", path=db) == [{"n": 1}]

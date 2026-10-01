@@ -194,7 +194,9 @@ def bind_oracle_params(
     on this fallback.
     """
     bind: dict[str, Any] = dict(params) if params else {}
-    if "$as_of" in sql and "as_of" not in bind:
+    from dms_executor.demo_warehouse import sql_has_reserved_as_of
+
+    if sql_has_reserved_as_of(sql) and "as_of" not in bind:
         # ponytail: omitted as_of uses this connection's CURRENT_DATE.
         # Offline only (same DuckDB file as submit()). Live must pass as_of.
         row = con.execute("SELECT CURRENT_DATE").fetchone()

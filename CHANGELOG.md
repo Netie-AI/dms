@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-01 gate: sqlglot placeholder, per-entry INVALID (#308)
+
+- **Ticket.** Same draft PR as the section below ([#321](https://github.com/Netie-AI/dms/pull/321), [dms#308](https://github.com/Netie-AI/dms/issues/308)). Stays a draft. Does not rebase (OVERMASK-01 is not on main). Does not touch `pii.py`. Does not stamp COMPLETE. Does not close the issue. CI fixtures, not live.
+- **Change.** Serving `execute_sql` auto-binds `$as_of` only when sqlglot's tokenizer sees a real placeholder (a `$` parameter token immediately followed by a var token `as_of`). A `$` inside a string, an identifier, or a comment is not a placeholder and is not bound. Product refusal uses the same detector. Oracle `bind_oracle_params` and the scorer bind the same way. The 52-pack table and the dms#299 grid hook already print `n`, `n_without_invalid`, and `invalid`.
+- **Gate.** `tests/test_engine_date_01.py`. Literal and comment SQL through `Executor.answer_user_sql` and `session_followup.run_followup_sql`. A `$` string beside a real `$as_of`. One midnight INVALID test each for `live`, `climb`, `climb_ab_live`, `prove_path_live`, and `grid_score_hook`. Whole file on `6da6e44`: 22 failed, 0 passed. On this head: 22 passed. No existing test edited. No skip, xfail, or importorskip.
+- **Counts.** Offline 52-pack unchanged: exact 0/16/36/0/0, generative 0/26/11/15/0, INVALID 0.
+- **Not this ticket:** rebase onto OVERMASK-01; `pii.py`; protected paths; the full dms#299 grid runner.
+
 ## 2026-10-01 - ENGINE-DATE-01: live engine date, reserved $as_of (#308)
 
 - **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) follow-up. Does not stamp COMPLETE. Does not merge. Does not close the issue. CI fixtures, not live.

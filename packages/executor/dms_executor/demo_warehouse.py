@@ -9,7 +9,6 @@ Cortex's duckdb file). Uploaded bronze is copied to the engine file by
 from __future__ import annotations
 
 import os
-import re
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -19,7 +18,6 @@ import duckdb
 
 # Product SQL may not bind this. Oracle and scorer calls may.
 RESERVED_PARAM_AS_OF = "reserved_param:as_of"
-_AS_OF_TOKEN = re.compile(r"\$as_of\b")
 
 _LOCKS_GUARD = threading.Lock()
 _FILE_LOCKS: dict[str, threading.RLock] = {}
@@ -35,47 +33,25 @@ class ReservedParamError(Exception):
     """Product SQL named $as_of. The statement was not executed."""
 
 
-def _mask_literals_and_comments(sql: str) -> str:
-    """Blank comments and quoted text so $as_of inside them is not a bind."""
-    out: list[str] = []
-    i = 0
-    n = len(sql)
-    while i < n:
-        ch = sql[i]
-        nxt = sql[i + 1] if i + 1 < n else ""
-        if ch == "-" and nxt == "-":
-            j = sql.find("\n", i)
-            end = n if j < 0 else j
-            out.append(" " * (end - i))
-            i = end
-            continue
-        if ch == "/" and nxt == "*":
-            j = sql.find("*/", i + 2)
-            end = n if j < 0 else j + 2
-            out.append(" " * (end - i))
-            i = end
-            continue
-        if ch in {"'", '"'}:
-            j = i + 1
-            while j < n:
-                if sql[j] == ch and j + 1 < n and sql[j + 1] == ch:
-                    j += 2
-                    continue
-                if sql[j] == ch:
-                    j += 1
-                    break
-                j += 1
-            out.append(" " * (j - i))
-            i = j
-            continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
 def sql_has_reserved_as_of(sql: str) -> bool:
-    """True when $as_of is a placeholder outside strings and comments."""
-    return _AS_OF_TOKEN.search(_mask_literals_and_comments(sql or "")) is not None
+    """True when sqlglot sees a real $as_of placeholder.
+
+    A `$` inside a string, an identifier, or a comment is not a placeholder.
+    Tokenizer only. No regex and no substring scan of the SQL text.
+    """
+    from sqlglot import tokenize
+    from sqlglot.tokens import TokenType
+
+    try:
+        tokens = tokenize(sql or "", read="duckdb")
+    except Exception:  # noqa: BLE001 - unreadable SQL is not a placeholder
+        return False
+    saw_param = False
+    for tok in tokens:
+        if saw_param and tok.token_type == TokenType.VAR and tok.text == "as_of":
+            return True
+        saw_param = tok.token_type == TokenType.PARAMETER and tok.text == "$"
+    return False
 
 
 def clear_engine_clock() -> None:
@@ -464,15 +440,16 @@ def execute_sql(
 
     product=True refuses a real $as_of placeholder before any execute.
     A $as_of inside a string or comment is not a placeholder. The default
-    path still auto-binds $as_of for oracle and scorer calls.
+    path auto-binds only a real placeholder, for oracle calls on this file.
     """
-    if product and sql_has_reserved_as_of(sql):
+    real_as_of = sql_has_reserved_as_of(sql)
+    if product and real_as_of:
         raise ReservedParamError(RESERVED_PARAM_AS_OF)
     con = connect_readonly(path)
     try:
         before, before_tz = _read_con_clock(con)
         bind: dict[str, Any] = dict(params) if params else {}
-        if not product and "$as_of" in sql and "as_of" not in bind:
+        if not product and real_as_of and "as_of" not in bind:
             # ponytail: omitted as_of uses this connection's CURRENT_DATE.
             # Offline only (same DuckDB file as submit()). Live must pass the
             # recorded answer-engine date; missing live date is INVALID.
