@@ -2966,6 +2966,7 @@ def live_climb_gate(report: dict[str, Any]) -> str | None:
 def _write_prove_report(
     report: dict[str, Any], *, live_climb: bool = False
 ) -> tuple[int, dict[str, Any]]:
+    exact_cases = report.pop("exact_cases", None)
     blob = json.dumps({k: v for k, v in report.items() if k != "cases"}, indent=2)
     if "COMPLETE" in blob or "99.95" in blob or "DB-GPT-class" in blob:
         print("FAIL: gen-path prove invented COMPLETE / 99.95")
@@ -2976,6 +2977,10 @@ def _write_prove_report(
     (art / "score_gen_path_prove_cases.json").write_text(
         json.dumps(report["cases"], indent=2) + "\n", encoding="utf-8"
     )
+    if exact_cases is not None:
+        (art / "score_gen_path_prove_exact_cases.json").write_text(
+            json.dumps(exact_cases, indent=2) + "\n", encoding="utf-8"
+        )
     by = report["by_plan_source"]
     print(
         f"{'plan_source':<16} answered answered_pct pack_pct"
@@ -3113,7 +3118,7 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
             url, timeout, ask_path="generative", oracle_db=oracle_db
         )
         print("-- ask_path=exact (WRONG=0 on same pack) --")
-        exact_t, _exact_cases, exact_clock = score_live_entry(
+        exact_t, exact_cases, exact_clock = score_live_entry(
             url, timeout, ask_path="exact", oracle_db=oracle_db
         )
     except ImportError:
@@ -3131,6 +3136,14 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
         gen_clock.get("oracle_timezone"),
     )
     report["reason"] = gen_clock.get("reason") or exact_clock.get("reason")
+    exact_n = sum(int(v) for v in exact_t.values())
+    exact_invalid = int(exact_t.get("INVALID") or 0)
+    report["exact_n"] = exact_n
+    report["exact_invalid"] = exact_invalid
+    report["exact_n_without_invalid"] = exact_n - exact_invalid
+    report["exact_cases"] = exact_cases
+    if exact_invalid:
+        report["passed"] = False
     if exact_clock.get("round_label") == "INVALID":
         report["round_label"] = "INVALID"
         report["passed"] = False
@@ -3142,6 +3155,12 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
     )
     code, _ = _write_prove_report(report, live_climb=True)
     if report.get("round_label") == "INVALID":
+        return EXIT_FAIL
+    if int(report.get("exact_invalid") or 0):
+        print(
+            f"FAIL: exact lane INVALID={report['exact_invalid']} "
+            "(engine date or timezone mismatch). Not WRONG. Not PASS."
+        )
         return EXIT_FAIL
     if int(exact_t["WRONG"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-01: one INVALID test per A/B lane (#308)
+
+- **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321). Stays a draft. No 52-pack drift.
+- **Lanes.** `climb_ab_live` and `prove_path_live` each call `score_live_entry` twice. New tests: generative lane of `climb_ab_live`, exact lane of `prove_path_live`. Both fail on `dd4162ec`. The exact prove lane is written to `score_gen_path_prove_exact_cases.json` and fails the round when `exact_invalid` is not 0.
+- **Not a sixth.** The grid runner is `grid_score_hook` (`scripts/score_curated.py`). `scripts/score_grid.py` is not in git. Bare `--ab` is `ab_offline`, not a live caller. `--climb --ab` is `climb_ab_live`, already one of the five.
+- **Timezone.** `_case_invalid_reason` is inside `score_pack_live`, which every live entry reaches through `score_live_entry`.
+
 ## 2026-10-01 - ENGINE-DATE-01: five live scorers, no sixth (#308)
 
 - **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321) / [dms#308](https://github.com/Netie-AI/dms/issues/308). Stays a draft. No scorer change. Counts stay exact 0/16/36/0/0 and generative 0/26/11/15/0, INVALID 0, n 52.

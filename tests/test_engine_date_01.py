@@ -408,6 +408,7 @@ def test_climb_ab_live_passes_envelope_engine_date(
 def test_climb_ab_live_one_midnight_case_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Exact lane. climb_ab_live calls score_live_entry for exact first."""
     from score_curated import climb_ab_live
 
     db = _oracle_db(tmp_path)
@@ -430,6 +431,35 @@ def test_climb_ab_live_one_midnight_case_is_invalid(
     assert report["generative"]["invalid"] == 0
     assert report["generative"]["n_without_invalid"] == report["generative"]["n"]
     _assert_one_invalid_rest_judged(blob["exact"], db)
+
+
+def test_climb_ab_live_generative_lane_one_midnight_case_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generative lane. Second score_live_entry call inside climb_ab_live."""
+    from score_curated import climb_ab_live
+
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+
+    def mutate(idx: int, _case: dict[str, Any], env: dict[str, Any]) -> None:
+        if idx == n_pack:
+            env["engine_as_of_after"] = "2024-06-16"
+
+    _install_ask(monkeypatch, tmp_path, health=_health_open(), mutate=mutate)
+    _patch_probe(monkeypatch)
+    climb_ab_live("http://score.test", 1.0, db)
+    blob = json.loads(
+        (tmp_path / "score_climb_ab_cases.json").read_text(encoding="utf-8")
+    )
+    report = json.loads((tmp_path / "score_climb_ab.json").read_text(encoding="utf-8"))
+    assert report["invalid"] == 1
+    assert report["generative"]["invalid"] == 1
+    assert report["generative"]["n"] == 52
+    assert report["generative"]["n_without_invalid"] == 51
+    assert report["exact_match"]["invalid"] == 0
+    assert report["exact_match"]["n_without_invalid"] == report["exact_match"]["n"]
+    _assert_one_invalid_rest_judged(blob["generative"], db)
 
 
 def test_prove_path_live_passes_envelope_engine_date(
@@ -460,6 +490,7 @@ def test_prove_path_live_passes_envelope_engine_date(
 def test_prove_path_live_one_midnight_case_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Generative lane. prove_path_live calls score_live_entry for generative first."""
     from score_curated import prove_path_live
 
     db = _oracle_db(tmp_path)
@@ -480,6 +511,39 @@ def test_prove_path_live_one_midnight_case_is_invalid(
     assert report["invalid"] == 1
     assert report["n"] == 52
     assert report["n_without_invalid"] == 51
+    _assert_one_invalid_rest_judged(cases, db)
+
+
+def test_prove_path_live_exact_lane_one_midnight_case_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exact lane. Second score_live_entry call inside prove_path_live."""
+    from score_curated import prove_path_live
+
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+
+    def mutate(idx: int, _case: dict[str, Any], env: dict[str, Any]) -> None:
+        if idx == n_pack:
+            env["engine_as_of_after"] = "2024-06-16"
+
+    _install_ask(monkeypatch, tmp_path, health=_health_open(), mutate=mutate)
+    _patch_probe(monkeypatch)
+    prove_path_live("http://score.test", 1.0, db)
+    cases = json.loads(
+        (tmp_path / "score_gen_path_prove_exact_cases.json").read_text(encoding="utf-8")
+    )
+    gen_cases = json.loads(
+        (tmp_path / "score_gen_path_prove_cases.json").read_text(encoding="utf-8")
+    )
+    report = json.loads(
+        (tmp_path / "score_gen_path_prove.json").read_text(encoding="utf-8")
+    )
+    assert report["invalid"] == 0
+    assert report["exact_invalid"] == 1
+    assert report["exact_n"] == 52
+    assert report["exact_n_without_invalid"] == 51
+    assert all(row["verdict"] != "INVALID" for row in gen_cases)
     _assert_one_invalid_rest_judged(cases, db)
 
 
