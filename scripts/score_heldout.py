@@ -42,8 +42,12 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = Path(__file__).resolve().parent
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
+# Same as bird_minidev.py: the CLI must import the judge's dms_executor / dms_core
+# helpers without an installed package or PYTHONPATH, or every oracle call errors.
+_PACKAGES = ("core", "cortex_client", "executor", "ledger")  # pyproject pythonpath, minus api
+for _path in (SCRIPTS, *(ROOT / "packages" / name for name in _PACKAGES)):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from oracle_row_match import rows_mismatch_reason, run_oracle_select  # noqa: E402
 from score_bound import bound_line  # noqa: E402
