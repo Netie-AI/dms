@@ -12,6 +12,7 @@ from typing import Any
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     execute_sql,
+    stamp_engine_clock,
     total_outbound_revenue,
 )
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -55,6 +56,7 @@ def _pack(**kwargs: Any) -> dict[str, Any]:
     kwargs.setdefault("as_of", _as_of())
     kwargs.setdefault("suggestions", SUGGESTIONS)
     env = build_answer_envelope(**kwargs)
+    stamp_engine_clock(env)
     assert_envelope_valid(env)
     return env
 

@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter
 
 from dms_api.deps import SettingsDep, StoreBindingDep
+from dms_api.wiring import engine_clock_fields
 
 router = APIRouter()
 
@@ -217,7 +218,7 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
     trust = _probe_openvault_trust(settings.openvault_url)
     ov_root = _openvault_root_hint()
     host = urlparse(settings.openvault_url).hostname or "127.0.0.1"
-    return {
+    body = {
         "status": "ok",
         "product": "dms",
         "version": "0.1.0",
@@ -261,3 +262,5 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
             },
         },
     }
+    body.update(engine_clock_fields())
+    return body

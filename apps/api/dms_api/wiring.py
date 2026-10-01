@@ -429,3 +429,11 @@ def gold_sign_metric(
     if not signed.is_signed:
         raise ValueError("gold metric is not signed after ledger append+verify")
     return signed.to_dict()
+
+
+def engine_clock_fields() -> dict[str, str]:
+    """Best-effort engine date for /health. Omitted when the warehouse is down."""
+    try:
+        return dms_executor.read_health_engine_clock()
+    except Exception:  # noqa: BLE001 - health must stay up
+        return {}

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-01: live engine date, reserved $as_of (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) follow-up. Does not stamp COMPLETE. Does not merge. Does not close the issue. CI fixtures, not live.
+- **Change.** Every live entry point (`live`, `climb`, `climb_ab_live` exact and generative, `prove_path_live` generative and exact, `grid_score_hook`) opens the round from the answer-engine date. Missing date is `engine_date_unread`: n=0, no asks, `passed` false, `round_label` INVALID. A per-ask before/after mismatch is `engine_date_mismatch`. A timezone mismatch is `engine_timezone_mismatch`. Those cases stay in n, tally INVALID, and are never WRONG. INVALID>0 cannot PASS. Product SQL with a real `$as_of` placeholder abstains as `reserved_param:as_of` and does not run. `$as_of` inside a string or comment is not a placeholder. Oracle and scorer calls still bind `$as_of`.
+- **Gate.** `tests/test_engine_date_01.py`. 16 failed, 0 passed on `6da6e44`. 16 passed on this head. No existing test edited. No skip, xfail, or importorskip.
+- **Counts.** Offline 52-pack before and after, ok/layer/abstain/wrong/oracle_error: exact 0/16/36/0/0, generative 0/26/11/15/0, INVALID 0. Same on `6da6e44` and on `ca34419`.
+- **Not this ticket:** `pii.py` (OVERMASK-01, rebase before merge and re-run the counts); judge comparison; oracle SQL; labels; pins; dms#317 timeout; dms#305 served_*; the full dms#299 grid runner; protected paths.
+
 ## 2026-10-01 - OVERMASK-01: served-path star test, live schema leftovers (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Verify and Gating on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.

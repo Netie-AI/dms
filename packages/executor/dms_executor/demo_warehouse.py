@@ -9,6 +9,7 @@ Cortex's duckdb file). Uploaded bronze is copied to the engine file by
 from __future__ import annotations
 
 import os
+import re
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -16,9 +17,152 @@ from typing import Any
 
 import duckdb
 
+# Product SQL may not bind this. Oracle and scorer calls may.
+RESERVED_PARAM_AS_OF = "reserved_param:as_of"
+_AS_OF_TOKEN = re.compile(r"\$as_of\b")
+
 _LOCKS_GUARD = threading.Lock()
 _FILE_LOCKS: dict[str, threading.RLock] = {}
 _SEEDED: set[str] = set()
+
+# Last successful execute_sql on this process. Pending until an envelope stamps it.
+# ponytail: process-global, one in-flight ask. Upgrade: pass the clock on the call.
+_ENGINE_CLOCK: dict[str, str] | None = None
+_CLOCK_PENDING = False
+
+
+class ReservedParamError(Exception):
+    """Product SQL named $as_of. The statement was not executed."""
+
+
+def _mask_literals_and_comments(sql: str) -> str:
+    """Blank comments and quoted text so $as_of inside them is not a bind."""
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        if ch == "-" and nxt == "-":
+            j = sql.find("\n", i)
+            end = n if j < 0 else j
+            out.append(" " * (end - i))
+            i = end
+            continue
+        if ch == "/" and nxt == "*":
+            j = sql.find("*/", i + 2)
+            end = n if j < 0 else j + 2
+            out.append(" " * (end - i))
+            i = end
+            continue
+        if ch in {"'", '"'}:
+            j = i + 1
+            while j < n:
+                if sql[j] == ch and j + 1 < n and sql[j + 1] == ch:
+                    j += 2
+                    continue
+                if sql[j] == ch:
+                    j += 1
+                    break
+                j += 1
+            out.append(" " * (j - i))
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def sql_has_reserved_as_of(sql: str) -> bool:
+    """True when $as_of is a placeholder outside strings and comments."""
+    return _AS_OF_TOKEN.search(_mask_literals_and_comments(sql or "")) is not None
+
+
+def clear_engine_clock() -> None:
+    global _ENGINE_CLOCK, _CLOCK_PENDING
+    _ENGINE_CLOCK = None
+    _CLOCK_PENDING = False
+
+
+def current_engine_clock() -> dict[str, str] | None:
+    if not _ENGINE_CLOCK:
+        return None
+    return dict(_ENGINE_CLOCK)
+
+
+def stamp_engine_clock(env: dict[str, Any]) -> dict[str, Any]:
+    """Copy the pending SQL-connection clock onto an envelope that ran SQL."""
+    global _CLOCK_PENDING
+    clock = _ENGINE_CLOCK
+    if _CLOCK_PENDING and clock and clock.get("engine_as_of") and clock.get("engine_as_of_after"):
+        for key in (
+            "engine_as_of",
+            "engine_as_of_after",
+            "engine_timezone",
+            "engine_timezone_after",
+        ):
+            val = clock.get(key)
+            if val:
+                env[key] = val
+        _CLOCK_PENDING = False
+    return env
+
+
+def _read_con_clock(con: Any) -> tuple[str | None, str | None]:
+    try:
+        row = con.execute(
+            "SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - clock must not fail the query
+        return None, None
+    if not row:
+        return None, None
+    as_of = str(row[0]).strip() if row[0] is not None else ""
+    tz = str(row[1]).strip() if row[1] is not None else ""
+    return (as_of or None, tz or None)
+
+
+def _publish_engine_clock(
+    before: str | None,
+    before_tz: str | None,
+    after: str | None,
+    after_tz: str | None,
+) -> None:
+    global _ENGINE_CLOCK, _CLOCK_PENDING
+    if not before or not after:
+        return
+    clock = {
+        "engine_as_of": before,
+        "engine_as_of_after": after,
+        "engine_timezone": before_tz or "",
+        "engine_timezone_after": after_tz or "",
+    }
+    _ENGINE_CLOCK = {k: v for k, v in clock.items() if v}
+    _CLOCK_PENDING = True
+
+
+def read_health_engine_clock() -> dict[str, str]:
+    """Point read so /health can open a live round. Not the answer SQL connection.
+
+    The case clock is the before/after pair on the connection that ran the SQL.
+    """
+    try:
+        con = connect_readonly()
+    except Exception:  # noqa: BLE001 - health must stay up
+        return {}
+    try:
+        as_of, tz = _read_con_clock(con)
+    finally:
+        con.close()
+    if not as_of:
+        return {}
+    out = {
+        "engine_as_of": as_of,
+        "engine_as_of_after": as_of,
+        "engine_timezone": tz or "",
+        "engine_timezone_after": tz or "",
+    }
+    return {k: v for k, v in out.items() if v}
 
 # ponytail: one live RW attach per resolved path. DuckDB 1.5 unique-file-handle
 # 500s a second attach of the same file (alias = stem, so browse.duckdb -> "browse").
@@ -314,12 +458,21 @@ def execute_sql(
     *,
     path: Path | None = None,
     params: Mapping[str, Any] | None = None,
+    product: bool = False,
 ) -> list[dict[str, Any]]:
-    """Run SELECT-shaped SQL; returns list of row dicts."""
+    """Run SELECT-shaped SQL; returns list of row dicts.
+
+    product=True refuses a real $as_of placeholder before any execute.
+    A $as_of inside a string or comment is not a placeholder. The default
+    path still auto-binds $as_of for oracle and scorer calls.
+    """
+    if product and sql_has_reserved_as_of(sql):
+        raise ReservedParamError(RESERVED_PARAM_AS_OF)
     con = connect_readonly(path)
     try:
+        before, before_tz = _read_con_clock(con)
         bind: dict[str, Any] = dict(params) if params else {}
-        if "$as_of" in sql and "as_of" not in bind:
+        if not product and "$as_of" in sql and "as_of" not in bind:
             # ponytail: omitted as_of uses this connection's CURRENT_DATE.
             # Offline only (same DuckDB file as submit()). Live must pass the
             # recorded answer-engine date; missing live date is INVALID.
@@ -327,7 +480,10 @@ def execute_sql(
             bind["as_of"] = row[0] if row else None
         rel = con.execute(sql, bind) if bind else con.execute(sql)
         cols = [d[0] for d in rel.description]
-        return [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
+        rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
+        after, after_tz = _read_con_clock(con)
+        _publish_engine_clock(before, before_tz, after, after_tz)
+        return rows
     finally:
         con.close()
 

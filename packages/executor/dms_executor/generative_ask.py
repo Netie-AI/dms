@@ -41,14 +41,21 @@ from cortex_client.qualifiers import unhonored_qualifier_reason
 
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
-from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, warehouse_path
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    connect_file,
+    sql_has_reserved_as_of,
+    warehouse_path,
+)
 from dms_executor.envelope import (
+    RESERVED_PARAM_AS_OF,
     _relation_bare,
     _sql_cited_labels,
     asked_calendar_years,
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
+    reserved_as_of_abstain,
 )
 from dms_executor.gen_path_refuse import (
     customer_abstain_text,
@@ -634,6 +641,8 @@ def validate_compiled_sql(
     warehouse: Path | None,
 ) -> str | None:
     """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
+    if sql_has_reserved_as_of(sql):
+        return RESERVED_PARAM_AS_OF
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
@@ -799,6 +808,13 @@ def _submit_validated(
             session_id=session_id,
             plan_source=plan_source,
         )
+    if sql_has_reserved_as_of(sql):
+        return reserved_as_of_abstain(
+            space_id=space_id,
+            session_id=session_id,
+            route="generated",
+            question=question,
+        )
     try:
         result = submit(sql)
     except Exception:  # noqa: BLE001
@@ -945,7 +961,21 @@ def _try_multi_grain_envelope(
             q, "existential many-to-many filter: ask path will not choose a reading",
             space_id=space_id, session_id=session_id, plan_source=source,
         )
+    if sql_has_reserved_as_of(multi.sql):
+        return reserved_as_of_abstain(
+            space_id=space_id,
+            session_id=session_id,
+            route="generated",
+            question=q,
+        )
     why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    if why == RESERVED_PARAM_AS_OF:
+        return reserved_as_of_abstain(
+            space_id=space_id,
+            session_id=session_id,
+            route="generated",
+            question=q,
+        )
     if why:
         gap = missing_join_for_ungranted(why, detect_supply_chain_grains(q))
         return _abstain(
@@ -1165,6 +1195,17 @@ def maybe_generative_ask(
     # ≥2 supply-chain grains: compile ranked where-paths BEFORE one-grain
     # GEN-01 plan/SQL. Live ranking fills kind=plan sku-only; that must
     # not drop plant/day/lane/supplier (#249 / #234 KEEP_HOLD).
+    if kind == "sql":
+        early_sql = query_sql_from_payload(payload if isinstance(payload, dict) else None)
+        if early_sql and sql_has_reserved_as_of(early_sql):
+            return _stamp(
+                reserved_as_of_abstain(
+                    space_id=space_id,
+                    session_id=session_id,
+                    route="generated",
+                    question=q,
+                )
+            )
     multi_env = _try_multi_grain_envelope(
         q,
         onto=onto,
@@ -1207,6 +1248,15 @@ def maybe_generative_ask(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
+                )
+            )
+        if why == RESERVED_PARAM_AS_OF:
+            return _stamp(
+                reserved_as_of_abstain(
+                    space_id=space_id,
+                    session_id=session_id,
+                    route="generated",
+                    question=q,
                 )
             )
         if why:
@@ -1378,6 +1428,15 @@ def maybe_generative_ask(
         )
 
     why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    if why == RESERVED_PARAM_AS_OF:
+        return _stamp(
+            reserved_as_of_abstain(
+                space_id=space_id,
+                session_id=session_id,
+                route="generated",
+                question=q,
+            )
+        )
     if why:
         return _stamp(
             _abstain(
