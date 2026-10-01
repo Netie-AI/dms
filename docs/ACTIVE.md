@@ -5,8 +5,11 @@ What exists in this repo and where. Update when structure changes, not when stat
 
 SERVING-PRECHECK-01 (Refs dms#303): `scripts/score_curated.py`
 `baseline_eligibility` appends `serving_precheck_missing`. `live()` writes
-`serving_path`, `serving_inode`, `serving_mtime`, `serving_snapshot_hash`,
-`serving_row_counts`, and `serving_tables` on the round summary. Tables come
+`serving_path`, `serving_inode`, `serving_mtime` (ISO-8601 UTC `+00:00`),
+`serving_snapshot_hash` (sha256 hex of the copy), `serving_row_counts`
+(bare table name to int), and `serving_tables` on the round summary. The
+five Platform keys are `SERVING_*` constants in `scripts/score_curated.py`.
+Tables come
 from FROM/JOIN in each scored question's correct oracle SQL (`expect: refuse`
 skipped). SQL that names no table is the same ineligible reason.
 `DMS_SERVING_PRECHECK` supplies the block; otherwise the explicit Cortex

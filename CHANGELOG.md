@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SERVING-PRECHECK-01: round-record keys are one interface
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Scope comment 5938840371.
+- **Change.** `SERVING_PATH`, `SERVING_INODE`, `SERVING_MTIME`, `SERVING_SNAPSHOT_HASH`, and `SERVING_ROW_COUNTS` are the only key names. mtime is ISO-8601 UTC with a numeric offset. The snapshot hash is sha256 hex of the copy. Row counts are keyed by bare table name.
+- **Gate.** `tests/test_serving_precheck_01.py` imports those constants.
+
 ## 2026-10-01 - SERVING-PRECHECK-01: unparsed correct SQL is not a baseline
 
 - **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Scope amendment 5938769006.

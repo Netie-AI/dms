@@ -24,7 +24,7 @@ import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2879,22 +2879,71 @@ def pack_question_tables(pack_path: Path = DEFAULT_PACK) -> tuple[str, ...]:
     return tables
 
 
+# Platform writes these keys. live() reads them. Tests import this block.
+SERVING_PATH = "serving_path"
+SERVING_INODE = "serving_inode"
+SERVING_MTIME = "serving_mtime"
+SERVING_SNAPSHOT_HASH = "serving_snapshot_hash"
+SERVING_ROW_COUNTS = "serving_row_counts"
+SERVING_HASH_ALG = "sha256"
+
+
+def serving_mtime_iso(epoch: float) -> str:
+    """UTC timestamp with a numeric offset. ``2023-11-14T22:13:20+00:00``."""
+    return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
+def serving_mtime_ok(value: object) -> bool:
+    """True for an ISO-8601 string that carries a timezone offset."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def serving_hash_ok(value: object) -> bool:
+    """True for a hex digest of ``SERVING_HASH_ALG``."""
+    import hashlib
+
+    if not isinstance(value, str):
+        return False
+    text = value.strip().lower()
+    try:
+        size = hashlib.new(SERVING_HASH_ALG).digest_size * 2
+    except ValueError:
+        return False
+    if len(text) != size:
+        return False
+    try:
+        int(text, 16)
+    except ValueError:
+        return False
+    return True
+
+
 def serving_precheck_gap(record: Mapping[str, Any], tables: tuple[str, ...]) -> bool:
     """True when path, inode, mtime, snapshot hash, or a used table's rows are missing.
 
-    A used table that is absent from ``serving_row_counts`` or has 0 rows is a gap.
+    A used table that is absent from ``SERVING_ROW_COUNTS`` or has 0 rows is a gap.
+    mtime must be ISO-8601 with an offset. The hash must be ``SERVING_HASH_ALG`` hex.
     """
-    path = record.get("serving_path")
+    path = record.get(SERVING_PATH)
     if not isinstance(path, str) or not path.strip():
         return True
-    if record.get("serving_inode") in (None, ""):
+    inode = record.get(SERVING_INODE)
+    if isinstance(inode, bool) or not isinstance(inode, int):
         return True
-    if record.get("serving_mtime") in (None, ""):
+    if not serving_mtime_ok(record.get(SERVING_MTIME)):
         return True
-    digest = record.get("serving_snapshot_hash")
-    if not isinstance(digest, str) or not digest.strip():
+    if not serving_hash_ok(record.get(SERVING_SNAPSHOT_HASH)):
         return True
-    counts = record.get("serving_row_counts")
+    counts = record.get(SERVING_ROW_COUNTS)
     if not isinstance(counts, dict):
         return True
     for name in tables:
@@ -2951,13 +3000,13 @@ def _snapshot_serving_file(path: Path, tables: tuple[str, ...]) -> dict[str, Any
     tmp = Path(tempfile.mkdtemp(prefix="serving_precheck_"))
     copy = tmp / "snapshot.duckdb"
     shutil.copy2(src, copy)
-    digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+    digest = hashlib.new(SERVING_HASH_ALG, copy.read_bytes()).hexdigest()
     return {
-        "serving_path": str(src.resolve()),
-        "serving_inode": int(st.st_ino),
-        "serving_mtime": st.st_mtime,
-        "serving_snapshot_hash": digest,
-        "serving_row_counts": _table_row_counts(copy, tables),
+        SERVING_PATH: str(src.resolve()),
+        SERVING_INODE: int(st.st_ino),
+        SERVING_MTIME: serving_mtime_iso(st.st_mtime),
+        SERVING_SNAPSHOT_HASH: digest,
+        SERVING_ROW_COUNTS: _table_row_counts(copy, tables),
     }
 
 
@@ -2976,7 +3025,7 @@ def _fixture_serving_precheck(tables: tuple[str, ...]) -> dict[str, Any]:
     if cached is not None:
         return {
             **cached,
-            "serving_row_counts": dict(cached.get("serving_row_counts") or {}),
+            SERVING_ROW_COUNTS: dict(cached.get(SERVING_ROW_COUNTS) or {}),
         }
     from dms_executor.demo_warehouse import ensure_demo_warehouse
 
@@ -3208,11 +3257,11 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "run_id": run_id,
                 "commit_sha": sha,
                 "case_record": str(abs_record),
-                "serving_path": serving.get("serving_path"),
-                "serving_inode": serving.get("serving_inode"),
-                "serving_mtime": serving.get("serving_mtime"),
-                "serving_snapshot_hash": serving.get("serving_snapshot_hash"),
-                "serving_row_counts": serving.get("serving_row_counts"),
+                SERVING_PATH: serving.get(SERVING_PATH),
+                SERVING_INODE: serving.get(SERVING_INODE),
+                SERVING_MTIME: serving.get(SERVING_MTIME),
+                SERVING_SNAPSHOT_HASH: serving.get(SERVING_SNAPSHOT_HASH),
+                SERVING_ROW_COUNTS: serving.get(SERVING_ROW_COUNTS),
                 "serving_tables": list(serving_tables),
                 "baseline_eligible": eligible,
                 "baseline_ineligible_reasons": ineligible,

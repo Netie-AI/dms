@@ -29,6 +29,35 @@ from score_curated import (  # noqa: E402
     merge_pack_questions,
 )
 
+try:
+    from score_curated import (  # noqa: E402
+        SERVING_HASH_ALG,
+        SERVING_INODE,
+        SERVING_MTIME,
+        SERVING_PATH,
+        SERVING_ROW_COUNTS,
+        SERVING_SNAPSHOT_HASH,
+        serving_hash_ok,
+        serving_mtime_iso,
+        serving_mtime_ok,
+    )
+except ImportError:  # fee155e4: no interface constants; the parent ignores the JSON
+    SERVING_PATH = "serving_path"
+    SERVING_INODE = "serving_inode"
+    SERVING_MTIME = "serving_mtime"
+    SERVING_SNAPSHOT_HASH = "serving_snapshot_hash"
+    SERVING_ROW_COUNTS = "serving_row_counts"
+    SERVING_HASH_ALG = "sha256"
+
+    def serving_mtime_iso(_epoch: float) -> str:
+        return "2023-11-14T22:13:20+00:00"
+
+    def serving_mtime_ok(_value: object) -> bool:
+        return False
+
+    def serving_hash_ok(_value: object) -> bool:
+        return False
+
 _SQL_TABLE_RE = re.compile(
     r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
     re.IGNORECASE,
@@ -152,12 +181,15 @@ def _plant(monkeypatch: pytest.MonkeyPatch, record: dict[str, object]) -> None:
 
 
 def _complete_fields(tables: tuple[str, ...], counts: dict[str, int]) -> dict[str, object]:
+    import hashlib
+
+    digest = hashlib.new(SERVING_HASH_ALG, b"fixture").hexdigest()
     return {
-        "serving_path": "/var/cortex/data/dms_demo.duckdb",
-        "serving_inode": 4242,
-        "serving_mtime": 1700000000.0,
-        "serving_snapshot_hash": "abc123fixture",
-        "serving_row_counts": counts,
+        SERVING_PATH: "/var/cortex/data/dms_demo.duckdb",
+        SERVING_INODE: 4242,
+        SERVING_MTIME: serving_mtime_iso(1700000000.0),
+        SERVING_SNAPSHOT_HASH: digest,
+        SERVING_ROW_COUNTS: counts,
         "serving_tables_note": list(tables),
     }
 
@@ -195,7 +227,7 @@ def test_missing_question_table_is_not_baseline(
     live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
     report = _report(tmp_path)
     _assert_ineligible("missing_question_table", report)
-    assert missing not in (report.get("serving_row_counts") or {})
+    assert missing not in (report.get(SERVING_ROW_COUNTS) or {})
 
 
 def test_zero_row_question_table_is_not_baseline(
@@ -212,7 +244,7 @@ def test_zero_row_question_table_is_not_baseline(
     live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
     report = _report(tmp_path)
     _assert_ineligible("zero_row_question_table", report)
-    got = report.get("serving_row_counts")
+    got = report.get(SERVING_ROW_COUNTS)
     assert isinstance(got, dict) and got.get(empty) == 0
 
 
@@ -223,13 +255,13 @@ def test_no_snapshot_hash_is_not_baseline(
     tables = _pack_tables()
     assert tables
     record = _complete_fields(tables, {name: 3 for name in tables})
-    record.pop("serving_snapshot_hash")
+    record.pop(SERVING_SNAPSHOT_HASH)
     _open_round(monkeypatch, tmp_path)
     _plant(monkeypatch, record)
     live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
     report = _report(tmp_path)
     _assert_ineligible("no_snapshot_hash", report)
-    assert not report.get("serving_snapshot_hash")
+    assert not report.get(SERVING_SNAPSHOT_HASH)
 
 
 def test_pack_named_table_missing_from_row_counts(
@@ -247,7 +279,7 @@ def test_pack_named_table_missing_from_row_counts(
     live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
     report = _report(tmp_path)
     _assert_ineligible("pack_names_unlisted_table", report)
-    assert named not in (report.get("serving_row_counts") or {})
+    assert named not in (report.get(SERVING_ROW_COUNTS) or {})
 
 
 def test_unparsed_correct_sql_is_not_baseline(
@@ -294,3 +326,40 @@ def test_complete_fixture_tables_stay_eligible(
     assert n == _pack_n() and eligible is True and reasons == [], (
         f"complete_fixture_tables baseline_eligible={eligible} n={n} reasons={reasons}"
     )
+    assert serving_mtime_ok(report.get(SERVING_MTIME))
+    assert serving_hash_ok(report.get(SERVING_SNAPSHOT_HASH))
+    assert isinstance(report.get(SERVING_INODE), int)
+    assert isinstance(report.get(SERVING_PATH), str)
+
+
+def test_fixture_snapshot_writes_the_interface(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A scorer-built snapshot uses the same keys, zone, hash, and bare names."""
+    assert score_curated.SERVING_PATH == SERVING_PATH == "serving_path"
+    assert score_curated.SERVING_INODE == SERVING_INODE == "serving_inode"
+    assert score_curated.SERVING_MTIME == SERVING_MTIME == "serving_mtime"
+    assert score_curated.SERVING_SNAPSHOT_HASH == SERVING_SNAPSHOT_HASH
+    assert SERVING_SNAPSHOT_HASH == "serving_snapshot_hash"
+    assert score_curated.SERVING_ROW_COUNTS == SERVING_ROW_COUNTS == "serving_row_counts"
+    assert score_curated.SERVING_HASH_ALG == SERVING_HASH_ALG == "sha256"
+    tables = _pack_tables()
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.delenv("DMS_SERVING_PRECHECK", raising=False)
+    live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
+    report = _report(tmp_path)
+    reasons = list(report.get("baseline_ineligible_reasons") or [])
+    assert report.get("baseline_eligible") is True and reasons == [], (
+        f"fixture_snapshot baseline_eligible={report.get('baseline_eligible')} "
+        f"n={report.get('n')} reasons={reasons}"
+    )
+    assert isinstance(report[SERVING_PATH], str) and report[SERVING_PATH]
+    inode = report[SERVING_INODE]
+    assert isinstance(inode, int) and not isinstance(inode, bool)
+    assert serving_mtime_ok(report[SERVING_MTIME])
+    assert str(report[SERVING_MTIME]).endswith("+00:00")
+    assert serving_hash_ok(report[SERVING_SNAPSHOT_HASH])
+    counts = report[SERVING_ROW_COUNTS]
+    assert isinstance(counts, dict)
+    assert set(counts) == set(tables)
+    assert all("." not in str(key) and int(counts[key]) > 0 for key in counts)
