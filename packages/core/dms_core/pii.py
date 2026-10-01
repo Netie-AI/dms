@@ -1,14 +1,17 @@
 """PII-01 — local deterministic personal-data detector and masker (dms#272).
 
 No network, no model. Column-name signals plus value-pattern checks for person
-names, Malaysian IC numbers, phones, emails and account numbers.
+names, Malaysian IC numbers, phones (MY / NANP / intl), emails, account/card
+numbers, and date-of-birth column names. Value checks search inside free text
+as well as whole values (dms#303). WIDEN-ONLY vs dms#272: nothing previously
+caught is dropped.
 
 Swap: Cortex HTTP PII-MASK (#268) or a vendor DLP call behind these functions.
 Not a sixth port: this is a local classifier, same class as xlsx_ooxml.
 
 Placeholders are ``DMSMASK_<kind>_<nn>`` — letters, underscores, a 2-digit
-counter. They are not email/phone/IC/account-shaped, so a second regex masker
-(Cortex #268 kinds without NER) must leave them unchanged.
+counter. They are not email/phone/IC/account/dob-shaped, so a second regex
+masker (Cortex #268 kinds without NER) must leave them unchanged.
 
 ponytail: names are column-name only (no NER). Ceiling: a free-text notes
 column of person names. Upgrade: Cortex #268 NER at the FreeRoute choke.
@@ -21,10 +24,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 Kind = str
-KINDS = frozenset({"name", "nric", "phone", "email", "account", "unknown"})
+KINDS = frozenset({"name", "nric", "phone", "email", "account", "dob", "unknown"})
 
-# Stable, non-PII-shaped. No '@', no 6-2-4 IC, no +60 / 01x phone, no 10-16 digit run.
-MASK_TOKEN_RE = re.compile(r"DMSMASK_(?:name|nric|phone|email|account|unknown)_\d{2,}")
+# Stable, non-PII-shaped. No '@', no 6-2-4 IC, no +60 / 01x / NANP phone, no 10-16 digit run.
+MASK_TOKEN_RE = re.compile(
+    r"DMSMASK_(?:name|nric|phone|email|account|dob|unknown)_\d{2,}"
+)
 
 _METRIC_SKIP = re.compile(
     r"(amount|qty|quantity|cost|kg|myr|usd|score|load|capacity|date|id|"
@@ -38,13 +43,21 @@ _PERSON_TABLE = re.compile(
     re.I,
 )
 _NAME_COL = re.compile(
+    r"(?:display_?names?$|forenames?$|surnames?$|"
     r"(?:^|_)(?:(?:customer|person|people|employee|staff|user|contact|client|"
     r"patient|member|holder|beneficiary|applicant|signatory|director|owner|"
     r"payee|payer|full|first|last|given|family|middle|maiden|preferred|legal|"
-    r"pic)_?names?|nama(?:_penuh|_pemegang|_pengguna)?)$",
+    r"pic|player|driver)_?names?|nama(?:_penuh|_pemegang|_pengguna)?)$)",
     re.I,
 )
-_EMAIL_COL = re.compile(r"(?:^|_)(?:e_?mails?|email_addr(?:ess)?s?)$", re.I)
+_DOB_COL = re.compile(
+    r"(?:^|_)(?:dob|date_of_birth|birth_?dates?|birthdays?)$",
+    re.I,
+)
+_EMAIL_COL = re.compile(
+    r"(?:e_?mails?\d*$|(?:^|_)(?:e_?mails?\d*|email_addr(?:ess)?s?)$)",
+    re.I,
+)
 _PHONE_COL = re.compile(
     r"(?:^|_)(?:phones?|mobiles?|telefons?|telephones?|whatsapps?|faxes|"
     r"fax|tels?|hp|contact_no|contact_num(?:ber)?s?)$",
@@ -64,13 +77,30 @@ _ACCOUNT_COL = re.compile(
 _EMAIL_VALUE = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}$", re.I)
 _EMAIL_FIND = re.compile(r"\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b", re.I)
 _NRIC_FIND = re.compile(r"\b(\d{6})-?(\d{2})-?(\d{4})\b")
+# MY + compact E.164 first (dms#272). Then spaced intl and NANP/US (dms#303).
 _PHONE_FIND = re.compile(
-    r"(?:(?<!\d)\+?60\s*1\d(?:[-\s]?\d){7,8}(?!\d)|"
+    r"(?:"
+    r"(?<!\d)\+?60\s*1\d(?:[-\s]?\d){7,8}(?!\d)|"
     r"(?<!\d)01\d(?:[-\s]?\d){7,8}(?!\d)|"
-    r"(?<!\d)\+[1-9]\d{9,14}(?!\d))"
+    r"(?<!\d)\+[1-9]\d{9,14}(?!\d)|"
+    r"(?<!\d)\+[1-9]\d{0,2}(?:[\s.-]+\d{2,8}){1,4}(?!\d)|"
+    r"(?<!\d)(?:\+?1[\s.-]*)?\(?[2-9]\d{2}\)?[\s.-]*[2-9]\d{2}[\s.-]*\d{4}(?!\d)"
+    r")"
 )
 _ACCOUNT_FIND = re.compile(r"(?<!\d)(\d{3,4}[-\s]\d{3,4}[-\s]\d{4,8})(?!\d)")
 _DIGIT_RUN = re.compile(r"(?<!\d)(\d{10,16})(?!\d)")
+# ponytail: in-text DOB years 1900-2019 so 2026 as_of stamps in prose stay.
+# Ceiling: a 2020+ birth date inside notes. Upgrade: Cortex #268 date NER.
+_DOB_YEAR = r"(?:19\d{2}|20[01]\d)"
+_DOB_YMD = re.compile(
+    rf"\b({_DOB_YEAR})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])\b"
+)
+_DOB_DMY = re.compile(
+    rf"\b(0[1-9]|[12]\d|3[01])[-/](0[1-9]|1[0-2])[-/]({_DOB_YEAR})\b"
+)
+_DOB_MDY = re.compile(
+    rf"\b(0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])[-/]({_DOB_YEAR})\b"
+)
 
 _KEEP_KEYS = frozenset(
     {
@@ -131,9 +161,44 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
+def _phone_ok(match: re.Match[str]) -> bool:
+    digits = _digits(match.group(0))
+    return 8 <= len(digits) <= 15
+
+
+def _nric_ok(match: re.Match[str]) -> bool:
+    return _valid_yymmdd(match.group(1))
+
+
+def _dob_match(text: str) -> re.Match[str] | None:
+    for rx in (_DOB_YMD, _DOB_DMY, _DOB_MDY):
+        hit = rx.search(text)
+        if hit:
+            return hit
+    return None
+
+
+def _dob_in_free_text(text: str) -> bool:
+    hit = _dob_match(text)
+    if hit is None:
+        return False
+    return hit.group(0) != text.strip()
+
+
+def _card_in_text(text: str) -> bool:
+    for hit in _DIGIT_RUN.finditer(text):
+        if _luhn_ok(hit.group(1)):
+            return True
+    return False
+
+
 def _kind_from_name(table: str | None, column: str) -> Kind | None:
     col = str(column or "").strip()
-    if not col or _METRIC_SKIP.search(col):
+    if not col:
+        return None
+    if _DOB_COL.search(col):
+        return "dob"
+    if _METRIC_SKIP.search(col):
         return None
     if _EMAIL_COL.search(col):
         return "email"
@@ -169,12 +234,15 @@ def _kind_from_one_value(raw: object) -> Kind | None:
     text = str(raw).strip()
     if not text or is_mask_token(text):
         return None
-    if _EMAIL_VALUE.fullmatch(text):
+    if _EMAIL_VALUE.fullmatch(text) or _EMAIL_FIND.search(text):
         return "email"
     nric = _NRIC_FIND.fullmatch(text) or (
         _NRIC_FIND.fullmatch(_digits(text)) if _digits(text) == text else None
     )
     if nric and _valid_yymmdd(nric.group(1)):
+        return "nric"
+    nric_hit = _NRIC_FIND.search(text)
+    if nric_hit and _nric_ok(nric_hit):
         return "nric"
     digits = _digits(text)
     if re.fullmatch(r"\+?60\s*1\d(?:[-\s]?\d){7,8}", text) or re.fullmatch(
@@ -185,6 +253,9 @@ def _kind_from_one_value(raw: object) -> Kind | None:
         return "phone"
     if 10 <= len(digits) <= 11 and digits.startswith(("01", "60")):
         return "phone"
+    phone_hit = _PHONE_FIND.search(text)
+    if phone_hit and _phone_ok(phone_hit):
+        return "phone"
     if _ACCOUNT_FIND.fullmatch(text):
         return "account"
     if digits == text.replace(" ", "").replace("-", "") and 10 <= len(digits) <= 16:
@@ -192,6 +263,10 @@ def _kind_from_one_value(raw: object) -> Kind | None:
             return "nric"
         if _luhn_ok(digits) or ("-" in text or " " in text):
             return "account"
+    if _card_in_text(text):
+        return "account"
+    if _dob_in_free_text(text):
+        return "dob"
     return None
 
 
@@ -359,6 +434,8 @@ def _scan_text(text: str, masker: Masker) -> str:
     out = _NRIC_FIND.sub(_sub_nric, out)
 
     def _sub_phone(match: re.Match[str]) -> str:
+        if not _phone_ok(match):
+            return match.group(0)
         return masker.token("phone", match.group(0))
 
     out = _PHONE_FIND.sub(_sub_phone, out)
@@ -376,7 +453,16 @@ def _scan_text(text: str, masker: Masker) -> str:
             return masker.token("account", match.group(0))
         return match.group(0)
 
-    return _DIGIT_RUN.sub(_sub_run, out)
+    out = _DIGIT_RUN.sub(_sub_run, out)
+
+    def _sub_dob(match: re.Match[str]) -> str:
+        if match.group(0) == out.strip():
+            return match.group(0)
+        return masker.token("dob", match.group(0))
+
+    out = _DOB_YMD.sub(_sub_dob, out)
+    out = _DOB_DMY.sub(_sub_dob, out)
+    return _DOB_MDY.sub(_sub_dob, out)
 
 
 def _mask_walk(obj: Any, masker: Masker, kinds: Mapping[str, Kind]) -> Any:
