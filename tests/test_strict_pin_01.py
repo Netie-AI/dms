@@ -148,12 +148,25 @@ class _Script:
         raise AssertionError("unexpected pin call")
 
 
+def _served_headers(provider: str, model: str) -> dict[str, str]:
+    """The three headers served_response_headers returns at 0d0ef3f0."""
+    return {
+        "X-OpenVault-Served-Provider": provider,
+        "X-OpenVault-Served-Model": model,
+        "X-OpenVault-Served-Local": "false",
+    }
+
+
 def _ok(
-    model: str, provider: str = _PROVIDER, *, upstream: str = "gemini-3.5-flash"
+    model: str,
+    provider: str = _PROVIDER,
+    *,
+    upstream: str = "gemini-3.5-flash",
+    headers: bool = False,
 ) -> dict[str, Any]:
     return {
         "status": 200,
-        "headers": {},
+        "headers": _served_headers(provider, model) if headers else {},
         "body": {
             "model": upstream,
             "served_provider": provider,
@@ -535,24 +548,28 @@ def test_live_missing_served_model_is_invalid(
     assert report["wrong"] == n_pack - 1
 
 
-def _nvidia(where: str) -> dict[str, Any]:
-    """Provider id nvidia, the OpenVault #81 NIM id. Not groq."""
+def _other(provider: str, where: str) -> dict[str, Any]:
+    """Same model, other provider. body, header, or both. Not the groq pin."""
     body: dict[str, Any] = {"choices": [{"message": {"content": "ok"}}]}
     headers: dict[str, str] = {}
     if where in ("body", "both"):
-        body["served_provider"] = "nvidia"
+        body["served_provider"] = provider
         body["served_model"] = _PIN
     if where in ("header", "both"):
-        headers["X-OpenVault-Served-Provider"] = "nvidia"
-        headers["X-OpenVault-Served-Model"] = _PIN
+        headers = _served_headers(provider, _PIN)
     return {"status": 200, "headers": headers, "body": body}
+
+
+def _nvidia(where: str) -> dict[str, Any]:
+    """Provider id nvidia, the OpenVault #81 NIM id. Not groq."""
+    return _other("nvidia", where)
 
 
 @pytest.mark.parametrize("where", ("body", "header", "both"))
 def test_live_nvidia_same_model_is_invalid(
     where: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same model from nvidia is not the groq pin. Stays in n."""
+    """Same model from nvidia is not the groq pin. Body, headers, or both. Stays in n."""
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
     bad = _nvidia(where)
@@ -586,25 +603,19 @@ def test_live_nvidia_same_model_is_invalid(
     assert rec["served_model_header"] == header_model
 
 
+@pytest.mark.parametrize("where", ("body", "both"))
 def test_live_together_same_model_is_invalid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    where: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """together serving openai/gpt-oss-120b is not the groq pin.
 
-    providers.py line 287 is id="together". Not an allowed pin. Body only,
-    no headers. INVALID pin_mismatch, stays in n, both body values recorded.
+    providers.py line 287 is id="together". Not an allowed pin.
+    Body alone, and body plus the served headers. INVALID pin_mismatch,
+    stays in n, both values recorded.
     """
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
-    bad = {
-        "status": 200,
-        "headers": {},
-        "body": {
-            "served_provider": "together",
-            "served_model": _PIN,
-            "choices": [{"message": {"content": "ok"}}],
-        },
-    }
+    bad = _other("together", where)
     shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
     _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
     live("http://score.test", 1.0, db)
@@ -612,7 +623,6 @@ def test_live_together_same_model_is_invalid(
     row = report["cases"][0]
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert report["cases"][1]["verdict"] == "WRONG"
-    assert bad["headers"] == {}
     assert row["verdict"] == "INVALID" and row["reason"] == (
         f"pin_mismatch:together/{_PIN}"
     )
@@ -620,12 +630,16 @@ def test_live_together_same_model_is_invalid(
     assert report["invalid"] == 1
     assert row["served_provider_body"] == "together"
     assert row["served_model_body"] == _PIN
-    assert row["served_provider_header"] is None
-    assert row["served_model_header"] is None
+    header_provider = "together" if where == "both" else None
+    header_model = _PIN if where == "both" else None
+    assert row["served_provider_header"] == header_provider
+    assert row["served_model_header"] == header_model
     rec = _record_line(report, "cq_spend_by_country")
     assert rec["outcome"] == "INVALID"
     assert rec["served_provider_body"] == "together"
     assert rec["served_model_body"] == _PIN
+    assert rec["served_provider_header"] == header_provider
+    assert rec["served_model_header"] == header_model
     assert rec["served_provider"] == "unknown"
     assert rec["served_model"] == "unknown"
 
@@ -744,9 +758,9 @@ def test_live_header_match_is_judged(
 def test_live_body_and_header_disagree_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Forward-compatible. Both sides present and they disagree. Neither wins.
+    """Both sides present and they disagree. Neither wins.
 
-    OpenVault #81 at 0d0ef3f0 sends served ids in the JSON body only.
+    OpenVault #81 at 0d0ef3f0 sends the served ids in the body and the headers.
     """
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
@@ -787,9 +801,9 @@ def test_live_body_and_header_disagree_is_invalid(
 def test_live_body_pin_header_other_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Forward-compatible. Body names the pin. The header does not. Still INVALID.
+    """Body names the pin. The header does not. Still INVALID.
 
-    OpenVault #81 at 0d0ef3f0 sends served ids in the JSON body only.
+    OpenVault #81 at 0d0ef3f0 sends the served ids in the body and the headers.
     """
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
@@ -1058,29 +1072,30 @@ def test_live_generate_posts_send_strict_once(
     assert len(asks) == n_pack
 
 
+@pytest.mark.parametrize("with_headers", (False, True), ids=("body", "headers"))
 def test_live_body_and_header_pin_match_oracle_is_correct(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    with_headers: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Body served_provider groq and served_model the pin. No served headers.
+    """Groq pin matched in the body, and in the body plus served headers.
 
-    That is the 0d0ef3f0 shape. CORRECT (verdict OK), no pin_* reason,
-    baseline_eligible. A missing header is not pin_mismatch. Passes on the
-    head. Does not have to fail on 22deaa35.
+    CORRECT (verdict OK), no pin_* reason, baseline_eligible. Passes on the
+    head. Does not have to fail on 87a94978.
     """
     outside = _outside_record_dir(monkeypatch)
     try:
         db = _oracle_db(tmp_path)
         n_pack = len(_questions())
-        shot = _ok(_PIN)
+        shot = _ok(_PIN, headers=with_headers)
         asks, script = _arm(monkeypatch, tmp_path, repeat=shot)
         _match_gold(monkeypatch)
         live("http://score.test", 1.0, db)
         report = _report(tmp_path)
         row = report["cases"][0]
         assert report["oracle_as_of"] == _ENGINE_DAY
-        assert shot["headers"] == {}
-        assert "X-OpenVault-Served-Model" not in shot["headers"]
-        assert "X-OpenVault-Served-Provider" not in shot["headers"]
+        if with_headers:
+            assert shot["headers"] == _served_headers("groq", _PIN)
+        else:
+            assert shot["headers"] == {}
         assert shot["body"]["served_provider"] == "groq"
         assert shot["body"]["served_model"] == _PIN
         assert row["id"] == "cq_spend_by_country" and row["verdict"] == "OK"
@@ -1099,6 +1114,7 @@ def test_live_body_and_header_pin_match_oracle_is_correct(
         _wipe_records(outside)
 
 
+@pytest.mark.parametrize("with_headers", (False, True), ids=("body", "headers"))
 @pytest.mark.parametrize(
     ("provider", "model"),
     (
@@ -1110,18 +1126,19 @@ def test_live_body_and_header_pin_match_oracle_is_correct(
 def test_live_fa01_pin_match_is_correct(
     provider: str,
     model: str,
+    with_headers: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Body served_provider and served_model equal this pin. No headers.
+    """Allowed pin matched in the body, and in the body plus served headers.
 
     google is providers.py line 188. openrouter is line 131.
-    Exact ==. No case fold. The case is CORRECT with no pin_* reason.
+    Exact ==. No case fold. CORRECT, no pin_* reason, baseline_eligible.
     """
     outside = _outside_record_dir(monkeypatch)
     try:
         db = _oracle_db(tmp_path)
-        shot = _ok(model, provider, upstream="upstream-not-the-pin")
+        shot = _ok(model, provider, upstream="upstream-not-the-pin", headers=with_headers)
         asks, script = _arm(
             monkeypatch,
             tmp_path,
@@ -1134,15 +1151,18 @@ def test_live_fa01_pin_match_is_correct(
         report = _report(tmp_path)
         row = report["cases"][0]
         assert report["oracle_as_of"] == _ENGINE_DAY
-        assert shot["headers"] == {}
-        assert "X-OpenVault-Served-Model" not in shot["headers"]
-        assert "X-OpenVault-Served-Provider" not in shot["headers"]
+        if with_headers:
+            assert shot["headers"] == _served_headers(provider, model)
+        else:
+            assert shot["headers"] == {}
         assert shot["body"]["served_provider"] == provider
         assert shot["body"]["served_model"] == model
         assert script.calls[0]["json"]["model"] == model
         assert row["id"] == "cq_spend_by_country" and row["verdict"] == "OK"
         assert not str(row.get("reason") or "").startswith("pin_")
         assert not str(report.get("reason") or "").startswith("pin_")
+        assert report["baseline_eligible"] is True
+        assert report["baseline_ineligible_reasons"] == []
         assert len(asks) == len(_questions())
     finally:
         _wipe_records(outside)

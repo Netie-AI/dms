@@ -5,7 +5,9 @@ boolean true. ``X-OpenVault-Strict`` is on for ``1`` / ``true`` / ``yes``.
 A 503 body is ``error.type=pin_unavailable``, ``error.reason``, ``error.model``
 (the pin that failed), ``served_provider`` null, ``served_model`` null,
 ``served_local`` false. A 200 stamps ``served_provider``, ``served_model``,
-and ``served_local``.
+and ``served_local`` in the JSON body, and sends
+``X-OpenVault-Served-Provider``, ``X-OpenVault-Served-Model``, and
+``X-OpenVault-Served-Local``.
 
 The pin is config (``DMS_STRICT_MODEL`` / ``DMS_STRICT_PROVIDER``). Call sites
 stamp that pair onto the request. They do not name a model. OpenVault keeps
@@ -157,9 +159,9 @@ def _body_provider(body: Mapping[str, Any]) -> str | None:
 
 
 def _header_provider(headers: Mapping[str, str] | None) -> str | None:
-    """Forward-compatible header. The name is exact. The value is not rewritten.
+    """Header name is exact. The value is not rewritten.
 
-    OpenVault #81 0d0ef3f0 does not send this header. Body fields are the contract.
+    OpenVault #81 0d0ef3f0 sends this from ``served_response_headers``.
     """
     if not headers or SERVED_PROVIDER_HEADER not in headers:
         return None

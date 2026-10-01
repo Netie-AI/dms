@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: served headers are on the 0d0ef3f0 response
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `local_hop.py` lines 48-50 name `X-OpenVault-Served-Provider`, `X-OpenVault-Served-Model`, and `X-OpenVault-Served-Local`. `served_response_headers` fills them. `app.py` `_chat_result_headers` attaches that dict.
+- **Gate.** A matched pin is CORRECT for the body alone and for the body plus those headers. No `pin_*` reason. `baseline_eligible` is true. `together` and `nvidia` mismatches cover both shapes. Body-versus-header disagreement is that vault pair.
+
 ## 2026-10-01 - dms#317 Part A: together is a pin mismatch, not an allowed pin
 
 - **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 287 is `id="together",`. It is not in the allowed pin list.
