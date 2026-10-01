@@ -156,14 +156,20 @@ def _request(
     json_body: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
     timeout: float,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{path}"
+    headers = auth_headers(api_key)
+    if extra_headers:
+        merged = dict(headers or {})
+        merged.update(extra_headers)
+        headers = merged
     try:
         with httpx.Client(timeout=timeout) as http:
             res = http.request(
                 method,
                 url,
-                headers=auth_headers(api_key),
+                headers=headers,
                 json=json_body,
                 params=params,
             )
@@ -175,6 +181,12 @@ def _request(
         ) from None
 
     body = _json_body(res)
+    if body is not None:
+        from cortex_client.strict_pin import abstain_payload, interpret
+
+        shot = interpret(res.status_code, body, getattr(res, "headers", None))
+        if shot.kind == "unavailable":
+            return honest_envelope(abstain_payload(shot))
     if res.status_code == 200 and body is not None:
         return honest_envelope(body)
     if body is not None:
@@ -240,6 +252,14 @@ def insights_post(
         "space_id": space_id,
         "consumer": consumer,
     }
+    extra_headers: dict[str, str] | None = None
+    if generate:
+        from cortex_client.strict_pin import stamp_generate_body, stamp_generate_headers
+
+        body = stamp_generate_body(body)
+        if body.get("pin_refusal"):
+            return generate_abstain_payload(str(body["pin_refusal"]))
+        extra_headers = stamp_generate_headers({})
     return _request(
         "POST",
         base_url,
@@ -247,6 +267,7 @@ def insights_post(
         api_key=api_key,
         json_body=body,
         timeout=timeout,
+        extra_headers=extra_headers,
     )
 
 

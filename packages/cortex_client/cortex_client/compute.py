@@ -713,26 +713,59 @@ def _insights_generate_post(
     body: dict[str, Any],
     headers: dict[str, str] | None,
 ) -> dict[str, Any] | None:
-    """POST /v1/insights generate. None on transport miss."""
+    """POST /v1/insights generate. None on transport miss.
+
+    One post. A caller-error pin does not go out. A 503 ``pin_unavailable``
+    returns a named abstain and does not retry.
+    """
+    from cortex_client.strict_pin import (
+        abstain_payload,
+        interpret,
+        refusal_payload,
+        stamp_generate_headers,
+    )
+
+    if body.get("pin_refusal"):
+        return refusal_payload(str(body["pin_refusal"]))
+    hdr = stamp_generate_headers(headers)
     try:
         res = http.post(
             f"{root}{INSIGHTS_PATH}",
             json=body,
-            headers=headers,
+            headers=hdr,
         )
     except httpx.HTTPError as exc:
         if isinstance(exc, httpx.TimeoutException):
             raise
         return None
+    try:
+        payload = res.json()
+    except ValueError:
+        payload = None
+    shot = interpret(
+        int(getattr(res, "status_code", 0) or 0),
+        payload,
+        getattr(res, "headers", None),
+    )
+    if shot.kind == "unavailable":
+        return abstain_payload(shot)
     return _insights_envelope(res)
 
 
 def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
-    """Named fail-closed reason stamped by ``compute_insights``, or None."""
+    """Named fail-closed reason stamped by ``compute_insights``, or None.
+
+    ``pin_unavailable:`` and ``pin_caller_error:`` pass through. They are not
+    folded into the older insights_fail set and they are not RATE_LIMIT.
+    """
     if not isinstance(payload, dict):
         return None
     raw = str(payload.get("insights_fail") or "").strip()
-    return raw if raw in INSIGHTS_FAIL_REASONS else None
+    if raw in INSIGHTS_FAIL_REASONS:
+        return raw
+    if raw.startswith("pin_unavailable:") or raw.startswith("pin_caller_error:"):
+        return raw
+    return None
 
 
 def insights_fail_payload(
@@ -802,7 +835,9 @@ def _insights_body(
             slots = ontology.get("intent_slots")
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
-    return body
+    from cortex_client.strict_pin import stamp_generate_body
+
+    return stamp_generate_body(body)
 
 
 def _leg_kind(payload: dict[str, Any] | None) -> str:
@@ -886,6 +921,10 @@ def _run_insights_legs(
     legs: list[dict[str, Any]] = []
     insights_payload = _insights_generate_post(http, root, insights_body, headers)
     legs.append(_leg(insights_payload, _leg_kind(insights_payload)))
+    if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
+        out = dict(insights_payload)
+        out["generate_legs"] = {"count": len(legs), "legs": legs}
+        return out
     if not _has_ranked_metrics(insights_payload):
         ranking = _insights_ontology_get(http, root, question, headers)
         if ranking is not None:
@@ -963,6 +1002,10 @@ def compute_query(
     insights_body = _insights_body(
         question, session_id=session_id, space_id=space_id, ontology=ontology
     )
+    if insights_body.get("pin_refusal"):
+        from cortex_client.strict_pin import refusal_payload
+
+        return refusal_payload(str(insights_body["pin_refusal"]))
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",
@@ -985,6 +1028,8 @@ def compute_query(
                 if not dms_query:
                     return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
                 return None
+            if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
+                return insights_payload
             ranked_plan = typed_ranked_retry_plan(
                 insights_payload, ontology=ontology, question=question
             )

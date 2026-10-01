@@ -1013,12 +1013,17 @@ def _round_clock(
     }
 
 
-def _invalid_round_exit(round_label: str | None) -> int | None:
+def _invalid_round_exit(
+    round_label: str | None, reason: str | None = None
+) -> int | None:
     if round_label == "INVALID":
-        print(
-            "INVALID: no recorded answer-engine CURRENT_DATE, or the engine "
-            "date crossed midnight during this round. Not WRONG."
-        )
+        if isinstance(reason, str) and reason.startswith("pin_"):
+            print(f"INVALID: {reason}. Not WRONG.")
+        else:
+            print(
+                "INVALID: no recorded answer-engine CURRENT_DATE, or the engine "
+                "date crossed midnight during this round. Not WRONG."
+            )
         return EXIT_FAIL
     return None
 
@@ -2143,11 +2148,41 @@ def _invalid_case_exit(tallies: dict[str, int]) -> int | None:
     n = int(tallies.get("INVALID") or 0)
     if n:
         print(
-            f"FAIL: INVALID={n} (engine date or timezone mismatch on a case). "
+            f"FAIL: INVALID={n} (engine date, timezone, or model pin on a case). "
             "Not WRONG. Not PASS."
         )
         return EXIT_FAIL
     return None
+
+
+def _pin_case(
+    case: dict[str, Any],
+    *,
+    verdict: str,
+    reason: str,
+    vault_reason: str,
+    schema_ver: str | None,
+    as_of: str | None,
+    tz: str | None,
+) -> dict[str, Any]:
+    """One pinned case. ABSTAIN or INVALID. Rows stay empty. Not WRONG."""
+    return {
+        "id": str(case["id"]),
+        "verdict": verdict,
+        "badge": "ABSTAIN" if verdict == "ABSTAIN" else None,
+        "route": None,
+        "path": "other",
+        "plan_source": "other",
+        "crag": "abstain" if verdict == "ABSTAIN" else "skipped",
+        "rows": 0,
+        "expect": case.get("expect"),
+        "reason": reason,
+        "pin_reason": vault_reason,
+        LEGACY_JUDGE_LABEL: verdict,
+        "oracle_schema_version": schema_ver,
+        "oracle_as_of": as_of,
+        "oracle_timezone": tz,
+    }
 
 
 def score_pack_live(
@@ -2169,6 +2204,20 @@ def score_pack_live(
     # second /health read after the cases, not engine_as_of_after on this open.
     if not engine_as_of:
         return _tally(), [], _unread_clock(engine_as_of, engine_as_of_after, engine_timezone)
+    from cortex_client.strict_pin import envelope_mismatch, next_answer, open_round
+
+    pin_round = open_round()
+    if pin_round.blocked:
+        clock = _round_clock(engine_as_of, engine_as_of_after, engine_timezone)
+        clock["reason"] = pin_round.reason
+        clock["pin_reason"] = pin_round.vault_reason
+        clock["round_label"] = "INVALID"
+        clock["passed"] = False
+        clock["invalid"] = 0
+        clock["n"] = 0
+        clock["n_without_invalid"] = 0
+        clock["case_records"] = []
+        return _tally(), [], clock
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
     oracles = load_oracles() if oracle_db is not None else None
@@ -2182,6 +2231,36 @@ def score_pack_live(
     for case in pack["questions"]:
         qid = str(case["id"])
         space = resolve_space(case, pack["spaces"])
+        if pin_round.active:
+            shot = next_answer()
+            if shot.kind != "ok":
+                if shot.kind == "unavailable":
+                    tallies["ABSTAIN"] += 1
+                    verdict = "ABSTAIN"
+                else:
+                    tallies["INVALID"] += 1
+                    verdict = "INVALID"
+                print(
+                    f"{qid}\t{verdict}\tpinned\treason={shot.name}"
+                    f"\tpin_reason={shot.vault_reason}"
+                )
+                cases_out.append(
+                    _pin_case(
+                        case,
+                        verdict=verdict,
+                        reason=shot.name,
+                        vault_reason=shot.vault_reason,
+                        schema_ver=schema_ver,
+                        as_of=as_of,
+                        tz=oracle_tz,
+                    )
+                )
+                records.append(
+                    _case_record(
+                        qid, verdict, shot.name, None, verdict, None, "round_health"
+                    )
+                )
+                continue
         try:
             env = _ask(url, str(case["question"]), space, timeout, ask_path=ask_path)
         except Exception as exc:  # noqa: BLE001
@@ -2216,6 +2295,34 @@ def score_pack_live(
         source, case_before, case_after, case_tz, case_tz_after = _answer_clock(
             env, as_of, oracle_tz
         )
+        if pin_round.active:
+            pin_why = envelope_mismatch(env)
+            if pin_why:
+                tallies["INVALID"] += 1
+                print(f"{qid}\tINVALID\tpinned\treason={pin_why}")
+                cases_out.append(
+                    _pin_case(
+                        case,
+                        verdict="INVALID",
+                        reason=pin_why,
+                        vault_reason="",
+                        schema_ver=schema_ver,
+                        as_of=as_of,
+                        tz=oracle_tz,
+                    )
+                )
+                records.append(
+                    _case_record(
+                        qid,
+                        "INVALID",
+                        pin_why,
+                        env,
+                        "INVALID",
+                        _own_engine_date(env),
+                        source,
+                    )
+                )
+                continue
         invalid_reason = _case_invalid_reason(
             case_before, case_after, case_tz, case_tz_after
         )
@@ -2608,6 +2715,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "oracle_as_of_after": after,
                 "oracle_timezone": oracle_tz,
                 "round_label": round_label,
+                "pin_reason": clock.get("pin_reason"),
                 "run_id": run_id,
                 "commit_sha": sha,
                 "case_record": str(abs_record),
@@ -2622,7 +2730,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         + "\n",
         encoding="utf-8",
     )
-    inv = _invalid_round_exit(clock.get("round_label"))
+    inv = _invalid_round_exit(clock.get("round_label"), clock.get("reason"))
     if inv is not None:
         return inv
     if unidentified:
@@ -2914,7 +3022,7 @@ def ab_offline(oracle_db: Path | None = None) -> int:
         print("FAIL: A/B report invented COMPLETE / 99.95")
         return EXIT_FAIL
     (art / "ab_gen01.json").write_text(blob + "\n", encoding="utf-8")
-    inv = _invalid_round_exit(report.get("round_label"))
+    inv = _invalid_round_exit(report.get("round_label"), report.get("reason"))
     if inv is not None:
         return inv
     if int(report.get("oracle_error") or 0):
@@ -3089,7 +3197,12 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         clock.get("oracle_as_of_after"),
         clock.get("oracle_timezone"),
     )
+    if clock.get("round_label") == "INVALID":
+        report["round_label"] = "INVALID"
+        report["passed"] = False
     report["reason"] = clock.get("reason")
+    if clock.get("pin_reason"):
+        report["pin_reason"] = clock.get("pin_reason")
     measured = report["measured"]
     base = report["baseline"]
     delta = report["delta"]
@@ -3128,7 +3241,7 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     (art / "score_climb_cases.json").write_text(
         json.dumps(report["cases"], indent=2) + "\n", encoding="utf-8"
     )
-    inv = _invalid_round_exit(report.get("round_label"))
+    inv = _invalid_round_exit(report.get("round_label"), report.get("reason"))
     if inv is not None:
         return inv
     inv_case = _invalid_case_exit(tallies)
@@ -3226,6 +3339,7 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         "oracle_error": oracle_error,
         "invalid": int(exact_t.get("INVALID") or 0) + int(gen_t.get("INVALID") or 0),
         "reason": exact_clock.get("reason") or gen_clock.get("reason"),
+        "pin_reason": exact_clock.get("pin_reason") or gen_clock.get("pin_reason"),
         "passed_wrong_zero": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
     }
     if (
@@ -3268,7 +3382,7 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         json.dumps({"exact": exact_cases, "generative": gen_cases}, indent=2) + "\n",
         encoding="utf-8",
     )
-    inv = _invalid_round_exit(report.get("round_label"))
+    inv = _invalid_round_exit(report.get("round_label"), report.get("reason"))
     if inv is not None:
         return inv
     if int(report.get("invalid") or 0):
@@ -3534,7 +3648,7 @@ def _write_prove_report(
     print("climb13_rise_l0 " + ",".join(CLIMB13_RISE_IDS))
     print(f"reason: {report['phase_a_hold_may_clear_reason']}")
     print("Harness only. Live counts are Platform. HOLD is not an epic stamp.")
-    inv = _invalid_round_exit(report.get("round_label"))
+    inv = _invalid_round_exit(report.get("round_label"), report.get("reason"))
     if inv is not None:
         return inv, report
     if int(report.get("invalid") or 0):
@@ -3658,6 +3772,7 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
         gen_clock.get("oracle_timezone"),
     )
     report["reason"] = gen_clock.get("reason") or exact_clock.get("reason")
+    report["pin_reason"] = gen_clock.get("pin_reason") or exact_clock.get("pin_reason")
     exact_n = sum(int(v) for v in exact_t.values())
     exact_invalid = int(exact_t.get("INVALID") or 0)
     report["exact_n"] = exact_n
@@ -3666,7 +3781,10 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
     report["exact_cases"] = exact_cases
     if exact_invalid:
         report["passed"] = False
-    if exact_clock.get("round_label") == "INVALID":
+    if (
+        exact_clock.get("round_label") == "INVALID"
+        or gen_clock.get("round_label") == "INVALID"
+    ):
         report["round_label"] = "INVALID"
         report["passed"] = False
     print(
@@ -3734,6 +3852,7 @@ def grid_score_hook(
         "oracle_error": tallies["ORACLE_ERROR"],
         "round_label": clock.get("round_label"),
         "reason": clock.get("reason"),
+        "pin_reason": clock.get("pin_reason"),
         "passed": (
             tallies["WRONG"] == 0
             and tallies["ORACLE_ERROR"] == 0

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: strict model pin on the generate path
+
+- **Ticket.** [dms#317](https://github.com/Netie-AI/dms/issues/317) Part A. Draft. Does not stamp COMPLETE. Does not close the issue. OpenVault #81 `0d0ef3f0` is the field contract. No live Groq call.
+- **Change.** Generate posts send JSON `strict: true` and `X-OpenVault-Strict: true` with `model` from `DMS_STRICT_MODEL` (default `openai/gpt-oss-120b`) and provider from `DMS_STRICT_PROVIDER` (default `groq`). Empty, `auto`, `default`, and bare `gpt-oss-120b` are not sent. A 503 `pin_unavailable` is ABSTAIN `pin_unavailable:<provider>/<model>` with the vault `reason` on `pin_reason`. It stays in n. No retry and no model switch. `quota_exhausted` is not RATE_LIMIT. A missing or different `served_model` (body or `X-OpenVault-Served-Model`) is INVALID `pin_mismatch:<served_provider>/<served_model>` and stays in n. One pinned call before the round: if it is not the pin, n=0 and the round is INVALID.
+- **Gate.** `tests/test_strict_pin_01.py` through `live()`. Fails on `a63988b2`. No existing test edited.
+- **Counts.** Offline 52-pack unchanged: exact 0/16/36/0/0, generative 0/26/11/15/0, INVALID 0.
+- **Not this ticket:** timeout (Part B), `submit_failed` (Part C), `pii.py`, judge, oracle SQL, the label set, protected paths.
+
 ## 2026-10-01 - ENGINE-DATE-02: clock clear without the score-mask reset (#308)
 
 - **Ticket.** Same follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. PR #325 stays a draft.
