@@ -20,10 +20,30 @@ from dms_core.pii import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from pii_mask_check import (  # noqa: E402
-    EXCLUDE_FOR_304,
     SCAN_SHA256,
     bare_table,
     check_all,
+)
+
+# Honest remainder after the widen. Still FAIL on all three paths.
+# dms#304 owns the deny/preflight file for these columns. This test does not
+# relabel them. Value detection for these kinds is still dms#318 work.
+REMAINING_FAIL_COLUMNS = frozenset(
+    {
+        ("drivers", "nationality"),
+        ("member", "position"),
+        ("patient", "diagnosis"),
+        ("users", "location"),
+        ("schools", "city"),
+        ("schools", "county"),
+        ("schools", "district"),
+        ("schools", "doctype"),
+        ("schools", "edopsname"),
+        ("schools", "eilname"),
+        ("schools", "mailcity"),
+        ("schools", "school"),
+        ("schools", "soctype"),
+    }
 )
 
 # Obviously fake. Must fail on cdd3ae2a.
@@ -223,26 +243,23 @@ def test_non_pii_stays_visible() -> None:
     assert "Warehouse A" in got["text"]
 
 
-def test_three_path_table_zero_fail_or_named_exclude() -> None:
+def test_three_path_table_258_pass_27_fail() -> None:
+    """258 PASS / 27 FAIL / 285. The 27 stay FAIL. No EXCLUDE relabel."""
     rows = check_all()
     assert len(rows) == 285
-    fails = [
-        (
-            f"{bare_table(r.cell.table)}.{r.cell.column} {r.cell.pattern} "
-            f"a={r.path_a} b={r.path_b} c={r.path_c} {r.note}"
-        )
-        for r in rows
-        if "FAIL" in (r.path_a, r.path_b, r.path_c)
-    ]
-    assert not fails, fails
-    excludes = [r for r in rows if r.path_a == "EXCLUDE"]
-    assert excludes
-    assert all(r.path_b == "EXCLUDE" and r.path_c == "EXCLUDE" for r in excludes)
-    assert all(r.cell.pattern == "person_name_shape_low" for r in excludes)
-    keys = {(bare_table(r.cell.table), r.cell.column.lower()) for r in excludes}
-    assert keys == set(EXCLUDE_FOR_304)
-    assert len(excludes) == 27
+    fails = [r for r in rows if "FAIL" in (r.path_a, r.path_b, r.path_c)]
     passed = [r for r in rows if r.path_a == "PASS"]
+    assert len(fails) == 27, [
+        f"{bare_table(r.cell.table)}.{r.cell.column} {r.cell.pattern} "
+        f"a={r.path_a} b={r.path_b} c={r.path_c}"
+        for r in fails
+    ]
     assert len(passed) == 258
+    assert all(r.path_a == r.path_b == r.path_c == "FAIL" for r in fails)
     assert all(r.path_b == "PASS" and r.path_c == "PASS" for r in passed)
-    assert all(r.synth and not is_mask_token(r.synth) for r in passed)
+    assert all(r.cell.pattern == "person_name_shape_low" for r in fails)
+    keys = {(bare_table(r.cell.table), r.cell.column.lower()) for r in fails}
+    assert keys == set(REMAINING_FAIL_COLUMNS)
+    assert all(r.synth and not is_mask_token(r.synth) for r in rows)
+    other = [r for r in rows if r.path_a not in {"PASS", "FAIL"}]
+    assert not other, other

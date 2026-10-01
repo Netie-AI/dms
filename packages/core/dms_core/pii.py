@@ -15,8 +15,8 @@ masker (Cortex #268 kinds without NER) must leave them unchanged.
 
 ponytail: free-text names are a Title-Case pattern on free-text columns only
 (no NER). Ceiling: a person name in a column that is neither a name column
-nor free text — those columns are named excludes for dms#304, not an unmasked
-pass. Upgrade: Cortex #268 NER at the FreeRoute choke.
+nor free text stays unmatched until value detection (still dms#318) or
+dms#304's deny file. Upgrade: Cortex #268 NER at the FreeRoute choke.
 """
 
 from __future__ import annotations

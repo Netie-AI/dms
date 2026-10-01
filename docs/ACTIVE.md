@@ -58,11 +58,15 @@ NANP and spaced-intl phones (WIDEN-ONLY vs #272). Counts-only fixture
 `scripts/pii_mask_check.py`. Regression: `tests/test_pii_mask_check_01.py`.
 Does not lift the BIRD exclusion. Not COMPLETE.
 
-PII-MASK-02 (#318): widens that masker for names, MY landlines, passports,
-street addresses, account numbers in text/URLs, and DOB years (WIDEN-ONLY
-vs #303). Named excludes for dms#304 live on `EXCLUDE_FOR_304` in
-`scripts/pii_mask_check.py` (not the BIRD allowlist). Regression:
-`tests/test_pii_mask_02.py`. Does not lift BIRD or dms#284. Not COMPLETE.
+PII-MASK-02 (#318): widens `dms_core/pii.py` for names, MY landlines,
+passports, street addresses, account numbers in text/URLs, and DOB years
+(WIDEN-ONLY vs #303). Three-path table is 258 PASS / 27 FAIL / 285. The 27
+(`drivers.nationality`, `member.position`, `patient.diagnosis`,
+`users.location`, `schools.city` / `county` / `district` / `doctype` /
+`edopsname` / `eilname` / `mailcity` / `school` / `soctype`) stay FAIL.
+dms#304 owns the deny/preflight file. This PR does not edit
+`scripts/pii_mask_check.py` (dms#304 has not merged). Regression:
+`tests/test_pii_mask_02.py`. Stays open. Does not lift BIRD or dms#284.
 
 INSIGHTS-EXPORT-01 (#188): `packages/core/dms_core/xlsx_export.py` copies an
 existing ask envelope into .xlsx (stdlib OOXML in `xlsx_ooxml.py`), then
