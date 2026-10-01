@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - BRONZE-GRANT-01: bronze-sheet lane uses the grounded grant check
+
+- **Gap.** `maybe_bronze_sheet_ask` read `bronze.*` with no Space or grant. A column-shape match was not a grant.
+- **Gate.** `_live_ask` reuses `table_is_granted` on `ingested_bronze_tables` intersected with `grantable_tables` (dms#284). No Space is ABSTAIN `no_space`. A table outside that set is ABSTAIN `ungranted_table:<table>`. No second grant function. `score_curated.py` and `strict_pin.py` untouched.
+
 ## 2026-10-01 - MASK-VALUES-01: empty log keeps a /health clock (#303)
 
 - **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
