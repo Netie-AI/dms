@@ -19,7 +19,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -2118,6 +2120,7 @@ def score_pack_live(
     oracle_tz = engine_timezone
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
+    records: list[dict[str, Any]] = []
     overmask = 0
     for case in pack["questions"]:
         qid = str(case["id"])
@@ -2148,6 +2151,7 @@ def score_pack_live(
                         LEGACY_JUDGE_LABEL: "",
                     }
                 )
+                records.append(_case_record(qid, verdict, reason, None, verdict, as_of))
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
         case_before, case_after, case_tz, case_tz_after = _case_engine_clock(
@@ -2184,6 +2188,11 @@ def score_pack_live(
                     "oracle_as_of": case_before,
                     "oracle_timezone": case_tz,
                 }
+            )
+            records.append(
+                _case_record(
+                    qid, "INVALID", invalid_reason, env, "INVALID", case_before or as_of
+                )
             )
             continue
         result = judge_envelope_detailed(
@@ -2228,6 +2237,9 @@ def score_pack_live(
                 "oracle_timezone": case_tz,
             }
         )
+        records.append(
+            _case_record(qid, verdict, result.reason, env, result.verdict, as_of)
+        )
     after = engine_as_of_after if engine_as_of_after is not None else as_of
     clock = _round_clock(as_of, after, oracle_tz)
     invalid_n = int(tallies.get("INVALID") or 0)
@@ -2235,9 +2247,103 @@ def score_pack_live(
     clock["n"] = sum(tallies.values())
     clock["n_without_invalid"] = clock["n"] - invalid_n
     clock[OVERMASK_STAR_KEY] = overmask
+    clock["case_records"] = records
     if invalid_n:
         clock["passed"] = False
     return tallies, cases_out, clock
+
+
+def _attr(env: Mapping[str, Any] | None, key: str) -> str:
+    if not env:
+        return "unknown"
+    val = env.get(key)
+    if val is None or str(val).strip() == "":
+        return "unknown"
+    return str(val)
+
+
+def _stored_served(
+    env: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[Any]]:
+    """Served envelope copied through the existing masker.
+
+    Mask tokens stay. A clear value the masker would catch is masked here
+    so the record file never holds unmasked rows.
+    """
+    if not env:
+        return None, []
+    from dms_core.pii import fail_closed_mask_envelope
+
+    stored = fail_closed_mask_envelope(dict(env))
+    rows = stored.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+    stored["rows"] = rows
+    return stored, rows
+
+
+def _case_record(
+    qid: str,
+    outcome: str,
+    reason: str,
+    env: Mapping[str, Any] | None,
+    oracle_verdict: str,
+    engine_date: str | None,
+) -> dict[str, Any]:
+    stored, rows = _stored_served(env)
+    return {
+        "id": qid,
+        "outcome": outcome,
+        "reason": reason,
+        "served_provider": _attr(env, "served_provider"),
+        "served_model": _attr(env, "served_model"),
+        "envelope": stored,
+        "rows": rows,
+        "oracle_verdict": oracle_verdict,
+        "engine_date": engine_date,
+    }
+
+
+def merge_commit_sha() -> str:
+    """Commit this process is running. On main that is the merge commit."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(ROOT),
+            text=True,
+            timeout=5,
+        )
+        sha = out.strip()
+        if sha:
+            return sha
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return os.environ.get("GIT_SHA") or os.environ.get("GITHUB_SHA") or "unknown"
+
+
+def case_record_dir(art: Path) -> Path:
+    """DMS_SCORE_CASE_DIR, else the score output dir (DMS_SCORE_DIR or .tmp)."""
+    raw = (os.environ.get("DMS_SCORE_CASE_DIR") or "").strip()
+    return Path(raw) if raw else art
+
+
+def case_record_path(directory: Path, run_id: str, sha: str) -> Path:
+    return directory / f"score_cases_{run_id}_{sha}.jsonl"
+
+
+def write_case_records(path: Path, records: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(
+        json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in records
+    )
+    path.write_text(body, encoding="utf-8")
+
+
+def case_record_matches(path: Path, n: int) -> bool:
+    if not path.is_file():
+        return False
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return len(lines) == n
 
 
 def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
@@ -2276,7 +2382,14 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     print_category_report(cats)
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
-    invalid = clock.get("round_label") == "INVALID"
+    run_id = uuid.uuid4().hex
+    sha = merge_commit_sha()
+    rec_path = case_record_path(case_record_dir(art), run_id, sha)
+    write_case_records(rec_path, list(clock.get("case_records") or []))
+    date_invalid = clock.get("round_label") == "INVALID"
+    record_missing = not case_record_matches(rec_path, n)
+    round_label = "INVALID" if date_invalid or record_missing else clock.get("round_label")
+    print(f"case_record={rec_path}")
     (art / "score_curated.json").write_text(
         json.dumps(
             {
@@ -2302,7 +2415,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                     and oracle_error == 0
                     and invalid_n == 0
                     and rate_limit == 0
-                    and not invalid
+                    and not date_invalid
+                    and not record_missing
                 ),
                 "cases": cases,
                 "oracle_db": str(oracle_db),
@@ -2310,7 +2424,10 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "oracle_as_of": as_of,
                 "oracle_as_of_after": after,
                 "oracle_timezone": oracle_tz,
-                "round_label": clock.get("round_label"),
+                "round_label": round_label,
+                "run_id": run_id,
+                "commit_sha": sha,
+                "case_record": str(rec_path),
                 "categories": cats,
             },
             indent=2,
@@ -2321,6 +2438,9 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     inv = _invalid_round_exit(clock.get("round_label"))
     if inv is not None:
         return inv
+    if record_missing:
+        print("INVALID: case record file missing. Not WRONG.")
+        return EXIT_FAIL
     engine_bad = any(
         row.get("verdict") == "INVALID"
         and str(row.get("reason") or "").startswith("engine_")

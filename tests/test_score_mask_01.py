@@ -337,6 +337,120 @@ def test_live_no_envelope_never_increments_wrong(
     assert all(row["reason"] == "ask_error:RuntimeError" for row in report["cases"])
 
 
+SECRET_EMAIL = "ada.lovelace@example.com"
+RECORD_KEYS = (
+    "id",
+    "outcome",
+    "reason",
+    "served_provider",
+    "served_model",
+    "envelope",
+    "rows",
+    "oracle_verdict",
+    "engine_date",
+)
+
+
+def test_live_case_record_lines_match_n_and_stay_masked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fails on dd4162ec: live() writes no per-case JSONL."""
+    _open_round(monkeypatch, tmp_path)
+    rec_dir = tmp_path / "case_records"
+    monkeypatch.setenv("DMS_SCORE_CASE_DIR", str(rec_dir))
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(
+        monkeypatch,
+        _by_question(
+            {
+                "badge": "L0_CERTIFIED",
+                "abstained": False,
+                "sql_used": SKU_SQL,
+                "text": f"reach {SECRET_EMAIL}",
+                "served_provider": "groq",
+                "served_model": "llama-3.3-70b",
+                "rows": [
+                    {"sku_count": "DMSMASK_unknown_01", "note": SECRET_EMAIL},
+                ],
+            }
+        ),
+    )
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    named = report.get("case_record")
+    assert isinstance(named, str) and named
+    path = Path(named)
+    assert path.is_file()
+    assert path.parent == rec_dir
+    assert path.name == f"score_cases_{report['run_id']}_{report['commit_sha']}.jsonl"
+    lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == report["n"] == _pack_n()
+    blob = path.read_text(encoding="utf-8")
+    assert SECRET_EMAIL not in blob
+    from dms_core.pii import fail_closed_mask_envelope, is_mask_token
+
+    rows = [json.loads(ln) for ln in lines]
+    outcomes = {row["outcome"] for row in rows}
+    assert "INVALID" in outcomes
+    assert "ABSTAIN" in outcomes
+    assert {row["id"] for row in rows} == {row["id"] for row in report["cases"]}
+    for row in rows:
+        assert set(row) == set(RECORD_KEYS)
+        assert row["oracle_verdict"] == row["outcome"]
+        assert "engine_date" in row
+        stored = row["envelope"]
+        if stored is None:
+            assert row["rows"] == []
+            continue
+        again = fail_closed_mask_envelope(stored)
+        assert again.get("text") == stored.get("text")
+        assert again.get("rows") == stored.get("rows")
+        assert row["rows"] == stored.get("rows")
+    hit = next(row for row in rows if row["id"] == SKU_ID)
+    assert hit["outcome"] == "INVALID"
+    assert hit["reason"] == "masked_compare:sku_count"
+    assert hit["served_provider"] == "groq"
+    assert hit["served_model"] == "llama-3.3-70b"
+    assert hit["rows"][0]["sku_count"] == "DMSMASK_unknown_01"
+    assert is_mask_token(hit["rows"][0]["note"])
+    assert SECRET_EMAIL not in json.dumps(hit)
+
+
+def test_live_round_without_case_record_is_invalid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fails on dd4162ec: a scored round with no record file stays unlabeled."""
+    _open_round(monkeypatch, tmp_path)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(
+        monkeypatch,
+        _by_question(
+            {
+                "badge": "L0_CERTIFIED",
+                "abstained": False,
+                "sql_used": SKU_SQL,
+                "rows": _gold(db),
+            }
+        ),
+    )
+    if hasattr(score_curated, "write_case_records"):
+        monkeypatch.setattr(score_curated, "write_case_records", lambda *_a, **_k: None)
+    code = live("http://127.0.0.1:9", 1.0, db)
+    text = capsys.readouterr().out
+    report = _report(tmp_path)
+    assert report["round_label"] == "INVALID"
+    assert "case record file missing" in text
+    assert report["wrong"] == 0
+    assert report["n"] == report["total"] == _pack_n()
+    assert report["oracle_error"] > 0
+    assert report["passed"] is False
+    assert code == EXIT_FAIL
+    named = report.get("case_record")
+    assert isinstance(named, str) and named
+    assert Path(named).parent == tmp_path
+    assert not Path(named).is_file()
+
+
 def test_live_unmasked_match_stays_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

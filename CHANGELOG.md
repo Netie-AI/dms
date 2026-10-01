@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: per-case JSONL on every live round (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. Rebased onto ENGINE-DATE-01 `a63988b2`.
+- **Record.** `live()` writes `score_cases_<run_id>_<commit_sha>.jsonl`. Directory is `DMS_SCORE_CASE_DIR`, else `DMS_SCORE_DIR`, else `.tmp/`. One line per case in n, including INVALID and ABSTAIN: id, outcome, reason, served_provider, served_model, served envelope, served rows, oracle verdict, engine date. The copy goes through the existing masker. The live report field `case_record` is that path (the dms#299 grid row). A round with no file is INVALID and the counts stay. A missing engine date is still round INVALID n=0.
+- **Gate.** `test_live_case_record_lines_match_n_and_stay_masked` and `test_live_round_without_case_record_is_invalid` go through `live()` and fail on `a63988b2`.
+
 ## 2026-10-01 - SCORE-MASK-01: masked compare is INVALID, ask failure is not WRONG (#299)
 
 - **Ticket.** Follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Epic ruling `issuecomment-5930136078`. Does not close the issue. Does not stamp COMPLETE.
