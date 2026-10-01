@@ -3,6 +3,15 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+SERVED-ATTR-01 (#305): every `Executor.live_ask` envelope carries
+`served_attribution` (`reported` / `missing` / `none`). Setup fields and
+per-leg `served_provider` / `served_model` are copied from the Insights
+payload as received. `DMS_SERVED_ATTR_DIAG=1` records payload key names
+only. `packages/executor/dms_executor/generative_ask.py`,
+`packages/cortex_client/cortex_client/compute.py`. Regression:
+`tests/test_served_attr_01.py`. Not COMPLETE. Cortex#269 and dms#317
+are other lanes.
+
 ONTO-STORE-01 (#279): Postgres ontology store. Migration
 `alembic/versions/0004_ontology_store.py`. Repository
 `packages/core/dms_core/control_plane/onto_store.py` (load active / by version /
