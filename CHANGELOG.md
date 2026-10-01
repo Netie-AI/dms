@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: parent failures are the rule, not n=0 (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE.
+- **Fixture.** `live()` tests that judge publish `_ENGINE_CLOCK` (same before and after). On `a63988b2` the round is readable and the cases score. Assertions are unchanged. The no-date test does not publish a clock.
+- **Gate.** On `a63988b2` each rule test fails on its own assert: masked compare is WRONG not `masked_compare:<col>`; ask failure is WRONG not RATE_LIMIT or `ask_error:<type>`; the case record path is missing. 52-pack unchanged. Unread engine date stays round INVALID n=0.
+
 ## 2026-10-01 - SCORE-MASK-01: per-case JSONL on every live round (#299)
 
 - **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. Rebased onto ENGINE-DATE-01 `a63988b2`.

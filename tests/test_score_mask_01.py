@@ -80,8 +80,21 @@ def _open_round(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A recorded engine date so live() judges. The product gate stays closed
     when no date is recorded; that case has its own test.
     """
+    import dms_executor.demo_warehouse as warehouse
+
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     monkeypatch.setattr(score_curated, "round_date_label", lambda _before, _after: None)
+    # Same before/after. #321 opens the round from this clock, then asks.
+    monkeypatch.setattr(
+        warehouse,
+        "_ENGINE_CLOCK",
+        {
+            "engine_as_of": "2024-06-15",
+            "engine_as_of_after": "2024-06-15",
+            "engine_timezone": "UTC",
+            "engine_timezone_after": "UTC",
+        },
+    )
 
 
 def _install_http(monkeypatch: pytest.MonkeyPatch, responder):
