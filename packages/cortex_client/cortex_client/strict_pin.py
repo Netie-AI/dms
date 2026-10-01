@@ -213,6 +213,25 @@ def _mismatch_name(
     return f"pin_mismatch:{provider or 'missing'}/{model or 'missing'}"
 
 
+def matches_pin(
+    provider: str | None,
+    model: str | None,
+    cfg: PinConfig | None = None,
+) -> bool:
+    """Exact provider and exact model. No strip. No case fold.
+
+    Preflight and the scored envelope both call this. A missing side is not
+    the pin.
+    """
+    pin = cfg or pin_config()
+    return (
+        provider in PROVIDER_IDS
+        and pin.provider in PROVIDER_IDS
+        and provider == pin.provider
+        and model == pin.model
+    )
+
+
 def interpret(
     status: int,
     body: Any,
@@ -274,10 +293,7 @@ def interpret(
         and both
         and body_provider == header_provider
         and body_model == header_model
-        and served_provider in PROVIDER_IDS
-        and pin.provider in PROVIDER_IDS
-        and served_provider == pin.provider
-        and served_model == pin.model
+        and matches_pin(served_provider, served_model, pin)
     ):
         return PinShot(
             kind="ok",
@@ -405,23 +421,17 @@ def next_answer() -> PinShot:
 
 
 def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
-    """INVALID name when a generate envelope's served_model is not the pin.
+    """INVALID name when the scored envelope is not the pin.
 
-    No served field and no generate attribution: the question did not claim a
-    model, so the vault shot already decided. A reported or missing attribution
-    must carry the pin.
+    Same matcher as preflight. Exact provider and exact model. No strip and
+    no case fold. A missing field is not the pin, including when
+    ``served_attribution`` is ``none`` or absent. Called only while a pin
+    is active.
     """
     if not isinstance(env, Mapping):
         return None
-    attr = str(env.get("served_attribution") or "")
-    has_model = "served_model" in env
-    if attr not in {"reported", "missing"} and not has_model:
+    provider = _provider_text(env.get("served_provider"))
+    model = _provider_text(env.get("served_model"))
+    if matches_pin(provider, model):
         return None
-    cfg = pin_config()
-    model = env.get("served_model")
-    provider = env.get("served_provider")
-    model_s = model.strip() if isinstance(model, str) else ""
-    provider_s = provider.strip() if isinstance(provider, str) else ""
-    if model_s == cfg.model:
-        return None
-    return f"pin_mismatch:{provider_s or 'missing'}/{model_s or 'missing'}"
+    return _mismatch_name(provider, model)
