@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: allowed pins drop nvidia
+
+- **Contract.** Allowed pins are `groq`, `google`, and `openrouter`. `nvidia` stays a mismatch under the groq pin. It returns only in the NIM lane's own ticket.
+- **Gate.** `test_live_fa01_pin_match_is_correct` is headers plus body for both. Google model is `providers.py` line 205 `gemini-3.5-flash`. OpenRouter model is line 150 `google/gemma-4-31b-it:free`. CORRECT, no `pin_*` reason, `baseline_eligible`.
+
 ## 2026-10-01 - dms#317 Part A: a pin match needs headers and body
 
 - **Contract.** The live vault sends served ids in both places. A 200 is the pin only when both are present and they agree with the pin. Header names still match in any case. Values stay exact.

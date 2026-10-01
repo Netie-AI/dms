@@ -1105,7 +1105,7 @@ def test_live_body_and_header_pin_match_oracle_is_correct(
     ("provider", "model"),
     (
         ("google", "gemini-3.5-flash"),
-        ("openrouter", "gemma-4-31b-it:free"),
+        ("openrouter", "google/gemma-4-31b-it:free"),
     ),
     ids=("google", "openrouter"),
 )
@@ -1117,8 +1117,10 @@ def test_live_fa01_pin_match_is_correct(
 ) -> None:
     """Allowed pin matched in the body and the served headers together.
 
-    google is providers.py line 188. openrouter is line 131.
-    Exact ==. No case fold. CORRECT, no pin_* reason, baseline_eligible.
+    google model is providers.py line 205, gemini-3.5-flash.
+    openrouter model is line 150, google/gemma-4-31b-it:free.
+    Headers plus body. Exact ==. No case fold. CORRECT, no pin_* reason,
+    baseline_eligible.
     """
     outside = _outside_record_dir(monkeypatch)
     try:

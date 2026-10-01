@@ -35,9 +35,9 @@ DEFAULT_STRICT_PROVIDER = "groq"
 #   131: id="openrouter",
 #   160: id="groq",
 #   188: id="google",
-#   247: id="nvidia",
+# nvidia is providers.py line 247. Not an allowed pin.
 # Compared with ==. No case fold and no rewrite.
-PROVIDER_IDS = frozenset({"groq", "nvidia", "google", "openrouter"})
+PROVIDER_IDS = frozenset({"groq", "google", "openrouter"})
 PIN_UNAVAILABLE = "pin_unavailable"
 # OpenVault #81. quota_exhausted stays here. It is not a 429.
 PIN_VAULT_REASONS = frozenset(
