@@ -167,6 +167,21 @@ def test_ungranted_space_bronze_sum_abstains(
     assert "1545366.4" not in env["text"]
 
 
+def test_cross_space_bronze_sum_abstains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Registered to Finance. Asked from Ops. Another Space is not a grant."""
+    db = tmp_path / "cross.duckdb"
+    filename = "crossspace.xlsx"
+    table = _seed(db, filename, space_id=FINANCE, amount=1545366.40)
+    env = _ask(db, filename, space_id=OPS, monkeypatch=monkeypatch)
+    assert env["badge"] == "ABSTAIN" and f"ungranted_table:{table}" in env["text"]
+    assert env["abstained"] is True
+    assert not env.get("values")
+    assert not env["rows"]
+    assert "1545366.4" not in env["text"]
+
+
 def test_no_space_bronze_sum_abstains(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -221,7 +236,7 @@ def test_granted_bronze_table_still_answers(
 def test_live_ungranted_bronze_sum_is_not_correct_and_stays_in_n(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """live() scores the real lane. An ungranted bronze sum is not CORRECT."""
+    """live() records ABSTAIN ungranted_table. The case stays in n."""
     db = tmp_path / "live.duckdb"
     filename = "livesum.xlsx"
     _seed(db, filename, space_id=None, amount=10.0)
@@ -295,8 +310,16 @@ def test_live_ungranted_bronze_sum_is_not_correct_and_stays_in_n(
     ids = [row["id"] for row in cases]
     assert report["n"] == 2
     assert BRONZE_ID in ids
-    hit = next(row for row in cases if row["id"] == BRONZE_ID)
-    assert hit["verdict"] != "OK"
+    rec_files = sorted(tmp_path.glob("score_cases_*.jsonl"))
+    assert len(rec_files) == 1
+    records = [
+        json.loads(line)
+        for line in rec_files[0].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    rec = next(row for row in records if row["id"] == BRONZE_ID)
+    recorded = str((rec.get("envelope") or {}).get("text") or "")
+    assert rec["outcome"] == "ABSTAIN" and "ungranted_table:" in recorded
     assert int(report["correct"]) == 0
 
 

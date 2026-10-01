@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - BRONZE-GRANT-01: cross-space bronze ask abstains
+
+- **Gate.** A bronze table registered to one Space is `ungranted_table:<table>` when asked from another. `live()` records that ABSTAIN. The case stays in n.
+- **Pack.** The 52-case offline pack does not take the matched-but-ungranted abstain path (0 of 52).
+
 ## 2026-10-01 - BRONZE-GRANT-01: bronze-sheet lane uses the grounded grant check
 
 - **Gap.** `maybe_bronze_sheet_ask` read `bronze.*` with no Space or grant. A column-shape match was not a grant.
