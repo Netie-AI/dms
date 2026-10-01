@@ -1438,7 +1438,12 @@ class Ontology:
                 rebuilt = measure_expression(prov.aggregate, prov.column)
             except ValueError:
                 rebuilt = None
-            if rebuilt is None or rebuilt != m.expression:
+            if (
+                rebuilt is None
+                or rebuilt != m.expression
+                or prov.grain != m.grain
+                or prov.name != m.name
+            ):
                 return Refusal(
                     "measure_expression_invalid",
                     f"measure {measure!r} expression is not the canonical rebuild of its "
