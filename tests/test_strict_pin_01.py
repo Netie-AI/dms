@@ -8,6 +8,7 @@ No existing test is edited here.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -240,6 +241,11 @@ def _install_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[s
             # Confident L0 with a row. Gold is empty, so the judge returns WRONG.
             # badge ABSTAIN never reaches that compare (is_confident is false).
             rows = [dict(item) for item in _ANSWER_ROWS]
+            # STRICT-PIN-02: the scored envelope is checked with the same
+            # matcher. Echo the active pin so these vault-shot tests still
+            # reach the row judge.
+            pin_provider = os.environ.get("DMS_STRICT_PROVIDER", _PROVIDER).strip() or _PROVIDER
+            pin_model = os.environ.get("DMS_STRICT_MODEL", _PIN).strip()
             return _Http(
                 200,
                 {
@@ -252,6 +258,9 @@ def _install_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[s
                     "engine_as_of_after": _ENGINE_DAY,
                     "engine_timezone": _TZ,
                     "engine_timezone_after": _TZ,
+                    "served_provider": pin_provider,
+                    "served_model": pin_model,
+                    "served_attribution": "reported",
                 },
                 {},
             )
