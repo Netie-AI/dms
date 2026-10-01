@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: rebase onto ENGINE-DATE-02
+
+- **Base.** Rebased onto main `87a94978` (#325). `baseline_eligibility` keeps `round_end_unread` and `pin_preflight_unavailable`. Neither test was removed. Per-answer clock records and the `tests/test_score_mask_01.py` health stub stay as merged.
+- **Gate.** Pin-rule tests fail on `87a94978` on their own asserts (`assert (None == 52)` for `n_planned`). Positive checks pass on this head.
+
 ## 2026-10-01 - dms#317 Part A: provider ids add google and openrouter
 
 - **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 131 is `id="openrouter",` and line 188 is `id="google",`. Same fixed list as groq and nvidia. Compared with `==`. No case fold.
