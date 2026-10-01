@@ -77,8 +77,20 @@ T14 signed receipts, U5–U6, Runs durability, C10.
 
 ## P-DMS-4 — F5 gate catalog tasks
 
-Soft-allow on `gate_task_unknown` until Cortex catalogs DMS mutation tasks.  
-**Condition:** Cortex packs task definitions.
+CORRECTED (DR-0006 step 0). `gate_task_unknown` is **fail-closed for mutations**:
+`apps/api/dms_api/gatekeeping.py` `enforce(..., mutation=True)` raises 403 for both
+`gate_unavailable` and `gate_task_unknown`; only a caller that passes `mutation=False`
+(a read path) proceeds on them. The earlier "soft-allow" text was wrong.
+Live probe 2026-10-01 against a local Cortex (`packs/dms`): the gate answered `pass` for
+every task id tried, including an id that exists nowhere, because
+`packs/dms/tasks/gate.py check_task` evaluates only `filled_template` and never consults
+a task catalog (a 404 is raised only for an unknown event id on `/gate/acknowledge`). So
+today the gate is task-id-blind and no catalog entry is needed; a future Cortex that adds
+a real catalog would turn every uncatalogued DMS mutation id into a 403 while CI stays
+green (tests monkeypatch `routes.spaces.compliance_gate`).
+**Condition:** Cortex introduces a task catalog or per-task policy; then request the DMS
+mutation ids (including `spaces.ontology.measures.propose|create|confirm|reject`,
+`spaces.ontology.derive`, `amend.confirm`) as data entries, and re-run the probe in DR-0006.
 
 ## P-DMS-5 — Sellable hardening
 
@@ -286,6 +298,101 @@ demote). Live Studio steward inspect of >=3 asks is not this seat.
 **Unlock:** Platform walk of Studio/ask after deploy of the #235 SHA, three
 asks showing include/exclude/unsure (or N/A with why). Until then: do not
 stamp #235 COMPLETE from CI green alone. #178 stays OPEN.
+
+## P-DMS-37 - Free-text measure expressions, measure filters, arithmetic, ratios (dms#283)
+
+A measure in ONTO-CONFIRM-01 is a structured spec: one aggregate enum over one landed
+column of one grain object. No expression text, no filters, no `SUM(qty*unit_price)`, no
+ratios. Such questions abstain `no_declared_measure` on the Space.
+**Unlock:** a paying pilot's real question set needs one. Design it then as structured
+predicates reusing `Ontology.compile`'s filter allowlist, never as text.
+
+## P-DMS-38 - A model or Cortex measure proposer, and the `cortex` source value (dms#283)
+
+The proposer is deterministic code in DMS (`source` is `derived` or `manual`); contract
+1.2.0 has no Cortex proposal call and Cortex is the gate only.
+**Unlock:** the founder approves a model call through the existing model-provider port
+that returns structured specs only. Same validator, same steward confirm, and only then
+add `cortex` to the source enum.
+
+## P-DMS-39 - Steward-declared or steward-confirmed LINKS (dms#283/#284)
+
+Links stay MEASURED only. A steward click can never override a measurement (Databricks
+`rely.at_most_one_match` is the counter-example). A missing declaration abstains
+`no_declared_link`.
+**Unlock:** a pilot source with no declared foreign keys.
+
+## P-DMS-40 - ONTO-PROMOTE-01: ontology version promotion (routes to prd-agent)
+
+Today a changed schema fingerprint leaves the old version answering and its measures
+bound to the old catalog; a drifted Space cannot gain measures. Promotion
+(proposed -> active, carrying measures as re-proposals) is a PRD question, not built here.
+**Unlock:** the prd-agent slices ONTO-PROMOTE-01 and the founder answers the promotion
+question (founder question 4 in the spec).
+
+## P-DMS-41 - Measure edit, revise/supersede, retire state, audit GET, bulk confirm, proposal expiry
+
+A confirmed definition is immutable; to change one, withdraw it and confirm again. No
+edit route, no supersede route, no new state, no audit GET (onto_audit rows exist), no
+bulk route (Studio fans out single confirms), and proposals never silently expire.
+**Unlock:** a steward workflow gap observed in a pilot; each is its own ticket via the
+prd-agent. Four gate ids is the smallest live-Cortex exposure.
+
+## P-DMS-42 - Ledgering refused confirms to Cortex
+
+A refused confirm writes `onto_audit` `measure.confirm_refused` only; it is not ledgered.
+**Unlock:** an auditor or pilot asks for refusal evidence in the one ledger.
+
+## P-DMS-43 - Four-eyes (proposer != confirmer)
+
+Impossible today: the confirmer is the configured actor (DR-0004 Option A), "steward
+confirmed" means configuration plus network position, not a person.
+**Unlock:** OIDC identity replaces DR-0004 Option A.
+
+## P-DMS-44 - Steward alias phrases and Bahasa Malaysia fit tokens
+
+The measure fit check tokenises English only; BM questions fall to the labelled
+(non-certified) lane. BM steward messages are not written.
+**Unlock:** steward alias phrases designed, and a pilot customer asking in BM.
+
+## P-DMS-45 - Ad hoc ROUND/CAST-of-aggregate answers; a steward reject vetoing the ad hoc lane
+
+The ad hoc lane answers only simple aggregates (no wrapping of the aggregate output),
+and a steward reject does not veto it ("without a confirmed measure").
+**Unlock:** the founder reopens the ad hoc-lane scope after measuring the abstain rate on
+a pilot's real questions.
+
+## P-DMS-46 - Small hardening items deliberately left out of the measures slice
+
+Retyping `Settings.dms_actor_role` to a Literal (would turn an existing config typo into
+a startup failure); live `schema_fingerprint` comparison at ask time (the per-measure
+DESCRIBE plus `verify()` cover what a measure depends on); `REVOKE DELETE` on
+`dms.onto_measure`; splitting `live_ask`; an OpenAPI snapshot test (the route table posted
+on the issues is the contract); a protected `tests/invariants` file (needs an
+INVARIANT-CHANGE line the founder has not given).
+**Unlock:** per item - a startup-config audit, a drift incident the per-ask checks missed,
+a DELETE misuse, `live_ask` growing another lane, a second API consumer, and a founder
+INVARIANT-CHANGE respectively.
+
+## P-DMS-47 - Standing P0 candidate: EXPLAIN on a write-mode DuckDB connection
+
+`EXPLAIN` on a write-mode DuckDB connection can execute a trailing non-query statement.
+Containment today is `resolve_declared_relations` refusing non-Query roots first. The
+cheap fix is a read-only connection for EXPLAIN.
+**Unlock:** its own ticket via the prd-agent; do not fold it into the measures slice.
+
+## P-DMS-48 - Founder/Cursor-gated steps of the confirmed-measures build (DR-0006)
+
+Held back: the new badge value `L2_UNCONFIRMED` anywhere in product code
+(`envelope.ALLOWED_BADGES`, `xlsx_export`, executor `_BADGE_MAP`, any emitted envelope),
+the egress finalizer, the ad hoc classifier wired into the ask path (spec steps 8, 9, 9b),
+and the flip of confirmed-measure answers to `L1_GOVERNED_METRIC` (step 11).
+`CONFIRMED_MEASURE_BADGE` stays `L2_VALIDATED`; ad hoc generated SQL keeps today's
+`L2_VALIDATED` path.
+**Unlock:** Cursor lands UI badge parity (`BadgeKind` + `BADGE_COPY` + `LAYER_COPY` with
+`L2_UNCONFIRMED`, `Badge.tsx` degrading an unknown badge instead of throwing) and the
+founder releases the badge policy; the L1 flip additionally needs every gate in spec
+section 7.4/7.5 green.
 
 ## Move out of parking lot
 
