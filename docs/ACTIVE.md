@@ -3,6 +3,15 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+SERVING-PRECHECK-01 (Refs dms#303): `scripts/score_curated.py`
+`baseline_eligibility` appends `serving_precheck_missing`. `live()` writes
+`serving_path`, `serving_inode`, `serving_mtime`, `serving_snapshot_hash`,
+`serving_row_counts`, and `serving_tables` on the round summary. Tables come
+from FROM/JOIN in the 52-pack oracle SQL (`expect: refuse` skipped).
+`DMS_SERVING_PRECHECK` supplies the block; otherwise the explicit Cortex
+warehouse is copied (not attached) or a private fixture is snapshotted.
+Regression: `tests/test_serving_precheck_01.py`. Not COMPLETE.
+
 SERVED-ATTR-01 (#305): every `Executor.live_ask` envelope carries
 `served_attribution` (`reported` / `missing` / `none`). Setup fields and
 per-leg `served_provider` / `served_model` are copied from the Insights

@@ -967,6 +967,14 @@ def test_live_baseline_eligible_agrees_with_empty_reasons(
         agreed.append(flag is (reasons == []))
         listed.append(reasons)
     assert (agreed, listed) == ([True, True], [[], ["record_path_scratch"]])
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(tmp_path / "out_records"))
+    monkeypatch.setenv("DMS_SERVING_PRECHECK", "{}")
+    live("http://127.0.0.1:9", 1.0, db)
+    gap = _report(tmp_path)
+    gap_flag = gap.get("baseline_eligible")
+    gap_reasons = gap.get("baseline_ineligible_reasons")
+    assert gap_flag is (gap_reasons == [])
+    assert gap_reasons == ["serving_precheck_missing"]
 
 
 def test_live_unmasked_match_stays_ok(

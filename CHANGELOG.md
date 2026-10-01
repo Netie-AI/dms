@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SERVING-PRECHECK-01: serving file precheck gates baseline eligibility
+
+- **Ticket.** Follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** `baseline_eligibility` appends `serving_precheck_missing` when the round summary lacks the Cortex serving path, inode, mtime, snapshot hash, or a positive row count for a table the 52 questions use. Tables are FROM/JOIN names in pack oracle SQL, skipping `expect: refuse`. `live()` writes those fields on `score_curated.json`.
+- **Gate.** `tests/test_serving_precheck_01.py` goes through `live()`. On `fee155e4` each must-fail test is eligible and fails on its own assert. No live scored round.
+
 ## 2026-10-01 - BRONZE-WAREHOUSE-01: executor file is the bronze grant
 
 - **Test only.** No product code. `tests/test_bronze_warehouse_01.py` asks from Finance through `live_ask` on one split layout. The bronze table is registered in the ingest file. The serving file is separate. A matched table that is not in that executor's `grantable_tables` abstains `ungranted_table:<table>`.
