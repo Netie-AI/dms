@@ -2877,6 +2877,206 @@ def record_path_block() -> str | None:
     return None
 
 
+# FROM/JOIN names in pack oracle SQL. Refuse oracles are not scored answers.
+_SQL_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    re.IGNORECASE,
+)
+_SQL_TABLE_SKIP = frozenset(
+    {
+        "and",
+        "as",
+        "cross",
+        "from",
+        "full",
+        "group",
+        "inner",
+        "join",
+        "lateral",
+        "left",
+        "limit",
+        "on",
+        "or",
+        "order",
+        "outer",
+        "right",
+        "select",
+        "values",
+        "where",
+    }
+)
+# Private fixture snapshot, keyed by the table tuple. Not the shared warehouse.
+_SERVING_FIXTURE_CACHE: dict[tuple[str, ...], dict[str, Any]] = {}
+_TABLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def pack_question_tables(
+    pack_path: Path = DEFAULT_PACK,
+    oracle_path: Path = DEFAULT_ORACLES,
+) -> tuple[str, ...]:
+    """Tables the scored pack questions name in oracle SQL.
+
+    Each merged pack question's oracle contributes FROM/JOIN identifiers.
+    ``expect: refuse`` oracles are not scored answers, so their SQL is not a
+    serving table (``alerts`` appears only on ``trap_alerts_ungranted``).
+    The curated 52 resolve to inventory, locations, shipments, suppliers,
+    and transactions. Not a silent list: the names come from the pack files.
+    """
+    pack = load_pack(pack_path)
+    ids = {
+        str(row.get("id") or "")
+        for row in merge_pack_questions(list(pack["questions"]))
+    }
+    found: set[str] = set()
+    for qid, row in load_oracles(oracle_path).items():
+        if str(qid) not in ids or not isinstance(row, dict):
+            continue
+        if str(row.get("expect") or "").strip().lower() == "refuse":
+            continue
+        sql = row.get("sql")
+        if not isinstance(sql, str):
+            continue
+        for match in _SQL_TABLE_RE.finditer(sql):
+            name = match.group(1).lower()
+            if name not in _SQL_TABLE_SKIP:
+                found.add(name)
+    return tuple(sorted(found))
+
+
+def serving_precheck_gap(record: Mapping[str, Any], tables: tuple[str, ...]) -> bool:
+    """True when path, inode, mtime, snapshot hash, or a used table's rows are missing.
+
+    A used table that is absent from ``serving_row_counts`` or has 0 rows is a gap.
+    """
+    path = record.get("serving_path")
+    if not isinstance(path, str) or not path.strip():
+        return True
+    if record.get("serving_inode") in (None, ""):
+        return True
+    if record.get("serving_mtime") in (None, ""):
+        return True
+    digest = record.get("serving_snapshot_hash")
+    if not isinstance(digest, str) or not digest.strip():
+        return True
+    counts = record.get("serving_row_counts")
+    if not isinstance(counts, dict):
+        return True
+    for name in tables:
+        if name not in counts:
+            return True
+        try:
+            n = int(counts[name])
+        except (TypeError, ValueError):
+            return True
+        if n <= 0:
+            return True
+    return False
+
+
+def _table_row_counts(path: Path, tables: tuple[str, ...]) -> dict[str, int]:
+    """Row counts on a copy. A missing table is omitted (the gap check catches it)."""
+    import duckdb
+
+    wanted = [name for name in tables if _TABLE_IDENT.match(name)]
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+        present = {str(row[0]).lower() for row in rows}
+        counts: dict[str, int] = {}
+        for name in wanted:
+            if name not in present:
+                continue
+            got = con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()
+            counts[name] = int(got[0]) if got else 0
+        return counts
+    except duckdb.Error:
+        return {}
+    finally:
+        con.close()
+
+
+def _snapshot_serving_file(path: Path, tables: tuple[str, ...]) -> dict[str, Any]:
+    """Stat the serving file, hash a copy, count rows on the copy.
+
+    The live file is not attached. That is the shared-file lock this must
+    not bring back. A missing file is an empty record (a skipped precheck).
+    """
+    import hashlib
+    import shutil
+    import tempfile
+
+    src = Path(path)
+    if not src.is_file():
+        return {}
+    st = src.stat()
+    tmp = Path(tempfile.mkdtemp(prefix="serving_precheck_"))
+    copy = tmp / "snapshot.duckdb"
+    shutil.copy2(src, copy)
+    digest = hashlib.sha256(copy.read_bytes()).hexdigest()
+    return {
+        "serving_path": str(src.resolve()),
+        "serving_inode": int(st.st_ino),
+        "serving_mtime": st.st_mtime,
+        "serving_snapshot_hash": digest,
+        "serving_row_counts": _table_row_counts(copy, tables),
+    }
+
+
+def _fixture_serving_precheck(tables: tuple[str, ...]) -> dict[str, Any]:
+    """Private seeded file when no Cortex warehouse is configured.
+
+    Offline ``live()`` rounds (the #323 unit path) have no prove serving
+    file. Recording this snapshot keeps those rounds from looking skipped.
+    A prove baseline sets ``CORTEX_WAREHOUSE_DB`` or ``DMS_SERVING_PRECHECK``
+    to the file Cortex serves. This never calls ``ensure_demo_warehouse``
+    on that file.
+    """
+    import tempfile
+
+    cached = _SERVING_FIXTURE_CACHE.get(tables)
+    if cached is not None:
+        return {
+            **cached,
+            "serving_row_counts": dict(cached.get("serving_row_counts") or {}),
+        }
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+
+    path = Path(tempfile.mkdtemp(prefix="serving_fixture_")) / "fixture.duckdb"
+    ensure_demo_warehouse(path)
+    record = _snapshot_serving_file(path, tables)
+    if not serving_precheck_gap(record, tables):
+        _SERVING_FIXTURE_CACHE[tables] = record
+    return record
+
+
+def load_serving_precheck(tables: tuple[str, ...]) -> dict[str, Any]:
+    """Serving block stored on the round summary.
+
+    Swap: ``DMS_SERVING_PRECHECK`` is the recorded JSON (Platform, or a test
+    that plants a skipped or partial check). Unset reads the explicit Cortex
+    file (``CORTEX_WAREHOUSE_DB`` / ``DMS_ORACLE_WAREHOUSE``) via a copy.
+    Neither set: a private fixture snapshot, not ``data/dms_demo.duckdb``.
+    """
+    raw = (os.environ.get("DMS_SERVING_PRECHECK") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return parsed
+    from dms_executor.warehouse_identity import explicit_engine_warehouse
+
+    explicit = explicit_engine_warehouse()
+    if explicit is not None:
+        return _snapshot_serving_file(explicit, tables)
+    return _fixture_serving_precheck(tables)
+
+
 def baseline_eligibility(
     *,
     path_block: str | None,
@@ -2886,13 +3086,16 @@ def baseline_eligibility(
     round_reason: str | None,
     pin_preflight_unavailable: bool = False,
     engine_clock_masked: bool = False,
+    serving_precheck_missing: bool = False,
 ) -> tuple[bool, list[str]]:
     """The only baseline gate. Eligible is true exactly when the list is empty.
 
     pin_preflight_unavailable is a blocked pin preflight. An in-round 503 does
     not set it. round_end_unread is a round INVALID reason and is listed here.
     engine_clock_masked is added when a clock field was masked, including
-    beside round_end_unread.
+    beside round_end_unread. serving_precheck_missing is a round record that
+    lacks the serving path, inode, mtime, snapshot hash, or a positive row
+    count for a table the pack questions use.
     """
     reasons: list[str] = []
     if path_block:
@@ -2911,6 +3114,8 @@ def baseline_eligibility(
             reasons.append(invalid)
     if engine_clock_masked and "engine_clock_masked" not in reasons:
         reasons.append("engine_clock_masked")
+    if serving_precheck_missing and "serving_precheck_missing" not in reasons:
+        reasons.append("serving_precheck_missing")
     return (not reasons, reasons)
 
 
@@ -3007,6 +3212,9 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
             reason = "record_write_failed"
     abs_record = rec_path if rec_path.is_absolute() else rec_path.absolute()
     path_block = record_path_block()
+    serving_tables = pack_question_tables()
+    serving = load_serving_precheck(serving_tables)
+    precheck_missing = serving_precheck_gap(serving, serving_tables)
     eligible, ineligible = baseline_eligibility(
         path_block=path_block,
         write_failed=write_failed,
@@ -3015,6 +3223,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         round_reason=reason if isinstance(reason, str) else None,
         pin_preflight_unavailable=bool(clock.get("pin_preflight_unavailable")),
         engine_clock_masked=bool(clock.get("engine_clock_masked")),
+        serving_precheck_missing=precheck_missing,
     )
     print(f"case_record={abs_record}")
     print(
@@ -3062,6 +3271,12 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "run_id": run_id,
                 "commit_sha": sha,
                 "case_record": str(abs_record),
+                "serving_path": serving.get("serving_path"),
+                "serving_inode": serving.get("serving_inode"),
+                "serving_mtime": serving.get("serving_mtime"),
+                "serving_snapshot_hash": serving.get("serving_snapshot_hash"),
+                "serving_row_counts": serving.get("serving_row_counts"),
+                "serving_tables": list(serving_tables),
                 "baseline_eligible": eligible,
                 "baseline_ineligible_reasons": ineligible,
                 "cortex_l2": cortex_l2,
