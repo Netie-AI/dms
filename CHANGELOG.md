@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-BIRD-ROWS-01: score_bird judges rows against gold SQL (#300)
+
+- **Ticket.** [dms#300](https://github.com/Netie-AI/dms/issues/300). Does not close #264 or EPIC-A1 #257. Not COMPLETE. No BIRD number.
+- **Change.** `scripts/score_bird.py --live/--ab --oracle-db <duckdb>` runs each case's `gold_sql` read-only and judges answer rows with the dms#292 judge (imported). No `--oracle-db`, or no `gold_sql` on a case: NO_ORACLE, no OK or answered count, no bound, no PASS line, exit 3. Gold SQL error is ORACLE_ERROR, exit 1. Refuse traps stay badge-judged. `--self-check` and the leftover-trap SKIP are unchanged.
+- **Gate.** `tests/test_score_bird_rows_01.py` (19 tests, seeded DuckDB, no network). On `87a9497` it fails at import, and a badge-only `live()` with a doubled row printed `PASS: WRONG=0`, rc 0.
+
 ## 2026-10-01 - ENGINE-DATE-02: clock clear without the score-mask reset (#308)
 
 - **Ticket.** Same follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. PR #325 stays a draft.
