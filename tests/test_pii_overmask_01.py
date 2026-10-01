@@ -385,6 +385,30 @@ _TXN_SCHEMA = {
 }
 
 
+def test_select_star_transactions_through_envelope() -> None:
+    """FAILS on de4c6df. Served path only.
+
+    Calls build_answer_envelope. The connection schema is column_schema on
+    that constructor. It is not an argument to fail_closed_mask_payload.
+    SELECT * over transactions keeps created_at and ts visible.
+    """
+    env = build_answer_envelope(
+        answer_id="ans_overmask_star",
+        text="Listed.",
+        badge="L2_VALIDATED",
+        sql_used="SELECT * FROM transactions",
+        rows=[{"created_at": "2026-10-01", "ts": "2026-09-30 10:00:00"}],
+        audit_id="aud_overmask_star",
+        as_of="2026-10-01T00:00:00Z",
+        ask_mode="live",
+        column_schema=_TXN_SCHEMA,
+    )
+    assert env["abstained"] is False, env.get("text")
+    assert env["rows"][0]["created_at"] == "2026-10-01"
+    assert env["rows"][0]["ts"] == "2026-09-30 10:00:00"
+    assert "DMSMASK_" not in str(env["rows"])
+
+
 def test_star_expands_before_lineage() -> None:
     """FAILS on de4c6df. SELECT *, t.*, and a star CTE trace created_at and ts."""
     rows = [{"created_at": "2026-10-01", "ts": "2026-09-30 10:00:00"}]

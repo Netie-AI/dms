@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - OVERMASK-01: served-path star test, live schema leftovers (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Verify and Gating on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** `test_select_star_transactions_through_envelope` calls `build_answer_envelope` with `column_schema`. `SELECT *` over transactions keeps `created_at` and `ts` visible. That test fails on `de4c6df`. No live entry point passes a connection schema. Typed dates behind a star on those paths stay masked. That is a dms#284 leftover, not a fix in this PR.
+- **Not this ticket:** wiring a schema into live ask; `load_active` intersected with grants (dms#284); COMPLETE; merge.
+
 ## 2026-10-01 - OVERMASK-01: qualify stars before lineage (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Gating and Epic ruling on PR #322, plus the PRD synthetic-schema case. Does not stamp COMPLETE. Does not merge. Does not close the issue.
