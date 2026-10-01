@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from dms_core.ask import CORTEX_LANES, MODEL_LANES, NO_MODEL_LANES
 
 STRICT_HEADER = "X-OpenVault-Strict"
 SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
@@ -421,18 +422,63 @@ def next_answer() -> PinShot:
     return post_once(base)
 
 
-def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
-    """INVALID name when the scored envelope is not the pin.
+def _explicit_model_calls(env: Mapping[str, Any]) -> int | None:
+    """Recorded count, or None when the answer has no explicit counter.
 
-    Same matcher as preflight. Exact provider and exact model. No strip and
-    no case fold. A missing field is not the pin, including when
-    ``served_attribution`` is ``none`` or absent. Called only while a pin
-    is active.
+    A bool is not a count. Only an int is. Absence is not zero.
     """
-    if not isinstance(env, Mapping):
+    if "model_calls" not in env:
         return None
+    n = env.get("model_calls")
+    if type(n) is not int:
+        return None
+    return n
+
+
+def _carrying_served_field(env: Mapping[str, Any]) -> bool:
+    """True when any ``served_*`` key is present. The value is not read."""
+    return any(str(key).startswith("served_") for key in env)
+
+
+def _pin_served_mismatch(env: Mapping[str, Any]) -> str | None:
+    """The #332 / #334 rule for an answer that called a model."""
     provider = _provider_text(env.get("served_provider"))
     model = _provider_text(env.get("served_model"))
     if matches_pin(provider, model):
         return None
     return _mismatch_name(provider, model)
+
+
+def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
+    """INVALID name when the scored envelope is not the pin.
+
+    The pin rule applies only when the answer called a model. No recorded
+    counter, or a count other than zero, is that path: exact provider and
+    exact model, no strip and no case fold. A missing served field is not
+    the pin, including when ``served_attribution`` is ``none`` or absent.
+
+    A recorded zero is scored on its rows only when ``lane`` is on
+    ``NO_MODEL_LANES`` (the same object BRONZE-GRANT-01 imports). That set
+    is empty: ``rules`` and ``curated`` reach Cortex submit, so they are
+    ``CORTEX_LANES`` and a recorded zero is ``pin_mismatch:<lane>``. Zero
+    calls with any ``served_*`` field, or a model lane, is ``pin_mismatch``.
+    No lane is ``lane_unknown``. Called only while a pin is active.
+    """
+    if not isinstance(env, Mapping):
+        return None
+    calls = _explicit_model_calls(env)
+    if calls is None or calls != 0:
+        return _pin_served_mismatch(env)
+    if _carrying_served_field(env):
+        return _mismatch_name(
+            _provider_text(env.get("served_provider")),
+            _provider_text(env.get("served_model")),
+        )
+    lane = env.get("lane") if "lane" in env else None
+    if not isinstance(lane, str) or lane == "":
+        return "lane_unknown"
+    if lane in NO_MODEL_LANES:
+        return None
+    if lane in MODEL_LANES or lane in CORTEX_LANES:
+        return f"pin_mismatch:{lane}"
+    return None

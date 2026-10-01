@@ -492,6 +492,9 @@ class Executor:
         generate seam ran, its setup fields reach the envelope on every path,
         including the contract-ask fallback after a generative miss.
         """
+        from cortex_client.compute import begin_answer_model_calls, recorded_model_calls
+
+        begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
         env = self._live_ask(
             question,
@@ -505,8 +508,13 @@ class Executor:
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
         out = stamped if stamped is not None else env
+        from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 
+        out["model_calls"] = recorded_model_calls()
+        mapped = lane_for_route(out.get("route"))
+        if mapped is not None:
+            out["lane"] = mapped
         return mask_unknown_keys(out)
 
     def _live_ask(

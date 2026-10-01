@@ -65,3 +65,29 @@ class GroundingRefused(Exception):
     @property
     def message(self) -> str:
         return str(self)
+
+
+# One lane list. BRONZE-GRANT-01 (#333, bronze_sheet_ask) and the pin both
+# import this object. No second copy.
+# No-model means the handler cannot reach Cortex. rules (verified_query,
+# maybe_verified_ask) and curated (governed_metric, maybe_pack_ask) submit
+# and append through CortexClient, so a recorded zero is not "no model".
+# They live on CORTEX_LANES. NO_MODEL_LANES stays empty until a handler
+# cannot reach cortex_client.
+NO_MODEL_LANES: frozenset[str] = frozenset()
+CORTEX_LANES = frozenset({"rules", "curated"})
+MODEL_LANES = frozenset({"generative"})
+_ROUTE_LANE = {
+    "verified_query": "rules",
+    "governed_metric": "curated",
+    "generated": "generative",
+    "bronze_sheet": "bronze",
+    "followup": "followup",
+}
+
+
+def lane_for_route(route: object) -> str | None:
+    """Lane name for an ask route. None when this route is not on the list."""
+    if not isinstance(route, str) or route == "":
+        return None
+    return _ROUTE_LANE.get(route)
