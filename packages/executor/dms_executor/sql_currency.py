@@ -3,8 +3,11 @@
 sqlglot lives here only. Swap: replace this module with a Cortex HTTP
 verify-unit call or another dialect parser. generative_ask calls
 currency_mismatch_reason. The ask envelope lazily imports
-served_column_sources. A parse failure, UNION, or SELECT * yields no
-traced source, so that column stays masked.
+served_column_sources. A parse failure yields no traced source.
+SELECT *, t.*, a star CTE, or UNION is expanded only when the caller
+passes the connection schema. No schema, a schema qualify cannot use,
+or a column that is still untraced: that column stays masked.
+This module does not load a schema and does not read DEMO_TABLES.
 No FX conversion. Mismatch or unresolved currency is ABSTAIN.
 """
 
@@ -18,6 +21,7 @@ from typing import Any
 
 from sqlglot import exp, parse_one
 from sqlglot.lineage import lineage
+from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
 from dms_executor.demo_warehouse import connect_file
@@ -860,6 +864,16 @@ def _outer_select(tree: exp.Expression) -> exp.Select | None:
     return None
 
 
+def _output_select(tree: exp.Expression) -> exp.Select | None:
+    """Leftmost select, so a qualified UNION still has output names."""
+    node = tree.this if isinstance(tree, exp.Subquery) else tree
+    while isinstance(node, exp.Union):
+        node = node.this
+    if isinstance(node, exp.Select):
+        return node
+    return None
+
+
 def _projection_is_star(proj: exp.Expression) -> bool:
     inner = proj.this if isinstance(proj, exp.Alias) else proj
     if isinstance(inner, exp.Star):
@@ -895,19 +909,37 @@ def _lineage_leaves(node: Any) -> frozenset[str] | None:
     return frozenset(found)
 
 
-def served_column_sources(sql: str) -> dict[str, frozenset[str]]:
+def served_column_sources(
+    sql: str,
+    schema: dict[str, Any] | None = None,
+) -> dict[str, frozenset[str]]:
     """Outer output name -> source column names from sqlglot lineage.
 
-    An empty set means that output could not be traced (star, or lineage
-    failed). A parse failure, a UNION, or a star returns ``{}``, so every
-    served date column is untraced and no column is a proven code source.
+    ``schema`` is the connection the answer ran against. The caller passes
+    it. This function does not load one. When qualify can use it, ``*``,
+    ``t.*``, star CTEs, and UNION branches expand to real source columns
+    before lineage. An empty set means that output could not be traced.
+    No schema, a schema qualify cannot use, a parse failure, or a column
+    that is still a star: that output stays untraced, so a date stays
+    masked and a passport shape is not a proven code source.
     No-SQL answers do not call this.
     """
     try:
         tree = parse_one(sql or "", read=_DIALECT)
     except Exception:
         return {}
-    select = _outer_select(tree)
+    sql_for_lineage = sql
+    qualified = False
+    if schema:
+        try:
+            expanded = qualify(tree.copy(), schema=schema, dialect=_DIALECT)
+        except Exception:
+            expanded = None
+        if expanded is not None:
+            sql_for_lineage = expanded.sql(dialect=_DIALECT)
+            tree = expanded
+            qualified = True
+    select = _output_select(tree) if qualified else _outer_select(tree)
     if select is None:
         return {}
     out: dict[str, frozenset[str]] = {}
@@ -919,7 +951,7 @@ def served_column_sources(sql: str) -> dict[str, frozenset[str]]:
             continue
         key = alias.casefold()
         try:
-            node = lineage(alias, sql, dialect=_DIALECT)
+            node = lineage(alias, sql_for_lineage, dialect=_DIALECT)
         except Exception:
             out[key] = frozenset()
             continue

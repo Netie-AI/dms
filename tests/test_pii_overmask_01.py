@@ -48,8 +48,13 @@ def _served(
     text: str,
     rows: list[dict],
     sql_used: str | None,
+    column_schema: dict | None = None,
 ) -> dict:
-    """The served constructor. Masking runs at envelope.py fail_closed_mask_payload."""
+    """The served constructor. Masking runs at envelope.py fail_closed_mask_payload.
+
+    ``column_schema`` is the connection the answer ran against. None means
+    the caller did not supply one, so a star stays untraced.
+    """
     env = build_answer_envelope(
         answer_id="ans_overmask",
         text=text,
@@ -59,6 +64,7 @@ def _served(
         audit_id="aud_overmask",
         as_of="2026-10-01T00:00:00Z",
         ask_mode="live",
+        column_schema=column_schema,
     )
     assert env["abstained"] is False, env.get("text")
     return env
@@ -158,11 +164,11 @@ def test_birth_source_stays_masked_through_alias_function_and_cte() -> None:
 
 
 def test_untraced_date_column_stays_masked() -> None:
-    """Star and a star CTE cannot name a source column, so the date stays masked.
+    """No schema available: a star and a star CTE stay masked.
 
-    Reason: sqlglot lineage cannot see through SELECT *. The served date is
-    masked by default. An explicit SELECT ts FROM transactions is the same
-    column name and stays visible, because the source is proven not to be birth.
+    Reason: qualify does not run without the connection schema, so lineage
+    cannot see through SELECT *. The served date stays masked. An explicit
+    SELECT ts FROM transactions names its source and stays visible.
     """
     reset_untraced_date_column_count()
     star = _served(
@@ -347,7 +353,7 @@ def test_cued_passport_prose_stays_masked() -> None:
 
 
 def test_untraced_code_column_gets_no_passport_exemption() -> None:
-    """LOCK. SELECT * cannot name a source, so a passport shape stays masked."""
+    """LOCK. SELECT * with no schema cannot name a source, so a passport shape stays masked."""
     env = _served(
         text="Listed.",
         rows=[{"sku": "AB1234567"}],
@@ -369,3 +375,150 @@ def test_285_untraced_default_is_separate_from_pass_count() -> None:
     assert len(rows) == 285
     assert untraced == 0
     assert len(passed) == 258
+
+
+_TXN_SCHEMA = {
+    "transactions": {
+        "created_at": "TIMESTAMP",
+        "ts": "TIMESTAMP",
+    }
+}
+
+
+def test_star_expands_before_lineage() -> None:
+    """FAILS on de4c6df. SELECT *, t.*, and a star CTE trace created_at and ts."""
+    rows = [{"created_at": "2026-10-01", "ts": "2026-09-30 10:00:00"}]
+    queries = (
+        "SELECT * FROM transactions",
+        "SELECT t.* FROM transactions t",
+        "WITH c AS (SELECT * FROM transactions) SELECT * FROM c",
+    )
+    for sql in queries:
+        env = _served(
+            text="Listed.",
+            rows=rows,
+            sql_used=sql,
+            column_schema=_TXN_SCHEMA,
+        )
+        assert env["rows"][0]["created_at"] == "2026-10-01", sql
+        assert env["rows"][0]["ts"] == "2026-09-30 10:00:00", sql
+        assert "DMSMASK_" not in str(env["rows"]), sql
+
+
+def test_star_birth_date_stays_masked() -> None:
+    """LOCK. Star over a table that has birth_date: birth_date stays masked.
+
+    order_date stays visible, which is what fails on de4c6df. birth_date is
+    masked there too.
+    """
+    env = _served(
+        text="Listed.",
+        rows=[{"birth_date": "1990-01-15", "order_date": "2026-10-01"}],
+        sql_used="SELECT * FROM patients",
+        column_schema={
+            "patients": {
+                "birth_date": "DATE",
+                "order_date": "DATE",
+            }
+        },
+    )
+    assert is_mask_token(env["rows"][0]["birth_date"])
+    assert "1990-01-15" not in str(env["rows"])
+    assert env["rows"][0]["order_date"] == "2026-10-01"
+
+
+def test_star_birth_ts_stays_masked() -> None:
+    """LOCK. A birth-cued timestamp birth_ts stays masked after the star expands.
+
+    created_at on the same star stays visible, which fails on de4c6df.
+    """
+    env = _served(
+        text="Listed.",
+        rows=[{"birth_ts": "1990-01-15 08:00:00", "created_at": "2026-10-01"}],
+        sql_used="SELECT * FROM people",
+        column_schema={
+            "people": {
+                "birth_ts": "TIMESTAMP",
+                "created_at": "TIMESTAMP",
+            }
+        },
+    )
+    assert is_mask_token(env["rows"][0]["birth_ts"])
+    assert "1990-01-15" not in str(env["rows"])
+    assert env["rows"][0]["created_at"] == "2026-10-01"
+
+
+def test_union_same_non_birth_column_stays_visible() -> None:
+    """FAILS on de4c6df. Both UNION ALL branches trace to created_at."""
+    env = _served(
+        text="Listed.",
+        rows=[{"created_at": "2026-10-01"}],
+        sql_used=(
+            "SELECT created_at FROM transactions "
+            "UNION ALL SELECT created_at FROM transactions"
+        ),
+        column_schema=_TXN_SCHEMA,
+    )
+    assert env["rows"][0]["created_at"] == "2026-10-01"
+    assert "DMSMASK_" not in str(env["rows"])
+
+
+def test_union_birth_branch_stays_masked() -> None:
+    """LOCK. Either UNION ALL branch tracing to a birth column keeps the date masked."""
+    env = _served(
+        text="Listed.",
+        rows=[{"d": "1990-01-15"}],
+        sql_used=(
+            "SELECT birth_date AS d FROM patients "
+            "UNION ALL SELECT created_at AS d FROM transactions"
+        ),
+        column_schema={
+            "patients": {"birth_date": "DATE"},
+            "transactions": {"created_at": "TIMESTAMP"},
+        },
+    )
+    assert is_mask_token(env["rows"][0]["d"])
+    assert "1990-01-15" not in str(env["rows"])
+
+
+def test_schema_that_cannot_expand_star_stays_masked() -> None:
+    """A schema that does not name the table leaves the star masked."""
+    env = _served(
+        text="Listed.",
+        rows=[{"ts": "2026-09-30 10:00:00"}],
+        sql_used="SELECT * FROM transactions",
+        column_schema={"other": {"id": "INTEGER"}},
+    )
+    assert is_mask_token(env["rows"][0]["ts"])
+
+
+def test_crm_accounts_star_is_not_the_demo_warehouse() -> None:
+    """FAILS on de4c6df. Synthetic crm.accounts, not the demo warehouse.
+
+    signup_date and last_login_ts stay visible. birth_date is a LOCK.
+    """
+    env = _served(
+        text="Listed.",
+        rows=[
+            {
+                "signup_date": "2020-01-02",
+                "last_login_ts": "2026-09-30 10:00:00",
+                "birth_date": "1990-01-15",
+            }
+        ],
+        sql_used="SELECT * FROM crm.accounts",
+        column_schema={
+            "crm": {
+                "accounts": {
+                    "signup_date": "DATE",
+                    "last_login_ts": "TIMESTAMP",
+                    "birth_date": "DATE",
+                }
+            }
+        },
+    )
+    row = env["rows"][0]
+    assert row["signup_date"] == "2020-01-02"
+    assert row["last_login_ts"] == "2026-09-30 10:00:00"
+    assert is_mask_token(row["birth_date"])
+    assert "1990-01-15" not in str(env["rows"])

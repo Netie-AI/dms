@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - OVERMASK-01: qualify stars before lineage (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Gating and Epic ruling on PR #322, plus the PRD synthetic-schema case. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** `served_column_sources` runs sqlglot qualify before lineage when the caller passes the connection schema on `build_answer_envelope` (`column_schema`). `SELECT *`, `t.*`, a star CTE, and UNION branches then trace to real source columns. No schema, a schema qualify cannot use, or a column that is still untraced: that column stays masked. This does not load a schema and does not read `DEMO_TABLES`. No ask path supplies a schema today, so production stars stay masked. A clock time is not a DOB shape by itself; a birth cue still masks it.
+- **Gate.** Checker re-run: 258 PASS / 27 FAIL / 285. Untraced-default: 0. Parent `cdd3ae2a` 169 PASS stay PASS. `tests/test_pii_mask_02.py` matches `ca34419d`.
+- **Not this ticket:** a schema loader; `load_active` intersected with grants (dms#284); Presidio; dms#304 deny file; COMPLETE; merge.
+
 ## 2026-10-01 - OVERMASK-01: gating, free-text dates stay masked (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Gating ruling on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
