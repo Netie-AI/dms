@@ -704,6 +704,126 @@ def test_live_written_files_omit_raw_dob_and_email(
     ) == ([], False, False, True, True)
 
 
+def _printed_case_record(text: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("case_record="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+def _jsonl_count(path: Path | None) -> int:
+    if path is None or not path.is_file():
+        return 0
+    return len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()])
+
+
+def test_live_unset_case_record_dir_is_scratch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unset DMS_CASE_RECORD_DIR writes `.tmp/score_cases` and is not a baseline."""
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.delenv("DMS_SCORE_DIR", raising=False)
+    monkeypatch.delenv("DMS_CASE_RECORD_DIR", raising=False)
+    monkeypatch.delenv("DMS_SCORE_CASE_DIR", raising=False)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    text = capsys.readouterr().out
+    report = json.loads((ROOT / ".tmp" / "score_curated.json").read_text(encoding="utf-8"))
+    named = report.get("case_record")
+    path = Path(named) if isinstance(named, str) else None
+    scratch = ROOT / ".tmp" / "score_cases"
+    assert (
+        report.get("record_path_scratch"),
+        report.get("baseline_eligible"),
+        report.get("record_path_in_repo"),
+        path == scratch / path.name if path else None,
+        _printed_case_record(text),
+        str(path) if path else "",
+        _jsonl_count(path),
+        report.get("n"),
+    ) == (
+        True,
+        False,
+        False,
+        True,
+        str(path) if path else "",
+        str(path) if path else "",
+        _pack_n(),
+        _pack_n(),
+    )
+
+
+def test_live_in_repo_case_record_dir_is_not_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A relative path or an absolute in-repo path is record_path_in_repo."""
+    _open_round(monkeypatch, tmp_path)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    dirs = (
+        ".tmp/rel_case_records",
+        str((ROOT / ".tmp" / "abs_case_records").resolve()),
+    )
+    got = []
+    for raw in dirs:
+        monkeypatch.setenv("DMS_CASE_RECORD_DIR", raw)
+        live("http://127.0.0.1:9", 1.0, db)
+        text = capsys.readouterr().out
+        report = _report(tmp_path)
+        named = report.get("case_record")
+        path = Path(named) if isinstance(named, str) else None
+        got.append(
+            (
+                report.get("record_path_in_repo"),
+                report.get("baseline_eligible"),
+                report.get("record_path_scratch"),
+                bool(path and path.is_absolute() and str(path) == _printed_case_record(text)),
+                report.get("n"),
+            )
+        )
+    assert got == [
+        (True, False, False, True, _pack_n()),
+        (True, False, False, True, _pack_n()),
+    ]
+
+
+def test_live_absolute_out_of_tree_record_is_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An absolute dir outside the work tree is eligible and the printed path is the file."""
+    _open_round(monkeypatch, tmp_path)
+    outside = tmp_path / "out_records"
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(outside))
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    text = capsys.readouterr().out
+    report = _report(tmp_path)
+    named = report.get("case_record")
+    path = Path(named) if isinstance(named, str) else None
+    printed = _printed_case_record(text)
+    assert (
+        report.get("baseline_eligible"),
+        report.get("record_path_scratch"),
+        report.get("record_path_in_repo"),
+        printed,
+        str(path) if path else "",
+        bool(path and path.is_file() and path.is_absolute() and path.parent == outside),
+        _jsonl_count(path),
+        report.get("n"),
+    ) == (
+        True,
+        False,
+        False,
+        str(path) if path else "",
+        str(path) if path else "",
+        True,
+        _pack_n(),
+        _pack_n(),
+    )
+
+
 def test_live_unmasked_match_stays_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

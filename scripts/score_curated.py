@@ -2322,17 +2322,46 @@ def merge_commit_sha() -> str:
 
 
 def case_record_dir(art: Path) -> Path:
-    """DMS_SCORE_CASE_DIR, else `.tmp/score_cases` for the default score dir, else art.
+    """DMS_CASE_RECORD_DIR, else DMS_SCORE_CASE_DIR, else the default scratch dir.
 
-    A custom DMS_SCORE_DIR (the live() tests) keeps records beside that score
-    file. The default directory is the only path gitignore names.
+    Unset `DMS_CASE_RECORD_DIR` still writes `.tmp/score_cases` when the score
+    dir is the default `.tmp`. A custom DMS_SCORE_DIR keeps that older path so
+    existing live() tests stay put. Only `DMS_CASE_RECORD_DIR` can make a
+    round baseline-eligible.
     """
-    raw = (os.environ.get("DMS_SCORE_CASE_DIR") or "").strip()
-    if raw:
-        return Path(raw)
+    configured = (os.environ.get("DMS_CASE_RECORD_DIR") or "").strip()
+    if configured:
+        return Path(configured)
+    legacy = (os.environ.get("DMS_SCORE_CASE_DIR") or "").strip()
+    if legacy:
+        return Path(legacy)
     if art.resolve() == (ROOT / ".tmp").resolve():
         return art / "score_cases"
     return art
+
+
+def _path_in_work_tree(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(ROOT.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def record_path_block() -> str | None:
+    """Why this round cannot be a baseline, or None when the record dir is eligible.
+
+    Unset `DMS_CASE_RECORD_DIR` is scratch. A relative dir, or an absolute dir
+    inside the git work tree, is in-repo. An absolute dir outside the work
+    tree is eligible.
+    """
+    raw = (os.environ.get("DMS_CASE_RECORD_DIR") or "").strip()
+    if not raw:
+        return "record_path_scratch"
+    path = Path(raw)
+    if not path.is_absolute() or _path_in_work_tree(path):
+        return "record_path_in_repo"
+    return None
 
 
 def case_record_path(directory: Path, run_id: str, sha: str) -> Path:
@@ -2422,7 +2451,13 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
             reason = "record_unidentified"
         elif write_failed:
             reason = "record_write_failed"
-    print(f"case_record={rec_path}")
+    abs_record = rec_path if rec_path.is_absolute() else rec_path.absolute()
+    path_block = record_path_block()
+    print(f"case_record={abs_record}")
+    if path_block:
+        print(f"{path_block} baseline_eligible=false")
+    else:
+        print("baseline_eligible=true")
     (art / "score_curated.json").write_text(
         json.dumps(
             {
@@ -2460,7 +2495,10 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "round_label": round_label,
                 "run_id": run_id,
                 "commit_sha": sha,
-                "case_record": str(rec_path),
+                "case_record": str(abs_record),
+                "baseline_eligible": path_block is None,
+                "record_path_scratch": path_block == "record_path_scratch",
+                "record_path_in_repo": path_block == "record_path_in_repo",
                 "categories": cats,
             },
             indent=2,

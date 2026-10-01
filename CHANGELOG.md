@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: record dir baseline gate (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited. `.gitignore` unchanged.
+- **Gate.** `live()` reads `DMS_CASE_RECORD_DIR` and prints the absolute path of the file it wrote. Unset stays `.tmp/score_cases/` and the summary has `record_path_scratch` with `baseline_eligible: false`. A relative dir, or an absolute dir inside the work tree, has `record_path_in_repo` and is not eligible. An absolute dir outside the work tree is eligible. Counts stay. Unread engine date stays n=0.
+
 ## 2026-10-01 - SCORE-MASK-01: record gate items 6 and 7 (#299)
 
 - **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited.
