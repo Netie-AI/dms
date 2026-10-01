@@ -32,16 +32,18 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
 import sqlglot
 from dms_core.control_plane.onto_store import (
+    MeasureDraft,
     OntologySnapshot,
     OntologyStore,
     OntologyVersion,
+    OntoMeasure,
     SchemaColumn,
     SchemaForeignKey,
     SchemaTable,
@@ -93,6 +95,55 @@ class OntologyStorePort(Protocol):
     ) -> OntologySnapshot: ...
 
     def latest_snapshot(self, version_id: UUID) -> OntologySnapshot | None: ...
+
+    # ---- measures (ONTO-CONFIRM-01) ----
+
+    @property
+    def persistent(self) -> bool: ...
+
+    def measures_for_space(
+        self,
+        space_id: UUID,
+        *,
+        states: Sequence[str] | None = None,
+        active_only: bool = False,
+    ) -> list[OntoMeasure]: ...
+
+    def get_measure(self, space_id: UUID, measure_id: UUID) -> OntoMeasure | None: ...
+
+    def add_measures(
+        self,
+        version_id: UUID,
+        drafts: Sequence[MeasureDraft],
+        evidences: Sequence[Mapping[str, Any]],
+        *,
+        actor: UUID | None,
+        snapshot_id: UUID | str | None,
+        action: str,
+    ) -> tuple[list[OntoMeasure], list[MeasureDraft]]: ...
+
+    def decide_measure(
+        self,
+        measure_id: UUID,
+        *,
+        to_state: str,
+        expected_hash: str,
+        name: str | None = None,
+        description: str | None = None,
+        reason: str | None = None,
+        evidence: Mapping[str, Any] | None = None,
+        actor: UUID,
+        ledger: Callable[[dict[str, Any]], str],
+    ) -> tuple[OntoMeasure, bool]: ...
+
+    def record_refusal(
+        self,
+        measure_id: UUID,
+        *,
+        failed: Sequence[str],
+        actor: UUID | None,
+        from_state: str,
+    ) -> None: ...
 
 
 _STORE_LOCK = threading.Lock()
