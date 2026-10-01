@@ -28,6 +28,12 @@ SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
 SERVED_PROVIDER_HEADER = "X-OpenVault-Served-Provider"
 DEFAULT_STRICT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_STRICT_PROVIDER = "groq"
+# Exact ids from OpenVault #81 0d0ef3f0
+# OpenMW/openmw/openvault/vault/providers.py
+#   160: id="groq",
+#   247: id="nvidia",
+# Compared with ==. No case fold and no rewrite.
+PROVIDER_IDS = frozenset({"groq", "nvidia"})
 PIN_UNAVAILABLE = "pin_unavailable"
 # OpenVault #81. quota_exhausted stays here. It is not a 429.
 PIN_VAULT_REASONS = frozenset(
@@ -135,6 +141,29 @@ def _header(headers: Mapping[str, str] | None, name: str) -> str | None:
     return None
 
 
+def _provider_text(value: object) -> str | None:
+    """Provider id as sent. Empty is absent. No strip and no case fold."""
+    if not isinstance(value, str) or value == "":
+        return None
+    return value
+
+
+def _body_provider(body: Mapping[str, Any]) -> str | None:
+    if "served_provider" not in body:
+        return None
+    return _provider_text(body.get("served_provider"))
+
+
+def _header_provider(headers: Mapping[str, str] | None) -> str | None:
+    """Forward-compatible header. The name is exact. The value is not rewritten.
+
+    OpenVault #81 0d0ef3f0 does not send this header. Body fields are the contract.
+    """
+    if not headers or SERVED_PROVIDER_HEADER not in headers:
+        return None
+    return _provider_text(headers.get(SERVED_PROVIDER_HEADER))
+
+
 def _body_field(body: Mapping[str, Any], key: str) -> str | None:
     if key not in body:
         return None
@@ -152,9 +181,9 @@ def _sides(
     """Body fields and header fields. A null body field is absent."""
     payload = body if isinstance(body, Mapping) else {}
     return (
-        _body_field(payload, "served_provider"),
+        _body_provider(payload),
         _body_field(payload, "served_model"),
-        _header(headers, SERVED_PROVIDER_HEADER),
+        _header_provider(headers),
         _header(headers, SERVED_MODEL_HEADER),
     )
 
@@ -218,9 +247,11 @@ def interpret(
         )
     served_model = body_model or header_model
     served_provider = body_provider or header_provider
-    # Provider is required. Same model id from another hop is not the pin.
+    # Both ids, exact. A missing header is fine. A wrong provider is not.
     if (
         status == 200
+        and served_provider in PROVIDER_IDS
+        and pin.provider in PROVIDER_IDS
         and served_provider == pin.provider
         and served_model == pin.model
     ):

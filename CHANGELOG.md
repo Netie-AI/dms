@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: provider ids are groq and nvidia
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 160 is `id="groq",` and line 247 is `id="nvidia",`. Compared with `==` against that fixed list. No case fold. A 200 from that commit puts `served_provider` and `served_model` in the JSON body. It does not send `X-OpenVault-Served-*` headers. A missing header is not `pin_mismatch`.
+- **Forward-compatible.** Body-versus-header disagreement tests stay. Those headers are not from #81.
+- **Gate.** The positive check is body `groq` / `openai/gpt-oss-120b` with no headers, CORRECT, `baseline_eligible`. NIM provider `nvidia` with that model is INVALID.
+
 ## 2026-10-01 - dms#317 Part A: pin match requires provider and model
 
 - **Gate.** A vault 200 is the pin only when `served_provider` and `served_model` both match. A different or missing provider, from the body or `X-OpenVault-Served-*`, is INVALID `pin_mismatch:<provider>/<model>`, kept in n. Both sides are stored on the case record. Preflight uses the same check. OpenVault #81 `0d0ef3f0`.
