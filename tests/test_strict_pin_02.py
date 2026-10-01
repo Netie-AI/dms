@@ -267,3 +267,34 @@ def test_live_ask_matched_groq_is_correct(
         assert matched["served_model"] == "openai/gpt-oss-120b"
     finally:
         _wipe(tmp_path)
+
+
+def test_live_default_ask_mock_together_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default /v1/chat/ask mock must not hide a mismatch.
+
+    Pin stays groq. The mock's scored envelope says together. INVALID
+    pin_mismatch, kept in n. next_answer() still runs.
+    """
+    try:
+        monkeypatch.setenv("DMS_PIN02_ASK_PROVIDER", "together")
+        db = harness._oracle_db(tmp_path)
+        n_pack = len(harness._questions())
+        asks, script = harness._arm(
+            monkeypatch, tmp_path, repeat=harness._ok(_PIN)
+        )
+        live("http://score.test", 1.0, db)
+        report = harness._report(tmp_path)
+        row = report["cases"][0]
+        assert script.calls[0]["json"]["model"] == _PIN
+        assert row["id"] == "cq_spend_by_country"
+        assert row["verdict"] == "INVALID"
+        assert row["reason"] == f"pin_mismatch:together/{_PIN}"
+        assert report["n"] == n_pack
+        assert report["invalid"] == n_pack
+        assert int(report["abstained"]) != n_pack
+        assert len(asks) == n_pack
+        assert len(script.calls) == n_pack + 1
+    finally:
+        _wipe(tmp_path)

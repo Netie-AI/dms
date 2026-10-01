@@ -246,6 +246,11 @@ def _install_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[s
             # reach the row judge.
             pin_provider = os.environ.get("DMS_STRICT_PROVIDER", _PROVIDER).strip() or _PROVIDER
             pin_model = os.environ.get("DMS_STRICT_MODEL", _PIN).strip()
+            # Unset, the echo stays the active pin. A test sets this to prove
+            # a mismatched scored envelope is still INVALID.
+            forced_provider = os.environ.get("DMS_PIN02_ASK_PROVIDER", "")
+            if forced_provider:
+                pin_provider = forced_provider
             return _Http(
                 200,
                 {
