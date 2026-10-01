@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: parent failures are the pin rule
+
+- **Ticket.** Same draft as the section below. OpenVault #81 `0d0ef3f0` is the field contract (`strict` boolean, `X-OpenVault-Strict`, 503 `pin_unavailable`, `served_provider` / `served_model`).
+- **Gate.** `tests/test_strict_pin_01.py` reads engine date `2024-06-15` and scores the pack (judge returns ABSTAIN, not ORACLE_ERROR). On `a63988b2` each test fails on that pin assertion. 27 failed, 0 passed.
+
 ## 2026-10-01 - dms#317 Part A: strict model pin on the generate path
 
 - **Ticket.** [dms#317](https://github.com/Netie-AI/dms/issues/317) Part A. Draft. Does not stamp COMPLETE. Does not close the issue. OpenVault #81 `0d0ef3f0` is the field contract. No live Groq call.

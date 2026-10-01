@@ -1,11 +1,16 @@
-"""Strict model pin for the generate path (dms#317 Part A, OpenVault #81).
+"""Strict model pin for the generate path (dms#317 Part A).
+
+Contract: OpenVault #81 at ``0d0ef3f0``. ``pop_strict`` accepts only JSON
+boolean true. ``X-OpenVault-Strict`` is on for ``1`` / ``true`` / ``yes``.
+A 503 body is ``error.type=pin_unavailable``, ``error.reason``, ``error.model``
+(the pin that failed), ``served_provider`` null, ``served_model`` null,
+``served_local`` false. A 200 stamps ``served_provider``, ``served_model``,
+and ``served_local``.
 
 The pin is config (``DMS_STRICT_MODEL`` / ``DMS_STRICT_PROVIDER``). Call sites
 stamp that pair onto the request. They do not name a model. OpenVault keeps
 the provider key. This module never reads a vault file and never retries.
-
-``strict`` is JSON true. The header ``X-OpenVault-Strict: true`` is the same
-opt-in. A 503 ``pin_unavailable`` is not a 429, so it is not RATE_LIMIT.
+A 503 ``pin_unavailable`` is not a 429, so it is not RATE_LIMIT.
 Retry-After is recorded and not slept on.
 """
 

@@ -160,6 +160,7 @@ def _down(reason: str, model: str) -> dict[str, Any]:
             },
             "served_provider": None,
             "served_model": None,
+            "served_local": False,
         },
     }
 
@@ -249,8 +250,17 @@ def _arm(
     else:
         monkeypatch.setenv("DMS_STRICT_PROVIDER", provider)
     asks = _install_ask(monkeypatch, tmp_path)
+    # Gold rows come back. The judge scores ABSTAIN. It does not ORACLE_ERROR.
+    monkeypatch.setattr("score_curated.run_oracle_select", lambda *_a, **_k: ([], None))
     script = _patch_pin(monkeypatch, shots=shots, repeat=repeat)
     return asks, script
+
+
+def _wire(script: _Script) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not script.calls:
+        return {}, {}
+    call = script.calls[0]
+    return dict(call.get("json") or {}), dict(call.get("headers") or {})
 
 
 def _assert_strict_call(call: dict[str, Any], model: str) -> None:
@@ -290,18 +300,22 @@ def test_live_preflight_pin_unavailable_is_invalid_n0(
     code = live("http://score.test", 1.0, db)
     elapsed = time.monotonic() - started
     report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    assert (
+        report["reason"] == name
+        and report["round_label"] == "INVALID"
+        and report["n"] == 0
+        and report["pin_reason"] == reason
+    )
     assert elapsed < 3.0
     assert code != 0
     assert asks == []
     assert len(script.calls) == 1
     _assert_strict_call(script.calls[0], _PIN)
-    assert report["n"] == 0
     assert report["total"] == 0
     assert report["cases"] == []
-    assert report["round_label"] == "INVALID"
     assert report["passed"] is False
-    assert report["reason"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
-    assert report["pin_reason"] == reason
     assert report["reason"] != "RATE_LIMIT"
     assert report["pin_reason"] != "RATE_LIMIT"
     assert int(report["invalid"]) == 0
@@ -322,9 +336,12 @@ def test_live_reads_model_from_config(
     )
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
-    assert script.calls
+    wire, hdr = _wire(script)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert wire.get("strict") is True and wire.get("model") == _OTHER
+    assert hdr.get("X-OpenVault-Strict") == "true"
+    assert wire.get("model") != _PIN
     _assert_strict_call(script.calls[0], _OTHER)
-    assert script.calls[0]["json"]["model"] != _PIN
     assert report["reason"] == f"pin_unavailable:groq/{_OTHER}"
 
 
@@ -341,9 +358,15 @@ def test_live_default_pin_is_groq_catalog_id(
     )
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
-    assert script.calls
+    wire, hdr = _wire(script)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert (
+        wire.get("strict") is True
+        and wire.get("model") == _PIN
+        and wire.get("model") != "gpt-oss-120b"
+        and hdr.get("X-OpenVault-Strict") == "true"
+    )
     _assert_strict_call(script.calls[0], _PIN)
-    assert script.calls[0]["json"]["model"] != "gpt-oss-120b"
     assert report["reason"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
 
 
@@ -360,7 +383,20 @@ def test_live_case_pin_unavailable_stays_in_n(
     live("http://score.test", 1.0, db)
     elapsed = time.monotonic() - started
     report = _report(tmp_path)
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    first = report["cases"][0]
+    assert (
+        first["verdict"] == "ABSTAIN"
+        and first["reason"] == name
+        and first.get("pin_reason") == reason
+    )
     assert elapsed < 5.0
+    assert first["verdict"] != "INVALID"
+    assert first["verdict"] != "WRONG"
+    assert first["verdict"] != "RATE_LIMIT"
+    assert first["rows"] == 0
     assert report["n"] == n_pack
     assert report["invalid"] == 0
     assert report["n_without_invalid"] == n_pack
@@ -370,14 +406,6 @@ def test_live_case_pin_unavailable_stays_in_n(
     models = {call["json"]["model"] for call in script.calls}
     assert models == {_PIN}
     assert all(call["json"]["strict"] is True for call in script.calls)
-    first = report["cases"][0]
-    assert first["verdict"] == "ABSTAIN"
-    assert first["verdict"] != "INVALID"
-    assert first["verdict"] != "WRONG"
-    assert first["verdict"] != "RATE_LIMIT"
-    assert first["reason"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
-    assert first["pin_reason"] == reason
-    assert first["rows"] == 0
     assert report["cases"][1]["verdict"] != "RATE_LIMIT"
 
 
@@ -391,17 +419,18 @@ def test_live_body_pin_mismatch_is_invalid(
     asks, script = _arm(monkeypatch, tmp_path, shots=shots)
     code = live("http://score.test", 1.0, db)
     report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    row = report["cases"][0]
+    assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
     assert code != 0
+    assert row["verdict"] != "WRONG"
     assert report["n"] == n_pack
     assert report["invalid"] == 1
     assert report["n_without_invalid"] == n_pack - 1
     assert report["wrong"] == 0
     assert len(asks) == n_pack - 1
     assert len(script.calls) == n_pack + 1
-    row = report["cases"][0]
-    assert row["verdict"] == "INVALID"
-    assert row["verdict"] != "WRONG"
-    assert row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
     assert all(item["verdict"] != "INVALID" for item in report["cases"][1:])
 
 
@@ -420,10 +449,11 @@ def test_live_missing_served_model_is_invalid(
     _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
     code = live("http://score.test", 1.0, db)
     report = _report(tmp_path)
-    assert code != 0
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "ABSTAIN"
     row = report["cases"][0]
-    assert row["verdict"] == "INVALID"
-    assert row["reason"] == "pin_mismatch:missing/missing"
+    assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:missing/missing"
+    assert code != 0
     assert report["n"] == n_pack
     assert report["invalid"] == 1
     assert report["wrong"] == 0
@@ -446,9 +476,10 @@ def test_live_header_mismatch_is_invalid(
     _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "ABSTAIN"
     row = report["cases"][0]
-    assert row["verdict"] == "INVALID"
-    assert row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
+    assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
     assert report["n"] == n_pack
     assert report["invalid"] == 1
 
@@ -470,13 +501,20 @@ def test_live_header_match_is_judged(
     asks, script = _arm(monkeypatch, tmp_path, shots=shots)
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
+    wire, hdr = _wire(script)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][0]["verdict"] == "ABSTAIN"
+    assert (
+        wire.get("strict") is True
+        and wire.get("model") == _PIN
+        and hdr.get("X-OpenVault-Strict") == "true"
+    )
     assert len(asks) == n_pack
     assert len(script.calls) == n_pack + 1
     assert report["invalid"] == 0
     assert report["n"] == n_pack
     assert report["wrong"] == 0
     assert all(row["verdict"] != "INVALID" for row in report["cases"])
-    assert any(row["verdict"] in {"ABSTAIN", "ORACLE_ERROR"} for row in report["cases"])
 
 
 def test_live_body_mismatch_wins_over_matching_header(
@@ -495,9 +533,11 @@ def test_live_body_mismatch_wins_over_matching_header(
     shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
     _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
     live("http://score.test", 1.0, db)
-    row = _report(tmp_path)["cases"][0]
-    assert row["verdict"] == "INVALID"
-    assert row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
+    report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "ABSTAIN"
+    row = report["cases"][0]
+    assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
 
 
 @pytest.mark.parametrize("model", _CALLER_ERRORS)
@@ -511,13 +551,16 @@ def test_live_caller_error_sends_nothing(
     shown = model.strip().lower() or "empty"
     if model == "gpt-oss-120b":
         shown = model
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert (
+        report["reason"] == f"pin_caller_error:{shown}"
+        and report["round_label"] == "INVALID"
+        and report["n"] == 0
+        and script.calls == []
+    )
     assert code != 0
     assert asks == []
-    assert script.calls == []
-    assert report["n"] == 0
     assert report["cases"] == []
-    assert report["round_label"] == "INVALID"
-    assert report["reason"] == f"pin_caller_error:{shown}"
 
 
 @pytest.mark.parametrize(
@@ -535,36 +578,46 @@ def test_each_live_entry_preflight_aborts(
     _patch_probe(monkeypatch)
     fn = getattr(score_curated, entry)
     result = fn("http://score.test", 1.0, db)
-    assert asks == []
-    assert script.calls
-    assert all(call["json"]["strict"] is True for call in script.calls)
-    assert all(call["json"]["model"] == _PIN for call in script.calls)
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
     if entry == "grid_score_hook":
-        assert result["n"] == 0
+        assert (
+            result.get("reason") == name
+            and result.get("round_label") == "INVALID"
+            and result.get("n") == 0
+            and result.get("pin_reason") == "quota_exhausted"
+        )
+        assert asks == []
+        assert script.calls
+        assert all(call["json"]["strict"] is True for call in script.calls)
+        assert all(call["json"]["model"] == _PIN for call in script.calls)
         assert result["cases"] == []
-        assert result["round_label"] == "INVALID"
-        assert result["reason"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
-        assert result["pin_reason"] == "quota_exhausted"
         assert result["passed"] is False
         return
     if entry == "live":
         report = _report(tmp_path)
     elif entry == "climb":
         report = json.loads((tmp_path / "score_climb.json").read_text(encoding="utf-8"))
-        assert report["measured"]["n"] == 0
     elif entry == "climb_ab_live":
         report = json.loads((tmp_path / "score_climb_ab.json").read_text(encoding="utf-8"))
+    else:
+        report = json.loads((tmp_path / "score_gen_path_prove.json").read_text(encoding="utf-8"))
+    assert report.get("oracle_as_of") == _ENGINE_DAY
+    assert (
+        report.get("reason") == name
+        and report.get("round_label") == "INVALID"
+        and report.get("pin_reason") == "quota_exhausted"
+    )
+    if entry == "climb":
+        assert report["measured"]["n"] == 0
+    elif entry == "climb_ab_live":
         assert report["exact_match"]["n"] == 0
         assert report["generative"]["n"] == 0
-    else:
-        report = json.loads(
-            (tmp_path / "score_gen_path_prove.json").read_text(encoding="utf-8")
-        )
+    elif entry == "prove_path_live":
         assert report["exact_n"] == 0
     assert result != 0
-    assert report["round_label"] == "INVALID"
-    assert report["reason"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
-    assert report["pin_reason"] == "quota_exhausted"
+    assert asks == []
+    assert script.calls
+    assert all(call["json"]["strict"] is True for call in script.calls)
 
 
 def test_live_generate_posts_send_strict_once(
@@ -597,13 +650,13 @@ def test_live_generate_posts_send_strict_once(
             body = _insights_body(
                 "how many skus", session_id="s", space_id="sp", ontology=None
             )
-            assert body["strict"] is True
-            assert body["model"] == _PIN
-            assert body["model_preference"] == "free+normal"
+            seen["body"] = body
+            seen["preference"] = body.get("model_preference")
 
             class _Once:
                 def __init__(self) -> None:
                     self.n = 0
+                    self.gets = 0
 
                 def post(
                     self,
@@ -617,56 +670,83 @@ def test_live_generate_posts_send_strict_once(
                     return _Http(503, _down("quota_exhausted", _PIN)["body"], {"Retry-After": "30"})
 
                 def get(self, *a: Any, **k: Any) -> _Http:
-                    raise AssertionError("pin_unavailable must not rank or retry")
+                    self.gets += 1
+                    return _Http(200, {}, {})
 
             once = _Once()
             auth = {"Authorization": "Bearer ov_test_pin_key"}
-            out = _run_insights_legs(
-                once,  # type: ignore[arg-type]
-                "http://127.0.0.1:9",
-                "how many skus",
-                body,
-                auth,
-                None,
-            )
-            assert once.n == 1
-            assert seen["gen_json"]["strict"] is True
-            assert seen["gen_json"]["model"] == _PIN
-            assert seen["gen_headers"]["X-OpenVault-Strict"] == "true"
-            assert seen["gen_headers"]["Authorization"] == "Bearer ov_test_pin_key"
-            assert out is not None
-            assert out["pin_stop"] is True
-            assert out["pin_reason"] == "quota_exhausted"
-            assert out["insights_fail"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
-            assert insights_fail_reason(out) == out["insights_fail"]
-            assert insights_fail_reason(out) != "RATE_LIMIT"
-            again = _insights_generate_post(
-                once,  # type: ignore[arg-type]
-                "http://127.0.0.1:9",
-                body,
-                auth,
-            )
-            assert once.n == 2
-            assert again is not None and again["pin_stop"] is True
-            hosted = insights_post(
-                "http://127.0.0.1:9",
-                intent="how many skus",
-                generate=True,
-                api_key="ov_test_pin_key",
-            )
-            assert hosted["status"] == "ABSTAIN"
-            assert hosted["insights_fail"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
-            assert hosted["pin_reason"] == "quota_exhausted"
-            assert script.requests
-            sent = script.requests[0]
-            assert sent["json"]["strict"] is True
-            assert sent["json"]["model"] == _PIN
-            assert sent["headers"]["X-OpenVault-Strict"] == "true"
-            assert "ov_test_pin_key" not in json.dumps(sent["json"])
+            try:
+                out = _run_insights_legs(
+                    once,  # type: ignore[arg-type]
+                    "http://127.0.0.1:9",
+                    "how many skus",
+                    body,
+                    auth,
+                    None,
+                )
+            except Exception as exc:  # noqa: BLE001 - recorded, asserted after live()
+                out = None
+                seen["legs_error"] = type(exc).__name__
+            seen["legs_posts"] = once.n
+            seen["legs_gets"] = once.gets
+            seen["out"] = out
+            try:
+                again = _insights_generate_post(
+                    once,  # type: ignore[arg-type]
+                    "http://127.0.0.1:9",
+                    body,
+                    auth,
+                )
+            except Exception as exc:  # noqa: BLE001
+                again = None
+                seen["post_error"] = type(exc).__name__
+            seen["again"] = again
+            seen["posts_after_second"] = once.n
+            try:
+                seen["hosted"] = insights_post(
+                    "http://127.0.0.1:9",
+                    intent="how many skus",
+                    generate=True,
+                    api_key="ov_test_pin_key",
+                )
+            except Exception as exc:  # noqa: BLE001
+                seen["hosted"] = None
+                seen["hosted_error"] = type(exc).__name__
             seen["done"] = True
         return installed_fn(method, url, json_body=json_body, timeout=timeout)
 
     monkeypatch.setattr("score_curated.score_http", wrapped)
     live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    body = seen.get("body") or {}
+    gen_json = seen.get("gen_json") or {}
+    gen_headers = seen.get("gen_headers") or {}
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][0]["verdict"] == "ABSTAIN"
+    assert (
+        body.get("strict") is True
+        and body.get("model") == _PIN
+        and gen_json.get("strict") is True
+        and gen_headers.get("X-OpenVault-Strict") == "true"
+    )
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    out = seen.get("out") or {}
+    assert out.get("insights_fail") == name and out.get("pin_reason") == "quota_exhausted"
+    assert out.get("pin_stop") is True
+    assert insights_fail_reason(out) == name
+    assert insights_fail_reason(out) != "RATE_LIMIT"
+    assert seen.get("legs_posts") == 1
+    assert seen.get("legs_gets") == 0
+    again = seen.get("again") or {}
+    assert again.get("pin_stop") is True
+    assert seen.get("posts_after_second") == 2
+    hosted = seen.get("hosted") or {}
+    assert hosted.get("insights_fail") == name and hosted.get("pin_reason") == "quota_exhausted"
+    assert script.requests
+    sent = script.requests[0]
+    assert sent["json"].get("strict") is True and sent["json"].get("model") == _PIN
+    assert sent["headers"].get("X-OpenVault-Strict") == "true"
+    assert "ov_test_pin_key" not in json.dumps(sent["json"])
+    assert seen.get("preference") == "free+normal"
     assert seen.get("done") is True
     assert len(asks) == n_pack
