@@ -147,6 +147,22 @@ def _assert_answered_wh_c(env: dict[str, Any] | None) -> dict[str, Any]:
     return env
 
 
+def _assert_answered_includes_wh_c(env: dict[str, Any] | None) -> dict[str, Any]:
+    """Ranking compile on this parent returns WH-C plus a numeric cell.
+
+    The customer fact is still the cold-storage location. The SQL path keeps
+    the one-column pin in ``_assert_answered_wh_c``.
+    """
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert len(env["rows"]) == 1
+    assert "WH-C" in list(env["rows"][0].values())
+    assert "WH-C" in env["text"]
+    return env
+
+
 # -- generate_sql path ------------------------------------------------------
 
 
@@ -194,7 +210,7 @@ def test_ranking_after_model_call_reports_served_fields(tmp_path: Path) -> None:
     # Both legs (first generate and the ranked retry) report attribution.
     leg = {"phase": "generate", **_STAMP, **_SERVED}
     fake = _Http([leg, leg], ranking=["cq_cold_storage"])
-    env = _assert_answered_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     assert env["plan_origin"] == "ontology_ranking"
     assert env["served_attribution"] == "reported"
     assert env["generate_legs"]["legs"][0] == {"returned": "nothing", **_SERVED}
@@ -202,7 +218,7 @@ def test_ranking_after_model_call_reports_served_fields(tmp_path: Path) -> None:
 
 def test_ranking_after_model_call_without_served_is_missing(tmp_path: Path) -> None:
     fake = _Http([{"phase": "generate", **_STAMP}], ranking=["cq_cold_storage"])
-    env = _assert_answered_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     assert env["plan_origin"] == "ontology_ranking"
     assert env["served_attribution"] == "missing"
 
@@ -212,7 +228,7 @@ def test_one_unattributed_retry_leg_makes_the_ask_missing(tmp_path: Path) -> Non
     first = {"phase": "generate", **_STAMP, **_SERVED}
     retry = {"phase": "generate", **_STAMP}
     fake = _Http([first, retry], ranking=["cq_cold_storage"])
-    env = _assert_answered_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     legs = env["generate_legs"]["legs"]
     assert len(legs) == 2
     assert legs[0] == {"returned": "nothing", **_SERVED}
@@ -229,7 +245,7 @@ def test_ranking_only_with_no_model_call_is_none(tmp_path: Path) -> None:
         "generative": {"climb": {"final": "UNARMED"}},
     }
     fake = _Http([unarmed, unarmed], ranking=["cq_cold_storage"])
-    env = _assert_answered_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     assert env["plan_origin"] == "ontology_ranking"
     assert env["generate_legs"]["count"] >= 1
     assert env["served_attribution"] == "none"
