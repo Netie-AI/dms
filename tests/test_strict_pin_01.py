@@ -586,6 +586,50 @@ def test_live_nvidia_same_model_is_invalid(
     assert rec["served_model_header"] == header_model
 
 
+def test_live_together_same_model_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """together serving openai/gpt-oss-120b is not the groq pin.
+
+    providers.py line 287 is id="together". Not an allowed pin. Body only,
+    no headers. INVALID pin_mismatch, stays in n, both body values recorded.
+    """
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    bad = {
+        "status": 200,
+        "headers": {},
+        "body": {
+            "served_provider": "together",
+            "served_model": _PIN,
+            "choices": [{"message": {"content": "ok"}}],
+        },
+    }
+    shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    row = report["cases"][0]
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    assert bad["headers"] == {}
+    assert row["verdict"] == "INVALID" and row["reason"] == (
+        f"pin_mismatch:together/{_PIN}"
+    )
+    assert report["n"] == n_pack
+    assert report["invalid"] == 1
+    assert row["served_provider_body"] == "together"
+    assert row["served_model_body"] == _PIN
+    assert row["served_provider_header"] is None
+    assert row["served_model_header"] is None
+    rec = _record_line(report, "cq_spend_by_country")
+    assert rec["outcome"] == "INVALID"
+    assert rec["served_provider_body"] == "together"
+    assert rec["served_model_body"] == _PIN
+    assert rec["served_provider"] == "unknown"
+    assert rec["served_model"] == "unknown"
+
+
 def test_live_missing_served_provider_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

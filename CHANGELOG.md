@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: together is a pin mismatch, not an allowed pin
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 287 is `id="together",`. It is not in the allowed pin list.
+- **Gate.** A body of `together` / `openai/gpt-oss-120b` under the groq pin, with no headers, is INVALID `pin_mismatch:together/openai/gpt-oss-120b`, kept in n. Both body values are on the case record. On parent `87a94978` that case is WRONG.
+
 ## 2026-10-01 - dms#317 Part A: rebase onto ENGINE-DATE-02
 
 - **Base.** Rebased onto main `87a94978` (#325). `baseline_eligibility` keeps `round_end_unread` and `pin_preflight_unavailable`. Neither test was removed. Per-answer clock records and the `tests/test_score_mask_01.py` health stub stay as merged.
