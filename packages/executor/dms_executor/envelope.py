@@ -16,7 +16,7 @@ from typing import Any
 from dms_core.pii import fail_closed_mask_payload
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
-from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF
+from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
 
 ALLOWED_BADGES = frozenset(
     {
@@ -1853,6 +1853,8 @@ def reserved_as_of_abstain(
     )
     env["abstain_reason"] = RESERVED_PARAM_AS_OF
     assert_envelope_valid(env)
+    # No SQL ran. Drop any leftover so this answer does not keep the previous clock.
+    clear_engine_clock()
     return env
 
 

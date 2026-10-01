@@ -48,7 +48,7 @@ def sql_has_reserved_as_of(sql: str) -> bool:
         return False
     saw_param = False
     for tok in tokens:
-        if saw_param and tok.token_type == TokenType.VAR and tok.text == "as_of":
+        if saw_param and tok.token_type == TokenType.VAR and tok.text.lower() == "as_of":
             return True
         saw_param = tok.token_type == TokenType.PARAMETER and tok.text == "$"
     return False
@@ -67,8 +67,10 @@ def current_engine_clock() -> dict[str, str] | None:
 
 
 def stamp_engine_clock(env: dict[str, Any]) -> dict[str, Any]:
-    """Copy the pending SQL-connection clock onto an envelope that ran SQL."""
-    global _CLOCK_PENDING
+    """Copy this answer's pending SQL clock onto its envelope, then drop it.
+
+    A later answer, including one that ran no SQL, must not inherit it.
+    """
     clock = _ENGINE_CLOCK
     if _CLOCK_PENDING and clock and clock.get("engine_as_of") and clock.get("engine_as_of_after"):
         for key in (
@@ -80,7 +82,7 @@ def stamp_engine_clock(env: dict[str, Any]) -> dict[str, Any]:
             val = clock.get(key)
             if val:
                 env[key] = val
-        _CLOCK_PENDING = False
+    clear_engine_clock()
     return env
 
 
@@ -435,12 +437,15 @@ def execute_sql(
     path: Path | None = None,
     params: Mapping[str, Any] | None = None,
     product: bool = False,
+    answer_clock: bool = False,
 ) -> list[dict[str, Any]]:
     """Run SELECT-shaped SQL; returns list of row dicts.
 
     product=True refuses a real $as_of placeholder before any execute.
     A $as_of inside a string or comment is not a placeholder. The default
     path auto-binds only a real placeholder, for oracle calls on this file.
+    Only an answer publishes the process clock. A later live() must not
+    adopt a clock from oracle or serving SQL that never became an answer.
     """
     real_as_of = sql_has_reserved_as_of(sql)
     if product and real_as_of:
@@ -459,12 +464,13 @@ def execute_sql(
         cols = [d[0] for d in rel.description]
         rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
         after, after_tz = _read_con_clock(con)
-        _publish_engine_clock(before, before_tz, after, after_tz)
+        if product or answer_clock:
+            _publish_engine_clock(before, before_tz, after, after_tz)
         return rows
     finally:
         con.close()
 
 
-def total_outbound_revenue(*, path: Path | None = None) -> float:
-    rows = execute_sql(_REVENUE_SQL, path=path)
+def total_outbound_revenue(*, path: Path | None = None, answer_clock: bool = False) -> float:
+    rows = execute_sql(_REVENUE_SQL, path=path, answer_clock=answer_clock)
     return float(rows[0]["revenue_myr"]) if rows else 0.0

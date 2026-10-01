@@ -2041,19 +2041,6 @@ def score_live_entry(
     )
 
 
-def _case_engine_clock(
-    env: dict[str, Any],
-    round_before: str | None,
-    round_after: str | None,
-    round_tz: str | None,
-) -> tuple[str | None, str | None, str | None, str | None]:
-    before = _clock_text(env.get("engine_as_of")) or round_before
-    after = _clock_text(env.get("engine_as_of_after")) or round_after
-    tz = _clock_text(env.get("engine_timezone")) or round_tz
-    tz_after = _clock_text(env.get("engine_timezone_after")) or tz
-    return before, after, tz, tz_after
-
-
 def _case_invalid_reason(
     before: str | None,
     after: str | None,
@@ -2062,9 +2049,81 @@ def _case_invalid_reason(
 ) -> str | None:
     if not before or not after or before != after:
         return "engine_date_mismatch"
-    if tz and tz_after and tz != tz_after:
+    if not tz or not tz_after:
+        return "engine_timezone_unread"
+    if tz != tz_after:
         return "engine_timezone_mismatch"
     return None
+
+
+def _own_engine_date(env: Mapping[str, Any] | None) -> str | None:
+    """Clock carried by this answer. The round date is not a substitute."""
+    if not env:
+        return None
+    return _clock_text(env.get("engine_as_of"))
+
+
+def _answer_clock(
+    env: Mapping[str, Any] | None,
+    round_before: str | None,
+    round_tz: str | None,
+) -> tuple[str, str | None, str | None, str | None, str | None]:
+    """case when this answer carried its own connection clock. Else round_health.
+
+    The open /health body's engine_as_of_after is not this case's end date.
+    """
+    if env:
+        before = _clock_text(env.get("engine_as_of"))
+        after = _clock_text(env.get("engine_as_of_after"))
+        if before or after:
+            return (
+                "case",
+                before,
+                after,
+                _clock_text(env.get("engine_timezone")),
+                _clock_text(env.get("engine_timezone_after")),
+            )
+    return ("round_health", round_before, round_before, round_tz, round_tz)
+
+
+def read_round_end_health(url: str, timeout: float) -> dict[str, Any]:
+    """A new GET /health after the last case. Not the opener's engine_as_of_after."""
+    try:
+        resp = score_http("GET", f"{url.rstrip('/')}/health", timeout=timeout)
+        resp.raise_for_status()
+        parsed = resp.json()
+    except Exception:  # noqa: BLE001 - a failed end read is round_end_unread
+        return {"ok": False, "engine_as_of": None}
+    if not isinstance(parsed, dict):
+        return {"ok": False, "engine_as_of": None}
+    as_of = _clock_text(parsed.get("engine_as_of"))
+    if not as_of:
+        return {"ok": False, "engine_as_of": None}
+    return {"ok": True, "engine_as_of": as_of}
+
+
+def _mark_round_health_midnight(
+    tallies: dict[str, int],
+    cases_out: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+) -> None:
+    """Every round_health case becomes INVALID round_spans_midnight and stays in n."""
+    for case, rec in zip(cases_out, records, strict=True):
+        if rec.get("clock_source") != "round_health":
+            continue
+        if case.get("verdict") == "INVALID" and case.get("reason") == "round_spans_midnight":
+            continue
+        old = str(case.get("verdict") or "")
+        if old != "INVALID":
+            if old in tallies:
+                tallies[old] -= 1
+            tallies["INVALID"] += 1
+        case["verdict"] = "INVALID"
+        case["reason"] = "round_spans_midnight"
+        case[LEGACY_JUDGE_LABEL] = "INVALID"
+        rec["outcome"] = "INVALID"
+        rec["reason"] = "round_spans_midnight"
+        rec["oracle_verdict"] = "INVALID"
 
 
 def _unread_clock(
@@ -2106,11 +2165,9 @@ def score_pack_live(
     Never falls back to --oracle-db CURRENT_DATE. No recorded engine date:
     round INVALID, not judged.
     """
-    # Missing engine date is an unread round: n=0, no asks. round_date_label
-    # is that same predicate. Replacing it with a non-INVALID result is the
-    # SCORE-MASK live() seam and still judges. Production never does that.
-    dates_missing = not engine_as_of or not engine_as_of_after
-    if dates_missing and round_date_label(engine_as_of, engine_as_of_after) == "INVALID":
+    # Missing engine date is an unread round: n=0, no asks. The end date is a
+    # second /health read after the cases, not engine_as_of_after on this open.
+    if not engine_as_of:
         return _tally(), [], _unread_clock(engine_as_of, engine_as_of_after, engine_timezone)
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
@@ -2151,18 +2208,16 @@ def score_pack_live(
                         LEGACY_JUDGE_LABEL: "",
                     }
                 )
-                records.append(_case_record(qid, verdict, reason, None, verdict, as_of))
+                records.append(
+                    _case_record(qid, verdict, reason, None, verdict, None, "round_health")
+                )
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
-        case_before, case_after, case_tz, case_tz_after = _case_engine_clock(
-            env, as_of, engine_as_of_after, oracle_tz
+        source, case_before, case_after, case_tz, case_tz_after = _answer_clock(
+            env, as_of, oracle_tz
         )
-        invalid_reason = (
-            None
-            if dates_missing
-            else _case_invalid_reason(
-                case_before, case_after, case_tz, case_tz_after
-            )
+        invalid_reason = _case_invalid_reason(
+            case_before, case_after, case_tz, case_tz_after
         )
         if invalid_reason:
             tallies["INVALID"] += 1
@@ -2191,7 +2246,13 @@ def score_pack_live(
             )
             records.append(
                 _case_record(
-                    qid, "INVALID", invalid_reason, env, "INVALID", case_before or as_of
+                    qid,
+                    "INVALID",
+                    invalid_reason,
+                    env,
+                    "INVALID",
+                    _own_engine_date(env),
+                    source,
                 )
             )
             continue
@@ -2238,14 +2299,29 @@ def score_pack_live(
             }
         )
         records.append(
-            _case_record(qid, verdict, result.reason, env, result.verdict, as_of)
+            _case_record(
+                qid, verdict, result.reason, env, result.verdict, _own_engine_date(env), source
+            )
         )
-    after = engine_as_of_after if engine_as_of_after is not None else as_of
-    clock = _round_clock(as_of, after, oracle_tz)
+    end = read_round_end_health(url, timeout)
+    if not end["ok"]:
+        clock = _round_clock(as_of, as_of, oracle_tz)
+        clock["oracle_as_of_after"] = None
+        clock["round_label"] = "INVALID"
+        clock["reason"] = "round_end_unread"
+    else:
+        end_day = str(end["engine_as_of"])
+        if end_day != as_of:
+            _mark_round_health_midnight(tallies, cases_out, records)
+        clock = _round_clock(as_of, as_of, oracle_tz)
+        clock["oracle_as_of_after"] = end_day
     invalid_n = int(tallies.get("INVALID") or 0)
     clock["invalid"] = invalid_n
     clock["n"] = sum(tallies.values())
     clock["n_without_invalid"] = clock["n"] - invalid_n
+    clock["round_health"] = sum(
+        1 for rec in records if rec.get("clock_source") == "round_health"
+    )
     clock[OVERMASK_STAR_KEY] = overmask
     clock["case_records"] = records
     if invalid_n:
@@ -2289,8 +2365,13 @@ def _case_record(
     env: Mapping[str, Any] | None,
     oracle_verdict: str,
     engine_date: str | None,
+    clock_source: str,
 ) -> dict[str, Any]:
     stored, rows = _stored_served(env)
+    if outcome == "UNCONFIRMED" or oracle_verdict == "UNCONFIRMED":
+        outcome = "INVALID"
+        oracle_verdict = "INVALID"
+        reason = reason or "INVALID"
     return {
         "id": qid,
         "outcome": outcome,
@@ -2301,6 +2382,7 @@ def _case_record(
         "rows": rows,
         "oracle_verdict": oracle_verdict,
         "engine_date": engine_date,
+        "clock_source": clock_source,
     }
 
 
@@ -2369,7 +2451,8 @@ def baseline_eligibility(
 ) -> tuple[bool, list[str]]:
     """The only baseline gate. Eligible is true exactly when the list is empty.
 
-    Later PRs add pin_unavailable and round_end_unread in this function.
+    pin_unavailable is still a later PR. round_end_unread is a round INVALID
+    reason and is listed here.
     """
     reasons: list[str] = []
     if path_block:
@@ -2378,6 +2461,8 @@ def baseline_eligibility(
         reasons.append("record_write_failed")
     if unidentified:
         reasons.append("record_unidentified")
+    if round_reason == "round_end_unread" and "round_end_unread" not in reasons:
+        reasons.append("round_end_unread")
     if round_label == "INVALID":
         invalid = round_reason or "INVALID"
         if invalid not in reasons:
@@ -2435,6 +2520,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"coverage {tallies['OK']}/{n}  "
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}  "
         f"INVALID {invalid_n}  RATE_LIMIT {rate_limit}  "
+        f"round_health {int(clock.get('round_health') or 0)}  "
         f"n {n}  n_without_invalid {n - invalid_n}"
     )
     print(f"{OVERMASK_STAR_KEY} {overmask}")
@@ -2504,6 +2590,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "total": n,
                 "n": n,
                 "n_without_invalid": n - invalid_n,
+                "round_health": int(clock.get("round_health") or 0),
                 "abstained": tallies["ABSTAIN"],
                 "reason": reason,
                 "passed": (
@@ -3622,6 +3709,7 @@ def grid_score_hook(
             "issue": 299,
             "n": 0,
             "n_without_invalid": 0,
+            "round_health": 0,
             "invalid": 0,
             "passed": False,
             "reason": None,
@@ -3637,6 +3725,7 @@ def grid_score_hook(
         "issue": 299,
         "n": n,
         "n_without_invalid": n - invalid_n,
+        "round_health": int(clock.get("round_health") or 0),
         "invalid": invalid_n,
         "ok": tallies["OK"],
         "layer": tallies["LAYER"],

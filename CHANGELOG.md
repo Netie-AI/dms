@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-02: clock clear without the score-mask reset (#308)
+
+- **Ticket.** Same follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. PR #325 stays a draft.
+- **Change.** A case record's `engine_date` is that answer's clock, or none when the answer ran no SQL. `execute_sql` publishes the process clock only for an answer (`product` or `answer_clock`). The #323 `clear_engine_clock()` setup in `tests/test_score_mask_01.py` is removed. `test_live_sql_nosql_sql_records_keep_own_clocks` is one `live()` round with no reset between SQL, no-SQL, and a second SQL.
+- **Gate.** That test failed on `22deaa35` on its own assert. `n` was 52. The first record's `engine_date` was the round date `2024-01-01`, not the SQL clock `2024-05-01`. The no-SQL record carried `2024-01-01`, not none.
+
+## 2026-10-01 - ENGINE-DATE-02: clock source, second health read, any-case $AS_OF (#308)
+
+- **Ticket.** Follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. Does not stamp COMPLETE. No Cortex change. Engine date stays on DMS `/health` reads.
+- **Change.** Each case record line has `clock_source` `case` or `round_health`. The dms#299 grid column is `round_health`. The pending engine clock is cleared after every answer, including no-SQL, and stays on that answer. `$AS_OF` in any letter case is ABSTAIN `reserved_param:as_of`. A missing timezone reading is INVALID `engine_timezone_unread` and stays in n. After the last case, a second GET `/health`: a different date makes every `round_health` case INVALID `round_spans_midnight` (stays in n); a failed or empty end read is INVALID `round_end_unread` and `baseline_eligibility` lists it. UNCONFIRMED is not a live outcome.
+- **Gate.** `tests/test_engine_date_02.py` goes through `live()`. On `22deaa35` each new test failed on its own assert. 52-pack unchanged.
+
 ## 2026-10-01 - SCORE-MASK-01: one baseline eligibility function (#299)
 
 - **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. `.gitignore` unchanged.

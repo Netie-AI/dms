@@ -59,7 +59,7 @@ def test_divide_revenue_by_5(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -
     # Patch execute path used by answer_demo_question
     monkeypatch.setattr(
         "dms_executor.demo_ask.total_outbound_revenue",
-        lambda path=None: total_outbound_revenue(path=warehouse),
+        lambda path=None, **_kwargs: total_outbound_revenue(path=warehouse),
     )
     env = answer_demo_question("Divide the revenue by 5")
     assert env["badge"] == "L2_VALIDATED"
