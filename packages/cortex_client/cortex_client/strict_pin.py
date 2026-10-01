@@ -218,23 +218,33 @@ def interpret(
 ) -> PinShot:
     """Classify one OpenVault chat response. Does not map 503 onto RATE_LIMIT.
 
-    One side present: that side is the served id. Both present and equal:
-    that value. Both present and different: INVALID, and neither value is chosen.
-    A 200 is ok only when served provider and served model both match the pin.
-    A different or missing provider is INVALID ``pin_mismatch``.
+    A 200 is ok only when body and headers are both present, agree, and match
+    the pin exactly. One side missing, or the two sides different, is INVALID
+    ``pin_mismatch``. A 503 ``pin_unavailable`` is ABSTAIN only when that
+    refusal carries neither served headers nor served body fields.
     """
     pin = cfg or pin_config()
     payload = body if isinstance(body, Mapping) else {}
     err = payload.get("error") if isinstance(payload, Mapping) else None
     err_d = err if isinstance(err, Mapping) else {}
-    if status == 503 and str(err_d.get("type") or "") == PIN_UNAVAILABLE:
+    body_provider, body_model, header_provider, header_model = _sides(payload, headers)
+    served_absent = (
+        body_provider is None
+        and body_model is None
+        and header_provider is None
+        and header_model is None
+    )
+    if (
+        status == 503
+        and str(err_d.get("type") or "") == PIN_UNAVAILABLE
+        and served_absent
+    ):
         vault_reason = str(err_d.get("reason") or "").strip()
         return PinShot(
             kind="unavailable",
             name=f"pin_unavailable:{pin.provider}/{pin.model}",
             vault_reason=vault_reason,
         )
-    body_provider, body_model, header_provider, header_model = _sides(payload, headers)
     if _disagree(body_provider, body_model, header_provider, header_model):
         # Neither side is chosen. Both pairs stay in the name and on the shot.
         left = f"{body_provider or 'missing'}/{body_model or 'missing'}"
@@ -249,9 +259,18 @@ def interpret(
         )
     served_model = body_model or header_model
     served_provider = body_provider or header_provider
-    # Both ids, exact. A missing header is fine. A wrong provider is not.
+    both = (
+        body_provider is not None
+        and body_model is not None
+        and header_provider is not None
+        and header_model is not None
+    )
+    # Both sides, exact, and the same pair. A missing side is not the pin.
     if (
         status == 200
+        and both
+        and body_provider == header_provider
+        and body_model == header_model
         and served_provider in PROVIDER_IDS
         and pin.provider in PROVIDER_IDS
         and served_provider == pin.provider
@@ -353,8 +372,9 @@ def post_once(base_url: str) -> PinShot:
 def open_round() -> PinRound:
     """Preflight. No ``OPENVAULT_URL`` and a sendable pin: the round is not pinned.
 
-    A caller-error pin blocks before any HTTP. A vault 503 or a served model
-    that is not the pin blocks the round with n left at 0 by the caller.
+    A caller-error pin blocks before any HTTP. A vault 503 with no served ids,
+    or a partial or disagreeing served set, blocks the round. The caller
+    leaves n at 0 and makes no case call.
     """
     cfg = pin_config()
     if cfg.refusal:

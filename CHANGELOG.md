@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: a pin match needs headers and body
+
+- **Contract.** The live vault sends served ids in both places. A 200 is the pin only when both are present and they agree with the pin. Header names still match in any case. Values stay exact.
+- **Gate.** Body without headers, headers without body, and header `groq` with body `together` are INVALID `pin_mismatch`, kept in n. ABSTAIN `pin_unavailable` is only a refusal with neither. A preflight with a partial served set stops at n=0 before any case call.
+
 ## 2026-10-01 - dms#317 Part A: header names fold, served values do not
 
 - **Contract.** A live hop on `0d0ef3f0` sent lowercase `x-openvault-served-provider=groq`, `x-openvault-served-model=openai/gpt-oss-120b`, `x-openvault-served-local=false`, and the same ids in the body. Header names match in any case. Values stay exact.
