@@ -202,17 +202,18 @@ def interpret(
             vault_reason=vault_reason,
         )
     body_provider, body_model, header_provider, header_model = _sides(payload, headers)
-    sides = dict(
-        body_provider=body_provider,
-        body_model=body_model,
-        header_provider=header_provider,
-        header_model=header_model,
-    )
     if _disagree(body_provider, body_model, header_provider, header_model):
         # Neither side is chosen. Both pairs stay in the name and on the shot.
         left = f"{body_provider or 'missing'}/{body_model or 'missing'}"
         right = f"{header_provider or 'missing'}/{header_model or 'missing'}"
-        return PinShot(kind="mismatch", name=f"pin_mismatch:{left}+{right}", **sides)
+        return PinShot(
+            kind="mismatch",
+            name=f"pin_mismatch:{left}+{right}",
+            body_provider=body_provider,
+            body_model=body_model,
+            header_provider=header_provider,
+            header_model=header_model,
+        )
     served_model = body_model or header_model
     served_provider = body_provider or header_provider
     if status == 200 and served_model == pin.model:
@@ -220,14 +221,20 @@ def interpret(
             kind="ok",
             served_provider=served_provider,
             served_model=served_model,
-            **sides,
+            body_provider=body_provider,
+            body_model=body_model,
+            header_provider=header_provider,
+            header_model=header_model,
         )
     return PinShot(
         kind="mismatch",
         name=_mismatch_name(served_provider, served_model),
         served_provider=served_provider,
         served_model=served_model,
-        **sides,
+        body_provider=body_provider,
+        body_model=body_model,
+        header_provider=header_provider,
+        header_model=header_model,
     )
 
 
