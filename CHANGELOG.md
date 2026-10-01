@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-01: five live scorers, no sixth (#308)
+
+- **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321) / [dms#308](https://github.com/Netie-AI/dms/issues/308). Stays a draft. No scorer change. Counts stay exact 0/16/36/0/0 and generative 0/26/11/15/0, INVALID 0, n 52.
+- **Finding.** Live curated rounds are `live`, `climb`, `climb_ab_live`, `prove_path_live`, and `grid_score_hook`. `--prove-path --url` and `--prove-path --climb` both call `prove_path_live`. The dms#299 runner `scripts/score_grid.py` is not in git history. `score_bird.live` and `score_answers` score other packs and do not call `score_pack_live`.
+- **Not this ticket:** building GRID-RUN-01; protected paths.
+
 ## 2026-10-01 - ENGINE-DATE-01: rebase onto OVERMASK-01 (#308)
 
 - **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321) / [dms#308](https://github.com/Netie-AI/dms/issues/308). Stays a draft. Does not stamp COMPLETE. Does not close the issue.
