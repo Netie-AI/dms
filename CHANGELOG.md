@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - OVERMASK-01: birth and passport cues, lineage fail-closed (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) follow-up. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** A date is a DOB only with a birth cue (column, table, nearby prose, or a sqlglot source column). A passport-shaped code needs a nearby passport cue. Served SQL that cannot name a source column masks that date column. No SQL keeps the cue rule. `scripts/pii_mask_check.py` is untouched.
+- **Gate.** Checker re-run: 247 PASS / 38 FAIL / 285. The 11 new FAILs are `passport_generic_like_low` cells whose synthetic text is `note A12345678 end` (no passport cue). Parent `cdd3ae2a` 169 PASS stay PASS. Untraced-default columns on that re-run: 0, not added to the pass count. 52-pack offline: exact 0/16/36/0/0, generative 0/26/11/15/0 (OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR).
+- **Not this ticket:** Presidio; dms#304 deny file; COMPLETE; merge.
+
 ## 2026-10-01 - PII-MASK-02: drop checker EXCLUDE relabel (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Epic ruling on PR #320. dms#318 stays open. Does not stamp COMPLETE. Does not merge.

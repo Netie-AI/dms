@@ -46,6 +46,19 @@ REMAINING_FAIL_COLUMNS = frozenset(
     }
 )
 
+# OVERMASK-01: these cells passed on ca34419d only because a bare code
+# matched _PASSPORT_FIND. The checker wraps them as "note A12345678 end"
+# with no passport cue, so they return to FAIL. Part of the 89, not the
+# parent's 169.
+PASSPORT_CUE_MISS_COLUMNS = frozenset(
+    {
+        ("comments", "text"),
+        ("posthistory", "text"),
+        ("posts", "body"),
+        ("users", "aboutme"),
+    }
+)
+
 # Obviously fake. Must fail on cdd3ae2a.
 NAME_IN_TEXT = "met Ada Lovelace yesterday"
 NAME_WHOLE = "Ada Lovelace"
@@ -140,9 +153,12 @@ def test_my_landline_in_free_text() -> None:
 
 
 def test_passport_value() -> None:
+    # OVERMASK-01: a bare code is not a passport. The cue in the text still is.
     assert classify_column("aboutme", [PASSPORT_IN_TEXT], table="users") == "passport"
-    assert classify_column("body", [PASSPORT], table="posts") == "passport"
+    assert classify_column("body", [PASSPORT], table="posts") is None
     assert PASSPORT not in _masked("text", PASSPORT_IN_TEXT)
+    bare = mask_payload(text=f"field {PASSPORT}", rows=[{"body": PASSPORT}])
+    assert bare["rows"][0]["body"] == PASSPORT
 
 
 def test_street_address_column_and_value() -> None:
@@ -177,13 +193,20 @@ def test_dob_every_year_in_free_text() -> None:
 
 
 def test_whole_value_dob_without_dob_name() -> None:
+    # Birth-named columns still mask any year. A date-shaped value on a
+    # column that does not point at birth stays visible (OVERMASK-01).
     assert classify_column("born_on", [DOB_WHOLE_OLD]) == "dob"
     assert classify_column("dateofbirth", [DOB_WHOLE_NEW]) == "dob"
     assert classify_column("year_of_birth", [DOB_WHOLE_OLD], table="patient") == "dob"
-    assert classify_column("enrolled", [DOB_WHOLE_NEW], table="patient") == "dob"
-    assert classify_column("notes", [DOB_WHOLE_OLD]) == "dob"
+    assert classify_column("enrolled", [DOB_WHOLE_NEW], table="patient") is None
+    assert classify_column("notes", [DOB_WHOLE_OLD]) is None
     assert DOB_WHOLE_OLD not in _masked("born_on", DOB_WHOLE_OLD)
-    assert DOB_WHOLE_NEW not in _masked("enrolled", DOB_WHOLE_NEW, table="patient")
+    visible = mask_payload(
+        text=DOB_WHOLE_NEW,
+        rows=[{"enrolled": DOB_WHOLE_NEW}],
+    )
+    assert visible["rows"][0]["enrolled"] == DOB_WHOLE_NEW
+    assert visible["text"] == DOB_WHOLE_NEW
     assert classify_column("order_date", ["1990-01-15"]) is None
     assert classify_column("last_audit_date", ["2024-01-15"]) is None
     assert classify_column("order_date", ["1990-01-15"], table="patient") is None
@@ -191,8 +214,12 @@ def test_whole_value_dob_without_dob_name() -> None:
 
 
 def test_uuid_shaped_column_not_skipped() -> None:
-    assert classify_column("revisionguid", [PASSPORT]) == "passport"
-    assert PASSPORT not in _masked("revisionguid", PASSPORT)
+    # No ID allow-list. A cued passport in revisionguid still masks.
+    # A bare code does not: there is no passport cue (OVERMASK-01).
+    assert classify_column("revisionguid", [PASSPORT_IN_TEXT]) == "passport"
+    assert PASSPORT not in _masked("revisionguid", PASSPORT_IN_TEXT)
+    bare = mask_payload(rows=[{"revisionguid": PASSPORT}], text=PASSPORT)
+    assert bare["rows"][0]["revisionguid"] == PASSPORT
     assert classify_column("revisionguid", [UUID_PLAIN]) is None
     got = mask_payload(rows=[{"revisionguid": UUID_PLAIN}], text=UUID_PLAIN)
     assert got["rows"][0]["revisionguid"] == UUID_PLAIN
@@ -243,23 +270,35 @@ def test_non_pii_stays_visible() -> None:
     assert "Warehouse A" in got["text"]
 
 
-def test_three_path_table_258_pass_27_fail() -> None:
-    """258 PASS / 27 FAIL / 285. The 27 stay FAIL. No EXCLUDE relabel."""
+def test_three_path_table_247_pass_38_fail() -> None:
+    """247 PASS / 38 FAIL / 285.
+
+    The original 27 person-name cells stay FAIL. OVERMASK-01 adds the 11
+    passport_generic cells whose synthetic text has no passport cue.
+    """
     rows = check_all()
     assert len(rows) == 285
     fails = [r for r in rows if "FAIL" in (r.path_a, r.path_b, r.path_c)]
     passed = [r for r in rows if r.path_a == "PASS"]
-    assert len(fails) == 27, [
+    assert len(fails) == 38, [
         f"{bare_table(r.cell.table)}.{r.cell.column} {r.cell.pattern} "
         f"a={r.path_a} b={r.path_b} c={r.path_c}"
         for r in fails
     ]
-    assert len(passed) == 258
+    assert len(passed) == 247
     assert all(r.path_a == r.path_b == r.path_c == "FAIL" for r in fails)
     assert all(r.path_b == "PASS" and r.path_c == "PASS" for r in passed)
-    assert all(r.cell.pattern == "person_name_shape_low" for r in fails)
-    keys = {(bare_table(r.cell.table), r.cell.column.lower()) for r in fails}
-    assert keys == set(REMAINING_FAIL_COLUMNS)
+    names = [r for r in fails if r.cell.pattern == "person_name_shape_low"]
+    passports = [r for r in fails if r.cell.pattern == "passport_generic_like_low"]
+    assert len(names) == 27
+    assert len(passports) == 11
+    assert len(names) + len(passports) == len(fails)
+    assert {(bare_table(r.cell.table), r.cell.column.lower()) for r in names} == set(
+        REMAINING_FAIL_COLUMNS
+    )
+    assert {
+        (bare_table(r.cell.table), r.cell.column.lower()) for r in passports
+    } == set(PASSPORT_CUE_MISS_COLUMNS)
     assert all(r.synth and not is_mask_token(r.synth) for r in rows)
     other = [r for r in rows if r.path_a not in {"PASS", "FAIL"}]
     assert not other, other

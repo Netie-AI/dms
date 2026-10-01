@@ -1609,6 +1609,13 @@ def build_answer_envelope(
 
     # PII-01 before E4: IC/phone digits in k=v prose must not look like uncited money.
     # Detector errors fail closed (string cells become DMSMASK_unknown_00).
+    # Date columns: sqlglot lineage carries a birth cue through an alias.
+    # No SQL keeps the birth-cue rule. Unresolved lineage fails closed.
+    column_sources = None
+    if _executed_query(sql_used):
+        from dms_executor.sql_currency import served_column_sources
+
+        column_sources = served_column_sources(str(sql_used))
     masked = fail_closed_mask_payload(
         text=text or "",
         rows=rows_out,
@@ -1616,6 +1623,7 @@ def build_answer_envelope(
         sources=sources,
         chart=chart,
         sql_used=sql_used,
+        column_sources=column_sources,
     )
     text = masked["text"]
     rows_out = masked["rows"]
