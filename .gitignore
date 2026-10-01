@@ -5,6 +5,7 @@
 venv/
 # Local pytest / scratch output. Never a release artifact, never reviewable.
 .tmp/
+.tmp/score_cases/
 __pycache__/
 *.pyc
 node_modules/

@@ -2,6 +2,45 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: one baseline eligibility function (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. `.gitignore` unchanged.
+- **Gate.** `baseline_eligibility` is the only place that sets `baseline_eligible`. The summary list is `baseline_ineligible_reasons`. Empty list means true. Reasons in this function: `record_path_scratch`, `record_path_in_repo`, `record_write_failed`, `record_unidentified`, and the round's INVALID reason. `pin_unavailable` and `round_end_unread` are not in it yet. The no-date live test clears a leaked engine clock before it asserts no ask.
+
+## 2026-10-01 - SCORE-MASK-01: record dir baseline gate (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited. `.gitignore` unchanged.
+- **Gate.** `live()` reads `DMS_CASE_RECORD_DIR` and prints the absolute path of the file it wrote. Unset stays `.tmp/score_cases/` and the summary has `record_path_scratch` with `baseline_eligible: false`. A relative dir, or an absolute dir inside the work tree, has `record_path_in_repo` and is not eligible. An absolute dir outside the work tree is eligible. Counts stay. Unread engine date stays n=0.
+
+## 2026-10-01 - SCORE-MASK-01: record gate items 6 and 7 (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited.
+- **Gate.** A `live()` round that serves a known date of birth and email writes no raw copy of either value. The test reads every file the round added or changed (the case record, the score file, logs, temp). Default records go in `.tmp/score_cases/`. Gitignore names that directory only. 52-pack unchanged. Unread engine date stays n=0.
+
+## 2026-10-01 - SCORE-MASK-01: record gate items 2 to 5 (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited.
+- **Gate.** `mask_payload` again leaves each record line unchanged and the line holds no clear value. Line count is n and file outcome counts match the round, with at least one INVALID, one ABSTAIN, and one WRONG. An unreadable commit is `record_unidentified`. A failed write or flush is `record_write_failed`. Each new test goes through `live()` and fails on `a63988b2` on that assert. 52-pack unchanged. Unread engine date stays n=0.
+
+## 2026-10-01 - SCORE-MASK-01: parent failures are the rule, not n=0 (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE.
+- **Fixture.** `live()` tests that judge publish `_ENGINE_CLOCK` (same before and after). On `a63988b2` the round is readable and the cases score. Assertions are unchanged. The no-date test does not publish a clock.
+- **Gate.** On `a63988b2` each rule test fails on its own assert: masked compare is WRONG not `masked_compare:<col>`; ask failure is WRONG not RATE_LIMIT or `ask_error:<type>`; the case record path is missing. 52-pack unchanged. Unread engine date stays round INVALID n=0.
+
+## 2026-10-01 - SCORE-MASK-01: per-case JSONL on every live round (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. Rebased onto ENGINE-DATE-01 `a63988b2`.
+- **Record.** `live()` writes `score_cases_<run_id>_<commit_sha>.jsonl`. Directory is `DMS_SCORE_CASE_DIR`, else `DMS_SCORE_DIR`, else `.tmp/`. One line per case in n, including INVALID and ABSTAIN: id, outcome, reason, served_provider, served_model, served envelope, served rows, oracle verdict, engine date. The copy goes through the existing masker. The live report field `case_record` is that path (the dms#299 grid row). A round with no file is INVALID and the counts stay. A missing engine date is still round INVALID n=0.
+- **Gate.** `test_live_case_record_lines_match_n_and_stay_masked` and `test_live_round_without_case_record_is_invalid` go through `live()` and fail on `a63988b2`.
+
+## 2026-10-01 - SCORE-MASK-01: masked compare is INVALID, ask failure is not WRONG (#299)
+
+- **Ticket.** Follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Epic ruling `issuecomment-5930136078`. Does not close the issue. Does not stamp COMPLETE.
+- **Change.** `score_pack_live` judges served rows. A `DMSMASK_` token in a column the oracle compares is `INVALID` `masked_compare:<col>`, kept in n, never CORRECT or WRONG. `overmask_star:dms#284` counts those INVALID answers whose SQL uses `*` or `UNION` and a masked typed date. It is a count, not an outcome. No envelope: HTTP 429 is `RATE_LIMIT`; any other ask failure is `ABSTAIN(ask_error:<type>)`. The scorer does not ask for unmasked rows. Rebased onto ENGINE-DATE-01 `a63988b2`: a missing engine date is still round INVALID n=0; a case date or timezone mismatch stays INVALID in n.
+- **Gate.** `tests/test_score_mask_01.py` calls `live()` with mocked HTTP. Those gate tests fail on `a63988b2`. `--ab` stays exact 0/16/36/0/0 and generative 0/26/11/15/0 (OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR), INVALID 0, n 52.
+- **Not this ticket:** `pii.py`, envelope masking, oracles, gold labels, `tests/test_pii_*`, `tests/invariants/`, `.importlinter`.
+
 ## 2026-10-01 - ENGINE-DATE-01: one INVALID test per A/B lane (#308)
 
 - **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321). Stays a draft. No 52-pack drift.
