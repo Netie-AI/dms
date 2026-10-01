@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - MASK-VALUES-01: clock keep is the round /health read (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** Top-level `engine_as_of`, `engine_as_of_after`, `engine_timezone`, and `engine_timezone_after` stay literal only when they equal that round's /health reads. A missing end read masks any clock that is not an ENGINE-DATE-02 case clock and records both `engine_clock_masked` and `round_end_unread`. A matched next-day end uses the existing `round_spans_midnight` reason (`scripts/score_curated.py` `_mark_round_health_midnight`). A mask token is not a date match. The same key nested in `values` stays on the values scan.
+- **Gate.** `tests/test_mask_clock_01.py` (a) (b) (c) fail on `87a94978` on their own assert, n=52. No live scored round.
+
 ## 2026-10-01 - MASK-VALUES-01: mask values and unknown envelope keys (#303)
 
 - **Ticket.** Follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.

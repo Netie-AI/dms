@@ -183,8 +183,10 @@ _KEEP_KEYS = frozenset(
     }
 )
 
-# Top-level envelope keys copied unchanged. A key not listed here is scanned.
-# Engine clocks are dates and are not PII. Do not add a key to skip a scan.
+# Top-level envelope keys copied unchanged by the generic scan.
+# Clock fields stay here so a masker call with no round does not invent a
+# /health read. The round applies mask_unkept_clock_fields. Do not add a key
+# to skip a scan.
 SAFE_ENVELOPE_KEYS = _KEEP_KEYS | frozenset(
     {
         "engine_as_of",
@@ -986,6 +988,45 @@ def _scan_closed(obj: Any, masker: Masker) -> Any:
         return _scan_closed_value(obj, masker)
     except Exception:
         return _blank_strings(obj)
+
+
+CLOCK_FIELD_KEYS = (
+    "engine_as_of",
+    "engine_as_of_after",
+    "engine_timezone",
+    "engine_timezone_after",
+)
+
+
+def mask_unkept_clock_fields(
+    payload: Mapping[str, Any],
+    allowed: Mapping[str, str | None],
+) -> tuple[dict[str, Any], bool]:
+    """Mask top-level clock fields whose value is not the allowed /health value.
+
+    ``None`` means that read is missing, so the field is masked. A mask token
+    is not a date and is left as-is. Nested keys are not this function.
+    """
+    masker = Masker()
+    out = dict(payload)
+    masked = False
+    for key in CLOCK_FIELD_KEYS:
+        if key not in payload:
+            continue
+        val = payload[key]
+        if is_mask_token(val):
+            continue
+        allow = allowed.get(key)
+        text = str(val).strip() if val is not None else ""
+        if allow is not None and text == allow:
+            continue
+        if _cell_is_date(val):
+            out[key] = masker.token("dob", val)
+        else:
+            scanned = _scan_closed_value(val, masker)
+            out[key] = scanned if scanned != val else masker.token("unknown", val)
+        masked = True
+    return out, masked
 
 
 def mask_unknown_keys(payload: Mapping[str, Any]) -> dict[str, Any]:

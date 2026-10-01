@@ -24,6 +24,7 @@ import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from oracle_row_match import (  # noqa: E402
     rows_mismatch_reason,
     run_oracle_select,
 )
+
 DEFAULT_PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 DEFAULT_ORACLES = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 DEFAULT_URL = "http://127.0.0.1:8090"
@@ -2110,7 +2112,152 @@ def read_round_end_health(url: str, timeout: float) -> dict[str, Any]:
     as_of = _clock_text(parsed.get("engine_as_of"))
     if not as_of:
         return {"ok": False, "engine_as_of": None}
-    return {"ok": True, "engine_as_of": as_of}
+    return {
+        "ok": True,
+        "engine_as_of": as_of,
+        "engine_timezone": _clock_text(parsed.get("engine_timezone")),
+    }
+
+
+_CLOCK_KEYS = (
+    "engine_as_of",
+    "engine_as_of_after",
+    "engine_timezone",
+    "engine_timezone_after",
+)
+
+
+def _iso_day(value: str | None) -> date | None:
+    if not value or len(value) != 10:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _preserved_case_clock(env: Mapping[str, Any] | None) -> bool:
+    """ENGINE-DATE-02 case clock. Four fields, equal zones, same day or the next.
+
+    That answer's connection clock is not the round /health point-read.
+    ``_case_invalid_reason`` still owns a before/after split on this shape.
+    """
+    if not env:
+        return False
+    before = _clock_text(env.get("engine_as_of"))
+    after = _clock_text(env.get("engine_as_of_after"))
+    tz = _clock_text(env.get("engine_timezone"))
+    tz_after = _clock_text(env.get("engine_timezone_after"))
+    if not before or not after or not tz or not tz_after or tz != tz_after:
+        return False
+    start = _iso_day(before)
+    end = _iso_day(after)
+    if start is None or end is None:
+        return False
+    return end == start or end == start + timedelta(days=1)
+
+
+def _retag_case(
+    tallies: dict[str, int],
+    case: dict[str, Any],
+    rec: dict[str, Any],
+    reason: str,
+) -> None:
+    old = str(case.get("verdict") or "")
+    if old != "INVALID":
+        if old in tallies:
+            tallies[old] -= 1
+        tallies["INVALID"] += 1
+    case["verdict"] = "INVALID"
+    case["reason"] = reason
+    case[LEGACY_JUDGE_LABEL] = "INVALID"
+    rec["outcome"] = "INVALID"
+    rec["reason"] = reason
+    rec["oracle_verdict"] = "INVALID"
+
+
+def _health_clock_match(
+    env: Mapping[str, Any],
+    *,
+    start: str | None,
+    end: str | None,
+    start_tz: str | None,
+    end_tz: str | None,
+) -> bool:
+    """True when every top-level clock field equals this round's /health reads."""
+    if not start or not end:
+        return False
+    pairs = (
+        ("engine_as_of", start),
+        ("engine_as_of_after", end),
+        ("engine_timezone", start_tz),
+        ("engine_timezone_after", end_tz or start_tz),
+    )
+    for key, want in pairs:
+        got = _clock_text(env.get(key))
+        if got != want:
+            return False
+    return True
+
+
+def _apply_clock_keep(
+    tallies: dict[str, int],
+    cases_out: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    *,
+    start: str | None,
+    end: str | None,
+    start_tz: str | None,
+    end_tz: str | None,
+    end_ok: bool,
+) -> bool:
+    """Mask top-level clocks that are not this round's /health values.
+
+    A missing end read masks every clock that is not an ENGINE-DATE-02 case
+    clock. A mask token is not a date match. Returns whether any field was masked.
+    """
+    from dms_core.pii import mask_unkept_clock_fields
+
+    if end_ok:
+        allowed: dict[str, str | None] = {
+            "engine_as_of": start,
+            "engine_as_of_after": end,
+            "engine_timezone": start_tz,
+            "engine_timezone_after": end_tz or start_tz,
+        }
+    else:
+        allowed = {key: None for key in _CLOCK_KEYS}
+    any_masked = False
+    for case, rec in zip(cases_out, records, strict=True):
+        env = rec.get("envelope")
+        if not isinstance(env, dict):
+            continue
+        if _preserved_case_clock(env):
+            if end_ok and end and start and end != start and _health_clock_match(
+                env, start=start, end=end, start_tz=start_tz, end_tz=end_tz
+            ):
+                _retag_case(tallies, case, rec, "round_spans_midnight")
+            continue
+        if case.get("reason") in (
+            "engine_timezone_unread",
+            "engine_timezone_mismatch",
+            "round_spans_midnight",
+        ):
+            continue
+        if not any(key in env for key in _CLOCK_KEYS):
+            continue
+        masked_env, did = mask_unkept_clock_fields(env, allowed)
+        if not did:
+            continue
+        any_masked = True
+        raw_day = _clock_text(env.get("engine_as_of"))
+        rec["envelope"] = masked_env
+        if raw_day and rec.get("engine_date") == raw_day:
+            rec["engine_date"] = masked_env.get("engine_as_of")
+        if raw_day and case.get("oracle_as_of") == raw_day:
+            case["oracle_as_of"] = masked_env.get("engine_as_of")
+        _retag_case(tallies, case, rec, "engine_clock_masked")
+    return any_masked
 
 
 def _mark_round_health_midnight(
@@ -2442,12 +2589,31 @@ def score_pack_live(
         clock["oracle_as_of_after"] = None
         clock["round_label"] = "INVALID"
         clock["reason"] = "round_end_unread"
+        end_day = None
+        end_tz = None
+        end_ok = False
     else:
         end_day = str(end["engine_as_of"])
+        end_tz = _clock_text(end.get("engine_timezone"))
         if end_day != as_of:
             _mark_round_health_midnight(tallies, cases_out, records)
         clock = _round_clock(as_of, as_of, oracle_tz)
         clock["oracle_as_of_after"] = end_day
+        end_ok = True
+    clock["engine_clock_masked"] = _apply_clock_keep(
+        tallies,
+        cases_out,
+        records,
+        start=as_of,
+        end=end_day,
+        start_tz=oracle_tz,
+        end_tz=end_tz,
+        end_ok=end_ok,
+    )
+    if clock["engine_clock_masked"] and clock.get("reason") != "round_end_unread":
+        clock["reason"] = "engine_clock_masked"
+        clock["round_label"] = "INVALID"
+        clock["passed"] = False
     invalid_n = int(tallies.get("INVALID") or 0)
     clock["invalid"] = invalid_n
     clock["n"] = sum(tallies.values())
@@ -2583,11 +2749,14 @@ def baseline_eligibility(
     round_label: str | None,
     round_reason: str | None,
     pin_preflight_unavailable: bool = False,
+    engine_clock_masked: bool = False,
 ) -> tuple[bool, list[str]]:
     """The only baseline gate. Eligible is true exactly when the list is empty.
 
     pin_preflight_unavailable is a blocked pin preflight. An in-round 503 does
     not set it. round_end_unread is a round INVALID reason and is listed here.
+    engine_clock_masked is added when a clock field was masked, including
+    beside round_end_unread.
     """
     reasons: list[str] = []
     if path_block:
@@ -2604,6 +2773,8 @@ def baseline_eligibility(
         invalid = round_reason or "INVALID"
         if invalid not in reasons:
             reasons.append(invalid)
+    if engine_clock_masked and "engine_clock_masked" not in reasons:
+        reasons.append("engine_clock_masked")
     return (not reasons, reasons)
 
 
@@ -2705,6 +2876,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         round_label=round_label if isinstance(round_label, str) else None,
         round_reason=reason if isinstance(reason, str) else None,
         pin_preflight_unavailable=bool(clock.get("pin_preflight_unavailable")),
+        engine_clock_masked=bool(clock.get("engine_clock_masked")),
     )
     print(f"case_record={abs_record}")
     print(
