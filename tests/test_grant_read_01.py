@@ -334,14 +334,11 @@ def test_unread_grant_refuses_empty_generate_context(
         )
     assert_envelope_valid(env)
     _assert_absent(_blob(env), SAMPLE_NEEDLES, where="unread-grant envelope")
-    bodies = _insights_bodies(posts)
-    assert bodies, posts
-    for body in bodies:
-        onto = body.get("ontology") or {}
-        _assert_absent(
-            _ontology_blob(body), CONTEXT_NEEDLES, where="unread-grant Insights ontology"
-        )
-        assert not (onto.get("schema") or []), onto.get("schema")
+    # GRANT-READ-02 (dms#307), Gating 20:18 MYT item 2: the empty-schema
+    # assertion changes only to the named ABSTAIN. No Insights call at all.
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert "grant_unreadable" in env["text"]
+    assert _insights_bodies(posts) == [], posts
 
 
 def test_list_space_source_ids_reads_executor_warehouse(
