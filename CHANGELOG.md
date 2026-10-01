@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - BRONZE-WAREHOUSE-01: executor file is the bronze grant
+
+- **Test only.** No product code. `tests/test_bronze_warehouse_01.py` asks from Finance through `live_ask` on one split layout. The bronze table is registered in the ingest file. The serving file is separate. A matched table that is not in that executor's `grantable_tables` abstains `ungranted_table:<table>`.
+- **Refs.** Follow-up to merged PR #333 under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue.
+
 ## 2026-10-01 - BRONZE-GRANT-01: cross-space bronze ask abstains
 
 - **Gate.** A bronze table registered to one Space is `ungranted_table:<table>` when asked from another. `live()` records that ABSTAIN. The case stays in n.
