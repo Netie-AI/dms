@@ -2,6 +2,43 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-01: one INVALID test per A/B lane (#308)
+
+- **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321). Stays a draft. No 52-pack drift.
+- **Lanes.** `climb_ab_live` and `prove_path_live` each call `score_live_entry` twice. New tests: generative lane of `climb_ab_live`, exact lane of `prove_path_live`. Both fail on `dd4162ec`. The exact prove lane is written to `score_gen_path_prove_exact_cases.json` and fails the round when `exact_invalid` is not 0.
+- **Not a sixth.** The grid runner is `grid_score_hook` (`scripts/score_curated.py`). `scripts/score_grid.py` is not in git. Bare `--ab` is `ab_offline`, not a live caller. `--climb --ab` is `climb_ab_live`, already one of the five.
+- **Timezone.** `_case_invalid_reason` is inside `score_pack_live`, which every live entry reaches through `score_live_entry`.
+
+## 2026-10-01 - ENGINE-DATE-01: five live scorers, no sixth (#308)
+
+- **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321) / [dms#308](https://github.com/Netie-AI/dms/issues/308). Stays a draft. No scorer change. Counts stay exact 0/16/36/0/0 and generative 0/26/11/15/0, INVALID 0, n 52.
+- **Finding.** Live curated rounds are `live`, `climb`, `climb_ab_live`, `prove_path_live`, and `grid_score_hook`. `--prove-path --url` and `--prove-path --climb` both call `prove_path_live`. The dms#299 runner `scripts/score_grid.py` is not in git history. `score_bird.live` and `score_answers` score other packs and do not call `score_pack_live`.
+- **Not this ticket:** building GRID-RUN-01; protected paths.
+
+## 2026-10-01 - ENGINE-DATE-01: rebase onto OVERMASK-01 (#308)
+
+- **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321) / [dms#308](https://github.com/Netie-AI/dms/issues/308). Stays a draft. Does not stamp COMPLETE. Does not close the issue.
+- **Change.** Rebased onto main `dd4162ec` (OVERMASK-01 #322). Conflict was changelog and status only. No test was weakened. `pii.py` still untouched by this PR.
+- **Counts.** `python scripts/score_curated.py --ab` on this head: exact 0/16/36/0/0, generative 0/26/11/15/0 (ok/layer/abstain/wrong/oracle_error), INVALID 0, n 52, n_without_invalid 52. Exit 1 is the existing generative WRONG pin.
+- **Gate.** `tests/test_engine_date_01.py` on parent `dd4162ec`: 22 failed, 0 passed. On this head: 22 passed.
+- **Not this ticket:** dms#284 live schema; the full dms#299 grid runner; protected paths.
+
+## 2026-10-01 - ENGINE-DATE-01 gate: sqlglot placeholder, per-entry INVALID (#308)
+
+- **Ticket.** Same draft PR as the section below ([#321](https://github.com/Netie-AI/dms/pull/321), [dms#308](https://github.com/Netie-AI/dms/issues/308)). Stays a draft. Does not rebase (OVERMASK-01 is not on main). Does not touch `pii.py`. Does not stamp COMPLETE. Does not close the issue. CI fixtures, not live.
+- **Change.** Serving `execute_sql` auto-binds `$as_of` only when sqlglot's tokenizer sees a real placeholder (a `$` parameter token immediately followed by a var token `as_of`). A `$` inside a string, an identifier, or a comment is not a placeholder and is not bound. Product refusal uses the same detector. Oracle `bind_oracle_params` and the scorer bind the same way. The 52-pack table and the dms#299 grid hook already print `n`, `n_without_invalid`, and `invalid`.
+- **Gate.** `tests/test_engine_date_01.py`. Literal and comment SQL through `Executor.answer_user_sql` and `session_followup.run_followup_sql`. A `$` string beside a real `$as_of`. One midnight INVALID test each for `live`, `climb`, `climb_ab_live`, `prove_path_live`, and `grid_score_hook`. Whole file on `6da6e44`: 22 failed, 0 passed. On this head: 22 passed. No existing test edited. No skip, xfail, or importorskip.
+- **Counts.** Offline 52-pack unchanged: exact 0/16/36/0/0, generative 0/26/11/15/0, INVALID 0.
+- **Not this ticket:** rebase onto OVERMASK-01; `pii.py`; protected paths; the full dms#299 grid runner.
+
+## 2026-10-01 - ENGINE-DATE-01: live engine date, reserved $as_of (#308)
+
+- **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) follow-up. Does not stamp COMPLETE. Does not merge. Does not close the issue. CI fixtures, not live.
+- **Change.** Every live entry point (`live`, `climb`, `climb_ab_live` exact and generative, `prove_path_live` generative and exact, `grid_score_hook`) opens the round from the answer-engine date. Missing date is `engine_date_unread`: n=0, no asks, `passed` false, `round_label` INVALID. A per-ask before/after mismatch is `engine_date_mismatch`. A timezone mismatch is `engine_timezone_mismatch`. Those cases stay in n, tally INVALID, and are never WRONG. INVALID>0 cannot PASS. Product SQL with a real `$as_of` placeholder abstains as `reserved_param:as_of` and does not run. `$as_of` inside a string or comment is not a placeholder. Oracle and scorer calls still bind `$as_of`.
+- **Gate.** `tests/test_engine_date_01.py`. 16 failed, 0 passed on `6da6e44`. 16 passed on this head. No existing test edited. No skip, xfail, or importorskip.
+- **Counts.** Offline 52-pack before and after, ok/layer/abstain/wrong/oracle_error: exact 0/16/36/0/0, generative 0/26/11/15/0, INVALID 0. Same on `6da6e44` and on `ca34419`.
+- **Not this ticket:** `pii.py` (OVERMASK-01, rebase before merge and re-run the counts); judge comparison; oracle SQL; labels; pins; dms#317 timeout; dms#305 served_*; the full dms#299 grid runner; protected paths.
+
 ## 2026-10-01 - OVERMASK-01: served-path star test, live schema leftovers (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Verify and Gating on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.

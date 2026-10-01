@@ -50,12 +50,22 @@ from dms_executor.demo_pack import (
     maybe_pack_ask,
     maybe_uncertified_refuse_ask,
 )
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, execute_sql
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    ReservedParamError,
+    ensure_demo_warehouse,
+    execute_sql,
+    read_health_engine_clock,
+    sql_has_reserved_as_of,
+    stamp_engine_clock,
+)
 from dms_executor.envelope import (
+    RESERVED_PARAM_AS_OF,
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
     normalize_contributing_sources,
+    reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
     maybe_generative_ask,
@@ -234,8 +244,42 @@ class Executor:
 
     def execute(self, sql: str) -> list[dict[str, Any]]:
         reject_hostile_chat_sql(sql)
+        if sql_has_reserved_as_of(sql):
+            raise ReservedParamError(RESERVED_PARAM_AS_OF)
         ensure_demo_warehouse(self._warehouse)
-        return execute_sql(sql, path=self._warehouse)
+        return execute_sql(sql, path=self._warehouse, product=True)
+
+    def answer_user_sql(
+        self,
+        sql: str,
+        *,
+        space_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """User SQL. A real $as_of placeholder is ABSTAIN and is not executed."""
+        if sql_has_reserved_as_of(sql):
+            return reserved_as_of_abstain(
+                space_id=space_id,
+                session_id=session_id,
+                route="user_sql",
+                question=sql,
+            )
+        rows = self.execute(sql)
+        env = build_answer_envelope(
+            answer_id="ans_user_sql",
+            text="Query result.",
+            badge="L2_VALIDATED",
+            rows=rows,
+            sql_used=sql,
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="user_sql",
+            question=sql,
+        )
+        stamp_engine_clock(env)
+        assert_envelope_valid(env)
+        return env
 
     def demo_ask(self, question: str, *, space_id: str | None = None) -> dict[str, Any]:
         ensure_demo_warehouse(self._warehouse)
@@ -453,6 +497,7 @@ class Executor:
             ask_path=ask_path,
             seen=seen,
         )
+        stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
         return stamped if stamped is not None else env
@@ -738,6 +783,8 @@ class Executor:
         reminted: bool = False,
     ) -> Any:
         reject_hostile_chat_sql(sql)
+        if sql_has_reserved_as_of(sql):
+            raise ReservedParamError(RESERVED_PARAM_AS_OF)
         if self._cortex is None:
             raise RuntimeError("CortexClient required for submit")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
@@ -1000,6 +1047,7 @@ __all__ = [
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "read_health_engine_clock",
     "list_bronze_tables",
     "list_promote_targets",
     "list_warehouse_tables",

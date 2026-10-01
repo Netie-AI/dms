@@ -630,7 +630,13 @@ def judge_detailed(
         return JudgeResult(legacy, "", legacy)
     if not sql:
         return JudgeResult("ORACLE_ERROR", "oracle_error:missing_sql", legacy)
-    params = {"as_of": as_of} if as_of is not None and "$as_of" in sql else None
+    from dms_executor.demo_warehouse import sql_has_reserved_as_of
+
+    params = (
+        {"as_of": as_of}
+        if as_of is not None and sql_has_reserved_as_of(sql)
+        else None
+    )
     gold, err = run_oracle_select(oracle_db, sql, params=params)
     if err is not None:
         return JudgeResult("ORACLE_ERROR", f"oracle_error:{err}", legacy)
@@ -726,8 +732,9 @@ def pack_category_report(
     abstain = int(tallies.get("ABSTAIN") or 0)
     wrong = int(tallies.get("WRONG") or 0)
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
+    invalid = int(tallies.get("INVALID") or 0)
     answered = ok + layer
-    accounted = ok + layer + abstain + wrong + oracle_error
+    accounted = ok + layer + abstain + wrong + oracle_error + invalid
     denom = max(PACK_DENOMINATOR, accounted)
     excluded = denom - accounted
 
@@ -1798,6 +1805,116 @@ def self_check() -> int:
     return 0
 
 
+def _clock_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def resolve_live_engine_clock(url: str, timeout: float) -> dict[str, str | None]:
+    """Engine date for opening a live round. Never the oracle file or the box clock.
+
+    Prefer the clock published by the connection that ran answer SQL. Else the
+    /health point-read. Else all nulls (the round is unread).
+    """
+    published: dict[str, str] | None = None
+    try:
+        from dms_executor.demo_warehouse import current_engine_clock
+
+        published = current_engine_clock()
+    except Exception:  # noqa: BLE001 - missing warehouse is an unread round
+        published = None
+    if published and published.get("engine_as_of") and published.get("engine_as_of_after"):
+        return {
+            "engine_as_of": published.get("engine_as_of"),
+            "engine_as_of_after": published.get("engine_as_of_after"),
+            "engine_timezone": published.get("engine_timezone"),
+        }
+    body: dict[str, Any] = {}
+    try:
+        resp = score_http("GET", f"{url.rstrip('/')}/health", timeout=timeout)
+        resp.raise_for_status()
+        parsed = resp.json()
+        if isinstance(parsed, dict):
+            body = parsed
+    except Exception:  # noqa: BLE001 - unread, do not invent a date
+        body = {}
+    return {
+        "engine_as_of": _clock_text(body.get("engine_as_of")),
+        "engine_as_of_after": _clock_text(body.get("engine_as_of_after")),
+        "engine_timezone": _clock_text(body.get("engine_timezone")),
+    }
+
+
+def score_live_entry(
+    url: str,
+    timeout: float,
+    ask_path: str | None = None,
+    *,
+    oracle_db: Path | None = None,
+) -> tuple[dict[str, int], list[dict[str, Any]], dict[str, Any]]:
+    """Every live entry point. Passes the engine date. Does not call the judge."""
+    clock = resolve_live_engine_clock(url, timeout)
+    return score_pack_live(
+        url,
+        timeout,
+        ask_path,
+        oracle_db=oracle_db,
+        engine_as_of=clock.get("engine_as_of"),
+        engine_as_of_after=clock.get("engine_as_of_after"),
+        engine_timezone=clock.get("engine_timezone"),
+    )
+
+
+def _case_engine_clock(
+    env: dict[str, Any],
+    round_before: str | None,
+    round_after: str | None,
+    round_tz: str | None,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    before = _clock_text(env.get("engine_as_of")) or round_before
+    after = _clock_text(env.get("engine_as_of_after")) or round_after
+    tz = _clock_text(env.get("engine_timezone")) or round_tz
+    tz_after = _clock_text(env.get("engine_timezone_after")) or tz
+    return before, after, tz, tz_after
+
+
+def _case_invalid_reason(
+    before: str | None,
+    after: str | None,
+    tz: str | None,
+    tz_after: str | None,
+) -> str | None:
+    if not before or not after or before != after:
+        return "engine_date_mismatch"
+    if tz and tz_after and tz != tz_after:
+        return "engine_timezone_mismatch"
+    return None
+
+
+def _unread_clock(
+    before: str | None,
+    after: str | None,
+    timezone: str | None,
+) -> dict[str, Any]:
+    clock = _round_clock(before, after, timezone)
+    clock["reason"] = "engine_date_unread"
+    clock["invalid"] = 0
+    clock["n"] = 0
+    clock["n_without_invalid"] = 0
+    return clock
+
+
+def _invalid_case_exit(tallies: dict[str, int]) -> int | None:
+    n = int(tallies.get("INVALID") or 0)
+    if n:
+        print(
+            f"FAIL: INVALID={n} (engine date or timezone mismatch on a case). "
+            "Not WRONG. Not PASS."
+        )
+        return EXIT_FAIL
+    return None
+
+
 def score_pack_live(
     url: str,
     timeout: float,
@@ -1813,9 +1930,8 @@ def score_pack_live(
     Never falls back to --oracle-db CURRENT_DATE. No recorded engine date:
     round INVALID, not judged.
     """
-    clock = _round_clock(engine_as_of, engine_as_of_after, engine_timezone)
-    if clock["round_label"] == "INVALID":
-        return _tally(), [], clock
+    if not engine_as_of or not engine_as_of_after:
+        return _tally(), [], _unread_clock(engine_as_of, engine_as_of_after, engine_timezone)
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
     oracles = load_oracles() if oracle_db is not None else None
@@ -1854,8 +1970,40 @@ def score_pack_live(
                 )
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
+        case_before, case_after, case_tz, case_tz_after = _case_engine_clock(
+            env, as_of, engine_as_of_after, oracle_tz
+        )
+        invalid_reason = _case_invalid_reason(
+            case_before, case_after, case_tz, case_tz_after
+        )
+        if invalid_reason:
+            tallies["INVALID"] += 1
+            badge = env.get("badge")
+            route = env.get("route")
+            print(
+                f"{qid}\tINVALID\t{badge}\troute={route}\treason={invalid_reason}"
+            )
+            cases_out.append(
+                {
+                    "id": qid,
+                    "verdict": "INVALID",
+                    "badge": badge,
+                    "route": route,
+                    "path": classify_path(route),
+                    "plan_source": classify_plan_source(env),
+                    "crag": classify_crag(env),
+                    "rows": len(env.get("rows") or []),
+                    "expect": case.get("expect"),
+                    "reason": invalid_reason,
+                    LEGACY_JUDGE_LABEL: "INVALID",
+                    "oracle_schema_version": schema_ver,
+                    "oracle_as_of": case_before,
+                    "oracle_timezone": case_tz,
+                }
+            )
+            continue
         result = judge_envelope_detailed(
-            case, env, oracle_db=oracle_db, oracles=oracles, as_of=as_of
+            case, env, oracle_db=oracle_db, oracles=oracles, as_of=case_before
         )
         verdict = result.verdict
         tallies[verdict] += 1
@@ -1890,12 +2038,17 @@ def score_pack_live(
                 "reason": result.reason,
                 LEGACY_JUDGE_LABEL: result.scorer_ok_rows_not_compared,
                 "oracle_schema_version": schema_ver,
-                "oracle_as_of": as_of,
-                "oracle_timezone": oracle_tz,
+                "oracle_as_of": case_before,
+                "oracle_timezone": case_tz,
             }
         )
-    after = engine_as_of_after if engine_as_of_after is not None else as_of
-    clock = _round_clock(as_of, after, oracle_tz)
+    clock = _round_clock(as_of, engine_as_of_after, oracle_tz)
+    invalid_n = int(tallies.get("INVALID") or 0)
+    clock["invalid"] = invalid_n
+    clock["n"] = sum(tallies.values())
+    clock["n_without_invalid"] = clock["n"] - invalid_n
+    if invalid_n:
+        clock["passed"] = False
     return tallies, cases_out, clock
 
 
@@ -1905,10 +2058,11 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         print(why)
         return EXIT_CONFIG
     assert oracle_db is not None
-    tallies, _cases, clock = score_pack_live(url, timeout, oracle_db=oracle_db)
+    tallies, cases, clock = score_live_entry(url, timeout, oracle_db=oracle_db)
     n = sum(tallies.values())
     wrong = tallies["WRONG"]
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
+    invalid_n = int(tallies.get("INVALID") or 0)
     answered_ok = tallies["OK"] + tallies["LAYER"]
     precision = 100.0 if answered_ok + wrong == 0 else (
         100.0 * answered_ok / (answered_ok + wrong)
@@ -1917,7 +2071,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     print(
         f"precision-on-answered {precision:.2f} pct  "
         f"coverage {tallies['OK']}/{n}  "
-        f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}"
+        f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}  "
+        f"INVALID {invalid_n}  n {n}  n_without_invalid {n - invalid_n}"
     )
     as_of = clock.get("oracle_as_of")
     after = clock.get("oracle_as_of_after")
@@ -1943,7 +2098,17 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "oracle_error": oracle_error,
                 "total": n,
                 "abstained": tallies["ABSTAIN"],
-                "passed": wrong == 0 and oracle_error == 0 and not invalid,
+                "invalid": invalid_n,
+                "n": n,
+                "n_without_invalid": n - invalid_n,
+                "reason": clock.get("reason"),
+                "passed": (
+                    wrong == 0
+                    and oracle_error == 0
+                    and invalid_n == 0
+                    and not invalid
+                ),
+                "cases": cases,
                 "oracle_db": str(oracle_db),
                 "schema_version": read_schema_version(oracle_db),
                 "oracle_as_of": as_of,
@@ -1960,6 +2125,9 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     inv = _invalid_round_exit(clock.get("round_label"))
     if inv is not None:
         return inv
+    inv_case = _invalid_case_exit(tallies)
+    if inv_case is not None:
+        return inv_case
     if oracle_error:
         print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
         return EXIT_FAIL
@@ -1991,21 +2159,31 @@ def _ab_seed(path: Path) -> Any:
 
 
 def _tally() -> dict[str, int]:
-    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0, "ORACLE_ERROR": 0}
+    return {
+        "OK": 0,
+        "ABSTAIN": 0,
+        "LAYER": 0,
+        "WRONG": 0,
+        "ORACLE_ERROR": 0,
+        "INVALID": 0,
+    }
 
 
 def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
     wrong = tallies["WRONG"]
     answered = tallies["OK"] + tallies["LAYER"]
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
+    invalid = int(tallies.get("INVALID") or 0)
     return {
         "path": name,
         "n": n,
+        "n_without_invalid": n - invalid,
         "ok": tallies["OK"],
         "layer": tallies["LAYER"],
         "abstain": tallies["ABSTAIN"],
         "wrong": wrong,
         "oracle_error": oracle_error,
+        "invalid": invalid,
         "answered": answered,
         "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
         "categories": pack_category_report(tallies, figure_label=FIGURE_LABEL_FIXTURE),
@@ -2154,6 +2332,8 @@ def run_ab_curated(
             exact_r["wrong"] == 0
             and gen_r["wrong"] == 0
             and oracle_error == 0
+            and int(exact_r.get("invalid") or 0) == 0
+            and int(gen_r.get("invalid") or 0) == 0
         ),
         "compare_rows": compare_rows,
         "oracle_db": str(compare_db) if compare_db is not None else None,
@@ -2177,13 +2357,14 @@ def ab_offline(oracle_db: Path | None = None) -> int:
     gen = report["generative"]
     base = report["baseline_ab"]
     print(
-        f"{'path':<22} n ok layer abstain wrong answered coverage_answered"
+        f"{'path':<22} n n_without_invalid ok layer abstain wrong invalid "
+        "answered coverage_answered"
     )
     for row in (exact, gen):
         print(
-            f"{row['path']:<22} {row['n']} {row['ok']} {row['layer']} "
-            f"{row['abstain']} {row['wrong']} {row['answered']} "
-            f"{row['coverage_answered_pct']:.2f} pct"
+            f"{row['path']:<22} {row['n']} {row['n_without_invalid']} {row['ok']} "
+            f"{row['layer']} {row['abstain']} {row['wrong']} {row['invalid']} "
+            f"{row['answered']} {row['coverage_answered_pct']:.2f} pct"
         )
     print(
         f"baseline @ {base['commit']}: exact_answered={base['exact_answered']} "
@@ -2289,6 +2470,8 @@ def build_climb_report(
         "answered_vs_baseline": vs,
         "wrong": wrong,
         "oracle_error": oracle_error,
+        "invalid": int(tallies.get("INVALID") or 0),
+        "n_without_invalid": n - int(tallies.get("INVALID") or 0),
         "passed_wrong_zero": wrong == 0,
         "categories": cats,
         "distill": distill_block(),
@@ -2371,7 +2554,7 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         return EXIT_CONFIG
     assert oracle_db is not None
     try:
-        tallies, cases, clock = score_pack_live(url, timeout, oracle_db=oracle_db)
+        tallies, cases, clock = score_live_entry(url, timeout, oracle_db=oracle_db)
     except ImportError:
         print("CONFIG: httpx required (DMS .venv). Not a score.")
         return EXIT_CONFIG
@@ -2384,6 +2567,7 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         clock.get("oracle_as_of_after"),
         clock.get("oracle_timezone"),
     )
+    report["reason"] = clock.get("reason")
     measured = report["measured"]
     base = report["baseline"]
     delta = report["delta"]
@@ -2425,6 +2609,9 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     inv = _invalid_round_exit(report.get("round_label"))
     if inv is not None:
         return inv
+    inv_case = _invalid_case_exit(tallies)
+    if inv_case is not None:
+        return inv_case
     if int(report.get("oracle_error") or 0):
         print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
         return EXIT_FAIL
@@ -2463,11 +2650,11 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
     assert oracle_db is not None
     print("-- ask_path=exact --")
     try:
-        exact_t, exact_cases, exact_clock = score_pack_live(
+        exact_t, exact_cases, exact_clock = score_live_entry(
             url, timeout, ask_path="exact", oracle_db=oracle_db
         )
         print("-- ask_path=generative --")
-        gen_t, gen_cases, gen_clock = score_pack_live(
+        gen_t, gen_cases, gen_clock = score_live_entry(
             url, timeout, ask_path="generative", oracle_db=oracle_db
         )
     except ImportError:
@@ -2515,6 +2702,8 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         "generative_vs_baseline": vs,
         "wrong": exact_r["wrong"] + gen_r["wrong"],
         "oracle_error": oracle_error,
+        "invalid": int(exact_t.get("INVALID") or 0) + int(gen_t.get("INVALID") or 0),
+        "reason": exact_clock.get("reason") or gen_clock.get("reason"),
         "passed_wrong_zero": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
     }
     if (
@@ -2527,12 +2716,15 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
     if "99.95" in blob or "COMPLETE" in blob:
         print("FAIL: live A/B invented COMPLETE / 99.95")
         return EXIT_FAIL
-    print(f"{'path':<22} n ok layer abstain wrong answered coverage_answered")
+    print(
+        f"{'path':<22} n n_without_invalid ok layer abstain wrong invalid "
+        "answered coverage_answered"
+    )
     for row in (exact_r, gen_r):
         print(
-            f"{row['path']:<22} {row['n']} {row['ok']} {row['layer']} "
-            f"{row['abstain']} {row['wrong']} {row['answered']} "
-            f"{row['coverage_answered_pct']:.2f} pct"
+            f"{row['path']:<22} {row['n']} {row['n_without_invalid']} {row['ok']} "
+            f"{row['layer']} {row['abstain']} {row['wrong']} {row['invalid']} "
+            f"{row['answered']} {row['coverage_answered_pct']:.2f} pct"
         )
     print(
         f"baseline @ {base['commit']}: exact_answered={base['exact_answered']} "
@@ -2557,6 +2749,12 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
     inv = _invalid_round_exit(report.get("round_label"))
     if inv is not None:
         return inv
+    if int(report.get("invalid") or 0):
+        print(
+            f"FAIL: INVALID={report['invalid']} (engine date or timezone mismatch). "
+            "Not WRONG. Not PASS."
+        )
+        return EXIT_FAIL
     if oracle_error:
         print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
         return EXIT_FAIL
@@ -2692,6 +2890,8 @@ def build_gen_path_prove_report(
         "abstain": int(tallies.get("ABSTAIN") or 0),
         "wrong": wrong,
         "oracle_error": oracle_error,
+        "invalid": int(tallies.get("INVALID") or 0),
+        "n_without_invalid": n - int(tallies.get("INVALID") or 0),
         "answered": answered,
         "passed_wrong_zero": wrong == 0,
         "by_plan_source": by_source,
@@ -2766,6 +2966,7 @@ def live_climb_gate(report: dict[str, Any]) -> str | None:
 def _write_prove_report(
     report: dict[str, Any], *, live_climb: bool = False
 ) -> tuple[int, dict[str, Any]]:
+    exact_cases = report.pop("exact_cases", None)
     blob = json.dumps({k: v for k, v in report.items() if k != "cases"}, indent=2)
     if "COMPLETE" in blob or "99.95" in blob or "DB-GPT-class" in blob:
         print("FAIL: gen-path prove invented COMPLETE / 99.95")
@@ -2776,6 +2977,10 @@ def _write_prove_report(
     (art / "score_gen_path_prove_cases.json").write_text(
         json.dumps(report["cases"], indent=2) + "\n", encoding="utf-8"
     )
+    if exact_cases is not None:
+        (art / "score_gen_path_prove_exact_cases.json").write_text(
+            json.dumps(exact_cases, indent=2) + "\n", encoding="utf-8"
+        )
     by = report["by_plan_source"]
     print(
         f"{'plan_source':<16} answered answered_pct pack_pct"
@@ -2810,6 +3015,12 @@ def _write_prove_report(
     inv = _invalid_round_exit(report.get("round_label"))
     if inv is not None:
         return inv, report
+    if int(report.get("invalid") or 0):
+        print(
+            f"FAIL: INVALID={report['invalid']} (engine date or timezone mismatch). "
+            "Not WRONG. Not PASS."
+        )
+        return EXIT_FAIL, report
     if int(report.get("oracle_error") or 0):
         print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
         return EXIT_FAIL, report
@@ -2903,11 +3114,11 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
     assert oracle_db is not None
     print("-- ask_path=generative (plan_source labels) --")
     try:
-        gen_t, gen_cases, gen_clock = score_pack_live(
+        gen_t, gen_cases, gen_clock = score_live_entry(
             url, timeout, ask_path="generative", oracle_db=oracle_db
         )
         print("-- ask_path=exact (WRONG=0 on same pack) --")
-        exact_t, _exact_cases, exact_clock = score_pack_live(
+        exact_t, exact_cases, exact_clock = score_live_entry(
             url, timeout, ask_path="exact", oracle_db=oracle_db
         )
     except ImportError:
@@ -2924,6 +3135,15 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
         gen_clock.get("oracle_as_of_after"),
         gen_clock.get("oracle_timezone"),
     )
+    report["reason"] = gen_clock.get("reason") or exact_clock.get("reason")
+    exact_n = sum(int(v) for v in exact_t.values())
+    exact_invalid = int(exact_t.get("INVALID") or 0)
+    report["exact_n"] = exact_n
+    report["exact_invalid"] = exact_invalid
+    report["exact_n_without_invalid"] = exact_n - exact_invalid
+    report["exact_cases"] = exact_cases
+    if exact_invalid:
+        report["passed"] = False
     if exact_clock.get("round_label") == "INVALID":
         report["round_label"] = "INVALID"
         report["passed"] = False
@@ -2936,6 +3156,12 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
     code, _ = _write_prove_report(report, live_climb=True)
     if report.get("round_label") == "INVALID":
         return EXIT_FAIL
+    if int(report.get("exact_invalid") or 0):
+        print(
+            f"FAIL: exact lane INVALID={report['exact_invalid']} "
+            "(engine date or timezone mismatch). Not WRONG. Not PASS."
+        )
+        return EXIT_FAIL
     if int(exact_t["WRONG"]):
         print("FAIL: exact-match lane WRONG>0 on same pack")
         return EXIT_FAIL
@@ -2946,6 +3172,52 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
         print("FAIL: leftover L0s not scored (frozen 17/26 pack)")
         return EXIT_FAIL
     return code
+
+
+def grid_score_hook(
+    url: str,
+    timeout: float,
+    oracle_db: Path | None = None,
+) -> dict[str, Any]:
+    """dms#299 row. Same live clock as live/climb/prove. Not the grid runner."""
+    why = require_oracle_db(oracle_db)
+    if why:
+        return {
+            "kind": "dms.grid_score_hook",
+            "issue": 299,
+            "n": 0,
+            "n_without_invalid": 0,
+            "invalid": 0,
+            "passed": False,
+            "reason": None,
+            "config": why,
+            "cases": [],
+        }
+    assert oracle_db is not None
+    tallies, cases, clock = score_live_entry(url, timeout, oracle_db=oracle_db)
+    n = sum(tallies.values())
+    invalid_n = int(tallies.get("INVALID") or 0)
+    return {
+        "kind": "dms.grid_score_hook",
+        "issue": 299,
+        "n": n,
+        "n_without_invalid": n - invalid_n,
+        "invalid": invalid_n,
+        "ok": tallies["OK"],
+        "layer": tallies["LAYER"],
+        "abstain": tallies["ABSTAIN"],
+        "wrong": tallies["WRONG"],
+        "oracle_error": tallies["ORACLE_ERROR"],
+        "round_label": clock.get("round_label"),
+        "reason": clock.get("reason"),
+        "passed": (
+            tallies["WRONG"] == 0
+            and tallies["ORACLE_ERROR"] == 0
+            and invalid_n == 0
+            and clock.get("round_label") != "INVALID"
+        ),
+        "cases": cases,
+    }
 
 
 def main(argv: list[str]) -> int:

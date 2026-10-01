@@ -16,9 +16,129 @@ from typing import Any
 
 import duckdb
 
+# Product SQL may not bind this. Oracle and scorer calls may.
+RESERVED_PARAM_AS_OF = "reserved_param:as_of"
+
 _LOCKS_GUARD = threading.Lock()
 _FILE_LOCKS: dict[str, threading.RLock] = {}
 _SEEDED: set[str] = set()
+
+# Last successful execute_sql on this process. Pending until an envelope stamps it.
+# ponytail: process-global, one in-flight ask. Upgrade: pass the clock on the call.
+_ENGINE_CLOCK: dict[str, str] | None = None
+_CLOCK_PENDING = False
+
+
+class ReservedParamError(Exception):
+    """Product SQL named $as_of. The statement was not executed."""
+
+
+def sql_has_reserved_as_of(sql: str) -> bool:
+    """True when sqlglot sees a real $as_of placeholder.
+
+    A `$` inside a string, an identifier, or a comment is not a placeholder.
+    Tokenizer only. No regex and no substring scan of the SQL text.
+    """
+    from sqlglot import tokenize
+    from sqlglot.tokens import TokenType
+
+    try:
+        tokens = tokenize(sql or "", read="duckdb")
+    except Exception:  # noqa: BLE001 - unreadable SQL is not a placeholder
+        return False
+    saw_param = False
+    for tok in tokens:
+        if saw_param and tok.token_type == TokenType.VAR and tok.text == "as_of":
+            return True
+        saw_param = tok.token_type == TokenType.PARAMETER and tok.text == "$"
+    return False
+
+
+def clear_engine_clock() -> None:
+    global _ENGINE_CLOCK, _CLOCK_PENDING
+    _ENGINE_CLOCK = None
+    _CLOCK_PENDING = False
+
+
+def current_engine_clock() -> dict[str, str] | None:
+    if not _ENGINE_CLOCK:
+        return None
+    return dict(_ENGINE_CLOCK)
+
+
+def stamp_engine_clock(env: dict[str, Any]) -> dict[str, Any]:
+    """Copy the pending SQL-connection clock onto an envelope that ran SQL."""
+    global _CLOCK_PENDING
+    clock = _ENGINE_CLOCK
+    if _CLOCK_PENDING and clock and clock.get("engine_as_of") and clock.get("engine_as_of_after"):
+        for key in (
+            "engine_as_of",
+            "engine_as_of_after",
+            "engine_timezone",
+            "engine_timezone_after",
+        ):
+            val = clock.get(key)
+            if val:
+                env[key] = val
+        _CLOCK_PENDING = False
+    return env
+
+
+def _read_con_clock(con: Any) -> tuple[str | None, str | None]:
+    try:
+        row = con.execute(
+            "SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - clock must not fail the query
+        return None, None
+    if not row:
+        return None, None
+    as_of = str(row[0]).strip() if row[0] is not None else ""
+    tz = str(row[1]).strip() if row[1] is not None else ""
+    return (as_of or None, tz or None)
+
+
+def _publish_engine_clock(
+    before: str | None,
+    before_tz: str | None,
+    after: str | None,
+    after_tz: str | None,
+) -> None:
+    global _ENGINE_CLOCK, _CLOCK_PENDING
+    if not before or not after:
+        return
+    clock = {
+        "engine_as_of": before,
+        "engine_as_of_after": after,
+        "engine_timezone": before_tz or "",
+        "engine_timezone_after": after_tz or "",
+    }
+    _ENGINE_CLOCK = {k: v for k, v in clock.items() if v}
+    _CLOCK_PENDING = True
+
+
+def read_health_engine_clock() -> dict[str, str]:
+    """Point read so /health can open a live round. Not the answer SQL connection.
+
+    The case clock is the before/after pair on the connection that ran the SQL.
+    """
+    try:
+        con = connect_readonly()
+    except Exception:  # noqa: BLE001 - health must stay up
+        return {}
+    try:
+        as_of, tz = _read_con_clock(con)
+    finally:
+        con.close()
+    if not as_of:
+        return {}
+    out = {
+        "engine_as_of": as_of,
+        "engine_as_of_after": as_of,
+        "engine_timezone": tz or "",
+        "engine_timezone_after": tz or "",
+    }
+    return {k: v for k, v in out.items() if v}
 
 # ponytail: one live RW attach per resolved path. DuckDB 1.5 unique-file-handle
 # 500s a second attach of the same file (alias = stem, so browse.duckdb -> "browse").
@@ -314,12 +434,22 @@ def execute_sql(
     *,
     path: Path | None = None,
     params: Mapping[str, Any] | None = None,
+    product: bool = False,
 ) -> list[dict[str, Any]]:
-    """Run SELECT-shaped SQL; returns list of row dicts."""
+    """Run SELECT-shaped SQL; returns list of row dicts.
+
+    product=True refuses a real $as_of placeholder before any execute.
+    A $as_of inside a string or comment is not a placeholder. The default
+    path auto-binds only a real placeholder, for oracle calls on this file.
+    """
+    real_as_of = sql_has_reserved_as_of(sql)
+    if product and real_as_of:
+        raise ReservedParamError(RESERVED_PARAM_AS_OF)
     con = connect_readonly(path)
     try:
+        before, before_tz = _read_con_clock(con)
         bind: dict[str, Any] = dict(params) if params else {}
-        if "$as_of" in sql and "as_of" not in bind:
+        if not product and real_as_of and "as_of" not in bind:
             # ponytail: omitted as_of uses this connection's CURRENT_DATE.
             # Offline only (same DuckDB file as submit()). Live must pass the
             # recorded answer-engine date; missing live date is INVALID.
@@ -327,7 +457,10 @@ def execute_sql(
             bind["as_of"] = row[0] if row else None
         rel = con.execute(sql, bind) if bind else con.execute(sql)
         cols = [d[0] for d in rel.description]
-        return [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
+        rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
+        after, after_tz = _read_con_clock(con)
+        _publish_engine_clock(before, before_tz, after, after_tz)
+        return rows
     finally:
         con.close()
 

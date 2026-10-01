@@ -16,7 +16,7 @@ from typing import Any
 from dms_core.pii import fail_closed_mask_payload
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
-from dms_executor.demo_warehouse import DEMO_TABLES
+from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF
 
 ALLOWED_BADGES = frozenset(
     {
@@ -1825,6 +1825,35 @@ def _parse_numbers(text: str) -> list[float]:
         except ValueError:
             continue
     return found
+
+
+def reserved_as_of_abstain(
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    route: str = "generated",
+    question: str | None = None,
+    ask_mode: str = "live",
+) -> dict[str, Any]:
+    """Named ABSTAIN. $as_of was a placeholder. Zero rows. SQL did not run."""
+    env = build_answer_envelope(
+        answer_id="ans_reserved_as_of",
+        text=RESERVED_PARAM_AS_OF,
+        badge="ABSTAIN",
+        abstained=True,
+        assumptions=[RESERVED_PARAM_AS_OF],
+        rows=[],
+        values=[],
+        as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode=ask_mode,
+        route=route,
+        question=question,
+    )
+    env["abstain_reason"] = RESERVED_PARAM_AS_OF
+    assert_envelope_valid(env)
+    return env
 
 
 def assert_envelope_valid(envelope: dict[str, Any]) -> None:

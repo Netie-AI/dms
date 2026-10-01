@@ -12,8 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from dms_executor.demo_warehouse import execute_sql
-from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.demo_warehouse import execute_sql, sql_has_reserved_as_of, stamp_engine_clock
+from dms_executor.envelope import (
+    assert_envelope_valid,
+    build_answer_envelope,
+    reserved_as_of_abstain,
+)
 
 _AVG = re.compile(r"^\s*average of them\s*[.?]?\s*$", re.I)
 _ADD = re.compile(r"^\s*add\s+(-?\d+(?:\.\d+)?)\s*[.?]?\s*$", re.I)
@@ -111,7 +115,58 @@ def _pack_compute(
         question=question,
     )
     assert_envelope_valid(env)
+    stamp_engine_clock(env)
     return env
+
+
+def _followup_execute(
+    sql: str,
+    *,
+    warehouse: Path | None,
+    space_id: str | None,
+    session_id: str | None,
+    question: str,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """Rows, or a reserved_param abstain. The placeholder never reaches DuckDB."""
+    if sql_has_reserved_as_of(sql):
+        return None, reserved_as_of_abstain(
+            space_id=space_id,
+            session_id=session_id,
+            route="followup",
+            question=question,
+        )
+    return execute_sql(sql, path=warehouse, product=True), None
+
+
+def run_followup_sql(
+    sql: str,
+    *,
+    warehouse: Path | None,
+    space_id: str | None,
+    session_id: str | None,
+    question: str,
+    why: str,
+    text: str,
+) -> dict[str, Any]:
+    """Follow-up SQL. A real $as_of placeholder abstains and does not run."""
+    rows, refused = _followup_execute(
+        sql,
+        warehouse=warehouse,
+        space_id=space_id,
+        session_id=session_id,
+        question=question,
+    )
+    if refused is not None:
+        return refused
+    return _pack_compute(
+        sql=sql,
+        rows=rows or [],
+        text=text,
+        space_id=space_id,
+        session_id=session_id,
+        question=question,
+        why=why,
+    )
 
 
 def maybe_followup(
@@ -143,17 +198,25 @@ def maybe_followup(
         expr = " + ".join(f"{n:.10g}" for n in nums)
         sql = f"SELECT ROUND(({expr}) / {len(nums)}.0, 2) AS average_myr"
         try:
-            rows = execute_sql(sql, path=warehouse)
+            rows, refused = _followup_execute(
+                sql,
+                warehouse=warehouse,
+                space_id=space_id,
+                session_id=session_id,
+                question=question,
+            )
         except Exception:  # noqa: BLE001
             return _abstain(
                 space_id=space_id,
                 session_id=session_id,
                 why="average of them: compute failed",
             )
+        if refused is not None:
+            return refused
         avg_v = float(rows[0]["average_myr"]) if rows else 0.0
         return _pack_compute(
             sql=sql,
-            rows=rows,
+            rows=rows or [],
             text=f"Average of the prior {len(nums)} figures is RM {avg_v:,.2f}.",
             space_id=space_id,
             session_id=session_id,
@@ -169,17 +232,25 @@ def maybe_followup(
         )
     sql = f"SELECT ROUND({nums[0]:.10g} + {delta:.10g}, 2) AS adjusted_myr"
     try:
-        rows = execute_sql(sql, path=warehouse)
+        rows, refused = _followup_execute(
+            sql,
+            warehouse=warehouse,
+            space_id=space_id,
+            session_id=session_id,
+            question=question,
+        )
     except Exception:  # noqa: BLE001
         return _abstain(
             space_id=space_id,
             session_id=session_id,
             why="add N: compute failed",
         )
+    if refused is not None:
+        return refused
     total = float(rows[0]["adjusted_myr"]) if rows else 0.0
     return _pack_compute(
         sql=sql,
-        rows=rows,
+        rows=rows or [],
         text=f"Prior figure plus {delta:g} is RM {total:,.2f}.",
         space_id=space_id,
         session_id=session_id,
