@@ -101,6 +101,16 @@ def _install_http(monkeypatch: pytest.MonkeyPatch, responder):
     calls: list[dict[str, object]] = []
 
     def fake(method: str, url: str, **kwargs):
+        if method == "GET" and url.rstrip("/").endswith("/health"):
+            return _Ok(
+                {
+                    "status": "ok",
+                    "engine_as_of": "2024-06-15",
+                    "engine_as_of_after": "2024-06-15",
+                    "engine_timezone": "UTC",
+                    "engine_timezone_after": "UTC",
+                }
+            )
         body = kwargs.get("json_body")
         if isinstance(body, dict):
             calls.append(body)
@@ -361,6 +371,7 @@ RECORD_KEYS = (
     "rows",
     "oracle_verdict",
     "engine_date",
+    "clock_source",
 )
 
 

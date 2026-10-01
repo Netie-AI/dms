@@ -48,7 +48,7 @@ def sql_has_reserved_as_of(sql: str) -> bool:
         return False
     saw_param = False
     for tok in tokens:
-        if saw_param and tok.token_type == TokenType.VAR and tok.text == "as_of":
+        if saw_param and tok.token_type == TokenType.VAR and tok.text.lower() == "as_of":
             return True
         saw_param = tok.token_type == TokenType.PARAMETER and tok.text == "$"
     return False
@@ -67,8 +67,10 @@ def current_engine_clock() -> dict[str, str] | None:
 
 
 def stamp_engine_clock(env: dict[str, Any]) -> dict[str, Any]:
-    """Copy the pending SQL-connection clock onto an envelope that ran SQL."""
-    global _CLOCK_PENDING
+    """Copy this answer's pending SQL clock onto its envelope, then drop it.
+
+    A later answer, including one that ran no SQL, must not inherit it.
+    """
     clock = _ENGINE_CLOCK
     if _CLOCK_PENDING and clock and clock.get("engine_as_of") and clock.get("engine_as_of_after"):
         for key in (
@@ -80,7 +82,7 @@ def stamp_engine_clock(env: dict[str, Any]) -> dict[str, Any]:
             val = clock.get(key)
             if val:
                 env[key] = val
-        _CLOCK_PENDING = False
+    clear_engine_clock()
     return env
 
 
