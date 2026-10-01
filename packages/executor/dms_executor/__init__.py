@@ -67,6 +67,7 @@ from dms_executor.envelope import (
     normalize_contributing_sources,
     reserved_as_of_abstain,
 )
+from dms_executor.gen_path_refuse import GRANT_UNREADABLE
 from dms_executor.generative_ask import (
     maybe_generative_ask,
     path_miss_envelope,
@@ -568,6 +569,31 @@ class Executor:
             run_cascade,
         )
 
+        # GRANT-READ-02 (dms#307): read the grant once, before any Cortex or
+        # model call. An unread grant is a named ABSTAIN, never an empty-schema
+        # generate call. An empty grant is the same ABSTAIN on a lane with no
+        # Cortex ask; on the product lane it skips Insights only, so a
+        # document-only Space still reaches the manifest-bound Cortex ask. A
+        # ticked table outside the grant is refused by name (R-0005), never
+        # dropped while another lane answers. All of it only narrows.
+        try:
+            granted = list(self.grantable_tables(space_id=space_id))
+            grant_read = True
+        except Exception:  # noqa: BLE001 -- named refusal, never the whole space
+            granted, grant_read = [], False
+        if not grant_read or (not granted and not allow_cortex):
+            env = path_miss_envelope(
+                question, GRANT_UNREADABLE, space_id=space_id, session_id=session_id
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
+        if not granted:
+            allow_gen = False
+        selection = [t for t in (tables or []) if t]
+        ungrantable = [t for t in selection if t not in set(granted)]
+        if ungrantable:
+            raise GroundingRefused(ungrantable=ungrantable, grantable=granted)
+
         key = turn_key(session_id, space_id)
         if allow_follow:
             follow = maybe_followup(
@@ -647,13 +673,8 @@ class Executor:
         # This path used ``requested or grantable_tables(...)``, so with
         # nothing ticked the cascade and retrieve opened every bronze upload
         # tagged to the Space and sent DISTINCT samples in the Insights body.
-        # Intersection with granted still narrows a selection; an unread grant
-        # never falls back to the whole space.
-        try:
-            granted = self.grantable_tables(space_id=space_id)
-        except Exception:  # noqa: BLE001 -- empty context, never the whole space
-            granted = []
-        selection = [t for t in (tables or []) if t]
+        # ``granted`` and ``selection`` come from the GRANT-READ-02 check above:
+        # an unread grant and an ungranted tick have already been refused.
         requested = [t for t in selection if t in set(granted)]
         default_readable = [t for t in granted if t in DEMO_TABLES]
         readable = requested or default_readable
