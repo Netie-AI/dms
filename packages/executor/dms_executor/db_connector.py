@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -29,9 +29,9 @@ from dms_executor.bronze import (
     ident_safe,
     mint_extracted_at,
     record_source_pull,
-    type_bronze_columns,
-    write_bronze_rows,
+    write_typed_bronze_rows,
 )
+from dms_executor.source_types import ColumnType, as_text, map_description
 
 SourceKind = Literal["sqlserver", "mysql", "postgresql"]
 
@@ -116,11 +116,12 @@ class SourcePull:
     #: Rows the source table held when the pull was capped. ``None`` when the pull
     #: was not truncated, or the source would not answer the count.
     source_row_count: int | None = None
-    #: Landed DuckDB type per column, from the source's declared types.
+    #: column -> DuckDB type it landed as. Source types are kept (dms#277); a column
+    #: that is VARCHAR here is either text at the source or named in ``type_notes``.
     column_types: dict[str, str] = field(default_factory=dict)
-    #: Columns that stayed VARCHAR, and why (undeclared type, unmapped type, or
-    #: values the declared type could not hold). Named on the receipt, never silent.
-    untyped_columns: dict[str, str] = field(default_factory=dict)
+    #: One per column that could not keep its source type and landed VARCHAR. Also
+    #: recorded on the source in the ingest registry.
+    type_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -469,17 +470,23 @@ def _fetch(
     target: SourceTable,
     *,
     max_rows: int,
-) -> tuple[list[str], list[list[Any]], bool]:
+) -> tuple[list[ColumnType], list[list[Any]], bool]:
+    """Column types from ``cursor.description`` and the rows as the driver returned them.
+
+    Values stay native (``int``, ``Decimal``, ``date``, ...) so bronze can land them in
+    the source's type; ``dms_executor.source_types`` does the mapping, and a column it
+    cannot keep exactly falls back to the ``str()`` text this function used to produce.
+    """
     ident = f"{_quote_ident(cfg, target.schema)}.{_quote_ident(cfg, target.name)}"
     cur = con.cursor()
     try:
         cur.execute(f"SELECT * FROM {ident}")
-        columns = [str(d[0]) for d in cur.description]
+        types = map_description(cfg.kind, cur.description)
         # Ask for one extra row: if it arrives, the pull was capped.
         fetched = list(cur.fetchmany(max_rows + 1))
         truncated = len(fetched) > max_rows
-        rows = [[None if v is None else str(v) for v in row] for row in fetched[:max_rows]]
-        return columns, rows, truncated
+        rows = [list(row) for row in fetched[:max_rows]]
+        return types, rows, truncated
     finally:
         cur.close()
 
@@ -512,8 +519,10 @@ def preview_source_table(
     """Read the first ``limit`` rows without writing anything to bronze."""
     with connect(cfg) as con:
         target = _resolve(cfg, con, schema, table)
-        columns, rows, _ = _fetch(cfg, con, target, max_rows=max(1, limit))
-    return columns, rows
+        types, rows, _ = _fetch(cfg, con, target, max_rows=max(1, limit))
+    return [t.name for t in types], [
+        [None if v is None else as_text(v) for v in row] for row in rows
+    ]
 
 
 def _bronze_name(target: SourceTable) -> str:
@@ -521,56 +530,19 @@ def _bronze_name(target: SourceTable) -> str:
     return ident_safe(stem.strip("_").lower()[:60] or "source_table")
 
 
-#: INFORMATION_SCHEMA.COLUMNS answers the same shape on all three sources.
-_COLUMN_TYPES_SQL = (
-    "SELECT COLUMN_NAME, DATA_TYPE, NUMERIC_PRECISION, NUMERIC_SCALE "
-    "FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = {p} AND TABLE_NAME = {p}"
-)
-
-
-def list_source_column_types(
-    cfg: SourceConfig, con: Any, target: SourceTable, columns: list[str]
-) -> dict[str, tuple[str, int | None, int | None]] | None:
-    """Declared type of each fetched column, from the source's own catalog.
-
-    ``None`` when the catalog will not say (no answer, an error, or rows that do
-    not name exactly the fetched columns): the pull then lands untyped and the
-    receipt says so. Declared, never inferred from the values.
-    """
-    placeholder = "?" if cfg.kind == "sqlserver" else "%s"
-    try:
-        rows = _run_query(
-            con,
-            _COLUMN_TYPES_SQL.format(p=placeholder),
-            (target.schema, target.name),
-        )
-    except Exception:  # noqa: BLE001 - an unreadable catalog is "undeclared"
-        return None
-    out: dict[str, tuple[str, int | None, int | None]] = {}
-    for row in rows:
-        if len(row) < 4 or not isinstance(row[0], str) or not isinstance(row[1], str):
-            return None
-        prec = int(row[2]) if isinstance(row[2], int) else None
-        scale = int(row[3]) if isinstance(row[3], int) else None
-        out[row[0]] = (row[1], prec, scale)
-    if set(out) != set(columns):
-        return None
-    return out
-
-
-def _distinct_columns(columns: list[str]) -> tuple[list[str], dict[str, str]]:
+def _distinct_types(types: list[ColumnType]) -> tuple[list[ColumnType], dict[str, str]]:
     """Column names unique case-insensitively; ``{original: landed}`` for the renamed."""
     seen: set[str] = set()
-    out: list[str] = []
+    out: list[ColumnType] = []
     renamed: dict[str, str] = {}
-    for col in columns:
-        name, n = col, 2
+    for t in types:
+        name, n = t.name, 2
         while name.lower() in seen:
-            name, n = f"{col}_{n}", n + 1
+            name, n = f"{t.name}_{n}", n + 1
         seen.add(name.lower())
-        out.append(name)
-        if name != col:
-            renamed[col] = name
+        out.append(t if name == t.name else replace(t, name=name))
+        if name != t.name:
+            renamed[t.name] = name
     return out, renamed
 
 
@@ -595,7 +567,8 @@ def _pull_one(
     ingest_id = str(uuid.uuid4())
     ref_id = str(uuid.uuid4())
     extracted_at = mint_extracted_at()
-    columns, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
+    types, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
+    columns = [t.name for t in types]
     if not columns:
         raise ValueError(f"{target.qualified} exposed no columns")
     source_row_count: int | None = None
@@ -614,25 +587,23 @@ def _pull_one(
         name, note = claimed or claim_source_table_name(
             stem=_bronze_name(target), source=source, path=path, space_id=space_id
         )
-    declared = list_source_column_types(cfg, con, target, columns)
-    landed_cols, renamed = _distinct_columns(columns)
+    types, renamed = _distinct_types(types)
+    columns = [t.name for t in types]
     if renamed:
         # DuckDB column names are case-insensitive: ``Name`` and ``name`` in one
         # source table were a CatalogException and a 500. The duplicate lands
         # under a suffixed name and the receipt says which.
         rename_note = "; ".join(f"column {a!r} landed as {b!r}" for a, b in renamed.items())
         note = f"{note}; {rename_note}" if note else rename_note
-        if declared is not None:
-            declared = {renamed.get(c, c): v for c, v in declared.items()}
-    landed = write_bronze_rows(
+    typed = write_typed_bronze_rows(
         table=name,
-        columns=landed_cols,
+        column_types=types,
         rows=rows,
         ref_id=ref_id,
         ingest_id=ingest_id,
         path=path,
     )
-    typing = type_bronze_columns(table=landed, declared=declared, path=path)
+    landed = typed.table
     record_source_pull(
         table_name=landed.split(".", 1)[-1],
         source=source,
@@ -643,7 +614,8 @@ def _pull_one(
         path=path,
         extracted_at=extracted_at,
         source_row_count=source_row_count,
-        untyped_numeric=typing["untyped_numeric"],
+        type_notes=typed.type_notes,
+        untyped_numeric=typed.untyped_numeric,
     )
     return SourcePull(
         bronze_table=landed,
@@ -656,8 +628,8 @@ def _pull_one(
         extracted_at=extracted_at,
         note=note,
         source_row_count=source_row_count,
-        column_types=typing["column_types"],
-        untyped_columns=typing["untyped_columns"],
+        column_types=typed.column_types,
+        type_notes=typed.type_notes,
     )
 
 

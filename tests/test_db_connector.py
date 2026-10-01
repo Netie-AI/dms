@@ -25,6 +25,33 @@ def wh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return db
 
 
+#: data_type (as INFORMATION_SCHEMA names it) -> the psycopg type OID the driver reports.
+_PG_OIDS = {
+    "integer": 23,
+    "bigint": 20,
+    "smallint": 21,
+    "numeric": 1700,
+    "text": 25,
+    "character varying": 1043,
+    "boolean": 16,
+    "double precision": 701,
+    "date": 1082,
+    "timestamp": 1114,
+    "timestamptz": 1184,
+    "money": 790,
+}
+
+
+def _table_key(sql: str, data: Any) -> str:
+    """``schema.table`` of the data query: the idents ``_pull_one`` quotes ``"s"."t"``."""
+    if not isinstance(data, dict):
+        return ""
+    for ident in data:
+        if ident in sql:
+            return ident.replace('"', "")
+    return ""
+
+
 class _FakeCursor:
     def __init__(self, owner: _FakeConnection) -> None:
         self._owner = owner
@@ -50,13 +77,6 @@ class _FakeCursor:
             ]
             self._result = list(self._owner.fks)
             return
-        if "INFORMATION_SCHEMA.COLUMNS" in sql:
-            # Declared column types (dms#277 F-e). A fake with none declared
-            # answers nothing, which lands the pull untyped and says so.
-            schema, table = (params or ("", ""))[:2]
-            self.description = [("COLUMN_NAME",), ("DATA_TYPE",), ("P",), ("S",)]
-            self._result = list(self._owner.column_types.get(f"{schema}.{table}", []))
-            return
         if "PRIMARY KEY" in sql or "CONSTRAINT_NAME = 'PRIMARY'" in sql:
             self.description = [
                 ("TABLE_SCHEMA",),
@@ -71,7 +91,14 @@ class _FakeCursor:
             cols, rows = next(payload for ident, payload in data.items() if ident in sql)
         else:
             cols, rows = data
-        self.description = [(c,) for c in cols]
+        declared = self._owner.column_types.get(_table_key(sql, data))
+        if declared is not None:
+            # psycopg-shaped: (name, type_oid, display, internal, precision, scale, null_ok)
+            self.description = [
+                (n, _PG_OIDS.get(t, 25), None, None, p, sc, None) for n, t, p, sc in declared
+            ]
+        else:
+            self.description = [(c,) for c in cols]
         self._result = [tuple(r) for r in rows]
 
     def fetchall(self) -> list[tuple[Any, ...]]:
@@ -201,13 +228,9 @@ def test_system_schemas_are_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, con)
     assert [t.qualified for t in dbc.list_source_tables(_cfg())] == ["dbo.orders"]
 
-    pg = _FakeConnection(
-        [("public", "orders"), ("pg_catalog", "pg_class")], (["id"], [["1"]])
-    )
+    pg = _FakeConnection([("public", "orders"), ("pg_catalog", "pg_class")], (["id"], [["1"]]))
     _install(monkeypatch, pg)
-    assert [t.qualified for t in dbc.list_source_tables(_cfg("postgresql"))] == [
-        "public.orders"
-    ]
+    assert [t.qualified for t in dbc.list_source_tables(_cfg("postgresql"))] == ["public.orders"]
 
 
 def test_mysql_catalog_sql_filters_database_as_schema(
@@ -243,9 +266,7 @@ def _bronze_rows(wh: Path, table: str) -> list[tuple[Any, ...]]:
         con.close()
 
 
-def test_ingest_lands_source_rows_in_bronze(
-    wh: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ingest_lands_source_rows_in_bronze(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     con = _FakeConnection(
         [("dbo", "orders")],
         (["order_id", "amount"], [["A-1", "10.50"], ["A-2", "20.25"]]),
@@ -306,9 +327,7 @@ def test_pull_over_max_rows_is_capped_and_flagged(
     assert len(_bronze_rows(wh, pull.bronze_table)) == 2
 
 
-def test_exact_fit_is_not_reported_as_truncated(
-    wh: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_exact_fit_is_not_reported_as_truncated(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rows = [[f"A-{i}", str(i)] for i in range(3)]
     con = _FakeConnection([("dbo", "orders")], (["order_id", "amount"], rows))
     _install(monkeypatch, con)
@@ -412,9 +431,7 @@ def _capped_parent_source() -> _FakeConnection:
     )
 
 
-def test_sql_source_is_named_on_library_preview(
-    wh: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sql_source_is_named_on_library_preview(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """R-0001: the customer artifact is the preview, not the registry insert."""
     from dms_api.app import create_app
     from fastapi.testclient import TestClient
@@ -614,9 +631,7 @@ def test_two_source_tables_one_stem_apart_do_not_overwrite_each_other(
 
     db = duckdb.connect(str(wh), read_only=True)
     try:
-        counts = {
-            n: db.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0] for n in names
-        }
+        counts = {n: db.execute(f"SELECT COUNT(*) FROM {n}").fetchone()[0] for n in names}
         registry = db.execute(
             "SELECT COUNT(*) FROM bronze._ingest_registry WHERE filename LIKE '%#dbo.a%'"
         ).fetchone()[0]

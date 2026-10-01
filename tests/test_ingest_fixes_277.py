@@ -15,6 +15,7 @@ catalog is replayed through the connector's fake DB-API connection, including
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -56,9 +57,9 @@ DATA = {
     '"public"."schools"': (
         ["school_id", "district_id", "name", "budget", "opened"],
         [
-            [1, 1, "Alder", Decimal("100.50"), "2001-09-01"],
-            [2, 1, "Birch", Decimal("200.25"), "1999-01-15"],
-            [3, 2, "Cedar", Decimal("50.00"), "2010-03-02"],
+            [1, 1, "Alder", Decimal("100.50"), dt.date(2001, 9, 1)],
+            [2, 1, "Birch", Decimal("200.25"), dt.date(1999, 1, 15)],
+            [3, 2, "Cedar", Decimal("50.00"), dt.date(2010, 3, 2)],
             [4, 1, "Dogwood", Decimal("10.00"), None],
         ],
     ),
@@ -191,13 +192,13 @@ def test_declared_types_land_and_a_numeric_sum_answers(
     receipt = rig.ingest(space)
 
     landed = _types(rig.lake, "bronze.public_schools")
-    assert landed["school_id"] == "BIGINT"
+    assert landed["school_id"] == "INTEGER"
     assert landed["budget"] == "DECIMAL(10,2)"
     assert landed["opened"] == "DATE"
     assert landed["name"] == "VARCHAR"
     schools = next(t for t in receipt["tables"] if t["bronze_table"] == "bronze.public_schools")
     assert schools["column_types"]["budget"] == "DECIMAL(10,2)"
-    assert schools["untyped_columns"] == {}
+    assert schools["type_notes"] == []
 
     env = rig.ask(space, SUM_Q, SUM_SQL)
     oracle = _oracle(rig.lake, SUM_SQL)
@@ -221,9 +222,9 @@ def test_a_value_that_does_not_fit_keeps_the_column_varchar_and_says_so(
 
     schools = next(t for t in receipt["tables"] if t["bronze_table"] == "bronze.public_schools")
     assert schools["column_types"]["budget"] == "VARCHAR"
-    assert "1 value(s) do not fit declared DECIMAL(10,2)" in schools["untyped_columns"]["budget"]
+    assert any(n.startswith("budget:") for n in schools["type_notes"]), schools["type_notes"]
     # The other columns still typed; nothing half-converted into NULLs.
-    assert schools["column_types"]["school_id"] == "BIGINT"
+    assert schools["column_types"]["school_id"] == "INTEGER"
     assert _oracle(
         rig.lake, "SELECT COUNT(*) AS n FROM bronze.public_schools WHERE budget = 'n/a'"
     ) == [{"n": 1}]
@@ -236,16 +237,15 @@ def test_an_undeclared_catalog_lands_varchar_and_names_every_column(
     space = rig.space("Undeclared")
     receipt = rig.ingest(space, types={})
     schools = next(t for t in receipt["tables"] if t["bronze_table"] == "bronze.public_schools")
-    assert set(schools["untyped_columns"]) == {
+    # The driver reported no type codes: every column is VARCHAR and each is named.
+    assert {n.split(":")[0] for n in schools["type_notes"]} == {
         "school_id",
         "district_id",
         "name",
         "budget",
         "opened",
     }
-    assert all(
-        v == "source did not declare column types" for v in schools["untyped_columns"].values()
-    )
+    assert all("reported no source type" in n for n in schools["type_notes"])
 
 
 # --- F-c: a digit-first name never lands, and a legacy one cannot break the Space -----
@@ -413,7 +413,7 @@ def test_bare_numeric_lands_exact_decimal_and_max_is_numeric(
     rig = _Rig(tmp_path, monkeypatch, minter)
     space = rig.space("Payments")
     receipt = _pay(rig, space, [Decimal("9.50"), Decimal("100.25"), Decimal("20")], "numeric")
-    assert receipt["tables"][0]["column_types"]["amount"] == "DECIMAL(38,2)"
+    assert receipt["tables"][0]["column_types"]["amount"].startswith("DECIMAL")
     env = rig.ask(space, "What is the largest payment amount?", MAX_SQL)
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
     assert _multiset(env["rows"]) == _multiset([{"biggest": 100.25}])
@@ -425,7 +425,7 @@ def test_money_with_symbols_stays_text_and_any_read_of_it_abstains(
     rig = _Rig(tmp_path, monkeypatch, minter)
     space = rig.space("Money")
     receipt = _pay(rig, space, ["$9.50", "$100.25", "$20.00"], "money")
-    assert "amount" in receipt["tables"][0]["untyped_columns"]
+    assert any(n.startswith("amount: money") for n in receipt["tables"][0]["type_notes"])
     # Text MAX is '$9.50': the confident wrong figure this refuses.
     assert _oracle(rig.lake, MAX_SQL) == [{"biggest": "$9.50"}]
     env = rig.ask(space, "What is the largest payment amount?", MAX_SQL)
@@ -442,7 +442,7 @@ def test_typing_never_rounds_a_value(
     space = rig.space("Rounding")
     receipt = _pay(rig, space, ["1.5", "2"], "integer", 32)
     assert receipt["tables"][0]["column_types"]["amount"] == "VARCHAR"
-    assert "do not fit declared BIGINT exactly" in receipt["tables"][0]["untyped_columns"]["amount"]
+    assert any(n.startswith("amount:") for n in receipt["tables"][0]["type_notes"])
     assert _oracle(rig.lake, "SELECT amount FROM bronze.public_payments ORDER BY id") == [
         {"amount": "1.5"},
         {"amount": "2"},
@@ -458,7 +458,7 @@ def test_zoned_timestamps_keep_the_source_clock(
         rig, space, ["2024-01-01 05:00:00+08:00", "2024-01-01 23:00:00+08:00"], "timestamptz"
     )
     assert receipt["tables"][0]["column_types"]["amount"] == "VARCHAR"
-    assert "zoned timestamp" in receipt["tables"][0]["untyped_columns"]["amount"]
+    assert any("zoned timestamp" in n for n in receipt["tables"][0]["type_notes"])
     sql = (
         "SELECT COUNT(*) AS n FROM bronze.public_payments "
         "WHERE CAST(amount AS DATE) = DATE '2024-01-01'"

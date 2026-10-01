@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
@@ -26,6 +27,7 @@ from dms_executor.demo_warehouse import (
 )
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
+from dms_executor.source_types import ColumnType, prepare_columns
 
 
 @dataclass
@@ -139,6 +141,11 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         # '9.50' > '100.25'.
         if "untyped_numeric" not in cols:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN untyped_numeric VARCHAR")
+        # Columns of a SQL pull that could not keep their source type and landed
+        # VARCHAR, one note per column, JSON array. NULL = typed cleanly, or a file
+        # ingest / a pull older than typed landing (dms#277).
+        if "type_notes" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN type_notes VARCHAR")
 
 
 def _claim_table_name(
@@ -212,6 +219,7 @@ def _record_ingest(
     extracted_at: str | None = None,
     source_kind: str | None = None,
     source_row_count: int | None = None,
+    type_notes: list[str] | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
     kind = source_kind or classify_source_kind(filename)
@@ -222,8 +230,8 @@ def _record_ingest(
     con.execute(
         f"INSERT INTO {_REGISTRY} "
         "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, "
-        "truncated, extracted_at, source_kind, source_row_count) "
-        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, ?)",
+        "truncated, extracted_at, source_kind, source_row_count, type_notes) "
+        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, ?, ?)",
         [
             table_name,
             filename,
@@ -236,6 +244,7 @@ def _record_ingest(
             stamp,
             kind,
             source_row_count,
+            json.dumps(type_notes) if type_notes else None,
         ],
     )
 
@@ -297,6 +306,7 @@ def record_source_pull(
     extracted_at: str | None = None,
     source_row_count: int | None = None,
     untyped_numeric: list[str] | None = None,
+    type_notes: list[str] | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -337,6 +347,7 @@ def record_source_pull(
             extracted_at=stamp,
             source_kind="sql",
             source_row_count=source_row_count,
+            type_notes=type_notes,
         )
         con.execute(
             f"UPDATE {_REGISTRY} SET untyped_numeric = ? WHERE table_name = ?",
@@ -352,6 +363,17 @@ def record_source_pull(
         source_row_count=source_row_count,
     )
     return fingerprint
+
+
+def parse_type_notes(raw: Any) -> list[str]:
+    """The registry's ``type_notes`` JSON array, read back. Unreadable reads as none."""
+    if not raw:
+        return []
+    try:
+        got = json.loads(str(raw))
+    except ValueError:
+        return [str(raw)]
+    return [str(n) for n in got] if isinstance(got, list) else [str(got)]
 
 
 def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
@@ -418,6 +440,7 @@ _REGISTRY_OPTIONAL = (
     "source_kind",
     "source_row_count",
     "untyped_numeric",
+    "type_notes",
 )
 
 
@@ -511,7 +534,7 @@ def list_source_pulls(
         lambda col: f"""
         SELECT r.table_name, r.filename, {col("space_id")}, {col("row_count")},
                {col("truncated")}, {col("source_row_count")}, {col("extracted_at")},
-               r.ingest_id, {col("source_kind")}
+               r.ingest_id, {col("source_kind")}, {col("type_notes")}
           FROM {_REGISTRY} r
           JOIN information_schema.tables t
             ON t.table_schema = 'bronze' AND t.table_name = r.table_name
@@ -544,6 +567,7 @@ def list_source_pulls(
             "ingest_id": None if ingest_id is None else str(ingest_id),
         }
         entry.update(_truncation_fields(row_count, truncated, total))
+        entry["type_notes"] = parse_type_notes(row[9])
         out.append(entry)
     return out
 
@@ -940,197 +964,111 @@ def write_bronze_rows(
         con.close()
 
 
-#: Source DATA_TYPE (lower-cased) -> DuckDB type. Declared types only; anything
-#: not listed stays VARCHAR and is named on the receipt.
-_INT_TYPES = frozenset(
-    {
-        "int",
-        "integer",
-        "int2",
-        "int4",
-        "int8",
-        "smallint",
-        "bigint",
-        "tinyint",
-        "mediumint",
-        "serial",
-        "bigserial",
-        "smallserial",
-    }
-)
-_FLOAT_TYPES = frozenset({"real", "float", "float4", "float8", "double", "double precision"})
-_TEXT_TYPES = frozenset(
-    {
-        "varchar",
-        "character varying",
-        "text",
-        "char",
-        "character",
-        "nvarchar",
-        "nchar",
-        "ntext",
-        "bpchar",
-        "citext",
-        "uuid",
-        "uniqueidentifier",
-        "longtext",
-        "mediumtext",
-        "tinytext",
-        "enum",
-    }
-)
-_DECIMAL_TYPES = frozenset({"numeric", "decimal", "money", "smallmoney", "number"})
-_SIMPLE_TYPES = {
-    "boolean": "BOOLEAN",
-    "bool": "BOOLEAN",
-    "bit": "BOOLEAN",
-    "date": "DATE",
-    "time": "TIME",
-    "time without time zone": "TIME",
-    "timestamp": "TIMESTAMP",
-    "timestamp without time zone": "TIMESTAMP",
-    "datetime": "TIMESTAMP",
-    "datetime2": "TIMESTAMP",
-    "smalldatetime": "TIMESTAMP",
-}
-#: Kept VARCHAR on purpose (adversary round 4): the driver writes these with the
-#: source session's offset (``05:00+08:00``) and a DuckDB TIMESTAMPTZ reads them in
-#: the server zone, so a day bucket moves (2024-01-01 becomes 2023-12-31). The text
-#: keeps the source's own clock, which is what the pre-typing answers used.
-_ZONED_TYPES = frozenset({"timestamptz", "timestamp with time zone", "datetimeoffset"})
+@dataclass
+class TypedLanding:
+    """What ``write_typed_bronze_rows`` landed: the table, each column's type, the notes."""
+
+    table: str
+    #: column -> DuckDB type it landed as, in column order.
+    column_types: dict[str, str]
+    #: One per column that could not keep its source type and landed VARCHAR.
+    type_notes: list[str]
+    #: Numeric source columns that landed VARCHAR. SQL reading one is refused
+    #: (``untyped_numeric``): text orders ``'9.50'`` above ``'100.25'``.
+    untyped_numeric: list[str]
 
 
-def duckdb_type_for(data_type: str, precision: int | None, scale: int | None) -> str | None:
-    """The DuckDB type a declared source type lands as, or None to stay VARCHAR."""
-    t = " ".join(str(data_type).lower().split())
-    if t in _TEXT_TYPES:
-        return "VARCHAR"
-    if t in _INT_TYPES:
-        return "BIGINT"
-    if t in _FLOAT_TYPES:
-        return "DOUBLE"
-    if t in {"money", "smallmoney"}:
-        return "DECIMAL(19,4)"
-    if t in _DECIMAL_TYPES:
-        # DuckDB DECIMAL holds 38 digits. Wider, or undeclared precision
-        # (Postgres bare NUMERIC), cannot be held exactly: stays VARCHAR.
-        if precision is None or not 1 <= precision <= 38:
-            return None
-        s = scale or 0
-        return f"DECIMAL({precision},{s})" if 0 <= s <= precision else None
-    return _SIMPLE_TYPES.get(t)
-
-
-_NUMERIC_TYPES = _INT_TYPES | _FLOAT_TYPES | _DECIMAL_TYPES
-
-
-def _bare_decimal(con: Any, rel: str, q: str) -> str | None:
-    """DECIMAL(38, s) for an undeclared-precision numeric, or None.
-
-    ``s`` is the largest scale the values carry. Plain decimal notation only (an
-    exponent is refused, not reinterpreted); the exactness check in the caller
-    still has to pass before anything is converted.
-    """
-    row = con.execute(
-        f"SELECT COUNT(*) FILTER (WHERE NOT regexp_full_match(trim({q}), '-?[0-9]+(\\.[0-9]+)?')), "
-        f"COALESCE(MAX(length(split_part(trim({q}), '.', 2))), 0), "
-        f"COALESCE(MAX(length(ltrim(split_part(trim({q}), '.', 1), '-'))), 0) "
-        f"FROM {rel} WHERE {q} IS NOT NULL"
-    ).fetchone()
-    if row is None or int(row[0]):
-        return None
-    scale, whole = int(row[1]), int(row[2])
-    if whole + scale > 38 or scale > 38:
-        return None
-    return f"DECIMAL(38,{scale})"
-
-
-def type_bronze_columns(
+def write_typed_bronze_rows(
     *,
     table: str,
-    declared: dict[str, tuple[str, int | None, int | None]] | None,
+    column_types: list[ColumnType],
+    rows: list[list[Any]],
+    ref_id: str | None = None,
+    ingest_id: str | None = None,
     path: Path | None = None,
-) -> dict[str, Any]:
-    """Give landed bronze columns their source-declared types (dms#277 F-e).
+) -> TypedLanding:
+    """Land SQL-source rows in bronze.<table> with the source's column types (dms#277).
 
-    Rows land as VARCHAR (``write_bronze_rows``), which made every generated
-    ``SUM``/``AVG`` over a numeric SQL-source column fail validation: the
-    largest known BIRD cost. A column with a mapped declared type is converted
-    only if EVERY non-NULL value converts AND, for a numeric target, converts
-    to the same number (DuckDB rounds ``'1.5'`` to an integer 2 instead of
-    failing). Otherwise it stays VARCHAR and is named, never half-converted.
+    ``write_bronze_rows`` landed every column VARCHAR, so ``SUM(amount)`` over a source
+    ``numeric(12,4)`` failed to bind and the ask abstained. Here each column is:
 
-    ``untyped_numeric`` lists columns declared numeric that stayed VARCHAR; the
-    ask path refuses SQL that reads them, because text compares ``'9.50' >
-    '100.25'``.
+    1. serialised in Python to text DuckDB casts back exactly (``source_types``) - a
+       value the mapped type cannot carry exactly (NaN numeric, scale overflow, a
+       zero date a driver returned as text) sends that column to VARCHAR;
+    2. bulk-loaded as text through the same temp-CSV fast path as ``write_bronze_rows``;
+    3. checked with ``TRY_CAST`` in DuckDB - any non-NULL value that does not cast
+       sends that column to VARCHAR too;
+    4. created with ``CAST`` to its final type in one ``CREATE TABLE AS``.
+
+    A column that fell back carries a note, returned here and recorded on the source
+    by ``record_source_pull`` - visible, never silently wrong. Provenance (``_src``,
+    ``_ingest_id``) is identical to ``write_bronze_rows``.
     """
-    column_types: dict[str, str] = {}
-    untyped: dict[str, str] = {}
-    untyped_numeric: list[str] = []
-    schema, _, name = table.partition(".")
-    rel = f'"{schema}"."{name}"'
+    ingest_id = ingest_id or str(uuid.uuid4())
+    ref_id = ref_id or str(uuid.uuid4())
+    if "." in table:
+        schema, name = table.split(".", 1)
+    else:
+        schema, name = "bronze", table
+    if not column_types:
+        raise ValueError("columns required")
+    width = len(column_types)
+    for r in rows:
+        if len(r) != width:
+            raise ValueError(f"row has {len(r)} values for {width} columns")
+    prepared = prepare_columns(column_types, rows)
+    text_rows: list[list[Any]] = [list(r) for r in zip(*(c.values for c in prepared), strict=True)]
+    columns = [c.name for c in prepared]
     db = ensure_demo_warehouse(path or warehouse_path())
     con = connect_file(db)
     try:
-        cols = [
-            str(r[0])
-            for r in con.execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()
-            if str(r[0]) not in {"_src", "_ingest_id"}
-        ]
-        for col in cols:
-            column_types[col] = "VARCHAR"
-            if declared is None:
-                untyped[col] = "source did not declare column types"
-                continue
-            spec = declared.get(col)
-            if spec is None:
-                untyped[col] = "type not declared"
-                continue
-            kind = " ".join(str(spec[0]).lower().split())
-            numeric = kind in _NUMERIC_TYPES
-            q = '"' + col.replace('"', '""') + '"'
-            if kind in _ZONED_TYPES:
-                untyped[col] = (
-                    f"declared {spec[0]!r} kept as source text: a zoned timestamp "
-                    "read in the server's zone would move day boundaries"
-                )
-                continue
-            target = duckdb_type_for(*spec)
-            if target is None and kind in _DECIMAL_TYPES and spec[1] is None:
-                target = _bare_decimal(con, rel, q)
-            if target is None:
-                untyped[col] = f"declared type {spec[0]!r} has no exact DuckDB type"
-                if numeric or kind in {"money", "smallmoney"}:
-                    untyped_numeric.append(col)
-                continue
-            if target == "VARCHAR":
-                continue
-            exact = (
-                f" OR TRY_CAST(TRY_CAST({q} AS {target}) AS DECIMAL(38,18)) "
-                f"IS DISTINCT FROM TRY_CAST({q} AS DECIMAL(38,18))"
-                if target == "BIGINT" or target.startswith("DECIMAL")
-                else ""
+        ensure_lake_schemas(con)
+        col_defs = ", ".join(f'"{c}" VARCHAR' for c in columns)
+        con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
+        if text_rows:
+            _load_raw_rows(con, columns, text_rows)
+        typed = [c for c in prepared if c.duck_type != "VARCHAR"]
+        if typed and text_rows:
+            probes = ", ".join(
+                f'COUNT(*) FILTER (WHERE "{c.name}" IS NOT NULL '
+                f'AND TRY_CAST("{c.name}" AS {c.duck_type}) IS NULL)'
+                for c in typed
             )
-            bad = con.execute(
-                f"SELECT COUNT(*) FROM {rel} WHERE {q} IS NOT NULL "
-                f"AND (TRY_CAST({q} AS {target}) IS NULL{exact})"
-            ).fetchone()
-            if bad is None or int(bad[0]):
-                untyped[col] = (
-                    f"{int(bad[0]) if bad else '?'} value(s) do not fit declared {target} exactly"
-                )
-                if numeric or kind in {"money", "smallmoney"}:
-                    untyped_numeric.append(col)
-                continue
-            con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE {target} USING CAST({q} AS {target})")
-            column_types[col] = target
+            bad = con.execute(f"SELECT {probes} FROM _bronze_raw").fetchone() or ()
+            for c, n in zip(typed, bad, strict=True):
+                if n:
+                    c.note = (
+                        f"{c.name}: source type {c.source_type} could not be kept "
+                        f"({int(n)} value(s) did not cast to {c.duck_type}); landed VARCHAR"
+                    )
+                    c.duck_type = "VARCHAR"
+        select = ", ".join(
+            f'"{c.name}"'
+            if c.duck_type == "VARCHAR"
+            else f'CAST("{c.name}" AS {c.duck_type}) AS "{c.name}"'
+            for c in prepared
+        )
+        con.execute(f'DROP TABLE IF EXISTS "{schema}"."{name}"')
+        con.execute(
+            f"""
+            CREATE TABLE "{schema}"."{name}" AS
+            SELECT
+              {select},
+              [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
+              '{ingest_id}'::VARCHAR AS _ingest_id
+            FROM _bronze_raw AS src
+            """
+        )
+        return TypedLanding(
+            table=f"{schema}.{name}",
+            column_types={c.name: c.duck_type for c in prepared},
+            type_notes=[c.note for c in prepared if c.note],
+            untyped_numeric=[
+                c.name for c in prepared if c.numeric_like and c.duck_type == "VARCHAR"
+            ],
+        )
     finally:
         con.close()
-    return {
-        "column_types": column_types,
-        "untyped_columns": untyped,
-        "untyped_numeric": untyped_numeric,
-    }
 
 
 def untyped_numeric_columns(tables: set[str], *, path: Path | None = None) -> dict[str, set[str]]:

@@ -339,10 +339,10 @@ def sql_source_ingest(
                     else None
                 ),
                 "extracted_at": p.extracted_at,
-                # F-e: landed types from the source's declared types; any column
-                # left VARCHAR is named with the reason.
+                # Source types are kept (dms#277). A column that could not be kept
+                # exactly landed VARCHAR and is named here, not silently retyped.
                 "column_types": dict(p.column_types),
-                "untyped_columns": dict(p.untyped_columns),
+                "type_notes": list(p.type_notes),
                 "note": p.note,
             }
             for p in extract.pulls
