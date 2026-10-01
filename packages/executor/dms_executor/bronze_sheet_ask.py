@@ -19,7 +19,7 @@ from typing import Any
 import duckdb
 
 from dms_executor.bronze import bronze_table_for_sheet
-from dms_executor.envelope import build_answer_envelope
+from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
 
 _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
@@ -41,6 +41,67 @@ _FOR_FILTER = re.compile(
 _TOTAL = re.compile(r"\btotal\b", re.I)
 
 
+def bronze_lane_table(question: str) -> str | None:
+    """Bronze table this question would read, or None if it is not that lane.
+
+    Same scope as ``maybe_bronze_sheet_ask`` before any DuckDB open. The
+    grant decision stays with ``table_is_granted`` on the caller's readable
+    set. This function does not decide grants.
+    """
+    if _NO_SQL.search(question or ""):
+        return None
+    scoped = _SCOPED.search(question or "")
+    if not scoped:
+        return None
+    workbook = scoped.group(1)
+    sheet = scoped.group(2) or scoped.group(3)
+    table = bronze_table_for_sheet(workbook, sheet)
+    ident = table.split(".", 1)[-1]
+    if not _IDENT.match(ident):
+        return None
+    n_m = _TOP_N.search(question or "")
+    if n_m and _CATEGORY.search(question or ""):
+        n = int(n_m.group(1) or n_m.group(2))
+        if 1 <= n <= 50:
+            return table
+        return None
+    filt = _FOR_FILTER.search(question or "")
+    measure_m = _MEASURE.search(question or "")
+    if filt and measure_m and _TOTAL.search(question or ""):
+        col = filt.group(1).lower()
+        value = filt.group(2).strip().strip("'\"")
+        if value and _IDENT.match(col):
+            return table
+    return None
+
+
+def bronze_grant_abstain(
+    question: str,
+    *,
+    reason: str,
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Named ABSTAIN. No rows, no SQL, no figure from the table."""
+    env = build_answer_envelope(
+        answer_id="ans_bronze_grant",
+        text=f"ABSTAIN {reason}",
+        badge="ABSTAIN",
+        abstained=True,
+        rows=[],
+        values=[],
+        sql_used=None,
+        assumptions=[reason],
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="abstain",
+        question=question,
+    )
+    assert_envelope_valid(env)
+    return env
+
+
 def maybe_bronze_sheet_ask(
     question: str,
     *,
@@ -48,7 +109,7 @@ def maybe_bronze_sheet_ask(
     session_id: str | None = None,
     warehouse: Path | None = None,
 ) -> dict[str, Any] | None:
-    if _NO_SQL.search(question or ""):
+    if bronze_lane_table(question) is None:
         return None
     scoped = _SCOPED.search(question or "")
     if not scoped:

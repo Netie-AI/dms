@@ -30,7 +30,11 @@ from dms_executor.bronze import (
     list_bronze_tables,
     write_bronze_rows,
 )
-from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
+from dms_executor.bronze_sheet_ask import (
+    bronze_grant_abstain,
+    bronze_lane_table,
+    maybe_bronze_sheet_ask,
+)
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -683,9 +687,40 @@ class Executor:
 
         question = with_grounded_scope(question, tables)
         if allow_bronze:
-            bronze_env = maybe_bronze_sheet_ask(
-                question, space_id=space_id, session_id=session_id
-            )
+            # dms#284: readable bronze tables are the active listing intersected
+            # with the grants ``grantable_tables`` just returned. Same predicate
+            # as the grounded ask (``table_is_granted``). No Space fails closed.
+            target = bronze_lane_table(question)
+            if target is None:
+                bronze_env = None
+            elif not space_id:
+                bronze_env = bronze_grant_abstain(
+                    question,
+                    reason="no_space",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+            else:
+                from dms_executor.ontology import table_is_granted
+
+                active = set(
+                    ingested_bronze_tables(self._warehouse, space_id=space_id)
+                )
+                bronze_readable = active.intersection(granted)
+                if table_is_granted(target, bronze_readable):
+                    bronze_env = maybe_bronze_sheet_ask(
+                        question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        warehouse=self._warehouse,
+                    )
+                else:
+                    bronze_env = bronze_grant_abstain(
+                        question,
+                        reason=f"ungranted_table:{target}",
+                        space_id=space_id,
+                        session_id=session_id,
+                    )
             if bronze_env is not None:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
