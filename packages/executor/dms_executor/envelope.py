@@ -14,9 +14,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload
+from sqlglot import exp, parse_one
+from sqlglot.lineage import lineage
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES
+
+_LINEAGE_DIALECT = "duckdb"
 
 ALLOWED_BADGES = frozenset(
     {
@@ -792,6 +796,81 @@ def _polarity_conflict_label(
         if _sql_filter_polarity(stripped, concept) == "positive":
             return " ".join(sorted(concept))
     return None
+
+
+def _outer_select(tree: exp.Expression) -> exp.Select | None:
+    node = tree.this if isinstance(tree, exp.Subquery) else tree
+    if isinstance(node, exp.Select):
+        return node
+    return None
+
+
+def _projection_is_star(proj: exp.Expression) -> bool:
+    inner = proj.this if isinstance(proj, exp.Alias) else proj
+    if isinstance(inner, exp.Star):
+        return True
+    return isinstance(inner, exp.Column) and isinstance(inner.this, exp.Star)
+
+
+def _lineage_leaves(node: Any) -> frozenset[str] | None:
+    """Source names such as ``patients.birth_date``. None if a star blocks proof."""
+    found: list[str] = []
+    unresolved = False
+
+    def walk(current: Any) -> None:
+        nonlocal unresolved
+        expr = getattr(current, "expression", None)
+        if isinstance(expr, exp.Star):
+            unresolved = True
+            return
+        kids = list(getattr(current, "downstream", None) or [])
+        if kids:
+            for kid in kids:
+                walk(kid)
+            return
+        name = str(getattr(current, "name", "") or "")
+        if not name or "*" in name.split("."):
+            unresolved = True
+            return
+        found.append(name)
+
+    walk(node)
+    if unresolved or not found:
+        return None
+    return frozenset(found)
+
+
+def served_column_sources(sql: str) -> dict[str, frozenset[str]]:
+    """Outer output name -> source column names from sqlglot lineage.
+
+    An empty set means that output could not be traced (star, or lineage
+    failed). A parse failure returns {}, so every served date column is
+    untraced and no column is a proven code source. No-SQL answers do not
+    call this.
+    """
+    try:
+        tree = parse_one(sql or "", read=_LINEAGE_DIALECT)
+    except Exception:
+        return {}
+    select = _outer_select(tree)
+    if select is None:
+        return {}
+    out: dict[str, frozenset[str]] = {}
+    for proj in select.expressions:
+        if _projection_is_star(proj):
+            continue
+        alias = str(proj.alias_or_name or "")
+        if not alias:
+            continue
+        key = alias.casefold()
+        try:
+            node = lineage(alias, sql, dialect=_LINEAGE_DIALECT)
+        except Exception:
+            out[key] = frozenset()
+            continue
+        sources = _lineage_leaves(node)
+        out[key] = sources if sources is not None else frozenset()
+    return out
 
 
 def _executed_query(sql: str | None) -> bool:
@@ -1609,12 +1688,12 @@ def build_answer_envelope(
 
     # PII-01 before E4: IC/phone digits in k=v prose must not look like uncited money.
     # Detector errors fail closed (string cells become DMSMASK_unknown_00).
-    # Date columns: sqlglot lineage carries a birth cue through an alias.
-    # No SQL keeps the birth-cue rule. Unresolved lineage fails closed.
+    # Dates: sqlglot lineage carries a birth cue through an alias.
+    # Passport shapes: a code exemption needs the source column, not the alias.
+    # No SQL keeps the birth-cue rule and does not exempt codes.
+    # Unresolved lineage fails closed.
     column_sources = None
     if _executed_query(sql_used):
-        from dms_executor.sql_currency import served_column_sources
-
         column_sources = served_column_sources(str(sql_used))
     masked = fail_closed_mask_payload(
         text=text or "",

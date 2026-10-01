@@ -5,8 +5,10 @@ names, Malaysian IC numbers, phones (MY mobile / landline / NANP / intl),
 emails, account/card numbers, passports, street addresses, and dates of birth.
 Value checks search inside free text as well as whole values (dms#303, dms#318).
 WIDEN-ONLY vs dms#272 and dms#303: nothing previously caught is dropped.
-OVERMASK-01 narrows two dms#318 widens: a date needs a birth cue, and a
-passport-shaped code needs a passport cue. Name signals stay.
+OVERMASK-01 narrows the date widen: a date needs a birth cue. A passport-shaped
+value in a data cell stays masked without a cue, unless lineage proves every
+source column is a non-PII code (sku, code, ref, order_id). Answer prose still
+needs a passport cue. An untraceable column gets no code exemption. Name signals stay.
 
 Swap: Cortex HTTP PII-MASK (#268) or a vendor DLP call behind these functions.
 Not a sixth port: this is a local classifier, same class as xlsx_ooxml.
@@ -76,6 +78,9 @@ _BIRTH_CUE = re.compile(
     r"(?i)\b(?:d\.?o\.?b|date\s+of\s+birth|birth\s*dates?|birthdays?|born)\b"
 )
 _PASSPORT_CUE = re.compile(r"(?i)\bpassports?\b")
+# Last segment of a lineage leaf. "barcode" does not match: "code" needs
+# a start or underscore boundary, not a suffix inside another word.
+_CODE_SOURCE = re.compile(r"(?i)(?:^|_)(?:skus?|codes?|refs?|order_ids?)$")
 _TIME_TAIL = re.compile(
     r"[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$"
 )
@@ -257,13 +262,15 @@ def _dob_in_free_text(text: str) -> bool:
     return _cue_near(text, hit.start(), hit.end(), _BIRTH_CUE)
 
 
-def _passport_in_text(text: str) -> re.Match[str] | None:
-    hit = _PASSPORT_FIND.search(text)
+def _passport_hit(text: str) -> re.Match[str] | None:
+    return _PASSPORT_FIND.search(text)
+
+
+def _passport_has_cue(text: str) -> bool:
+    hit = _passport_hit(text)
     if hit is None:
-        return None
-    if not _cue_near(text, hit.start(), hit.end(), _PASSPORT_CUE):
-        return None
-    return hit
+        return False
+    return _cue_near(text, hit.start(), hit.end(), _PASSPORT_CUE)
 
 
 def reset_untraced_date_column_count() -> None:
@@ -300,15 +307,61 @@ def _date_lineage_status(
     """
     if column_sources is None:
         return "no_sql"
-    key = str(column or "").casefold()
-    sources = column_sources.get(key)
-    if sources is None and "." in key:
-        sources = column_sources.get(key.rsplit(".", 1)[-1])
+    sources = _lookup_sources(column, column_sources)
     if not sources:
         return "untraced"
     if any(_source_is_birth(src) for src in sources):
         return "birth"
     return "clear"
+
+
+def _leaf_column(source: str) -> str:
+    return str(source).replace('"', "").replace("`", "").split(".")[-1]
+
+
+def _source_is_code(source: str) -> bool:
+    name = _leaf_column(source)
+    return bool(name) and _CODE_SOURCE.search(name) is not None
+
+
+def _lookup_sources(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]],
+) -> frozenset[str] | None:
+    key = str(column or "").casefold()
+    sources = column_sources.get(key)
+    if sources is None and "." in key:
+        sources = column_sources.get(key.rsplit(".", 1)[-1])
+    return sources
+
+
+def _proven_code_column(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]] | None,
+) -> bool:
+    """True only when every lineage source column is a non-PII code name.
+
+    None (no SQL), a missing key, or an empty set is not proof. The served
+    alias is not consulted. One non-code source (notes beside sku) blocks it.
+    """
+    if column_sources is None:
+        return False
+    sources = _lookup_sources(column, column_sources)
+    if not sources:
+        return False
+    return all(_source_is_code(src) for src in sources)
+
+
+def _code_source_skips_passport(
+    column: str,
+    value: object,
+    column_sources: Mapping[str, frozenset[str]] | None,
+) -> bool:
+    """Proven code column with no passport cue: leave the cell visible."""
+    if not _proven_code_column(column, column_sources):
+        return False
+    text = value if isinstance(value, str) else ""
+    return not _passport_has_cue(text)
 
 
 def _card_in_text(text: str) -> bool:
@@ -389,7 +442,9 @@ def _kind_from_one_value(raw: object) -> Kind | None:
         return "phone"
     if _ACCOUNT_FIND.search(text) or _URL_ACCOUNT.search(text):
         return "account"
-    if _passport_in_text(text):
+    # Data cells: the shape is enough. Prose and proven code columns are
+    # decided later, and those still require a passport cue.
+    if _passport_hit(text):
         return "passport"
     if _PLACE_CODE.fullmatch(text) or _ADDRESS_VALUE.search(text):
         return "address"
@@ -610,6 +665,8 @@ def _should_mask_cell(
         if status == "clear":
             return None
     kind = kinds.get(column)
+    if kind == "passport" and _code_source_skips_passport(column, value, column_sources):
+        kind = None
     if kind:
         if isinstance(value, (int, float)) and kind == "name":
             return None
@@ -618,6 +675,8 @@ def _should_mask_cell(
         got = _kind_from_one_value(value)
     except Exception:
         return "unknown"
+    if got == "passport" and _code_source_skips_passport(column, value, column_sources):
+        got = None
     if got:
         return got
     if isinstance(value, str) and _free_text_has_name(column, [value]):
@@ -741,9 +800,10 @@ def mask_payload(
 ) -> dict[str, Any]:
     """Mask PII in customer-visible fields. Numeric aggregates stay numbers.
 
-    ``column_sources`` is None when the answer has no SQL (birth-cue rule).
-    A dict maps each served column to source column names from sqlglot
-    lineage. An empty source set means that column could not be traced.
+    ``column_sources`` is None when the answer has no SQL (birth-cue rule,
+    and no code-column exemption). A dict maps each served column to source
+    column names from sqlglot lineage. An empty source set means that column
+    could not be traced: a date stays masked, and a passport shape is not exempt.
     """
     global _UNTRACED_DATE_COLUMNS
     row_list = [dict(r) for r in (rows or []) if isinstance(r, dict)]

@@ -1,10 +1,8 @@
 """Currency unit gate for the generative ask path (A2-05 / dms#261).
 
 sqlglot lives here only. Swap: replace this module with a Cortex HTTP
-verify-unit call or another dialect parser. generative_ask calls
-currency_mismatch_reason. The ask envelope calls served_column_sources
-so a birth column is still recognised through an alias, function, or CTE.
-No FX conversion. Mismatch or unresolved currency is ABSTAIN.
+verify-unit call or another dialect parser; generative_ask calls one function.
+No FX conversion — mismatch or unresolved is ABSTAIN.
 """
 
 from __future__ import annotations
@@ -16,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from sqlglot import exp, parse_one
-from sqlglot.lineage import lineage
 from sqlglot.optimizer.scope import Scope, build_scope
 
 from dms_executor.demo_warehouse import connect_file
@@ -852,86 +849,10 @@ def _from_source(
     return None
 
 
-def _outer_select(tree: exp.Expression) -> exp.Select | None:
-    node = tree.this if isinstance(tree, exp.Subquery) else tree
-    if isinstance(node, exp.Select):
-        return node
-    return None
-
-
-def _projection_is_star(proj: exp.Expression) -> bool:
-    inner = proj.this if isinstance(proj, exp.Alias) else proj
-    if isinstance(inner, exp.Star):
-        return True
-    return isinstance(inner, exp.Column) and isinstance(inner.this, exp.Star)
-
-
-def _lineage_leaves(node: Any) -> frozenset[str] | None:
-    """Source names such as ``patients.birth_date``. None if a star blocks proof."""
-    found: list[str] = []
-    unresolved = False
-
-    def walk(current: Any) -> None:
-        nonlocal unresolved
-        expr = getattr(current, "expression", None)
-        if isinstance(expr, exp.Star):
-            unresolved = True
-            return
-        kids = list(getattr(current, "downstream", None) or [])
-        if kids:
-            for kid in kids:
-                walk(kid)
-            return
-        name = str(getattr(current, "name", "") or "")
-        if not name or "*" in name.split("."):
-            unresolved = True
-            return
-        found.append(name)
-
-    walk(node)
-    if unresolved or not found:
-        return None
-    return frozenset(found)
-
-
-def served_column_sources(sql: str) -> dict[str, frozenset[str]]:
-    """Outer output name -> source column names from sqlglot lineage.
-
-    An empty set means that output could not be traced (star, or lineage
-    failed). A parse failure returns ``{}``, so every served date column is
-    untraced. No-SQL answers do not call this: the masker then uses the
-    birth-cue rule instead of failing closed.
-    """
-    try:
-        tree = parse_one(sql or "", read=_DIALECT)
-    except Exception:
-        return {}
-    select = _outer_select(tree)
-    if select is None:
-        return {}
-    out: dict[str, frozenset[str]] = {}
-    for proj in select.expressions:
-        if _projection_is_star(proj):
-            continue
-        alias = str(proj.alias_or_name or "")
-        if not alias:
-            continue
-        key = alias.casefold()
-        try:
-            node = lineage(alias, sql, dialect=_DIALECT)
-        except Exception:
-            out[key] = frozenset()
-            continue
-        sources = _lineage_leaves(node)
-        out[key] = sources if sources is not None else frozenset()
-    return out
-
-
 __all__ = [
     "SourceColumn",
     "asked_currencies",
     "asked_currency",
     "currency_mismatch_reason",
     "is_currency_column",
-    "served_column_sources",
 ]

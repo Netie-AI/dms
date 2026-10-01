@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - OVERMASK-01: passport split by lineage source (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) correction on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** A passport-shaped value in a data cell stays masked without a cue, unless sqlglot lineage proves every source column is a non-PII code (`sku`, `code`, `ref`, `order_id`). The served alias is not proof. Answer prose still needs a passport cue. An untraceable column gets no exemption. Lineage stays in the ask envelope. `sql_currency.py` is unchanged versus `ca34419d`.
+- **Gate.** Checker re-run: 258 PASS / 27 FAIL / 285. The 11 `passport_generic_like_low` cells stay PASS. Parent `cdd3ae2a` 169 PASS stay PASS. Untraced-default columns on that re-run: 0, not added to the pass count.
+- **Not this ticket:** Presidio; dms#304 deny file; COMPLETE; merge.
+
 ## 2026-10-01 - OVERMASK-01: birth and passport cues, lineage fail-closed (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) follow-up. Does not stamp COMPLETE. Does not merge. Does not close the issue.

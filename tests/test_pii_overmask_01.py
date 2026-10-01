@@ -69,7 +69,6 @@ def test_mask_payload_keeps_ordinary_dates_codes_and_native_dates() -> None:
     row = {column: value for column, value in _DATE_COLUMNS}
     row["qty"] = 12
     row["amount"] = 12847.5
-    row["sku"] = "AB1234567"
     got = mask_payload(
         text=" ".join(_PROSE_VISIBLE),
         rows=[row],
@@ -81,7 +80,6 @@ def test_mask_payload_keeps_ordinary_dates_codes_and_native_dates() -> None:
         assert not is_mask_token(out[column])
     assert out["qty"] == 12
     assert out["amount"] == 12847.5
-    assert out["sku"] == "AB1234567"
     for prose in _PROSE_VISIBLE:
         assert prose in got["text"], prose
     assert "DMSMASK_" not in got["text"]
@@ -196,11 +194,10 @@ def test_no_sql_keeps_birth_cue_rule() -> None:
     """An answer with no SQL does not fail closed. Prose uses the birth cue."""
     visible = _served(
         text="As of 2026-10-01. Peak on 2026-09-30. SKU AB1234567.",
-        rows=[{"ts": "2026-09-30", "sku": "AB1234567"}],
+        rows=[{"ts": "2026-09-30"}],
         sql_used=None,
     )
     assert visible["rows"][0]["ts"] == "2026-09-30"
-    assert visible["rows"][0]["sku"] == "AB1234567"
     assert "As of 2026-10-01" in visible["text"]
     assert "Peak on 2026-09-30" in visible["text"]
     assert "SKU AB1234567" in visible["text"]
@@ -234,14 +231,17 @@ def test_birth_and_passport_cues_stay_masked_at_any_year() -> None:
 
 
 def test_numbers_timestamps_and_codes_stay_unchanged() -> None:
-    """Must stay unchanged, through mask_payload. Not only the over-mask list."""
+    """Must stay unchanged, through mask_payload. Not only the over-mask list.
+
+    A bare code in a row with no SQL is not a proven code column, so that
+    cell is covered by the served sku test, not here. Uncued SKU prose stays.
+    """
     got = mask_payload(
         text="12 units at 12847.50. SKU AB1234567. As of 2026-10-01.",
         rows=[
             {
                 "qty": 12,
                 "amount": 12847.5,
-                "sku": "AB1234567",
                 "ts": datetime(2026, 9, 30, 10),
                 "created_at": date(2026, 10, 1),
             }
@@ -250,13 +250,79 @@ def test_numbers_timestamps_and_codes_stay_unchanged() -> None:
     row = got["rows"][0]
     assert row["qty"] == 12
     assert row["amount"] == 12847.5
-    assert row["sku"] == "AB1234567"
     assert row["ts"] == datetime(2026, 9, 30, 10)
     assert row["created_at"] == date(2026, 10, 1)
     assert "12847.50" in got["text"]
     assert "SKU AB1234567" in got["text"]
     assert "As of 2026-10-01" in got["text"]
     assert "DMSMASK_" not in got["text"]
+
+
+def test_notes_passport_shape_stays_masked() -> None:
+    """LOCK. Already masked on ca34419d. Free-text cell, no cue required."""
+    env = _served(
+        text="Listed.",
+        rows=[{"notes": "A12345678"}],
+        sql_used="SELECT notes FROM patients",
+    )
+    assert is_mask_token(env["rows"][0]["notes"])
+    assert "A12345678" not in str(env["rows"])
+
+
+def test_notes_aliased_as_sku_stays_masked() -> None:
+    """LOCK. Already masked on ca34419d. Source is notes, not the alias sku."""
+    env = _served(
+        text="Listed.",
+        rows=[{"sku": "A12345678"}],
+        sql_used="SELECT notes AS sku FROM patients",
+    )
+    assert is_mask_token(env["rows"][0]["sku"])
+    assert "A12345678" not in str(env["rows"])
+
+
+def test_sku_source_column_stays_visible() -> None:
+    """FAILS on ca34419d. Lineage source is sku, so a bare code stays visible."""
+    env = _served(
+        text="Listed.",
+        rows=[{"sku": "AB1234567"}],
+        sql_used="SELECT sku FROM products",
+    )
+    assert env["rows"][0]["sku"] == "AB1234567"
+    assert "DMSMASK_" not in str(env["rows"])
+
+
+def test_sku_prose_without_passport_cue_stays_visible() -> None:
+    """FAILS on ca34419d. Answer prose needs a passport cue."""
+    env = _served(
+        text="SKU AB1234567",
+        rows=[{"label": "listed"}],
+        sql_used=None,
+    )
+    assert env["text"] == "SKU AB1234567"
+    assert "DMSMASK_" not in env["text"]
+
+
+def test_cued_passport_prose_stays_masked() -> None:
+    """LOCK. Already masked on ca34419d. Prose with a passport cue."""
+    env = _served(
+        text="passport A12345678",
+        rows=[{"label": "listed"}],
+        sql_used=None,
+    )
+    assert "A12345678" not in env["text"]
+    assert "passport" in env["text"]
+    assert is_mask_token(env["text"].split()[-1])
+
+
+def test_untraced_code_column_gets_no_passport_exemption() -> None:
+    """LOCK. SELECT * cannot name a source, so a passport shape stays masked."""
+    env = _served(
+        text="Listed.",
+        rows=[{"sku": "AB1234567"}],
+        sql_used="SELECT * FROM products",
+    )
+    assert is_mask_token(env["rows"][0]["sku"])
+    assert "AB1234567" not in str(env["rows"])
 
 
 def test_285_untraced_default_is_separate_from_pass_count() -> None:
@@ -270,5 +336,4 @@ def test_285_untraced_default_is_separate_from_pass_count() -> None:
     passed = [r for r in rows if r.path_a == "PASS" == r.path_b == r.path_c]
     assert len(rows) == 285
     assert untraced == 0
-    assert len(passed) == 247
-    assert len(passed) + untraced == 247
+    assert len(passed) == 258
