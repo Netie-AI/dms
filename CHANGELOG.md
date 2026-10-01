@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: a matched pin can score CORRECT
+
+- **Gate.** A `live()` case whose body and `X-OpenVault-Served-*` both name `openai/gpt-oss-120b`, and whose row matches the oracle, is CORRECT (verdict `OK`) with no `pin_*` reason. `baseline_eligible` is true when `DMS_CASE_RECORD_DIR` is an absolute path outside the repo. A whole round with that pin on every case keeps the parent CORRECT count, with no extra ABSTAIN or INVALID. These two checks pass on the head. They do not have to fail on `22deaa35`.
+- **Contract.** OpenVault #81 `0d0ef3f0`. Fixture and mocks only. Case-record files from the tests are deleted.
+
 ## 2026-10-01 - dms#317 Part A: round summary carries n_planned
 
 - **Summary.** Every live round (`live`, `climb`, `climb_ab_live`, `prove_path_live`, `grid_score_hook`) writes `n_planned` next to `n`. It is the pack size (52), including a preflight round whose `n` is 0 and a round that scores.

@@ -1,13 +1,16 @@
 """dms#317 Part A. Strict pin through live(), mocked OpenVault, no Groq call.
 
-Each test fails on a63988b2: that tree has no pin gate, so the assertions do
-not hold. No existing test is edited here.
+Pin-rule tests fail on 22deaa35 on their own assertion. The two positive
+checks pass on the head and do not have to fail on the parent.
+No existing test is edited here.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +27,8 @@ _ENGINE_DAY = "2024-06-15"
 _TZ = "UTC"
 _PIN = "openai/gpt-oss-120b"
 _PROVIDER = "groq"
+# One served row. Empty gold is WRONG. The same row as gold is CORRECT (OK).
+_ANSWER_ROWS = [{"country": "MY", "spend": 1}]
 _OTHER = "openai/gpt-oss-20b"
 _VAULT_REASONS = (
     "parked",
@@ -221,13 +226,14 @@ def _install_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[s
             asks.append(dict(json_body or {}))
             # Confident L0 with a row. Gold is empty, so the judge returns WRONG.
             # badge ABSTAIN never reaches that compare (is_confident is false).
+            rows = [dict(item) for item in _ANSWER_ROWS]
             return _Http(
                 200,
                 {
                     "badge": "L0_CERTIFIED",
                     "abstained": False,
-                    "rows": [{"country": "MY", "spend": 1}],
-                    "values": [{"country": "MY", "spend": 1}],
+                    "rows": rows,
+                    "values": [dict(item) for item in rows],
                     "text": "1",
                     "engine_as_of": _ENGINE_DAY,
                     "engine_as_of_after": _ENGINE_DAY,
@@ -250,8 +256,12 @@ def _arm(
     provider: str | None = _PROVIDER,
     shots: list[dict[str, Any]] | None = None,
     repeat: dict[str, Any] | None = None,
+    pinned: bool = True,
 ) -> tuple[list[dict[str, Any]], _Script]:
-    monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
+    if pinned:
+        monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
+    else:
+        monkeypatch.delenv("OPENVAULT_URL", raising=False)
     monkeypatch.delenv("OPENVAULT_API_KEY", raising=False)
     monkeypatch.delenv("CORTEX_API_KEY", raising=False)
     if model is None:
@@ -267,6 +277,48 @@ def _arm(
     monkeypatch.setattr("score_curated.run_oracle_select", lambda *_a, **_k: ([], None))
     script = _patch_pin(monkeypatch, shots=shots, repeat=repeat)
     return asks, script
+
+
+def _both_sides(model: str = _PIN, provider: str = _PROVIDER) -> dict[str, Any]:
+    """Body and X-OpenVault-Served-* both name this pin. Neither side is missing."""
+    return {
+        "status": 200,
+        "headers": {
+            "X-OpenVault-Served-Provider": provider,
+            "X-OpenVault-Served-Model": model,
+        },
+        "body": {
+            "model": "gemini-3.5-flash",
+            "served_provider": provider,
+            "served_model": model,
+            "choices": [{"message": {"content": "ok"}}],
+        },
+    }
+
+
+def _match_gold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gold is the served row, so an L0 case that clears min_rows is OK."""
+    gold = [dict(item) for item in _ANSWER_ROWS]
+    monkeypatch.setattr(
+        "score_curated.run_oracle_select",
+        lambda *_a, **_k: ([dict(item) for item in gold], None),
+    )
+
+
+def _outside_record_dir(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Absolute case-record dir outside the repo. Eligible when the round is not INVALID."""
+    path = Path(tempfile.mkdtemp(prefix="dms-pin-pos-", dir="/tmp"))
+    try:
+        path.resolve().relative_to(ROOT.resolve())
+    except ValueError:
+        monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(path))
+        return path
+    shutil.rmtree(path, ignore_errors=True)
+    raise AssertionError(str(path))
+
+
+def _wipe_records(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _wire(script: _Script) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -868,3 +920,82 @@ def test_live_generate_posts_send_strict_once(
     assert seen.get("preference") == "free+normal"
     assert seen.get("done") is True
     assert len(asks) == n_pack
+
+
+def test_live_body_and_header_pin_match_oracle_is_correct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Body and headers both name the pin, and the row matches the oracle.
+
+    That case is CORRECT (verdict OK) with no pin_* reason. The round is
+    baseline_eligible. Passes on the head. Does not have to fail on 22deaa35.
+    """
+    outside = _outside_record_dir(monkeypatch)
+    try:
+        db = _oracle_db(tmp_path)
+        n_pack = len(_questions())
+        shot = _both_sides()
+        asks, script = _arm(monkeypatch, tmp_path, repeat=shot)
+        _match_gold(monkeypatch)
+        live("http://score.test", 1.0, db)
+        report = _report(tmp_path)
+        row = report["cases"][0]
+        assert report["oracle_as_of"] == _ENGINE_DAY
+        assert shot["body"]["served_model"] == _PIN
+        assert shot["headers"]["X-OpenVault-Served-Model"] == _PIN
+        assert shot["body"]["served_provider"] == _PROVIDER
+        assert shot["headers"]["X-OpenVault-Served-Provider"] == _PROVIDER
+        assert row["id"] == "cq_spend_by_country" and row["verdict"] == "OK"
+        assert report["correct"] >= 1
+        assert not str(row.get("reason") or "").startswith("pin_")
+        assert not str(report.get("reason") or "").startswith("pin_")
+        assert report.get("pin_reason") in (None, "")
+        assert report["baseline_eligible"] is True
+        assert report["baseline_ineligible_reasons"] == []
+        rec = _record_line(report, "cq_spend_by_country")
+        assert rec["outcome"] == "OK"
+        assert not str(rec.get("reason") or "").startswith("pin_")
+        assert len(asks) == n_pack
+        assert len(script.calls) == n_pack + 1
+    finally:
+        _wipe_records(outside)
+
+
+def test_live_pin_matched_round_keeps_parent_correct_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin matched on every case. CORRECT stays the 22deaa35 count.
+
+    The parent has no pin, so the unpinned fixture round is that count.
+    No extra ABSTAIN or INVALID. Passes on the head. Does not have to fail
+    on the parent.
+    """
+    outside = _outside_record_dir(monkeypatch)
+    try:
+        db = _oracle_db(tmp_path)
+        n_pack = len(_questions())
+        _arm(monkeypatch, tmp_path, pinned=False)
+        _match_gold(monkeypatch)
+        live("http://score.test", 1.0, db)
+        parent = _report(tmp_path)
+        _asks, script = _arm(monkeypatch, tmp_path, repeat=_both_sides())
+        _match_gold(monkeypatch)
+        live("http://score.test", 1.0, db)
+        head = _report(tmp_path)
+        assert head["oracle_as_of"] == _ENGINE_DAY
+        assert (head["correct"], parent["correct"]) == (
+            parent["correct"],
+            parent["correct"],
+        )
+        assert (head["abstained"], head["invalid"]) == (
+            parent["abstained"],
+            parent["invalid"],
+        )
+        assert head["n"] == n_pack == parent["n"]
+        assert head["correct"] > 0
+        assert len(script.calls) == n_pack + 1
+        assert all(
+            not str(row.get("reason") or "").startswith("pin_") for row in head["cases"]
+        )
+    finally:
+        _wipe_records(outside)
