@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - MASK-VALUES-01: no connection read is a missing read (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** A case clock with no connection read is masked. Shape is not a keep by itself. An existing `engine_timezone_*` or `round_spans_midnight` reason stays, and the round still records `engine_clock_masked`. A missing end `/health` records both `round_end_unread` and `engine_clock_masked`.
+- **Gate.** `tests/test_mask_clock_03.py` fails on `86b7771a` on its own assert. The two ENGINE-DATE-02 `round_end_unread` lists are the only existing assertion edit, approved in ruling 4.
+
 ## 2026-10-01 - MASK-VALUES-01: case clock must equal its connection read (#303)
 
 - **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.

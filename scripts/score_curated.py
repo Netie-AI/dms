@@ -2137,11 +2137,7 @@ def _iso_day(value: str | None) -> date | None:
 
 
 def _preserved_case_clock(env: Mapping[str, Any] | None) -> bool:
-    """Four-field shape. Used only when this case recorded no connection read.
-
-    A recorded read, including a missing date, is not kept for this shape.
-    ``_case_invalid_reason`` still owns a before/after split on this shape.
-    """
+    """Four-field shape. Extra check on a recorded read. Never a keep by itself."""
     if not env:
         return False
     before = _clock_text(env.get("engine_as_of"))
@@ -2222,11 +2218,11 @@ def _apply_clock_keep(
 ) -> bool:
     """Mask a top-level clock that is not this case's own connection read.
 
-    The clock stays when its date and zone equal the read recorded at connect
-    time. The other keep is a /health next-day end (``round_spans_midnight``).
-    A planted date, any other mismatch, or a missing read is masked. A case
-    that never connected still uses the four-field shape keep. A mask token
-    is not a date match. Returns whether any field was masked.
+    The clock stays when it equals a recorded read and has the four-field
+    shape. The other keep is a /health next-day end (``round_spans_midnight``).
+    No read is a missing read. An existing ``engine_timezone_*`` or
+    ``round_spans_midnight`` reason is kept, and the round still records
+    ``engine_clock_masked``. A mask token is not a date match.
     """
     from dms_core.pii import mask_unkept_clock_fields
 
@@ -2255,16 +2251,10 @@ def _apply_clock_keep(
         ):
             _retag_case(tallies, case, rec, "round_spans_midnight")
             continue
-        if isinstance(read, dict) and _clock_equals_read(env, read):
-            continue
-        if read == "missing" or isinstance(read, dict):
-            pass
-        elif _preserved_case_clock(env):
-            continue
-        if case.get("reason") in (
-            "engine_timezone_unread",
-            "engine_timezone_mismatch",
-            "round_spans_midnight",
+        if (
+            isinstance(read, dict)
+            and _clock_equals_read(env, read)
+            and _preserved_case_clock(env)
         ):
             continue
         if not any(key in env for key in _CLOCK_KEYS):
@@ -2279,6 +2269,12 @@ def _apply_clock_keep(
             rec["engine_date"] = masked_env.get("engine_as_of")
         if raw_day and case.get("oracle_as_of") == raw_day:
             case["oracle_as_of"] = masked_env.get("engine_as_of")
+        if case.get("reason") in (
+            "engine_timezone_unread",
+            "engine_timezone_mismatch",
+            "round_spans_midnight",
+        ):
+            continue
         _retag_case(tallies, case, rec, "engine_clock_masked")
     return any_masked
 

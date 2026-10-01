@@ -276,7 +276,14 @@ def test_live_end_health_failure_is_round_end_unread(
         report.get("baseline_ineligible_reasons"),
         report.get("n"),
         report.get("reason") == "UNCONFIRMED",
-    ) == ("round_end_unread", "INVALID", False, ["round_end_unread"], _pack_n(), False)
+    ) == (
+        "round_end_unread",
+        "INVALID",
+        False,
+        ["round_end_unread", "engine_clock_masked"],
+        _pack_n(),
+        False,
+    )
 
 
 def test_live_end_health_empty_is_round_end_unread(
@@ -297,7 +304,7 @@ def test_live_end_health_empty_is_round_end_unread(
         report.get("round_label"),
         report.get("baseline_ineligible_reasons"),
         report.get("n"),
-    ) == ("round_end_unread", "INVALID", ["round_end_unread"], _pack_n())
+    ) == ("round_end_unread", "INVALID", ["round_end_unread", "engine_clock_masked"], _pack_n())
 
 
 def test_live_one_timezone_reading_is_unread(
