@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - MASK-VALUES-01: empty log keeps a /health clock (#303)
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** When the scorer's connection log is empty, a case clock stays literal only if both dates and both zones equal that round's /health start or end. `round_spans_midnight` is the other keep. Anything else is masked and INVALID, kept in n. A recorded `_publish_engine_clock` read still keeps only an equal clock. Carrying the read over the wire is a later ticket.
+- **Gate.** `tests/test_mask_clock_04.py` fails on `c0ca540a` on its own assert, n=52.
+
 ## 2026-10-01 - MASK-VALUES-01: no connection read is a missing read (#303)
 
 - **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.

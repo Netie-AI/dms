@@ -116,6 +116,15 @@ def _install_ask(
             case = questions[idx] if idx < len(questions) else {}
             env = _envelope()
             mutate(idx, case, env)
+            pair = _simulated_connection(env)
+            if pair is not None:
+                from dms_executor.demo_warehouse import (
+                    _publish_engine_clock,
+                    clear_engine_clock,
+                )
+
+                _publish_engine_clock(*pair)
+                clear_engine_clock()
             return _Resp(env)
         raise RuntimeError(f"unexpected {method} {url}")
 
@@ -134,6 +143,27 @@ def _health_open() -> dict[str, Any]:
         "engine_timezone": _TZ,
         "engine_timezone_after": _TZ,
     }
+
+
+def _simulated_connection(env: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    """Before/after a simulated SQL connection would read. Constants only.
+
+    Same-day SQL reads 2024-06-15 then 2024-06-15. Midnight SQL reads
+    2024-06-15 then 2024-06-16. A planted date connects nothing.
+    """
+    stamp = (
+        env.get("engine_as_of"),
+        env.get("engine_timezone"),
+        env.get("engine_timezone_after"),
+    )
+    if stamp != (_ENGINE_DAY, _TZ, _TZ):
+        return None
+    after = env.get("engine_as_of_after")
+    if after == _ENGINE_DAY:
+        return (_ENGINE_DAY, _TZ, _ENGINE_DAY, _TZ)
+    if after == "2024-06-16":
+        return (_ENGINE_DAY, _TZ, "2024-06-16", _TZ)
+    return None
 
 
 def _health_unread() -> dict[str, Any]:

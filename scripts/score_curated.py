@@ -2180,6 +2180,20 @@ def _clock_equals_read(env: Mapping[str, Any], read: Mapping[str, Any]) -> bool:
     return True
 
 
+def _clock_equals_health_read(
+    env: Mapping[str, Any], day: str | None, tz: str | None
+) -> bool:
+    """Both dates and both zones equal one /health read. A span is not this."""
+    if not day or not tz:
+        return False
+    return (
+        _clock_text(env.get("engine_as_of")) == day
+        and _clock_text(env.get("engine_as_of_after")) == day
+        and _clock_text(env.get("engine_timezone")) == tz
+        and _clock_text(env.get("engine_timezone_after")) == tz
+    )
+
+
 def _health_clock_match(
     env: Mapping[str, Any],
     *,
@@ -2216,13 +2230,15 @@ def _apply_clock_keep(
     end_tz: str | None,
     end_ok: bool,
 ) -> bool:
-    """Mask a top-level clock that is not this case's own connection read.
+    """Mask a top-level clock the scorer cannot tie to a read.
 
-    The clock stays when it equals a recorded read and has the four-field
-    shape. The other keep is a /health next-day end (``round_spans_midnight``).
-    No read is a missing read. An existing ``engine_timezone_*`` or
-    ``round_spans_midnight`` reason is kept, and the round still records
-    ``engine_clock_masked``. A mask token is not a date match.
+    A recorded connection read keeps the clock only when the four fields
+    equal that read. An empty log keeps it only when both dates and both
+    zones equal this round's /health start or end. The other keep is a
+    /health next-day end (``round_spans_midnight``). Anything else is
+    masked. An existing ``engine_timezone_*`` or ``round_spans_midnight``
+    reason is kept, and the round still records ``engine_clock_masked``.
+    A mask token is not a date match.
     """
     from dms_core.pii import mask_unkept_clock_fields
 
@@ -2255,6 +2271,12 @@ def _apply_clock_keep(
             isinstance(read, dict)
             and _clock_equals_read(env, read)
             and _preserved_case_clock(env)
+        ):
+            continue
+        # Empty log: this process never saw _publish_engine_clock. /health only.
+        if read is None and end_ok and (
+            _clock_equals_health_read(env, start, start_tz)
+            or _clock_equals_health_read(env, end, end_tz or start_tz)
         ):
             continue
         if not any(key in env for key in _CLOCK_KEYS):
