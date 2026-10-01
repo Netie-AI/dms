@@ -88,16 +88,19 @@ class PinRound:
 
 def pin_config() -> PinConfig:
     """The pin. Env overrides the default. Empty, auto, default, and the bare
-    Cerebras id are caller errors: nothing is sent.
+    Cerebras id are caller errors: nothing is sent. A provider outside the
+    allowed set is refused here, before any vault call.
     """
     model = os.environ.get("DMS_STRICT_MODEL", DEFAULT_STRICT_MODEL).strip()
     provider = os.environ.get("DMS_STRICT_PROVIDER", DEFAULT_STRICT_PROVIDER).strip()
     if not provider:
         provider = DEFAULT_STRICT_PROVIDER
-    return PinConfig(provider=provider, model=model, refusal=_refusal(model))
+    return PinConfig(provider=provider, model=model, refusal=_refusal(model, provider))
 
 
-def _refusal(model: str) -> str | None:
+def _refusal(model: str, provider: str) -> str | None:
+    if provider not in PROVIDER_IDS:
+        return f"pin_caller_error:{provider}"
     token = model.strip()
     if token.lower() in _BAD_MODELS:
         shown = token.lower() or "empty"

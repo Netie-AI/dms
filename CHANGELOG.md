@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: nvidia pin is refused at setup
+
+- **Contract.** Allowed models stay the catalog strings. OpenRouter `google/gemma-4-31b-it:free` (providers.py 150 and 156). Google `gemini-3.5-flash` (205, 212, 220). Groq `openai/gpt-oss-120b` (176 and 182).
+- **Gate.** `DMS_STRICT_PROVIDER=nvidia` is `pin_caller_error:nvidia` before any vault call. n=0. Zero case calls.
+
 ## 2026-10-01 - dms#317 Part A: allowed pins drop nvidia
 
 - **Contract.** Allowed pins are `groq`, `google`, and `openrouter`. `nvidia` stays a mismatch under the groq pin. It returns only in the NIM lane's own ticket.

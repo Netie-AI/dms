@@ -872,6 +872,30 @@ def test_live_caller_error_sends_nothing(
     assert report["cases"] == []
 
 
+def test_live_nvidia_pin_refused_at_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """nvidia is not an allowed pin. Setup refuses. No vault call, no case call."""
+    db = _oracle_db(tmp_path)
+    asks, script = _arm(
+        monkeypatch,
+        tmp_path,
+        provider="nvidia",
+        model=_PIN,
+        repeat=_nvidia("both"),
+    )
+    code = live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["reason"] == "pin_caller_error:nvidia"
+    assert report["round_label"] == "INVALID"
+    assert report.get("n_planned") == 52 and report["n"] == 0
+    assert asks == []
+    assert script.calls == []
+    assert report["cases"] == []
+    assert code != 0
+
+
 @pytest.mark.parametrize(
     "entry",
     ("live", "climb", "climb_ab_live", "prove_path_live", "grid_score_hook"),
