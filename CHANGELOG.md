@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - PII-MASK-02: drop checker EXCLUDE relabel (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Epic ruling on PR #320. dms#318 stays open. Does not stamp COMPLETE. Does not merge.
+- **Change.** This PR does not modify `scripts/pii_mask_check.py` versus its merge base. dms#304 has not merged, so that base is `6da6e44` and the checker is untouched. Honest three-path table: **258 PASS, 27 FAIL, 285**. The 27 are `person_name_shape_low` on `drivers.nationality`, `member.position`, `patient.diagnosis`, `users.location`, `schools.city`, `schools.county`, `schools.district`, `schools.doctype`, `schools.edopsname`, `schools.eilname`, `schools.mailcity`, `schools.school`, `schools.soctype`.
+- **Still open.** Those 27 go to dms#304's deny/preflight file, owned by the dms#304 writer. Value-based detection of medical, location, nationality, role, and place-name columns is the remaining dms#318 work. `pii.py` widen-only is unchanged.
+- **Not this ticket:** editing `scripts/pii_mask_check.py`; `table_allowlist.yaml`; `scripts/score_bird.py`; lifting BIRD or dms#284; COMPLETE; merge.
+
+## 2026-10-01 - PII-MASK-02: close dms#303 three-path FAILs, widen-only (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) under dms#303. Does not stamp COMPLETE. Does not merge. Does not lift the BIRD block or dms#284's live block. CI fixtures, not live.
+- **Change.** WIDEN-ONLY vs `cdd3ae2a`. `dms_core/pii.py` also masks free-text person names (Title-Case pattern on free-text columns; person-name columns including `admfname` / `admlname`), Malaysian landlines `0[3-9]`, passport-shaped values, street-address columns and `123 Fake Street` / `Place XX` values, account numbers inside text and URL query strings, DOB dates for every 4-digit year, and a whole-value date on a column that is not an event date or calendar grain. Scan fixture unchanged (counts only; sha256 `878f664d1d920bee99b3859285dd669b86edc16945288a5251c2fa66fae0c330`).
+- **Gate.** `tests/test_pii_mask_02.py`. Synthetic values only. 11 new tests fail on `cdd3ae2a`; `test_old_matches_still_mask`, `test_non_pii_stays_visible`, and `test_scan_sha_unchanged` pass there. `tests/test_pii_01.py` and `tests/test_pii_mask_check_01.py` are not edited. No skip/xfail. No scorer, oracle, label, pin, or protected-path edits.
+- **Not this ticket:** BIRD allowlist (`tests/fixtures/bird_minidev/table_allowlist.yaml`, `scripts/score_bird.py`); lifting BIRD or dms#284; Cortex #268; COMPLETE; merge.
+
 ## 2026-10-01 - ORACLE-FIX-02 gating: live missing engine date is INVALID (#308)
 
 - **Ticket.** [ORACLE-FIX-02 #308](https://github.com/Netie-AI/dms/issues/308) / PR #310. Gating conditions before merge. Does not stamp COMPLETE. Does not merge. CI fixtures, not live.
