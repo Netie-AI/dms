@@ -241,34 +241,30 @@ def _install_ask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[dict[s
             # Confident L0 with a row. Gold is empty, so the judge returns WRONG.
             # badge ABSTAIN never reaches that compare (is_confident is false).
             rows = [dict(item) for item in _ANSWER_ROWS]
-            # STRICT-PIN-02: the scored envelope is checked with the same
-            # matcher. Echo the active pin so these vault-shot tests still
-            # reach the row judge.
-            pin_provider = os.environ.get("DMS_STRICT_PROVIDER", _PROVIDER).strip() or _PROVIDER
-            pin_model = os.environ.get("DMS_STRICT_MODEL", _PIN).strip()
-            # Unset, the echo stays the active pin. A test sets this to prove
-            # a mismatched scored envelope is still INVALID.
-            forced_provider = os.environ.get("DMS_PIN02_ASK_PROVIDER", "")
-            if forced_provider:
-                pin_provider = forced_provider
-            return _Http(
-                200,
-                {
-                    "badge": "L0_CERTIFIED",
-                    "abstained": False,
-                    "rows": rows,
-                    "values": [dict(item) for item in rows],
-                    "text": "1",
-                    "engine_as_of": _ENGINE_DAY,
-                    "engine_as_of_after": _ENGINE_DAY,
-                    "engine_timezone": _TZ,
-                    "engine_timezone_after": _TZ,
-                    "served_provider": pin_provider,
-                    "served_model": pin_model,
-                    "served_attribution": "reported",
-                },
-                {},
-            )
+            # Echo served_* only when a pin env is set. Exact value. No strip.
+            # No fallback to _PROVIDER / _PIN. Neither set: no served_* keys.
+            body: dict[str, Any] = {
+                "badge": "L0_CERTIFIED",
+                "abstained": False,
+                "rows": rows,
+                "values": [dict(item) for item in rows],
+                "text": "1",
+                "engine_as_of": _ENGINE_DAY,
+                "engine_as_of_after": _ENGINE_DAY,
+                "engine_timezone": _TZ,
+                "engine_timezone_after": _TZ,
+            }
+            has_provider = "DMS_STRICT_PROVIDER" in os.environ
+            has_model = "DMS_STRICT_MODEL" in os.environ
+            if has_provider or has_model:
+                if "DMS_PIN02_ASK_PROVIDER" in os.environ:
+                    body["served_provider"] = os.environ["DMS_PIN02_ASK_PROVIDER"]
+                elif has_provider:
+                    body["served_provider"] = os.environ["DMS_STRICT_PROVIDER"]
+                if has_model:
+                    body["served_model"] = os.environ["DMS_STRICT_MODEL"]
+                body["served_attribution"] = "reported"
+            return _Http(200, body, {})
         raise RuntimeError(f"unexpected {method} {url}")
 
     monkeypatch.setattr("score_curated.score_http", score_http)
@@ -1432,9 +1428,25 @@ def test_live_pin_matched_round_keeps_parent_correct_count(
         db = _oracle_db(tmp_path)
         n_pack = len(_questions())
         _arm(monkeypatch, tmp_path, pinned=False)
+        monkeypatch.delenv("DMS_STRICT_PROVIDER", raising=False)
+        monkeypatch.delenv("DMS_STRICT_MODEL", raising=False)
         _match_gold(monkeypatch)
         live("http://score.test", 1.0, db)
         parent = _report(tmp_path)
+        seen_env = 0
+        rec_path = Path(str(parent["case_record"]))
+        for line in rec_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            stored = json.loads(line).get("envelope")
+            assert isinstance(stored, dict)
+            assert not any(str(key).startswith("served_") for key in stored)
+            seen_env += 1
+        assert seen_env == n_pack
+        assert all(
+            not str(row.get("reason") or "").startswith("pin_")
+            for row in parent["cases"]
+        )
         _asks, script = _arm(monkeypatch, tmp_path, repeat=_ok(_PIN))
         _match_gold(monkeypatch)
         live("http://score.test", 1.0, db)
@@ -1449,6 +1461,7 @@ def test_live_pin_matched_round_keeps_parent_correct_count(
             parent["invalid"],
         )
         assert head["n"] == n_pack == parent["n"]
+        assert parent["correct"] == head["correct"]
         assert head["correct"] > 0
         assert len(script.calls) == n_pack + 1
         assert all(
