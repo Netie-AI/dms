@@ -2026,6 +2026,12 @@ def resolve_live_engine_clock(url: str, timeout: float) -> dict[str, str | None]
     }
 
 
+def _planned_n() -> int:
+    """Cases the pack will ask. Stays 52 when a preflight round scores n=0."""
+    pack = load_pack(DEFAULT_PACK)
+    return len(merge_pack_questions(list(pack["questions"])))
+
+
 def score_live_entry(
     url: str,
     timeout: float,
@@ -2211,8 +2217,11 @@ def score_pack_live(
     """
     # Missing engine date is an unread round: n=0, no asks. The end date is a
     # second /health read after the cases, not engine_as_of_after on this open.
+    planned = _planned_n()
     if not engine_as_of:
-        return _tally(), [], _unread_clock(engine_as_of, engine_as_of_after, engine_timezone)
+        clock = _unread_clock(engine_as_of, engine_as_of_after, engine_timezone)
+        clock["n_planned"] = planned
+        return _tally(), [], clock
     from cortex_client.strict_pin import envelope_mismatch, next_answer, open_round
 
     pin_round = open_round()
@@ -2224,6 +2233,7 @@ def score_pack_live(
         clock["passed"] = False
         clock["invalid"] = 0
         clock["n"] = 0
+        clock["n_planned"] = planned
         clock["n_without_invalid"] = 0
         clock["case_records"] = []
         if str(pin_round.reason or "").startswith("pin_unavailable:"):
@@ -2441,6 +2451,7 @@ def score_pack_live(
     invalid_n = int(tallies.get("INVALID") or 0)
     clock["invalid"] = invalid_n
     clock["n"] = sum(tallies.values())
+    clock["n_planned"] = planned
     clock["n_without_invalid"] = clock["n"] - invalid_n
     clock["round_health"] = sum(
         1 for rec in records if rec.get("clock_source") == "round_health"
@@ -2647,7 +2658,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}  "
         f"INVALID {invalid_n}  RATE_LIMIT {rate_limit}  "
         f"round_health {int(clock.get('round_health') or 0)}  "
-        f"n {n}  n_without_invalid {n - invalid_n}"
+        f"n {n}  n_planned {int(clock.get('n_planned') or _planned_n())}  "
+        f"n_without_invalid {n - invalid_n}"
     )
     print(f"{OVERMASK_STAR_KEY} {overmask}")
     as_of = clock.get("oracle_as_of")
@@ -2716,6 +2728,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 OVERMASK_STAR_KEY: overmask,
                 "total": n,
                 "n": n,
+                "n_planned": int(clock.get("n_planned") or _planned_n()),
                 "n_without_invalid": n - invalid_n,
                 "round_health": int(clock.get("round_health") or 0),
                 "abstained": tallies["ABSTAIN"],
@@ -3223,6 +3236,9 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     report["reason"] = clock.get("reason")
     if clock.get("pin_reason"):
         report["pin_reason"] = clock.get("pin_reason")
+    planned = int(clock.get("n_planned") or _planned_n())
+    report["n_planned"] = planned
+    report["measured"]["n_planned"] = planned
     measured = report["measured"]
     base = report["baseline"]
     delta = report["delta"]
@@ -3236,6 +3252,7 @@ def climb(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"{'measured':<10} {measured['n']:>3} {measured['ok']:>3} {measured['layer']:>5} "
         f"{measured['abstain']:>7} {measured['wrong']:>5} {measured['answered']:>8}"
     )
+    print(f"n {measured['n']}  n_planned {report['n_planned']}")
     print(
         f"{'delta':<10} {'':>3} {delta['ok']:>+3} {delta['layer']:>+5} "
         f"{delta['abstain']:>+7} {delta['wrong']:>+5} {delta['answered']:>+8}"
@@ -3361,7 +3378,12 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         "reason": exact_clock.get("reason") or gen_clock.get("reason"),
         "pin_reason": exact_clock.get("pin_reason") or gen_clock.get("pin_reason"),
         "passed_wrong_zero": exact_r["wrong"] == 0 and gen_r["wrong"] == 0,
+        "n_planned": int(
+            exact_clock.get("n_planned") or gen_clock.get("n_planned") or _planned_n()
+        ),
     }
+    exact_r["n_planned"] = report["n_planned"]
+    gen_r["n_planned"] = report["n_planned"]
     if (
         exact_clock.get("round_label") == "INVALID"
         or gen_clock.get("round_label") == "INVALID"
@@ -3373,12 +3395,13 @@ def climb_ab_live(url: str, timeout: float, oracle_db: Path | None = None) -> in
         print("FAIL: live A/B invented COMPLETE / 99.95")
         return EXIT_FAIL
     print(
-        f"{'path':<22} n n_without_invalid ok layer abstain wrong invalid "
+        f"{'path':<22} n n_planned n_without_invalid ok layer abstain wrong invalid "
         "answered coverage_answered"
     )
     for row in (exact_r, gen_r):
         print(
-            f"{row['path']:<22} {row['n']} {row['n_without_invalid']} {row['ok']} "
+            f"{row['path']:<22} {row['n']} {row['n_planned']} "
+            f"{row['n_without_invalid']} {row['ok']} "
             f"{row['layer']} {row['abstain']} {row['wrong']} {row['invalid']} "
             f"{row['answered']} {row['coverage_answered_pct']:.2f} pct"
         )
@@ -3649,6 +3672,7 @@ def _write_prove_report(
         )
     print(
         f"WRONG {report['wrong']}  answered {report['answered']}/{report['n']}  "
+        f"n_planned {report.get('n_planned', report['n'])}  "
         f"{HOLD_MAY_CLEAR_FIELD}: {report[HOLD_MAY_CLEAR_FIELD]}"
     )
     if report.get("categories"):
@@ -3795,6 +3819,9 @@ def prove_path_live(url: str, timeout: float, oracle_db: Path | None = None) -> 
     report["pin_reason"] = gen_clock.get("pin_reason") or exact_clock.get("pin_reason")
     exact_n = sum(int(v) for v in exact_t.values())
     exact_invalid = int(exact_t.get("INVALID") or 0)
+    report["n_planned"] = int(
+        gen_clock.get("n_planned") or exact_clock.get("n_planned") or _planned_n()
+    )
     report["exact_n"] = exact_n
     report["exact_invalid"] = exact_invalid
     report["exact_n_without_invalid"] = exact_n - exact_invalid
@@ -3846,6 +3873,7 @@ def grid_score_hook(
             "kind": "dms.grid_score_hook",
             "issue": 299,
             "n": 0,
+            "n_planned": _planned_n(),
             "n_without_invalid": 0,
             "round_health": 0,
             "invalid": 0,
@@ -3862,6 +3890,7 @@ def grid_score_hook(
         "kind": "dms.grid_score_hook",
         "issue": 299,
         "n": n,
+        "n_planned": int(clock.get("n_planned") or _planned_n()),
         "n_without_invalid": n - invalid_n,
         "round_health": int(clock.get("round_health") or 0),
         "invalid": invalid_n,

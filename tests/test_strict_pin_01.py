@@ -314,11 +314,11 @@ def test_live_preflight_pin_unavailable_is_invalid_n0(
     elapsed = time.monotonic() - started
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report.get("n_planned") == 52 and report["n"] == 0
     name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
     assert (
         report["reason"] == name
         and report["round_label"] == "INVALID"
-        and report["n"] == 0
         and report["pin_reason"] == reason
     )
     assert elapsed < 3.0
@@ -554,6 +554,7 @@ def test_live_header_match_is_judged(
     assert len(script.calls) == n_pack + 1
     assert report["invalid"] == 0
     assert report["n"] == n_pack
+    assert report["n_planned"] == n_pack
     assert report["wrong"] == n_pack
     assert all(row["verdict"] != "INVALID" for row in report["cases"])
 
@@ -705,6 +706,7 @@ def test_each_live_entry_preflight_aborts(
         assert script.calls
         assert all(call["json"]["strict"] is True for call in script.calls)
         assert all(call["json"]["model"] == _PIN for call in script.calls)
+        assert result.get("n_planned") == 52
         assert result["cases"] == []
         assert result["passed"] is False
         return
@@ -722,6 +724,7 @@ def test_each_live_entry_preflight_aborts(
         and report.get("round_label") == "INVALID"
         and report.get("pin_reason") == "quota_exhausted"
     )
+    assert report.get("n_planned") == 52
     if entry == "climb":
         assert report["measured"]["n"] == 0
     elif entry == "climb_ab_live":

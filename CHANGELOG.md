@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: round summary carries n_planned
+
+- **Summary.** Every live round (`live`, `climb`, `climb_ab_live`, `prove_path_live`, `grid_score_hook`) writes `n_planned` next to `n`. It is the pack size (52), including a preflight round whose `n` is 0 and a round that scores.
+- **Gate.** `test_live_preflight_pin_unavailable_is_invalid_n0` asserts `n_planned == 52` and `n == 0`. On main `22deaa3` that assert is the failure.
+
 ## 2026-10-01 - dms#317 Part A: pin preflight is one baseline reason
 
 - **Gate.** `baseline_eligibility` takes `pin_preflight_unavailable`. A blocked preflight whose reason starts with `pin_unavailable:` appends that reason and `baseline_eligible` is false. An in-round 503 `quota_exhausted` stays ABSTAIN `pin_unavailable:<provider>/<model>` with `pin_reason=quota_exhausted` and `rate_limit` 0. It does not append the preflight reason. HTTP 429 remains the only `RATE_LIMIT`.
