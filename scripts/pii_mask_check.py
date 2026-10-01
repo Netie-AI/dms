@@ -40,6 +40,7 @@ from dms_executor.semantic_retrieve import retrieve_value_encodings  # noqa: E40
 
 SCAN_SHA256 = "878f664d1d920bee99b3859285dd669b86edc16945288a5251c2fa66fae0c330"
 FLAGGED_CSV = ROOT / "tests" / "fixtures" / "pii_hold" / "flagged_columns.csv"
+COLUMN_DENY_PATH = ROOT / "tests" / "fixtures" / "bird_minidev" / "preflight.yaml"
 FLAGGED_TABLES = frozenset(
     {
         "schools",
@@ -55,9 +56,7 @@ FLAGGED_TABLES = frozenset(
     }
 )
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_RETRIEVE_SKIP = re.compile(
-    r"(amount|qty|quantity|cost|kg|myr|score|load|capacity|date|id)$", re.I
-)
+_RETRIEVE_SKIP = re.compile(r"(amount|qty|quantity|cost|kg|myr|score|load|capacity|date|id)$", re.I)
 _FREE_TEXT_COLS = frozenset(
     {
         "text",
@@ -242,6 +241,51 @@ def _path_c(table: str, column: str, sample: str, synth: str, warehouse: Path) -
     return "PASS"
 
 
+def deny_columns(path: Path | None = None) -> set[tuple[str, str]]:
+    """Columns listed in the dms#304 preflight file. Empty if the file is missing."""
+    file = path or COLUMN_DENY_PATH
+    try:
+        import yaml
+    except ImportError:
+        return set()
+    if not file.is_file():
+        return set()
+    data = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+    found: set[tuple[str, str]] = set()
+    for item in data.get("columns") or []:
+        text = str(item).strip().lower()
+        if "." not in text:
+            continue
+        table, column = text.split(".", 1)
+        table = bare_table(table)
+        column = column.strip()
+        if table and column:
+            found.add((table, column))
+    return found
+
+
+def _exclude_listed_fail(result: CheckResult) -> CheckResult:
+    """A FAIL on a column named in the preflight file is EXCLUDE, citing dms#304.
+
+    A column that is not in the file stays whatever the three paths returned.
+    There is no hardcoded column set here.
+    """
+    if "FAIL" not in (result.path_a, result.path_b, result.path_c):
+        return result
+    table = bare_table(result.cell.table)
+    column = str(result.cell.column or "").strip().lower()
+    if (table, column) not in deny_columns():
+        return result
+    return CheckResult(
+        result.cell,
+        result.synth,
+        "EXCLUDE",
+        "EXCLUDE",
+        "EXCLUDE",
+        f"dms#304 {table}.{column}",
+    )
+
+
 def check_cell(cell: FlaggedCell, warehouse: Path) -> CheckResult:
     note = ""
     synth = SYNTH_BY_PATTERN.get(cell.pattern)
@@ -259,10 +303,9 @@ def check_cell(cell: FlaggedCell, warehouse: Path) -> CheckResult:
         path_b = _path_b(column, sample, synth)
         path_c = _path_c(table, column, sample, synth, warehouse)
     except Exception as exc:  # fail closed
-        return CheckResult(
-            cell, synth, "FAIL", "FAIL", "FAIL", f"error:{type(exc).__name__}"
-        )
-    return CheckResult(cell, synth, path_a, path_b, path_c, note)
+        failed = CheckResult(cell, synth, "FAIL", "FAIL", "FAIL", f"error:{type(exc).__name__}")
+        return _exclude_listed_fail(failed)
+    return _exclude_listed_fail(CheckResult(cell, synth, path_a, path_b, path_c, note))
 
 
 def check_all(path: Path = FLAGGED_CSV) -> list[CheckResult]:

@@ -1,0 +1,13 @@
+# dms#304 table allowlist. Names only. No values.
+# Source scan pii_counts.csv sha256 (verified on the file, dms#303 run):
+source_sha256: 878f664d1d920bee99b3859285dd669b86edc16945288a5251c2fa66fae0c330
+# Zero-hit v5 bronze.public_* tables whose full scan span was recovered.
+# trans and yearmonth stay held and are not listed.
+# Tables with a pattern hit in that span are not listed.
+tables:
+  - bronze.public_account
+  - bronze.public_alignment
+  - bronze.public_atom
+  - bronze.public_attendance
+  - bronze.public_bond
+  - bronze.public_card

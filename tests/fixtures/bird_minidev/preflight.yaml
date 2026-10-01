@@ -1,0 +1,30 @@
+# dms#304 deny / preflight. Names only. No values.
+# flagged_tables: if any is grantable, live and generate are BLOCKED.
+# columns: a FAIL cell on one of these becomes EXCLUDE citing dms#304.
+# The checker reads this file. It does not keep its own copy of the names.
+issue: 304
+flagged_tables:
+  - schools
+  - member
+  - client
+  - patient
+  - player
+  - drivers
+  - users
+  - posts
+  - posthistory
+  - comments
+columns:
+  - drivers.nationality
+  - member.position
+  - patient.diagnosis
+  - users.location
+  - schools.city
+  - schools.county
+  - schools.district
+  - schools.doctype
+  - schools.edopsname
+  - schools.eilname
+  - schools.mailcity
+  - schools.school
+  - schools.soctype

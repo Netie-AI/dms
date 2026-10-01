@@ -392,6 +392,37 @@ def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[st
     return "ok", names
 
 
+def _case_sql(case: dict[str, Any]) -> str:
+    return str(case.get("SQL") or case.get("sql") or case.get("gold_sql") or "")
+
+
+def _exclusion_of(case: dict[str, Any]) -> dict[str, Any] | None:
+    from bird_allowlist import decide_question, required_columns_of
+
+    decision = decide_question(_case_sql(case), required_columns_of(case))
+    if decision is None:
+        return None
+    raw_tables = decision["excluded_tables"]
+    raw_cols = decision["excluded_columns"]
+    tables = [str(name) for name in raw_tables] if isinstance(raw_tables, list) else []
+    cols = [str(name) for name in raw_cols] if isinstance(raw_cols, list) else []
+    return {
+        "reason": str(decision["reason"]),
+        "label": str(decision["label"]),
+        "citation": str(decision["citation"]),
+        "excluded_tables": tables,
+        "excluded_columns": cols,
+    }
+
+
+def _print_pack_exclusion(questions: list, rows: list[dict[str, Any]]) -> None:
+    from bird_allowlist import exclusion_stats, print_exclusion_report
+
+    excluded, by_table, by_column = exclusion_stats(rows)
+    n = len(questions)
+    print_exclusion_report(n, n - excluded, by_table, by_column)
+
+
 def run_exact(
     pack: dict[str, Any],
     space_id: str,
@@ -400,8 +431,15 @@ def run_exact(
     tallies = _tally()
     rows: list[dict[str, Any]] = []
     skipped = 0
-    for case in pack["questions"]:
+    questions = list(pack["questions"])
+    for case in questions:
         qid = str(case["id"])
+        decision = _exclusion_of(case)
+        if decision:
+            tallies["ABSTAIN"] += 1
+            rows.append({"id": qid, "exact": "ABSTAIN", "rows": 0, **decision})
+            print(f"{qid}\texact\tABSTAIN\t{decision['reason']}\trows=0")
+            continue
         expect = case_expect(case, bronze_names)
         if expect is None:
             skipped += 1
@@ -421,6 +459,7 @@ def run_exact(
             }
         )
         print(f"{qid}\texact\t{verdict}\t{env.get('badge')}\texpect={expect}")
+    _print_pack_exclusion(questions, rows)
     return tallies, rows, skipped
 
 
@@ -435,8 +474,15 @@ def run_live(
     tallies = _tally()
     rows: list[dict[str, Any]] = []
     skipped = 0
-    for case in pack["questions"]:
+    questions = list(pack["questions"])
+    for case in questions:
         qid = str(case["id"])
+        decision = _exclusion_of(case)
+        if decision:
+            tallies["ABSTAIN"] += 1
+            rows.append({"id": qid, "generative": "ABSTAIN", "rows": 0, **decision})
+            print(f"{qid}\tlive\tABSTAIN\t{decision['reason']}\trows=0")
+            continue
         expect = case_expect(case, bronze_names)
         if expect is None:
             skipped += 1
@@ -471,6 +517,7 @@ def run_live(
             }
         )
         print(f"{qid}\tlive\t{verdict}\t{env.get('badge')}\trows={n}\texpect={expect}")
+    _print_pack_exclusion(questions, rows)
     return "ok", tallies, rows, skipped
 
 
@@ -559,12 +606,24 @@ def ab_offline() -> int:
 
 def live(url: str, timeout: float, space_id: str) -> int:
     pack = load_bird()
-    snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 live A/B: exact-match pack vs POST /v1/chat/ask (GEN-01).")
     print(f"space_id={space_id}")
     print(f"DMS_API_BASE={url}")
     bronze_status, measured = fetch_bronze(url, space_id, timeout)
-    names = measured if bronze_status == "ok" and measured else snapshot
+    if bronze_status != "ok" or not measured:
+        print("BLOCKED")
+        print("BLOCKED could not read granted or bronze table names")
+        print("VERDICT: BLOCKED. Not COMPLETE.")
+        return EXIT_BLOCKED
+    from bird_allowlist import grant_block_reason
+
+    reason = grant_block_reason(list(measured))
+    if reason:
+        print("BLOCKED")
+        print(reason)
+        print("VERDICT: BLOCKED. Not COMPLETE.")
+        return EXIT_BLOCKED
+    names = measured
     print_honesty(pack["honesty"], measured=names)
     exact_t, exact_cases, skip_e = run_exact(pack, space_id, names)
     status, live_t, live_cases, skip_g = run_live(pack, space_id, url, timeout, names)

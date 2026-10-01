@@ -60,9 +60,7 @@ REL_TOL = Decimal("1e-6")
 ABS_TOL = Decimal("1e-9")
 LEARN_ENV = "CORTEX_FREEROUTE_LEARN"
 STORE_ENV = "CORTEX_ROUTE_STORE"
-CONFIDENT = frozenset(
-    {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "L2_ANOMALOUS"}
-)
+CONFIDENT = frozenset({"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "L2_ANOMALOUS"})
 # Same names as dms_executor.generative_ask.SETUP_FIELD_KEYS (do not import
 # executor here: its package init pulls CortexClient). Exact envelope keys.
 SETUP_FIELD_KEYS: tuple[str, ...] = (
@@ -76,9 +74,7 @@ SETUP_FIELD_KEYS: tuple[str, ...] = (
 BOOL_SETUP_KEYS = frozenset({"served_local", "learn_enabled"})
 PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
 PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
-PLAN_ORIGINS = frozenset(
-    {PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING}
-)
+PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
 
 SYNTHETIC_SETUP: tuple[str, ...] = (
     "CREATE TABLE widgets (id INTEGER, name VARCHAR, price DOUBLE)",
@@ -350,10 +346,7 @@ def served_mix(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
 
 
 def setup_mix_key(row: Mapping[str, Any]) -> str:
-    return "|".join(
-        f"{key}={_field_label(key, row.get(key, UNKNOWN))}"
-        for key in SETUP_FIELD_KEYS
-    )
+    return "|".join(f"{key}={_field_label(key, row.get(key, UNKNOWN))}" for key in SETUP_FIELD_KEYS)
 
 
 def setup_mix(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -383,9 +376,7 @@ def plan_origin_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         counts[val] += 1
     return {
         PLAN_ORIGIN_GENERATE_SQL: int(counts.get(PLAN_ORIGIN_GENERATE_SQL, 0)),
-        PLAN_ORIGIN_ONTOLOGY_RANKING: int(
-            counts.get(PLAN_ORIGIN_ONTOLOGY_RANKING, 0)
-        ),
+        PLAN_ORIGIN_ONTOLOGY_RANKING: int(counts.get(PLAN_ORIGIN_ONTOLOGY_RANKING, 0)),
         UNKNOWN: int(counts.get(UNKNOWN, 0)),
     }
 
@@ -423,12 +414,7 @@ def _count_store_rows(path: Path, data: bytes) -> int:
 
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
-            names = [
-                r[0]
-                for r in con.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                )
-            ]
+            names = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
             total = 0
             for name in names:
                 total += int(con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
@@ -513,9 +499,7 @@ def require_freeroute_frozen(env: Mapping[str, str]) -> dict[str, Any] | str:
         )
     store = (env.get(STORE_ENV) or "").strip()
     if not store:
-        return (
-            f"CONFIG: {STORE_ENV} is required so the run can record store state."
-        )
+        return f"CONFIG: {STORE_ENV} is required so the run can record store state."
     snap = snapshot_route_store(Path(store))
     if snap["error"]:
         return f"CONFIG: cannot record route-store state: {snap['error']}"
@@ -614,12 +598,7 @@ def validate_full_minidev(
 
 
 def gold_sql_of(question: Mapping[str, Any]) -> str:
-    return str(
-        question.get("SQL")
-        or question.get("sql")
-        or question.get("gold_sql")
-        or ""
-    )
+    return str(question.get("SQL") or question.get("sql") or question.get("gold_sql") or "")
 
 
 def asked_text(question: Mapping[str, Any], *, with_evidence: bool) -> str:
@@ -631,16 +610,88 @@ def asked_text(question: Mapping[str, Any], *, with_evidence: bool) -> str:
     return text
 
 
+def _case_shell(
+    item: Mapping[str, Any],
+    served: Mapping[str, Any],
+    *,
+    verdict: str,
+    badge: Any,
+    gold_n: int,
+    got_n: int,
+    gold_error: str | None,
+    reason: str = "",
+    citation: str = "",
+    excluded_tables: Sequence[str] = (),
+    excluded_columns: Sequence[str] = (),
+) -> dict[str, Any]:
+    label = reason or verdict
+    case = {
+        "id": item.get("question_id", item.get("id")),
+        "db_id": item.get("db_id"),
+        "difficulty": item.get("difficulty") or "unknown",
+        "verdict": verdict,
+        "label": label,
+        "reason": reason,
+        "citation": citation,
+        "excluded_tables": list(excluded_tables),
+        "excluded_columns": list(excluded_columns),
+        "badge": badge,
+        "gold_rows": gold_n,
+        "got_rows": got_n,
+        "gold_error": gold_error,
+        "provider": served["provider"],
+        "model": served["model"],
+        "plan_origin": served["plan_origin"],
+    }
+    for key in SETUP_FIELD_KEYS:
+        case[key] = served[key]
+    return case
+
+
 def score_cases(
     questions: Sequence[Mapping[str, Any]],
     *,
     ask_fn: AskFn,
     gold_fn: GoldFn,
     with_evidence: bool = False,
+    apply_allowlist: bool = True,
 ) -> list[dict[str, Any]]:
+    """Score every question. Exclusions stay in the list as one named ABSTAIN.
+
+    apply_allowlist is False for the synthetic plant (widgets is not on the
+    PII allowlist). The Mini-Dev CLI turns it on. An exclusion makes no model
+    call and returns zero rows. It is never OK / LAYER / WRONG.
+    """
+    from bird_allowlist import decide_question, required_columns_of
+
     rows: list[dict[str, Any]] = []
     for item in questions:
         sql = gold_sql_of(item)
+        decision = None
+        if apply_allowlist:
+            decision = decide_question(sql, required_columns_of(item))
+        if decision:
+            served = served_from_response(None)
+            raw_tables = decision["excluded_tables"]
+            raw_cols = decision["excluded_columns"]
+            tables = [str(name) for name in raw_tables] if isinstance(raw_tables, list) else []
+            cols = [str(name) for name in raw_cols] if isinstance(raw_cols, list) else []
+            rows.append(
+                _case_shell(
+                    item,
+                    served,
+                    verdict="ABSTAIN",
+                    badge="ABSTAIN",
+                    gold_n=0,
+                    got_n=0,
+                    gold_error=None,
+                    reason=str(decision["reason"]),
+                    citation=str(decision["citation"]),
+                    excluded_tables=tables,
+                    excluded_columns=cols,
+                )
+            )
+            continue
         gold_rows, gold_err = gold_fn(sql)
         env = ask_fn(asked_text(item, with_evidence=with_evidence))
         served = served_from_response(env)
@@ -649,22 +700,17 @@ def score_cases(
         else:
             verdict = gold_error_dominating(None, grade_envelope(env, gold_rows or []))
         got = envelope_rows(env)
-        case = {
-            "id": item.get("question_id", item.get("id")),
-            "db_id": item.get("db_id"),
-            "difficulty": item.get("difficulty") or "unknown",
-            "verdict": verdict,
-            "badge": env.get("badge"),
-            "gold_rows": len(gold_rows or []),
-            "got_rows": len(got),
-            "gold_error": gold_err,
-            "provider": served["provider"],
-            "model": served["model"],
-            "plan_origin": served["plan_origin"],
-        }
-        for key in SETUP_FIELD_KEYS:
-            case[key] = served[key]
-        rows.append(case)
+        rows.append(
+            _case_shell(
+                item,
+                served,
+                verdict=verdict,
+                badge=env.get("badge"),
+                gold_n=len(gold_rows or []),
+                got_n=len(got),
+                gold_error=gold_err,
+            )
+        )
     return rows
 
 
@@ -710,6 +756,12 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     summary["served_local"] = served_local_counts(rows)
     summary["setup_mix"] = setup_mix(rows)
     summary["plan_origin"] = plan_origin_counts(rows)
+    from bird_allowlist import exclusion_stats
+
+    excluded, by_table, by_column = exclusion_stats(rows)
+    summary["n_without_excluded"] = int(summary["n"]) - excluded
+    summary["excluded_by_table"] = by_table
+    summary["excluded_by_column"] = by_column
     return summary
 
 
@@ -725,6 +777,21 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
         f"ABSTAIN={summary['abstain']} WRONG={summary['wrong']} "
         f"GOLD_ERROR={summary['gold_error']} (excluded from n)"
     )
+    if "n_without_excluded" in summary:
+        print(f"n_without_excluded={summary['n_without_excluded']}")
+        print("excluded by table:")
+        by_table = summary.get("excluded_by_table") or {}
+        if not by_table:
+            print("  (none)")
+        for key, count in sorted(by_table.items()):
+            print(f"  {key} {count}")
+        print("excluded by column:")
+        by_column = summary.get("excluded_by_column") or {}
+        if not by_column:
+            print("  (none)")
+        for key, count in sorted(by_column.items()):
+            print(f"  {key} {count}")
+        print("new measure: not comparable with 73/75")
     print(f"EX on answered={ex_s} abstain rate={abs_txt}")
     print(f"  {bound_line(answered)}")
     if limit is not None:
@@ -983,9 +1050,7 @@ def minidev_self_check() -> list[str]:
         errs.append("run_pg_gold must pin dead_connection on connect failure")
 
     unknown_setup = {key: UNKNOWN for key in SETUP_FIELD_KEYS}
-    unknown_setup.update(
-        {"provider": UNKNOWN, "model": UNKNOWN, "plan_origin": UNKNOWN}
-    )
+    unknown_setup.update({"provider": UNKNOWN, "model": UNKNOWN, "plan_origin": UNKNOWN})
     served_u = served_from_response({"badge": "L0_CERTIFIED", "rows": [{"n": 1}]})
     if served_u != unknown_setup:
         errs.append("missing envelope setup fields must record unknown, never guess")
@@ -1022,9 +1087,7 @@ def minidev_self_check() -> list[str]:
     if served_r["plan_origin"] != PLAN_ORIGIN_GENERATE_SQL:
         errs.append("plan_origin generate_sql must be copied")
     if (
-        served_from_response({"plan_origin": PLAN_ORIGIN_ONTOLOGY_RANKING})[
-            "plan_origin"
-        ]
+        served_from_response({"plan_origin": PLAN_ORIGIN_ONTOLOGY_RANKING})["plan_origin"]
         != PLAN_ORIGIN_ONTOLOGY_RANKING
     ):
         errs.append("plan_origin ontology_ranking must be copied")
@@ -1089,6 +1152,7 @@ def run_minidev(
     env: Mapping[str, str] | None = None,
     started: str | None = None,
     write: bool = True,
+    apply_allowlist: bool = False,
 ) -> tuple[int, dict[str, Any] | None, str | None]:
     """Score Mini-Dev. On freeze/store failure returns CONFIG and no report."""
     env = env or os.environ
@@ -1103,7 +1167,11 @@ def run_minidev(
     if limit is not None:
         sliced = sliced[: max(limit, 0)]
     cases = score_cases(
-        sliced, ask_fn=ask_fn, gold_fn=gold_fn, with_evidence=with_evidence
+        sliced,
+        ask_fn=ask_fn,
+        gold_fn=gold_fn,
+        with_evidence=with_evidence,
+        apply_allowlist=apply_allowlist,
     )
     summary = summarize(cases)
     mix = summary["served_mix"]
@@ -1196,9 +1264,7 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
 
     source = str(args.minidev)
     try:
-        questions, data_meta = load_minidev_source(
-            source, dest_dir=ROOT / ".tmp" / "bird_minidev"
-        )
+        questions, data_meta = load_minidev_source(source, dest_dir=ROOT / ".tmp" / "bird_minidev")
     except Exception as exc:  # noqa: BLE001
         print(f"CONFIG: cannot load Mini-Dev JSON: {exc}")
         print("VERDICT: CONFIG")
@@ -1234,6 +1300,21 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
             from score_bird import BIRD_SPACE
 
             space = BIRD_SPACE
+        from bird_allowlist import grant_block_reason
+        from score_bird import fetch_bronze
+
+        bronze_status, measured = fetch_bronze(url, space, args.timeout)
+        if bronze_status != "ok" or not measured:
+            print("BLOCKED")
+            print("BLOCKED could not read granted or bronze table names")
+            print("VERDICT: BLOCKED. Not COMPLETE.")
+            return EXIT_BLOCKED
+        blocked = grant_block_reason(list(measured))
+        if blocked:
+            print("BLOCKED")
+            print(blocked)
+            print("VERDICT: BLOCKED. Not COMPLETE.")
+            return EXIT_BLOCKED
 
         def ask_fn(question: str) -> dict[str, Any]:
             return _ask_live(url, question, space, args.timeout)
@@ -1267,6 +1348,7 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
         env=env,
         started=started,
         write=True,
+        apply_allowlist=True,
     )
     if err:
         print(err)
