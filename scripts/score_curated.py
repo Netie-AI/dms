@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -60,6 +61,9 @@ PACK_DENOMINATOR = 52
 FIGURE_LABEL_FIXTURE = "CI fixtures, not live"
 FIGURE_LABEL_LIVE = "live row-compared"
 LEGACY_JUDGE_LABEL = "scorer_ok_rows_not_compared"
+# Count inside INVALID. Not an outcome label. dms#284 leftover: star/UNION
+# SQL comes back with a masked typed date.
+OVERMASK_STAR_KEY = "overmask_star:dms#284"
 
 # Live curated_ceo @ 91c5cc99 (VQ-04 refuse traps). Frozen measurement, not a target.
 BASELINE_91C5CC99: dict[str, Any] = {
@@ -569,6 +573,165 @@ def ask_error_envelope(exc: BaseException) -> dict[str, Any] | None:
     return None
 
 
+def _response_status(exc: BaseException) -> int | None:
+    resp = getattr(exc, "response", None)
+    status = getattr(resp, "status_code", None)
+    if status is None:
+        return None
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def no_envelope_verdict(exc: BaseException) -> tuple[str, str]:
+    """Ask raised and there is no envelope. Never WRONG.
+
+    HTTP 429 is RATE_LIMIT. Anything else is ABSTAIN(ask_error:<exception type>).
+    """
+    if _response_status(exc) == 429:
+        return "RATE_LIMIT", "RATE_LIMIT"
+    return "ABSTAIN", f"ask_error:{type(exc).__name__}"
+
+
+def _mask_token(value: object) -> bool:
+    from dms_core.pii import is_mask_token
+
+    return is_mask_token(value)
+
+
+def _typed_date_column(column: str) -> bool:
+    from dms_core.pii import _typed_date_column as typed
+
+    return typed(column)
+
+
+def _sql_uses_star_or_union(sql: str) -> bool:
+    """Projection star or UNION. COUNT(*) is not a projection star.
+
+    ponytail: regex, not a parse. Ceiling: a star inside a string literal.
+    Upgrade: the sqlglot projection walk in served_column_sources.
+    """
+    blob = " ".join(sql.split())
+    if re.search(r"\bUNION\b", blob, re.IGNORECASE):
+        return True
+    stripped = re.sub(
+        r"\bCOUNT\s*\(\s*(?:DISTINCT\s+)?\*\s*\)",
+        "",
+        blob,
+        flags=re.IGNORECASE,
+    )
+    if re.search(r"\.\s*\*", stripped):
+        return True
+    return re.search(r"(?:^|[\s,(])\*(?:\s|$)", stripped) is not None
+
+
+def _has_masked_typed_date(env: Mapping[str, Any]) -> bool:
+    for row in envelope_rows(env):
+        if not isinstance(row, dict):
+            continue
+        for key, val in row.items():
+            if _mask_token(val) and _typed_date_column(str(key)):
+                return True
+    return False
+
+
+def overmask_star_case(env: Mapping[str, Any]) -> bool:
+    """INVALID breakdown: star or UNION SQL and a masked typed date. Not a verdict."""
+    sql = str(env.get("sql_used") or "")
+    return bool(sql) and _sql_uses_star_or_union(sql) and _has_masked_typed_date(env)
+
+
+def _gold_columns(gold: list[Any]) -> list[str]:
+    cols: list[str] = []
+    seen: set[str] = set()
+    for row in gold:
+        if not isinstance(row, dict):
+            continue
+        for key in row:
+            name = str(key)
+            if name not in seen:
+                seen.add(name)
+                cols.append(name)
+    return cols
+
+
+def _masked_compared_column(got: list[Any], cols: list[str]) -> str | None:
+    """First served column that the oracle compare will read and that is masked."""
+    gold = set(cols)
+    for row in got:
+        if isinstance(row, dict):
+            for key, val in row.items():
+                name = str(key)
+                if name in gold and _mask_token(val):
+                    return name
+            continue
+        cells = list(row) if isinstance(row, (list, tuple)) else [row]
+        for i, val in enumerate(cells):
+            if i >= len(cols) or not _mask_token(val):
+                continue
+            return cols[i]
+    return None
+
+
+def _drop_uncompared_masks(rows: list[Any], cols: list[str]) -> tuple[list[Any], bool]:
+    """Drop masked cells the oracle does not compare. Compared cells stay."""
+    gold = set(cols)
+    changed = False
+    out: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            out.append(row)
+            continue
+        new: dict[str, Any] = {}
+        for key, val in row.items():
+            if str(key) not in gold and _mask_token(val):
+                changed = True
+                continue
+            new[key] = val
+        out.append(new)
+    return out, changed
+
+
+def _mask_compare_gate(
+    case: dict[str, Any],
+    env: dict[str, Any],
+    *,
+    oracle_db: Path | str | None,
+    oracles: Mapping[str, Any] | None,
+    oracle_sql: str | None,
+    as_of: str | None,
+) -> tuple[dict[str, Any], JudgeResult | None]:
+    """INVALID when a compared column is DMSMASK_. Else the normal judge.
+
+    A masked column the oracle does not return is removed so the row compare
+    judges the compared columns. No unmask, no second HTTP fetch.
+    """
+    expect = str(case.get("expect") or "l0").lower()
+    if expect in REFUSE or oracle_db is None or expect != "l0" or not is_confident(env):
+        return env, None
+    sql = _lookup_oracle_sql(case, oracles, oracle_sql)
+    if not sql:
+        return env, None
+    params = {"as_of": as_of} if as_of is not None and "$as_of" in sql else None
+    gold, err = run_oracle_select(oracle_db, sql, params=params)
+    if err is not None or not gold:
+        return env, None
+    cols = _gold_columns(gold)
+    if not cols:
+        return env, None
+    got = envelope_rows(env)
+    masked = _masked_compared_column(got, cols)
+    if masked:
+        return env, JudgeResult("INVALID", f"masked_compare:{masked}", _judge_badge(case, env))
+    projected, changed = _drop_uncompared_masks(got, cols)
+    if not changed:
+        return env, None
+    viewed = dict(env)
+    viewed["rows"] = projected
+    return viewed, None
+
+
 @dataclass(frozen=True)
 class JudgeResult:
     verdict: str
@@ -708,9 +871,19 @@ def judge_envelope_detailed(
     oracle_sql: str | None = None,
     as_of: str | None = None,
 ) -> JudgeResult:
-    inner = judge_detailed(
+    viewed, blocked = _mask_compare_gate(
         case,
         env,
+        oracle_db=oracle_db,
+        oracles=oracles,
+        oracle_sql=oracle_sql,
+        as_of=as_of,
+    )
+    if blocked is not None:
+        return blocked
+    inner = judge_detailed(
+        case,
+        viewed,
         oracle_db=oracle_db,
         oracles=oracles,
         oracle_sql=oracle_sql,
@@ -733,8 +906,9 @@ def pack_category_report(
     wrong = int(tallies.get("WRONG") or 0)
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     invalid = int(tallies.get("INVALID") or 0)
+    rate_limit = int(tallies.get("RATE_LIMIT") or 0)
     answered = ok + layer
-    accounted = ok + layer + abstain + wrong + oracle_error + invalid
+    accounted = ok + layer + abstain + wrong + oracle_error + invalid + rate_limit
     denom = max(PACK_DENOMINATOR, accounted)
     excluded = denom - accounted
 
@@ -1930,7 +2104,11 @@ def score_pack_live(
     Never falls back to --oracle-db CURRENT_DATE. No recorded engine date:
     round INVALID, not judged.
     """
-    if not engine_as_of or not engine_as_of_after:
+    # Missing engine date is an unread round: n=0, no asks. round_date_label
+    # is that same predicate. Replacing it with a non-INVALID result is the
+    # SCORE-MASK live() seam and still judges. Production never does that.
+    dates_missing = not engine_as_of or not engine_as_of_after
+    if dates_missing and round_date_label(engine_as_of, engine_as_of_after) == "INVALID":
         return _tally(), [], _unread_clock(engine_as_of, engine_as_of_after, engine_timezone)
     pack = load_pack(DEFAULT_PACK)
     pack["questions"] = merge_pack_questions(list(pack["questions"]))
@@ -1940,22 +2118,24 @@ def score_pack_live(
     oracle_tz = engine_timezone
     tallies = _tally()
     cases_out: list[dict[str, Any]] = []
+    overmask = 0
     for case in pack["questions"]:
         qid = str(case["id"])
         space = resolve_space(case, pack["spaces"])
-        err = ""
         try:
             env = _ask(url, str(case["question"]), space, timeout, ask_path=ask_path)
         except Exception as exc:  # noqa: BLE001
             env = ask_error_envelope(exc)
             if env is None:
+                # Live WRONG path changed: no envelope is never WRONG.
+                verdict, reason = no_envelope_verdict(exc)
                 err = f"{type(exc).__name__}: {exc}"
-                print(f"{qid}\tERROR\t{err}")
-                tallies["WRONG"] += 1
+                print(f"{qid}\t{verdict}\t{reason}\t{err}")
+                tallies[verdict] += 1
                 cases_out.append(
                     {
                         "id": qid,
-                        "verdict": "WRONG",
+                        "verdict": verdict,
                         "badge": None,
                         "route": None,
                         "path": "other",
@@ -1964,8 +2144,8 @@ def score_pack_live(
                         "rows": 0,
                         "expect": case.get("expect"),
                         "error": err,
-                        "reason": "",
-                        LEGACY_JUDGE_LABEL: "WRONG",
+                        "reason": reason,
+                        LEGACY_JUDGE_LABEL: "",
                     }
                 )
                 continue
@@ -1973,8 +2153,12 @@ def score_pack_live(
         case_before, case_after, case_tz, case_tz_after = _case_engine_clock(
             env, as_of, engine_as_of_after, oracle_tz
         )
-        invalid_reason = _case_invalid_reason(
-            case_before, case_after, case_tz, case_tz_after
+        invalid_reason = (
+            None
+            if dates_missing
+            else _case_invalid_reason(
+                case_before, case_after, case_tz, case_tz_after
+            )
         )
         if invalid_reason:
             tallies["INVALID"] += 1
@@ -2006,6 +2190,8 @@ def score_pack_live(
             case, env, oracle_db=oracle_db, oracles=oracles, as_of=case_before
         )
         verdict = result.verdict
+        if verdict == "INVALID" and overmask_star_case(env):
+            overmask += 1
         tallies[verdict] += 1
         badge = env.get("badge")
         route = env.get("route")
@@ -2042,11 +2228,13 @@ def score_pack_live(
                 "oracle_timezone": case_tz,
             }
         )
-    clock = _round_clock(as_of, engine_as_of_after, oracle_tz)
+    after = engine_as_of_after if engine_as_of_after is not None else as_of
+    clock = _round_clock(as_of, after, oracle_tz)
     invalid_n = int(tallies.get("INVALID") or 0)
     clock["invalid"] = invalid_n
     clock["n"] = sum(tallies.values())
     clock["n_without_invalid"] = clock["n"] - invalid_n
+    clock[OVERMASK_STAR_KEY] = overmask
     if invalid_n:
         clock["passed"] = False
     return tallies, cases_out, clock
@@ -2063,6 +2251,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     wrong = tallies["WRONG"]
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     invalid_n = int(tallies.get("INVALID") or 0)
+    rate_limit = int(tallies.get("RATE_LIMIT") or 0)
+    overmask = int(clock.get(OVERMASK_STAR_KEY) or 0)
     answered_ok = tallies["OK"] + tallies["LAYER"]
     precision = 100.0 if answered_ok + wrong == 0 else (
         100.0 * answered_ok / (answered_ok + wrong)
@@ -2072,8 +2262,10 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"precision-on-answered {precision:.2f} pct  "
         f"coverage {tallies['OK']}/{n}  "
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}  "
-        f"INVALID {invalid_n}  n {n}  n_without_invalid {n - invalid_n}"
+        f"INVALID {invalid_n}  RATE_LIMIT {rate_limit}  "
+        f"n {n}  n_without_invalid {n - invalid_n}"
     )
+    print(f"{OVERMASK_STAR_KEY} {overmask}")
     as_of = clock.get("oracle_as_of")
     after = clock.get("oracle_as_of_after")
     oracle_tz = clock.get("oracle_timezone")
@@ -2096,16 +2288,20 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "answered": tallies["OK"] + tallies["LAYER"],
                 "wrong": wrong,
                 "oracle_error": oracle_error,
-                "total": n,
-                "abstained": tallies["ABSTAIN"],
                 "invalid": invalid_n,
+                "rate_limit": rate_limit,
+                "layer": tallies["LAYER"],
+                OVERMASK_STAR_KEY: overmask,
+                "total": n,
                 "n": n,
                 "n_without_invalid": n - invalid_n,
+                "abstained": tallies["ABSTAIN"],
                 "reason": clock.get("reason"),
                 "passed": (
                     wrong == 0
                     and oracle_error == 0
                     and invalid_n == 0
+                    and rate_limit == 0
                     and not invalid
                 ),
                 "cases": cases,
@@ -2125,14 +2321,26 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     inv = _invalid_round_exit(clock.get("round_label"))
     if inv is not None:
         return inv
-    inv_case = _invalid_case_exit(tallies)
-    if inv_case is not None:
-        return inv_case
+    engine_bad = any(
+        row.get("verdict") == "INVALID"
+        and str(row.get("reason") or "").startswith("engine_")
+        for row in cases
+    )
+    if engine_bad:
+        inv_case = _invalid_case_exit(tallies)
+        if inv_case is not None:
+            return inv_case
+    if invalid_n:
+        print(f"FAIL: INVALID={invalid_n} (masked compared column). Not WRONG.")
+        return EXIT_FAIL
     if oracle_error:
         print("FAIL: ORACLE_ERROR>0 (oracle SQL did not run). Not OK, not skipped.")
         return EXIT_FAIL
+    if rate_limit:
+        print(f"FAIL: RATE_LIMIT={rate_limit}. Not WRONG.")
+        return EXIT_FAIL
     if wrong:
-        print("FAIL: confidently wrong or transport error")
+        print("FAIL: confidently wrong")
         return EXIT_FAIL
     print("PASS: 0 WRONG")
     return EXIT_PASS
@@ -2166,6 +2374,7 @@ def _tally() -> dict[str, int]:
         "WRONG": 0,
         "ORACLE_ERROR": 0,
         "INVALID": 0,
+        "RATE_LIMIT": 0,
     }
 
 

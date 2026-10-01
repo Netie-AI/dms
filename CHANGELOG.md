@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: masked compare is INVALID, ask failure is not WRONG (#299)
+
+- **Ticket.** Follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Epic ruling `issuecomment-5930136078`. Does not close the issue. Does not stamp COMPLETE.
+- **Change.** `score_pack_live` judges served rows. A `DMSMASK_` token in a column the oracle compares is `INVALID` `masked_compare:<col>`, kept in n, never CORRECT or WRONG. `overmask_star:dms#284` counts those INVALID answers whose SQL uses `*` or `UNION` and a masked typed date. It is a count, not an outcome. No envelope: HTTP 429 is `RATE_LIMIT`; any other ask failure is `ABSTAIN(ask_error:<type>)`. The scorer does not ask for unmasked rows. Rebased onto ENGINE-DATE-01 `a63988b2`: a missing engine date is still round INVALID n=0; a case date or timezone mismatch stays INVALID in n.
+- **Gate.** `tests/test_score_mask_01.py` calls `live()` with mocked HTTP. Those gate tests fail on `a63988b2`. `--ab` stays exact 0/16/36/0/0 and generative 0/26/11/15/0 (OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR), INVALID 0, n 52.
+- **Not this ticket:** `pii.py`, envelope masking, oracles, gold labels, `tests/test_pii_*`, `tests/invariants/`, `.importlinter`.
+
 ## 2026-10-01 - ENGINE-DATE-01: one INVALID test per A/B lane (#308)
 
 - **Ticket.** Same draft [PR #321](https://github.com/Netie-AI/dms/pull/321). Stays a draft. No 52-pack drift.
