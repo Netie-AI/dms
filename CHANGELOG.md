@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: pin match requires provider and model
+
+- **Gate.** A vault 200 is the pin only when `served_provider` and `served_model` both match. A different or missing provider, from the body or `X-OpenVault-Served-*`, is INVALID `pin_mismatch:<provider>/<model>`, kept in n. Both sides are stored on the case record. Preflight uses the same check. OpenVault #81 `0d0ef3f0`.
+- **Tests.** `nvidia_nim` serving `openai/gpt-oss-120b` under the groq pin is INVALID. A missing provider is INVALID. On `4d61a83c` the nvidia case is WRONG, so the INVALID assertion fails there.
+
 ## 2026-10-01 - dms#317 Part A: a matched pin can score CORRECT
 
 - **Gate.** A `live()` case whose body and `X-OpenVault-Served-*` both name `openai/gpt-oss-120b`, and whose row matches the oracle, is CORRECT (verdict `OK`) with no `pin_*` reason. `baseline_eligible` is true when `DMS_CASE_RECORD_DIR` is an absolute path outside the repo. A whole round with that pin on every case keeps the parent CORRECT count, with no extra ABSTAIN or INVALID. These two checks pass on the head. They do not have to fail on `22deaa35`.

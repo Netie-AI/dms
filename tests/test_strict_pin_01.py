@@ -552,6 +552,109 @@ def test_live_missing_served_model_is_invalid(
     assert report["wrong"] == n_pack - 1
 
 
+def _nim(where: str) -> dict[str, Any]:
+    """nvidia_nim serving the pin model. Provider is not groq."""
+    body: dict[str, Any] = {"choices": [{"message": {"content": "ok"}}]}
+    headers: dict[str, str] = {}
+    if where in ("body", "both"):
+        body["served_provider"] = "nvidia_nim"
+        body["served_model"] = _PIN
+    if where in ("header", "both"):
+        headers["X-OpenVault-Served-Provider"] = "nvidia_nim"
+        headers["X-OpenVault-Served-Model"] = _PIN
+    return {"status": 200, "headers": headers, "body": body}
+
+
+@pytest.mark.parametrize("where", ("body", "header", "both"))
+def test_live_nvidia_nim_same_model_is_invalid(
+    where: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same model from nvidia_nim is not the groq pin. Stays in n."""
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    bad = _nim(where)
+    shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    row = report["cases"][0]
+    assert row["verdict"] == "INVALID" and row["reason"] == (
+        f"pin_mismatch:nvidia_nim/{_PIN}"
+    )
+    assert report["n"] == n_pack
+    assert report["invalid"] == 1
+    body_provider = "nvidia_nim" if where in ("body", "both") else None
+    header_provider = "nvidia_nim" if where in ("header", "both") else None
+    body_model = _PIN if where in ("body", "both") else None
+    header_model = _PIN if where in ("header", "both") else None
+    assert row["served_provider_body"] == body_provider
+    assert row["served_model_body"] == body_model
+    assert row["served_provider_header"] == header_provider
+    assert row["served_model_header"] == header_model
+    rec = _record_line(report, "cq_spend_by_country")
+    assert rec["outcome"] == "INVALID"
+    assert rec["served_provider"] == "unknown"
+    assert rec["served_model"] == "unknown"
+    assert rec["served_provider_body"] == body_provider
+    assert rec["served_model_body"] == body_model
+    assert rec["served_provider_header"] == header_provider
+    assert rec["served_model_header"] == header_model
+
+
+def test_live_missing_served_provider_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Model present, provider absent from body and headers. INVALID."""
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    bad = {
+        "status": 200,
+        "headers": {"X-OpenVault-Served-Model": _PIN},
+        "body": {
+            "served_model": _PIN,
+            "choices": [{"message": {"content": "ok"}}],
+        },
+    }
+    shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    row = report["cases"][0]
+    assert row["verdict"] == "INVALID" and row["reason"] == f"pin_mismatch:missing/{_PIN}"
+    assert report["n"] == n_pack
+    assert report["invalid"] == 1
+    assert row["served_provider_body"] is None
+    assert row["served_model_body"] == _PIN
+    assert row["served_provider_header"] is None
+    assert row["served_model_header"] == _PIN
+    rec = _record_line(report, "cq_spend_by_country")
+    assert rec["served_provider_body"] is None
+    assert rec["served_model_body"] == _PIN
+    assert rec["served_provider_header"] is None
+    assert rec["served_model_header"] == _PIN
+
+
+def test_live_preflight_other_provider_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preflight rejects nvidia_nim even when the model id is the pin."""
+    db = _oracle_db(tmp_path)
+    asks, script = _arm(monkeypatch, tmp_path, repeat=_nim("both"))
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["reason"] == f"pin_mismatch:nvidia_nim/{_PIN}"
+    assert report["round_label"] == "INVALID"
+    assert report.get("n_planned") == 52 and report["n"] == 0
+    assert asks == []
+    assert len(script.calls) == 1
+    assert report["cases"] == []
+
+
 def test_live_header_mismatch_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

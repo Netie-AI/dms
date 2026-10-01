@@ -187,8 +187,10 @@ def interpret(
 ) -> PinShot:
     """Classify one OpenVault chat response. Does not map 503 onto RATE_LIMIT.
 
-    One side present: that side is the served model. Both present and equal:
+    One side present: that side is the served id. Both present and equal:
     that value. Both present and different: INVALID, and neither value is chosen.
+    A 200 is ok only when served provider and served model both match the pin.
+    A different or missing provider is INVALID ``pin_mismatch``.
     """
     pin = cfg or pin_config()
     payload = body if isinstance(body, Mapping) else {}
@@ -216,7 +218,12 @@ def interpret(
         )
     served_model = body_model or header_model
     served_provider = body_provider or header_provider
-    if status == 200 and served_model == pin.model:
+    # Provider is required. Same model id from another hop is not the pin.
+    if (
+        status == 200
+        and served_provider == pin.provider
+        and served_model == pin.model
+    ):
         return PinShot(
             kind="ok",
             served_provider=served_provider,
