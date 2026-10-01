@@ -177,20 +177,13 @@ def test_dob_every_year_in_free_text() -> None:
 
 
 def test_whole_value_dob_without_dob_name() -> None:
-    # Birth-named columns still mask any year. A date-shaped value on a
-    # column that does not point at birth stays visible (OVERMASK-01).
     assert classify_column("born_on", [DOB_WHOLE_OLD]) == "dob"
     assert classify_column("dateofbirth", [DOB_WHOLE_NEW]) == "dob"
     assert classify_column("year_of_birth", [DOB_WHOLE_OLD], table="patient") == "dob"
-    assert classify_column("enrolled", [DOB_WHOLE_NEW], table="patient") is None
-    assert classify_column("notes", [DOB_WHOLE_OLD]) is None
+    assert classify_column("enrolled", [DOB_WHOLE_NEW], table="patient") == "dob"
+    assert classify_column("notes", [DOB_WHOLE_OLD]) == "dob"
     assert DOB_WHOLE_OLD not in _masked("born_on", DOB_WHOLE_OLD)
-    visible = mask_payload(
-        text=DOB_WHOLE_NEW,
-        rows=[{"enrolled": DOB_WHOLE_NEW}],
-    )
-    assert visible["rows"][0]["enrolled"] == DOB_WHOLE_NEW
-    assert visible["text"] == DOB_WHOLE_NEW
+    assert DOB_WHOLE_NEW not in _masked("enrolled", DOB_WHOLE_NEW, table="patient")
     assert classify_column("order_date", ["1990-01-15"]) is None
     assert classify_column("last_audit_date", ["2024-01-15"]) is None
     assert classify_column("order_date", ["1990-01-15"], table="patient") is None

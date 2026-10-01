@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - OVERMASK-01: gating, free-text dates stay masked (#318)
+
+- **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) Gating ruling on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.
+- **Change.** A whole-value date in a free-text cell stays masked with no cue. A person or birth table does the same when the column is not a typed date (`enrolled` on `patient`). Typed date and timestamp columns, and answer prose, still need a birth cue. `sql_currency.py` keeps sqlglot: it is the only importer, the envelope loads `served_column_sources` lazily, and a parse failure, UNION, or `SELECT *` leaves the column untraced so it stays masked. `tests/test_pii_mask_02.py` matches `ca34419d`.
+- **Gate.** Checker re-run: 258 PASS / 27 FAIL / 285. Untraced-default: 0. Parent `cdd3ae2a` 169 PASS stay PASS.
+- **Not this ticket:** Presidio; dms#304 deny file; COMPLETE; merge.
+
 ## 2026-10-01 - OVERMASK-01: passport split by lineage source (#318)
 
 - **Ticket.** [PII-MASK-02 #318](https://github.com/Netie-AI/dms/issues/318) correction on PR #322. Does not stamp COMPLETE. Does not merge. Does not close the issue.

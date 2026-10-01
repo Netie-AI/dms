@@ -5,10 +5,13 @@ names, Malaysian IC numbers, phones (MY mobile / landline / NANP / intl),
 emails, account/card numbers, passports, street addresses, and dates of birth.
 Value checks search inside free text as well as whole values (dms#303, dms#318).
 WIDEN-ONLY vs dms#272 and dms#303: nothing previously caught is dropped.
-OVERMASK-01 narrows the date widen: a date needs a birth cue. A passport-shaped
-value in a data cell stays masked without a cue, unless lineage proves every
-source column is a non-PII code (sku, code, ref, order_id). Answer prose still
-needs a passport cue. An untraceable column gets no code exemption. Name signals stay.
+OVERMASK-01: a whole-value date on a typed date or timestamp column, and a
+date in answer prose, need a birth cue. A whole-value date in a free-text cell
+stays masked with no cue. A person or birth table does the same when the
+column is not a typed date. A passport-shaped value in a data cell stays
+masked without a cue, unless lineage proves every source column is a non-PII
+code (sku, code, ref, order_id). Answer prose still needs a passport cue.
+An untraceable column gets no exemption. Name signals stay.
 
 Swap: Cortex HTTP PII-MASK (#268) or a vendor DLP call behind these functions.
 Not a sixth port: this is a local classifier, same class as xlsx_ooxml.
@@ -85,6 +88,12 @@ _TIME_TAIL = re.compile(
     r"[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$"
 )
 _FREE_TEXT_COL = re.compile(r"(?i)(?:text|body|comment|about_?me|title|notes|note)$")
+# Typed date and timestamp columns are the over-mask fix. Birth names are
+# _DOB_COL and are not in this set. Free-text cells are not in this set.
+_TYPED_DATE_COL = re.compile(
+    r"(?i)(?:^|_)(?:ts|timestamps?|datetimes?|expiry|expires|as_of|months?|quarters?|weeks?)$"
+    r"|(?:_at|_date|_time|_ts|_due)$"
+)
 _ADDRESS_COL = re.compile(
     r"(?i)(?:^|_)(?:street|streets|mailstreet|mail_street|streetabr|street_abr|"
     r"mailstrabr|mail_str_abr|address|addresses|addr)$"
@@ -285,8 +294,33 @@ def untraced_date_column_count() -> int:
 
 
 def _table_points_to_birth(table: str | None) -> bool:
-    bare = str(table or "").replace('"', "").split(".")[-1]
-    return bool(bare and _DOB_COL.search(bare))
+    bare = str(table or "").replace('"', "").replace("`", "").split(".")[-1]
+    if not bare:
+        return False
+    return _DOB_COL.search(bare) is not None or _PERSON_TABLE.search(bare) is not None
+
+
+def _typed_date_column(column: str) -> bool:
+    """True for ts / created_at / order_date. False for birth names and notes."""
+    col = str(column or "").strip()
+    if not col or _DOB_COL.search(col):
+        return False
+    return _TYPED_DATE_COL.search(col) is not None
+
+
+def _whole_date_is_dob(column: str, table: str | None) -> bool:
+    """Whole-value date with no SQL lineage.
+
+    Free-text cells stay masked. A person or birth table stays masked when
+    the column is not a typed date. Typed date and timestamp columns stay
+    visible. Any other column stays masked: it is not the over-mask fix.
+    """
+    col = str(column or "").strip()
+    if _FREE_TEXT_COL.fullmatch(col):
+        return True
+    if _table_points_to_birth(table) and not _typed_date_column(col):
+        return True
+    return not _typed_date_column(col)
 
 
 def _source_is_birth(source: str) -> bool:
@@ -350,6 +384,25 @@ def _proven_code_column(
     if not sources:
         return False
     return all(_source_is_code(src) for src in sources)
+
+
+def _traced_date_stays_visible(
+    column: str,
+    column_sources: Mapping[str, frozenset[str]],
+) -> bool:
+    """True when every source column is a typed date, not free text.
+
+    A person table does not override that. A free-text or other source does
+    not become visible just because the served alias looks like order_date.
+    """
+    sources = _lookup_sources(column, column_sources)
+    if not sources:
+        return False
+    for src in sources:
+        col = _leaf_column(src)
+        if _FREE_TEXT_COL.fullmatch(col) or not _typed_date_column(col):
+            return False
+    return True
 
 
 def _code_source_skips_passport(
@@ -510,9 +563,9 @@ def classify_column(
         return valued
     if _free_text_has_name(col, values):
         return "name"
-    # A whole-value date is DOB only when the table name points at birth.
-    # The column-name cue is _DOB_COL above. Shape alone is not a cue.
-    if _values_look_like_dob(values) and _table_points_to_birth(table):
+    # Shape alone is not a cue on a typed date or timestamp column.
+    # Free-text cells and a person/birth table still mask a whole-value date.
+    if _values_look_like_dob(values) and _whole_date_is_dob(col, table):
         return "dob"
     return None
 
@@ -625,8 +678,8 @@ def _column_kinds(
                 elif status == "untraced":
                     kind = "dob"
                     masker.note_untraced(col)
-                else:
-                    # Lineage proved the source is not a birth column.
+                elif _traced_date_stays_visible(key, column_sources):
+                    # Typed date source: drop a name-only DOB on the alias.
                     named = _kind_from_name(table, col)
                     if named and named != "dob":
                         kind = named
@@ -634,6 +687,8 @@ def _column_kinds(
                         valued = _kind_from_values(sample)
                         if valued and valued != "dob":
                             kind = valued
+                else:
+                    kind = "dob"
             else:
                 kind = classify_column(col, sample, table=table)
         except Exception:
@@ -663,7 +718,11 @@ def _should_mask_cell(
                 masker.note_untraced(column)
             return "dob"
         if status == "clear":
-            return None
+            # Typed date source stays visible. Free-text, a non-date column,
+            # and a person-table column that is not a typed date stay masked.
+            if _traced_date_stays_visible(column, column_sources):
+                return None
+            return "dob"
     kind = kinds.get(column)
     if kind == "passport" and _code_source_skips_passport(column, value, column_sources):
         kind = None

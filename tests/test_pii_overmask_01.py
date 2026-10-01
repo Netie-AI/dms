@@ -258,6 +258,38 @@ def test_numbers_timestamps_and_codes_stay_unchanged() -> None:
     assert "DMSMASK_" not in got["text"]
 
 
+def test_table_birth_cue_and_free_text_dates_stay_masked() -> None:
+    """classify_column and fail_closed_mask_payload.
+
+    patient is a table birth cue, so enrolled stays masked. notes is free
+    text, so a whole-value date stays masked with no cue. order_date is a
+    typed date column, so the same table leaves it visible.
+    """
+    assert classify_column("enrolled", ["2020-05-05"], table="patient") == "dob"
+    assert classify_column("notes", ["1888-12-31"]) == "dob"
+    assert classify_column("order_date", ["1990-01-15"], table="patient") is None
+    enrolled = _served(
+        text="Listed.",
+        rows=[{"enrolled": "2020-05-05"}],
+        sql_used="SELECT enrolled FROM patients",
+    )
+    assert is_mask_token(enrolled["rows"][0]["enrolled"])
+    assert "2020-05-05" not in str(enrolled["rows"])
+    notes = _served(
+        text="Listed.",
+        rows=[{"notes": "1888-12-31"}],
+        sql_used="SELECT notes FROM comments",
+    )
+    assert is_mask_token(notes["rows"][0]["notes"])
+    assert "1888-12-31" not in str(notes["rows"])
+    order_date = _served(
+        text="Listed.",
+        rows=[{"order_date": "1990-01-15"}],
+        sql_used="SELECT order_date FROM patients",
+    )
+    assert order_date["rows"][0]["order_date"] == "1990-01-15"
+
+
 def test_notes_passport_shape_stays_masked() -> None:
     """LOCK. Already masked on ca34419d. Free-text cell, no cue required."""
     env = _served(
