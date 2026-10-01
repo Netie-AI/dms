@@ -39,6 +39,7 @@ from dms_executor.db_connector import (
     SourceConnectionError,
     UnknownSourceTable,
     ingest_source_database,
+    list_source_keys,
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
@@ -62,6 +63,7 @@ from dms_executor.demo_warehouse import (
     WarehouseBusy,
     ensure_demo_warehouse,
     execute_sql,
+    warehouse_path,
 )
 from dms_executor.envelope import (
     assert_envelope_valid,
@@ -78,6 +80,7 @@ from dms_executor.generative_ask import (
     is_empty_generation,
     maybe_generative_ask,
     path_miss_envelope,
+    untyped_numeric_reason,
 )
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -108,6 +111,20 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_ontology import (
+    REASON_STORE_UNAVAILABLE,
+    bronze_catalog,
+    check_sql_against_space,
+    derive_and_store,
+    load_space_ontology,
+    ontology_store,
+    set_ontology_store,
+    source_identity,
+    space_ontology_views,
+    stored_catalogs,
+    stored_catalogs_by_source,
+)
+from dms_executor.sql_grain import relation_name_parts
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -124,6 +141,7 @@ from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
+    serving_sync_state,
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
@@ -301,7 +319,19 @@ class Executor:
             session_id="_grantable_probe",
             pool_id="default",
         )
-        return sorted(resolve_session_acl(ctx).row_predicates)
+        granted = sorted(resolve_session_acl(ctx).row_predicates)
+        # F-c: one granted name that breaks the SHARED NAMING RULE (a legacy
+        # ``bronze.2024_sales``) made ``cortex_row_predicates`` refuse the whole
+        # Space's manifest, so every ask abstained ``submit_failed``. Such a table
+        # is not grantable (new ingests never create one); it is named, not hidden.
+        bad = [t for t in granted if relation_name_parts(t) is None]
+        if bad:
+            logger.warning(
+                "space %s: not granting %s (name breaks the naming rule; re-ingest to rename)",
+                space_id,
+                ", ".join(bad),
+            )
+        return [t for t in granted if t not in bad]
 
     def demo_acl(
         self,
@@ -670,6 +700,25 @@ class Executor:
             insights_seen.append(got)
             return got
 
+        space_onto = None
+        if allow_gen and not demo_space:
+            # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
+            # one and never another Space's. A store that cannot be read is a
+            # named ABSTAIN: answering without the join rules it holds would
+            # be a silent downgrade.
+            try:
+                space_onto = load_space_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology store unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the Space ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -693,6 +742,7 @@ class Executor:
                 ),
                 bind_on_miss=False,
                 demo_ontology_allowed=demo_space,
+                ontology=space_onto,
             )
             if gen_env is not None:
                 env = attach_cascade(gen_env, cascade)
@@ -735,6 +785,28 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        sql_used = str(getattr(resp, "sql_used", None) or "")
+        if sql_used and not demo_space and not getattr(resp, "abstained", False):
+            # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
+            num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
+            if num_why:
+                env = path_miss_envelope(
+                    question, num_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+        if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
+            # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
+            # Its SQL answers only if it passes the same rule generation does.
+            join_why = check_sql_against_space(
+                sql_used, space_onto, self._warehouse or warehouse_path(), readable
+            )
+            if join_why:
+                env = path_miss_envelope(
+                    question, join_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1058,6 +1130,18 @@ __all__ = [
     "ingest_csv_bytes",
     "ingest_source_database",
     "verify_source_links",
+    "bronze_catalog",
+    "derive_and_store",
+    "load_space_ontology",
+    "ontology_store",
+    "set_ontology_store",
+    "source_identity",
+    "space_ontology_views",
+    "stored_catalogs",
+    "stored_catalogs_by_source",
+    "list_source_keys",
+    "warehouse_path",
+    "serving_sync_state",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

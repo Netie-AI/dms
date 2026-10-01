@@ -7,7 +7,7 @@ so rather than letting the UI imply a Space survived a redeploy that it did not.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from fastapi import APIRouter, HTTPException
@@ -15,7 +15,11 @@ from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep, SpaceStoreDep, StoreBindingDep
 from dms_api.gatekeeping import enforce
-from dms_api.wiring import space_source_pull_counts
+from dms_api.wiring import (
+    space_ontology,
+    space_ontology_rederive,
+    space_source_pull_counts,
+)
 
 router = APIRouter(prefix="/v1/spaces", tags=["spaces"])
 
@@ -151,3 +155,53 @@ def space_sources(space_id: str, store: SpaceStoreDep, settings: SettingsDep) ->
     if degraded:
         out["degraded"] = degraded
     return out
+
+
+# --- ONTO-DERIVE-01 (dms#277): the Space's own ontology, shown honestly --------
+
+
+class OntologySourceIn(BaseModel):
+    """A source connection for a keys-only catalog read. Never stored, never echoed."""
+
+    kind: Literal["sqlserver", "mysql", "postgresql"]
+    host: str
+    database: str
+    user: str
+    password: str = Field(default="", max_length=256)
+    port: int | None = None
+    encrypt: bool = True
+    trust_server_certificate: bool = False
+
+
+class OntologyDeriveIn(BaseModel):
+    source: OntologySourceIn | None = None
+
+
+@router.get("/{space_id}/ontology")
+def get_space_ontology(space_id: str, store: SpaceStoreDep) -> dict[str, Any]:
+    """Objects and links with verified/unverified status and the violation that failed."""
+    if store.get(space_id) is None:
+        raise HTTPException(status_code=404, detail="space not found")
+    return space_ontology(space_id)
+
+
+@router.post("/{space_id}/ontology/derive")
+def derive_space_ontology(
+    space_id: str,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    settings: SettingsDep,
+    body: OntologyDeriveIn | None = None,
+) -> dict[str, Any]:
+    """Re-derive and re-verify an existing Space's ontology. Reads keys, never rows."""
+    if store.get(space_id) is None:
+        raise HTTPException(status_code=404, detail="space not found")
+    decision = compliance_gate(
+        action="spaces.ontology.derive",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "spaces.ontology.derive", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision)
+    source = body.source.model_dump() if body is not None and body.source is not None else None
+    return space_ontology_rederive(space_id, source=source)

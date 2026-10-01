@@ -20,12 +20,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from dms_executor.bronze import (
     claim_source_table_name,
+    ident_safe,
     mint_extracted_at,
     record_source_pull,
     write_typed_bronze_rows,
@@ -526,7 +527,23 @@ def preview_source_table(
 
 def _bronze_name(target: SourceTable) -> str:
     stem = "".join(c if c.isalnum() else "_" for c in target.qualified)
-    return stem.strip("_").lower()[:60] or "source_table"
+    return ident_safe(stem.strip("_").lower()[:60] or "source_table")
+
+
+def _distinct_types(types: list[ColumnType]) -> tuple[list[ColumnType], dict[str, str]]:
+    """Column names unique case-insensitively; ``{original: landed}`` for the renamed."""
+    seen: set[str] = set()
+    out: list[ColumnType] = []
+    renamed: dict[str, str] = {}
+    for t in types:
+        name, n = t.name, 2
+        while name.lower() in seen:
+            name, n = f"{t.name}_{n}", n + 1
+        seen.add(name.lower())
+        out.append(t if name == t.name else replace(t, name=name))
+        if name != t.name:
+            renamed[t.name] = name
+    return out, renamed
 
 
 def _pull_one(
@@ -538,6 +555,7 @@ def _pull_one(
     path: Path | None,
     space_id: str | None,
     bronze_table: str | None = None,
+    claimed: tuple[str, str | None] | None = None,
 ) -> SourcePull:
     """Land one table in bronze with both halves of its provenance.
 
@@ -566,9 +584,17 @@ def _pull_one(
     note: str | None = None
     name = bronze_table
     if name is None:
-        name, note = claim_source_table_name(
-            stem=_bronze_name(target), source=source, path=path
+        name, note = claimed or claim_source_table_name(
+            stem=_bronze_name(target), source=source, path=path, space_id=space_id
         )
+    types, renamed = _distinct_types(types)
+    columns = [t.name for t in types]
+    if renamed:
+        # DuckDB column names are case-insensitive: ``Name`` and ``name`` in one
+        # source table were a CatalogException and a 500. The duplicate lands
+        # under a suffixed name and the receipt says which.
+        rename_note = "; ".join(f"column {a!r} landed as {b!r}" for a, b in renamed.items())
+        note = f"{note}; {rename_note}" if note else rename_note
     typed = write_typed_bronze_rows(
         table=name,
         column_types=types,
@@ -589,6 +615,7 @@ def _pull_one(
         extracted_at=extracted_at,
         source_row_count=source_row_count,
         type_notes=typed.type_notes,
+        untyped_numeric=typed.untyped_numeric,
     )
     return SourcePull(
         bronze_table=landed,
@@ -668,9 +695,29 @@ def ingest_source_database(
                 else:
                     skipped.append(req)
         keys = list_source_keys(cfg, con=con)
+        # Claim every bronze name before writing any rows: a claim refused for the
+        # third table used to leave the first two landed and granted with no
+        # receipt (adversary round 4).
+        claims: list[tuple[str, str | None]] = []
+        reserved: dict[str, tuple[Any, Any]] = {}
+        for t in wanted:
+            source = f"{cfg.describe()}#{t.qualified}"
+            claim = claim_source_table_name(
+                stem=_bronze_name(t),
+                source=source,
+                path=path,
+                space_id=space_id,
+                reserved=reserved,
+            )
+            # Nothing is registered until rows land, so two tables in this pull
+            # that sanitise alike (dbo.a-b, dbo.a_b) must see each other's claim.
+            reserved[claim[0]] = (source, space_id)
+            claims.append(claim)
         pulls = [
-            _pull_one(cfg, con, t, max_rows=max_rows, path=path, space_id=space_id)
-            for t in wanted
+            _pull_one(
+                cfg, con, t, max_rows=max_rows, path=path, space_id=space_id, claimed=claim
+            )
+            for t, claim in zip(wanted, claims, strict=True)
         ]
     source = cfg.describe()
     return SourceExtract(

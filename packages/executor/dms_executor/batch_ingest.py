@@ -16,7 +16,7 @@ from dms_executor.bronze import bronze_table_for_sheet, ingest_csv_bytes
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
 from dms_executor.document_chunks import index_unstructured_upload
 from dms_executor.triage import classify_bytes, parse_csv_grid
-from dms_executor.warehouse_identity import maybe_sync_bronze_to_serving
+from dms_executor.warehouse_identity import maybe_sync_bronze_to_serving, sync_receipt_state
 
 logger = logging.getLogger(__name__)
 
@@ -249,28 +249,7 @@ def ingest_batch(
     sync_state = "not_attempted"
     sync_detail = ""
     if ingested_count:
-        synced = maybe_sync_bronze_to_serving(db_path)
-        if synced is None:
-            # No serving warehouse named, sync disabled, or under pytest. Nothing
-            # was copied and nothing was verified - which is a third answer, not
-            # a quiet success.
-            sync_state, sync_detail = "not_attempted", "no serving warehouse configured"
-        elif synced.ok:
-            sync_state = "not_needed" if synced.status == "same_file" else "ok"
-            sync_detail = synced.status
-        else:
-            sync_state = "failed"
-            sync_detail = (
-                synced.error
-                or f"{synced.status}: {synced.serving} was not updated"
-            )[:300]
-            logger.warning(
-                "bronze landed in %s but chat serving %s was not updated (%s): %s",
-                synced.ingest,
-                synced.serving,
-                synced.status,
-                synced.error or "run python scripts/sync_bronze_to_serving.py",
-            )
+        sync_state, sync_detail = sync_receipt_state(maybe_sync_bronze_to_serving(db_path))
 
     return TriageReceipt(
         files_seen=len(files),

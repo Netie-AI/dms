@@ -48,6 +48,10 @@ class ColumnType:
     duck_type: str
     #: Set when the type is unknown to the mapping, so VARCHAR is a fallback, not a choice.
     note: str | None = None
+    #: The source calls this column a number even where it lands text (``money``). A
+    #: numeric column that lands VARCHAR is recorded, and SQL that reads it is refused:
+    #: text orders ``'9.50'`` above ``'100.25'`` (dms#277).
+    numeric_like: bool = False
 
 
 def _varchar(name: str, source_type: str, *, known_text: bool) -> ColumnType:
@@ -90,12 +94,35 @@ _PG_TEXT: dict[int, str] = {
     19: "name",
 }
 _PG_NUMERIC = 1700
+_PG_TIMESTAMPTZ = 1184
+_PG_MONEY = 790
 
 
 def _map_postgres(name: str, desc: Sequence[Any]) -> ColumnType:
     oid = desc[1] if len(desc) > 1 else None
     if not isinstance(oid, int):
         return _varchar(name, "unreported", known_text=False)
+    if oid == _PG_TIMESTAMPTZ:
+        # DuckDB reads a TIMESTAMPTZ in the server's zone, so a source 05:00+08:00 on
+        # 2024-01-01 counts on 2023-12-31 and a day bucket moves. The text keeps the
+        # source session's own clock, the date its own SQL would have used.
+        return ColumnType(
+            name,
+            "timestamptz",
+            "VARCHAR",
+            note=(
+                "timestamptz kept as source text: a zoned timestamp read in the "
+                "server's zone moves day boundaries"
+            ),
+        )
+    if oid == _PG_MONEY:
+        return ColumnType(
+            name,
+            "money",
+            "VARCHAR",
+            note="money has no exact DuckDB type (currency text)",
+            numeric_like=True,
+        )
     if oid in _PG_SIMPLE:
         src, duck = _PG_SIMPLE[oid]
         return ColumnType(name, src, duck)
@@ -335,6 +362,15 @@ class PreparedColumn:
     duck_type: str
     values: list[str | None]
     note: str | None = None
+    numeric_like: bool = False
+
+
+def _is_numeric_type(duck_type: str) -> bool:
+    return (
+        duck_type in _INT_RANGES
+        or duck_type in ("DOUBLE", "REAL")
+        or duck_type.startswith("DECIMAL")
+    )
 
 
 def _serialise(duck_type: str, values: list[Any]) -> tuple[str, list[str | None]]:
@@ -401,6 +437,7 @@ def prepare_columns(
                 duck_type=duck_type,
                 values=text,
                 note=note,
+                numeric_like=ct.numeric_like or _is_numeric_type(ct.duck_type),
             )
         )
     return out
