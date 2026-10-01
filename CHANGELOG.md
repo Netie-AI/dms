@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: provider ids add google and openrouter
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 131 is `id="openrouter",` and line 188 is `id="google",`. Same fixed list as groq and nvidia. Compared with `==`. No case fold.
+- **Gate.** A body pin of `google` / `gemini-3.5-flash`, and of `openrouter` / `gemma-4-31b-it:free`, with no headers, scores CORRECT with no `pin_*` reason. No other provider id was added.
+
 ## 2026-10-01 - dms#317 Part A: provider ids are groq and nvidia
 
 - **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 160 is `id="groq",` and line 247 is `id="nvidia",`. Compared with `==` against that fixed list. No case fold. A 200 from that commit puts `served_provider` and `served_model` in the JSON body. It does not send `X-OpenVault-Served-*` headers. A missing header is not `pin_mismatch`.

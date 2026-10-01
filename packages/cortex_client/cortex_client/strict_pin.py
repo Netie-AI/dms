@@ -30,10 +30,12 @@ DEFAULT_STRICT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_STRICT_PROVIDER = "groq"
 # Exact ids from OpenVault #81 0d0ef3f0
 # OpenMW/openmw/openvault/vault/providers.py
+#   131: id="openrouter",
 #   160: id="groq",
+#   188: id="google",
 #   247: id="nvidia",
 # Compared with ==. No case fold and no rewrite.
-PROVIDER_IDS = frozenset({"groq", "nvidia"})
+PROVIDER_IDS = frozenset({"groq", "nvidia", "google", "openrouter"})
 PIN_UNAVAILABLE = "pin_unavailable"
 # OpenVault #81. quota_exhausted stays here. It is not a 429.
 PIN_VAULT_REASONS = frozenset(

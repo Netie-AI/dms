@@ -1055,6 +1055,55 @@ def test_live_body_and_header_pin_match_oracle_is_correct(
         _wipe_records(outside)
 
 
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    (
+        ("google", "gemini-3.5-flash"),
+        ("openrouter", "gemma-4-31b-it:free"),
+    ),
+    ids=("google", "openrouter"),
+)
+def test_live_fa01_pin_match_is_correct(
+    provider: str,
+    model: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Body served_provider and served_model equal this pin. No headers.
+
+    google is providers.py line 188. openrouter is line 131.
+    Exact ==. No case fold. The case is CORRECT with no pin_* reason.
+    """
+    outside = _outside_record_dir(monkeypatch)
+    try:
+        db = _oracle_db(tmp_path)
+        shot = _ok(model, provider, upstream="upstream-not-the-pin")
+        asks, script = _arm(
+            monkeypatch,
+            tmp_path,
+            model=model,
+            provider=provider,
+            repeat=shot,
+        )
+        _match_gold(monkeypatch)
+        live("http://score.test", 1.0, db)
+        report = _report(tmp_path)
+        row = report["cases"][0]
+        assert report["oracle_as_of"] == _ENGINE_DAY
+        assert shot["headers"] == {}
+        assert "X-OpenVault-Served-Model" not in shot["headers"]
+        assert "X-OpenVault-Served-Provider" not in shot["headers"]
+        assert shot["body"]["served_provider"] == provider
+        assert shot["body"]["served_model"] == model
+        assert script.calls[0]["json"]["model"] == model
+        assert row["id"] == "cq_spend_by_country" and row["verdict"] == "OK"
+        assert not str(row.get("reason") or "").startswith("pin_")
+        assert not str(report.get("reason") or "").startswith("pin_")
+        assert len(asks) == len(_questions())
+    finally:
+        _wipe_records(outside)
+
+
 def test_live_pin_matched_round_keeps_parent_correct_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
