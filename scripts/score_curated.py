@@ -2830,14 +2830,24 @@ _SERVING_FIXTURE_CACHE: dict[tuple[str, ...], dict[str, Any]] = {}
 _TABLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def pack_question_tables(pack_path: Path = DEFAULT_PACK) -> tuple[str, ...]:
-    """Tables the scored pack questions name in oracle SQL.
+def _sql_table_names(sql: str) -> set[str]:
+    found: set[str] = set()
+    for match in _SQL_TABLE_RE.finditer(sql):
+        name = match.group(1).lower()
+        if name not in _SQL_TABLE_SKIP:
+            found.add(name)
+    return found
 
-    Each merged pack question's oracle contributes FROM/JOIN identifiers.
-    ``expect: refuse`` oracles are not scored answers, so their SQL is not a
-    serving table (``alerts`` appears only on ``trap_alerts_ungranted``).
-    The curated 52 resolve to inventory, locations, shipments, suppliers,
-    and transactions. Not a silent list: the names come from the pack files.
+
+def parse_pack_serving(
+    pack_path: Path = DEFAULT_PACK,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """FROM/JOIN tables in correct oracle SQL, and ids whose SQL did not parse.
+
+    Correct SQL is the oracle ``sql`` on a merged pack question that is not
+    ``expect: refuse``. The table set is those identifiers. A blank statement
+    or one that names no table is unparsed, and the round is ineligible.
+    It does not pass. Refuse rows are not scored answers.
     """
     pack = load_pack(pack_path)
     ids = {
@@ -2845,19 +2855,28 @@ def pack_question_tables(pack_path: Path = DEFAULT_PACK) -> tuple[str, ...]:
         for row in merge_pack_questions(list(pack["questions"]))
     }
     found: set[str] = set()
+    unparsed: list[str] = []
     for qid, row in load_oracles().items():
         if str(qid) not in ids or not isinstance(row, dict):
             continue
         if str(row.get("expect") or "").strip().lower() == "refuse":
             continue
         sql = row.get("sql")
-        if not isinstance(sql, str):
+        if not isinstance(sql, str) or not sql.strip():
+            unparsed.append(str(qid))
             continue
-        for match in _SQL_TABLE_RE.finditer(sql):
-            name = match.group(1).lower()
-            if name not in _SQL_TABLE_SKIP:
-                found.add(name)
-    return tuple(sorted(found))
+        names = _sql_table_names(sql)
+        if not names:
+            unparsed.append(str(qid))
+            continue
+        found.update(names)
+    return tuple(sorted(found)), tuple(sorted(unparsed))
+
+
+def pack_question_tables(pack_path: Path = DEFAULT_PACK) -> tuple[str, ...]:
+    """Tables named by correct oracle SQL. The names come from the parse."""
+    tables, _unparsed = parse_pack_serving(pack_path)
+    return tables
 
 
 def serving_precheck_gap(record: Mapping[str, Any], tables: tuple[str, ...]) -> bool:
@@ -3012,7 +3031,8 @@ def baseline_eligibility(
     engine_clock_masked is added when a clock field was masked, including
     beside round_end_unread. serving_precheck_missing is a round record that
     lacks the serving path, inode, mtime, snapshot hash, or a positive row
-    count for a table the pack questions use.
+    count for a table the pack questions use, or whose correct SQL did not
+    parse to a table.
     """
     reasons: list[str] = []
     if path_block:
@@ -3127,9 +3147,11 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
             reason = "record_write_failed"
     abs_record = rec_path if rec_path.is_absolute() else rec_path.absolute()
     path_block = record_path_block()
-    serving_tables = pack_question_tables()
+    serving_tables, serving_unparsed = parse_pack_serving()
     serving = load_serving_precheck(serving_tables)
-    precheck_missing = serving_precheck_gap(serving, serving_tables)
+    precheck_missing = bool(serving_unparsed) or serving_precheck_gap(
+        serving, serving_tables
+    )
     eligible, ineligible = baseline_eligibility(
         path_block=path_block,
         write_failed=write_failed,

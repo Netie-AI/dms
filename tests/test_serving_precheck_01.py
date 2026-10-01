@@ -5,7 +5,8 @@ No OpenVault call, no real key, no scored network round.
 
 Must-fail cases are eligible on fee155e4 (the parent ignores DMS_SERVING_PRECHECK)
 and fail there on the tuple assert. A complete record over the tables the pack
-oracle SQL names stays eligible.
+oracle SQL names stays eligible. Those names are the parse result. Correct SQL
+that names no table is the same ineligible reason.
 """
 
 from __future__ import annotations
@@ -231,19 +232,58 @@ def test_no_snapshot_hash_is_not_baseline(
     assert not report.get("serving_snapshot_hash")
 
 
+def test_pack_named_table_missing_from_row_counts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Correct SQL names a table the round record's row counts do not list."""
+    tables = _pack_tables()
+    named = "suppliers"
+    assert named in tables and named != tables[0]
+    spend = load_oracles()["cq_spend_by_country"]["sql"]
+    assert named in _SQL_TABLE_RE.findall(str(spend).lower())
+    counts = {name: 3 for name in tables if name != named}
+    _open_round(monkeypatch, tmp_path)
+    _plant(monkeypatch, _complete_fields(tables, counts))
+    live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
+    report = _report(tmp_path)
+    _assert_ineligible("pack_names_unlisted_table", report)
+    assert named not in (report.get("serving_row_counts") or {})
+
+
+def test_unparsed_correct_sql_is_not_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Correct SQL with no FROM or JOIN table does not pass."""
+    tables = _pack_tables()
+    assert tables
+    base = load_oracles()
+    broken = {
+        qid: (dict(row) if isinstance(row, dict) else row) for qid, row in base.items()
+    }
+    sku = dict(broken["cq_sku_count"])
+    sku["sql"] = "SELECT 1"
+    broken["cq_sku_count"] = sku
+    monkeypatch.setattr(score_curated, "load_oracles", lambda: broken)
+    _open_round(monkeypatch, tmp_path)
+    _plant(monkeypatch, _complete_fields(tables, {name: 4 for name in tables}))
+    live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))
+    _assert_ineligible("unparsed_correct_sql", _report(tmp_path))
+
+
 def test_complete_fixture_tables_stay_eligible(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A complete record over the five fixture tables stays baseline-eligible."""
-    tables = _pack_tables()
-    assert tables == score_curated.pack_question_tables()
-    assert set(tables) == {
+    """Eligible only because the parse of correct SQL produced these tables."""
+    tables, unparsed = score_curated.parse_pack_serving()
+    assert unparsed == ()
+    assert tables == _pack_tables()
+    assert tables == (
         "inventory",
         "locations",
         "shipments",
         "suppliers",
         "transactions",
-    }
+    )
     _open_round(monkeypatch, tmp_path)
     _plant(monkeypatch, _complete_fields(tables, {name: 4 for name in tables}))
     live("http://127.0.0.1:9", 1.0, _oracle_db(tmp_path / "oracle.duckdb"))

@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SERVING-PRECHECK-01: unparsed correct SQL is not a baseline
+
+- **Ticket.** Same follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Scope amendment 5938769006.
+- **Change.** The serving table set is the FROM/JOIN parse of each scored question's correct oracle SQL. A blank statement or one that names no table makes the round ineligible with `serving_precheck_missing`. It does not pass.
+- **Gate.** `tests/test_serving_precheck_01.py` adds the unlisted-table and unparsed-SQL must-fail cases. On `fee155e4` each is eligible and fails on its own assert.
+
 ## 2026-10-01 - SERVING-PRECHECK-01: serving file precheck gates baseline eligibility
 
 - **Ticket.** Follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
