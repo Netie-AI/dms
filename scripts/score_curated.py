@@ -2910,10 +2910,7 @@ _SERVING_FIXTURE_CACHE: dict[tuple[str, ...], dict[str, Any]] = {}
 _TABLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def pack_question_tables(
-    pack_path: Path = DEFAULT_PACK,
-    oracle_path: Path = DEFAULT_ORACLES,
-) -> tuple[str, ...]:
+def pack_question_tables(pack_path: Path = DEFAULT_PACK) -> tuple[str, ...]:
     """Tables the scored pack questions name in oracle SQL.
 
     Each merged pack question's oracle contributes FROM/JOIN identifiers.
@@ -2928,7 +2925,7 @@ def pack_question_tables(
         for row in merge_pack_questions(list(pack["questions"]))
     }
     found: set[str] = set()
-    for qid, row in load_oracles(oracle_path).items():
+    for qid, row in load_oracles().items():
         if str(qid) not in ids or not isinstance(row, dict):
             continue
         if str(row.get("expect") or "").strip().lower() == "refuse":
