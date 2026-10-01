@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - ENGINE-DATE-02: clock clear without the score-mask reset (#308)
+
+- **Ticket.** Same follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. PR #325 stays a draft.
+- **Change.** A case record's `engine_date` is that answer's clock, or none when the answer ran no SQL. `execute_sql` publishes the process clock only for an answer (`product` or `answer_clock`). The #323 `clear_engine_clock()` setup in `tests/test_score_mask_01.py` is removed. `test_live_sql_nosql_sql_records_keep_own_clocks` is one `live()` round with no reset between SQL, no-SQL, and a second SQL.
+- **Gate.** That test failed on `22deaa35` on its own assert. `n` was 52. The first record's `engine_date` was the round date `2024-01-01`, not the SQL clock `2024-05-01`. The no-SQL record carried `2024-01-01`, not none.
+
 ## 2026-10-01 - ENGINE-DATE-02: clock source, second health read, any-case $AS_OF (#308)
 
 - **Ticket.** Follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. Does not stamp COMPLETE. No Cortex change. Engine date stays on DMS `/health` reads.

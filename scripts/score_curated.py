@@ -2056,6 +2056,13 @@ def _case_invalid_reason(
     return None
 
 
+def _own_engine_date(env: Mapping[str, Any] | None) -> str | None:
+    """Clock carried by this answer. The round date is not a substitute."""
+    if not env:
+        return None
+    return _clock_text(env.get("engine_as_of"))
+
+
 def _answer_clock(
     env: Mapping[str, Any] | None,
     round_before: str | None,
@@ -2202,7 +2209,7 @@ def score_pack_live(
                     }
                 )
                 records.append(
-                    _case_record(qid, verdict, reason, None, verdict, as_of, "round_health")
+                    _case_record(qid, verdict, reason, None, verdict, None, "round_health")
                 )
                 continue
             print(f"{qid}\tGRANT_REFUSE\t{type(exc).__name__}: {exc}")
@@ -2244,7 +2251,7 @@ def score_pack_live(
                     invalid_reason,
                     env,
                     "INVALID",
-                    case_before or as_of,
+                    _own_engine_date(env),
                     source,
                 )
             )
@@ -2292,7 +2299,9 @@ def score_pack_live(
             }
         )
         records.append(
-            _case_record(qid, verdict, result.reason, env, result.verdict, as_of, source)
+            _case_record(
+                qid, verdict, result.reason, env, result.verdict, _own_engine_date(env), source
+            )
         )
     end = read_round_end_health(url, timeout)
     if not end["ok"]:

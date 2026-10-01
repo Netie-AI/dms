@@ -921,9 +921,6 @@ def test_live_round_invalid_reason_blocks_baseline(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A round INVALID puts that reason in the list and is not eligible."""
-    from dms_executor.demo_warehouse import clear_engine_clock
-
-    clear_engine_clock()
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(tmp_path / "out_records"))
 
@@ -1074,9 +1071,6 @@ def test_live_grant_403_stays_abstain_not_rate_limit(
 def test_live_without_engine_date_asks_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from dms_executor.demo_warehouse import clear_engine_clock
-
-    clear_engine_clock()
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     db = _oracle_db(tmp_path / "oracle.duckdb")
 

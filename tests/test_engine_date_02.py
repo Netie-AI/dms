@@ -109,13 +109,8 @@ def _install(
     health_error_at: int | None = None,
     case_clock_at: set[int] | None = None,
     mutate: Any = None,
-    clear_clock: bool = True,
 ) -> tuple[list[dict[str, Any]], list[int]]:
     """Stub score_http. health_bodies[0] is the open read. Later bodies are later GETs."""
-    if clear_clock:
-        from dms_executor.demo_warehouse import clear_engine_clock
-
-        clear_engine_clock()
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     asks: list[dict[str, Any]] = []
     health_gets: list[int] = []
@@ -338,9 +333,8 @@ def test_live_nosql_after_sql_carries_no_clock(
 ) -> None:
     """A SQL answer's clock does not ride onto the next no-SQL answer or round."""
     from dms_executor import Executor
-    from dms_executor.demo_warehouse import clear_engine_clock, current_engine_clock
+    from dms_executor.demo_warehouse import current_engine_clock
 
-    clear_engine_clock()
     exe = Executor(warehouse_path=tmp_path / "sql.duckdb")
     sql_env = exe.answer_user_sql("SELECT 1 AS n", session_id="ses_sql")
     sql_day = sql_env.get("engine_as_of")
@@ -355,7 +349,6 @@ def test_live_nosql_after_sql_carries_no_clock(
             "ask_mode": "live",
             "demo_fallback": False,
         }],
-        clear_clock=False,
     )
     live("http://score.test", 1.0, db := _oracle_db(tmp_path))
     report = _report(tmp_path)
@@ -522,3 +515,79 @@ def test_live_followup_sql_upper_as_of_abstains(
         [],
         "followup",
     )
+
+
+_SQL_A = "2024-05-01"
+_SQL_B = "2024-05-02"
+
+
+def test_live_sql_nosql_sql_records_keep_own_clocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One live() round. SQL, then no-SQL, then SQL. No clock reset between them."""
+    import dms_executor.demo_warehouse as warehouse
+    from dms_executor import Executor
+
+    reads = {"n": 0}
+
+    def read_clock(_con: Any) -> tuple[str, str]:
+        reads["n"] += 1
+        day = _SQL_A if reads["n"] <= 2 else _SQL_B
+        return day, _TZ
+
+    monkeypatch.setattr(warehouse, "_read_con_clock", read_clock)
+    exe = Executor(warehouse_path=tmp_path / "seq.duckdb")
+    monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    asks: list[int] = []
+
+    def score_http(
+        method: str,
+        url: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 0,
+    ) -> _Resp:
+        if method == "GET" and url.rstrip("/").endswith("/health"):
+            return _Resp(_health(_START))
+        if method == "POST" and url.rstrip("/").endswith("/v1/chat/ask"):
+            idx = len(asks)
+            asks.append(idx)
+            if idx == 0:
+                env = exe.answer_user_sql("SELECT 1 AS n", session_id="ses_a")
+            elif idx == 1:
+                env = exe.answer_user_sql("SELECT $as_of AS day", session_id="ses_b")
+            elif idx == 2:
+                env = exe.answer_user_sql("SELECT 2 AS n", session_id="ses_c")
+            else:
+                env = _envelope(case_clock=False)
+            return _Resp(env)
+        raise RuntimeError(f"unexpected {method} {url}")
+
+    monkeypatch.setattr("score_curated.score_http", score_http)
+    live("http://score.test", 1.0, _oracle_db(tmp_path))
+    report = _report(tmp_path)
+    lines = _lines(report)
+
+    def carried(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+        env = row.get("envelope") or {}
+        return (
+            row.get("engine_date"),
+            env.get("engine_as_of"),
+            env.get("engine_as_of_after"),
+        )
+
+    assert (
+        carried(lines[0]),
+        carried(lines[1]),
+        carried(lines[2]),
+        report.get("n"),
+    ) == (
+        (_SQL_A, _SQL_A, _SQL_A),
+        (None, None, None),
+        (_SQL_B, _SQL_B, _SQL_B),
+        _pack_n(),
+    )
+    assert _SQL_A not in json.dumps(lines[1])
+    assert _SQL_A not in json.dumps(lines[2])
+    assert _SQL_B not in json.dumps(lines[0])
+    assert _SQL_B not in json.dumps(lines[1])

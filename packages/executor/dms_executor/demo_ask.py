@@ -219,7 +219,10 @@ def _resolve_exclude_skus(tokens: list[str]) -> list[str]:
     """Map bare tokens like BETA → SKU-BETA against live distinct SKUs."""
     if not tokens:
         return []
-    rows = execute_sql("SELECT DISTINCT sku FROM transactions WHERE sku IS NOT NULL")
+    rows = execute_sql(
+        "SELECT DISTINCT sku FROM transactions WHERE sku IS NOT NULL",
+        answer_clock=True,
+    )
     known = [str(r["sku"]) for r in rows if r.get("sku") is not None]
     by_lower = {k.lower(): k for k in known}
 
@@ -336,7 +339,7 @@ def _total_revenue(*, space_id: str | None) -> dict[str, Any]:
         "SELECT COALESCE(SUM(quantity_kg * unit_cost_myr), 0)::DOUBLE AS revenue_myr "
         "FROM transactions WHERE txn_type = 'outbound'"
     )
-    total = total_outbound_revenue()
+    total = total_outbound_revenue(answer_clock=True)
     return _pack(
         answer_id="ans_demo_revenue",
         text=f"Total outbound revenue was {_money(total)}.",
@@ -363,7 +366,7 @@ def _total_revenue(*, space_id: str | None) -> dict[str, Any]:
 
 
 def _scale_revenue(factor: float, *, space_id: str | None) -> dict[str, Any]:
-    total = total_outbound_revenue()
+    total = total_outbound_revenue(answer_clock=True)
     scaled = total / factor
     sql = (
         "SELECT COALESCE(SUM(quantity_kg * unit_cost_myr), 0)::DOUBLE AS revenue_myr "
@@ -427,7 +430,7 @@ def _top_skus(
         ORDER BY revenue_myr DESC, sku ASC
         LIMIT {int(n)} OFFSET {int(max(0, offset))}
     """
-    rows = execute_sql(sql)
+    rows = execute_sql(sql, answer_clock=True)
     if not rows:
         return _abstain(space_id=space_id)
     top = rows[0]
@@ -476,7 +479,7 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
         FROM locations
         ORDER BY util_pct DESC
     """
-    rows = execute_sql(sql)
+    rows = execute_sql(sql, answer_clock=True)
     peak = rows[0] if rows else {"location": "?", "util_pct": 0.0}
     raw_util = peak.get("util_pct", 0.0)
     util_pct = float(raw_util) if isinstance(raw_util, (int, float, str)) else 0.0
@@ -527,7 +530,7 @@ def _below_reorder(*, space_id: str | None) -> dict[str, Any]:
         WHERE quantity_kg < reorder_level_kg
         ORDER BY sku
     """
-    rows = execute_sql(sql)
+    rows = execute_sql(sql, answer_clock=True)
     if not rows:
         return _pack(
             answer_id="ans_demo_reorder_ok",
@@ -570,7 +573,7 @@ def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
         ORDER BY CASE severity WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                  alert_id
     """
-    rows = execute_sql(sql)
+    rows = execute_sql(sql, answer_clock=True)
     if not rows:
         return _pack(
             answer_id="ans_demo_alerts_none",
