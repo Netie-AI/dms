@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: record gate items 6 and 7 (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited.
+- **Gate.** A `live()` round that serves a known date of birth and email writes no raw copy of either value. The test reads every file the round added or changed (the case record, the score file, logs, temp). Default records go in `.tmp/score_cases/`. Gitignore names that directory only. 52-pack unchanged. Unread engine date stays n=0.
+
 ## 2026-10-01 - SCORE-MASK-01: record gate items 2 to 5 (#299)
 
 - **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited.

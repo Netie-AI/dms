@@ -624,6 +624,86 @@ def test_live_record_write_failure_is_record_write_failed(
     )
 
 
+SECRET_DOB = "1985-03-22"
+_SCAN_SKIP = frozenset({".duckdb", ".wal"})
+
+
+def _file_sigs(roots: list[Path]) -> dict[Path, int]:
+    sigs: dict[Path, int] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file():
+                sigs[path.resolve()] = path.stat().st_mtime_ns
+    return sigs
+
+
+def _files_written(roots: list[Path], before: dict[Path, int]) -> list[Path]:
+    found: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix in _SCAN_SKIP:
+                continue
+            if before.get(path.resolve()) != path.stat().st_mtime_ns:
+                found.append(path)
+    return found
+
+
+def test_live_written_files_omit_raw_dob_and_email(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No file the round writes holds the raw DOB or the raw email."""
+    _open_round(monkeypatch, tmp_path)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    served_text = f"born {SECRET_DOB} reach {SECRET_EMAIL}"
+    served_rows = [
+        {
+            "sku_count": "DMSMASK_unknown_01",
+            "dob": SECRET_DOB,
+            "email": SECRET_EMAIL,
+        }
+    ]
+    _install_http(
+        monkeypatch,
+        _by_question(
+            {
+                "badge": "L0_CERTIFIED",
+                "abstained": False,
+                "sql_used": SKU_SQL,
+                "text": served_text,
+                "rows": served_rows,
+            }
+        ),
+    )
+    roots = [tmp_path, ROOT / ".tmp", ROOT / "logs"]
+    before = _file_sigs(roots)
+    live("http://127.0.0.1:9", 1.0, db)
+    written = _files_written(roots, before)
+    report = _report(tmp_path)
+    named = report.get("case_record")
+    if isinstance(named, str):
+        extra = Path(named)
+        if extra.is_file() and extra.resolve() not in {p.resolve() for p in written}:
+            written.append(extra)
+    leaks: list[str] = []
+    blob = ""
+    for path in written:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        blob += text
+        if SECRET_DOB in text or SECRET_EMAIL in text:
+            leaks.append(path.name)
+    assert (
+        leaks,
+        SECRET_DOB in blob,
+        SECRET_EMAIL in blob,
+        "DMSMASK_dob_" in blob,
+        "DMSMASK_email_" in blob,
+    ) == ([], False, False, True, True)
+
+
 def test_live_unmasked_match_stays_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -5,8 +5,7 @@
 venv/
 # Local pytest / scratch output. Never a release artifact, never reviewable.
 .tmp/
-# Live per-case records (score_cases_<run_id>_<sha>.jsonl). Never reviewable.
-score_cases_*.jsonl
+.tmp/score_cases/
 __pycache__/
 *.pyc
 node_modules/

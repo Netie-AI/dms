@@ -2322,9 +2322,17 @@ def merge_commit_sha() -> str:
 
 
 def case_record_dir(art: Path) -> Path:
-    """DMS_SCORE_CASE_DIR, else the score output dir (DMS_SCORE_DIR or .tmp)."""
+    """DMS_SCORE_CASE_DIR, else `.tmp/score_cases` for the default score dir, else art.
+
+    A custom DMS_SCORE_DIR (the live() tests) keeps records beside that score
+    file. The default directory is the only path gitignore names.
+    """
     raw = (os.environ.get("DMS_SCORE_CASE_DIR") or "").strip()
-    return Path(raw) if raw else art
+    if raw:
+        return Path(raw)
+    if art.resolve() == (ROOT / ".tmp").resolve():
+        return art / "score_cases"
+    return art
 
 
 def case_record_path(directory: Path, run_id: str, sha: str) -> Path:
