@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -95,6 +97,23 @@ def _make_pack(tmp_path: Path, *, scan: str = "PASS") -> tuple[Path, Path, str]:
 
 def _args(pack: Path, db: Path, root: str) -> list[str]:
     return ["--self-check", "--pack", str(pack), "--oracle-db", str(db), "--expect-root", root]
+
+
+def test_cli_self_check_runs_without_pythonpath(tmp_path: Path) -> None:
+    """The real entry point, in a clean env: oracle imports must resolve on their own."""
+    pack, db, root = _make_pack(tmp_path)
+    keep = ("PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "HOME", "TEMP", "TMP")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    script = Path(__file__).resolve().parents[1] / "scripts" / "score_heldout.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), *_args(pack, db, root)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+    )
+    assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
+    assert "VERDICT: PACK OK" in proc.stdout
 
 
 def test_self_check_passes_on_a_sealed_pack(tmp_path: Path, capsys) -> None:
