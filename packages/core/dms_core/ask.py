@@ -65,3 +65,24 @@ class GroundingRefused(Exception):
     @property
     def message(self) -> str:
         return str(self)
+
+
+# One lane list. BRONZE-GRANT-01 (#333, bronze_sheet_ask) and the pin both
+# import this object. No second copy.
+# No-model lanes do not call a model. Model lanes do.
+NO_MODEL_LANES = frozenset({"rules", "curated"})
+MODEL_LANES = frozenset({"generative"})
+_ROUTE_LANE = {
+    "verified_query": "rules",
+    "governed_metric": "curated",
+    "generated": "generative",
+    "bronze_sheet": "bronze",
+    "followup": "followup",
+}
+
+
+def lane_for_route(route: object) -> str | None:
+    """Lane name for an ask route. None when this route is not on the list."""
+    if not isinstance(route, str) or route == "":
+        return None
+    return _ROUTE_LANE.get(route)
