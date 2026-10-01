@@ -133,18 +133,6 @@ def stamp_generate_headers(headers: Mapping[str, str] | None) -> dict[str, str] 
     return merged
 
 
-def _header(headers: Mapping[str, str] | None, name: str) -> str | None:
-    if not headers:
-        return None
-    want = name.lower()
-    for key, value in headers.items():
-        if str(key).lower() == want:
-            text = str(value).strip()
-            if text:
-                return text
-    return None
-
-
 def _provider_text(value: object) -> str | None:
     """Provider id as sent. Empty is absent. No strip and no case fold."""
     if not isinstance(value, str) or value == "":
@@ -158,14 +146,24 @@ def _body_provider(body: Mapping[str, Any]) -> str | None:
     return _provider_text(body.get("served_provider"))
 
 
+def _header_raw(headers: Mapping[str, str] | None, name: str) -> str | None:
+    """Header name matches in any case. The value is not rewritten."""
+    if not headers:
+        return None
+    want = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == want:
+            return value if isinstance(value, str) else None
+    return None
+
+
 def _header_provider(headers: Mapping[str, str] | None) -> str | None:
-    """Header name is exact. The value is not rewritten.
+    """Name is case-insensitive. The id is not folded or stripped.
 
     OpenVault #81 0d0ef3f0 sends this from ``served_response_headers``.
+    A live hop used the lowercase name ``x-openvault-served-provider``.
     """
-    if not headers or SERVED_PROVIDER_HEADER not in headers:
-        return None
-    return _provider_text(headers.get(SERVED_PROVIDER_HEADER))
+    return _provider_text(_header_raw(headers, SERVED_PROVIDER_HEADER))
 
 
 def _body_field(body: Mapping[str, Any], key: str) -> str | None:
@@ -188,7 +186,7 @@ def _sides(
         _body_provider(payload),
         _body_field(payload, "served_model"),
         _header_provider(headers),
-        _header(headers, SERVED_MODEL_HEADER),
+        _provider_text(_header_raw(headers, SERVED_MODEL_HEADER)),
     )
 
 

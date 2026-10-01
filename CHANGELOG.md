@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: header names fold, served values do not
+
+- **Contract.** A live hop on `0d0ef3f0` sent lowercase `x-openvault-served-provider=groq`, `x-openvault-served-model=openai/gpt-oss-120b`, `x-openvault-served-local=false`, and the same ids in the body. Header names match in any case. Values stay exact.
+- **Gate.** Canonical and lowercase header names with the body present are CORRECT, no `pin_*` reason, `baseline_eligible`. Served `Groq` under the `groq` pin is INVALID `pin_mismatch:Groq/openai/gpt-oss-120b`, kept in n. A 503 `no_hop` with no served headers and no served body fields is ABSTAIN `pin_unavailable`, never `pin_mismatch`.
+
 ## 2026-10-01 - dms#317 Part A: served headers are on the 0d0ef3f0 response
 
 - **Contract.** OpenVault #81 `0d0ef3f0` `local_hop.py` lines 48-50 name `X-OpenVault-Served-Provider`, `X-OpenVault-Served-Model`, and `X-OpenVault-Served-Local`. `served_response_headers` fills them. `app.py` `_chat_result_headers` attaches that dict.

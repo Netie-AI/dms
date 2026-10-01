@@ -1168,6 +1168,123 @@ def test_live_fa01_pin_match_is_correct(
         _wipe_records(outside)
 
 
+def _headers_named(provider: str, model: str, *, lower: bool) -> dict[str, str]:
+    headers = _served_headers(provider, model)
+    if not lower:
+        return headers
+    return {key.lower(): value for key, value in headers.items()}
+
+
+@pytest.mark.parametrize("lower", (False, True), ids=("canonical", "lower"))
+def test_live_served_header_name_case_is_correct(
+    lower: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Body plus served headers. Name case does not matter. Values stay exact.
+
+    canonical is X-OpenVault-Served-Provider. lower is the live hop:
+    x-openvault-served-provider=groq, x-openvault-served-model=openai/gpt-oss-120b,
+    x-openvault-served-local=false. CORRECT, no pin_* reason, baseline_eligible.
+    """
+    outside = _outside_record_dir(monkeypatch)
+    try:
+        db = _oracle_db(tmp_path)
+        shot = _ok(_PIN, headers=True)
+        shot["body"]["served_local"] = False
+        shot["headers"] = _headers_named("groq", _PIN, lower=lower)
+        asks, script = _arm(monkeypatch, tmp_path, repeat=shot)
+        _match_gold(monkeypatch)
+        live("http://score.test", 1.0, db)
+        report = _report(tmp_path)
+        row = report["cases"][0]
+        assert report["oracle_as_of"] == _ENGINE_DAY
+        assert shot["body"]["served_provider"] == "groq"
+        assert shot["body"]["served_model"] == _PIN
+        assert shot["body"]["served_local"] is False
+        names = {key.lower() for key in shot["headers"]}
+        assert "x-openvault-served-provider" in names
+        assert "x-openvault-served-model" in names
+        assert "x-openvault-served-local" in names
+        assert row["id"] == "cq_spend_by_country" and row["verdict"] == "OK"
+        assert not str(row.get("reason") or "").startswith("pin_")
+        assert not str(report.get("reason") or "").startswith("pin_")
+        assert report["baseline_eligible"] is True
+        assert report["baseline_ineligible_reasons"] == []
+        assert len(asks) == len(_questions())
+        assert len(script.calls) == len(_questions()) + 1
+    finally:
+        _wipe_records(outside)
+
+
+def test_live_groq_value_case_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Served provider Groq is not the groq pin. Values are not case-folded."""
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    bad = _ok(_PIN, "Groq", headers=True)
+    shots = [_ok(_PIN), bad] + [_ok(_PIN) for _ in range(n_pack - 1)]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    row = report["cases"][0]
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    assert row["verdict"] == "INVALID" and row["reason"] == (
+        f"pin_mismatch:Groq/{_PIN}"
+    )
+    assert report["n"] == n_pack
+    assert report["invalid"] == 1
+    assert row["served_provider_body"] == "Groq"
+    assert row["served_model_body"] == _PIN
+    assert row["served_provider_header"] == "Groq"
+    assert row["served_model_header"] == _PIN
+    rec = _record_line(report, "cq_spend_by_country")
+    assert rec["served_provider_body"] == "Groq"
+    assert rec["served_model_body"] == _PIN
+    assert rec["outcome"] == "INVALID"
+
+
+def test_live_pin_unavailable_without_served_ids_is_abstain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """503 no_hop with no served headers and no served body fields is ABSTAIN.
+
+    It is pin_unavailable, never pin_mismatch.
+    """
+    db = _oracle_db(tmp_path)
+    n_pack = len(_questions())
+    bare = {
+        "status": 503,
+        "headers": {},
+        "body": {
+            "error": {
+                "type": "pin_unavailable",
+                "reason": "no_hop",
+                "model": _PIN,
+                "message": "pinned model has no healthy hop",
+            }
+        },
+    }
+    shots = [_ok(_PIN), bare] + [_ok(_PIN) for _ in range(n_pack - 1)]
+    _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
+    live("http://score.test", 1.0, db)
+    report = _report(tmp_path)
+    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    row = report["cases"][0]
+    assert report["oracle_as_of"] == _ENGINE_DAY
+    assert report["cases"][1]["verdict"] == "WRONG"
+    assert bare["headers"] == {}
+    assert "served_provider" not in bare["body"]
+    assert "served_model" not in bare["body"]
+    assert row["verdict"] == "ABSTAIN" and row["reason"] == name
+    assert row.get("pin_reason") == "no_hop"
+    assert row["verdict"] != "INVALID"
+    assert not str(row["reason"]).startswith("pin_mismatch")
+    assert report["n"] == n_pack
+    assert report["invalid"] == 0
+    assert int(report.get("rate_limit") or 0) == 0
+
+
 def test_live_pin_matched_round_keeps_parent_correct_count(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
