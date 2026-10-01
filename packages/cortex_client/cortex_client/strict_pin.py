@@ -170,13 +170,14 @@ def _header_provider(headers: Mapping[str, str] | None) -> str | None:
 
 
 def _body_field(body: Mapping[str, Any], key: str) -> str | None:
+    """Body value as sent. Empty is absent. No strip and no case fold.
+
+    Same read as ``envelope_mismatch``. ``interpret`` and ``next_answer``
+    pass this straight to ``matches_pin``.
+    """
     if key not in body:
         return None
-    value = body.get(key)
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    return text or None
+    return _provider_text(body.get(key))
 
 
 def _sides(

@@ -14,6 +14,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Change.** `baseline_eligibility` appends `serving_precheck_missing` when the round summary lacks the Cortex serving path, inode, mtime, snapshot hash, or a positive row count for a table the 52 questions use. Tables are FROM/JOIN names in pack oracle SQL, skipping `expect: refuse`. `live()` writes those fields on `score_curated.json`.
 - **Gate.** `tests/test_serving_precheck_01.py` goes through `live()`. On `fee155e4` each must-fail test is eligible and fails on its own assert. No live scored round.
 
+## 2026-10-01 - PIN-STRIP-01: preflight matches served ids exactly (Refs dms#317)
+
+- **Ticket.** Follow-up under [dms#317](https://github.com/Netie-AI/dms/issues/317). Does not close the issue. Does not stamp COMPLETE.
+- **Record.** (1) The body-only gate with the bare id `gemma-4-31b-it:free` recorded at the old line 43 is superseded. (2) On c1461134 the scored envelope check (`envelope_mismatch`) reads only the envelope's served_provider and served_model, not the headers, and matches when they are exactly the pin, including the full id `google/gemma-4-31b-it:free`. (3) Preflight requires the body and the headers both present and equal. (4) Preflight matches exactly only from PR #334 onward.
+- **Gate.** A padded body `served_model` next to exact headers fails on `f0e6c61f` on its own assert (`tests/test_pin_strip_01.py`). No live scored round.
+
 ## 2026-10-01 - BRONZE-WAREHOUSE-01: executor file is the bronze grant
 
 - **Test only.** No product code. `tests/test_bronze_warehouse_01.py` asks from Finance through `live_ask` on one split layout. The bronze table is registered in the ingest file. The serving file is separate. A matched table that is not in that executor's `grantable_tables` abstains `ungranted_table:<table>`.
