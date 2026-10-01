@@ -13,7 +13,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from dms_core.pii import fail_closed_mask_payload
+from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
@@ -1736,7 +1736,7 @@ def build_answer_envelope(
         env["constraint_trace"] = trace_out
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
-    return env
+    return mask_unknown_keys(env)
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:

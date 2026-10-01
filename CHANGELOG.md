@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - MASK-VALUES-01: mask values and unknown envelope keys (#303)
+
+- **Ticket.** Follow-up under [dms#303](https://github.com/Netie-AI/dms/issues/303). Does not close the issue. Does not stamp COMPLETE.
+- **Change.** `mask_payload` masks a whole-value date in `values`. Any envelope key not on `SAFE_ENVELOPE_KEYS` is scanned like answer text, including nested dicts and lists, and a whole-value date there is masked. A scanner error blanks that key. The served constructor and the case-record copy both use it. Rows keep the lineage rule. Engine clocks stay literal.
+- **Gate.** `tests/test_mask_values_01.py` fails on `87a94978` on its own assert. 52-pack unchanged. No live scored round.
+
 ## 2026-10-01 - dms#317 Part A: nvidia pin is refused at setup
 
 - **Contract.** Allowed models stay the catalog strings. OpenRouter `google/gemma-4-31b-it:free` (providers.py 150 and 156). Google `gemini-3.5-flash` (205, 212, 220). Groq `openai/gpt-oss-120b` (176 and 182).
