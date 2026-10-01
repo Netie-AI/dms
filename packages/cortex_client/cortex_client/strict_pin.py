@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
+from dms_core.ask import CORTEX_LANES, MODEL_LANES, NO_MODEL_LANES
 
 STRICT_HEADER = "X-OpenVault-Strict"
 SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
@@ -457,11 +457,12 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
     exact model, no strip and no case fold. A missing served field is not
     the pin, including when ``served_attribution`` is ``none`` or absent.
 
-    A recorded zero is no-model only when ``lane`` is on ``NO_MODEL_LANES``
-    (rules, curated), the same object BRONZE-GRANT-01 imports. That answer
-    is scored on its rows. Zero calls with any ``served_*`` field, or a
-    model lane, is ``pin_mismatch``. No lane is ``lane_unknown``.
-    Called only while a pin is active.
+    A recorded zero is scored on its rows only when ``lane`` is on
+    ``NO_MODEL_LANES`` (the same object BRONZE-GRANT-01 imports). That set
+    is empty: ``rules`` and ``curated`` reach Cortex submit, so they are
+    ``CORTEX_LANES`` and a recorded zero is ``pin_mismatch:<lane>``. Zero
+    calls with any ``served_*`` field, or a model lane, is ``pin_mismatch``.
+    No lane is ``lane_unknown``. Called only while a pin is active.
     """
     if not isinstance(env, Mapping):
         return None
@@ -478,6 +479,6 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
         return "lane_unknown"
     if lane in NO_MODEL_LANES:
         return None
-    if lane in MODEL_LANES:
+    if lane in MODEL_LANES or lane in CORTEX_LANES:
         return f"pin_mismatch:{lane}"
     return None

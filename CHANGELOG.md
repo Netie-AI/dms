@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - PIN-NOMODEL-01: a Cortex lane is not no-model (Refs dms#317)
+
+- **Amendment.** Epic comment 5939668193. `model_calls` counts only model posts from DMS's own client. `rules` and `curated` come off `NO_MODEL_LANES`: `maybe_verified_ask` and `maybe_pack_ask` submit and append through Cortex. The shared list is empty. A zero on `CORTEX_LANES` is INVALID `pin_mismatch:<lane>`, kept in n.
+- **Gate.** `tests/test_pin_nomodel_01.py` covers that case through `live()` and fails on `7a8d6c11` on its own assert. A structural test fails if a listed lane's handler imports or calls `cortex_client`. No live scored round. `score_curated.py` is untouched. 52-pack counts stay.
+
 ## 2026-10-01 - PIN-NOMODEL-01: pin only when the answer called a model (Refs dms#317)
 
 - **Ticket.** Follow-up under [dms#317](https://github.com/Netie-AI/dms/issues/317). Does not close the issue. Does not stamp COMPLETE.
