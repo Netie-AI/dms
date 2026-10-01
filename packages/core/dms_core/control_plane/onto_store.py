@@ -153,6 +153,26 @@ class OntoAudit:
     tenant_id: UUID | None = None
 
 
+def measure_definition_hash(
+    name: str, grain: str, aggregate: str, column: str, description: str
+) -> str:
+    """sha256 over the canonical JSON of one measure definition.
+
+    Our own hash over our own object (not a manifest signature): the single
+    home of the formula; the executor imports it.
+    """
+    payload = {
+        "v": 1,
+        "name": name,
+        "grain": grain,
+        "aggregate": aggregate,
+        "column": column,
+        "description": description,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(raw.encode("ascii")).hexdigest()
+
+
 @dataclass(frozen=True)
 class OntologySnapshot:
     """One measurement of a version: the derived body and what verify() found.
