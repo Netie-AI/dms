@@ -824,6 +824,143 @@ def test_live_absolute_out_of_tree_record_is_baseline(
     )
 
 
+def test_live_scratch_reason_blocks_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unset DMS_CASE_RECORD_DIR adds record_path_scratch and is not eligible."""
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.delenv("DMS_CASE_RECORD_DIR", raising=False)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    reasons = report.get("baseline_ineligible_reasons")
+    assert (
+        report.get("baseline_eligible"),
+        reasons,
+        report.get("baseline_eligible") is (reasons == []),
+        report.get("n"),
+    ) == (False, ["record_path_scratch"], True, _pack_n())
+
+
+def test_live_in_repo_reason_blocks_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A relative record dir adds record_path_in_repo and is not eligible."""
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", ".tmp/rel_case_records")
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    reasons = report.get("baseline_ineligible_reasons")
+    assert (
+        report.get("baseline_eligible"),
+        reasons,
+        report.get("baseline_eligible") is (reasons == []),
+        report.get("n"),
+    ) == (False, ["record_path_in_repo"], True, _pack_n())
+
+
+def test_live_write_failed_reason_blocks_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed write adds record_write_failed and is not eligible."""
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(tmp_path / "out_records"))
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("flush failed")
+
+    monkeypatch.setattr(score_curated, "write_case_records", _boom, raising=False)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    reasons = report.get("baseline_ineligible_reasons")
+    assert (
+        report.get("baseline_eligible"),
+        reasons,
+        report.get("baseline_eligible") is (reasons == []),
+        report.get("n"),
+    ) == (False, ["record_write_failed"], True, _pack_n())
+
+
+def test_live_unidentified_reason_blocks_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unreadable commit adds record_unidentified and is not eligible."""
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(tmp_path / "out_records"))
+    monkeypatch.setattr(score_curated, "merge_commit_sha", lambda: "unknown", raising=False)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    reasons = report.get("baseline_ineligible_reasons")
+    assert (
+        report.get("baseline_eligible"),
+        reasons,
+        report.get("baseline_eligible") is (reasons == []),
+        report.get("n"),
+    ) == (False, ["record_unidentified"], True, _pack_n())
+
+
+def test_live_round_invalid_reason_blocks_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A round INVALID puts that reason in the list and is not eligible."""
+    from dms_executor.demo_warehouse import clear_engine_clock
+
+    clear_engine_clock()
+    monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(tmp_path / "out_records"))
+
+    def _no_http(*_args: object, **_kwargs: object) -> None:
+        raise OSError("no health")
+
+    monkeypatch.setattr(score_curated, "score_http", _no_http)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    reasons = report.get("baseline_ineligible_reasons")
+    assert (
+        report.get("baseline_eligible"),
+        reasons,
+        report.get("baseline_eligible") is (reasons == []),
+        report.get("reason"),
+        report.get("n"),
+    ) == (False, ["engine_date_unread"], True, "engine_date_unread", 0)
+
+
+def test_live_baseline_eligible_agrees_with_empty_reasons(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """baseline_eligible is true only when baseline_ineligible_reasons is empty."""
+    _open_round(monkeypatch, tmp_path)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    monkeypatch.setenv("DMS_CASE_RECORD_DIR", str(tmp_path / "out_records"))
+    live("http://127.0.0.1:9", 1.0, db)
+    eligible = _report(tmp_path)
+    monkeypatch.delenv("DMS_CASE_RECORD_DIR")
+    live("http://127.0.0.1:9", 1.0, db)
+    scratch = _report(tmp_path)
+    pairs = (
+        (
+            row.get("baseline_eligible"),
+            row.get("baseline_ineligible_reasons"),
+        )
+        for row in (eligible, scratch)
+    )
+    agreed = []
+    listed = []
+    for flag, reasons in pairs:
+        agreed.append(flag is (reasons == []))
+        listed.append(reasons)
+    assert (agreed, listed) == ([True, True], [[], ["record_path_scratch"]])
+
+
 def test_live_unmasked_match_stays_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -926,6 +1063,9 @@ def test_live_grant_403_stays_abstain_not_rate_limit(
 def test_live_without_engine_date_asks_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from dms_executor.demo_warehouse import clear_engine_clock
+
+    clear_engine_clock()
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     db = _oracle_db(tmp_path / "oracle.duckdb")
 

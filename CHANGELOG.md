@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: one baseline eligibility function (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. `.gitignore` unchanged.
+- **Gate.** `baseline_eligibility` is the only place that sets `baseline_eligible`. The summary list is `baseline_ineligible_reasons`. Empty list means true. Reasons in this function: `record_path_scratch`, `record_path_in_repo`, `record_write_failed`, `record_unidentified`, and the round's INVALID reason. `pin_unavailable` and `round_end_unread` are not in it yet. The no-date live test clears a leaked engine clock before it asserts no ask.
+
 ## 2026-10-01 - SCORE-MASK-01: record dir baseline gate (#299)
 
 - **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited. `.gitignore` unchanged.

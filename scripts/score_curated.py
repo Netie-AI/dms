@@ -2349,12 +2349,7 @@ def _path_in_work_tree(path: Path) -> bool:
 
 
 def record_path_block() -> str | None:
-    """Why this round cannot be a baseline, or None when the record dir is eligible.
-
-    Unset `DMS_CASE_RECORD_DIR` is scratch. A relative dir, or an absolute dir
-    inside the git work tree, is in-repo. An absolute dir outside the work
-    tree is eligible.
-    """
+    """Unset `DMS_CASE_RECORD_DIR` is scratch. Relative or in-repo is in_repo."""
     raw = (os.environ.get("DMS_CASE_RECORD_DIR") or "").strip()
     if not raw:
         return "record_path_scratch"
@@ -2362,6 +2357,32 @@ def record_path_block() -> str | None:
     if not path.is_absolute() or _path_in_work_tree(path):
         return "record_path_in_repo"
     return None
+
+
+def baseline_eligibility(
+    *,
+    path_block: str | None,
+    write_failed: bool,
+    unidentified: bool,
+    round_label: str | None,
+    round_reason: str | None,
+) -> tuple[bool, list[str]]:
+    """The only baseline gate. Eligible is true exactly when the list is empty.
+
+    Later PRs add pin_unavailable and round_end_unread in this function.
+    """
+    reasons: list[str] = []
+    if path_block:
+        reasons.append(path_block)
+    if write_failed:
+        reasons.append("record_write_failed")
+    if unidentified:
+        reasons.append("record_unidentified")
+    if round_label == "INVALID":
+        invalid = round_reason or "INVALID"
+        if invalid not in reasons:
+            reasons.append(invalid)
+    return (not reasons, reasons)
 
 
 def case_record_path(directory: Path, run_id: str, sha: str) -> Path:
@@ -2453,11 +2474,18 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
             reason = "record_write_failed"
     abs_record = rec_path if rec_path.is_absolute() else rec_path.absolute()
     path_block = record_path_block()
+    eligible, ineligible = baseline_eligibility(
+        path_block=path_block,
+        write_failed=write_failed,
+        unidentified=unidentified,
+        round_label=round_label if isinstance(round_label, str) else None,
+        round_reason=reason if isinstance(reason, str) else None,
+    )
     print(f"case_record={abs_record}")
-    if path_block:
-        print(f"{path_block} baseline_eligible=false")
-    else:
-        print("baseline_eligible=true")
+    print(
+        f"baseline_eligible={str(eligible).lower()} "
+        f"baseline_ineligible_reasons={','.join(ineligible)}"
+    )
     (art / "score_curated.json").write_text(
         json.dumps(
             {
@@ -2496,7 +2524,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "run_id": run_id,
                 "commit_sha": sha,
                 "case_record": str(abs_record),
-                "baseline_eligible": path_block is None,
+                "baseline_eligible": eligible,
+                "baseline_ineligible_reasons": ineligible,
                 "record_path_scratch": path_block == "record_path_scratch",
                 "record_path_in_repo": path_block == "record_path_in_repo",
                 "categories": cats,
