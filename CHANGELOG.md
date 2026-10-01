@@ -2,6 +2,92 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - dms#317 Part A: nvidia pin is refused at setup
+
+- **Contract.** Allowed models stay the catalog strings. OpenRouter `google/gemma-4-31b-it:free` (providers.py 150 and 156). Google `gemini-3.5-flash` (205, 212, 220). Groq `openai/gpt-oss-120b` (176 and 182).
+- **Gate.** `DMS_STRICT_PROVIDER=nvidia` is `pin_caller_error:nvidia` before any vault call. n=0. Zero case calls.
+
+## 2026-10-01 - dms#317 Part A: allowed pins drop nvidia
+
+- **Contract.** Allowed pins are `groq`, `google`, and `openrouter`. `nvidia` stays a mismatch under the groq pin. It returns only in the NIM lane's own ticket.
+- **Gate.** `test_live_fa01_pin_match_is_correct` is headers plus body for both. Google model is `providers.py` line 205 `gemini-3.5-flash`. OpenRouter model is line 150 `google/gemma-4-31b-it:free`. CORRECT, no `pin_*` reason, `baseline_eligible`.
+
+## 2026-10-01 - dms#317 Part A: a pin match needs headers and body
+
+- **Contract.** The live vault sends served ids in both places. A 200 is the pin only when both are present and they agree with the pin. Header names still match in any case. Values stay exact.
+- **Gate.** Body without headers, headers without body, and header `groq` with body `together` are INVALID `pin_mismatch`, kept in n. ABSTAIN `pin_unavailable` is only a refusal with neither. A preflight with a partial served set stops at n=0 before any case call.
+
+## 2026-10-01 - dms#317 Part A: header names fold, served values do not
+
+- **Contract.** A live hop on `0d0ef3f0` sent lowercase `x-openvault-served-provider=groq`, `x-openvault-served-model=openai/gpt-oss-120b`, `x-openvault-served-local=false`, and the same ids in the body. Header names match in any case. Values stay exact.
+- **Gate.** Canonical and lowercase header names with the body present are CORRECT, no `pin_*` reason, `baseline_eligible`. Served `Groq` under the `groq` pin is INVALID `pin_mismatch:Groq/openai/gpt-oss-120b`, kept in n. A 503 `no_hop` with no served headers and no served body fields is ABSTAIN `pin_unavailable`, never `pin_mismatch`.
+
+## 2026-10-01 - dms#317 Part A: served headers are on the 0d0ef3f0 response
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `local_hop.py` lines 48-50 name `X-OpenVault-Served-Provider`, `X-OpenVault-Served-Model`, and `X-OpenVault-Served-Local`. `served_response_headers` fills them. `app.py` `_chat_result_headers` attaches that dict.
+- **Gate.** A matched pin is CORRECT for the body alone and for the body plus those headers. No `pin_*` reason. `baseline_eligible` is true. `together` and `nvidia` mismatches cover both shapes. Body-versus-header disagreement is that vault pair.
+
+## 2026-10-01 - dms#317 Part A: together is a pin mismatch, not an allowed pin
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 287 is `id="together",`. It is not in the allowed pin list.
+- **Gate.** A body of `together` / `openai/gpt-oss-120b` under the groq pin, with no headers, is INVALID `pin_mismatch:together/openai/gpt-oss-120b`, kept in n. Both body values are on the case record. On parent `87a94978` that case is WRONG.
+
+## 2026-10-01 - dms#317 Part A: rebase onto ENGINE-DATE-02
+
+- **Base.** Rebased onto main `87a94978` (#325). `baseline_eligibility` keeps `round_end_unread` and `pin_preflight_unavailable`. Neither test was removed. Per-answer clock records and the `tests/test_score_mask_01.py` health stub stay as merged.
+- **Gate.** Pin-rule tests fail on `87a94978` on their own asserts (`assert (None == 52)` for `n_planned`). Positive checks pass on this head.
+
+## 2026-10-01 - dms#317 Part A: provider ids add google and openrouter
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 131 is `id="openrouter",` and line 188 is `id="google",`. Same fixed list as groq and nvidia. Compared with `==`. No case fold.
+- **Gate.** A body pin of `google` / `gemini-3.5-flash`, and of `openrouter` / `gemma-4-31b-it:free`, with no headers, scores CORRECT with no `pin_*` reason. No other provider id was added.
+
+## 2026-10-01 - dms#317 Part A: provider ids are groq and nvidia
+
+- **Contract.** OpenVault #81 `0d0ef3f0` `providers.py` line 160 is `id="groq",` and line 247 is `id="nvidia",`. Compared with `==` against that fixed list. No case fold. A 200 from that commit puts `served_provider` and `served_model` in the JSON body. It does not send `X-OpenVault-Served-*` headers. A missing header is not `pin_mismatch`.
+- **Forward-compatible.** Body-versus-header disagreement tests stay. Those headers are not from #81.
+- **Gate.** The positive check is body `groq` / `openai/gpt-oss-120b` with no headers, CORRECT, `baseline_eligible`. NIM provider `nvidia` with that model is INVALID.
+
+## 2026-10-01 - dms#317 Part A: pin match requires provider and model
+
+- **Gate.** A vault 200 is the pin only when `served_provider` and `served_model` both match. A different or missing provider, from the body or `X-OpenVault-Served-*`, is INVALID `pin_mismatch:<provider>/<model>`, kept in n. Both sides are stored on the case record. Preflight uses the same check. OpenVault #81 `0d0ef3f0`.
+- **Tests.** `nvidia_nim` serving `openai/gpt-oss-120b` under the groq pin is INVALID. A missing provider is INVALID. On `4d61a83c` the nvidia case is WRONG, so the INVALID assertion fails there.
+
+## 2026-10-01 - dms#317 Part A: a matched pin can score CORRECT
+
+- **Gate.** A `live()` case whose body and `X-OpenVault-Served-*` both name `openai/gpt-oss-120b`, and whose row matches the oracle, is CORRECT (verdict `OK`) with no `pin_*` reason. `baseline_eligible` is true when `DMS_CASE_RECORD_DIR` is an absolute path outside the repo. A whole round with that pin on every case keeps the parent CORRECT count, with no extra ABSTAIN or INVALID. These two checks pass on the head. They do not have to fail on `22deaa35`.
+- **Contract.** OpenVault #81 `0d0ef3f0`. Fixture and mocks only. Case-record files from the tests are deleted.
+
+## 2026-10-01 - dms#317 Part A: round summary carries n_planned
+
+- **Summary.** Every live round (`live`, `climb`, `climb_ab_live`, `prove_path_live`, `grid_score_hook`) writes `n_planned` next to `n`. It is the pack size (52), including a preflight round whose `n` is 0 and a round that scores.
+- **Gate.** `test_live_preflight_pin_unavailable_is_invalid_n0` asserts `n_planned == 52` and `n == 0`. On main `22deaa3` that assert is the failure.
+
+## 2026-10-01 - dms#317 Part A: pin preflight is one baseline reason
+
+- **Gate.** `baseline_eligibility` takes `pin_preflight_unavailable`. A blocked preflight whose reason starts with `pin_unavailable:` appends that reason and `baseline_eligible` is false. An in-round 503 `quota_exhausted` stays ABSTAIN `pin_unavailable:<provider>/<model>` with `pin_reason=quota_exhausted` and `rate_limit` 0. It does not append the preflight reason. HTTP 429 remains the only `RATE_LIMIT`.
+- **Record.** When body and header served ids disagree, the per-case JSONL keeps both pairs (`served_*_body`, `served_*_header`). The record's `served_model` stays `unknown`.
+- **Contract.** OpenVault #81 `0d0ef3f0`.
+
+## 2026-10-01 - dms#317 Part A: pin fixture scores, neither served side wins
+
+- **Why the old fixture abstained.** The ask mock used `badge: ABSTAIN` and `abstained: true`. `is_confident` is false, so `judge_detailed` returns ABSTAIN after the oracle runs and never compares rows. A parent result of ABSTAIN==INVALID does not prove the pin. The mock is now `L0_CERTIFIED` with one row against empty gold, so the parent judge returns WRONG (`rows_mismatch`). Refuse and abstain expects with that badge are WRONG via `_judge_badge`.
+- **Served ids.** When body `served_model` / `served_provider` and `X-OpenVault-Served-*` are both present and they differ, the case is INVALID `pin_mismatch` with both pairs, kept in n. Neither side is chosen. One side present uses that side. OpenVault #81 `0d0ef3f0`.
+- **Gate.** `tests/test_strict_pin_01.py`. The body-wins test was this PR's own test; it is now the disagree test. A second test has the body on the pin and the header on another model.
+
+## 2026-10-01 - dms#317 Part A: parent failures are the pin rule
+
+- **Ticket.** Same draft as the section below. OpenVault #81 `0d0ef3f0` is the field contract (`strict` boolean, `X-OpenVault-Strict`, 503 `pin_unavailable`, `served_provider` / `served_model`).
+- **Gate.** `tests/test_strict_pin_01.py` reads engine date `2024-06-15` and scores the pack (judge returns ABSTAIN, not ORACLE_ERROR). On `a63988b2` each test fails on that pin assertion. 27 failed, 0 passed.
+
+## 2026-10-01 - dms#317 Part A: strict model pin on the generate path
+
+- **Ticket.** [dms#317](https://github.com/Netie-AI/dms/issues/317) Part A. Draft. Does not stamp COMPLETE. Does not close the issue. OpenVault #81 `0d0ef3f0` is the field contract. No live Groq call.
+- **Change.** Generate posts send JSON `strict: true` and `X-OpenVault-Strict: true` with `model` from `DMS_STRICT_MODEL` (default `openai/gpt-oss-120b`) and provider from `DMS_STRICT_PROVIDER` (default `groq`). Empty, `auto`, `default`, and bare `gpt-oss-120b` are not sent. A 503 `pin_unavailable` is ABSTAIN `pin_unavailable:<provider>/<model>` with the vault `reason` on `pin_reason`. It stays in n. No retry and no model switch. `quota_exhausted` is not RATE_LIMIT. A missing or different `served_model` (body or `X-OpenVault-Served-Model`) is INVALID `pin_mismatch:<served_provider>/<served_model>` and stays in n. One pinned call before the round: if it is not the pin, n=0 and the round is INVALID.
+- **Gate.** `tests/test_strict_pin_01.py` through `live()`. Fails on `a63988b2`. No existing test edited.
+- **Counts.** Offline 52-pack unchanged: exact 0/16/36/0/0, generative 0/26/11/15/0, INVALID 0.
+- **Not this ticket:** timeout (Part B), `submit_failed` (Part C), `pii.py`, judge, oracle SQL, the label set, protected paths.
+
 ## 2026-10-01 - ENGINE-DATE-02: clock clear without the score-mask reset (#308)
 
 - **Ticket.** Same follow-up under [dms#308](https://github.com/Netie-AI/dms/issues/308). Does not close the issue. PR #325 stays a draft.
