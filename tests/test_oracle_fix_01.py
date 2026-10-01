@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ORACLES_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 SEED_PATH = ROOT / "packages" / "executor" / "dms_executor" / "demo_warehouse.py"
 
-# dms#301: last_audit_date / INTERVAL stays its own ORACLE_ERROR category.
-_OWN_ORACLE_ERROR = frozenset({"cq_audit_overdue"})
+# dms#308: cq_audit_overdue is judgeable; no own-error exemption.
+_OWN_ORACLE_ERROR = frozenset()
 
 _EQ_SINGLE = re.compile(r"\btxn_type\s*=\s*'([^']*)'", re.IGNORECASE)
 _EQ_DOUBLE = re.compile(r'\btxn_type\s*=\s*"([^"]*)"', re.IGNORECASE)
@@ -95,8 +95,7 @@ def test_curated_oracles_match_demo_seed_txn_type(tmp_path: Path) -> None:
                 bad_literals.append(f"{oid}:{lit!r}")
 
         expect = str(body.get("expect") or "").lower()
-        # Refuse SQL is Cortex-shaped documentation, not a DMS-lake PASS oracle.
-        # cq_audit_overdue keeps its own ORACLE_ERROR category (last_audit_date).
+        # Refuse/abstain SQL is Cortex-shaped documentation, not a DMS-lake PASS oracle.
         own_error = oid in _OWN_ORACLE_ERROR or expect in {"refuse", "abstain"}
         try:
             rows = warehouse.execute_sql(sql, path=db)
@@ -107,7 +106,7 @@ def test_curated_oracles_match_demo_seed_txn_type(tmp_path: Path) -> None:
             continue
         if own_error:
             continue
-        if lits and not rows:
+        if not rows:
             zero_rows.append(str(oid))
 
     assert len(txn_oracle_ids) >= 9, (
@@ -116,5 +115,5 @@ def test_curated_oracles_match_demo_seed_txn_type(tmp_path: Path) -> None:
     assert not bad_literals and not errors and not zero_rows, (
         f"txn_type literals not in seed {sorted(seed_types)}: {bad_literals}; "
         f"oracle errors: {errors}; "
-        f"zero-row txn_type oracles: {zero_rows}"
+        f"zero-row answer oracles: {zero_rows}"
     )
