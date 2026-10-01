@@ -464,6 +464,166 @@ def test_live_round_without_case_record_is_invalid(
     assert not Path(named).is_file()
 
 
+def _record_rows(report: dict[str, object]) -> list[dict[str, object]]:
+    named = report.get("case_record")
+    if not isinstance(named, str):
+        return []
+    path = Path(named)
+    if not path.is_file():
+        return []
+    return [
+        json.loads(ln)
+        for ln in path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+
+
+def test_live_case_record_mask_payload_stays_fixed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """mask_payload again leaves every record line unchanged."""
+    from dms_core.pii import is_mask_token, mask_payload
+
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.setenv("DMS_SCORE_CASE_DIR", str(tmp_path / "case_records"))
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    served_text = f"reach {SECRET_EMAIL}"
+    served_rows = [{"sku_count": "DMSMASK_unknown_01", "note": SECRET_EMAIL}]
+    _install_http(
+        monkeypatch,
+        _by_question(
+            {
+                "badge": "L0_CERTIFIED",
+                "abstained": False,
+                "sql_used": SKU_SQL,
+                "text": served_text,
+                "rows": served_rows,
+            }
+        ),
+    )
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    assert report["n"] == _pack_n()
+    rows = _record_rows(report)
+    blob = ""
+    named = report.get("case_record")
+    if isinstance(named, str) and Path(named).is_file():
+        blob = Path(named).read_text(encoding="utf-8")
+    masked = mask_payload(text=served_text, rows=served_rows)
+    token = masked["rows"][0]["note"]
+    problems: list[str] = []
+    if not is_mask_token(token) or SECRET_EMAIL in blob or token not in blob:
+        problems.append("unmasked value in a record line")
+    for row in rows:
+        env = row.get("envelope")
+        stored = env if isinstance(env, dict) else {}
+        again = mask_payload(
+            text=str(stored.get("text") or ""),
+            rows=list(row.get("rows") or []),
+            values=list(stored.get("values") or []),
+            sources=list(stored.get("contributing_sources") or []),
+            chart=stored.get("chart"),
+            sql_used=stored.get("sql_used"),
+        )
+        if (
+            again["text"] != stored.get("text")
+            or again["rows"] != row.get("rows")
+            or again["sql_used"] != stored.get("sql_used")
+        ):
+            problems.append("mask_payload changed a record line")
+            break
+    if not rows:
+        problems.append("mask_payload: no record lines")
+    assert problems == []
+
+
+def test_live_case_record_outcome_counts_match_round(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Line count is n. File outcomes match the round, including INVALID, ABSTAIN, WRONG."""
+    from collections import Counter
+
+    _open_round(monkeypatch, tmp_path)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    question = _sku_question()
+    finance = _finance_space()
+    ops = str(load_pack(score_curated.DEFAULT_PACK)["spaces"]["ops"])
+
+    def responder(_method: str, _url: str, body: dict[str, object] | None):
+        if not isinstance(body, dict) or body.get("question") != question:
+            return _Ok(_abstain())
+        if body.get("space_id") == finance:
+            return _Ok(
+                {
+                    "badge": "L0_CERTIFIED",
+                    "abstained": False,
+                    "sql_used": SKU_SQL,
+                    "rows": [{"sku_count": "DMSMASK_unknown_01"}],
+                }
+            )
+        if body.get("space_id") == ops:
+            return _Ok(
+                {
+                    "badge": "L0_CERTIFIED",
+                    "abstained": False,
+                    "sql_used": SKU_SQL,
+                    "rows": [{"sku_count": 0}],
+                }
+            )
+        return _Ok(_abstain())
+
+    _install_http(monkeypatch, responder)
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    cases = report["cases"]
+    assert isinstance(cases, list)
+    round_counts = Counter(str(row["verdict"]) for row in cases)
+    file_counts = Counter(str(row["outcome"]) for row in _record_rows(report))
+    assert (len(list(file_counts.elements())), file_counts) == (
+        report["n"],
+        round_counts,
+    )
+    assert {"INVALID", "ABSTAIN", "WRONG"} <= set(file_counts)
+
+
+def test_live_unreadable_commit_is_record_unidentified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unreadable commit sha makes the round INVALID record_unidentified."""
+    _open_round(monkeypatch, tmp_path)
+    monkeypatch.setattr(score_curated, "merge_commit_sha", lambda: "unknown", raising=False)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    assert (report.get("reason"), report.get("round_label"), report.get("n")) == (
+        "record_unidentified",
+        "INVALID",
+        _pack_n(),
+    )
+
+
+def test_live_record_write_failure_is_record_write_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed write or flush makes the round INVALID record_write_failed."""
+    _open_round(monkeypatch, tmp_path)
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("flush failed")
+
+    monkeypatch.setattr(score_curated, "write_case_records", _boom, raising=False)
+    db = _oracle_db(tmp_path / "oracle.duckdb")
+    _install_http(monkeypatch, _by_question(_abstain()))
+    live("http://127.0.0.1:9", 1.0, db)
+    report = _report(tmp_path)
+    assert (report.get("reason"), report.get("round_label"), report.get("n")) == (
+        "record_write_failed",
+        "INVALID",
+        _pack_n(),
+    )
+
+
 def test_live_unmasked_match_stays_ok(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

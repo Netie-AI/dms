@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-01 - SCORE-MASK-01: record gate items 2 to 5 (#299)
+
+- **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE. No existing test edited.
+- **Gate.** `mask_payload` again leaves each record line unchanged and the line holds no clear value. Line count is n and file outcome counts match the round, with at least one INVALID, one ABSTAIN, and one WRONG. An unreadable commit is `record_unidentified`. A failed write or flush is `record_write_failed`. Each new test goes through `live()` and fails on `a63988b2` on that assert. 52-pack unchanged. Unread engine date stays n=0.
+
 ## 2026-10-01 - SCORE-MASK-01: parent failures are the rule, not n=0 (#299)
 
 - **Ticket.** Same follow-up under [dms#299](https://github.com/Netie-AI/dms/issues/299). Does not close the issue. Does not stamp COMPLETE.

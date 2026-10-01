@@ -2331,12 +2331,20 @@ def case_record_path(directory: Path, run_id: str, sha: str) -> Path:
     return directory / f"score_cases_{run_id}_{sha}.jsonl"
 
 
+def _record_id_ok(value: str | None) -> bool:
+    """Run id and commit sha are hex. Empty and 'unknown' are unreadable."""
+    text = (value or "").strip().lower()
+    if len(text) < 8:
+        return False
+    return all(ch in "0123456789abcdef" for ch in text)
+
+
 def write_case_records(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = "".join(
-        json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in records
-    )
-    path.write_text(body, encoding="utf-8")
+    with path.open("w", encoding="utf-8") as handle:
+        for row in records:
+            handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        handle.flush()
 
 
 def case_record_matches(path: Path, n: int) -> bool:
@@ -2385,10 +2393,27 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     run_id = uuid.uuid4().hex
     sha = merge_commit_sha()
     rec_path = case_record_path(case_record_dir(art), run_id, sha)
-    write_case_records(rec_path, list(clock.get("case_records") or []))
+    unidentified = not _record_id_ok(run_id) or not _record_id_ok(sha)
+    write_failed = False
+    if not unidentified:
+        try:
+            write_case_records(rec_path, list(clock.get("case_records") or []))
+        except OSError:
+            write_failed = True
     date_invalid = clock.get("round_label") == "INVALID"
-    record_missing = not case_record_matches(rec_path, n)
-    round_label = "INVALID" if date_invalid or record_missing else clock.get("round_label")
+    record_missing = (
+        not unidentified
+        and not write_failed
+        and not case_record_matches(rec_path, n)
+    )
+    record_bad = unidentified or write_failed or record_missing
+    round_label = "INVALID" if date_invalid or record_bad else clock.get("round_label")
+    reason = clock.get("reason")
+    if reason != "engine_date_unread":
+        if unidentified:
+            reason = "record_unidentified"
+        elif write_failed:
+            reason = "record_write_failed"
     print(f"case_record={rec_path}")
     (art / "score_curated.json").write_text(
         json.dumps(
@@ -2409,14 +2434,14 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "n": n,
                 "n_without_invalid": n - invalid_n,
                 "abstained": tallies["ABSTAIN"],
-                "reason": clock.get("reason"),
+                "reason": reason,
                 "passed": (
                     wrong == 0
                     and oracle_error == 0
                     and invalid_n == 0
                     and rate_limit == 0
                     and not date_invalid
-                    and not record_missing
+                    and not record_bad
                 ),
                 "cases": cases,
                 "oracle_db": str(oracle_db),
@@ -2438,6 +2463,12 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     inv = _invalid_round_exit(clock.get("round_label"))
     if inv is not None:
         return inv
+    if unidentified:
+        print("INVALID: record_unidentified. Not WRONG.")
+        return EXIT_FAIL
+    if write_failed:
+        print("INVALID: record_write_failed. Not WRONG.")
+        return EXIT_FAIL
     if record_missing:
         print("INVALID: case record file missing. Not WRONG.")
         return EXIT_FAIL
