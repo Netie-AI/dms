@@ -1,0 +1,1546 @@
+{
+ "outside_in": {
+  "entry_points": [
+   {
+    "id": "chat-ask:followup-average",
+    "name": "Session follow-up: 'average of them'",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100 (router mounted only when DMS_MCP=1, apps/api/dms_api/app.py:158)"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:172 maybe_followup (average branch :191-225), called first in the ladder at packages/executor/dms_executor/__init__.py:579-590",
+    "trigger": "DMS_ASK_MODE=live, Cortex client present, ask_path None/product (allow_follow __init__.py:548), no grounded_tables (session_followup.py:182), non-empty session_id, question matches ^average of them$ (session_followup.py:22), and Executor._turns holds >=1 numeric value for (session_id, space_id). SQL of literals runs on LOCAL DuckDB via execute_sql (session_followup.py:138), no Cortex submit, no ledger; badge L2_VALIDATED.",
+    "evidence": "packages/executor/dms_executor/session_followup.py:217-225 (text 'Average of the prior N figures is RM ...') and :99-116 (L2_VALIDATED envelope with rows)"
+   },
+   {
+    "id": "chat-ask:followup-add-n",
+    "name": "Session follow-up: 'add N'",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:226-259 (maybe_followup add branch)",
+    "trigger": "Same gating as followup-average; question matches ^add <number>$ (session_followup.py:23) and the prior turn stored exactly one numeric value (:227). Local DuckDB arithmetic, L2_VALIDATED, no ledger.",
+    "evidence": "packages/executor/dms_executor/session_followup.py:250-259 (text 'Prior figure plus N is RM ...', rows)"
+   },
+   {
+    "id": "chat-ask:followup-abstain",
+    "name": "Session follow-up abstain",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:67 _abstain",
+    "trigger": "Follow-up phrase recognised but no prior numeric values (avg, :192-197), prior not a single scalar (add, :227-232), or local compute raised (:208-213, :242-247). Also fires when session_id is set but the turn cache is empty (e.g. after restart).",
+    "evidence": "packages/executor/dms_executor/session_followup.py:68-86 (ABSTAIN envelope with explanatory text)"
+   },
+   {
+    "id": "cache:session-turns",
+    "name": "In-process prior-turn values cache (feeds follow-up figures)",
+    "kind": "cache",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (written after every live_ask lane return; read at packages/executor/dms_executor/__init__.py:582)"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:237-247 Executor._store_turn -> packages/executor/dms_executor/session_followup.py:58 snapshot_turn",
+    "trigger": "Any non-abstained live_ask envelope with numeric values[] is snapshotted into self._turns keyed (session_id, space_id) (__init__.py:193, session_followup.py:51-55); abstained answers pop the key (__init__.py:244-246). Process memory only, cleared on close (__init__.py:235). Not written by demo lanes, the space-boundary refusal, or the cascade-blocked abstain (__init__.py:676-686 returns without _store_turn). Keyed only by caller-supplied session_id, no user identity.",
+    "evidence": "packages/executor/dms_executor/session_followup.py:58-64 (stores values + sql_used); consumed into answer figures at session_followup.py:189-225"
+   },
+   {
+    "id": "chat-ask:verified-query",
+    "name": "Steward verified question->SQL (VQ-02) lane",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ask_path product or exact)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100",
+     "setup: POST /v1/studio/verified-queries apps/api/dms_api/routes/studio.py:309"
+    ],
+    "producer": "packages/executor/dms_executor/verified_queries.py:319 maybe_verified_ask -> :275 envelope_from_verified_submit (called at packages/executor/dms_executor/__init__.py:592-612)",
+    "trigger": "Ladder product/exact (certified_first, __init__.py:545); no grounded_tables (verified_queries.py:223); normalized question equals a registered question_norm or synonym for scope_key(space_id) (:204-211, :35-40); registered SQL names only grantable DEMO_TABLES identifiers (:244-246); Cortex submit ok with output (:347-353); ledger append returns entry_id and a distinct non-empty hash (:355-361). Submit exceptions are NOT caught here (:347) and propagate to chat.py.",
+    "evidence": "packages/executor/dms_executor/verified_queries.py:291-316 (L0_CERTIFIED envelope, rows from Cortex submit, 'Found N row(s)' text, audit_id=ledger entry)"
+   },
+   {
+    "id": "chat-ask:governed-pack",
+    "name": "Demo governed-metric pack (VQ-01/VQ-03) lane",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ask_path product or exact)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_pack.py:326 maybe_pack_ask -> :283 envelope_from_pack_submit (called at packages/executor/dms_executor/__init__.py:614-633)",
+    "trigger": "Ladder product/exact; no grounded_tables (demo_pack.py:265); normalized question exactly equals one of the 10 PACK_METRICS questions (demo_pack.py:95-156, :270); the Space grant covers every table the SQL names or its warehouse_ alias (:245-250, :274); Cortex submit ok with output and ledger entry_id+hash; any submit/ledger exception -> miss (None).",
+    "evidence": "packages/executor/dms_executor/demo_pack.py:297-323 (L1_GOVERNED_METRIC envelope with Cortex rows, route governed_metric)"
+   },
+   {
+    "id": "chat-ask:planted-refuse",
+    "name": "Planted uncertified-paraphrase refuse trap (VQ-04)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (all ladders: product, exact, generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_pack.py:200 maybe_uncertified_refuse_ask (called at packages/executor/dms_executor/__init__.py:635-640)",
+    "trigger": "After follow-up/VQ/pack miss; normalized question exactly equals one of 3 trap phrases ('how full is each warehouse', 'How many delayed incoming shipments per warehouse?', 'Show stock by storage bin') (demo_pack.py:36-38, :167-178).",
+    "evidence": "packages/executor/dms_executor/demo_pack.py:213-238 (ABSTAIN envelope, refusal text, suggestion chip for capacity utilisation)"
+   },
+   {
+    "id": "chat-ask:harness-exact-miss",
+    "name": "GEN-02 isolated 'exact' ladder miss",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask with ask_path='exact' apps/api/dms_api/routes/chat.py:213 - only when DMS_HARNESS_ASK_PATHS=1, else 400 at chat.py:227-238 (MCP cannot set ask_path, mcp.py:124-129)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:915 path_miss_envelope (called at packages/executor/dms_executor/__init__.py:642-650)",
+    "trigger": "ask_path=exact on a measurement origin and the question was not a VQ/pack/planted-refuse hit.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:923-929 -> :670-695 (ABSTAIN envelope route 'generated')"
+   },
+   {
+    "id": "chat-ask:cascade-abstain",
+    "name": "CCA-05 constraint cascade blocked abstain",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/cca/cascade.py:410 cascade_abstain_envelope (run_cascade :338; invoked at packages/executor/dms_executor/__init__.py:667-686)",
+    "trigger": "DMS_CCA_CASCADE truthy (cascade.py:88-95; default '0', not set in compose); question engages sense/class/segment/geo proposers (cascade.py:277-294) over the readable tables (__init__.py:659-666); a stage fails to certify, or a certified stage is demoted because the ask carries a polarity cue (cascade.py:393-405). When engaged but certified, attach_cascade (cascade.py:443-479) rides the trace on later lanes and demotes to ABSTAIN if the trace fails to parse (:451-462).",
+    "evidence": "packages/executor/dms_executor/cca/cascade.py:421-440 (ABSTAIN envelope with abstain_text and constraint_trace)"
+   },
+   {
+    "id": "chat-ask:bronze-sheet",
+    "name": "Named workbook+sheet bronze ask",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/bronze_sheet_ask.py:105 maybe_bronze_sheet_ask (_grouped_top_n :170, _eq_filter_total :237); called at packages/executor/dms_executor/__init__.py:689-727",
+    "trigger": "allow_bronze (product only, __init__.py:549); question names '<file>.xlsx ... on the X sheet|sheet X' AND either 'top N ... category' (1<=N<=50) or 'total <sales_value_myr|stock_value_myr|myr sales> for sku|city V' and not 'without running sql' (bronze_sheet_ask.py:26-75); space_id set; target bronze table is active in the Space and granted (__init__.py:704-716); table/columns exist. Executes read-only on LOCAL DuckDB bronze (no Cortex submit, no ledger append, no audit_id) and badges L0_CERTIFIED; these envelopes are not passed through assert_envelope_valid. Grounded_tables do NOT skip this lane.",
+    "evidence": "packages/executor/dms_executor/bronze_sheet_ask.py:207-234 and :299-319 (L0_CERTIFIED envelopes with rows and 'Found N row(s)' text); zero-match L0 envelope at :279-298"
+   },
+   {
+    "id": "chat-ask:bronze-grant-abstain",
+    "name": "Bronze-sheet lane grant/space abstain",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/bronze_sheet_ask.py:78 bronze_grant_abstain (called at packages/executor/dms_executor/__init__.py:696-723)",
+    "trigger": "bronze_lane_table(question) matches and either no space_id (reason 'no_space') or the target is not in active-bronze intersect granted (reason 'ungranted_table:<t>').",
+    "evidence": "packages/executor/dms_executor/bronze_sheet_ask.py:86-102 (ABSTAIN envelope 'ABSTAIN <reason>')"
+   },
+   {
+    "id": "chat-ask:generative-pregate-abstain",
+    "name": "Generative lane pre-gate abstains (vague/predictive/2099)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1020 maybe_generative_ask pre-gates :1067-1086 (called at packages/executor/dms_executor/__init__.py:728-763)",
+    "trigger": "allow_gen (product/generative); no grounded_tables (generative_ask.py:1062); question matches _UNSURE_ASK, is predictive, or names year 2099. Fires before Insights is called. The uncertified-paraphrase gate at :1067 is unreachable from live_ask because the planted refuse already fired at __init__.py:635.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1072-1086 -> :670-695 (ABSTAIN envelope)"
+   },
+   {
+    "id": "chat-ask:generative-multi-grain",
+    "name": "Generative multi-grain where-path compile (L2)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:932 _try_multi_grain_envelope -> :766 _submit_validated -> :698 _l2_envelope (invoked :1209-1221)",
+    "trigger": "Question names >=2 supply-chain grains and try_compile_multi_grain returns a compiled query over a granted join; not existential; validate_compiled_sql passes; coverage valid, no unhonored qualifier/currency gap; Cortex submit (via Executor._submit_verified_sql) returns output; ledger entry_id+hash.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:712-763 (L2_VALIDATED envelope, rows from submit, chart, coverage, where_paths)"
+   },
+   {
+    "id": "chat-ask:generative-insights-sql",
+    "name": "Generative lane: Cortex Insights-generated SQL (L2)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1222-1297 (kind=='sql' branch, submit at :1283-1296); planner seam packages/executor/dms_executor/__init__.py:137-164 _insights_compute_seam -> packages/cortex_client/cortex_client/client.py:196 compute_insights",
+    "trigger": "Cortex Insights generate payload carries query_sql (parse_compute_plan == 'sql'); SQL passes hostile/grant/EXPLAIN validate (:1235) and cites no declared-ontology violation (:1236-1252); submit + ledger succeed.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1283-1296 -> :720-741 (L2_VALIDATED envelope with rows/text/chart)"
+   },
+   {
+    "id": "chat-ask:generative-ontology-plan",
+    "name": "Generative lane: typed plan / Cortex-ranked metric compiled on DMS ontology (L2)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1359-1470 (plan_from_payload, _compile_maybe_unverified :1001, submit :1453-1470); ranking slots from :878 ontology_plan_from_ranking",
+    "trigger": "Insights returns a typed query_plan, OR a miss whose Cortex-ranked metric resolves onto the DMS ontology (:1163-1170), OR invalid Insights SQL that climbs to ranked slots (:1271-1281); ontology verified (or plan avoids failed subjects); compile ok; validate ok; submit + ledger ok. The bind_plan fallback (:1333) is unreachable over HTTP because live_ask passes bind_on_miss=False (__init__.py:758).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1453-1470 -> :720-763 (L2_VALIDATED envelope)"
+   },
+   {
+    "id": "chat-ask:generative-named-abstain",
+    "name": "Generative lane named abstains after Insights call",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:670 _abstain (returned from maybe_generative_ask :1149-1446 and _submit_validated :783-862)",
+    "trigger": "After compute: ontology verify cache missing, ranked-metric gap, compute 'unsure', named insights_fail, empty/invalid SQL, declared-ontology violation, compile refusal, existential filter, validate failure, coverage invalid, qualifier/currency gap, $as_of placeholder, submit failure/no rows, ledger failure. A plain transport miss returns None instead and falls through to the Cortex contract ask (product) or harness miss (generative) (:1319-1332).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:679-695 (ABSTAIN envelope with customer_abstain_text(reason))"
+   },
+   {
+    "id": "chat-ask:harness-generative-miss",
+    "name": "GEN-02 isolated 'generative' ladder miss",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask with ask_path='generative' apps/api/dms_api/routes/chat.py:213 - only when DMS_HARNESS_ASK_PATHS=1 (chat.py:227-238)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:915 path_miss_envelope (called at packages/executor/dms_executor/__init__.py:764-775)",
+    "trigger": "ask_path=generative on a measurement origin (skips follow-up, VQ, pack, bronze, Cortex ask) and maybe_generative_ask returned None.",
+    "evidence": "packages/executor/dms_executor/__init__.py:765-775 -> generative_ask.py:923-929 (ABSTAIN envelope)"
+   },
+   {
+    "id": "chat-ask:cortex-contract-ask",
+    "name": "Cortex /v1/contract/ask fallthrough",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:894 map_ask_response_to_envelope; call site :776-814 (demo_acl mint + bind_session + packages/cortex_client/cortex_client/client.py:114 ask -> generated/api/contract/ask.py:28 '/v1/contract/ask')",
+    "trigger": "allow_cortex (product only, __init__.py:547) and every earlier lane returned None. All grounded_tables asks that are not bronze-sheet hits land here (follow-up, VQ, pack and generative skip when tables are given). Engine badge mapped to L0/L1/L2 or ABSTAIN; refusal routes / unsure / unknown badge forced to ABSTAIN (:934-961); covers Cortex document-retrieval routes (envelope.py:58, __init__.py:1009-1010). Retries once on session_unbound/expired (:787-798).",
+    "evidence": "packages/executor/dms_executor/__init__.py:962-1047 (values promoted from rows, rows, chart, text=resp.answer, drillthrough_token, audit_id)"
+   },
+   {
+    "id": "chat-ask:space-boundary-refusal",
+    "name": "Space boundary refusal rendered as envelope",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:153 _space_refusal_envelope (via apps/api/dms_api/wiring.py:118 build_validated_envelope)",
+    "trigger": "live_ask raises AskServiceError code 'path_not_allowed', no grounded_tables, and space_id set (chat.py:317-325). With grounded_tables the same error is a 403 outside_grounded_scope (chat.py:296-311), not an envelope.",
+    "evidence": "apps/api/dms_api/routes/chat.py:170-182 (ABSTAIN envelope 'I can't answer that in <Space>...')"
+   },
+   {
+    "id": "chat-ask:demo-mode",
+    "name": "Demo ask mode (DMS_ASK_MODE=demo)",
+    "kind": "demo",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :249-255)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 answer_demo_question via packages/executor/dms_executor/__init__.py:288 Executor.demo_ask",
+    "trigger": "settings.dms_ask_mode == 'demo' (apps/api/dms_api/settings.py:40) and compliance not hard-denied. Ignores session_id, grounded_tables (ask_path still 400s without harness flag). Keyword router over local demo DuckDB: predictive->ABSTAIN (:287), scale/divide revenue (:292-295), top/rank SKUs (:306-318), capacity (:320-321), total revenue/sales (:323-326), SKUs below reorder (:328-329), alerts (:331-332), else ABSTAIN (:334). Envelope ask_mode='demo' but demo_fallback_used/banner are NOT set on this path.",
+    "evidence": "packages/executor/dms_executor/demo_ask.py:337-365 (L2_VALIDATED 'Total outbound revenue was RM ...' with values/rows/chart); apps/api/dms_api/routes/chat.py:253-255"
+   },
+   {
+    "id": "chat-ask:demo-fallback-no-cortex",
+    "name": "DMS_DEMO_FALLBACK when Cortex client missing",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :260-263)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 answer_demo_question, restamped by apps/api/dms_api/routes/chat.py:185 _stamp_demo_fallback",
+    "trigger": "DMS_ASK_MODE=live, DMS_DEMO_FALLBACK=1 (settings.py:43, default False), and app.state.cortex is None (e.g. app built without lifespan, app.py:123). Without the flag: 503 cortex_unavailable.",
+    "evidence": "apps/api/dms_api/routes/chat.py:189-210 (envelope with values/rows/chart, demo_fallback_used=True, demo_fallback_banner=True)"
+   },
+   {
+    "id": "chat-ask:demo-fallback-live-error",
+    "name": "DMS_DEMO_FALLBACK after non-policy AskServiceError",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :327-331)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 + apps/api/dms_api/routes/chat.py:185 _stamp_demo_fallback",
+    "trigger": "DMS_DEMO_FALLBACK=1 and live_ask raised AskServiceError whose code is not in _POLICY_CODES (chat.py:34-49) and was not handled as the grounded-scope 403 or space refusal (e.g. submit_failed, pool_queue_timeout, statement_timeout, sql_not_analyzable - the latter is a 403 policy code in _STATUS_BY_CODE but absent from _POLICY_CODES).",
+    "evidence": "apps/api/dms_api/routes/chat.py:328-331"
+   },
+   {
+    "id": "chat-ask:demo-fallback-exception",
+    "name": "DMS_DEMO_FALLBACK after any other live exception",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :336-340)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 + apps/api/dms_api/routes/chat.py:185 _stamp_demo_fallback",
+    "trigger": "DMS_DEMO_FALLBACK=1 and live_ask raised a non-AskServiceError exception (timeouts, RuntimeError, ReservedParamError, and SubmitError - a plain Exception subclass at packages/executor/dms_executor/manifest.py:227 that maybe_verified_ask does not catch at verified_queries.py:347, so a Cortex policy refusal such as path_not_allowed on the VQ lane is not screened by _POLICY_CODES here).",
+    "evidence": "apps/api/dms_api/routes/chat.py:337-340"
+   },
+   {
+    "id": "chat-drillthrough",
+    "name": "Drillthrough contributing rows",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/chat/drillthrough apps/api/dms_api/routes/chat.py:357",
+     "UI auto-call before CSV/XLSX/BI export apps/ui/src/components/AnswerMessage.tsx:145-156, :187-199"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:377-381 -> packages/cortex_client/cortex_client/client.py:268 drillthrough (generated/api/contract/drillthrough.py:28 '/v1/contract/drillthrough')",
+    "trigger": "Caller holds a drillthrough_token (from a Cortex contract answer); Cortex configured; gate not hard-denied. Response is the raw Cortex model dump: no envelope validation, no PII mask.",
+    "evidence": "packages/cortex_client/cortex_client/models.py:116-123 (rows, sql_used, source_table); apps/api/dms_api/routes/chat.py:381"
+   },
+   {
+    "id": "export:xlsx",
+    "name": "Excel export of an ask envelope",
+    "kind": "export",
+    "outer_routes": [
+     "POST /v1/chat/export.xlsx apps/api/dms_api/routes/chat.py:390"
+    ],
+    "producer": "packages/core/dms_core/xlsx_export.py:186 export_envelope_xlsx",
+    "trigger": "Body carries any envelope dict with answer_id+badge and list rows/values (xlsx_export.py:117-136); the envelope is caller-supplied and not checked against a server-issued answer. The UI posts {...envelope, rows: drillthrough rows} (AnswerMessage.tsx:213-222). PII re-masked server-side (:196).",
+    "evidence": "apps/api/dms_api/routes/chat.py:408-420 (xlsx bytes attachment); packages/core/dms_core/xlsx_export.py:196-198"
+   },
+   {
+    "id": "export:bi",
+    "name": "Power BI / Superset connect stub from an ask envelope",
+    "kind": "export",
+    "outer_routes": [
+     "POST /v1/chat/export.bi apps/api/dms_api/routes/chat.py:423"
+    ],
+    "producer": "packages/core/dms_core/bi_export.py:203 export_envelope_bi",
+    "trigger": "Same caller-supplied envelope contract as export.xlsx; table built from rows, else values, else cover (bi_export.py:118-135). UI posts envelope with drillthrough rows substituted (AnswerMessage.tsx:236-247).",
+    "evidence": "packages/core/dms_core/bi_export.py:235-249 (returns table rows, columns, badge, targets)"
+   },
+   {
+    "id": "export:csv-client",
+    "name": "Client-side CSV download of answer rows",
+    "kind": "export",
+    "outer_routes": [
+     "none server-side (browser only); source rows come from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 or POST /v1/chat/drillthrough apps/api/dms_api/routes/chat.py:357"
+    ],
+    "producer": "apps/ui/src/components/AnswerMessage.tsx:201 downloadRowsCsv -> apps/ui/src/lib/rowsToCsv.ts:61 rowsToCsv",
+    "trigger": "User clicks 'Download CSV' (AnswerMessage.tsx:325); when the envelope has a drillthrough_token and rows look like a summary, the drillthrough rows replace envelope rows (:187-199). No server-side PII masking on this path.",
+    "evidence": "apps/ui/src/components/AnswerMessage.tsx:202-210 (Blob text/csv of rows)"
+   },
+   {
+    "id": "ui:share-answer",
+    "name": "Share answer (envelope JSON to clipboard)",
+    "kind": "export",
+    "outer_routes": [
+     "none server-side (browser only); envelope from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213"
+    ],
+    "producer": "apps/ui/src/lib/answerDelivery.ts:23 shareEnvelopePayload",
+    "trigger": "User clicks 'Share answer' (apps/ui/src/components/AnswerMessage.tsx:358-369).",
+    "evidence": "apps/ui/src/lib/answerDelivery.ts:24-41 (text, values, rows, chart copied)"
+   },
+   {
+    "id": "ui:check-accuracy",
+    "name": "Client-computed row-sum 'Check accuracy' figure",
+    "kind": "other",
+    "outer_routes": [
+     "none server-side (browser only); envelope from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213"
+    ],
+    "producer": "apps/ui/src/lib/answerDelivery.ts:68 checkAnswerTotals",
+    "trigger": "User clicks 'Check accuracy' (apps/ui/src/components/AnswerMessage.tsx:370-378) on a non-abstained answer with rows; client sums a heuristically chosen numeric column and prints a new figure not present in the envelope.",
+    "evidence": "apps/ui/src/lib/answerDelivery.ts:95-114, :121-157 ('Row sum of X = N', Match/Mismatch messages)"
+   },
+   {
+    "id": "ui:exclusion-auto-confirm",
+    "name": "UI auto-fired follow-up ask on exclusion-confirm abstain",
+    "kind": "other",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (via apps/ui/src/lib/api.ts:158)"
+    ],
+    "producer": "apps/ui/src/components/AnswerMessage.tsx:163-185 (auto ask(resolveExclusionNoChip(noChip)) after 5s); server rewrites the chip via packages/executor/dms_executor/demo_ask.py:177-189 normalize_ask_question (applied at packages/executor/dms_executor/__init__.py:541)",
+    "trigger": "An ABSTAIN envelope whose suggestions (from the engine, or the UI defaults) contain both a '^Yes \u2014 exclude' and a '^No \u2014 show|without excluding' chip (AnswerMessage.tsx:30-31, :157-161). Without user input, after 5s the UI asks the 'No' chip, which the server normalizes to 'Top N selling SKUs by revenue'; the answer then comes from whichever chat-ask lane matches.",
+    "evidence": "apps/ui/src/components/AnswerMessage.tsx:173-178"
+   },
+   {
+    "id": "library:warehouse-preview",
+    "name": "Library warehouse table preview (raw rows)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/warehouse/{table}/preview apps/api/dms_api/routes/library.py:243",
+     "POST /v1/mcp/call name=preview apps/api/dms_api/routes/mcp.py:135-146"
+    ],
+    "producer": "packages/executor/dms_executor/warehouse_browse.py:114 preview_warehouse_table (via apps/api/dms_api/wiring.py:92)",
+    "trigger": "table is in warehouse_tables(space_id) (company-default ACL when space_id omitted) (library.py:272-274) and in the module allowlist (warehouse_browse.py:122); limit<=500. No PII mask, no envelope.",
+    "evidence": "packages/executor/dms_executor/warehouse_browse.py:129-143 (SELECT * rows, row_count)"
+   },
+   {
+    "id": "library:bronze-preview",
+    "name": "Library bronze table preview (raw rows)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/bronze/{table:path}/preview apps/api/dms_api/routes/library.py:283"
+    ],
+    "producer": "packages/executor/dms_executor/warehouse_browse.py:182 preview_bronze_table (via apps/api/dms_api/wiring.py:96)",
+    "trigger": "table resolves to a registered bronze table (warehouse_browse.py:190-191); Space allowlist enforced only when space_id is given (library.py:308-319) - company-default returns any registered upload. No PII mask.",
+    "evidence": "packages/executor/dms_executor/warehouse_browse.py:198-201, :228-238 (rows, row_count, truncated)"
+   },
+   {
+    "id": "mcp:ask",
+    "name": "MCP-01 ask tool",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call {name:'ask'} apps/api/dms_api/routes/mcp.py:100 (router mounted only when DMS_MCP=1, apps/api/dms_api/app.py:158-159)"
+    ],
+    "producer": "apps/api/dms_api/routes/mcp.py:118-133 -> apps/api/dms_api/routes/chat.py:213 chat_ask",
+    "trigger": "DMS_MCP=1; gate 'mcp.call' with read posture (mcp.py:108-114) then chat.ask's own gate; reaches every chat-ask lane on the product ladder plus demo mode / demo fallback; cannot pass ask_path, so harness lanes are unreachable.",
+    "evidence": "apps/api/dms_api/routes/mcp.py:132-133 (returns {ok, name, result: envelope})"
+   },
+   {
+    "id": "mcp:preview",
+    "name": "MCP-01 preview tool",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call {name:'preview'} apps/api/dms_api/routes/mcp.py:100 (DMS_MCP=1)"
+    ],
+    "producer": "apps/api/dms_api/routes/mcp.py:135-146 -> apps/api/dms_api/routes/library.py:243 preview_wh_table -> packages/executor/dms_executor/warehouse_browse.py:114",
+    "trigger": "DMS_MCP=1; table arg without '/' or '..'; same Space/company-default allowlist as the HTTP preview. Bronze preview is not exposed via MCP.",
+    "evidence": "apps/api/dms_api/routes/mcp.py:143-146 (returns preview rows)"
+   },
+   {
+    "id": "library:chunks-search",
+    "name": "Document chunk search (RAG-02) returning chunk content",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/chunks/search apps/api/dms_api/routes/library.py:118"
+    ],
+    "producer": "apps/api/dms_api/wiring.py:51 search_document_chunks -> packages/core/dms_core/control_plane/document_chunks.py:147 search_chunks",
+    "trigger": "DATABASE_URL set (else []), space_id + q supplied; ranked chunks filtered by Space in SQL.",
+    "evidence": "packages/core/dms_core/control_plane/document_chunks.py:211 (chunk 'content' returned), :221"
+   },
+   {
+    "id": "studio:chunks-list",
+    "name": "Studio steward list of document chunks",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/studio/chunks apps/api/dms_api/routes/studio.py:150"
+    ],
+    "producer": "apps/api/dms_api/wiring.py:76 list_document_chunks -> packages/core/dms_core/control_plane/document_chunks.py:224 list_chunks",
+    "trigger": "DATABASE_URL set (else []); space_id required.",
+    "evidence": "packages/core/dms_core/control_plane/document_chunks.py:245-251 (chunk 'content' returned)"
+   },
+   {
+    "id": "insights:post-ask",
+    "name": "Hosted Cortex Insights ask passthrough",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/insights and POST /v1/insights/ apps/api/dms_api/routes/insights.py:153-154"
+    ],
+    "producer": "apps/api/dms_api/routes/insights.py:182-193 -> packages/cortex_client/cortex_client/client.py:243 insights_ask -> packages/cortex_client/cortex_client/insights.py:229 insights_post (Cortex POST /v1/insights)",
+    "trigger": "generate=false (default), intent or question non-empty, Cortex client present, gate not hard-denied (soft reasons pass, insights.py:172-173). The Cortex payload (including values) is returned via honest_envelope, which only stamps live_5000_ci (cortex_client/insights.py:124-131): no assert_envelope_valid, no badge normalization, no PII mask.",
+    "evidence": "packages/cortex_client/cortex_client/insights.py:190-191 (200 body returned); apps/api/dms_api/routes/insights.py:183-193"
+   },
+   {
+    "id": "insights:post-generate",
+    "name": "Hosted Cortex Insights generate passthrough",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/insights (generate=true) apps/api/dms_api/routes/insights.py:153-154"
+    ],
+    "producer": "apps/api/dms_api/routes/insights.py:175-193 -> packages/cortex_client/cortex_client/insights.py:229-269 insights_post (generate branch)",
+    "trigger": "generate=true, OpenVault probe reachable (insights.py:175-180), bearer key present and not the demo viewer key with safe transport (cortex_client/insights.py:242-245), strict-pin stamp without refusal (:257-262); otherwise a REFUSE/ABSTAIN payload with values=[].",
+    "evidence": "packages/cortex_client/cortex_client/insights.py:263-269 and :190-191 (Cortex generate payload returned to caller)"
+   },
+   {
+    "id": "studio:xlsx-orch-crosscheck",
+    "name": "XLSX-ORCH crosscheck with source-grid oracle figures",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/crosscheck apps/api/dms_api/routes/studio.py:187"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:69 run_crosscheck -> packages/core/dms_core/xlsx_orch.py:296 crosscheck_pack -> :195 oracle_from_sheets",
+    "trigger": "Mutation gate passes (enforce, studio.py:200); pack valid; workbook_path resolves under allowlisted roots; a sheet with OnTime + cost columns exists.",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:238-247 (avg_cost, ontime_count, total_count) returned as source_oracle at :340-351"
+   },
+   {
+    "id": "studio:xlsx-orch-golden",
+    "name": "XLSX-ORCH FRTR golden evaluation figures",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/golden apps/api/dms_api/routes/studio.py:234"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:153 run_golden -> packages/core/dms_core/xlsx_orch.py:405 evaluate_frtr_golden",
+    "trigger": "Stored artifact for pack_id or an allowlisted path; producer pointer_copilot (or test_fixture).",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:463-484 (avg_cost, ontime_count, total_count, export_row_count)"
+   },
+   {
+    "id": "studio:xlsx-orch-extract",
+    "name": "XLSX-ORCH extract/store with inspected analysis numbers",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/extract apps/api/dms_api/routes/studio.py:208"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:90 run_extract -> packages/core/dms_core/xlsx_orch.py:354 inspect_result_grids",
+    "trigger": "result_path is an allowlisted readable xlsx; bytes stored under space_docs and the parsed Analysis numbers returned.",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:379-388 (analysis_numbers, analysis_labeled); packages/executor/dms_executor/xlsx_orch.py:147-150"
+   },
+   {
+    "id": "cli:insights-report",
+    "name": "Deterministic insights report CLI",
+    "kind": "other",
+    "outer_routes": [
+     "none (CLI: python scripts/insights.py --database <db> [--json out])"
+    ],
+    "producer": "scripts/insights.py:199 mine (main :377)",
+    "trigger": "Operator runs the script against a manifest-listed database; compiles ontology insights in an in-memory DuckDB.",
+    "evidence": "scripts/insights.py:412-431 (prints totals and top rows, writes report JSON)"
+   },
+   {
+    "id": "cli:brief-deck",
+    "name": "Slide deck / HTML brief generator from insights report",
+    "kind": "other",
+    "outer_routes": [
+     "none (CLI: python scripts/brief.py --insights report.json --pptx/--html)"
+    ],
+    "producer": "scripts/brief.py:296 build_pptx and :268 build_html (main :411)",
+    "trigger": "Operator supplies an insights JSON that passes validate_report (:182).",
+    "evidence": "scripts/brief.py:438-452 (writes deck/HTML carrying report figures)"
+   }
+  ],
+  "notes": "I audited read-only at E:/DMS-wt/gate-matrix, HEAD f0e6c61f98248c4c3bde161d9f0cd1e553bf143f, branch claude/gate-matrix-e. Every citation below was opened at this commit. I edited nothing and ran nothing.\n\nLADDER ORDER (packages/executor/dms_executor/__init__.py:512-814). The question is normalized first (:541). Then, in order:\n1. follow-up\n2. verified query\n3. governed pack\n4. planted refuse (runs on every ladder)\n5. exact-ladder miss\n6. CCA cascade (default off: DMS_CCA_CASCADE, cca/cascade.py:88-95)\n7. bronze sheet (product ladder only)\n8. generative: Insights generate/ranking\n9. generative-ladder miss\n10. Cortex /v1/contract/ask\n\nlive_ask (:480-510) post-stamps served_attribution and runs mask_unknown_keys on every one of these. In chat.py, demo mode is checked first (:249-255). Cortex-missing and exception demo fallbacks come at :260-263 and :327-340.\n\nFINDINGS THAT MATTER FOR A GATE MATRIX\n1. The bronze-sheet lane gives an L0_CERTIFIED badge to figures it computes on local DuckDB. There is no Cortex submit, no ledger entry and no audit_id, and assert_envelope_valid is not called (bronze_sheet_ask.py:186-234, 254-319).\n2. The follow-up lane gives L2_VALIDATED to figures computed from the in-process _turns cache on local DuckDB. There is no ledger entry, and the cache is keyed only by the session_id the caller sends.\n3. Demo mode (DMS_ASK_MODE=demo) does not set demo_fallback_banner (chat.py:253-255). Only the DMS_DEMO_FALLBACK paths stamp it (chat.py:185-210).\n4. A SubmitError raised on the verified-query lane is not caught. verified_queries.py:347 lets it escape; SubmitError is a plain Exception (manifest.py:227). With DMS_DEMO_FALLBACK=1 it lands in the generic branch at chat.py:336, which skips the _POLICY_CODES screen. So a policy refusal there could be answered with demo numbers. This is plausible, not reproduced.\n5. Code sql_not_analyzable is a 403 policy code in _STATUS_BY_CODE (chat.py:71) but is missing from _POLICY_CODES (chat.py:34-49). Demo fallback can therefore mask it.\n6. Five surfaces bypass envelope validation:\n   - POST /v1/insights passes Cortex payloads through with no envelope check and no PII mask.\n   - Drillthrough returns raw rows with no PII mask.\n   - Warehouse and bronze previews return raw rows with no PII mask.\n   - Exports accept any envelope the caller sends; it is not tied to a server-issued answer.\n   - The UI swaps drillthrough rows into the export envelope (AnswerMessage.tsx:213-247).\n7. The UI auto-sends a follow-up ask after 5 seconds on an exclusion-confirm ABSTAIN (AnswerMessage.tsx:163-185). The server rewrites that chip to \"Top N selling SKUs by revenue\" (demo_ask.py:177-189).\n8. Grounded asks (grounded_tables) skip follow-up, verified query, pack and generative. They fall to the bronze lane or the Cortex contract ask.\n\nUNREACHABLE OR DORMANT AT THIS COMMIT\n- Executor.answer_user_sql (__init__.py:256): no HTTP caller.\n- bind_plan (generative_ask.py:1333): live_ask passes bind_on_miss=False (__init__.py:758).\n- Generative uncertified-paraphrase gate (generative_ask.py:1067): the planted refuse already fired earlier.\n- Duplicate refuse override in map_ask_response_to_envelope (__init__.py:1016-1021): the same phrases are refused at :635.\n- CortexClient.compute_query, the /dms/query path (client.py:166): not used by any ask lane.\n- apps/api/dms_api/scenarios/demo_ask.py: raises RuntimeError.\n\nLOOKED AT AND EXCLUDED (no answer data)\n- /health; /v1/skeleton/ping\n- /v1/spaces*; /v1/admin/overview; /v1/audit/ledger*; /v1/amend/proposals*; /v1/freeroute/providers\n- /v1/ontology* and MCP list_metrics: metric definitions only (ontology.py:36-72, mcp.py:148-152)\n- GET /v1/insights, /keys, /identity, /ontology: metadata\n- /v1/trust/summary and /runs/{name}: eval statistics and question/outcome/sql items, not answers to a data question\n- /v1/runs: SQL text and status\n- /v1/pipelines/*: promote receipts, contract inference, gold sign\n- /v1/studio/ingest*, /bronze listing, /sources/sql receipt, /verified-queries list and register (register is the setup for the VQ lane)\n- /v1/library/sources, /data-map, /tree, /warehouse/tables, /reveal\n\nScripts such as playground_ask.py, verify_*.py and score_*.py are HTTP clients or test harnesses, not answer producers. The only non-HTTP producers serving people are scripts/insights.py and scripts/brief.py. I found no scheduled job and no standalone MCP server; MCP is only the HTTP router mounted when DMS_MCP=1."
+ },
+ "inside_out": {
+  "entry_points": [
+   {
+    "id": "chat-ask:followup",
+    "name": "Session follow-up arithmetic ('average of them' / 'add N')",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:100, mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:172 (maybe_followup) -> _pack_compute session_followup.py:89; called at packages/executor/dms_executor/__init__.py:578-590",
+    "trigger": "ladder=product (ask_path None/product, __init__.py:548) AND no grounded_tables (session_followup.py:182-183) AND question matches ^average of them$ or ^add N$ (session_followup.py:22-23, 185-188). Prior values come from the in-process Executor._turns memo keyed (session_id, space_id) (__init__.py:578-583); no/insufficient prior -> ABSTAIN (session_followup.py:67-86, 191-197, 227-232). Executes arithmetic SQL on LOCAL DuckDB (execute_sql session_followup.py:138), not Cortex submit/ledger, yet badges L2_VALIDATED. A real $as_of placeholder returns reserved_as_of_abstain (session_followup.py:131-137).",
+    "evidence": "packages/executor/dms_executor/session_followup.py:99-119 (build_answer_envelope badge L2_VALIDATED with rows/sql_used, text 'Average of the prior N figures is RM ...' at :220 / 'Prior figure plus ...' at :254); returned at packages/executor/dms_executor/__init__.py:590"
+   },
+   {
+    "id": "chat-ask:verified-query",
+    "name": "Steward-registered verified query (VQ-02) executed via Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/verified_queries.py:319 (maybe_verified_ask) -> envelope_from_verified_submit verified_queries.py:275; called at packages/executor/dms_executor/__init__.py:592-612",
+    "trigger": "ask_path != generative (certified_first, __init__.py:545) AND no grounded_tables (verified_queries.py:223-224) AND normalized question equals a registered question or synonym in _verified_queries for scope_key(space_id) (verified_queries.py:204-211, 230-242) AND registered SQL names only granted tables and is not hostile (244-250) AND Cortex /v1/contract/submit returns ok with output (347-353, via __init__.py:441-453) AND ledger append returns entry_id + distinct hash (355-361). Submit exceptions are NOT caught here (verified_queries.py:347) - a SubmitError reaches chat.py's generic except.",
+    "evidence": "packages/executor/dms_executor/verified_queries.py:296-316 (L0_CERTIFIED envelope with rows from submit output, text 'Found N row(s)' + row dump :291-295); returned at packages/executor/dms_executor/__init__.py:612"
+   },
+   {
+    "id": "chat-ask:governed-pack",
+    "name": "Demo governed-metric pack (VQ-01/VQ-03 exact phrases) executed via Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/demo_pack.py:326 (maybe_pack_ask) -> envelope_from_pack_submit demo_pack.py:283; called at packages/executor/dms_executor/__init__.py:614-633",
+    "trigger": "ask_path != generative AND no grounded_tables (demo_pack.py:265-266) AND normalized question exactly equals one of the 10 PACK_METRICS questions (demo_pack.py:26-35, 95-156, 270) AND every table the metric SQL names is granted (or warehouse_<t> alias) (demo_pack.py:245-249, 273-275) AND Cortex submit + ledger append succeed (351-369; failures miss, not 503).",
+    "evidence": "packages/executor/dms_executor/demo_pack.py:302-323 (L1_GOVERNED_METRIC envelope with rows, sql_used, grounded_tables); returned at packages/executor/dms_executor/__init__.py:633"
+   },
+   {
+    "id": "chat-ask:planted-refuse",
+    "name": "Planted uncertified-paraphrase refuse trap (VQ-04)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/demo_pack.py:200 (maybe_uncertified_refuse_ask); called at packages/executor/dms_executor/__init__.py:635-640",
+    "trigger": "All ladders (not gated by ask_path). Normalized question equals one of three trap phrases: 'how full is each warehouse', 'How many delayed incoming shipments per warehouse?', 'Show stock by storage bin' (demo_pack.py:36-38, 167-178). The same check is repeated as a generative pre-gate (generative_ask.py:1067-1071) and as a post-Cortex overlay inside map_ask_response_to_envelope (__init__.py:1016-1021); both are shadowed by the earlier __init__.py:635 return (the overlay sees the with_grounded_scope-rewritten question, __init__.py:688).",
+    "evidence": "packages/executor/dms_executor/demo_pack.py:213-238 (ABSTAIN envelope with refuse text from :181-197 and a suggestion chip); returned at packages/executor/dms_executor/__init__.py:640"
+   },
+   {
+    "id": "chat-ask:harness-exact-miss",
+    "name": "GEN-03 isolated 'exact' ladder miss",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask with body ask_path='exact' (apps/api/dms_api/routes/chat.py:213; gated at chat.py:227-238)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:915 (path_miss_envelope); called at packages/executor/dms_executor/__init__.py:642-650",
+    "trigger": "Server sets DMS_HARNESS_ASK_PATHS (settings.py:50; else 400 ask_path_not_allowed at chat.py:227-238) AND body ask_path='exact' AND no VQ/pack/planted-refuse hit. Not reachable via MCP (mcp.py:124-129 builds AskBody without ask_path).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:679-695 (ABSTAIN envelope 'exact-match miss'); returned at packages/executor/dms_executor/__init__.py:650"
+   },
+   {
+    "id": "chat-ask:cascade-abstain",
+    "name": "CCA-05 constraint cascade block (sense/asset_class/geo)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/cca/cascade.py:338 (run_cascade) -> cascade_abstain_envelope cascade.py:410; called at packages/executor/dms_executor/__init__.py:667-686",
+    "trigger": "Env DMS_CCA_CASCADE in {1,true,yes,on} (cascade.py:88-95; default off) AND ladder product or generative (exact returned earlier) AND question proposes a sense/class/segment/geo term (cascade.py:277-294) AND a stage does not certify, including any polarity cue word such as 'only', 'not', 'except' (cascade.py:203-251, 393-405). Binders read DISTINCT landed column values from local DuckDB (cca/binder.py:223-271).",
+    "evidence": "packages/executor/dms_executor/cca/cascade.py:421-440 (ABSTAIN envelope whose constraint_trace carries the bound/matched landed values); returned at packages/executor/dms_executor/__init__.py:677-686 (no _store_turn)"
+   },
+   {
+    "id": "chat-ask:cascade-attach",
+    "name": "Cascade trace attach / fail-closed demotion on any later lane's answer",
+    "kind": "other",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)"
+    ],
+    "producer": "packages/executor/dms_executor/cca/cascade.py:443 (attach_cascade); applied at packages/executor/dms_executor/__init__.py:725, 761, 801-812",
+    "trigger": "DMS_CCA_CASCADE on AND cascade engaged and certified. If parse_trace fails, rewrites a bronze/generative/contract-ask answer into ABSTAIN with new text and clears values/rows/sql (cascade.py:451-462); otherwise appends coverage notes and encoding source cards (463-479). When cascade is not engaged it returns env unchanged without asserting (cascade.py:449-450).",
+    "evidence": "packages/executor/dms_executor/cca/cascade.py:454-462 (text 'Constraint cascade trace did not parse ... No answer is certified.'), returned via __init__.py:726-727 / 762-763 / 813-814"
+   },
+   {
+    "id": "chat-ask:bronze-sheet",
+    "name": "Named workbook+sheet ask executed on bronze (top-N category / filtered total)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/bronze_sheet_ask.py:105 (maybe_bronze_sheet_ask) -> _grouped_top_n :170 / _eq_filter_total :237; called at packages/executor/dms_executor/__init__.py:689-716",
+    "trigger": "ladder=product (allow_bronze, __init__.py:549) AND question names '<file>.xlsx' plus 'on the X sheet' / 'sheet X' / 'helaian X' (bronze_sheet_ask.py:26-29) AND either 'top N ... category' (N 1-50) or 'total <sales_value_myr|stock_value_myr|myr sales> for sku|city V' (44-75) AND not 'without running sql' AND space_id set AND target is in active bronze for the Space intersected with grantable_tables (__init__.py:704-716) AND bronze table exists in serving/ingest DuckDB (329-364). Runs even when grounded_tables is set. Executes on LOCAL DuckDB (191-203, 259-269) with no Cortex submit or ledger, yet badge L0_CERTIFIED; returns before generative and Cortex ask.",
+    "evidence": "packages/executor/dms_executor/bronze_sheet_ask.py:213-234 and :302-319 (L0_CERTIFIED envelopes with rows/text 'Found N row(s)'); empty-filter case :281-298; returned at packages/executor/dms_executor/__init__.py:724-727"
+   },
+   {
+    "id": "chat-ask:bronze-grant-abstain",
+    "name": "Bronze-lane grant refusal (no Space / ungranted sheet table)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/bronze_sheet_ask.py:78 (bronze_grant_abstain); called at packages/executor/dms_executor/__init__.py:696-723",
+    "trigger": "bronze_lane_table(question) resolves a target (bronze_sheet_ask.py:44-75) AND (no space_id -> reason 'no_space', __init__.py:696-702) OR (target not in active bronze \u2229 granted -> 'ungranted_table:<t>', __init__.py:717-723).",
+    "evidence": "packages/executor/dms_executor/bronze_sheet_ask.py:86-102 (ABSTAIN envelope 'ABSTAIN <reason>'); returned at packages/executor/dms_executor/__init__.py:727"
+   },
+   {
+    "id": "chat-ask:generative-pregate-abstain",
+    "name": "Generative lane pre-gate ABSTAIN (vague / predictive / year 2099)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1020 (maybe_generative_ask) -> _abstain generative_ask.py:670; called at packages/executor/dms_executor/__init__.py:728-763",
+    "trigger": "ladder product or generative (allow_gen, __init__.py:546) AND no grounded_tables (generative_ask.py:1062) AND question matches _UNSURE_ASK 'worry about|is this good|just give me' (91-94, 1072-1076), or is predictive (1077-1081), or names 2099 (1082-1086). The paraphrase pre-gate at 1067-1071 is shadowed by chat-ask:planted-refuse.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:679-695 (ABSTAIN envelope); returned at packages/executor/dms_executor/__init__.py:760-763"
+   },
+   {
+    "id": "chat-ask:generative-multi-grain",
+    "name": "GEN-01 multi-grain compile (ranked where-paths + importance) via Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:932 (_try_multi_grain_envelope) -> _submit_validated :766 -> _l2_envelope :698",
+    "trigger": "Generative lane reached (no earlier hit, no tables) AND question names >=2 supply-chain grains so try_compile_multi_grain returns a compiled query (generative_ask.py:949-952, 1209-1221) AND not existential/refusal, validate_compiled_sql passes (971-984) AND coverage/qualifier/currency checks pass (783-810) AND Cortex submit + ledger succeed (818-862). Runs after the Cortex Insights compute call (1130-1133).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:720-763 (L2_VALIDATED envelope with rows, chart, coverage, where_paths); returned at :1221 then packages/executor/dms_executor/__init__.py:760-763"
+   },
+   {
+    "id": "chat-ask:generative-insights-sql",
+    "name": "GEN-01 Cortex Insights-generated SQL, validated then Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1222-1297 -> _submit_validated :766 -> _l2_envelope :698; planner = Executor._insights_compute_seam packages/executor/dms_executor/__init__.py:137-164 -> CortexClient.compute_insights packages/cortex_client/cortex_client/client.py:196-219 (Cortex POST /v1/insights, never /dms/query)",
+    "trigger": "Insights payload parses as kind 'sql' (generative_ask.py:1159, 1222) with non-empty query_sql AND validate_compiled_sql passes (hostile/grant/EXPLAIN, 637-663) AND the SQL cites no broken declared ontology link (1236-1252) AND submit + ledger succeed. An invalid SELECT with a Cortex ranking available climbs to chat-ask:generative-ontology-plan (1271-1281).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1283-1297 -> :720-763 (L2_VALIDATED rows/text/chart); returned via packages/executor/dms_executor/__init__.py:760-763"
+   },
+   {
+    "id": "chat-ask:generative-ontology-plan",
+    "name": "GEN-01 typed plan / Cortex-ranking overlay compiled on the DMS ontology, then Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1359-1469 (plan_from_payload -> _compile_maybe_unverified :1001 -> _submit_validated :766); ranking overlay ontology_plan_from_ranking :878-912",
+    "trigger": "Insights returned a typed query_plan (kind 'plan'), OR kind 'miss' / invalid SQL with a Cortex-ranked metric resolvable onto a DMS measure (1163-1170, 1271-1281) AND plan is typed (1360-1368), qualifiers honored (1369-1383), ontology verified or plan avoids failed subjects (1384-1405), compile succeeds non-existential (1407-1428), validate passes (1430-1446), submit+ledger succeed. The bind_plan sub-variant (1331-1357) needs bind_on_miss=True, which live_ask never passes (__init__.py:758).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1453-1469 -> :720-763 (L2_VALIDATED rows/text, keep_gt filtering at :830-842); returned via packages/executor/dms_executor/__init__.py:760-763"
+   },
+   {
+    "id": "chat-ask:generative-named-abstain",
+    "name": "GEN-01 named fail-closed ABSTAIN (Insights refuse, unsure, validate/compile/coverage/ledger failure)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:670 (_abstain) reached from many branches in maybe_generative_ask :1020",
+    "trigger": "Generative lane reached and: ontology verify cache missing (1149-1157), ranking names a metric DMS cannot compile (1171-1184), compute unsure (1185-1194), Insights fail reason (1298-1311), untyped plan / unhonored qualifier / unverified ontology / compile refusal / validate failure (1360-1446), coverage/qualifier/currency/submit/ledger failure (783-862), or reserved $as_of (811-817, 1200-1208).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:679-695 (ABSTAIN envelope with customer_abstain_text(reason)); returned via packages/executor/dms_executor/__init__.py:760-763"
+   },
+   {
+    "id": "chat-ask:harness-generative-miss",
+    "name": "GEN-03 isolated 'generative' ladder miss",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask with body ask_path='generative' (apps/api/dms_api/routes/chat.py:213; gated at chat.py:227-238)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:915 (path_miss_envelope); called at packages/executor/dms_executor/__init__.py:764-775",
+    "trigger": "DMS_HARNESS_ASK_PATHS set AND ask_path='generative' (skips VQ/pack, __init__.py:545; skips follow-up and bronze, :548-549) AND maybe_generative_ask returned None (e.g. Insights transport miss, or grounded_tables set).",
+    "evidence": "packages/executor/dms_executor/__init__.py:765-775 -> generative_ask.py:679-695 (ABSTAIN 'generative miss: no plan source on this lane')"
+   },
+   {
+    "id": "chat-ask:cortex-contract-ask",
+    "name": "Cortex /v1/contract/ask fallthrough mapped to the DMS envelope",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:776-814 (demo_acl -> bind_session -> CortexClient.ask packages/cortex_client/cortex_client/client.py:114-121, POST /v1/contract/ask) -> map_ask_response_to_envelope packages/executor/dms_executor/__init__.py:894",
+    "trigger": "ladder=product AND every earlier lane returned None: no follow-up, VQ, pack, planted refuse, cascade block, bronze answer, generative answer. All grounded_tables asks land here unless the bronze lane hits (VQ/pack/generative skip when tables are set). An ungrantable grounded table raises GroundingRefused -> 403 (__init__.py:360-364; chat.py:277-290). Session unbound/expired triggers one rebind+retry (__init__.py:787-799).",
+    "evidence": "packages/executor/dms_executor/__init__.py:1022-1047 (envelope with Cortex answer text, values incl. every numeric row cell promoted up to 80 (:962-987), rows, chart (:989-991), drillthrough_token); returned at :801-814 then live_ask post-processing :504-510"
+   },
+   {
+    "id": "chat-ask:space-refusal",
+    "name": "Space-boundary refusal rendered as an ABSTAIN envelope at the route",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:153 (_space_refusal_envelope) -> apps/api/dms_api/wiring.py:118-122 (build_validated_envelope)",
+    "trigger": "live_ask raises AskServiceError code 'path_not_allowed' (from bind_session __init__.py:419-437 or contract ask __init__.py:800) AND body.space_id set AND no grounded_tables (grounded case becomes 403 outside_grounded_scope at chat.py:296-311). A path_not_allowed from submit_sql (VQ/pack/generative) is a SubmitError, not AskServiceError (manifest.py:227), so it does not reach this branch.",
+    "evidence": "apps/api/dms_api/routes/chat.py:170-182 (ABSTAIN text 'I can't answer that in <Space>...'); returned at chat.py:317-325"
+   },
+   {
+    "id": "cache:session-turns",
+    "name": "In-process memo of prior answer values per (session_id, space_id)",
+    "kind": "cache",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213) - written by every live_ask lane and read by chat-ask:followup"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:237-247 (_store_turn) + packages/executor/dms_executor/session_followup.py:58-64 (snapshot_turn); store dict at __init__.py:193",
+    "trigger": "session_id present (turn_key session_followup.py:51-55) and the returned envelope is not abstained and has numeric values; written at __init__.py:589, 611, 632, 639, 649, 726, 762, 774, 813 (not on cascade abstain :677). Demo-mode and demo-fallback envelopes never pass through live_ask so are not memoized. Cleared only on Executor.close (__init__.py:232-235).",
+    "evidence": "packages/executor/dms_executor/session_followup.py:64 (memo holds values + sql_used), consumed by maybe_followup session_followup.py:189-225 via __init__.py:582"
+   },
+   {
+    "id": "demo:ask-mode",
+    "name": "DMS_ASK_MODE=demo keyword demo router",
+    "kind": "demo",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213; branch chat.py:249-255)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 (answer_demo_question) via Executor.demo_ask packages/executor/dms_executor/__init__.py:288-290",
+    "trigger": "settings.dms_ask_mode == 'demo' (settings.py:40) and compliance gate allowed or soft-unavailable. Runs before any Cortex check, ignores session_id and grounded_tables, applies no Space grant (demo_ask.py:281-334 only stamps space_id), reads the demo DuckDB locally (e.g. demo_ask.py:433). Envelope gets ask_mode='demo' but no demo_fallback_banner flag (chat.py:254); UI banner keys off askMode (apps/ui/src/components/DemoFallbackBanner.tsx:6).",
+    "evidence": "packages/executor/dms_executor/demo_ask.py:343-365 (L2_VALIDATED 'Total outbound revenue was ...' with values/rows/chart), other branches :295, :313, :321, :329, :332; returned at apps/api/dms_api/routes/chat.py:253-255"
+   },
+   {
+    "id": "fallback:demo-no-cortex",
+    "name": "DMS_DEMO_FALLBACK when the Cortex client is missing",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213; branch chat.py:260-263)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:185 (_stamp_demo_fallback) over packages/executor/dms_executor/demo_ask.py:281",
+    "trigger": "settings.dms_demo_fallback true (settings.py:43, default False) AND the CortexDep is None. lifespan always installs a CortexClient (app.py:99-104); create_app's pre-lifespan state has cortex None (app.py:123), so this is reachable only when lifespan did not run.",
+    "evidence": "apps/api/dms_api/routes/chat.py:189-210 (demo envelope re-stamped demo_fallback_used/banner), returned chat.py:263"
+   },
+   {
+    "id": "fallback:demo-after-ask-error",
+    "name": "DMS_DEMO_FALLBACK after a non-policy AskServiceError",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213; branch chat.py:327-331)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:185 (_stamp_demo_fallback) over packages/executor/dms_executor/demo_ask.py:281",
+    "trigger": "dms_demo_fallback true AND live_ask raised AskServiceError whose code is not in _POLICY_CODES (chat.py:34-49) and was not handled by the path_not_allowed grounded/Space branches (chat.py:296-325), e.g. submit_failed / timeout from bind_session or contract ask.",
+    "evidence": "apps/api/dms_api/routes/chat.py:328-331 returns demo numbers stamped 'fallback after live error: <code>'"
+   },
+   {
+    "id": "fallback:demo-after-exception",
+    "name": "DMS_DEMO_FALLBACK after any other live_ask exception",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask (apps/api/dms_api/routes/chat.py:213; branch chat.py:336-340)",
+     "POST /v1/mcp/call tool=ask (apps/api/dms_api/routes/mcp.py:118-133)"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:185 (_stamp_demo_fallback) over packages/executor/dms_executor/demo_ask.py:281",
+    "trigger": "dms_demo_fallback true AND live_ask raised a non-AskServiceError exception: e.g. SubmitError from the verified-query submit (verified_queries.py:347 does not catch; manifest.py:227 SubmitError is a plain Exception), RuntimeError 'CortexClient required' (__init__.py:539-540), a ReservedParamError, or an HTTP timeout.",
+    "evidence": "apps/api/dms_api/routes/chat.py:337-340 returns demo numbers stamped 'fallback \u2014 live ask failed'"
+   },
+   {
+    "id": "preview:drillthrough",
+    "name": "Contributing-row drillthrough for a live answer token",
+    "kind": "preview",
+    "outer_routes": [
+     "POST /v1/chat/drillthrough (apps/api/dms_api/routes/chat.py:357)"
+    ],
+    "producer": "packages/cortex_client/cortex_client/client.py:268-275 (CortexClient.drillthrough -> Cortex POST /v1/contract/drillthrough)",
+    "trigger": "Caller supplies a drillthrough token (minted by Cortex on the contract-ask lane, __init__.py:1040) and the gate allows or is soft-unavailable (chat.py:364-370); 503 if no Cortex client. UI calls it on 'show rows' and before exports (apps/ui/src/components/AnswerMessage.tsx:145-156, 272-296).",
+    "evidence": "apps/api/dms_api/routes/chat.py:380-381 returns resp.model_dump with rows/sql_used (packages/cortex_client/cortex_client/models.py:116-122); no DMS envelope, no assert_envelope_valid, no PII mask"
+   },
+   {
+    "id": "export:xlsx",
+    "name": "Excel export of a caller-supplied ask envelope (INSIGHTS-EXPORT-01)",
+    "kind": "export",
+    "outer_routes": [
+     "POST /v1/chat/export.xlsx (apps/api/dms_api/routes/chat.py:390)"
+    ],
+    "producer": "packages/core/dms_core/xlsx_export.py:186 (export_envelope_xlsx)",
+    "trigger": "Body.envelope is a dict with non-empty answer_id and a badge in ALLOWED_BADGES, rows/values lists of dicts (xlsx_export.py:117-136): a shape check only, no provenance/audit check, so any API caller can export arbitrary rows under any badge. The UI posts its envelope with rows replaced by drillthrough rows when a summary row has a token (AnswerMessage.tsx:187-199, 213-221).",
+    "evidence": "packages/core/dms_core/xlsx_export.py:175-198 (Cover/Values/Rows sheets after PII mask); bytes returned at apps/api/dms_api/routes/chat.py:408-420"
+   },
+   {
+    "id": "export:bi",
+    "name": "Power BI / Superset stub from a caller-supplied ask envelope (INSIGHTS-EXPORT-02)",
+    "kind": "export",
+    "outer_routes": [
+     "POST /v1/chat/export.bi (apps/api/dms_api/routes/chat.py:423)"
+    ],
+    "producer": "packages/core/dms_core/bi_export.py:203 (export_envelope_bi)",
+    "trigger": "Same shape-only gate as xlsx (bi_export.py:209-215 -> xlsx_export.py:117-136); target powerbi|superset|both. The UI substitutes drillthrough rows as for xlsx (AnswerMessage.tsx:236-245).",
+    "evidence": "packages/core/dms_core/bi_export.py:235-247 (returns table rows, columns, badge) plus Power Query M embedding the rows (bi_export.py:80-100); returned at apps/api/dms_api/routes/chat.py:442"
+   },
+   {
+    "id": "export:csv-client",
+    "name": "Client-side CSV download of answer rows (CSV-01)",
+    "kind": "export",
+    "outer_routes": [
+     "none server-side; built in the browser from POST /v1/chat/ask envelopes or POST /v1/chat/drillthrough rows (apps/ui/src/components/AnswerMessage.tsx:201-211)"
+    ],
+    "producer": "apps/ui/src/lib/rowsToCsv.ts:61 (rowsToCsv)",
+    "trigger": "User clicks CSV download on an answer with rows; uses drillthrough rows if loaded, or fetches them when the envelope row is a one-cell summary (AnswerMessage.tsx:187-199; isSummaryExport rowsToCsv.ts:85-90).",
+    "evidence": "apps/ui/src/components/AnswerMessage.tsx:204-209 (Blob of rowsToCsv(exportRows) downloaded)"
+   },
+   {
+    "id": "preview:warehouse",
+    "name": "Library warehouse table preview (raw rows)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/warehouse/{table}/preview (apps/api/dms_api/routes/library.py:243)",
+     "POST /v1/mcp/call tool=preview (apps/api/dms_api/routes/mcp.py:135-146)"
+    ],
+    "producer": "packages/executor/dms_executor/warehouse_browse.py:114 (preview_warehouse_table) via apps/api/dms_api/wiring.py:92-93",
+    "trigger": "table is in the DEMO_TABLES allowlist (warehouse_browse.py:121-123) AND in warehouse_tables(space_id) for the named Space or company default (library.py:272-274); limit 1-500.",
+    "evidence": "packages/executor/dms_executor/warehouse_browse.py:129-143 (SELECT * LIMIT/OFFSET rows returned); route returns at apps/api/dms_api/routes/library.py:276-280"
+   },
+   {
+    "id": "preview:bronze",
+    "name": "Library bronze table preview (raw uploaded/SQL-pulled rows)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/bronze/{table:path}/preview (apps/api/dms_api/routes/library.py:283)"
+    ],
+    "producer": "packages/executor/dms_executor/warehouse_browse.py:182 (preview_bronze_table) via apps/api/dms_api/wiring.py:96-97",
+    "trigger": "table resolves against list_bronze_tables (warehouse_browse.py:190-192). Space scope check runs only when space_id is given (library.py:308-319); the company-default call previews any registered bronze table. Not exposed via MCP.",
+    "evidence": "packages/executor/dms_executor/warehouse_browse.py:198-201, 228-250 (rows, row_count, provenance); route returns at apps/api/dms_api/routes/library.py:321-327"
+   },
+   {
+    "id": "preview:chunks-search",
+    "name": "RAG-02 document chunk search (raw document text)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/chunks/search (apps/api/dms_api/routes/library.py:118)"
+    ],
+    "producer": "packages/core/dms_core/control_plane/document_chunks.py:147 (search_chunks) via apps/api/dms_api/wiring.py:51-73",
+    "trigger": "DATABASE_URL set (else []), space_id and q given; lexical match on the Space's chunks.",
+    "evidence": "packages/core/dms_core/control_plane/document_chunks.py:211, 221 (chunk 'content' returned); route returns at apps/api/dms_api/routes/library.py:135-140"
+   },
+   {
+    "id": "preview:chunks-list",
+    "name": "RAG-01 steward list of a Space's document chunks",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/studio/chunks (apps/api/dms_api/routes/studio.py:150)"
+    ],
+    "producer": "packages/core/dms_core/control_plane/document_chunks.py:224 (list_chunks) via apps/api/dms_api/wiring.py:76-89",
+    "trigger": "DATABASE_URL set and space_id given.",
+    "evidence": "packages/core/dms_core/control_plane/document_chunks.py:245-257 (content per chunk); route returns at apps/api/dms_api/routes/studio.py:164"
+   },
+   {
+    "id": "studio:xlsx-orch-crosscheck",
+    "name": "XLSX-ORCH crosscheck with source-grid oracle figure",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/crosscheck (apps/api/dms_api/routes/studio.py:187)"
+    ],
+    "producer": "packages/core/dms_core/xlsx_orch.py:296 (crosscheck_pack) -> oracle_from_sheets :195; via packages/executor/dms_executor/xlsx_orch.py:69-87",
+    "trigger": "Valid pack AND workbook_path resolves under allowlisted roots (executor xlsx_orch.py:42-66, 77-81) AND the workbook has an OnTime+Cost sheet.",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:241 (avg_cost computed from the source grid) returned as source_oracle at :348; route returns at apps/api/dms_api/routes/studio.py:201-205"
+   },
+   {
+    "id": "studio:xlsx-orch-extract",
+    "name": "XLSX-ORCH extract/store of a Pointer result workbook with parsed figures",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/extract (apps/api/dms_api/routes/studio.py:208)"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:90 (run_extract) -> packages/core/dms_core/xlsx_orch.py:354 (inspect_result_grids)",
+    "trigger": "result_path resolves under allowlisted roots (executor xlsx_orch.py:114-126) and parses as xlsx.",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:385 (analysis_numbers / analysis_labeled read from the workbook) attached at packages/executor/dms_executor/xlsx_orch.py:147-150; route returns at apps/api/dms_api/routes/studio.py:226-231"
+   },
+   {
+    "id": "studio:xlsx-orch-golden",
+    "name": "XLSX-ORCH FRTR golden evaluation (avg cost / on-time / total counts)",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/golden (apps/api/dms_api/routes/studio.py:234)"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:153 (run_golden) -> packages/core/dms_core/xlsx_orch.py:405 (evaluate_frtr_golden)",
+    "trigger": "A stored artifact for pack_id or an allowlisted path exists AND producer is allowed (xlsx_orch.py:411-432).",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:464-485 (avg_cost, ontime_count, total_count, export_row_count returned on both miss and pass); route returns at apps/api/dms_api/routes/studio.py:248-253"
+   },
+   {
+    "id": "insights:post",
+    "name": "Hosted Cortex Insights ask pass-through (INSIGHTS-HOST-01)",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/insights and POST /v1/insights/ (apps/api/dms_api/routes/insights.py:153-154)"
+    ],
+    "producer": "packages/cortex_client/cortex_client/client.py:243-266 (insights_ask) -> packages/cortex_client/cortex_client/insights.py:229 (insights_post) -> _request :150 -> honest_envelope :124",
+    "trigger": "intent or question non-empty, Cortex client configured, F5 allowed/soft (insights.py:165-173); generate=true additionally needs OpenVault reachable (insights.py:175-180). Not called by the UI.",
+    "evidence": "apps/api/dms_api/routes/insights.py:182-193 returns the Cortex payload with only live_5000_ci rewritten (packages/cortex_client/cortex_client/insights.py:124-131); not a DMS envelope (no badge mapping, no assert_envelope_valid); error bodies also forwarded (routes/insights.py:77-79). The ask-lane path strips values from the same payload (packages/cortex_client/cortex_client/compute.py:590-599); this route does not."
+   },
+   {
+    "id": "mcp:ask",
+    "name": "MCP-01 ask tool (wraps chat_ask)",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call name=ask (apps/api/dms_api/routes/mcp.py:100, 118-133); router mounted only when DMS_MCP=1 (apps/api/dms_api/app.py:158-159)"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:214 (chat_ask) - every chat-ask:*, demo:ask-mode and fallback:* lane",
+    "trigger": "settings.dms_mcp true; tool name 'ask' with non-empty question. AskBody has no ask_path, so it always runs the product ladder (mcp.py:124-129); gate checked as mcp.call (mutation=False) and again inside chat_ask.",
+    "evidence": "apps/api/dms_api/routes/mcp.py:132-133 returns {'result': chat_ask(...)}"
+   },
+   {
+    "id": "mcp:preview",
+    "name": "MCP-01 preview tool (wraps warehouse preview)",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call name=preview (apps/api/dms_api/routes/mcp.py:135-146); mounted only when DMS_MCP=1 (apps/api/dms_api/app.py:158-159)"
+    ],
+    "producer": "apps/api/dms_api/routes/library.py:244 (preview_wh_table) -> packages/executor/dms_executor/warehouse_browse.py:114",
+    "trigger": "settings.dms_mcp true; table without '/' or '..', limit 1-500 (mcp.py:136-140); same Space scope check as the HTTP route.",
+    "evidence": "apps/api/dms_api/routes/mcp.py:143-146 returns preview rows from warehouse_browse.py:129-143"
+   },
+   {
+    "id": "mcp:list-metrics",
+    "name": "MCP-01 list_metrics tool (Cortex ontology metrics pass-through)",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call name=list_metrics (apps/api/dms_api/routes/mcp.py:148-152); same data as GET /v1/ontology/metrics (apps/api/dms_api/routes/ontology.py:64)"
+    ],
+    "producer": "apps/api/dms_api/routes/ontology.py:36-51 (_fetch -> cortex_get /dms/ontology/metrics)",
+    "trigger": "settings.dms_mcp true; tool name 'list_metrics', optional pack.",
+    "evidence": "apps/api/dms_api/routes/ontology.py:44-45 returns Cortex data verbatim. These are metric definitions, not figures, as far as DMS code shows; the payload shape is defined by Cortex."
+   },
+   {
+    "id": "other:answer-user-sql",
+    "name": "Executor.answer_user_sql (user SQL -> L2 envelope on local DuckDB)",
+    "kind": "other",
+    "outer_routes": [],
+    "producer": "packages/executor/dms_executor/__init__.py:256-286 (answer_user_sql; Executor.execute :249-254)",
+    "trigger": "No HTTP route or MCP tool calls it at this commit; referenced only by tests (tests/test_engine_date_01.py, tests/test_engine_date_02.py, tests/test_mask_clock_02.py). A future route wiring it would get an L2_VALIDATED answer from local DuckDB with no Cortex submit/ledger.",
+    "evidence": "packages/executor/dms_executor/__init__.py:271-286 (execute rows -> build_answer_envelope badge L2_VALIDATED)"
+   },
+   {
+    "id": "ui:demo-source-fixture-preview",
+    "name": "UI fabricated spreadsheet preview in the Sources panel for demo answers",
+    "kind": "demo",
+    "outer_routes": [
+     "rendered client-side for envelopes from POST /v1/chat/ask (apps/ui/src/components/SourcePanel.tsx:128-129, 171-172)"
+    ],
+    "producer": "apps/ui/src/lib/previewFixtures.ts:20-61 (buildSheet / PREVIEW_SHEETS / sheetForSource)",
+    "trigger": "envelope.ask_mode === 'demo' AND a non-doc contributing source whose ref_id is ref_q3_sales, ref_kl_branch or ref_erp_inv. No server path emits those ref_ids at this commit (demo sources are ref_txn/ref_loc, packages/executor/dms_executor/demo_ask.py:29-46), so this path is dormant.",
+    "evidence": "apps/ui/src/lib/previewFixtures.ts:34 (synthetic figures 1000 + row*17) rendered via PreviewGrid at apps/ui/src/components/SourcePanel.tsx:171-172"
+   }
+  ],
+  "notes": "I audited read-only at E:/DMS-wt/gate-matrix, commit f0e6c61 (`git log -1` confirmed). I edited nothing and ran nothing.\n\nLadder order in Executor._live_ask (packages/executor/dms_executor/__init__.py:512-814):\n1. Follow-up (:578)\n2. Verified query (:592)\n3. Pack (:614)\n4. Planted refuse (:635)\n5. Exact-miss (:642)\n6. Cascade (:667)\n7. with_grounded_scope rewrite (:688)\n8. Bronze sheet (:689)\n9. Generative (:728)\n10. Generative-miss (:764)\n11. Cortex /v1/contract/ask (:776)\n\nEvery result is then post-processed by live_ask (:504-510): stamp_engine_clock, with_served_attribution (copies the Insights setup fields and generate_legs) and mask_unknown_keys. These modify an answer but do not produce one.\n\nThe route (apps/api/dms_api/routes/chat.py:213-354) adds demo mode, three DMS_DEMO_FALLBACK branches and the Space-refusal envelope.\n\nFindings that matter for a gate matrix:\n- **No runtime assert on the bronze lane.** It returns L0_CERTIFIED envelopes without calling assert_envelope_valid (bronze_sheet_ask.py:213, 281, 302). build_answer_envelope does not assert either (envelope.py:1340-1739). attach_cascade returns early without asserting when the cascade is not engaged, which is the default (cca/cascade.py:449-450). So E1-E9 are never asserted at runtime on that lane.\n- **Two lanes skip Cortex but carry confident badges.** Bronze (L0) and follow-up (L2) run on local DuckDB with no Cortex submit or ledger. Verified query, pack and generative all go through Cortex submit and ledger append.\n- **Four outputs bypass the DMS envelope.** Drillthrough (chat.py:380-381), POST /v1/insights (routes/insights.py:182-193) and the xlsx-orch figures are returned raw. Exports accept any caller envelope that passes a shape check (dms_core/xlsx_export.py:117-136). The UI also swaps drillthrough rows into envelope.rows before exporting (AnswerMessage.tsx:187-199).\n- **Demo mode is weaker than the fallback.** It applies no Space grant, ignores session and grounding, and sets no demo_fallback_banner (chat.py:249-255).\n- **A verified-query submit failure can fall back to demo numbers.** verified_queries.py:347 does not catch it, so the SubmitError reaches chat.py:336-340. With DMS_DEMO_FALLBACK=1 that serves demo numbers.\n- **Shadowed and dead branches.** The planted-refuse checks in generative_ask.py:1067 and __init__.py:1016-1021 never fire, because __init__.py:635 returns first. bind_plan needs bind_on_miss=True, which live_ask never passes (:758). apps/api/dms_api/scenarios/demo_ask.py:8-9 just raises and has no callers.\n- **The cascade engages only with DMS_CCA_CASCADE=1** (cca/cascade.py:88-95).\n\nData sent out but not shown to the user: semantic_retrieve (DISTINCT samples, semantic_retrieve.py:200, 379) goes into the Insights request body as ontology context (__init__.py:137-164).\n\nExcluded as not answer data, after reading them:\n- health, ping, freeroute\n- spaces list, get and sources\n- library sources, data-map, tree and warehouse/tables (row counts only)\n- studio ingest and ingest-batch receipts, GET /v1/studio/bronze (row counts), POST /v1/studio/sources/sql (pull receipt and link verdicts)\n- verified-queries register and list (question and SQL, no figures)\n- pipelines run, gold/sign and receipts (pass/quarantine counts; a gold promote does materialise metric SQL into a table at promote.py:424, but promote targets are not previewable through warehouse_browse.py:121-123), and infer-contract (column profile)\n- amend, audit ledger and verify, admin overview, runs\n- GET /v1/insights, /keys and /identity\n- GET /v1/insights/ontology?q= is a Cortex ranking pass-through (routes/insights.py:137-150). I saw no figures in the DMS code but did not prove it, so I left it out of the list.\n- GET /v1/trust/summary and /runs/{name} forward Cortex eval artifacts verbatim (trust.py:67-119). These are eval evidence, not answers to a user's question; their item contents are defined by Cortex.\n\nScripts such as playground_ask and score_* are HTTP clients or harnesses, not serving surfaces."
+ },
+ "merged": {
+  "entry_points": [
+   {
+    "id": "chat-ask:followup-average",
+    "name": "Session follow-up: 'average of them'",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (live_ask call :269-276)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100 (:118-133); router mounted only when DMS_MCP=1, apps/api/dms_api/app.py:158-159"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:172 maybe_followup (average branch :191-225) -> _followup_execute :122 (execute_sql on local DuckDB :138) -> _pack_compute :89; first rung of the ladder at packages/executor/dms_executor/__init__.py:578-590",
+    "trigger": "DMS_ASK_MODE=live (apps/api/dms_api/settings.py:40), Cortex client present (__init__.py:539-540), ladder product (ask_path None/product, __init__.py:548), no grounded_tables (session_followup.py:182-183), question after normalize_ask_question (__init__.py:541) matches ^average of them$ (session_followup.py:22), and Executor._turns holds >=1 numeric value for (session_id, space_id) (__init__.py:582). Runs arithmetic on literals in local DuckDB: no Cortex submit, no ledger append, yet badge L2_VALIDATED.",
+    "evidence": "packages/executor/dms_executor/session_followup.py:217-225 (text 'Average of the prior N figures is RM ...'); :99-119 (L2_VALIDATED envelope with rows and sql_used); returned at packages/executor/dms_executor/__init__.py:588-590"
+   },
+   {
+    "id": "chat-ask:followup-add",
+    "name": "Session follow-up: 'add N'",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:172 maybe_followup (add branch :226-259) -> _pack_compute :89; called at packages/executor/dms_executor/__init__.py:578-590",
+    "trigger": "Same gating as chat-ask:followup-average. The question matches ^add <number>$ (session_followup.py:23) and the prior turn stored exactly one numeric value (:227). Computed in local DuckDB with no ledger entry, badged L2_VALIDATED. The result is itself stored as the next turn (__init__.py:589), so 'add N' chains.",
+    "evidence": "packages/executor/dms_executor/session_followup.py:250-259 (text 'Prior figure plus N is RM ...', rows from local execute)"
+   },
+   {
+    "id": "chat-ask:followup-abstain",
+    "name": "Session follow-up abstain",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/session_followup.py:67 _abstain (plus reserved_as_of_abstain packages/executor/dms_executor/envelope.py:1830 via session_followup.py:131-137)",
+    "trigger": "A follow-up phrase is recognised, but one of these holds:\n- 'average' has no prior numeric values (session_followup.py:191-197). This includes asks with no session_id, where turn_key returns None (session_followup.py:51-55, __init__.py:578-582), and a cache emptied by restart or close (__init__.py:232-235).\n- 'add' has a prior that is not a single scalar (:227-232).\n- The local compute raised (:208-213, :242-247).\nThe $as_of branch is effectively dead, because follow-up SQL is numeric literals only (:198-199, :233).",
+    "evidence": "packages/executor/dms_executor/session_followup.py:68-86 (ABSTAIN envelope 'I cannot compute that follow-up without a prior numeric answer...')"
+   },
+   {
+    "id": "cache:session-turns",
+    "name": "In-process prior-turn values cache (feeds follow-up figures)",
+    "kind": "cache",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (written after each live_ask lane return; read at packages/executor/dms_executor/__init__.py:582)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:237-247 Executor._store_turn -> packages/executor/dms_executor/session_followup.py:58-64 snapshot_turn; the store is the dict at __init__.py:193",
+    "trigger": "Every live_ask lane return goes through _store_turn: __init__.py:589, 611, 632, 639, 649, 726, 762, 774 and 813. The cascade-blocked abstain at :676-686 does not.\n- A non-abstained envelope with numeric values[] is snapshotted (session_followup.py:58-64).\n- An abstained one pops the key (__init__.py:244-246).\nThe store is process-global on the one Executor and is keyed only by the caller-supplied (session_id, space_id) (session_followup.py:51-55), with no user identity. Any caller who knows a session_id can therefore have its prior figures averaged or added. Demo mode and demo-fallback envelopes never pass through live_ask, so they are not stored.",
+    "evidence": "packages/executor/dms_executor/session_followup.py:64 (stores values + sql_used); consumed into new answer figures at session_followup.py:189-225 via __init__.py:582"
+   },
+   {
+    "id": "chat-ask:verified-query",
+    "name": "Steward verified question->SQL (VQ-02) via Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ask_path product or exact)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100",
+     "setup: POST /v1/studio/verified-queries apps/api/dms_api/routes/studio.py:309"
+    ],
+    "producer": "packages/executor/dms_executor/verified_queries.py:319 maybe_verified_ask -> :275 envelope_from_verified_submit; called at packages/executor/dms_executor/__init__.py:592-612; submit via Executor._submit_verified_sql __init__.py:441-453 (demo_acl + bind_session + submit_sql)",
+    "trigger": "All of these hold:\n- Ladder product or exact (certified_first, __init__.py:545).\n- No grounded_tables (verified_queries.py:223-224).\n- The normalized question equals a registered question_norm or synonym in main._verified_queries for scope_key(space_id) (:35-40, :204-211, :225-242).\n- Every DEMO_TABLES identifier the SQL names is grantable (:244-246). Identifiers outside DEMO_TABLES are not checked here (:54-61).\n- The SQL is not hostile (:247-250).\n- Cortex submit returns ok with output (:347-353).\n- The ledger append returns an entry_id and a distinct non-empty hash (:355-361).\nNothing here catches exceptions from submit or ledger_append (:347, :355). A SubmitError from submit_sql (manifest.py:226-227, __init__.py:850) and a ledger error reach chat.py's generic except. An AskServiceError from bind_session (__init__.py:421-437) reaches chat.py's AskServiceError branch.",
+    "evidence": "packages/executor/dms_executor/verified_queries.py:286-316 (L0_CERTIFIED envelope, rows from Cortex submit output, text 'Found N row(s)' plus a row dump, audit_id = ledger entry)"
+   },
+   {
+    "id": "chat-ask:governed-pack",
+    "name": "Demo governed-metric pack (VQ-01/VQ-03) via Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ask_path product or exact)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_pack.py:326 maybe_pack_ask -> :283 envelope_from_pack_submit; called at packages/executor/dms_executor/__init__.py:614-633",
+    "trigger": "Ladder product or exact. No grounded_tables (demo_pack.py:265-266). The normalized question exactly equals one of the 10 PACK_METRICS questions (:26-35, :95-156, :267-272). The Space grant covers every table or its warehouse_ alias (:245-249, :273-275). Cortex submit is ok with output, and the ledger returns an entry_id plus a distinct hash (:350-369). Any submit or ledger exception becomes a miss (:352-353, :362-363), and the ask falls through to later lanes.",
+    "evidence": "packages/executor/dms_executor/demo_pack.py:292-323 (L1_GOVERNED_METRIC envelope with Cortex rows, sql_used, route governed_metric)"
+   },
+   {
+    "id": "chat-ask:planted-refuse",
+    "name": "Planted uncertified-paraphrase refuse trap (VQ-04)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (every ladder: product, exact, generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_pack.py:200 maybe_uncertified_refuse_ask; called at packages/executor/dms_executor/__init__.py:635-640",
+    "trigger": "Reached after a follow-up, VQ or pack miss. The normalized question exactly equals one of 3 trap phrases (demo_pack.py:36-38, :167-178). This runs before the with_grounded_scope rewrite (__init__.py:688), so grounded asks hit it too. The duplicate checks at generative_ask.py:1067-1071 and __init__.py:1016-1021 are shadowed by this return.",
+    "evidence": "packages/executor/dms_executor/demo_pack.py:213-238 (ABSTAIN envelope with refusal text from :181-197, plus a suggestion chip for the capacity-utilisation question)"
+   },
+   {
+    "id": "chat-ask:harness-exact-miss",
+    "name": "GEN-03 isolated 'exact' ladder miss",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask with body ask_path='exact' apps/api/dms_api/routes/chat.py:213; only when DMS_HARNESS_ASK_PATHS (settings.py:50), else 400 at chat.py:227-238. MCP cannot set ask_path (mcp.py:124-129)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:915 path_miss_envelope -> _abstain :670; called at packages/executor/dms_executor/__init__.py:642-650",
+    "trigger": "ask_path=exact on a measurement origin, and the question was not a VQ, pack or planted-refuse hit.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:923-929 -> :679-695 (ABSTAIN envelope route 'generated')"
+   },
+   {
+    "id": "chat-ask:cascade-abstain",
+    "name": "CCA-05 constraint cascade blocked abstain",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/cca/cascade.py:338 run_cascade -> :410 cascade_abstain_envelope; invoked at packages/executor/dms_executor/__init__.py:659-686",
+    "trigger": "Env DMS_CCA_CASCADE is in {1,true,yes,on} (cascade.py:88-95). It defaults to '0' and is read straight from the environment, not from Settings. The exact ladder already returned at __init__.py:642-650. The question engages a sense, class, segment or geo proposer (cascade.py:277-294) over the readable tables (__init__.py:659-666). A stage then either fails to certify or is demoted because polarity is unsettled (cascade.py:393-405). Binders read DISTINCT landed column values from local DuckDB (cca/binder.py:223-231), and those values travel in constraint_trace. The result is not stored as a turn (__init__.py:676-686).",
+    "evidence": "packages/executor/dms_executor/cca/cascade.py:421-440 (ABSTAIN envelope with abstain_text and constraint_trace)"
+   },
+   {
+    "id": "chat-ask:cascade-attach",
+    "name": "Cascade trace attach / fail-closed demotion of a later lane's answer",
+    "kind": "other",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/cca/cascade.py:443 attach_cascade; applied at packages/executor/dms_executor/__init__.py:725, 761, 801-812",
+    "trigger": "DMS_CCA_CASCADE is on and the cascade engaged without blocking.\n- If parse_trace fails, it rewrites a bronze, generative or contract-ask answer into ABSTAIN with new text and clears values, rows and sql (cascade.py:451-462).\n- Otherwise it appends coverage notes and adds encoding source cards when a drillthrough token exists (:463-479), then runs assert_envelope_valid (:481-483). That is the only runtime E1-E9 assert the bronze lane ever gets.\n- When the cascade is not engaged (the default), it returns the envelope unchanged with no assert (:449-450).",
+    "evidence": "packages/executor/dms_executor/cca/cascade.py:454-462 (text 'Constraint cascade trace did not parse ... No answer is certified.')"
+   },
+   {
+    "id": "chat-ask:bronze-sheet",
+    "name": "Named workbook+sheet bronze ask (top-N category / filtered total)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/bronze_sheet_ask.py:105 maybe_bronze_sheet_ask (_grouped_top_n :170, _eq_filter_total :237); called at packages/executor/dms_executor/__init__.py:688-727",
+    "trigger": "Conditions:\n- Product ladder only (allow_bronze, __init__.py:549).\n- bronze_lane_table matches (bronze_sheet_ask.py:44-75): the question names '<file>.xlsx' with 'on the X sheet', 'sheet X' or 'helaian X', plus either 'top N' (N 1-50) with a category word, or 'total' + sales_value_myr|stock_value_myr|myr sales + 'for sku|city V'.\n- The question does not say 'without running sql'.\n- space_id is set.\n- The target is in the Space's active bronze tables intersected with grantable_tables (__init__.py:704-716).\n- The table and columns exist in the serving or ingest DuckDB (:329-364).\nGrounded asks do NOT skip this lane. The with_grounded_scope prefix (__init__.py:688, demo_ask.py:158-174) still matches the regex.\nIt executes read-only on LOCAL DuckDB (:186-205, :254-271) with no Cortex submit, no ledger and no audit_id, yet badges L0_CERTIFIED. assert_envelope_valid is not called (:213, :302) unless the cascade engaged. A zero-match total is demoted to ABSTAIN by build_answer_envelope (envelope.py:1450-1460), so it is not an L0 empty answer.",
+    "evidence": "packages/executor/dms_executor/bronze_sheet_ask.py:207-234 and :299-319 (L0_CERTIFIED envelopes with rows and 'Found N row(s)' text); returned at packages/executor/dms_executor/__init__.py:724-727"
+   },
+   {
+    "id": "chat-ask:bronze-grant-abstain",
+    "name": "Bronze-sheet lane grant/space abstain",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/bronze_sheet_ask.py:78 bronze_grant_abstain; called at packages/executor/dms_executor/__init__.py:696-723",
+    "trigger": "bronze_lane_table(question) resolves a target, and either there is no space_id (reason 'no_space', __init__.py:696-702) or the target is not in active bronze intersected with granted (reason 'ungranted_table:<t>', __init__.py:717-723).",
+    "evidence": "packages/executor/dms_executor/bronze_sheet_ask.py:86-102 (ABSTAIN envelope 'ABSTAIN <reason>')"
+   },
+   {
+    "id": "chat-ask:generative-pregate-abstain",
+    "name": "Generative lane pre-gate abstains (vague / predictive / 2099)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1020 maybe_generative_ask pre-gates :1072-1086 -> _abstain :670; called at packages/executor/dms_executor/__init__.py:728-763",
+    "trigger": "allow_gen holds (product or generative, __init__.py:546). There are no grounded_tables (generative_ask.py:1062). The question then matches one of:\n- _UNSURE_ASK 'worry about|is this good|just give me' (:91-94, :1072-1076)\n- a predictive phrasing (:1077-1081)\n- the year 2099 (:1082-1086)\nThis fires before the Insights compute call (:1130-1131). The paraphrase gate at :1067-1071 is shadowed by chat-ask:planted-refuse.",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:679-695 (ABSTAIN envelope with customer_abstain_text)"
+   },
+   {
+    "id": "chat-ask:generative-multi-grain",
+    "name": "GEN-01 multi-grain where-path compile (L2) via Cortex submit",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:932 _try_multi_grain_envelope -> :766 _submit_validated -> :698 _l2_envelope (invoked :1209-1221)",
+    "trigger": "The question names >=2 supply-chain grains and try_compile_multi_grain returns a compiled query over a granted join (:949-952).\n- It is not existential (:959-963).\n- validate_compiled_sql passes (:971-984). That includes the hostile check, the grant check and a local DuckDB EXPLAIN (:637-663).\n- Coverage, qualifier and currency checks pass (:783-810).\n- Cortex submit through Executor._submit_verified_sql (__init__.py:748-750) returns output.\n- The ledger returns an entry_id and hash (:843-862).\nThis runs after the Insights compute call (:1130-1131).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:712-763 (L2_VALIDATED envelope: rows from submit, chart, coverage, where_paths)"
+   },
+   {
+    "id": "chat-ask:generative-insights-sql",
+    "name": "GEN-01 Cortex Insights-generated SQL, validated then Cortex submit (L2)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1222-1297 (kind=='sql' branch; submit :1283-1297) -> _submit_validated :766 -> _l2_envelope :698. Planner: packages/executor/dms_executor/__init__.py:137-164 _insights_compute_seam -> packages/cortex_client/cortex_client/client.py:196-219 compute_insights (Cortex POST /v1/insights generate, compute.py:910-958; never /dms/query)",
+    "trigger": "parse_compute_plan returns 'sql' (generative_ask.py:1159, :1222) with non-empty query_sql. Validate passes (:1235), and the SQL cites no declared-ontology violation (:1236-1252). Submit and ledger succeed (:818-862). An invalid SELECT with a ranking available climbs to chat-ask:generative-ontology-plan (:1271-1281). A hostile SQL or a missing ranking abstains instead (:1262-1270).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1283-1297 -> :720-763 (L2_VALIDATED rows/text/chart)"
+   },
+   {
+    "id": "chat-ask:generative-ontology-plan",
+    "name": "GEN-01 typed plan / Cortex-ranked metric compiled on the DMS ontology (L2)",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:1359-1470 (plan_from_payload -> _compile_maybe_unverified :1001 -> _submit_validated :766); ranking overlay ontology_plan_from_ranking :878-912",
+    "trigger": "The plan comes from one of three places:\n- Insights returned a typed query_plan.\n- The result was a miss, but a Cortex-ranked metric resolves onto a DMS measure (:1163-1170).\n- Invalid Insights SQL climbed to ranked slots (:1271-1281).\nThe plan must then pass, in order: typed plan (:1360-1368), qualifiers honored (:1369-1383), ontology verified or failed subjects avoided (:1384-1405), non-existential compile (:1407-1428), validate (:1430-1446), then submit and ledger.\nkeep_gt filters the Cortex rows in DMS after submit (:830-842). The bind_plan sub-variant (:1331-1357) is unreachable because live_ask passes bind_on_miss=False (__init__.py:758).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:1453-1470 -> :720-763 (L2_VALIDATED envelope)"
+   },
+   {
+    "id": "chat-ask:generative-named-abstain",
+    "name": "GEN-01 named fail-closed abstains after the Insights call",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (ladder product or generative)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:670 _abstain and packages/executor/dms_executor/envelope.py:1830 reserved_as_of_abstain, reached from maybe_generative_ask :1149-1446, _submit_validated :783-862 and _try_multi_grain_envelope :955-984",
+    "trigger": "Any of these, after the Insights compute call:\n- ontology verify cache missing (:1149-1157)\n- the ranking names a metric DMS cannot compile (:1171-1184)\n- compute returned unsure (:1185-1194)\n- a $as_of placeholder (:1198-1208, :1253-1261, :811-817)\n- empty or invalid SQL, or a declared-ontology violation (:1228-1270)\n- an insights_fail reason (:1298-1311)\n- untyped plan, unhonored qualifier, unverified ontology, compile refusal, existential filter or validate failure (:1360-1446)\n- a multi-grain refusal (:955-984)\n- coverage, qualifier or currency gap, submit failure or no rows, keep_gt empty, ledger failure (:783-862)\nA plain transport miss, or Insights reached with no plan, returns None instead (:1319-1332). That falls through to the Cortex contract ask (product) or the harness miss (generative).",
+    "evidence": "packages/executor/dms_executor/generative_ask.py:679-695 (ABSTAIN envelope with customer_abstain_text(reason))"
+   },
+   {
+    "id": "chat-ask:harness-generative-miss",
+    "name": "GEN-03 isolated 'generative' ladder miss",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask with body ask_path='generative' apps/api/dms_api/routes/chat.py:213; only when DMS_HARNESS_ASK_PATHS (chat.py:227-238)"
+    ],
+    "producer": "packages/executor/dms_executor/generative_ask.py:915 path_miss_envelope; called at packages/executor/dms_executor/__init__.py:764-775",
+    "trigger": "ask_path=generative, which skips VQ and pack (__init__.py:545) and follow-up, bronze and the Cortex ask (:547-549). maybe_generative_ask returned None, for example on an Insights transport miss or with grounded_tables set (generative_ask.py:1062).",
+    "evidence": "packages/executor/dms_executor/__init__.py:765-775 -> generative_ask.py:679-695 (ABSTAIN 'generative miss: no plan source on this lane')"
+   },
+   {
+    "id": "chat-ask:cortex-contract-ask",
+    "name": "Cortex /v1/contract/ask fallthrough mapped to the DMS envelope",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:776-814 (demo_acl + bind_session + packages/cortex_client/cortex_client/client.py:114-121 ask -> generated/api/contract/ask.py:28 '/v1/contract/ask') -> map_ask_response_to_envelope __init__.py:894",
+    "trigger": "Product ladder (allow_cortex, __init__.py:547), and every earlier lane returned None. Grounded asks land here unless the bronze lane hits, because follow-up, VQ, pack and generative all skip when tables are given. The question sent is the with_grounded_scope rewrite (__init__.py:688).\n- An ungrantable grounded table raises GroundingRefused, which becomes a 403 (__init__.py:360-364, chat.py:277-290).\n- session_unbound or session_expired triggers one rebind and retry (__init__.py:787-799).\n- Refusal routes, unsure and unknown badges are forced to ABSTAIN (:934-961).\n- An unknown badge gets DMS-authored abstain text (:952-961).\nThe Cortex answer text may carry an INS-01 'Insights:' bullet block, which the UI splits out (apps/ui/src/lib/splitInsights.ts:2-12).",
+    "evidence": "packages/executor/dms_executor/__init__.py:962-1047 (values promoted from up to 50 rows / 80 cells, rows, chart, text=resp.answer, drillthrough_token, audit_id; assert_envelope_valid at :1046)"
+   },
+   {
+    "id": "chat-ask:cortex-doc-retrieval",
+    "name": "Cortex contract-ask document-retrieval (L3 quote) answer",
+    "kind": "ask_lane",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (product ladder only)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/__init__.py:894 map_ask_response_to_envelope (doc stub :1006-1012) -> packages/executor/dms_executor/envelope.py:1340 build_answer_envelope E9 branch :1423-1445 (_cited_figures :942-977; doc_quote :1467)",
+    "trigger": "The contract ask is reached, and Cortex returns a non-refused answer with no sql_used. Its route is in _DOC_ROUTE_KINDS {doc_rag, document, rag, document_retrieval} (envelope.py:58), or a contributing source is not of kind sql (__init__.py:1009).\n- Sources survive only if a drillthrough_token exists (__init__.py:1003-1005).\n- Figures in the prose that also appear in cited snippets are promoted into values[] labelled 'quoted' (envelope.py:969-976).\n- Uncited figures demote the answer to ABSTAIN (envelope.py:1428-1445).\nThe snippet text is rendered in the UI Sources panel (apps/ui/src/components/SourcePanel.tsx:173-176).",
+    "evidence": "packages/executor/dms_executor/__init__.py:1008-1010 (sql_used '-- document retrieval (no SQL)'); packages/executor/dms_executor/envelope.py:974 ({'label': 'quoted'} values)"
+   },
+   {
+    "id": "chat-ask:space-refusal",
+    "name": "Space-boundary refusal rendered as an ABSTAIN envelope",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :317-325)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:153 _space_refusal_envelope -> apps/api/dms_api/wiring.py:118-122 build_validated_envelope",
+    "trigger": "live_ask raises AskServiceError with code 'path_not_allowed' from one of:\n- bind_session (__init__.py:419-437), including the bind inside the VQ lane's _submit_verified_sql (:450-452)\n- the contract ask (:799-800)\nbody.space_id must be set and grounded_tables empty. With grounded_tables the same error is a 403 outside_grounded_scope (chat.py:296-311). A path_not_allowed raised by submit_sql is a SubmitError (__init__.py:850), so it never reaches this branch.",
+    "evidence": "apps/api/dms_api/routes/chat.py:170-182 (ABSTAIN text 'I can't answer that in <Space>...')"
+   },
+   {
+    "id": "chat-ask:demo-mode",
+    "name": "Demo ask mode (DMS_ASK_MODE=demo) keyword router",
+    "kind": "demo",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :249-255)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 answer_demo_question via packages/executor/dms_executor/__init__.py:288-290 Executor.demo_ask",
+    "trigger": "settings.dms_ask_mode == 'demo' (settings.py:40), and compliance is not hard-denied (chat.py:251-252). The ask_path 400 (chat.py:227) and the space 404 (:240-241) still apply.\nThe path ignores session_id and grounded_tables, applies no normalize_ask_question and no Space grant (demo_ask.py:281-334 only stamps space_id), and reads the local demo DuckDB.\nKeyword routing: predictive goes to ABSTAIN (:287-288). Then, in order: scale (:292-295), rank (:306-318), capacity (:320-321), revenue (:323-326), reorder (:328-329), alerts (:331-332), else ABSTAIN (:334).\nThe envelope sets ask_mode='demo' but neither demo_fallback_used nor demo_fallback_banner (chat.py:253-255). The UI banner keys off /health askMode (apps/ui/src/components/DemoFallbackBanner.tsx:5-6), so an API or MCP caller gets no banner flag.",
+    "evidence": "packages/executor/dms_executor/demo_ask.py:337-365 (L2_VALIDATED 'Total outbound revenue was RM ...' with values/rows/chart); returned at apps/api/dms_api/routes/chat.py:253-255"
+   },
+   {
+    "id": "chat-ask:demo-fallback-no-cortex",
+    "name": "DMS_DEMO_FALLBACK when the Cortex client is missing",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :260-263)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 answer_demo_question, restamped by apps/api/dms_api/routes/chat.py:185 _stamp_demo_fallback",
+    "trigger": "DMS_ASK_MODE=live, DMS_DEMO_FALLBACK=1 (settings.py:43, default False), and app.state.cortex is None. lifespan always installs a CortexClient (app.py:99-104), so this happens only when lifespan did not run (app.py:123). Without the flag the result is a 503 cortex_unavailable.",
+    "evidence": "apps/api/dms_api/routes/chat.py:189-210 (demo envelope with values/rows/chart, demo_fallback_used=True, demo_fallback_banner=True)"
+   },
+   {
+    "id": "chat-ask:demo-fallback-ask-error",
+    "name": "DMS_DEMO_FALLBACK after a non-policy AskServiceError",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :327-331)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 + apps/api/dms_api/routes/chat.py:185 _stamp_demo_fallback",
+    "trigger": "DMS_DEMO_FALLBACK=1, and live_ask raised an AskServiceError whose code is not in _POLICY_CODES (chat.py:34-49) and was not handled as the grounded 403 or the Space refusal (chat.py:296-325).\n- Examples: submit_failed, pool_queue_timeout, statement_timeout from bind_session or the contract ask.\n- Also sql_not_analyzable, manifest_malformed and manifest_not_yet_valid. Those are 403 policy codes in _STATUS_BY_CODE (chat.py:71-77) but are missing from _POLICY_CODES, so demo numbers can mask a policy refusal.",
+    "evidence": "apps/api/dms_api/routes/chat.py:328-331 (returns demo numbers stamped 'fallback after live error: <code>')"
+   },
+   {
+    "id": "chat-ask:demo-fallback-exception",
+    "name": "DMS_DEMO_FALLBACK after any other live_ask exception",
+    "kind": "fallback",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (branch :336-340)",
+     "POST /v1/mcp/call name=ask apps/api/dms_api/routes/mcp.py:100"
+    ],
+    "producer": "packages/executor/dms_executor/demo_ask.py:281 + apps/api/dms_api/routes/chat.py:185 _stamp_demo_fallback",
+    "trigger": "DMS_DEMO_FALLBACK=1 and live_ask raised a non-AskServiceError exception. Examples:\n- A SubmitError from the VQ lane's submit. It is not caught at verified_queries.py:347 (SubmitError is a plain Exception, manifest.py:226-227), so a policy refusal such as path_not_allowed there skips the _POLICY_CODES screen.\n- A ledger_append error on the VQ lane (verified_queries.py:355).\n- An AssertionError from assert_envelope_valid on a live answer (e.g. __init__.py:1046, demo_pack.py:322). An E1-E9 invariant violation is then answered with demo numbers.\n- RuntimeError 'CortexClient required' (__init__.py:539-540), ReservedParamError, or an HTTP timeout.",
+    "evidence": "apps/api/dms_api/routes/chat.py:337-340 (returns demo numbers stamped 'fallback \u2014 live ask failed')"
+   },
+   {
+    "id": "chat:drillthrough",
+    "name": "Drillthrough contributing rows",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/chat/drillthrough apps/api/dms_api/routes/chat.py:357",
+     "UI auto-call before CSV/XLSX/BI export and on 'show rows': apps/ui/src/components/AnswerMessage.tsx:145-156, :187-199, :272-296"
+    ],
+    "producer": "apps/api/dms_api/routes/chat.py:377-381 -> packages/cortex_client/cortex_client/client.py:268-275 drillthrough (generated/api/contract/drillthrough.py:28 '/v1/contract/drillthrough')",
+    "trigger": "The caller holds a drillthrough_token minted by Cortex on the contract-ask lane (__init__.py:1040). Cortex is configured (else 503, chat.py:372-376), and the gate allows or is soft-unavailable (chat.py:364-370). The response is the raw Cortex model dump: no envelope, no assert_envelope_valid, no PII mask.",
+    "evidence": "packages/cortex_client/cortex_client/models.py:116-122 (rows, sql_used, source_table, answer_id); apps/api/dms_api/routes/chat.py:380-381"
+   },
+   {
+    "id": "export:xlsx",
+    "name": "Excel export of a caller-supplied ask envelope (INSIGHTS-EXPORT-01)",
+    "kind": "export",
+    "outer_routes": [
+     "POST /v1/chat/export.xlsx apps/api/dms_api/routes/chat.py:390"
+    ],
+    "producer": "packages/core/dms_core/xlsx_export.py:186 export_envelope_xlsx",
+    "trigger": "The body envelope has an answer_id, a badge in ALLOWED_BADGES, and rows/values lists of dicts (xlsx_export.py:117-136). That is a shape check only. Nothing ties the envelope to a server-issued answer, so any caller can export arbitrary rows under any badge. The UI posts {...envelope, rows: drillthrough rows} (AnswerMessage.tsx:213-222). PII is re-masked server-side (xlsx_export.py:196).",
+    "evidence": "packages/core/dms_core/xlsx_export.py:175-198 (Cover/Values/Rows sheets); bytes returned at apps/api/dms_api/routes/chat.py:408-420"
+   },
+   {
+    "id": "export:bi",
+    "name": "Power BI / Superset connect stub from a caller-supplied ask envelope (INSIGHTS-EXPORT-02)",
+    "kind": "export",
+    "outer_routes": [
+     "POST /v1/chat/export.bi apps/api/dms_api/routes/chat.py:423"
+    ],
+    "producer": "packages/core/dms_core/bi_export.py:203 export_envelope_bi",
+    "trigger": "The same shape-only gate as xlsx (bi_export.py:209-215 -> xlsx_export.py:117-136). The table is built from rows, else values, else cover (bi_export.py:118-135), and is PII-masked (:217). The UI substitutes drillthrough rows (AnswerMessage.tsx:236-247). The client then downloads the stub as a file (AnswerMessage.tsx:259-270).",
+    "evidence": "packages/core/dms_core/bi_export.py:235-247 (table rows, columns, badge, targets); Power Query M embedding the rows at :80-100"
+   },
+   {
+    "id": "export:csv-client",
+    "name": "Client-side CSV download of answer rows",
+    "kind": "export",
+    "outer_routes": [
+     "none server-side; built in the browser from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 envelopes or POST /v1/chat/drillthrough apps/api/dms_api/routes/chat.py:357 rows"
+    ],
+    "producer": "apps/ui/src/components/AnswerMessage.tsx:201 downloadRowsCsv -> apps/ui/src/lib/rowsToCsv.ts:61 rowsToCsv",
+    "trigger": "The user clicks 'Download CSV' (AnswerMessage.tsx:322-330) on an answer with rows. When the envelope has a drillthrough_token and the rows look like a summary, drillthrough rows replace the envelope rows (:187-199; isSummaryExport rowsToCsv.ts:85). Unlike the xlsx and BI exports, the CSV gets no PII masking.",
+    "evidence": "apps/ui/src/components/AnswerMessage.tsx:202-210 (Blob text/csv of rowsToCsv(exportRows))"
+   },
+   {
+    "id": "ui:share-answer",
+    "name": "Share answer (envelope JSON to clipboard)",
+    "kind": "export",
+    "outer_routes": [
+     "none server-side; envelope from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213"
+    ],
+    "producer": "apps/ui/src/lib/answerDelivery.ts:23 shareEnvelopePayload",
+    "trigger": "The user clicks 'Share answer' (apps/ui/src/components/AnswerMessage.tsx:358-369).",
+    "evidence": "apps/ui/src/lib/answerDelivery.ts:24-41 (text, values, rows, chart, audit_id copied)"
+   },
+   {
+    "id": "ui:check-accuracy",
+    "name": "Client-computed row-sum 'Check accuracy' figure",
+    "kind": "other",
+    "outer_routes": [
+     "none server-side; envelope from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213"
+    ],
+    "producer": "apps/ui/src/lib/answerDelivery.ts:68 checkAnswerTotals",
+    "trigger": "The user clicks 'Check accuracy' (apps/ui/src/components/AnswerMessage.tsx:370-378) on a non-abstained answer with rows. The client sums a heuristically chosen numeric column (answerDelivery.ts:83-89) and prints a new figure that is not in values[].",
+    "evidence": "apps/ui/src/lib/answerDelivery.ts:95-114, :121-157 ('Row sum of X = N', Match/Mismatch messages)"
+   },
+   {
+    "id": "ui:exclusion-auto-confirm",
+    "name": "UI auto-fired ask on an exclusion-confirm abstain",
+    "kind": "other",
+    "outer_routes": [
+     "POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (via apps/ui/src/lib/api.ts:154-176 postAsk)"
+    ],
+    "producer": "apps/ui/src/components/AnswerMessage.tsx:163-185 (auto ask(resolveExclusionNoChip(noChip)) after 5s; client rewrite :34-43); server rewrite packages/executor/dms_executor/demo_ask.py:177-189 normalize_ask_question (applied at packages/executor/dms_executor/__init__.py:541)",
+    "trigger": "An ABSTAIN envelope whose suggestions contain both a '^Yes \u2014 exclude' chip and a '^No \u2014 show|without excluding' chip (AnswerMessage.tsx:30-31, :157-161). Those chips come from the engine; the UI's default SUGGESTED_QUESTIONS (apps/ui/src/lib/fixtures.ts:19-26) contain none. After 5s with no user input, the UI asks the 'No' chip, rewritten to 'Top N selling SKUs by revenue'. Whichever chat-ask lane matches produces the answer.",
+    "evidence": "apps/ui/src/components/AnswerMessage.tsx:173-178"
+   },
+   {
+    "id": "ui:source-panel-contribution",
+    "name": "Sources panel client-derived contribution figures (MYR-formatted weights, % share, row totals)",
+    "kind": "other",
+    "outer_routes": [
+     "none server-side; renders contributing_sources of envelopes from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213"
+    ],
+    "producer": "apps/ui/src/components/SourcePanel.tsx:43-47 (totalRows, totalContribution), :122-125 (pct), :153 formatMoney(src.contribution); headline apps/ui/src/lib/sourcePanel.ts:35-45",
+    "trigger": "The Sources panel is open on an answer with contributing_sources. Each source's contribution field is rendered as MYR currency (SourcePanel.tsx:9-15) and as a percentage share. Summed row counts go in the headline. On demo envelopes contribution is a 1.0/0.0 weight (packages/executor/dms_executor/demo_ask.py:35, :43), so a weight renders as a ringgit figure. None of these figures are in values[].",
+    "evidence": "apps/ui/src/components/SourcePanel.tsx:153 ('{formatMoney(src.contribution)} \u00b7 {pct}%'); apps/ui/src/lib/sourcePanel.ts:42 ('N tables \u00b7 M rows')"
+   },
+   {
+    "id": "ui:demo-source-fixture-preview",
+    "name": "UI fabricated spreadsheet preview for demo answers (dormant)",
+    "kind": "demo",
+    "outer_routes": [
+     "rendered client-side for envelopes from POST /v1/chat/ask apps/api/dms_api/routes/chat.py:213 (apps/ui/src/components/SourcePanel.tsx:128-129, :171-172)"
+    ],
+    "producer": "apps/ui/src/lib/previewFixtures.ts:20-61 (buildSheet / PREVIEW_SHEETS / sheetForSource)",
+    "trigger": "envelope.ask_mode === 'demo' AND a non-doc source whose ref_id is ref_q3_sales, ref_kl_branch or ref_erp_inv. Those ref_ids appear nowhere else in the repo. Demo and demo-fallback sources are ref_txn and ref_loc (packages/executor/dms_executor/demo_ask.py:29-46), so this path is dormant at this commit.",
+    "evidence": "apps/ui/src/lib/previewFixtures.ts:31-35 (synthetic figures 1000 + row*17) rendered via PreviewGrid at apps/ui/src/components/SourcePanel.tsx:171-172"
+   },
+   {
+    "id": "library:warehouse-preview",
+    "name": "Library warehouse table preview (raw rows)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/warehouse/{table}/preview apps/api/dms_api/routes/library.py:243",
+     "POST /v1/mcp/call name=preview apps/api/dms_api/routes/mcp.py:135-146"
+    ],
+    "producer": "packages/executor/dms_executor/warehouse_browse.py:114 preview_warehouse_table (via apps/api/dms_api/wiring.py:92-93)",
+    "trigger": "The table is in warehouse_tables(space_id), using the company-default ACL when space_id is omitted (library.py:272-274), and in the DEMO_TABLES allowlist (warehouse_browse.py:19, :121-123). limit 1-500. Read-posture gate (library.py:270). No PII mask, no envelope.",
+    "evidence": "packages/executor/dms_executor/warehouse_browse.py:129-143 (SELECT * LIMIT/OFFSET rows, row_count); route returns at apps/api/dms_api/routes/library.py:276-280"
+   },
+   {
+    "id": "library:bronze-preview",
+    "name": "Library bronze table preview (raw uploaded / SQL-pulled rows)",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/bronze/{table:path}/preview apps/api/dms_api/routes/library.py:283"
+    ],
+    "producer": "packages/executor/dms_executor/warehouse_browse.py:182 preview_bronze_table (via apps/api/dms_api/wiring.py:96-97)",
+    "trigger": "The table resolves against list_bronze_tables (warehouse_browse.py:190-192). The Space allowlist is checked only when space_id is given (library.py:308-319); the company-default call previews any registered bronze table. No PII mask. Not exposed via MCP. Also used by the Studio tree preview (apps/ui/src/lib/api.ts:372-388).",
+    "evidence": "packages/executor/dms_executor/warehouse_browse.py:198-201, :228-250 (rows, row_count, provenance, truncated)"
+   },
+   {
+    "id": "library:chunks-search",
+    "name": "RAG-02 document chunk search returning chunk content",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/library/chunks/search apps/api/dms_api/routes/library.py:118"
+    ],
+    "producer": "apps/api/dms_api/wiring.py:51-73 search_document_chunks -> packages/core/dms_core/control_plane/document_chunks.py:147 search_chunks",
+    "trigger": "DATABASE_URL is set (else []), and space_id and q are supplied. A lexical match runs on the Space's chunks, filtered in SQL. Read-posture gate (library.py:129-134).",
+    "evidence": "packages/core/dms_core/control_plane/document_chunks.py:211 (chunk 'content' returned), :221"
+   },
+   {
+    "id": "studio:chunks-list",
+    "name": "RAG-01 steward list of a Space's document chunks",
+    "kind": "preview",
+    "outer_routes": [
+     "GET /v1/studio/chunks apps/api/dms_api/routes/studio.py:150"
+    ],
+    "producer": "apps/api/dms_api/wiring.py:76-89 list_document_chunks -> packages/core/dms_core/control_plane/document_chunks.py:224 list_chunks",
+    "trigger": "DATABASE_URL set (else []); space_id required.",
+    "evidence": "packages/core/dms_core/control_plane/document_chunks.py:245-251 (chunk 'content' returned); route returns at apps/api/dms_api/routes/studio.py:164"
+   },
+   {
+    "id": "mcp:ask",
+    "name": "MCP-01 ask tool (wraps chat_ask)",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call {name:'ask'} apps/api/dms_api/routes/mcp.py:100 (:118-133); router mounted only when DMS_MCP=1 (apps/api/dms_api/app.py:158-159, settings.py:45)"
+    ],
+    "producer": "apps/api/dms_api/routes/mcp.py:118-133 -> apps/api/dms_api/routes/chat.py:213 chat_ask",
+    "trigger": "DMS_MCP=1. The 'mcp.call' gate runs with read posture (mcp.py:108-114), then chat_ask's own gate. Every chat-ask lane on the product ladder is reachable, plus demo mode and the demo fallbacks. AskBody gets no ask_path, so the harness lanes are unreachable.",
+    "evidence": "apps/api/dms_api/routes/mcp.py:132-133 (returns {ok, name, result: envelope})"
+   },
+   {
+    "id": "mcp:preview",
+    "name": "MCP-01 preview tool (wraps warehouse preview)",
+    "kind": "mcp",
+    "outer_routes": [
+     "POST /v1/mcp/call {name:'preview'} apps/api/dms_api/routes/mcp.py:135-146 (DMS_MCP=1)"
+    ],
+    "producer": "apps/api/dms_api/routes/library.py:244 preview_wh_table -> packages/executor/dms_executor/warehouse_browse.py:114",
+    "trigger": "DMS_MCP=1. The table name contains no '/' or '..'; limit 1-500 (mcp.py:136-140). The same Space or company-default scope check as the HTTP route applies.",
+    "evidence": "apps/api/dms_api/routes/mcp.py:143-146 (returns preview rows)"
+   },
+   {
+    "id": "insights:post-ask",
+    "name": "Hosted Cortex Insights ask pass-through (generate=false)",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/insights and POST /v1/insights/ apps/api/dms_api/routes/insights.py:153-154"
+    ],
+    "producer": "apps/api/dms_api/routes/insights.py:182-193 -> packages/cortex_client/cortex_client/client.py:243-266 insights_ask -> packages/cortex_client/cortex_client/insights.py:229 insights_post -> _request :150 -> honest_envelope :124",
+    "trigger": "Conditions:\n- intent or question is non-empty.\n- A Cortex client is present.\n- The F5 gate is not hard-denied; soft reasons pass (routes/insights.py:165-173).\n- generate=false (the default).\nThe Cortex payload, values included, is returned through honest_envelope, which only stamps live_5000_ci (cortex_client/insights.py:124-131). There is no badge normalization, no assert_envelope_valid and no PII mask. Error bodies are forwarded too (routes/insights.py:77-79). The UI does not call this route.",
+    "evidence": "packages/cortex_client/cortex_client/insights.py:190-191 (200 body returned verbatim); apps/api/dms_api/routes/insights.py:183-193"
+   },
+   {
+    "id": "insights:post-generate",
+    "name": "Hosted Cortex Insights generate pass-through (generate=true)",
+    "kind": "http_route",
+    "outer_routes": [
+     "POST /v1/insights (body generate=true) apps/api/dms_api/routes/insights.py:153-154"
+    ],
+    "producer": "apps/api/dms_api/routes/insights.py:175-193 -> packages/cortex_client/cortex_client/insights.py:229-271 insights_post (generate branch)",
+    "trigger": "generate=true and the OpenVault probe is reachable (routes/insights.py:175-180). The bearer key must be present and not the demo viewer key, over a safe transport (cortex_client/insights.py:94-107, :242-245), and the strict-pin stamp must not refuse (:256-262). The default settings.cortex_api_key is 'dms-demo-viewer-key' (settings.py:36, cortex_client/insights.py:21), so out of the box this returns a local ABSTAIN payload with values=[] (:110-121). Once a real key is set, the Cortex generate payload passes through verbatim.",
+    "evidence": "packages/cortex_client/cortex_client/insights.py:263-271 and :190-191 (Cortex generate payload returned to caller)"
+   },
+   {
+    "id": "insights:get-ontology-ranking",
+    "name": "Hosted Cortex Insights ontology ranking pass-through for a question",
+    "kind": "http_route",
+    "outer_routes": [
+     "GET /v1/insights/ontology?q= apps/api/dms_api/routes/insights.py:137"
+    ],
+    "producer": "packages/cortex_client/cortex_client/client.py:234-241 insights_ontology -> packages/cortex_client/cortex_client/insights.py:210 insights_get -> _request :150 -> honest_envelope :124",
+    "trigger": "q is non-empty and a Cortex client is present. There is no compliance_gate on this route at all (routes/insights.py:137-150). It forwards Cortex's question-keyed metric ranking verbatim. The Insights envelope shape carries a values key (the test fake returns 'values': None, tests/test_insights_host.py:122-123). The ask lane strips values from these payloads (packages/cortex_client/cortex_client/compute.py:592-599); this route does not. PLAUSIBLE only: DMS code shows no figures here, but nothing prevents Cortex from returning some.",
+    "evidence": "apps/api/dms_api/routes/insights.py:147 (returns honest_envelope(cortex.insights_ontology(intent)) unfiltered)"
+   },
+   {
+    "id": "studio:xlsx-orch-crosscheck",
+    "name": "XLSX-ORCH crosscheck with source-grid oracle figures",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/crosscheck apps/api/dms_api/routes/studio.py:187"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:69 run_crosscheck -> packages/core/dms_core/xlsx_orch.py:296 crosscheck_pack -> :195 oracle_from_sheets (+ strengthen_pack :250)",
+    "trigger": "The mutation gate passes (studio.py:200) and the pack is valid. workbook_path resolves under the allowlisted roots (executor xlsx_orch.py:42-66, :77-81), and a sheet with OnTime and cost columns exists.",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:238-247 (avg_cost, ontime_count, total_count) returned as source_oracle at :348 and inside strengthened_pack.dms_source_oracle at :283-288"
+   },
+   {
+    "id": "studio:xlsx-orch-extract",
+    "name": "XLSX-ORCH extract/store with parsed Analysis figures",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/extract apps/api/dms_api/routes/studio.py:208"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:90 run_extract -> packages/core/dms_core/xlsx_orch.py:354 inspect_result_grids",
+    "trigger": "The mutation gate passes (studio.py:225). result_path resolves under the allowlisted roots (executor xlsx_orch.py:114-126) and parses as xlsx. The bytes are stored under space_docs, and the parsed numbers are returned.",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:379-388 (analysis_numbers, analysis_labeled); attached at packages/executor/dms_executor/xlsx_orch.py:147-150"
+   },
+   {
+    "id": "studio:xlsx-orch-golden",
+    "name": "XLSX-ORCH FRTR golden evaluation figures",
+    "kind": "studio_action",
+    "outer_routes": [
+     "POST /v1/studio/xlsx-orch/golden apps/api/dms_api/routes/studio.py:234"
+    ],
+    "producer": "packages/executor/dms_executor/xlsx_orch.py:153 run_golden -> packages/core/dms_core/xlsx_orch.py:405 evaluate_frtr_golden",
+    "trigger": "A stored artifact for pack_id, or an allowlisted path, exists (executor xlsx_orch.py:161-175), and the producer is allowed (pointer_copilot or test_fixture).",
+    "evidence": "packages/core/dms_core/xlsx_orch.py:463-485 (avg_cost, ontime_count, total_count, export_row_count on both miss and pass)"
+   },
+   {
+    "id": "cli:insights-report",
+    "name": "Deterministic insights report CLI",
+    "kind": "other",
+    "outer_routes": [
+     "none (operator CLI: python scripts/insights.py --database <db> [--json out])"
+    ],
+    "producer": "scripts/insights.py:199 mine (main :377)",
+    "trigger": "An operator runs the script against a manifest-listed database. It compiles ontology insights in DuckDB and prints or writes them.",
+    "evidence": "scripts/insights.py:412-431 (prints totals and top rows, writes report JSON)"
+   },
+   {
+    "id": "cli:brief-deck",
+    "name": "Slide deck / HTML brief generator from an insights report",
+    "kind": "other",
+    "outer_routes": [
+     "none (operator CLI: python scripts/brief.py --insights report.json --pptx/--html)"
+    ],
+    "producer": "scripts/brief.py:296 build_pptx and :268 build_html (main :411)",
+    "trigger": "The operator supplies an insights JSON that passes validate_report (:182).",
+    "evidence": "scripts/brief.py:438-452 (writes deck / HTML carrying report figures; prs.save at :350)"
+   },
+   {
+    "id": "other:answer-user-sql",
+    "name": "Executor.answer_user_sql (user SQL -> L2 envelope on local DuckDB), dormant",
+    "kind": "other",
+    "outer_routes": [],
+    "producer": "packages/executor/dms_executor/__init__.py:256-286 answer_user_sql (Executor.execute :249-254)",
+    "trigger": "No HTTP route or MCP tool calls it at this commit; only tests reference it (tests/test_engine_date_01.py, tests/test_engine_date_02.py, tests/test_mask_clock_02.py). If a route ever wires it, that route would get an L2_VALIDATED answer from local DuckDB with no Cortex submit and no ledger.",
+    "evidence": "packages/executor/dms_executor/__init__.py:271-286 (execute rows -> build_answer_envelope badge L2_VALIDATED)"
+   }
+  ],
+  "added_by_critic": [
+   "chat-ask:cortex-doc-retrieval",
+   "ui:source-panel-contribution",
+   "insights:get-ontology-ranking"
+  ],
+  "dropped": [
+   {
+    "id": "mcp:list-metrics",
+    "reason": "It returns Cortex ontology metric definitions, not figures. It is the same handler as GET /v1/ontology/metrics (apps/api/dms_api/routes/mcp.py:148-152 -> apps/api/dms_api/routes/ontology.py:36-51, cortex_read GET /dms/ontology/metrics). The consumer type carries only id, kind, synonyms, result_columns, params, object_types and sql (apps/ui/src/lib/types.ts:159-167). No rows, values or answer text. Outside-in excluded it for the same reason."
+   }
+  ],
+  "only_in_outside_in": [
+   "ui:share-answer",
+   "ui:check-accuracy",
+   "ui:exclusion-auto-confirm",
+   "cli:insights-report",
+   "cli:brief-deck"
+  ],
+  "only_in_inside_out": [
+   "chat-ask:cascade-attach",
+   "other:answer-user-sql",
+   "ui:demo-source-fixture-preview",
+   "mcp:list-metrics"
+  ],
+  "notes": "I audited read-only at E:/DMS-wt/gate-matrix, HEAD f0e6c61f98248c4c3bde161d9f0cd1e553bf143f (= origin/main). I re-opened every citation at this commit. I edited nothing and ran nothing but read-only shell commands.\n\nID MAPPING (enumerator id -> canonical id)\n- Outside-in followup-average, followup-add-n, followup-abstain -> chat-ask:followup-average / -add / -abstain. Inside-out's single chat-ask:followup covers all three, so these count as found by both.\n- space-boundary-refusal and space-refusal -> chat-ask:space-refusal.\n- demo:ask-mode -> chat-ask:demo-mode.\n- fallback:demo-* -> chat-ask:demo-fallback-*.\n- chat-drillthrough and preview:drillthrough -> chat:drillthrough.\n- preview:warehouse, preview:bronze, preview:chunks-* -> library:* and studio:chunks-list.\n- Inside-out insights:post covers both insights:post-ask and insights:post-generate.\n\nLADDER ORDER in Executor._live_ask (packages/executor/dms_executor/__init__.py:512-814)\n1. normalize (:541)\n2. follow-up (:578)\n3. VQ (:592)\n4. pack (:614)\n5. planted refuse (:635)\n6. exact-miss (:642)\n7. cascade (:667)\n8. with_grounded_scope rewrite (:688)\n9. bronze (:689)\n10. generative (:728)\n11. generative-miss (:764)\n12. Cortex contract ask (:776)\n\nlive_ask (:480-510) then runs stamp_engine_clock, with_served_attribution and mask_unknown_keys on every result. chat.py checks demo mode first (:249), then the Cortex-missing fallback (:260), then the exception fallbacks (:291-354).\n\nCORRECTIONS TO ENUMERATOR CLAIMS\n- Bronze zero-match: the 'L0' envelope at bronze_sheet_ask.py:281-298 is demoted to ABSTAIN by build_answer_envelope hard rule 12 (envelope.py:1450-1460). It is not shipped as L0.\n- Bronze runtime assert: the lane is asserted only when the cascade is engaged (attach_cascade calls assert_envelope_valid at cca/cascade.py:483). That is off by default.\n- VQ grant check: it only checks DEMO_TABLES identifiers. A registered SQL naming non-demo tables passes the DMS check, and only the Cortex manifest stops it (verified_queries.py:54-61).\n- VQ error paths:\n  - A bind_session failure is an AskServiceError, so it can become the Space-refusal envelope or the ask-error demo fallback.\n  - A submit failure is a SubmitError, so it reaches the generic-exception demo fallback.\n  - Ledger errors also escape uncaught (verified_queries.py:355).\n- _POLICY_CODES is missing three 403 codes, not one: sql_not_analyzable, manifest_malformed and manifest_not_yet_valid (chat.py:34-49 vs :71-77).\n- AssertionError from E1-E9 on a live answer is a plain Exception. With DMS_DEMO_FALLBACK=1 it is answered with demo numbers (chat.py:336-340).\n- The BI export also re-masks PII (bi_export.py:217). The xlsx export is not the only masked one. CSV, drillthrough, previews, chunk search and POST /v1/insights are unmasked.\n- Insights generate is refused locally under the default demo viewer key (settings.py:36; cortex_client/insights.py:103-104).\n- GET /v1/insights/* routes call no compliance_gate (routes/insights.py:97-150).\n\nGATE-MATRIX FINDINGS\n1. Two lanes skip Cortex but carry confident badges:\n   - Bronze-sheet: L0_CERTIFIED with no Cortex submit, no ledger, no audit_id and no runtime assert.\n   - Follow-up: L2_VALIDATED over the process-global _turns cache, which is keyed only by the caller's session_id.\n2. Demo mode sets no demo_fallback_banner and applies no Space grant.\n3. These outputs bypass the envelope: drillthrough, POST /v1/insights, previews, chunk search and xlsx-orch. Exports trust any caller envelope that passes a shape check.\n4. Added by me:\n   - The doc-retrieval sub-lane of the contract ask. It is the only path where figures come from cited prose (E9 'quoted' values).\n   - The Sources panel. It renders contribution weights as RM currency, which are figures absent from values[].\n   - GET /v1/insights/ontology. Ungated, verbatim pass-through, PLAUSIBLE only.\n\nDEAD OR SHADOWED AT THIS COMMIT (not entry points)\n- bind_plan: generative_ask.py:1331-1357, with bind_on_miss=False at __init__.py:758.\n- Generative paraphrase gate: generative_ask.py:1067-1071.\n- Post-Cortex refuse overlay: __init__.py:1016-1021. The question there is the with_grounded_scope rewrite, so it is shadowed by :635.\n- CortexClient.compute_query (/dms/query): no caller in apps or packages.\n- apps/api/dms_api/scenarios/demo_ask.py: raises.\n- The follow-up $as_of branch: follow-up SQL is literals only.\n\nLOOKED AT AND EXCLUDED (no answer data)\n- /health; /v1/skeleton/ping; /v1/freeroute/providers\n- /v1/spaces*; /v1/admin/overview; /v1/audit/ledger*; /v1/amend/proposals* (user diffs)\n- /v1/runs: status and sql_text\n- /v1/pipelines/*: receipts are counts; infer-contract is a profile of counts and types (contract_infer.py:31-128)\n- /v1/studio/ingest*, /bronze, /sources/sql (pull receipt, link verdicts), /verified-queries list and register\n- /v1/library/sources, /data-map, /tree, /warehouse/tables, /reveal\n- /v1/ontology*\n- GET /v1/insights, /keys, /identity\n- /v1/trust/*: eval tallies and per-case verdicts with row counts only (scripts/score_curated.py:2560-2626, :2942-2965)\n- /v1/mcp/tools\n\nUI\n- No browser storage of answers. Only the theme is stored (AppContext.tsx:191).\n- The SpacesPage 'Mock stock ask' button (SpacesPage.tsx:245) is a user-clicked canned ask into the pack lane, not a new producer.\n- Copilot prompts carry no data (copilotPrompts.ts:4-26).\n\nOTHER\n- No lru_cache or dict cache of envelopes exists besides _turns. ManifestMinter._cache holds manifests (manifest.py:89).\n- No standalone MCP server or scheduler.\n- The only non-HTTP producers that serve people are scripts/insights.py and scripts/brief.py. The other scripts are harnesses or HTTP clients."
+ }
+}
