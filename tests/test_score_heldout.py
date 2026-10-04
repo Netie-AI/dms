@@ -110,7 +110,21 @@ def _args(pack: Path, db: Path, root: str) -> list[str]:
 def test_cli_self_check_runs_without_pythonpath(tmp_path: Path) -> None:
     """The real entry point, in a clean env: oracle imports must resolve on their own."""
     pack, db, root = _make_pack(tmp_path)
-    keep = ("PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATHEXT", "HOME", "TEMP", "TMP")
+    keep = (
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "SYSTEMDRIVE",
+        "PATHEXT",
+        "HOME",
+        "TEMP",
+        "TMP",
+        "PROGRAMDATA",
+        "ALLUSERSPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "USERPROFILE",
+    )
     env = {k: os.environ[k] for k in keep if k in os.environ}
     script = Path(__file__).resolve().parents[1] / "scripts" / "score_heldout.py"
     proc = subprocess.run(
@@ -118,6 +132,7 @@ def test_cli_self_check_runs_without_pythonpath(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         env=env,
+        cwd=tmp_path,  # a stripped env makes some Pythons write caches under the cwd
         timeout=120,
     )
     assert proc.returncode == EXIT_PASS, proc.stdout + proc.stderr
