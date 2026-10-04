@@ -1,0 +1,1096 @@
+{
+ "gaps": [
+  {
+   "gap_id": "no-space-ask-widest-grant",
+   "title": "With no space_id the ask lanes resolve the grant to every DEMO_TABLE (including alerts, which no Space grants) plus every Space's uploads, although the Library path was fixed to company_default_tables (A-0007) and the bronze-sheet lane abstains no_space.",
+   "cells": [
+    "chat-ask:verified-query G1",
+    "chat-ask:governed-pack G1",
+    "chat-ask:harness-generative-miss G1",
+    "chat-ask:generative-named-abstain G1",
+    "chat-ask:cascade-abstain G1",
+    "chat-ask:cascade-attach G1",
+    "chat-ask:generative-multi-grain G1",
+    "chat-ask:generative-insights-sql G1",
+    "chat-ask:generative-ontology-plan G1",
+    "chat-ask:cortex-contract-ask G1",
+    "ui:exclusion-auto-confirm G1",
+    "mcp:ask G1"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "All tracers say new. Adjacent but not covering: A-0007 (#72, closed, Library preview only - demo_grants.py:61-85, warehouse_browse.py:42-50); BRONZE-GRANT-01 (bronze-sheet lane only); #307/#331 (unread grant, dropped tick); #297 (unticked uploads).",
+   "repro": "Default config (DMS_ASK_MODE=live, DMS_DEMO_FALLBACK=0, Cortex client present). (a) POST /v1/chat/ask {\"question\":\"List all open alerts by severity\"} with NO space_id. demo_acl(None) -> grantable_tables(None) = sorted(DEMO_TABLES + every upload) (executor/__init__.py:306-317), so the minted manifest names alerts and an engine honouring it answers AL-1..AL-5 under a normal badge. The same body with space_id=cccccccc-cccc-cccc-cccc-cccccccccccc or dddddddd-dddd-dddd-dddd-dddddddddddd is refused (neither Space grants alerts, demo_grants.py:39-48). (b) POST /v1/studio/ingest a CSV into cccccccc-cccc-cccc-cccc-cccccccccccc (-> bronze.<t>), then POST /v1/chat/ask {\"question\":\"How many rows are there?\",\"grounded_tables\":[\"bronze.<t>\"]} with no space_id: grantable_tables(None) includes every Space's uploads, so no GroundingRefused; with space_id=dddddddd-dddd-dddd-dddd-dddddddddddd the same body 403s grounding_not_grantable. Gated sibling: the bronze-sheet lane abstains no_space (executor/__init__.py:696-702) and library warehouse_tables(None) uses company_default_tables() (no alerts). Coherence: checked in code, holds. demo_acl's docstring calls no-Space 'the personal context' (intended), but STATUS.md says A-0007 is closed 'refused under all' - true for the Library only.",
+   "test_idea": "Use a manifest-enforcing fake Cortex (submit(session_bind) records manifest.row_predicates; ask() returns alert rows only if 'alerts' is in the bound manifest). Assert POST /v1/chat/ask {question:'List all open alerts by severity'} (no space_id) does NOT return 200 with rows whose alert_id starts 'AL-' (expect the same refusal envelope the Space-scoped ask gets); and POST with no space_id + grounded_tables=[a FIN upload] returns 403 grounding_not_grantable. CONTROL: the same alerts question with space_id=cccccccc-cccc-cccc-cccc-cccccccccccc is refused (passes today), and a no-space 'Show warehouse capacity utilisation' (locations, company-scoped) still returns 200 with rows - so the fixture is not blanket-refusing.",
+   "testable_in_process": true,
+   "testable_note": "Executor + FakeCortex subclass (tests/test_live_ask.py pattern); upload leg uses TestClient + /v1/studio/ingest (tests/test_library_space_scope.py pattern).",
+   "severity_hint": "high: an invariant the project records as closed (A-0007) is still open on the main ask path, and cross-Space uploads are reachable without naming a Space. Bounded by DR-0004 (no principal, so 'no Space' is company-wide by design).",
+   "n_cells": 12
+  },
+  {
+   "gap_id": "audit-receipt-and-late-added-cards-skip-mask",
+   "title": "audit_receipt (exclude.reasons[].detail, unsure.why) and source cards attached after the build sit outside the masker's walk, so literals the envelope masks elsewhere appear raw in the receipt, workbook, BI stub and share payload.",
+   "cells": [
+    "chat-ask:generative-named-abstain G5",
+    "chat-ask:cascade-attach G5",
+    "chat-ask:cortex-contract-ask G5",
+    "chat-ask:cortex-doc-retrieval G5",
+    "export:xlsx G5",
+    "export:bi G5",
+    "ui:share-answer G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Adjacent: #272 PII-01 (title includes exports, tracers say it names Studio answer/xlsx/bi/model context but not the receipt) and #318/#303 (masker recall for names/addresses - different problem). cascade-attach cell is flag-gated (DMS_CCA_CASCADE=1) but shares the root cause (contributing_sources added after masking).",
+   "repro": "Default config, no Cortex needed beyond the compliance gate. POST /v1/chat/export.xlsx {\"envelope\":{\"answer_id\":\"a1\",\"badge\":\"L2_VALIDATED\",\"text\":\"x\",\"sql_used\":\"SELECT n FROM t WHERE ic_no = '900101-14-5678'\",\"audit_receipt\":{\"include\":{\"status\":\"na\",\"rows\":[]},\"exclude\":{\"status\":\"filters\",\"reasons\":[{\"kind\":\"where\",\"detail\":\"ic_no = '900101-14-5678'\"}],\"why\":\"w\"},\"unsure\":{\"status\":\"none\",\"why\":\"w\"}}}}. The Cover row for sql_used holds a DMSMASK token; the Cover row for audit_receipt holds the raw NRIC. Ask-path variant (synthetic): a Cortex abstain whose provenance/exclude_reasons quote the filter literal -> assumptions masked, audit_receipt.unsure.why raw. Coherence: verified - pii.py:201-211 puts audit_receipt in _HANDLED_KEYS (mask_unknown_keys skips it) and mask_envelope (pii.py:1068-1076) only rewrites include.rows.",
+   "test_idea": "POST the envelope above to /v1/chat/export.xlsx, open the bytes with openpyxl and assert '900101-14-5678' appears in no cell of any sheet (rendered deliverable, not an intermediate). CONTROL: in the same workbook the Cover sql_used row already contains the DMSMASK token and not the raw literal (passes today), proving the masker runs and the miss is specific to audit_receipt; a numeric figure in values[] stays unmasked.",
+   "testable_in_process": true,
+   "testable_note": "TestClient POST with the gate stubbed allow (tests/test_library_space_scope.py:_gate_allows pattern).",
+   "severity_hint": "medium: exclude.reasons[].detail is predicate text that routinely carries the user's filter literal; reaches an artefact that leaves the product. Masker recall for names is a separate known gap.",
+   "n_cells": 7
+  },
+  {
+   "gap_id": "ui-derives-figures-and-labels-client-side",
+   "title": "The Check-accuracy and Sources panels compute and label figures client-side (summed percentages, equal-value ties, synthesized MYR/percent contribution cards, a 'Certified answer' headline on any answer lacking cards) that are not in values[], not ontology-defined, not ledgered, and not tied to the badge.",
+   "cells": [
+    "ui:check-accuracy G2",
+    "ui:source-panel-contribution G2",
+    "ui:check-accuracy G7",
+    "ui:source-panel-contribution G7",
+    "ui:check-accuracy G8",
+    "ui:source-panel-contribution G8"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "No tracer cites a ticket for either component.",
+   "repro": "Default config, UI only. (a) In dddddddd-dddd-dddd-dddd-dddddddddddd ask the pack question 'Show warehouse capacity utilisation' (rows {location_code, pct_used}); click 'Check accuracy': answerDelivery.ts:83-89,111-134 sums the percentages and prints 'Match - N grouped values sum to X (= row sum)'. Tie case: 'Show shipment cost by destination' with two equal total_cost_myr - envelope.py:1296-1303 dedupes equal cells so values[] has one figure and the check prints a red 'Mismatch - row sum 2X vs stated X' over a correct, ledgered answer. (b) In cccccccc-cccc-cccc-cccc-cccccccccccc ask 'What is our total spend by supplier country?' (pack; grounded_tables inventory+suppliers, no contributing_sources): sourcePanel.ts:19-33 synthesizes two cards with contribution 1/n and row_count = answer rows, rendered 'N rows - RM 0.50 - 50.0%'; a refusal or ABSTAIN with no cards gets the headline 'Certified answer, no file card from Cortex. Open SQL.' (sourcePanel.ts:44 ignores badge). Coherence: answerDelivery.ts and sourcePanel.ts read; claims hold. Other-finding: the check is self-referential (values[] is harvested from the same rows), so a Match cannot detect fan-out.",
+   "test_idea": "Vitest (no network): sourcesHeadline(abstainEnvelope, [], 0) must not contain 'Certified', and sourcesForPanel(packEnvelopeWithoutContributingSources) must return [] (never invent provenance); checkAnswerTotals on a rows set with two equal values and values.length==1 must not return status 'mismatch'. CONTROL: an envelope that carries real contributing_sources renders them unchanged (sourcePanel.test.ts already covers an L0 case) and a unique-value ranking still returns 'ok'.",
+   "testable_in_process": false,
+   "testable_note": "UI logic: runs under vitest with no network, but not under the Python Executor/fake-Cortex/TestClient harness.",
+   "severity_hint": "medium: confident-looking UI claims ('Certified answer', fabricated RM/percent weights, false Mismatch) with no server provenance; UI-only, figures in the answer itself are unchanged.",
+   "n_cells": 6
+  },
+  {
+   "gap_id": "xlsx-orch-coercion-and-false-ok",
+   "title": "xlsx-orch reads untyped workbook cells with per-request coercion (text OnTime/cost silently dropped, 0.0 treated as missing, nearest-number fishing) and returns ok:true or a 500 instead of a named refusal.",
+   "cells": [
+    "studio:xlsx-orch-crosscheck G4",
+    "studio:xlsx-orch-extract G4",
+    "studio:xlsx-orch-golden G4",
+    "studio:xlsx-orch-crosscheck G8",
+    "studio:xlsx-orch-extract G8",
+    "studio:xlsx-orch-golden G8"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "repro": "Default config, compliance gate allowing (stub or fake Cortex). POST /v1/studio/xlsx-orch/crosscheck with a valid pack and workbook_path = a workbook under the warehouse parent dir (DMS_WAREHOUSE_DB in tmp) whose OnTime column holds 'On Time'/'Late' and cost holds 'RM 300.27': _truthy('On Time') is False and _as_float('RM 300.27') is None, every row is dropped, and the response is HTTP 200 {ok:true,status:'awaiting_pointer_receipt',reason:'live',source_oracle:null} with no named reason (core xlsx_orch.py:98-116,224-230; executor xlsx_orch.py:69-87). Golden variant: stored artifact whose Analysis sheet has ['Average Cost', 0] plus any other numeric cell equal to 300.27 -> ok:true reason frtr_golden (0.0 falsy, `or _nearest`, core :411-448) - needs a ~184005-row Export sheet unless the constants are patched. extract: unreadable/locked file or read-only space_docs -> bare 500. Coherence: tracer scenarios consistent with cited code; crosscheck is the cheap one.",
+   "test_idea": "POST crosscheck as above and assert the response is not {ok:true, source_oracle:null} - expect ok:false or a named reason (e.g. no_ontime_rows / oracle_unavailable) in the body. CONTROL: a workbook whose OnTime holds 'yes'/'1' and cost holds plain numbers returns source_oracle with avg_cost/ontime_count (shape asserted in tests/test_xlsx_orch.py:147-167, passes today).",
+   "testable_in_process": true,
+   "testable_note": "openpyxl-written workbook in tmp_path + TestClient; the golden variant additionally needs a large sheet or patched constants.",
+   "severity_hint": "medium: an oracle whose job is to catch Copilot errors answers ok:true on unreadable input; external-caller tool, not the customer answer path.",
+   "tracked_note": "",
+   "n_cells": 6
+  },
+  {
+   "gap_id": "preview-and-drill-rows-unmasked",
+   "title": "Library warehouse/bronze preview, the MCP preview twin and /v1/chat/drillthrough return raw cell values; the masker is wired only into live_ask / build_answer_envelope.",
+   "cells": [
+    "library:warehouse-preview G5",
+    "library:bronze-preview G5",
+    "mcp:preview G5",
+    "chat:drillthrough G5",
+    "export:csv-client G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "#272 PII-01 (open) covers Studio answer, xlsx/bi export and model context, not these routes (tracers). Design question for PRD: previews exist so a steward can see raw uploads; the audit's G5 requires masking anyway. mcp:preview is flag-gated (DMS_MCP=1) but shares the library route.",
+   "repro": "Default config, synthetic seed. POST /v1/studio/ingest (gate allowed) multipart file people.csv 'name,email,ic_no\\nSiti,siti@example.com,900101-14-5678' with space_id=cccccccc-cccc-cccc-cccc-cccccccccccc -> table bronze.people. GET /v1/library/bronze/bronze.people/preview?space_id=cccccccc-cccc-cccc-cccc-cccccccccccc returns the raw email and IC in rows (library.py:321-327 returns bronze_preview() output; no mask call in any route file). The same table through POST /v1/chat/ask grounded_tables=['bronze.people'] has rows masked by mask_unknown_keys (executor/__init__.py:508-510). Drillthrough: chat.py:380-381 returns resp.model_dump(mode='json') unmasked; the UI Download CSV writes those rows. Coherence: grep finds no 'mask' in routes/library.py, studio.py, mcp.py, insights.py; holds.",
+   "test_idea": "GET /v1/library/bronze/bronze.people/preview?space_id=cccccccc-cccc-cccc-cccc-cccccccccccc and assert no row value matches the NRIC/email patterns (DMSMASK tokens instead). CONTROL: the non-PII column (e.g. a 'city' column added to the CSV) is returned unmasked, and POST /v1/chat/ask over the same grounded table already returns masked tokens (passes today) - proving the fixture holds PII the masker detects.",
+   "testable_in_process": true,
+   "testable_note": "TestClient + tmp warehouse (tests/test_library_space_scope.py pattern); drillthrough leg uses a fake cortex.drillthrough returning raw rows.",
+   "severity_hint": "high: unauthenticated GETs (DR-0004 Option A) return the most likely place for personal data raw; PRD must decide whether previews are exempt.",
+   "n_cells": 5
+  },
+  {
+   "gap_id": "followup-no-submit",
+   "title": "Follow-up lanes ('average of them', 'add N') compute figures in local DuckDB from literals and return L2_VALIDATED with a made-up audit_id, never calling submit or the ledger.",
+   "cells": [
+    "chat-ask:followup-average G7",
+    "chat-ask:followup-add G7",
+    "cache:session-turns G7",
+    "mcp:ask G7"
+   ],
+   "class": "bypass",
+   "tracked_by": "FOLLOWUP-CONTRACT-01",
+   "tracked_note": "Item 4 of the dms#303 ruling. mcp:ask tracer notes the bronze lane and Cortex-ask lane are not covered by it (see bronze-sheet-l0-minted-locally, contract-ask-answer-not-submitted-or-ledgered-by-dms). mcp:ask cell assigned here because its scenario is the follow-up; flag-gated by DMS_MCP=1 but same code as /v1/chat/ask.",
+   "repro": "Default config. POST /v1/chat/ask {\"question\":\"What is our total spend by supplier country?\",\"space_id\":\"cccccccc-cccc-cccc-cccc-cccccccccccc\",\"session_id\":\"s1\"} (pack lane: Cortex submit + ledger append), then {\"question\":\"average of them\",\"space_id\":\"cccccccc-cccc-cccc-cccc-cccccccccccc\",\"session_id\":\"s1\"}. Turn 2 returns 200 L2_VALIDATED, text 'Average of the prior N figures is RM x', audit_id 'ans_followup', sql_used 'SELECT ROUND((a + b)/N.0, 2) AS average_myr' executed by local DuckDB; the fake Cortex records no new submit and no new ledger append. A gated path would submit the SQL under the signed manifest and ledger it (or abstain). Coherence: verified - maybe_followup returns at executor/__init__.py:578-590 before any _submit_verified_sql/_ledger_verified_query.",
+   "test_idea": "After turn 2 assert len(fake.ledger_appends) == 2 and envelope.audit_id equals the ledger entry id the fake returned for turn 2 (today 1 append, audit_id 'ans_followup' matches nothing); user-visible variant: badge is not L2_VALIDATED unless a submit/ledger entry exists. CONTROL: turn 1 in the same session has audit_id == its ledger entry id and fake.submits non-empty, so the fake does record when the code calls it.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_demo_pack_followup.py already builds create_app + Executor + fake Cortex for exactly this sequence.",
+   "severity_hint": "high: a green L2 figure whose audit_id resolves to nothing in the ledger; already ruled a gap (hard rule 3).",
+   "n_cells": 4
+  },
+  {
+   "gap_id": "followup-no-grant-recheck",
+   "title": "The follow-up lane reads the per-(session_id, space_id) turn cache with no shared grant check, no no_space abstain and no re-read of grants.",
+   "cells": [
+    "chat-ask:followup-average G1",
+    "chat-ask:followup-add G1",
+    "chat-ask:followup-abstain G1",
+    "cache:session-turns G1"
+   ],
+   "class": "bypass",
+   "tracked_by": "FOLLOWUP-CONTRACT-01",
+   "tracked_note": "Item 3 of the dms#303 ruling (shared grant function with ungranted_table / no_space).",
+   "repro": "Default config. POST /v1/chat/ask {question:'What is our total spend?', session_id:'s2'} with NO space_id (pack lane answers under the company default), then {question:'add 2000', session_id:'s2'} no space_id: 200 'Prior figure plus 2000 is RM ...' L2_VALIDATED under cache key ('s2',''), no grantable_tables call. The bronze lane in the same ladder abstains no_space for the same request shape. Tracer variant (grants revoked between turns; same session+Space still averages) is contrived for the seeded store and is downgraded to a secondary assertion. Coherence: session_followup.py:51-55 keys on caller strings only; executor/__init__.py:578-590 returns before grants; cross-Space reuse is correctly blocked by the key, so no cross-Space leak is shown.",
+   "test_idea": "No-space session: after the pack answer, 'add 2000' with the same session and no space_id must abstain with reason no_space (per the ruling), not return 200 'Prior figure plus'. Secondary: mutate the Space grant store so the source table is no longer granted, then 'average of them' must abstain ungranted_table. CONTROL: the same sequence with space_id=cccccccc-cccc-cccc-cccc-cccccccccccc and grants intact still returns the follow-up figure, and the bronze lane with no space already abstains no_space.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_demo_pack_followup.py harness.",
+   "severity_hint": "medium: partition by (session, Space) holds; the gap is relative to the ruling and to the no_space precedent.",
+   "n_cells": 4
+  },
+  {
+   "gap_id": "ledger-append-carries-unmasked-sql",
+   "title": "The ledger append for verified-query and generative answers carries the raw SQL text (filter literals included) while the envelope's sql_used is masked.",
+   "cells": [
+    "chat-ask:verified-query G5",
+    "chat-ask:generative-insights-sql G5",
+    "chat-ask:generative-ontology-plan G5",
+    "mcp:ask G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Adjacent #272/#318 (masker coverage, not ledger payloads). Generative variants need an armed Insights key (real CORTEX_API_KEY), not a flag.",
+   "repro": "Default config, VQ variant. POST /v1/studio/verified-queries {space_id:cccccccc-cccc-cccc-cccc-cccccccccccc, question:'Payments for IC 900101-14-5555', sql:\"SELECT txn_id FROM transactions WHERE txn_id = '900101-14-5555'\"}; then POST /v1/chat/ask {question:'Payments for IC 900101-14-5555', space_id:cccccccc-cccc-cccc-cccc-cccccccccccc}. envelope.sql_used shows a DMSMASK token; fake Cortex ledger_append payload['sql'] contains the raw literal (executor/__init__.py:455-478 payload sql=asset_sql; generative_ask.py:845 ledger_append({'sql': sql,...}) shared by multi-grain :985, insights-sql :1284, ontology-plan :1454). Coherence: verified in code; steward/model must place a PII literal in the SQL.",
+   "test_idea": "Capture fake.ledger_appends[-1].payload and assert '900101-14-5555' not in json.dumps(payload) while the rendered envelope.sql_used is masked. CONTROL: payload still has 'sql' and 'run_id' keys and the envelope sql_used already masks the literal (passes today).",
+   "testable_in_process": true,
+   "testable_note": "Fake Cortex capturing ledger_append (FakeCortex in tests/test_live_ask.py has no ledger_append; extend it as tests/test_vq*.py do).",
+   "severity_hint": "medium: an append-only ledger cannot be erased, but exposure needs a PII literal inside the SQL.",
+   "n_cells": 4
+  },
+  {
+   "gap_id": "export-projections-no-provenance-tie",
+   "title": "Export/BI/CSV/share outputs restate whatever envelope they are handed (shape-only check) with no tie to a server-issued, ledgered answer, so forged figures and badges are exported and follow-up/bronze/demo figures export without a marker.",
+   "cells": [
+    "export:xlsx G7",
+    "export:bi G7",
+    "export:csv-client G7",
+    "ui:share-answer G7"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "csv-client and share tracers cite FOLLOWUP-CONTRACT-01 only for the follow-up-lane figures they project; the missing answer-to-ledger tie on export routes is new. Contract 1.2.0 has no ledger get-entry (STATUS.md EPIC-025), so the fix needs server-issued answer records or signing.",
+   "repro": "Default config, no prior ask. POST /v1/chat/export.xlsx {\"envelope\":{\"answer_id\":\"x\",\"badge\":\"L0_CERTIFIED\",\"values\":[{\"id\":\"v1\",\"value\":9999999,\"unit\":\"MYR\",\"label\":\"Revenue\"}],\"rows\":[{\"region\":\"KL\",\"revenue\":9999999}]}} -> 200 workbook whose Cover reads badge L0_CERTIFIED and whose Values/Rows sheets hold the invented figure. POST /v1/chat/export.bi with badge L1_GOVERNED_METRIC returns the same in a Power Query stub. Space seed is incidental. Coherence: verified - refuse_envelope_export (xlsx_export.py:117-136) checks only answer_id non-empty, badge in ALLOWED_BADGES and row/value shapes; the route docstring says 'real ask envelope'. CSV/share legs are UI projections (vitest only).",
+   "test_idea": "POST the forged envelope to /v1/chat/export.xlsx and /v1/chat/export.bi and assert 4xx (e.g. answer_not_issued) because the answer_id was never returned by this app's /v1/chat/ask. CONTROL: export of the envelope actually returned by a real POST /v1/chat/ask in the same app returns 200 with the same badge.",
+   "testable_in_process": true,
+   "testable_note": "Export routes via TestClient. The csv-client and share-answer cells are client-side and need vitest.",
+   "severity_hint": "medium: caller can mint a workbook claiming L0 without any ask; there is no principal (DR-0004) so forging is self-service, but the artefact leaves the product.",
+   "n_cells": 4
+  },
+  {
+   "gap_id": "followup-unit-relabelled-rm",
+   "title": "Follow-up arithmetic hard-codes 'RM'/average_myr and ignores each prior figure's unit and measure, so percentages, counts and row_count placeholders are averaged or added and labelled ringgit under L2_VALIDATED.",
+   "cells": [
+    "chat-ask:followup-average G2",
+    "chat-ask:followup-add G2",
+    "cache:session-turns G2"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Tracers say new. FOLLOWUP-CONTRACT-01 items 1, 2 and 5 were not visible to the tracers - PRD to confirm whether a unit rule is among them.",
+   "repro": "Default config. In dddddddd-dddd-dddd-dddd-dddddddddddd POST /v1/chat/ask {question:'Show warehouse capacity utilisation', session_id:'s3'} (pack; values are pct_used per location), then {question:'average of them', session_id:'s3', space_id:'dddddddd-dddd-dddd-dddd-dddddddddddd'}: 200 'Average of the prior N figures is RM x' L2_VALIDATED - a mean of percentages (distinct values only, envelope.py:1294-1301) labelled ringgit. Simpler: any text-only/doc answer stores the v_count=row_count placeholder (envelope.py:1313-1314); 'add 5' returns 'Prior figure plus 5 is RM 5.00'. Coherence: verified - session_followup.py:220,254 hard-code 'RM'; numeric_values (session_followup.py:39-48) drops unit and label.",
+   "test_idea": "After the capacity-utilisation answer, assert the follow-up's rendered text does not contain 'RM' (and states the percent unit) or the lane abstains; today it says 'RM'. CONTROL: the same follow-up after the stock-value pack answer (values really are RM) keeps 'RM' and passes.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_demo_pack_followup.py harness.",
+   "severity_hint": "medium: wrong unit on a green figure; arithmetic is on figures already shown.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "followup-stale-prior-after-failed-turn",
+   "title": "A turn that fails by exception (Space refusal, timeout) or by a blocked cascade neither stores nor clears the cached prior, so a later follow-up silently computes over an older turn's figures; the cache is also unbounded.",
+   "cells": [
+    "chat-ask:followup-average G8",
+    "chat-ask:followup-add G8",
+    "cache:session-turns G8"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Cascade-block variant (executor/__init__.py:676-686 skips _store_turn) is flag-gated by DMS_CCA_CASCADE=1; exception variant is default-config.",
+   "repro": "Default config. Session s4 in dddddddd-dddd-dddd-dddd-dddddddddddd: turn 1 pack ask 'Show warehouse capacity utilisation' (stored under ('s4','dddddddd-dddd-dddd-dddd-dddddddddddd')); turn 2 'Top 5 selling SKUs by revenue' (needs transactions, not granted) -> AskServiceError path_not_allowed -> route-built Space-refusal envelope (chat.py:317-325), never stored and not popped; turn 3 'average of them' -> 200 L2_VALIDATED computed from turn 1. Coherence: _store_turn (executor/__init__.py:240-247) runs only on returned envelopes; exceptions bypass it, chat.py does not touch executor._turns. Holds.",
+   "test_idea": "After the refused turn 2, assert turn 3 abstains (no prior numeric answer) and its text does not start 'Average of the prior'. CONTROL: if turn 2 is a lane-returned abstain envelope (e.g. the planted-refuse question 'how full is each warehouse'), turn 3 already abstains because snapshot_turn pops the entry.",
+   "testable_in_process": true,
+   "testable_note": "FakeCortex.ask_error = AskServiceError('path_not_allowed', ...) with the follow-up harness.",
+   "severity_hint": "low: stale but real earlier figures; mislabelled recency rather than an invented number.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "bronze-sheet-trycast-drops-rows-silently",
+   "title": "The bronze-sheet lane sums TRY_CAST(measure AS DOUBLE) over sniffed-VARCHAR columns and drops unparseable cells without a count, so a text-formatted cell understates the total under L0_CERTIFIED and sql_used omits the predicate that dropped it.",
+   "cells": [
+    "chat-ask:bronze-sheet G4",
+    "chat-ask:cascade-attach G4",
+    "mcp:ask G4"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Adjacent: #316 ONTO-DERIVE-01 (draft; declared types for SQL-source ingest). Tracers differ on disclosure: bronze-sheet says nothing discloses it; cascade-attach says an assumption string does - code has the generic string 'hanging/blank measure rows dropped' with no count (bronze_sheet_ask.py:243-246). cascade-attach and mcp:ask cells share this lane.",
+   "repro": "Default config, synthetic. Ingest granted.xlsx sheet Sales (category, sales_value_myr) into cccccccc-cccc-cccc-cccc-cccccccccccc as in tests/test_bronze_sheet_ask.py, with one sales_value_myr cell 'RM 1200' so the column lands VARCHAR; POST /v1/chat/ask {question:'In granted.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?', space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc'}. 200 L0_CERTIFIED 'Found 3 row(s)' with that category's total understated; the executed SQL has WHERE TRY_CAST(...) IS NOT NULL (bronze_sheet_ask.py:191-205) but sql_used does not (:219-222). Coherence: verified in code; the generic assumption wording ('hanging/blank') does not describe a non-blank 'RM 1200'.",
+   "test_idea": "Assert the envelope abstains or its text/assumptions state the dropped-row count (e.g. 'dropped 1 of N rows'), or the total includes the parsed value. CONTROL: the same sheet with all-numeric cells returns the exact SUM per category and no drop notice (passes today).",
+   "testable_in_process": true,
+   "testable_note": "tests/test_bronze_sheet_ask.py fixtures; no Cortex call is made by the lane.",
+   "severity_hint": "high: understated total with a green L0_CERTIFIED badge is the plausible-number-plus-green-badge failure CLAUDE.md rule 12 names.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "insights-routes-return-payload-unmasked",
+   "title": "POST /v1/insights and GET /v1/insights/ontology pass Cortex's payload (values, answer, SQL, error bodies, the user's question in the URL) through unmasked.",
+   "cells": [
+    "insights:post-ask G5",
+    "insights:post-generate G5",
+    "insights:get-ontology-ranking G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "#272/#318 cover Studio answer/exports/generate context, not this route (tracers). get-ontology-ranking is structural only (today's payload is a metric catalogue); generate leg needs a real key.",
+   "repro": "Default config with a fake Cortex whose insights_ask returns {status:'CERTIFIED', values:[{email:'siti@example.com'}], answer:'...'}. POST /v1/insights {\"intent\":\"list customer emails\",\"space_id\":\"cccccccc-cccc-cccc-cccc-cccccccccccc\"} -> 200 with the raw address (routes/insights.py:183-193 returns honest_envelope(payload); no mask import in the file). The same values through POST /v1/chat/ask pass mask_unknown_keys. Coherence: holds; the real payload depends on Cortex.",
+   "test_idea": "Assert the /v1/insights response body contains no raw email (DMSMASK token instead). CONTROL: a payload with only numeric values and non-PII text comes back unchanged (no over-masking), and /v1/chat/ask on the same payload is masked (passes today).",
+   "testable_in_process": true,
+   "testable_note": "tests/test_insights_host.py FakeInsights + TestClient.",
+   "severity_hint": "medium: depends on Cortex returning personal data, but DMS adds no control.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "xlsx-orch-cross-space-path-read",
+   "title": "xlsx-orch routes accept any space_id and any xlsx path under the warehouse parent directory (which holds every Space's space_docs), so one Space's stored workbook can be read, graded or copied into another Space.",
+   "cells": [
+    "studio:xlsx-orch-crosscheck G1",
+    "studio:xlsx-orch-extract G1",
+    "studio:xlsx-orch-golden G1"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "BANK-01 #268 (credential, DR-0004 Option B) would not add per-Space grants (tracers).",
+   "repro": "Default config, DMS_WAREHOUSE_DB in a tmp dir so the allowlist root is that dir, gate allowing. POST /v1/studio/xlsx-orch/extract {pack_id:'p1', space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc', producer:'pointer_copilot', result_path:<tmp>/fin.xlsx} stores <tmp>/space_docs/cccccccc-cccc-cccc-cccc-cccccccccccc/xlsx_orch/p1/result.xlsx. Then POST extract {pack_id:'p9', space_id:'dddddddd-dddd-dddd-dddd-dddddddddddd', producer:'pointer_copilot', result_path:<that FIN path>} -> ok:true; the FIN workbook is copied into dddddddd-dddd-dddd-dddd-dddddddddddd's space_docs and its Analysis figures returned. golden/crosscheck read the same paths. Coherence: reveal.py:25-45 roots = warehouse parent; xlsx_orch.py:104-126 has no Space ownership test. Holds; under DR-0004 any caller can name any space_id anyway.",
+   "test_idea": "Assert the cross-Space extract returns 403/path_not_allowlisted (or space_mismatch), not ok:true. CONTROL: extract with result_path under dddddddd-dddd-dddd-dddd-dddddddddddd's own space_docs succeeds, and a path outside the root already returns path_not_allowlisted.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_xlsx_orch.py patterns with tmp_path and openpyxl.",
+   "severity_hint": "medium: any caller of a gated mutation route can read any xlsx under the data dir; no principal exists.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "xlsx-orch-unmasked-and-raw-persist",
+   "title": "xlsx-orch responses return workbook headers/labels/values unmasked, and extract persists the raw workbook under space_docs.",
+   "cells": [
+    "studio:xlsx-orch-crosscheck G5",
+    "studio:xlsx-orch-extract G5",
+    "studio:xlsx-orch-golden G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Persisting byte-faithful is the extract route's stated purpose, so the record-side 'no' there may be by design; the response masking is the testable part.",
+   "repro": "Default config. POST /v1/studio/xlsx-orch/extract {pack_id:'p5', space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc', producer:'pointer_copilot', result_path:<tmp xlsx>} where Analysis has ['IC 900101-14-5566', 4521.50]: response inspected.analysis_labeled carries the raw label; crosscheck returns source_oracle.cost_col verbatim from the header 'Cost - IC 900101-14-5566'. Coherence: nothing in studio.py or executor/xlsx_orch.py calls a masker; holds (names are not detected by the masker today, so use an IC/email in the test).",
+   "test_idea": "Assert the response JSON contains no raw '900101-14-5566'. CONTROL: numeric figures (avg_cost, counts) are unchanged.",
+   "testable_in_process": true,
+   "testable_note": "TestClient + openpyxl in tmp_path.",
+   "severity_hint": "low-medium: aggregates and labels in an external-caller tool; raw persistence is by design.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "stored-sql-no-fanout-guard",
+   "title": "Steward-registered (VQ) and hard-coded pack SQL is served at L0/L1 with no join-rule or fan-out check at registration or serve time.",
+   "cells": [
+    "chat-ask:verified-query G3",
+    "chat-ask:governed-pack G3"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Pack half is explained by the same missing guard but is not demonstrable on the seed (needs duplicate parents in the Cortex lake).",
+   "repro": "Default config. POST /v1/studio/verified-queries {space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc', question:'Revenue by warehouse', sql:'SELECT t.location_id, ROUND(SUM(t.quantity_kg*t.unit_cost_myr),2) AS revenue_myr FROM transactions t JOIN inventory i ON i.location_id = t.location_id GROUP BY t.location_id'} is accepted (verified_queries.py:125-175 checks hostile SQL and grants only). POST /v1/chat/ask {question:'Revenue by warehouse', space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc'} -> L0_CERTIFIED; WH-A and WH-B totals are doubled because the seed inventory has two rows for each (demo_warehouse.py:350-358). Coherence: holds; needs a steward-authored bad join and a DuckDB-backed fake submit so the rows are real.",
+   "test_idea": "Assert the WH-A revenue_myr in the response equals SELECT SUM(quantity_kg*unit_cost_myr) FROM transactions WHERE location_id='WH-A' computed directly on the seed (not the doubled value), or that registration is rejected 4xx. CONTROL: a single-table VQ (SELECT location_id, SUM(...) FROM transactions GROUP BY location_id) is accepted and equals the oracle (passes today).",
+   "testable_in_process": true,
+   "testable_note": "Needs a fake Cortex whose submit() executes the SQL on the tmp DMS seed (about 15 lines); otherwise only the registration-rejects assertion is possible.",
+   "severity_hint": "medium: requires a steward-authored fan-out join, but the figure ships with the top trust badge.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "bronze-sheet-l0-minted-locally",
+   "title": "The bronze-sheet lane computes rows in DMS's own DuckDB and ships L0_CERTIFIED with audit_id=answer_id, with no signed manifest, submit or ledger append.",
+   "cells": [
+    "chat-ask:bronze-sheet G7",
+    "chat-ask:cascade-attach G7"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "BRONZE-GRANT-01 (#333/#335, merged) fixed only the grant; FOLLOWUP-CONTRACT-01 covers follow-up only; #331/#336/#337 do not touch the lane. Conflicts with F83 'no local L0' (docs/subagents_findings/2026-09-05_epic-019-f83-no-local-l0.md). cascade-attach is flag-gated but inherits the lane.",
+   "repro": "Default config. Ingest granted.xlsx / Sales into cccccccc-cccc-cccc-cccc-cccccccccccc (tests/test_bronze_sheet_ask.py), POST /v1/chat/ask {question:'In granted.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?', space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc'}: 200 L0_CERTIFIED with rows from bronze_sheet_ask._grouped_top_n (duckdb.connect read_only), audit_id 'ans_bronze_<ident>'; fake Cortex submits and ledger appends stay empty. Coherence: verified (bronze_sheet_ask.py:178-206, executor/__init__.py:693-727).",
+   "test_idea": "Assert len(fake.ledger_appends) == 1 and envelope.audit_id equals that entry's id (or the badge is not L0_CERTIFIED); today 0 appends and audit_id is 'ans_bronze_...'. CONTROL: a pack/VQ L0 answer in the same test has a submit, a ledger append and a matching audit_id.",
+   "testable_in_process": true,
+   "testable_note": "Executor + FakeCortex over a tmp warehouse (tests/test_bronze_sheet_ask.py).",
+   "severity_hint": "high: top trust tier minted locally; breaks hard rule 3 (one ledger) and F83.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "chunk-text-routes-unmasked",
+   "title": "GET /v1/library/chunks/search and GET /v1/studio/chunks return raw chunk text (free text where emails, phones, passports live) with no masker.",
+   "cells": [
+    "library:chunks-search G5",
+    "studio:chunks-list G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "#303/#318 widen free-text detection but do not wire a masker into these routes.",
+   "repro": "Needs DATABASE_URL (default None -> wiring.py:64-65,83-84 return []). Ingest a note into cccccccc-cccc-cccc-cccc-cccccccccccc containing 'Contact siti@example.my 012-3456789 passport A1234567'; GET /v1/library/chunks/search?space_id=cccccccc-cccc-cccc-cccc-cccccccccccc&q=contact or GET /v1/studio/chunks?space_id=cccccccc-cccc-cccc-cccc-cccccccccccc returns it verbatim in content. Coherence: holds in code; not reproducible on default config.",
+   "test_idea": "Assert the returned content holds masked tokens, not the email/phone/passport. CONTROL: a chunk without PII is returned unchanged.",
+   "testable_in_process": false,
+   "testable_note": "DB path needs Postgres (tests/control_plane fixtures require it). A route-level masker assertion could monkeypatch the wiring chunk callable.",
+   "severity_hint": "medium: free-text PII exposure, but only with Postgres configured.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "drillthrough-failure-and-truncation-not-named",
+   "title": "A Cortex 422 on drillthrough becomes an empty 200, the model drops truncation/approximate fields, and a refused or failed drill makes the CSV button silently download the one-cell summary.",
+   "cells": [
+    "chat:drillthrough G8",
+    "export:csv-client G8"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Truncation/approximate flags are cited from DMS_TECHNICAL_ARCHITECTURE.md:238-242 and the generated drillthrough_response model; DrillthroughResponse (extra='ignore') cannot carry them, so that sub-part is only testable after a contract field check.",
+   "repro": "Default config. A Cortex drillthrough answering 422: client.py:268-275 model_validates parsed.to_dict() into an all-default DrillthroughResponse, so POST /v1/chat/drillthrough {token:'t'} returns HTTP 200 {rows:[],sql_used:null} and the UI prints 'No drill rows returned.'. If the gate refuses (403) or Cortex 502s, AnswerMessage.tsx:195-197 falls back and 'Download CSV' saves the summary cell. Coherence: holds for the 422 path; CSV leg is UI-only.",
+   "test_idea": "With an httpx.MockTransport returning 422, assert POST /v1/chat/drillthrough returns a named non-200 (502 drillthrough_failed). CONTROL: a transport exception already returns 502 drillthrough_failed and a 200 with rows returns the rows.",
+   "testable_in_process": true,
+   "testable_note": "Needs httpx MockTransport under CortexClient (no network); the CSV leg needs vitest.",
+   "severity_hint": "low-medium: a failed drill reads as 'no rows' and a capped drill can export as complete.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "generative-sql-ships-over-failed-verify-ontology",
+   "title": "Insights-written SQL ships L2_VALIDATED over a lake whose default ontology failed Ontology.verify because live_ask passes no declared ontology, so the A2-02 guard is not wired on the live path.",
+   "cells": [
+    "chat-ask:generative-insights-sql G2"
+   ],
+   "class": "bypass",
+   "tracked_by": "#258",
+   "tracked_note": "A2-02, open. Armed deployments only (real CORTEX_API_KEY; the default demo key is refused locally).",
+   "repro": "Armed config. Seed the DMS warehouse then add an inventory row with supplier_id 'SUP-99' (orphan FK) so demo_ontology fails verify; load_verified_ontology returns None (generative_ask.py:369-372). In cccccccc-cccc-cccc-cccc-cccccccccccc POST /v1/chat/ask {question:'revenue by supplier'} with a fake Insights returning SQL joining transactions->inventory->suppliers with SUM: validate_compiled_sql passes (all granted), submit and ledger succeed, 200 L2_VALIDATED with the orphan's value silently dropped by the INNER JOIN. Coherence: tests/test_a2_02 shows the guard works when a declared ontology is passed; maybe_generative_ask is called without one at executor/__init__.py:731-762. Holds.",
+   "test_idea": "Assert the response abstains naming the violated check/link/orphan count (as test_a2_02 does for a declared ontology), not L2_VALIDATED. CONTROL: the same ask on the clean seed ships L2_VALIDATED, and the typed-plan path on the orphan seed already abstains ontology_unverified.",
+   "testable_in_process": true,
+   "testable_note": "Existing generative tests inject compute/submit; FakeCortex with insights seam.",
+   "severity_hint": "high: wrong number under a confident badge on a known orphan; already ticketed.",
+   "n_cells": 1
+  },
+  {
+   "gap_id": "cortex-error-detail-returned-unmasked",
+   "title": "Engine error text raised as AskServiceError is returned verbatim as HTTP detail.message with no masker.",
+   "cells": [
+    "ui:exclusion-auto-confirm G5"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Also affects contract-ask, doc-retrieval and mcp:ask error bodies (their G5 cells sit in other gaps). PLAUSIBLE: depends on engine text quoting a cell value.",
+   "repro": "Default config. FakeCortex.ask_error = AskServiceError('submit_failed', \"cast failed for value 'siti@example.com'\"); POST /v1/chat/ask {question:'Top 5 selling SKUs by revenue', space_id:'cccccccc-cccc-cccc-cccc-cccccccccccc'} -> HTTP 502 whose detail.message holds the raw address (chat.py:332-335). Coherence: holds.",
+   "test_idea": "Assert response.text has no raw email. CONTROL: an error body without PII keeps its code and message (e.g. pool_mismatch).",
+   "testable_in_process": true,
+   "testable_note": "FakeCortex.ask_error in tests/test_live_ask.py.",
+   "severity_hint": "low: needs an engine error that quotes data.",
+   "n_cells": 1
+  },
+  {
+   "gap_id": "rule12-aggregate-zero-row-green",
+   "title": "The hard-rule-12 net demotes only an empty result set; a Cortex ask whose zero-match filter returns one aggregate row (COUNT(*)=0, SUM NULL) keeps a confident badge.",
+   "cells": [
+    "chat-ask:cortex-contract-ask G8"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "#290 QUAL-GUARD-01 covers dropped filters on generated SQL only. The code comment at envelope.py:1448 says one zero-row COUNT is fine, so this is a known carve-out.",
+   "repro": "Default config. dddddddd-dddd-dddd-dddd-dddddddddddd POST /v1/chat/ask {question:'total quantity of BETA in stock', space_id:'dddddddd-dddd-dddd-dddd-dddddddddddd'} (generative lane misses on the default key); fake Cortex ask returns sql_used \"SELECT SUM(quantity_kg) AS total FROM inventory WHERE sku = 'BETA'\" and rows [{total: null}] (the seed holds 'SKU-BETA'). rows is non-empty, so envelope.py:1450-1460 does not fire; map_ask_response adds a v_count=1 row_count value; the envelope ships L2_VALIDATED. Coherence: net code verified; the final text depends on the engine answer, so confidence is medium.",
+   "test_idea": "Assert the badge is ABSTAIN (or text states no matching rows) for rows [{total:None}] / [{n:0}] when sql_used filters on a literal. CONTROL: the same ask filtering 'SKU-BETA' returns a real total at L2, and an empty rows list already abstains.",
+   "testable_in_process": true,
+   "testable_note": "Fake Cortex ask response (tests/test_live_ask.py).",
+   "severity_hint": "high: CLAUDE.md rule 12 calls this the most dangerous single failure (plausible number, green badge).",
+   "n_cells": 1
+  },
+  {
+   "gap_id": "e9-bare-integer-uncited-in-doc-lane",
+   "title": "E9/E4 treat only decimal or thousand-separated literals as figures, so an uncited bare integer in a doc-retrieval answer keeps its badge, and an empty-answer abstain renders as a bare 'Abstained.'.",
+   "cells": [
+    "chat-ask:cortex-doc-retrieval G8"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "tracked_note": "Deliberate trade-off (envelope.py:845-859: bare integers are ranks, years, SKU tails) against E9's stated contract.",
+   "repro": "Default config. Fake Cortex ask returns answer 'The total is 12500', no sql_used, a doc route with one source snippet that does not contain 12500: _money_like skips bare integers, unbacked_numbers finds nothing, the badge is kept. No matching chunk -> text 'Abstained.' with no reason. Coherence: _money_like verified.",
+   "test_idea": "Assert the 'total is 12500' doc answer is demoted (ABSTAIN or figure withheld). CONTROL: 'The total is 12,500.00' with no matching snippet is already withheld (passes today).",
+   "testable_in_process": true,
+   "testable_note": "Fake Cortex ask.",
+   "severity_hint": "low-medium: needs a model-composed integer total in prose; deliberate heuristic.",
+   "n_cells": 1
+  },
+  {
+   "gap_id": "generative-keep-gt-rows-not-in-ledgered-sql",
+   "title": "On keep_gt plans DMS keeps rows in Python after Cortex executes, so displayed rows are a subset of the ledgered, displayed SQL's result.",
+   "cells": [
+    "chat-ask:generative-ontology-plan G7"
+   ],
+   "class": "bypass",
+   "tracked_by": "new",
+   "repro": "Armed config. A typed plan with keep_gt (existing fixtures: tests/test_gen_path_climb03.py, 04, test_gen02_bind_fallback.py): Cortex returns all rows, DMS keeps those over the threshold (generative_ask.py:830-842), and sql_used plus the ledger payload record the unfiltered query. Re-running sql_used returns more rows than were shown. Coherence: verified in code.",
+   "test_idea": "Assert envelope.sql_used contains the keep predicate, or re-executing sql_used on the seed returns exactly envelope.rows. CONTROL: the same plan without keep_gt already satisfies it.",
+   "testable_in_process": true,
+   "testable_note": "Existing keep_gt tests.",
+   "severity_hint": "low-medium: audit mismatch; shown rows are real rows.",
+   "tracked_note": "",
+   "n_cells": 1
+  },
+  {
+   "gap_id": "space-refusal-envelope-no-served-attribution",
+   "title": "The Space-refusal ABSTAIN envelope is built in routes/chat.py outside live_ask, so it carries no served_attribution although Insights or Cortex generation may have run before the refusal.",
+   "cells": [
+    "chat-ask:space-refusal G6"
+   ],
+   "class": "bypass",
+   "tracked_by": "#305",
+   "tracked_note": "Open issue; the stamp merged in #319 covers live_ask results only.",
+   "repro": "Default config. FakeCortex.ask_error = AskServiceError('path_not_allowed', \"table 'transactions' is not named by this manifest\"); POST /v1/chat/ask {question:'Top 5 selling SKUs by revenue', space_id:'dddddddd-dddd-dddd-dddd-dddddddddddd'} -> refusal envelope (chat.py:317-325) with no served_attribution key. Coherence: verified (executor/__init__.py:504-510 stamps only live_ask returns).",
+   "test_idea": "Assert 'served_attribution' is present in the refusal body. CONTROL: a normal live_ask envelope carries it (tests/test_served_attr_01.py).",
+   "testable_in_process": true,
+   "testable_note": "tests/test_live_ask.py harness.",
+   "severity_hint": "low: attribution gap on a refusal.",
+   "n_cells": 1
+  },
+  {
+   "gap_id": "served-pin-checked-only-in-offline-scorer",
+   "title": "served_provider/served_model are stamped on envelopes but compared with the pin only in scripts/score_curated.py (envelope_mismatch), which also mis-scores truthful no-model lanes as INVALID pin_mismatch; nothing at serving time refuses an off-pin 200.",
+   "cells": [
+    "chat-ask:followup-average G6",
+    "chat-ask:followup-add G6",
+    "chat-ask:followup-abstain G6",
+    "cache:session-turns G6",
+    "chat-ask:verified-query G6",
+    "chat-ask:governed-pack G6",
+    "chat-ask:planted-refuse G6",
+    "chat-ask:harness-exact-miss G6",
+    "chat-ask:generative-pregate-abstain G6",
+    "chat-ask:cascade-abstain G6",
+    "chat-ask:bronze-sheet G6",
+    "chat-ask:bronze-grant-abstain G6",
+    "chat-ask:harness-generative-miss G6",
+    "chat-ask:generative-named-abstain G6",
+    "chat-ask:generative-multi-grain G6",
+    "chat-ask:generative-insights-sql G6",
+    "chat-ask:generative-ontology-plan G6"
+   ],
+   "class": "systemic",
+   "tracked_by": "#337",
+   "tracked_note": "PIN-NOMODEL-01 (draft PR, scorer half only) + #305 (stamp merged via #319); the serve-time served-vs-pin check is new. harness/cascade cells are flag-gated but share the stamp.",
+   "repro": "Not a request-triggerable bypass: the stamp is truthful and the pin is sent; the check lives in the harness. Demonstration: fake Insights answering 200 with served_model != pin ships L2_VALIDATED with served_attribution 'reported'.",
+   "test_idea": "With a strict pin set, a fake Insights 200 whose served_model differs from the pin must produce a named abstain (pin_mismatch), not L2_VALIDATED; plus strict_pin.envelope_mismatch(envelope with served_attribution 'none') returns None. CONTROL: a 200 carrying the pinned pair ships normally.",
+   "testable_in_process": true,
+   "testable_note": "Fake Insights; tests/test_strict_pin_01.py patterns.",
+   "severity_hint": "medium: the gate exists only in the offline harness; no runtime enforcement.",
+   "n_cells": 17
+  },
+  {
+   "gap_id": "insights-routes-bypass-dms-gates",
+   "title": "POST /v1/insights and GET /v1/insights/ontology are a thin passthrough to Cortex's Insights endpoint on the founder key: no Space/grant resolution, ontology verify, fan-out guard, typed-ingest evidence, pin/attribution, submit/ledger, or Cortex-200 sanity check.",
+   "cells": [
+    "insights:post-ask G1",
+    "insights:post-generate G1",
+    "insights:post-ask G2",
+    "insights:post-generate G2",
+    "insights:post-ask G3",
+    "insights:post-generate G3",
+    "insights:post-ask G4",
+    "insights:post-generate G4",
+    "insights:post-ask G6",
+    "insights:post-generate G6",
+    "insights:get-ontology-ranking G6",
+    "insights:post-ask G7",
+    "insights:post-generate G7",
+    "insights:post-ask G8",
+    "insights:post-generate G8"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "#331/#336/#337 do not touch routes/insights.py (tracers); #273 KEY-01 and #268 BANK-01 are adjacent. Design: INSIGHTS-HOST-01 hosted consume of Cortex's own endpoint; Space grants do not apply to it. Post-generate needs a real key (default key refused locally).",
+   "repro": "Not downgraded to a bypass because DMS's contribution is only an absent check and the outcome depends on Cortex. Demonstrable: POST /v1/insights with space_id='no-such-space' returns 200 while /v1/chat/ask returns 404 space_not_found.",
+   "test_idea": "POST /v1/insights {intent:'how many skus', space_id:'no-such-space'} must be refused as /v1/chat/ask is (404 space_not_found). CONTROL: space_id='cccccccc-cccc-cccc-cccc-cccccccccccc' returns 200.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_insights_host.py FakeInsights.",
+   "severity_hint": "medium: unknowable from this repo how much Cortex enforces by key; DMS adds nothing.",
+   "n_cells": 15
+  },
+  {
+   "gap_id": "browse-and-chunk-routes-not-answer-paths",
+   "title": "Library preview, MCP preview and chunk routes read local data and return unnamed 500s, silent empty 200s, soft-passed gate outages and untyped rows, so the answer-path gate definitions (typed ingest, submit/ledger, named failure) do not fit them.",
+   "cells": [
+    "library:bronze-preview G4",
+    "library:chunks-search G4",
+    "studio:chunks-list G4",
+    "library:warehouse-preview G7",
+    "library:bronze-preview G7",
+    "mcp:preview G7",
+    "library:chunks-search G7",
+    "studio:chunks-list G7",
+    "library:warehouse-preview G8",
+    "library:bronze-preview G8",
+    "mcp:preview G8",
+    "library:chunks-search G8",
+    "studio:chunks-list G8",
+    "export:xlsx G8"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "#316 (draft) partly covers G4 for all-VARCHAR SQL pulls. Tracers self-flag the chunks G4 'no' as definitional ('matrix owners may prefer n_a'). Gate soft-pass on reads is deliberate and tested. export:xlsx G8 (non-Latin-1 answer_id -> UnicodeEncodeError 500) is a small default-config defect inside this gap.",
+   "repro": "Not a bypass: by design these are not answer paths. Demonstrable: GET /v1/library/chunks/search?space_id=cccccccc-cccc-cccc-cccc-cccccccccccc&q=x on the default config (DATABASE_URL unset) returns bare 200 [] although library.py:231-233 says an empty 200 must not happen; export.xlsx with answer_id '答案1' raises UnicodeEncodeError (xlsx_download_name keeps isalnum() letters).",
+   "test_idea": "GET chunks/search on default config must return a named reason (e.g. document_index_unconfigured) not []; POST export.xlsx with answer_id '答案1' must return 200 or a named 4xx, not a 500. CONTROL: a warehouse preview refusal already returns 403 with code and scope.",
+   "testable_in_process": true,
+   "testable_note": "Default config needs no Postgres (wiring returns []).",
+   "severity_hint": "low: usability/honesty of non-answer routes.",
+   "n_cells": 14
+  },
+  {
+   "gap_id": "certified-lane-failure-not-named",
+   "title": "When a certified or earlier lane hits or fails (VQ ledger/submit problem, pack submit error, bronze in-lane miss, Insights transport error, shadowed ontology_unverified, grounded follow-up) the ladder hands the question to the next lane without naming the failure; the VQ lane also leaks SubmitError as 503 live_ask_failed while the pack swallows it.",
+   "cells": [
+    "chat-ask:verified-query G8",
+    "chat-ask:governed-pack G8",
+    "chat-ask:bronze-sheet G8",
+    "chat-ask:generative-named-abstain G8",
+    "chat-ask:generative-multi-grain G8",
+    "chat-ask:generative-ontology-plan G8",
+    "chat-ask:followup-abstain G8",
+    "mcp:ask G8"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "Grant-refusal sub-branches are #307 / draft #331; #276 GEN-RESTORE-01 (fail-closed umbrella) cited by one tracer. Fall-through is the designed ladder; the audit's named-abstain rule is stricter.",
+   "repro": "Not a bypass (the later lane has its own gates and badge). Demonstration: VQ asset whose ledger append echoes entry_id==hash -> lane returns None and Cortex ask answers; assumptions never mention the asset failed.",
+   "test_idea": "Register a VQ, make fake ledger_append return entry_id==hash, ask the exact question: assert text or assumptions name that the verified query failed (or the envelope abstains). Second: fake submit raising SubmitError(path_not_allowed) on a VQ -> assert a named Space refusal envelope, not 503 live_ask_failed. CONTROL: valid ledger entry -> L0.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_vq*.py fakes.",
+   "severity_hint": "low-medium: source swap without a stated reason; confidence labels remain truthful.",
+   "n_cells": 8
+  },
+  {
+   "gap_id": "served-sql-never-reverified-against-ontology",
+   "title": "Stored steward SQL, hard-coded pack SQL, template bronze SQL and Cortex-written SQL are never run through Ontology.verify/compile at register or serve time; only the typed-plan generative sub-lane is.",
+   "cells": [
+    "chat-ask:verified-query G2",
+    "chat-ask:governed-pack G2",
+    "chat-ask:bronze-sheet G2",
+    "chat-ask:cascade-attach G2",
+    "chat-ask:cortex-contract-ask G2",
+    "ui:exclusion-auto-confirm G2",
+    "mcp:ask G2"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "mcp:ask tracer cites #258 for the generated-SQL part only (separate gap generative-sql-ships-over-failed-verify-ontology); #256/#261 cover generated SQL/currency, not these lanes.",
+   "repro": "Not a request-triggerable bypass: a human certifies L0 by design. Demonstration: register 'What is our revenue?' as SUM(quantity_kg*unit_cost_myr) FROM inventory in cccccccc-cccc-cccc-cccc-cccccccccccc; it ships L0_CERTIFIED stock value labelled revenue, no verify() run.",
+   "test_idea": "Register that VQ and assert it is rejected or served below L0 when its measure disagrees with the ontology's revenue definition. CONTROL: a VQ matching the ontology measure is accepted.",
+   "testable_in_process": true,
+   "testable_note": "Existing VQ register route + fakes.",
+   "severity_hint": "medium: design question for PRD (human certification vs ontology authority).",
+   "n_cells": 7
+  },
+  {
+   "gap_id": "cortex-lake-column-types-unread-by-dms",
+   "title": "DMS never inspects or records the column types of the lake Cortex executes against, so typed-ingest reliance cannot be shown for any Cortex-executed lane.",
+   "cells": [
+    "chat-ask:verified-query G4",
+    "chat-ask:governed-pack G4",
+    "chat-ask:generative-multi-grain G4",
+    "chat-ask:generative-insights-sql G4",
+    "chat-ask:generative-ontology-plan G4",
+    "chat-ask:cortex-contract-ask G4",
+    "ui:exclusion-auto-confirm G4"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "Adjacent #316 (declared types, draft).",
+   "repro": "Not a bypass: unprovable from this repo (DMS seed DDL is typed; Cortex's lake is a different file).",
+   "test_idea": "A fake Cortex lake with a VARCHAR amount column and a model/pack SQL that casts it should produce a typed-ingest-evidence warning; no such field exists yet.",
+   "testable_in_process": false,
+   "testable_note": "Needs the real engine lake; no in-process fake models Cortex's column types.",
+   "severity_hint": "low-medium: unknowable here.",
+   "n_cells": 7
+  },
+  {
+   "gap_id": "read-routes-own-space-check-not-shared-grant",
+   "title": "Library preview, MCP preview, chunk routes and doc retrieval use their own Space predicates (company_default_tables, registry match, SQL space_id) instead of the shared grant function, fail open with no/unknown Space, and trust the caller-asserted space_id.",
+   "cells": [
+    "library:warehouse-preview G1",
+    "library:bronze-preview G1",
+    "mcp:preview G1",
+    "library:chunks-search G1",
+    "studio:chunks-list G1",
+    "chat-ask:cortex-doc-retrieval G1"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "dms#74 (closed) judged the required space_id param enough; DR-0004 Option A (no principal); BANK-01 #268 open. Small concrete bug inside: bronze preview with no space serves tables registered to none although library.py:291-296 says it must not (bronze.py:546-558).",
+   "repro": "Not a bypass under DR-0004 (any caller can name any Space). Demonstrable: ingest with no space_id, GET /v1/library/bronze/<t>/preview with no space_id returns 200; unknown Space ?space_id=not-a-space on warehouse preview returns locations/inventory while ask on that Space is refused.",
+   "test_idea": "Ingest a CSV with no space_id; assert GET preview with no space_id is refused as library.py's docstring says. CONTROL: with space_id=dddddddd-dddd-dddd-dddd-dddddddddddd a cccccccc-cccc-cccc-cccc-cccccccccccc upload already returns 403 bronze_not_in_space.",
+   "testable_in_process": true,
+   "testable_note": "tests/test_library_space_scope.py pattern (chunk routes need Postgres).",
+   "severity_hint": "low-medium: documented design vs audit definition; docstring bug is real.",
+   "n_cells": 6
+  },
+  {
+   "gap_id": "xlsx-orch-outside-governed-path",
+   "title": "xlsx-orch figures come from Copilot/Python over a workbook with no ontology, and extract/crosscheck/golden write no manifest, submit or ledger record (extract's mutation is not ledgered).",
+   "cells": [
+    "studio:xlsx-orch-crosscheck G2",
+    "studio:xlsx-orch-extract G2",
+    "studio:xlsx-orch-golden G2",
+    "studio:xlsx-orch-crosscheck G7",
+    "studio:xlsx-orch-extract G7",
+    "studio:xlsx-orch-golden G7"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "Tracers call N_A arguable for G2 (DMS computes little).",
+   "repro": "Not a bypass: sidecar tool. Demonstration: extract stores result.xlsx; fake.ledger_appends stays empty.",
+   "test_idea": "Assert extract appends an 'xlsx_orch.extract' ledger entry with the sha256. CONTROL: gate-refused extract writes nothing.",
+   "testable_in_process": true,
+   "testable_note": "TestClient + fake ledger.",
+   "severity_hint": "medium.",
+   "n_cells": 6
+  },
+  {
+   "gap_id": "free-sql-lanes-no-fanout-guard",
+   "title": "Model- and engine-written SQL passes only hostile/grant/EXPLAIN checks; fanout_refused lives only in Ontology.compile, so one-to-many joins in free SQL ship inflated sums.",
+   "cells": [
+    "chat-ask:generative-insights-sql G3",
+    "chat-ask:cortex-contract-ask G3",
+    "chat-ask:cascade-attach G3",
+    "ui:exclusion-auto-confirm G3",
+    "mcp:ask G3"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "#258 is orphan-FK drops, not fan-out.",
+   "repro": "Not a bypass by design (L2 = generated, check sources). Demonstration (armed): fake Insights SQL 'SELECT SUM(i.quantity_kg) FROM inventory i JOIN shipments s ON i.location_id = s.destination_location_id' passes validate_compiled_sql and ships an inflated L2 sum; the typed plan for the same ask returns fanout_refused.",
+   "test_idea": "Assert that SQL joining inventory to shipments on a non-unique key is refused or demoted; CONTROL: typed-plan path already returns fanout_refused for the same join.",
+   "testable_in_process": true,
+   "testable_note": "Fake Insights seam.",
+   "severity_hint": "medium: inflated figure at the L2 tier.",
+   "n_cells": 5
+  },
+  {
+   "gap_id": "contract-ask-model-call-unpinned-and-stamped-none",
+   "title": "The Cortex /v1/contract/ask lane can call a model server-side with no pin from DMS and no served_* in the 1.2.0 Answer, yet the envelope carries served_attribution 'none' (or only describes the earlier Insights leg).",
+   "cells": [
+    "chat-ask:cortex-contract-ask G6",
+    "chat-ask:cortex-doc-retrieval G6",
+    "chat-ask:cascade-attach G6",
+    "ui:exclusion-auto-confirm G6",
+    "mcp:ask G6"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "#305 is adjacent (Insights-generate attribution only); #337 does not close it. Needs a contract bump to fix fully; a DMS-side honest stamp ('unattributed') is possible.",
+   "repro": "Not a bypass: contract limitation. Demonstration: fake ask returns route 'generated' with sql_used; envelope.served_attribution == 'none'.",
+   "test_idea": "Assert served_attribution != 'none' when the engine route is 'generated'. CONTROL: a pack answer (route 'governed_metric') keeps 'none'.",
+   "testable_in_process": true,
+   "testable_note": "Fake Cortex ask.",
+   "severity_hint": "medium: false no-model label on model-written SQL.",
+   "n_cells": 5
+  },
+  {
+   "gap_id": "drillthrough-token-is-the-only-control",
+   "title": "Drillthrough resolves no Space, applies no shared grant, runs no fan-out/type check and appends nothing to the ledger; the Cortex-minted token is the only control.",
+   "cells": [
+    "chat:drillthrough G1",
+    "export:csv-client G1",
+    "chat:drillthrough G3",
+    "chat:drillthrough G4",
+    "chat:drillthrough G7"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "repro": "Not a bypass observable from this repo: token validity/expiry is Cortex-side.",
+   "test_idea": "Replaying a FIN-minted token with a different session/space should be refused; today DrillthroughBody carries only the token (new contract).",
+   "testable_in_process": true,
+   "testable_note": "Fake cortex.drillthrough.",
+   "severity_hint": "low-medium.",
+   "tracked_note": "",
+   "n_cells": 5
+  },
+  {
+   "gap_id": "contract-ask-answer-not-submitted-or-ledgered-by-dms",
+   "title": "Contract-ask and doc-retrieval figures execute inside Cortex /v1/contract/ask; DMS only binds the session, appends no ledger entry, never checks the receipt, and falls back to audit_id = answer_id 'ans_live_<session>' when none is returned.",
+   "cells": [
+    "chat-ask:cortex-contract-ask G7",
+    "ui:exclusion-auto-confirm G7",
+    "chat-ask:cortex-doc-retrieval G7"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "repro": "Not a bypass by design (engine owns the ledger for its own ask); demonstration: fake ask without receipt_id -> audit_id starts 'ans_live', fake.ledger_appends empty.",
+   "test_idea": "Assert envelope.audit_id is not the synthesized answer_id for a non-abstaining contract-ask answer. CONTROL: with a receipt_id the id is passed through.",
+   "testable_in_process": true,
+   "testable_note": "Fake Cortex ask.",
+   "severity_hint": "medium.",
+   "tracked_note": "",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "export-restate-badge-without-attribution",
+   "title": "Exports and share restate the trust badge but carry no served_attribution/provider/model.",
+   "cells": [
+    "export:xlsx G6",
+    "export:bi G6",
+    "ui:share-answer G6"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "repro": "Not a bypass; projection omits a field. Demonstration: export an envelope with served_attribution 'missing'; Cover has no such row.",
+   "test_idea": "Assert the Cover includes served_attribution when the envelope has it. CONTROL: badge and answer_id rows present.",
+   "testable_in_process": true,
+   "testable_note": "xlsx/bi via TestClient; share is client-side.",
+   "severity_hint": "low.",
+   "tracked_note": "",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "verify-measured-on-dms-file-not-serving-lake",
+   "title": "Ontology.verify runs on DMS's own warehouse file while the SQL executes on Cortex's lake in the default two-file layout, so the evidence is about a different file.",
+   "cells": [
+    "chat-ask:generative-multi-grain G2",
+    "chat-ask:generative-ontology-plan G2"
+   ],
+   "class": "systemic",
+   "tracked_by": "new",
+   "tracked_note": "Single-file appliance layout closes it.",
+   "repro": "Not a bypass: layout-dependent. Demonstration: orphan only in the serving file; verify passes on the DMS file.",
+   "test_idea": "With two DuckDB files and the orphan only in the serving file, the ask must abstain or note unverified serving data. CONTROL: single-file layout abstains today.",
+   "testable_in_process": true,
+   "testable_note": "Two tmp DuckDB files + DuckDB-backed fake submit.",
+   "severity_hint": "medium.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "demo-lane-bypasses-all-gates",
+   "title": "Demo answers (DMS_ASK_MODE=demo or the no-Cortex fallback) come from hard-coded DuckDB definitions with no grant, ontology, attribution or submit/ledger and answer near-miss questions with the all-time total at L2_VALIDATED.",
+   "cells": [
+    "chat-ask:demo-mode G1",
+    "chat-ask:demo-fallback-no-cortex G1",
+    "chat-ask:demo-mode G2",
+    "chat-ask:demo-fallback-no-cortex G2",
+    "chat-ask:demo-fallback-ask-error G2",
+    "chat-ask:demo-fallback-exception G2",
+    "chat-ask:demo-fallback-exception G5",
+    "chat-ask:demo-mode G6",
+    "chat-ask:demo-fallback-no-cortex G6",
+    "chat-ask:demo-fallback-ask-error G6",
+    "chat-ask:demo-fallback-exception G6",
+    "chat-ask:demo-mode G7",
+    "chat-ask:demo-fallback-no-cortex G7",
+    "chat-ask:demo-fallback-ask-error G7",
+    "chat-ask:demo-fallback-exception G7",
+    "chat-ask:demo-mode G8",
+    "chat-ask:demo-fallback-no-cortex G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Flags: DMS_ASK_MODE=demo (default live), or DMS_DEMO_FALLBACK=1 (default 0 in .env.example and compose) with app.state.cortex None (not under normal lifespan). Banner/chip present (rule 11).",
+   "repro": "Dormant. DMS_ASK_MODE=demo, dddddddd-dddd-dddd-dddd-dddddddddddd 'What was total revenue?' returns 'Total outbound revenue was RM 25,654.50.' L2_VALIDATED from transactions the Space does not grant; 'What was total revenue in 2099?' returns the same all-time total.",
+   "test_idea": "With ask_mode demo and space dddddddd-dddd-dddd-dddd-dddddddddddd, the revenue ask must refuse as live does; CONTROL: live mode refuses.",
+   "testable_in_process": true,
+   "testable_note": "create_app with env.",
+   "severity_hint": "low: opt-in demo mode.",
+   "n_cells": 17
+  },
+  {
+   "gap_id": "operator-cli-outside-governed-path",
+   "title": "scripts/insights.py and scripts/brief.py run locally with no masker, ledger or ontology re-check, and brief.py's 'Every figure compiled and conserved' claim is unconditional over any JSON.",
+   "cells": [
+    "cli:insights-report G4",
+    "cli:insights-report G5",
+    "cli:brief-deck G5",
+    "cli:insights-report G7",
+    "cli:brief-deck G7",
+    "cli:insights-report G8",
+    "cli:brief-deck G8",
+    "cli:brief-deck G2",
+    "cli:brief-deck G3"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Operator CLIs; no route/UI/in-repo caller; insights needs gitignored data/lake.",
+   "repro": "Dormant (operator CLI). Hand-built report JSON with PII-looking labels yields a deck with raw labels and the 'compiled and conserved' claim.",
+   "test_idea": "brief.py with a hand-built report containing an IC label must refuse or mask. CONTROL: a report from insights.py passes.",
+   "testable_in_process": false,
+   "testable_note": "brief.py testable with hand JSON (python-pptx dev extra); insights.py needs the lake.",
+   "severity_hint": "low: operator tooling.",
+   "n_cells": 9
+  },
+  {
+   "gap_id": "answer-user-sql-unwired",
+   "title": "Executor.answer_user_sql has no route, MCP tool or UI caller: it runs caller SQL on the local warehouse with no grant, ontology, fan-out, typing, attribution, submit or named-failure handling.",
+   "cells": [
+    "other:answer-user-sql G1",
+    "other:answer-user-sql G2",
+    "other:answer-user-sql G3",
+    "other:answer-user-sql G4",
+    "other:answer-user-sql G6",
+    "other:answer-user-sql G7",
+    "other:answer-user-sql G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Dead code (definition executor/__init__.py:256; tests only). Same defect class as FOLLOWUP-CONTRACT-01 but out of its scope.",
+   "repro": "Dormant (no caller). Direct call: answer_user_sql('SELECT * FROM alerts', space_id='dddddddd-dddd-dddd-dddd-dddddddddddd') returns rows at L2_VALIDATED.",
+   "test_idea": "Assert answer_user_sql in dddddddd-dddd-dddd-dddd-dddddddddddd refuses alerts; CONTROL: granted table works.",
+   "testable_in_process": true,
+   "testable_note": "Direct Executor call.",
+   "severity_hint": "low: unreachable until wired; becomes high if a route is added.",
+   "n_cells": 7
+  },
+  {
+   "gap_id": "demo-fallback-converts-live-refusal-to-demo-numbers",
+   "title": "With DMS_DEMO_FALLBACK=1, live errors outside _POLICY_CODES (sql_not_analyzable, manifest_malformed, VQ SubmitError, AssertionError E4/E9) are answered with confident demo numbers instead of a refusal.",
+   "cells": [
+    "chat-ask:demo-fallback-ask-error G1",
+    "chat-ask:demo-fallback-exception G1",
+    "chat-ask:demo-fallback-ask-error G8",
+    "chat-ask:demo-fallback-exception G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Flag DMS_DEMO_FALLBACK=1 (default 0). _POLICY_CODES (chat.py:34-49) omits three 403 codes from _STATUS_BY_CODE.",
+   "repro": "Dormant. Flag on, Cortex rejects manifest_malformed: 'What was total revenue?' returns 'Total outbound revenue was RM 25,654.50.' L2_VALIDATED, note 'fallback after live error: manifest_malformed'.",
+   "test_idea": "With the flag on, AskServiceError('manifest_malformed') must return the named policy error. CONTROL: path_not_allowed already does.",
+   "testable_in_process": true,
+   "testable_note": "FakeCortex.ask_error + env flag.",
+   "severity_hint": "low: default off, bannered; contradicts the in-code 'never mask policy refusals' rule.",
+   "n_cells": 4
+  },
+  {
+   "gap_id": "ui-demo-source-fixture-unreachable",
+   "title": "Client-side fixture previews (ref_q3_sales etc.) would fabricate cells if a demo source ever carried those ids; no producer exists.",
+   "cells": [
+    "ui:demo-source-fixture-preview G2",
+    "ui:demo-source-fixture-preview G7",
+    "ui:demo-source-fixture-preview G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Dead code in the UI bundle.",
+   "repro": "Dormant.",
+   "test_idea": "Vitest: fixtures must not render unless ask_mode demo and an explicit fixture marker.",
+   "testable_in_process": false,
+   "testable_note": "UI only.",
+   "severity_hint": "low.",
+   "n_cells": 3
+  },
+  {
+   "gap_id": "ungranted-tick-dropped-not-refused",
+   "title": "Under the cascade or harness ladders an ungranted ticked table is dropped from the read set and the ask runs or misses with a misleading reason instead of a named refusal.",
+   "cells": [
+    "chat-ask:cascade-abstain G8",
+    "chat-ask:harness-generative-miss G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "#307",
+   "tracked_note": "GRANT-READ-02, draft PR #331. Flags: DMS_CCA_CASCADE=1 or DMS_HARNESS_ASK_PATHS=1.",
+   "repro": "Dormant. DMS_HARNESS_ASK_PATHS=1, cccccccc-cccc-cccc-cccc-cccccccccccc, grounded_tables=['alerts'], ask_path='generative' -> 200 ABSTAIN 'generative miss: no plan source' with grounded_tables []; the product ladder gives 403 grounding_not_grantable.",
+   "test_idea": "Assert 403 grounding_not_grantable on the generative ladder. CONTROL: product ladder already does.",
+   "testable_in_process": true,
+   "testable_note": "Env flag + TestClient.",
+   "severity_hint": "low.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "cascade-certifies-spelling-not-executed-sql",
+   "title": "The CCA cascade certifies a landed spelling but never checks the executed SQL's filter, and binds on raw string casts.",
+   "cells": [
+    "chat-ask:cascade-attach G8",
+    "chat-ask:cascade-abstain G4"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Flag DMS_CCA_CASCADE (shipped OFF; documented cascade.py:19-35 and 2026-09-05_cca-certifies-spelling-not-sql).",
+   "repro": "Dormant. Flag on, 'total supplier risk for Malaysia' with suppliers.country stored 'MY': trace CERTIFIED while Cortex filters 'Malaysia'.",
+   "test_idea": "Assert a CERTIFIED trace whose spelling is absent from sql_used demotes. CONTROL: matching spelling stays certified.",
+   "testable_in_process": true,
+   "testable_note": "Env flag + fakes.",
+   "severity_hint": "low: off by default.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "demo-answers-exported-and-shared-unlabelled",
+   "title": "BI export and share payloads drop ask_mode/demo_fallback, so demo numbers travel without a marker.",
+   "cells": [
+    "export:bi G8",
+    "ui:share-answer G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Flags DMS_ASK_MODE=demo / DMS_DEMO_FALLBACK=1.",
+   "repro": "Dormant. Export a demo-fallback envelope via export.bi; response omits ask_mode.",
+   "test_idea": "Assert export.bi carries ask_mode/demo marker. CONTROL: xlsx Cover has ask_mode.",
+   "testable_in_process": true,
+   "testable_note": "TestClient.",
+   "severity_hint": "low.",
+   "n_cells": 2
+  },
+  {
+   "gap_id": "exclusion-auto-decline-answers-different-question",
+   "title": "After 5 seconds with no click the UI auto-declines an exclusion prompt and posts a different question with a confident badge (plus a PLAUSIBLE re-ask loop).",
+   "cells": [
+    "ui:exclusion-auto-confirm G8"
+   ],
+   "class": "dormant",
+   "tracked_by": "new",
+   "tracked_note": "Needs Cortex to emit 'Yes - exclude' / 'No - show without excluding' chips; no DMS producer exists. Runaway re-ask is a static reading only.",
+   "repro": "Dormant (engine-dependent).",
+   "test_idea": "Vitest: with an abstain carrying both chips and no click, assert no auto-posted answer. CONTROL: explicit click posts once.",
+   "testable_in_process": false,
+   "testable_note": "UI effect timing; needs vitest.",
+   "severity_hint": "low-medium.",
+   "n_cells": 1
+  }
+ ],
+ "unassigned": [],
+ "contradictions": [
+  {
+   "id": "ledger-sql-masking-verdicts",
+   "cells": [
+    "chat-ask:generative-multi-grain G5 (yes)",
+    "chat-ask:generative-insights-sql G5 (partial)",
+    "chat-ask:generative-ontology-plan G5 (partial)",
+    "chat-ask:generative-named-abstain G5 (calls the ledger record clean)",
+    "chat-ask:governed-pack G5 (yes)",
+    "chat-ask:verified-query G5 (partial)",
+    "mcp:ask G5 (partial)"
+   ],
+   "shared_code": "generative_ask.py:845 ledger_append({'sql': sql, ...}) in _submit_validated (called at :985 multi-grain, :1284 insights-sql, :1454 ontology-plan); executor/__init__.py:455-478 _ledger_verified_query (VQ and pack).",
+   "disagreement": "All paths append the raw SQL text to the Cortex ledger. Three cells fail it, two call it clean (multi-grain yes; named-abstain says the ledger payload has no cell values). Pack is defensible only because its SQL has no user literals.",
+   "recheck": "Score the shared ledger payload once; apply the same verdict to the multi-grain and named-abstain cells."
+  },
+  {
+   "id": "audit-receipt-masking-verdicts",
+   "cells": [
+    "chat-ask:generative-named-abstain G5 (partial)",
+    "chat-ask:cortex-contract-ask G5 (partial)",
+    "chat-ask:cortex-doc-retrieval G5 (partial)",
+    "export:xlsx G5 (partial)",
+    "export:bi G5 (partial)",
+    "ui:share-answer G5 (partial)",
+    "chat-ask:generative-pregate-abstain G5 (yes)",
+    "chat-ask:bronze-grant-abstain G5 (yes)",
+    "chat-ask:cascade-abstain G5 (yes)",
+    "chat-ask:followup-abstain G5 (yes)",
+    "chat-ask:space-refusal G5 (yes)",
+    "ui:exclusion-auto-confirm G5 (partial, error bodies only)",
+    "mcp:ask G5 (partial, ledger only)"
+   ],
+   "shared_code": "pii.py:201-211 (_HANDLED_KEYS contains audit_receipt), pii.py:1068-1076 (mask_envelope rewrites only include.rows), executor/__init__.py:504-510 (live_ask scan skips handled keys), envelope.py:1222-1231,1726-1733 (abstain why copied into audit_receipt.unsure.why).",
+   "disagreement": "Six cells fail the receipt; the other abstain-envelope cells and the two cells whose own lane is contract-ask score yes or ignore it. Verdicts depend on whether the tracer looked at the receipt.",
+   "recheck": "Re-score every cell that returns an envelope with the receipt in scope; abstain 'why' text can echo user text."
+  },
+  {
+   "id": "zero-row-vs-single-aggregate-row",
+   "cells": [
+    "chat-ask:cortex-contract-ask G8 (partial: aggregate zero row ships)",
+    "chat-ask:cascade-attach G8 (partial: wrong-encoding zero row keeps badge)",
+    "ui:exclusion-auto-confirm G8 (lists zero-row demotion as a named branch)",
+    "mcp:ask G8 (lists bronze zero-match as good)"
+   ],
+   "shared_code": "envelope.py:1450-1460 (hard rule 12 net fires only when rows_out is empty; comment 'COUNT(*) returning one zero-row is fine').",
+   "disagreement": "Tracers use 'zero-row' for two shapes: empty result (demoted) and one aggregate row of 0/NULL (not demoted). Two cells treat the net as sufficient.",
+   "recheck": "Re-read the contract-ask and exclusion cells against envelope.py:1450-1460 for the one-row-aggregate shape."
+  },
+  {
+   "id": "pass-through-figures-na-policy",
+   "cells": [
+    "export:xlsx G2/G3 (n_a: no computed figure)",
+    "export:bi G3 (n_a)",
+    "export:csv-client G2 (n_a)",
+    "studio:xlsx-orch-extract G2 (no; tracer says DMS computes none and N_A is arguable)",
+    "insights:post-ask G2/G3 (no; Cortex-computed figure passed through)"
+   ],
+   "shared_code": "n/a (same pass-through pattern: xlsx_export.py:117-136, routes/insights.py:182-193, core xlsx_orch.py:354-388).",
+   "disagreement": "Pass-through figures are n_a for G2/G3 on exports but 'no' on insights and xlsx-orch; exports are scored 'no' on G7 for the same pass-through.",
+   "recheck": "Pick one rule for figures DMS does not compute and apply it to G2, G3, G7 on all pass-through entry points."
+  },
+  {
+   "id": "restated-badge-g6-verdicts",
+   "cells": [
+    "ui:share-answer G6 (no)",
+    "export:xlsx G6 (no)",
+    "export:bi G6 (no)",
+    "export:csv-client G6 (n_a)",
+    "ui:source-panel-contribution G6 (n_a; headline claims 'Certified answer', sourcePanel.ts:44)",
+    "ui:check-accuracy G6 (n_a)",
+    "insights:get-ontology-ranking G6 (no, low confidence, 'arguably N_A') vs library:* G6 (n_a)"
+   ],
+   "shared_code": "apps/ui/src/lib/answerDelivery.ts:23-41, packages/core/dms_core/xlsx_export.py:26-36, apps/ui/src/lib/sourcePanel.ts:35-45.",
+   "disagreement": "Surfaces that restate a trust claim get 'no' for some and n_a for others.",
+   "recheck": "Apply 'restates the badge => G6 applies' uniformly."
+  },
+  {
+   "id": "no-space-scope-semantics",
+   "cells": [
+    "library:warehouse-preview G1",
+    "mcp:preview G1",
+    "library:bronze-preview G1",
+    "the 12 chat-ask/mcp:ask no-space G1 cells in gap no-space-ask-widest-grant"
+   ],
+   "shared_code": "demo_grants.py:61-85 and warehouse_browse.py:42-50 (no space = company_default_tables, no alerts) vs executor/__init__.py:306-317 (no space = all DEMO_TABLES + every upload); library.py:291-296 docstring vs bronze.py:546-558.",
+   "disagreement": "The same 'no Space' request has three different grant sets across routes; STATUS.md says A-0007 closed 'refused under all'; library cells call the union by design while ask cells call alerts access a gap.",
+   "recheck": "Decide one meaning of no-Space; re-score the library cells accordingly."
+  },
+  {
+   "id": "cascade-attach-tick-drop-scenario",
+   "cells": [
+    "chat-ask:cascade-attach G1 (partial)",
+    "chat-ask:bronze-grant-abstain G1 (yes)"
+   ],
+   "shared_code": "executor/__init__.py:659-666 (drop narrows only requested -> readable for cascade and generative), :693-723 (bronze lane uses bronze_lane_table(question) and granted, never requested).",
+   "disagreement": "cascade-attach says the ungranted tick vanishes before the bronze lane at :663-664; code shows the bronze lane never reads ticks. That half of its bypass_scenario is mis-attributed (downgraded).",
+   "recheck": "Re-read cascade-attach G1's second scenario."
+  },
+  {
+   "id": "ticket-status-wording",
+   "cells": [
+    "chat-ask:cascade-abstain G1 (#297 merged)",
+    "chat-ask:harness-generative-miss G1 (#297 open)",
+    "chat-ask:generative-named-abstain G1 (#297 open)",
+    "mcp:ask G1 (#297 open)",
+    "chat-ask:cascade-abstain G6 (#305 stamp on main)",
+    "other cells (#305 open)"
+   ],
+   "shared_code": "n/a (gh: issues #297 and #305 OPEN; PRs #302 and #319 merged, git f5fcc42 and 156cde8).",
+   "disagreement": "Wording only: the issues are open, the first PRs merged.",
+   "recheck": "None needed beyond consistent wording."
+  },
+  {
+   "id": "typed-ingest-evidence-standard",
+   "cells": [
+    "library:warehouse-preview G4 (yes)",
+    "chat-ask:demo-mode G4 (yes)",
+    "chat-ask:governed-pack G4 (partial)",
+    "chat-ask:generative-multi-grain G4 (partial)",
+    "library:chunks-search G4 (no, self-described definitional)",
+    "studio:chunks-list G4 (no)"
+   ],
+   "shared_code": "demo_warehouse.py:288-440 (declared DDL).",
+   "disagreement": "Same DDL counts as evidence for DMS-executed reads but not for Cortex-executed ones; chunk routes score 'no' although the tracers say it is definitional.",
+   "recheck": "State the rule (who reads the file) and re-score chunk routes."
+  }
+ ],
+ "coverage": {
+  "no_cells": 103,
+  "partial_cells": 131,
+  "assigned": 234
+ },
+ "notes": [
+  "Off-matrix findings from tracer other_findings: ensure_demo_warehouse DROPs and reseeds the six demo-named tables on first call per process (chat-ask:demo-mode, library:warehouse-preview other_findings); CSV export does not neutralise formula-leading cells (export:csv-client); possible runaway auto re-ask loop in ui:exclusion-auto-confirm (static reading).",
+  "Repo pre-existing gate harness: tests/gate_matrix/conftest.py registers the gate_gap marker; no tests were written here."
+ ]
+}

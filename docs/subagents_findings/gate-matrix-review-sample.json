@@ -1,0 +1,167 @@
+{
+ "seed": 20261005,
+ "n_yes": 45,
+ "k": 14,
+ "sample": [
+  [
+   "chat-ask:bronze-grant-abstain",
+   "G1"
+  ],
+  [
+   "chat-ask:bronze-grant-abstain",
+   "G5"
+  ],
+  [
+   "chat-ask:demo-fallback-ask-error",
+   "G4"
+  ],
+  [
+   "chat-ask:demo-fallback-ask-error",
+   "G5"
+  ],
+  [
+   "chat-ask:demo-fallback-exception",
+   "G4"
+  ],
+  [
+   "chat-ask:followup-add",
+   "G5"
+  ],
+  [
+   "chat-ask:generative-ontology-plan",
+   "G3"
+  ],
+  [
+   "chat-ask:governed-pack",
+   "G5"
+  ],
+  [
+   "chat-ask:governed-pack",
+   "G7"
+  ],
+  [
+   "chat-ask:harness-exact-miss",
+   "G5"
+  ],
+  [
+   "chat-ask:planted-refuse",
+   "G5"
+  ],
+  [
+   "chat-ask:space-refusal",
+   "G8"
+  ],
+  [
+   "insights:get-ontology-ranking",
+   "G8"
+  ],
+  [
+   "ui:source-panel-contribution",
+   "G5"
+  ]
+ ],
+ "rows": {
+  "chat-ask:bronze-grant-abstain": {
+   "sampled": [
+    "G1",
+    "G5"
+   ],
+   "decoys": [
+    "G6",
+    "G7"
+   ]
+  },
+  "chat-ask:demo-fallback-ask-error": {
+   "sampled": [
+    "G4",
+    "G5"
+   ],
+   "decoys": [
+    "G2",
+    "G1"
+   ]
+  },
+  "chat-ask:demo-fallback-exception": {
+   "sampled": [
+    "G4"
+   ],
+   "decoys": [
+    "G2",
+    "G3"
+   ]
+  },
+  "chat-ask:followup-add": {
+   "sampled": [
+    "G5"
+   ],
+   "decoys": [
+    "G4",
+    "G3"
+   ]
+  },
+  "chat-ask:generative-ontology-plan": {
+   "sampled": [
+    "G3"
+   ],
+   "decoys": [
+    "G4",
+    "G5"
+   ]
+  },
+  "chat-ask:governed-pack": {
+   "sampled": [
+    "G5",
+    "G7"
+   ],
+   "decoys": [
+    "G3",
+    "G8"
+   ]
+  },
+  "chat-ask:harness-exact-miss": {
+   "sampled": [
+    "G5"
+   ],
+   "decoys": [
+    "G2",
+    "G1"
+   ]
+  },
+  "chat-ask:planted-refuse": {
+   "sampled": [
+    "G5"
+   ],
+   "decoys": [
+    "G2",
+    "G7"
+   ]
+  },
+  "chat-ask:space-refusal": {
+   "sampled": [
+    "G8"
+   ],
+   "decoys": [
+    "G4",
+    "G7"
+   ]
+  },
+  "insights:get-ontology-ranking": {
+   "sampled": [
+    "G8"
+   ],
+   "decoys": [
+    "G5",
+    "G6"
+   ]
+  },
+  "ui:source-panel-contribution": {
+   "sampled": [
+    "G5"
+   ],
+   "decoys": [
+    "G8",
+    "G6"
+   ]
+  }
+ }
+}

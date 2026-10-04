@@ -1,3 +1,29 @@
+> **STATUS UPDATE 2026-10-05 (supersedes the status table below). Steps 1-4 have run on 7a8d6c1; the rendered
+> matrix and the PRD hand-off are not written yet.**
+>
+> - Entry points n = 49. Trace: 392 cells = 45 yes, 131 partial, 103 no, 113 n/a. Raw cells with file:line
+>   evidence: gate-matrix-trace.json.
+> - Review (blind, seed 20261005, gate-matrix-review-sample.json): 14 of 45 yes cells re-judged, 11 agreed,
+>   3 overturned (bronze-grant-abstain G1, insights ontology ranking G8, source-panel G5). Agreement 11/14 = 79%.
+>   On 22 unlabeled non-yes decoys the reviewers matched 19 (86%). Inferred, not measured: if the 3-in-14 rate
+>   held, about 10 of the 45 yes cells would not survive review. The other 31 yes cells are single-traced and
+>   unreviewed. Treat every yes as unconfirmed until a second pass.
+> - Gaps: the 234 no/partial cells reduce to 48 root-cause gaps (25 bypass, 14 systemic, 9 dormant), 0 unassigned.
+>   9 tracer contradictions are listed in gate-matrix-gaps.json. Many partials depend on how strictly the gates were
+>   defined (e.g. G6 has no serving-time check of served fields, G2 does not re-verify stored SQL), so read
+>   class=bypass as the provable set.
+> - Failing tests: tests/gate_matrix/, 28 gaps, all demonstrated. Full run by me: 19 passed (harness self-check),
+>   50 xfailed, 0 failed, 0 error. Tests are xfail(strict, raises=AssertionError): the gap assertion failing is
+>   XFAIL, a fixed gap is a loud XPASS, and a broken fixture is a hard failure. No product file was modified.
+>   Not run (no in-process test possible): ui-derives-figures-and-labels-client-side (needs vitest) and
+>   chunk-text-routes-unmasked (needs Postgres). They stay unproven by reading only.
+> - Verifier caveats (gate-matrix-tests.json): the follow-up submit tests assert call counts and audit_id but not
+>   the rendered text; one export test could flip for the wrong reason; test_doc_abstain_with_an_empty_engine_answer
+>   is mis-scoped and should be re-done or dropped; the E7 demo-fallback variant is a semantic stretch.
+> - Reviewer finding to test further: table_is_granted accepts a warehouse_ alias, so a bronze ask may read another
+>   Space's table. A test exists in test_gap_grants.py; Epic should rule on whether it belongs under BRONZE-GRANT-01.
+> - Not done: render the full matrix, 31 unreviewed yes cells, route findings to DMS PRD (feedback only, no tickets).
+
 # Gate matrix - does every answer path pass every gate? (IN PROGRESS)
 
 Plan E, read-only audit of `netie/dms` at `f0e6c61` (origin/main on 2026-10-02, BRONZE-GRANT-01 #333

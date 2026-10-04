@@ -1,0 +1,833 @@
+{
+ "harness": {
+  "files": [
+   "E:/DMS-wt/gate-matrix/tests/gate_matrix/_harness.py (new, 525 lines incl. recipes docstring)",
+   "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_harness_selfcheck.py (new, 19 tests)",
+   "E:/DMS-wt/gate-matrix/tests/gate_matrix/conftest.py (extended: gate_gap marker now documents gap_id; sys.path bootstrap; module-scoped autouse _offline_import_guard; harness_factory and harness fixtures)"
+  ],
+  "api": "Import by bare name (conftest.py already puts tests/gate_matrix on sys.path; do NOT use `from tests.x import`). All names below are in `_harness`. Pack constants (SPEND_BY_COUNTRY_Q, SPEND_BY_COUNTRY_SQL, STOCK_BY_CATEGORY_Q, TOTAL_SPEND_Q, ...) are imported from dms_executor.demo_pack.\n\nConstants: FINANCE, WAREHOUSE_OPS, HOSTILE_CELLS (dict: prompt_injection, formula, sql_text, pii; all synthetic).\n\nGap and control:\n  gap(row: str, gate: str, ticket: str, gap_id: str) -> decorator  # applies pytest.mark.gate_gap(row=,gate=,ticket=,gap_id=) (kwargs, not args) + pytest.mark.xfail(raises=AssertionError, strict=True, reason=\"GATE GAP <gap_id>: ...\")\n  class ControlFailed(Exception)   # deliberately NOT an AssertionError\n  control(cond: object, msg: str = \"\") -> None   # raises ControlFailed\n\nEnvelope and request helpers:\n  assert_envelope(env: dict, *, as_gap: bool = False) -> None   # wraps dms_executor.envelope.assert_envelope_valid (E1-E9). Default raises ControlFailed (precondition). as_gap=True re-raises the plain AssertionError for when \"envelope malformed\" IS the gap.\n  require_envelope(status: int, env) -> dict   # ControlFailed unless HTTP 200, dict body and a valid envelope. Call it on the gap request BEFORE the gap assertion, so a 404/422/503 cannot satisfy `not env.get(\"rows\")` and XFAIL for the wrong reason.\n  ask(client, question, space_id=None, session_id=None, grounded_tables=None, **extra) -> (status:int, json:dict)   # POST /v1/chat/ask, asserts nothing, None args omitted, **extra merged into the body (e.g. ask_path=)\n  csv_bytes(header: list[str], rows: list[list]) -> bytes ; hostile_upload_csv() -> bytes   # columns sku,note,amount; one row per HOSTILE_CELLS payload plus a clean row\n\nRecordingCortex(warehouse=None, bind_ok=True, submit_ok=True, submit_raises=None, rows=None, ask_response=None, ask_fn=None, ask_raises=None, ledger_entry_id=\"led_gm\", ledger_hash=\"hash_gm_not_entry\", ledger_raises=None)\n  methods: submit(req), ask(req), ledger_append(req)   # session_bind obeys bind_ok; sql obeys submit_raises > submit_ok > real execute_sql on the tmp seed (or rows=); default ask = abstention; entry id differs from hash on purpose\n  records: .submits .asks .appends .calls (ordered [(\"submit\"|\"ask\"|\"ledger_append\", req)])\n  helpers: .sql_submits .bind_submits (properties), .submitted_sql() -> list[str], .ledger_events() -> list[str], .ledger_payloads(event_type=None) -> list[dict]\n  It has no base_url, so compliance_gate returns the soft gate_unavailable with no HTTP.\n\nbuild_harness(tmp_path, monkeypatch, *, cortex=None, ask_mode=\"live\", demo_fallback=False, cascade=False, env=None, session_uploads=None, **cortex_kw) -> Harness\nHarness: .client (TestClient over create_app()) .cortex .executor .app .warehouse; .ask(question, **kw) -> (status, json); .set_env(**env) (monkeypatch env + get_settings.cache_clear(); None unsets) for DMS_DEMO_FALLBACK / DMS_ASK_MODE / DMS_CCA_CASCADE; .upload(filename, data, *, space_id=None, expect_ingested=True) -> IngestReceipt (ControlFailed if quarantined; uses the real ingest_csv_bytes); .close().\nFixtures (conftest): harness_factory(**build_harness_kwargs) -> Harness (auto-closed), harness (default config).\n\n6-line example (the shape every gap test takes):\n  from _harness import gap, control, assert_envelope, require_envelope, FINANCE, WAREHOUSE_OPS\n  from dms_executor.demo_pack import SPEND_BY_COUNTRY_Q\n  @gap(\"R-12\", \"F5 compliance_gate\", \"#NNN\", \"GM-12\")\n  def test_x(harness):\n      s, env = harness.ask(SPEND_BY_COUNTRY_Q, space_id=FINANCE, session_id=\"c\"); control(s == 200 and env[\"badge\"] == \"L1_GOVERNED_METRIC\", env.get(\"text\"))  # control on the gated path\n      s, env = harness.ask(\"<gap request>\", space_id=WAREHOUSE_OPS); require_envelope(s, env); assert env[\"abstained\"] is True and harness.cortex.sql_submits == []  # the gap assertion",
+  "control_example": "Control request: harness.ask(SPEND_BY_COUNTRY_Q (\"What is our total spend by supplier country?\"), space_id=FINANCE, session_id=\"ses_ctl\") through the real create_app() + Executor.live_ask with the RecordingCortex. Returned HTTP 200, badge L1_GOVERNED_METRIC, abstained False, 3 rows (MY/SG/TH, real rows executed on the tmp DuckDB seed), 3 values, envelope valid (E1-E9), text contains \"MY\". The fake recorded exactly one SQL submit (SQL == SPEND_BY_COUNTRY_SQL) plus one session_bind submit (so 2 submit calls in total, not 1; the brief's \"one submit\" is the sql submit), exactly one ledger_append (event_type \"ask.governed_metric\", payload keys sql/run_id/space_id/session_id), zero Cortex.ask calls, call order [submit, submit, ledger_append], and envelope audit_id == the ledger entry id \"led_gm\" (not the hash). Sibling proof the fake is not a yes-man: the same question in WAREHOUSE_OPS returns 200, ABSTAIN, no rows or values, one Cortex.ask, zero SQL submits, zero ledger appends. submit_ok=False and submit_raises=RuntimeError both fall through to Cortex.ask and abstain with no ledger entry.",
+  "selfcheck_results": "Exact brief command: cd E:/DMS-wt/gate-matrix && DMS_SKIP_CONTROL_PLANE_TESTS=1 DMS_DEMO_FALLBACK=0 python -m pytest tests/gate_matrix -q -p no:cacheprovider  ->  19 passed in ~17s, 0 failed, 0 xfailed in-process (the XFAIL proof runs in a subprocess so the folder carries no phantom gate_gap markers). Also green under a socket guard that blocks every non-loopback connect: no connect to port 5000 or any service port; only asyncio's ephemeral loopback socketpair.\n\nXFAIL vs FAILURE proof (real `python -m pytest` subprocess on a temporary inner file, parsed from junit XML; raw -rxXf output captured):\n  XFAIL  test_assert_false_is_xfail            (@gap, assert False)  reason \"GATE GAP INNER-1: matrix row R-0 skips G (ticket new)...\"\n  FAILED test_runtime_error_is_a_failure       (@gap, raise RuntimeError(\"broken fixture\"))  -> \"RuntimeError: broken fixture\"\n  FAILED test_keyerror_is_a_failure            (@gap, {}[\"abstained\"])  -> \"KeyError: 'abstained'\"\n  FAILED test_failing_control_is_a_failure     (@gap, control(False, ...))  -> \"_harness.ControlFailed: sibling on the gated path did not pass\"\n  FAILED test_a_gap_that_closed_is_loud        (@gap, body passes)  -> \"[XPASS(strict)] GATE GAP INNER-5 ... delete the @gap marker\"\n  summary line: \"4 failed, 1 xfailed\".\nSame mechanics with the real fixtures (inner file using the repo conftest + _harness + create_app, run with -c pyproject.toml):\n  XFAIL  test_gap_assertion_fails_on_a_healthy_harness  (control passes, require_envelope passes, then the gap assertion fails)\n  FAILED test_unknown_space_is_a_failure_not_an_xfail  -> ControlFailed \"expected HTTP 200 from the ask, got 404: {'detail': 'space_not_found'}\" (a bare `assert not env.get(\"rows\")` would have XFAILed for the wrong reason)\n  FAILED test_broken_control_is_a_failure  (harness_factory(submit_ok=False)) -> ControlFailed \"Cannot answer from this Space.\"\n  summary line: \"2 failed, 1 xfailed\".\nIn-process: ControlFailed is not a subclass of AssertionError; assert_envelope raises ControlFailed by default and plain AssertionError with as_gap=True; the gap mark carries gate_gap kwargs and xfail(strict=True, raises=AssertionError). Other selfchecks: recipes (a) pack answer, (b) follow-up \"average of them\" -> L2_VALIDATED with no new Cortex.ask, (c) ledger payload read, (d) hostile upload registered to FINANCE only (grantable in FINANCE, not in WAREHOUSE_OPS, payloads verified verbatim in the bronze table), flags (DMS_DEMO_FALLBACK, DMS_ASK_MODE, DMS_CCA_CASCADE) apply for one test and do not leak into the next, settings have no database_url and no secret env vars, imported dms_api/dms_executor resolve inside E:/DMS-wt/gate-matrix. Only the three files under tests/gate_matrix were touched (git status: conftest.py modified, two new files); no E:/DMS access.",
+  "limits": [
+   "Only the two seeded Spaces exist (FINANCE, WAREHOUSE_OPS). A brand-new third Space cannot be registered: the DemoSessionStore grants only DEMO_SPACE_GRANTS ids and no existing test shows another way. Give a Space its own data by upload(..., space_id=FINANCE or WAREHOUSE_OPS); cross-Space tests use the other seeded Space.",
+   "Cannot fake a Postgres-backed path (DATABASE_URL is removed, spaces come from the in-memory DemoSpaceStore), a DuckDB-backed submit inside real Cortex, OpenVault key signing (manifest minting is stubbed), or a real compliance_gate: the fake has no base_url so the gate is the soft gate_unavailable. A gap that needs a DENYING F5 gate on chat.ask must monkeypatch dms_api.routes.chat.compliance_gate itself.",
+   "The ledger append is only observable at the fake Cortex boundary (event_type, payload, actor); it does not model Cortex hash chaining or ledger_ref storage.",
+   "A pack hit's sql submit executes the real SQL on the tmp DuckDB seed, so rows are real, but any other path's rows are whatever rows=/ask_response= you configure: a test must not claim the engine would return them.",
+   "A gap test is only as good as its control: gate_gap catches AssertionError, so a plain `assert` that fails inside the HARNESS or product code on a different cause still XFAILs. Put preconditions behind control/require_envelope/assert_envelope and keep exactly one plain assert for the gap itself.",
+   "The gate_gap mark uses kwargs (row=, gate=, ticket=, gap_id=), so a report script must read mark.kwargs, not mark.args.",
+   "Pre-existing hazard found, not fixed (out of scope, product code): dms_api/__init__.py imports dms_api.app, whose module-level create_app() runs Executor.startup(), which seeds the default warehouse under the repo (data/dms_demo.duckdb) and probes 127.0.0.1:5000 for OpenVault, fetching a signing key if one answers. Every other test module that imports dms_api at collection triggers this in a full-suite run. gate_matrix is protected by the conftest module-scoped _offline_import_guard (pins DMS_WAREHOUSE_DB to tmp and the probe to offline), but only for tests in this folder.",
+   "The first import of the dms stack is slow (about 15s cold on this machine); the folder run is about 17s. The real-harness inner subprocess test costs about 7s of that."
+  ]
+ },
+ "written": [
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_followup.py",
+   "gaps": [
+    {
+     "gap_id": "followup-no-submit",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_followup.py::test_followup_figure_goes_through_cortex_submit_and_the_ledger[chat-average]",
+      "tests/gate_matrix/test_gap_followup.py::test_followup_figure_goes_through_cortex_submit_and_the_ledger[chat-add]",
+      "tests/gate_matrix/test_gap_followup.py::test_followup_figure_goes_through_cortex_submit_and_the_ledger[mcp-average]"
+     ],
+     "control": "In the same session the parent turn (SPEND_BY_COUNTRY_Q, or TOTAL_SPEND_Q for the add case) in FINANCE is a gated answer: HTTP 200, valid envelope, L1_GOVERNED_METRIC, not abstained, values present, exactly 1 SQL submit and 1 ledger append recorded by RecordingCortex, and audit_id equals the ledger entry id 'led_gm'. All asserted with control() and passed before the gap assertion. The mcp variant goes through POST /v1/mcp/call (DMS_MCP=1 set in the harness env).",
+     "failure_message": "AssertionError: follow-up 'average of them' was served as L2_VALIDATED 'Average of the prior 3 figures is RM 9,946.67.' with audit_id='ans_followup'; Cortex saw 1 SQL submit(s) and 1 ledger append(s) in total, and the parent turn made 1 of each",
+     "user_sees": "The customer gets a green L2_VALIDATED follow-up figure whose audit_id 'ans_followup' resolves to no ledger entry, and Cortex never saw the follow-up SQL (the same holds for 'add 2000' and for the MCP ask tool).",
+     "reason": ""
+    },
+    {
+     "gap_id": "followup-no-grant-recheck",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_followup.py::test_followup_without_a_space_abstains_no_space",
+      "tests/gate_matrix/test_gap_followup.py::test_followup_after_the_grant_is_revoked_abstains_ungranted_table"
+     ],
+     "control": "No-Space test: (1) with space_id=FINANCE and grants intact, TOTAL_SPEND_Q then 'add 2000' returns the L2 follow-up 'Prior figure plus 2000'; (2) a seeded bronze sheet asked with no space_id abstains with 'no_space' (the precedent in the same ladder); (3) the no-Space parent is answered L1_GOVERNED_METRIC by the pack lane. Revoked-grant test: the bronze sheet registered to FINANCE answers L0_CERTIFIED with 3 values, then after the registry row is re-homed to WAREHOUSE_OPS a fresh session asking the same sheet in FINANCE abstains 'ungranted_table:bronze.<table>' (gated lane honours the revocation). All via control(), all passed.",
+     "failure_message": "AssertionError: follow-up with no Space was served as L2_VALIDATED 'Prior figure plus 2000 is RM 31,840.00.'; expected an ABSTAIN naming no_space  |  AssertionError: follow-up over a revoked table was served as L2_VALIDATED 'Average of the prior 3 figures is RM 508.50.'; expected an ABSTAIN naming ungranted_table",
+     "user_sees": "A follow-up with no Space, or after the Space lost the grant to the upload the earlier figures came from, still returns a green L2_VALIDATED computed figure instead of a named abstain (no_space / ungranted_table).",
+     "reason": ""
+    },
+    {
+     "gap_id": "followup-unit-relabelled-rm",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_followup.py::test_followup_does_not_label_a_non_ringgit_figure_as_ringgit[percent-average]",
+      "tests/gate_matrix/test_gap_followup.py::test_followup_does_not_label_a_non_ringgit_figure_as_ringgit[count-add]"
+     ],
+     "control": "Stock-value pack answer (all values labelled stock_value_myr) in WAREHOUSE_OPS then 'average of them' returns L2_VALIDATED with 'RM' in the text (the lane keeps RM when the prior figures really are ringgit). The non-ringgit parent is also proved from its own envelope before judging the follow-up: values all labelled pct_used (CAPACITY_UTILISATION_Q) or row_count (COLD_STORAGE_Q), and its text has no RM or myr. All via control(), all passed.",
+     "failure_message": "AssertionError: 'average of them' after a 'pct_used' answer was served as L2_VALIDATED 'Average of the prior 5 figures is RM 69.72.' with value labels ['average_myr']  |  AssertionError: 'add 5' after a 'row_count' answer was served as L2_VALIDATED 'Prior figure plus 5 is RM 6.00.' with value labels ['adjusted_myr']",
+     "user_sees": "The mean of five warehouse capacity percentages is shown as 'RM 69.72' (value label average_myr), and a one-row location listing plus 5 is shown as 'RM 6.00', both as green L2_VALIDATED figures.",
+     "reason": ""
+    },
+    {
+     "gap_id": "followup-stale-prior-after-failed-turn",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_followup.py::test_followup_after_a_failed_turn_does_not_reuse_the_older_figures[space-refusal]",
+      "tests/gate_matrix/test_gap_followup.py::test_followup_after_a_failed_turn_does_not_reuse_the_older_figures[timeout]"
+     ],
+     "control": "A separate session: stock-value parent (4 values), then the planted-refuse question HOW_FULL_TRAP_Q returns a lane abstain, and the next 'average of them' abstains ('no prior numeric answer'), proving snapshot_turn clears the cache on a lane-returned abstain. In the gap session, turn 2 'Top 5 selling SKUs by revenue' is confirmed to fail as intended: HTTP 200 Space-refusal envelope (abstained, 'no access') for the path_not_allowed case, HTTP 504 for the statement_timeout case. All via control(), all passed.",
+     "failure_message": "AssertionError: follow-up after the failed turn was served as L2_VALIDATED 'Average of the prior 4 figures is RM 7,460.00.', computed from the figures of the turn before it",
+     "user_sees": "After a refused (or timed-out) question, 'average of them' silently returns a green L2_VALIDATED average of the older turn's figures, as if it were about the question that just failed.",
+     "reason": ""
+    }
+   ],
+   "notes": "File: E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_followup.py (the only file I created or edited; no product code, harness or git state touched). Run: DMS_SKIP_CONTROL_PLANE_TESTS=1 DMS_DEMO_FALLBACK=0 python -m pytest tests/gate_matrix/test_gap_followup.py -q -p no:cacheprovider gives 9 xfailed, 0 failed, 0 errors (~16s). With --runxfail all 9 fail with a plain AssertionError at the gap assert lines (171, 229, 265, 335, 408), never at a control (messages above, taken from that run).\n\nTest shape: 5 test functions, 9 parametrized cases, each with controls via control()/require_envelope() then ONE plain gap assert. Gap-ids: no-submit x3 params (chat-average, chat-add, mcp-average, so the followup-average, followup-add and mcp:ask cells are exercised, the mcp one via POST /v1/mcp/call with DMS_MCP=1 passed through harness_factory(env=...)); no-grant-recheck x2 tests; unit-relabelled x2 params (percent average, count add); stale-prior x2 params (Space refusal 200 envelope, timeout 504).\n\nSatisfiability check (not committed): I ran five throwaway simulated fixes through a scratchpad pytest plugin (follow-up submit+ledger+audit_id; abstain no_space; abstain ungranted_table; unit relabel only for non-RM parents; cache pop on exception). Each flipped its tests to strict XPASS with the controls still green, so the gap assertions can pass and will go loud when a real gate lands. A blanket 'strip RM everywhere' fix correctly trips the RM control instead.\n\nJudgement calls and caveats for the PRD agent:\n1. followup-no-grant-recheck is two tests because the primary repro and the secondary are independent mechanisms. The no-Space test encodes the dms#303 FOLLOWUP-CONTRACT-01 item 3 expectation (abstain no_space) as quoted in gaps.json and docs/subagents_findings/gate-matrix.md; I could not read the ruling itself. Note the pack lane deliberately serves no-space_id asks under the 'Company (default ACL)' scope (demo_grants.company_default_tables), so the no_space expectation on the follow-up comes from the ruling and the bronze-lane precedent, not from the pack lane. The revoked-grant test does not depend on the ruling: the upload is re-homed from FINANCE to WAREHOUSE_OPS in the ingest registry (same state test_bronze_grant_01's cross-Space case seeds), a fresh session's bronze ask is refused ungranted_table, yet the old session's follow-up still averages the figures. That variant is real in-process (the tracer called it contrived for the seeded store; with uploads it is not).\n2. followup-no-submit: the gate assertion accepts either an abstain or (2 SQL submits, 2 ledger appends, audit_id equal to the fake's ledger entry id), so it does not prescribe the fix shape. The fake returns a constant entry id 'led_gm', so audit_id equality alone is weak; the append count carries the proof.\n3. followup-unit-relabelled-rm: the gap assertion is 'abstained OR no RM in text and no *myr* value label'. I deliberately did not require a percent marker in the text, to avoid hiding a fix that renders a unitless number. The row_count placeholder variant (v_count) reproduces with COLD_STORAGE_Q: 'add 5' gives 'Prior figure plus 5 is RM 6.00.'.\n4. followup-stale-prior-after-failed-turn: the 'cache is also unbounded' half of the gap title is NOT tested (it is internal state, Executor._turns, with no user-visible output; an assertion on it would break rule 10). The cascade-block variant (DMS_CCA_CASCADE=1, __init__.py:676-686) is not covered; the exception variants (default config) are.\n5. Side finding seen while seeding (not a gap I own, nothing asserted): the bronze-sheet lane made zero Cortex submit/ledger calls in the harness (cx.calls == [] after an L0_CERTIFIED bronze answer), consistent with the known leads bronze-sheet-l0-minted-locally in the matrix.\n6. Worktree HEAD is ad4d4ef (docs commit on top of 7a8d6c1), which differs from the brief's stated commit only by docs."
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_grants.py",
+   "gaps": [
+    {
+     "gap_id": "no-space-ask-widest-grant",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_grants.py::test_ask_without_a_space_does_not_widen_to_a_table_no_space_grants"
+     ],
+     "control": "Three controls pass today through create_app + Executor.live_ask with a manifest-honouring fake engine (reads the manifest DMS bound for the session). (1) 'List all open alerts by severity' in FINANCE returns 200, ABSTAIN, no rows, 'alerts' named in the text, route refused, one Cortex.ask. (2) 'List every location with its capacity' in FINANCE returns 200 with abstained False and rows, so the engine answers when the table is in the manifest. (3) CAPACITY_UTILISATION_Q with no space_id returns 200 L1_GOVERNED_METRIC with rows, so no-space is not blanket-refused. All behind control()/require_envelope; a broken fixture would be ControlFailed, not XFAIL.",
+     "failure_message": "no-space ask was served: badge=L2_VALIDATED rows=[{'alert_id': 'AL-1', 'severity': 'high', 'location_id': 'WH-C', 'message': 'Load near capacity'}, {'alert_id': 'AL-2', 'severity': 'medium', 'location_id': 'WH-A', 'message': 'SKU RS622XKR below reorder'}, {'alert_id': 'AL-4', 'severity': 'high', 'lo",
+     "user_sees": "With no space_id, the 'List all open alerts by severity' ask is answered 200 L2_VALIDATED with the open alert rows AL-1, AL-2, AL-4 and AL-5 (given an engine that honours the manifest), because the manifest DMS minted for the session names alerts, which no Space grants; in FINANCE or WAREHOUSE_OPS the same ask is an ABSTAIN.",
+     "reason": ""
+    },
+    {
+     "gap_id": "ungranted-tick-dropped-not-refused",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_grants.py::test_generative_ladder_refuses_an_ungranted_tick_by_name",
+      "tests/gate_matrix/test_gap_grants.py::test_cascade_refuses_an_ungranted_tick_by_name"
+     ],
+     "control": "Two tests, one per matrix cell (a single test cannot show both lanes, since the first failing assert ends it). Generative (DMS_HARNESS_ASK_PATHS=1): (1) the product ladder with FINANCE + grounded_tables=['alerts'] returns 403 grounding_not_grantable naming alerts; (2) the generative ladder in FINANCE with no tick returns 200 ABSTAIN with 'generative miss' in assumptions, proving the flag is on and the lane reachable. Cascade (DMS_CCA_CASCADE=1): (1) 'rental across SEA, commercial only' in FINANCE with no tick returns 200 ABSTAIN with a constraint_trace, proving the cascade engages and blocks; (2) with the cascade off, the same question with grounded_tables=['alerts'] returns 403 grounding_not_grantable. All behind control()/require_envelope.",
+     "failure_message": "generative ladder did not refuse the ungranted tick: HTTP 200; abstained=True text='I cannot certify an ontology-grounded query for that question, so I am not executing one.' grounded_tables=[] assumptions=['GEN-01: generative miss: no plan source on this lane (Insights returned no SQL and no rankin",
+     "user_sees": "Ticking alerts (granted by no Space) in FINANCE on the generative ladder or with the CCA cascade on gives a 200 ABSTAIN with grounded_tables empty and an unrelated reason ('generative miss: no plan source' / 'transactions.txn_type carries no value matching sense_tenure[Lease]') instead of the 403 grounding_not_grantable the product ladder returns; the tick is dropped and the cascade scans transactions, a scope the user did not choose.",
+     "reason": ""
+    },
+    {
+     "gap_id": "bronze-grant-warehouse-alias-collision",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_grants.py::test_bronze_ask_does_not_read_another_spaces_table_through_the_warehouse_alias"
+     ],
+     "control": "WAREHOUSE_OPS holds bronze.foo_Sales (uploaded with space_id). (1) the bronze-sheet ask 'In foo.xlsx sheet Sales, what are the top 3 categories by sales_value_myr?' from WAREHOUSE_OPS returns 200 L0_CERTIFIED with its own rows (lane and fixture work). (2) the same ask from FINANCE, which holds nothing named foo_Sales, returns an ABSTAIN naming ungranted_table with no rows. Then FINANCE uploads its own warehouse_foo_Sales (control asserts grantable_tables(FINANCE) holds bronze.warehouse_foo_Sales and not bronze.foo_Sales). Only that upload changes between control 2 and the gap request.",
+     "failure_message": "FINANCE was served WAREHOUSE_OPS's foo_Sales: badge=L0_CERTIFIED rows=[{'category': 'OPS-ONLY-CATEGORY', 'sales_value_myr': 900.0}, {'category': 'ops-b', 'sales_value_myr': 20.0}, {'category': 'ops-c', 'sales_value_myr': 5.0}] grounded_tables=['bronze.foo_Sales']",
+     "user_sees": "A FINANCE user who uploaded a file named warehouse_foo gets a 200 L0_CERTIFIED answer carrying WAREHOUSE_OPS's foo_Sales rows (OPS-ONLY-CATEGORY 900.0, ...), grounded_tables bronze.foo_Sales, a table FINANCE does not hold; without the decoy upload the same ask is refused ungranted_table.",
+     "reason": ""
+    }
+   ],
+   "notes": "File: E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_grants.py (4 tests for 3 gaps). Normal run of the file: 4 xfailed. Whole tests/gate_matrix folder at the time of my last run: 25 passed, 11 xfailed (includes sibling writers' files). --runxfail: all 4 fail with a plain AssertionError on the gap assertion, none on ControlFailed or an unrelated route. Mutation check, scratch plugins in the scratchpad only, no product edits: simulating company_default_tables for no-space plus an exact (no warehouse_ alias) table_is_granted made the no-space and bronze-alias tests pass (so the strict xfail would flip); simulating a GroundingRefused on ungranted ticks in _live_ask made both tick tests pass. Notes per gap. (1) The fake engine is a manifest-honouring stand-in (ManifestEnforcingCortex pattern, tests/test_space_boundary_envelope.py), so the 'alert rows' the user sees are what an engine honouring the manifest would return; the claim that is observed rather than modelled is that the session_bind manifest DMS minted for no-space names ['alerts','inventory','locations','shipments','suppliers','transactions'] (executor/__init__.py:306-317 returns sorted({*DEMO_TABLES, *uploaded}); alerts is in DEMO_TABLES, demo_warehouse.py:183-190, and in no Space grant, demo_grants.py:39-48). The row= marker lists all 12 cells of the gap; the lane actually exercised is chat-ask:cortex-contract-ask (the other cells read the same grantable_tables(None)). I did not write the gap's leg (b) (cross-Space upload groundable with no space_id): executor/__init__.py:307-309 says uploads are deliberately grantable outside a Space (personal context), which is by design, and suppliers/transactions answering company-wide matches company_default_tables (the union of Space grants), so alerts is the only defect that contradicts the closed A-0007. (2) Two tests because the two cells are different lanes and one assertion ends the test; both use gap_id ungranted-tick-dropped-not-refused, gate G8, ticket #307. The cascade case shows the dropped tick is worse than a missing refusal: with grounded_tables=['alerts'] the cascade scanned transactions and named transactions.txn_type in its abstain. The tests assert 403 + code grounding_not_grantable + alerts in ungrantable_tables, the same shape the product ladder returns; a fix that returned an ABSTAIN envelope instead would make these tests need updating when they XPASS-fail. (3) The extra gap is REPRODUCED, and it is the most serious of the three: executor/__init__.py:706-710 intersects the Space's active bronze tables with its grants, then table_is_granted (ontology.py:398-404) accepts t in allowed or f'warehouse_{t}' in allowed on bare lowercase names, and maybe_bronze_sheet_ask -> _db_with_table (bronze_sheet_ask.py, last function) plus the SELECT filter by table name only, with no Space check, so the lane reads bronze.foo_Sales out of the shared DuckDB. It is a cross-Space data read by a user who can choose an upload filename; tracked_by new. The uploads in the test are CSVs named foo_Sales.csv and warehouse_foo_Sales.csv because ingest names an xlsx sheet table {stem}_{sheet} (bronze.py:43-49), so they land on the same idents the check compares; no xlsx was built (the repo's invariants scan for openpyxl writes). Limits: only the two seeded Spaces exist in the harness; no Postgres, no real Cortex, no real compliance_gate (soft gate_unavailable)."
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_mask_envelope.py",
+   "gaps": [
+    {
+     "gap_id": "audit-receipt-and-late-added-cards-skip-mask",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_ask_abstain_receipt_why_is_masked_like_assumptions",
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_cascade_encoding_source_cards_are_masked_like_the_trace",
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_xlsx_export_masks_the_audit_receipt_like_sql_used",
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_bi_export_masks_the_audit_receipt_like_sql_used"
+     ],
+     "control": "Every test first runs the FINANCE pack question through create_app() (200, L1_GOVERNED_METRIC, rows, valid envelope) and then proves the masker ran on the SAME artefact: on the ask path assumptions[0] is a DMSMASK_nric token and the abstain receipt exists; in the cascade test constraint_trace evidence and assumptions hold DMSMASK_email and a CCA encoding card is attached; in the xlsx and BI tests the Cover sql_used row is a DMSMASK_nric token with no raw literal and an audit_receipt row exists. All controls pass today (ControlFailed would surface as FAILED, not XFAIL). I also ran all four bodies under a simulated fix (removing audit_receipt and contributing_sources from pii._HANDLED_KEYS) and they pass, so the assertions are satisfiable and not failing on fixture noise.",
+     "failure_message": "AssertionError: audit_receipt.unsure.why carries the raw literal the envelope masks elsewhere: \"interpreted the filter as ic_no = '900101-14-5678'\" / assert '900101-14-5678' not in '{\"include\":...14-5678\\'\"}}'  (siblings: cascade card snippet '...left out of this filter: ada.lovelace@example.com'; xlsx Cover audit_receipt cell and BI Cover table hold ic_no = '900101-14-5678' raw)",
+     "user_sees": "An ABSTAIN answer shows the filter literal tokenised in the assumptions but in clear in the audit receipt's unsure reason; a CCA encoding source card prints a landed email address in clear while the constraint trace masks it; and the downloaded .xlsx Cover sheet and BI stub carry the raw IC number inside the audit_receipt cell while the sql_used row beside it is a mask token.",
+     "reason": "n/a: demonstrated (ask-path receipt, cascade-attach flag-gated via harness cascade=True, xlsx and BI Cover branch; ui:share-answer is a client-side copy of the same audit_receipt, covered by the ask-path test and tagged on the xlsx test row)."
+    },
+    {
+     "gap_id": "ledger-append-carries-unmasked-sql",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_verified_query_ledger_payload_masks_sql_like_the_envelope",
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_mcp_ask_ledger_payload_masks_sql_like_the_envelope",
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_generative_insights_sql_ledger_payload_masks_sql_like_the_envelope"
+     ],
+     "control": "Each test first runs the FINANCE pack question (L1, rows), then the real answer: HTTP 200, valid envelope E1-E9, not abstained with rows, envelope sql_used is a DMSMASK_nric token with no raw literal, Cortex was handed the real SQL as the last submit (required for execution), exactly one ledger append of the expected event_type (ask.verified_query or ask.generated_ontology) whose payload still has the sql and run_id keys. VQ registered through the real POST /v1/studio/verified-queries with only that route's gate stubbed allow; the MCP variant goes through POST /v1/mcp/call (DMS_MCP=1); the generative variant uses an instance-level compute_insights stand-in returning {'query_sql': ...} on the harness fake (no key, no network), which really drives maybe_generative_ask. Simulated fix (mask asset_sql in Executor._ledger_verified_query) makes all three bodies pass.",
+     "failure_message": "AssertionError: the ledger entry holds the literal the envelope masks: \"SELECT txn_id, quantity_kg FROM transactions WHERE txn_id <> '900101-14-5555'\" / assert '900101-14-5555' not in '{\"sql\": \"SE...d\": \"gm_vq\"}'",
+     "user_sees": "The customer's answer shows sql_used with the IC-shaped literal replaced by a mask token, but the append-only Cortex ledger entry for that same answer holds the SQL with the literal in clear, so the audit record exposes what the answer hid and cannot be erased.",
+     "reason": "n/a: demonstrated (VQ, mcp:ask via /v1/mcp/call, and generative insights-SQL lane; the ontology-plan and multi-grain variants share generative_ask.py:845 and need no separate test)."
+    },
+    {
+     "gap_id": "cortex-error-detail-returned-unmasked",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_mask_envelope.py::test_engine_error_detail_is_masked_like_an_answer"
+     ],
+     "control": "Pack question certifies (L1) on the same harness; Control A: an ANSWER (Cortex abstain) whose text quotes the same example.com address comes back HTTP 200 with the address tokenised (DMSMASK_email in text, raw address in no field of the envelope), so the masker knows this literal; Control B: a PII-free engine error (UnexpectedStatus 403 pool_mismatch) returns 403 with detail.code pool_mismatch and its message intact; then the gap request raises UnexpectedStatus(500, body quoting the address) from Cortex.ask, classified by the real executor, and the control asserts it arrived as HTTP 502 detail.code submit_failed via the AskServiceError branch (chat.py:332-335), not some other route. Simulated fix (mask AskServiceError.detail in live_ask) makes the body pass.",
+     "failure_message": "AssertionError: the HTTP error the UI prints carries the raw cell value: 'Unexpected status code: 500\\n\\nResponse content:\\n{\"detail\":\"cast failed for value \\'ada.lovelace@example.com\\' in column note\"}' / assert 'ada.lovelace@example.com' not in '{\"detail\":{... note\\\\\"}\"}}'",
+     "user_sees": "When the engine fails on a cell, the chat shows an HTTP 502 whose detail.message contains the engine's text with the raw email address in clear, while the same address inside an answer is masked.",
+     "reason": "n/a: demonstrated (PLAUSIBLE half of the tracer note stands: it depends on the engine error text quoting a cell value; the test supplies that text and shows DMS passes it through unmasked)."
+    }
+   ],
+   "notes": "One file written, E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_mask_envelope.py: 8 tests, all XFAIL under the normal run (8 xfailed, no FAILED/ERROR) and all fail with a plain AssertionError on the gap assertion under --runxfail (no ControlFailed). Whole folder run (including other writers' files): 19 passed, 50 xfailed. I confirmed each body passes under a simulated in-process fix (scratch file, deleted), so a closed gap will XPASS-strict and flag the marker for removal. No product code, harness or existing test touched; no git state changed; no stray files (git status shows only gate_matrix files). Notes for the orchestrator: (1) gate_gap marks use row= with a comma-separated list of entry ids where one test covers several rows. (2) The ledger tests assert on the Cortex-boundary payload only (the harness limit): the Cortex submit legitimately receives the raw SQL for execution, and the tests do not claim otherwise; the gap is the ledger payload, so a fix could mask or hash the SQL in the append. (3) The cascade-attach cell is flag-gated (DMS_CCA_CASCADE=1) and was driven through harness_factory(cascade=True) with an email-shaped value landed in a transactions.asset_class column added to the tmp warehouse; the card kind is normalised to 'sql'. (4) ui:share-answer is client-side (answerDelivery.ts copies audit_receipt whole): not separately testable in-process, but the ask-path test shows the audit_receipt it would copy is raw. (5) I did not write separate tests for generative-ontology-plan, cortex-doc-retrieval or the multi-grain ledger variants: they share generative_ask.py:845 / the same _HANDLED_KEYS skip and are covered by the representative tests. (6) Gap 3 is a high-level PLAUSIBLE: it needs the engine's error text to quote a cell value; severity low as the tracer said. (7) Importing dms_executor lazily inside helpers and never importing dms_api at module level keeps collection off the module-level create_app() hazard noted in the harness limits."
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_mask_surfaces.py",
+   "gaps": [
+    {
+     "gap_id": "preview-and-drill-rows-unmasked",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_mask_surfaces.py::test_library_and_mcp_previews_return_personal_values_raw",
+      "tests/gate_matrix/test_gap_mask_surfaces.py::test_drillthrough_rows_come_back_unmasked"
+     ],
+     "control": "Both tests first upload a synthetic people.csv (name,email,ic_no,city) to FINANCE and, for the warehouse leg, plant a synthetic email in suppliers.supplier_name on the tmp seed. CONTROL 1: POST /v1/chat/ask on the same table rows (fake Cortex.ask returning the table's own rows) returns a valid envelope (E1-E9), HTTP 200, abstained False, rows present, no raw email/NRIC anywhere, DMSMASK_ tokens in the rows. CONTROL 2: each surface is reached with HTTP 200 and returns rows with the non-PII cells unmasked (city Ipoh, country MY; MCP body ok:true; DMS_MCP=1 via harness env). For drillthrough the token from the masked ask envelope is forwarded to the Cortex httpx.MockTransport (exactly one call, token matches) and answers 200 with contributing rows. All controls pass today; with the gate simulated in-process (monkeypatched maskers, no product edit) both tests flip to strict XPASS, so the controls hold in the closed state too.",
+     "failure_message": "test_library_and_mcp_previews: AssertionError: preview surfaces returned raw personal values: {'GET /v1/library/bronze/{table}/preview': ['siti.synth@example.com', '900101-14-5678'], 'GET /v1/library/warehouse/suppliers/preview': ['ops.synth@example.com'], 'POST /v1/mcp/call preview': ['ops.synth@example.com']} || test_drillthrough_rows: AssertionError: drillthrough returned raw personal values: ['siti.synth@example.com', '900101-14-5678']",
+     "user_sees": "A steward or MCP client calling the Library bronze preview, the warehouse preview, the MCP preview tool, or POST /v1/chat/drillthrough receives the stored email and NRIC verbatim (and the UI's Download CSV writes the drill rows), although the same values asked through /v1/chat/ask come back as DMSMASK_ tokens.",
+     "reason": "Demonstrated for library:bronze-preview, library:warehouse-preview, mcp:preview (one test, one combined assert naming each leaking route) and chat:drillthrough (second test). The export:csv-client G5 cell is carried by the drillthrough test because the CSV is built client-side from exactly the drillthrough response (AnswerMessage.tsx:187-203); the browser download itself is not pytest-testable (needs vitest). Two tests rather than one because the previews and the drillthrough need different fixtures and routes."
+    },
+    {
+     "gap_id": "insights-routes-return-payload-unmasked",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_mask_surfaces.py::test_insights_routes_return_cortex_payload_unmasked"
+     ],
+     "control": "The harness's RecordingCortex gets instance-level insights_ask/insights_ontology stand-ins (the payload is ours, not a claim about Cortex). CONTROL 1: POST /v1/insights with a numeric, non-PII payload returns HTTP 200 with values [{sku_count:12}] and the answer text byte-identical (route reached, no over-masking). CONTROL 2: /v1/chat/ask with the same personal values returns a valid envelope with no raw email/NRIC and DMSMASK_ tokens. Then each of the three surfaces (POST ask, POST generate with dms_api.routes.insights.openvault_reachable monkeypatched True, GET /v1/insights/ontology?q=...) is required to return HTTP 200 and a dict before the final assert. Passes today; with the masker simulated on honest_envelope the test flips to strict XPASS.",
+     "failure_message": "AssertionError: insights routes returned raw personal values: {'POST /v1/insights (ask)': ['siti.synth@example.com', '900101-14-5678'], 'POST /v1/insights (generate)': ['siti.synth@example.com', '900101-14-5678'], 'GET /v1/insights/ontology': ['siti.synth@example.com']}",
+     "user_sees": "A caller of POST /v1/insights (ask or generate) or GET /v1/insights/ontology gets Cortex's values and answer text back with the raw email and NRIC intact, where the ask path would have returned DMSMASK_ tokens.",
+     "reason": "Demonstrated in-process. The generate leg needs only an openvault_reachable monkeypatch (a real key is not needed because the fake Cortex answers); the get-ontology leg is structural (today's real payload is a metric catalogue), so the test plants values in the fake's payload to show the route has no masker, which matches the gap's own tracked_note."
+    },
+    {
+     "gap_id": "drillthrough-failure-and-truncation-not-named",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_mask_surfaces.py::test_drillthrough_cortex_422_is_an_empty_success_not_a_named_failure",
+      "tests/gate_matrix/test_gap_mask_surfaces.py::test_drillthrough_drops_the_cap_and_approximate_flags"
+     ],
+     "control": "A real CortexClient (empty base_url so compliance_gate takes its no-HTTP gate_unavailable soft branch) is wired to an httpx.MockTransport and set as app.state.cortex. CONTROL a: a contract-shaped 200 returns its rows through POST /v1/chat/drillthrough. CONTROL b: a transport ConnectError already returns HTTP 502 with detail.code drillthrough_failed. The mock records that the 422 request actually reached it (one extra call) before the gap assert. For the truncation test: exactly one Cortex call, HTTP 200 and the three rows returned. With the gate simulated in-process (422 raises; approximate/total_count passed through) both tests flip to strict XPASS.",
+     "failure_message": "test_..._422: AssertionError: Cortex 422 reached the caller as HTTP 200 {\"rows\":[],\"sql_used\":null,\"source_table\":null,\"answer_id\":null} || test_..._cap: AssertionError: capped, approximate drill returned as complete: {\"rows\":[{\"sku\":\"A\",\"amount\":1},{\"sku\":\"B\",\"amount\":2},{\"sku\":\"C\",\"amount\":3}],\"sql_used\":\"SELECT * FROM bronze.people\",\"source_table\":null,\"answer_id\":\"ans_ms_drill\"}",
+     "user_sees": "A Cortex 422 on drillthrough comes back as HTTP 200 with rows [] and null sql_used (the UI prints 'No drill rows returned.'), and a capped/approximate drill (contract fields approximate=true, total_count=84201) comes back with those fields dropped so it reads as the complete detail.",
+     "reason": "Demonstrated for the server legs. The truncation sub-part is testable because the generated contract DrillthroughResponse (generated/models/drillthrough_response.py:22-31) does carry approximate and total_count while DMS's DrillthroughResponse (cortex_client/models.py:116-122, extra='ignore') has no field for them. The CSV-button fallback (AnswerMessage.tsx:195-197, export:csv-client G8) is UI-only and not testable with pytest (needs vitest); it is not covered."
+    }
+   ],
+   "notes": "File: E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_mask_surfaces.py (5 tests, no product code or harness edits). Plain run: 5 xfailed, no FAILED/ERROR; --runxfail: 5 AssertionErrors on the intended final assert in every case (ControlFailed never reached); full folder run beside the other writers: 25 passed, 11 xfailed. Sensitivity check: a throwaway pytest plugin in the scratchpad (not in the repo) simulated the gates via monkeypatch (masking previews, insights envelope and drill rows; raising on a Cortex 422; passing approximate/total_count through) and all 5 tests went strict XPASS, so the assertions pass when the gate exists and the controls hold in the closed state. Test count is above the one-per-gap guide because the gaps span distinct routes: preview surfaces were merged into one test with a single combined assert (bronze, warehouse, MCP), the three insights surfaces into one, and only the drillthrough legs (and the 422 vs truncation failure modes) needed separate fixtures. Techniques: real CortexClient + httpx.MockTransport with an empty base_url (keeps compliance_gate off the network); instance-level insights_ask/insights_ontology on RecordingCortex; direct duckdb UPDATE on the tmp warehouse to plant a synthetic email in suppliers.supplier_name; harness_factory(env={'DMS_MCP':'1'}) to mount the MCP router. Synthetic values only (example.com addresses, the NRIC shape from tests/test_pii_01.py); the 'Siti Synth' name is not masked by the masker (no NER) and is deliberately not asserted. Caveats: drill rows in the mock are the uploaded table's own rows, a stand-in for Cortex, not a claim about what the engine returns; the 422 assert accepts any named failure (status >= 400 with a detail code or string), not only 502; the truncation assert accepts approximate=true, truncated=true or total_count==84201 so a fix is not forced onto one field name.\""
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_exports.py",
+   "gaps": [
+    {
+     "gap_id": "export-projections-no-provenance-tie",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_exports.py::test_export_routes_restate_an_answer_this_app_never_issued"
+     ],
+     "control": "Control (passes today, behind control()): POST /v1/chat/ask SPEND_BY_COUNTRY_Q in FINANCE returns 200, a valid E1-E9 envelope, L1_GOVERNED_METRIC, abstained False, 3 rows. Posting that same envelope to /v1/chat/export.xlsx returns 200 and its Cover reads the same answer_id and badge; posting it to /v1/chat/export.bi (powerbi) returns 200, ok True, same badge, table equal to the ask rows. The forged answer_id ans_forged_never_asked is asserted not to be an id the ask issued.",
+     "failure_message": "AssertionError: export restated an envelope this app never issued: export.xlsx -> HTTP 200 (Cover badge 'L0_CERTIFIED'), export.bi -> HTTP 200 (table [{'region': 'KL', 'revenue': 9999999}]); Cortex calls made while serving the forged exports: 0\nE       assert (400 <= 200)",
+     "user_sees": "A caller who never asked anything posts an invented envelope (badge L0_CERTIFIED, Revenue 9999999 MYR) and gets back a 200 Excel workbook whose Cover claims L0_CERTIFIED and whose Values/Rows sheets hold the invented figure, and a 200 Power Query stub embedding the same row, with zero Cortex calls.",
+     "reason": "Reproduces as written in gaps.json. refuse_envelope_export (packages/core/dms_core/xlsx_export.py:117-136) checks only a non-empty answer_id, badge in ALLOWED_BADGES and row/value shapes, and routes/chat.py:390-420 and :423-447 hand body.envelope straight to the serializers with no submit or ledger lookup. Only the export:xlsx and export:bi cells are covered; export:csv-client and ui:share-answer are browser projections (AnswerMessage.tsx, rowsToCsv.ts, answerDelivery.ts) with no server route and need vitest."
+    },
+    {
+     "gap_id": "demo-answers-exported-and-shared-unlabelled",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_exports.py::test_bi_export_of_a_demo_fallback_answer_says_it_is_demo"
+     ],
+     "control": "Control (passes today, behind control()): a harness with demo_fallback=True and the Cortex ask raising, asking 'What was total revenue?' in FINANCE, returns 200, a valid envelope with ask_mode 'demo', demo_fallback_used True, demo_fallback_banner True and rows. /v1/chat/export.xlsx of that same envelope returns 200 and its Cover has ask_mode == 'demo'. /v1/chat/export.bi of it returns 200, ok True, table equal to the envelope rows (so a 4xx cannot stand in for the missing marker).",
+     "failure_message": "AssertionError: export.bi restated demo-fallback figures [{'metric': 'total_revenue', 'revenue_myr': 25654.5}] (envelope ask_mode='demo', demo_fallback_used=True) with no demo marker; response keys: ['abstained', 'answer_id', 'badge', 'columns', 'complete', 'live_connector', 'ok', 'row_count', 'source_table', 'table', 'targets'], powerbi stub keys: ['blocked', 'filename',",
+     "user_sees": "A demo-fallback answer (RM 25,654.50, badge L2_VALIDATED, banner shown in the chat) exported with Power BI / Superset comes back as a plain table whose response, Power Query header and Superset dataset say nothing about demo, while the Excel Cover of the same answer does say ask_mode demo.",
+     "reason": "Reproduces. export_envelope_bi (packages/core/dms_core/bi_export.py:235-247) returns only ok/complete/live_connector/answer_id/badge/abstained/row_count/columns/source_table/table/targets, dropping ask_mode and demo_fallback_*; the xlsx Cover keeps ask_mode via COVER_KEYS (xlsx_export.py:26-37). I used the demo-fallback path (the repro's own scenario) rather than DMS_ASK_MODE=demo. The marker check walks keys only (ask_mode=='demo', demo_fallback_used/banner true) plus the // header of the M stub, because the answer_id 'ans_demo_revenue' puts the word demo into filenames and a substring check would have passed falsely. The ui:share-answer cell is client-side (answerDelivery.ts:23-41) and not reachable from Python."
+    }
+   ],
+   "notes": "File: E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_exports.py (2 tests, both XFAIL, no FAILED/ERROR; with --runxfail both fail with plain AssertionError). Normal run: '2 xfailed'. No product code, harness, or other test files touched; no stdlib-external deps (xlsx read via zipfile+ElementTree, not openpyxl, to stay clear of the tests/invariants openpyxl/Workbook grep rule). Flip proof: I wrote a scratch pytest plugin in the scratchpad (monkeypatch only, no product edits) that simulates (a) export routes refusing answer_ids not issued by this app's ask and (b) export.bi carrying ask_mode/demo_fallback_used. With both simulated, 2 passed (i.e. would XPASS strict, signalling to delete the marker); with only (a) the G8 test still fails and the G7 test passes; with only (b) the reverse. So the two tests are independent and the controls survive a plausible fix. Observations beyond the brief: (1) the pack answer_id is deterministic ('ans_spend_by_country'), so an 'issued answer_id' set would be a weak tie; a fix that signs or ledger-references the answer would be needed, and I did not add a tampered-figures-with-real-answer_id test because the gap's test_idea is the never-issued case; (2) the xlsx Cover carries ask_mode but not demo_fallback_used/banner, and a demo-fallback envelope exports through xlsx with badge L2_VALIDATED, which may be worth a separate look; (3) forged exports made zero Cortex calls (asserted in the message, observed 0); (4) the 'gate' param uses 'G7'/'G8' and 'row' lists only the cells actually exercised (export:xlsx,export:bi and export:bi); the csv-client and share-answer cells of both gaps remain untested here and need vitest. Test runtime about 4-6s warm.\"}"
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_xlsx_orch.py",
+   "gaps": [
+    {
+     "gap_id": "xlsx-orch-coercion-and-false-ok",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_xlsx_orch.py::test_crosscheck_text_flags_and_costs_do_not_answer_ok_without_a_named_reason",
+      "tests/gate_matrix/test_gap_xlsx_orch.py::test_golden_zero_average_is_not_replaced_by_the_nearest_cell"
+     ],
+     "control": "Both tests assert, via control(), that the real gate fails closed (403 gate_unavailable) before the patched allow. Crosscheck test: a clean workbook (OnTime TRUE/FALSE/yes, numeric cost) returns ok:true with source_oracle ok:true, ontime_count 2, total_count 3, avg_cost 300.0. A workbook with no OnTime header is refused with ok:false, status rejected, reason ontime_col_missing. Golden test: a workbook with a labeled average of 300.27, OnTime Count 1000 and Total Rows 2000 returns ok:true, reason frtr_golden. The same workbook with a labeled average of 12.34 returns ok:false, golden_miss, avg_cost 12.34, even though a 300.27 chart cell is present. All controls pass today.",
+     "failure_message": "Crosscheck: AssertionError: crosscheck answered ok:true / reason 'live' with source_oracle null for a workbook where every row was dropped by coercion, and named no reason: {\"ok\": true, \"status\": \"awaiting_pointer_receipt\", \"reason\": \"live\", \"pack_id\": \"orch_84e385eaf1a3\", \"issues\": [], \"paste_owner\": \"pointer\", \"source_oracle\": null, ... | Golden: AssertionError: golden passed a workbook whose labeled average is 0, by reading the unrelated 300.27 chart cell instead: {\"ok\": true, \"reason\": \"frtr_golden\", \"avg_cost\": 300.27, \"ontime_count\": 1000.0, \"total_count\": 2000.0, \"export_row_count\": 1000, ...}",
+     "user_sees": "POST /v1/studio/xlsx-orch/crosscheck on a workbook whose OnTime cells say 'On Time'/'Late' and whose cost cells say 'RM 300.27' gets HTTP 200 {ok:true, reason:'live', source_oracle:null} with no named refusal. POST /v1/studio/xlsx-orch/golden on a workbook whose labeled Average Cost is 0 gets ok:true / frtr_golden with avg_cost 300.27 read from an unrelated chart cell.",
+     "reason": ""
+    },
+    {
+     "gap_id": "xlsx-orch-cross-space-path-read",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_xlsx_orch.py::test_one_space_cannot_read_or_copy_another_spaces_stored_workbook"
+     ],
+     "control": "The real gate fails closed with 403 gate_unavailable. A result_path outside the allowlist root returns ok:false, reason path_not_allowlisted. FINANCE extracts its own workbook (ok:true, status stored, path under space_docs/<FINANCE>). WAREHOUSE_OPS extracts its own workbook and then re-extracts from its own stored path (ok:true). The own-Space response carries no FINANCE-only label. All pass today.",
+     "failure_message": "AssertionError: cross-Space read: extract -> HTTP 200 ok=True; golden -> HTTP 200 reason='golden_miss'; extract copied FINANCE's workbook into ...\\space_docs\\dddddddd-dddd-dddd-dddd-dddddddddddd\\xlsx_orch\\p9\\finance_result.xlsx; extract returned FINANCE's Analysis labels to a WAREHOUSE_OPS request; golden returned FINANCE's Analysis labels to a WAREHOUSE_OPS request; golden graded FINANCE's workbook for WAREHOUSE_OPS (golden_miss)",
+     "user_sees": "A request addressed to WAREHOUSE_OPS that names FINANCE's stored workbook gets HTTP 200 ok:true: the file is copied byte-for-byte into WAREHOUSE_OPS's space_docs and FINANCE's Analysis labels and figures are returned; the golden route likewise grades it and returns FINANCE's labels.",
+     "reason": ""
+    },
+    {
+     "gap_id": "xlsx-orch-unmasked-and-raw-persist",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_xlsx_orch.py::test_workbook_labels_and_headers_are_masked_in_the_response"
+     ],
+     "control": "The real gate fails closed with 403 gate_unavailable. The repo masker (dms_core.pii.mask_payload) turns 'IC 900101-14-5566' into a DMSMASK token, so the pattern is detectable. Numeric figures are correct on all three routes: extract inspected.analysis_numbers has 4521.5 and 300.27 with export_row_count 2, crosscheck oracle has ontime_count 2 and avg_cost 300.0, and golden returns golden_miss with 4521.5 in inspected.analysis_numbers. All pass today.",
+     "failure_message": "AssertionError: raw IC 900101-14-5566 returned unmasked by ['crosscheck', 'extract', 'golden']: extract analysis_labeled={'ic 900101-14-5566': 4521.5, 'avg_cost': 300.27}, crosscheck cost_col='Spend IC 900101-14-5566', golden analysis_labeled={'ic 900101-14-5566': 4521.5, 'avg_cost': 300.27}",
+     "user_sees": "The extract and golden responses return the Analysis label 'ic 900101-14-5566' verbatim in inspected.analysis_labeled, and the crosscheck response returns the header 'Spend IC 900101-14-5566' verbatim as source_oracle.cost_col, with no masking.",
+     "reason": ""
+    }
+   ],
+   "notes": "File: E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_xlsx_orch.py (4 tests, 3 gap_ids). Result: 4 xfailed with the default command; 4 plain AssertionErrors with --runxfail; no FAILED or ERROR. The whole tests/gate_matrix folder at the time of my run was 19 passed, 50 xfailed (96s, sharing the machine with other writers). Only my file was written; no product code touched, no git state changes. \n\nEvery repro in gaps.json held when run. Details of what I did and where I deviated:\n\n(1) Gate. The studio xlsx-orch routes call compliance_gate with the fake Cortex, which has no base_url, so the real gate returns gate_unavailable and enforce() answers 403 on these mutation routes. Each test asserts that 403 as control 0, then monkeypatches dms_api.routes.studio.compliance_gate to allow (the same pattern as tests/test_xlsx_orch.py). The harness cannot give an allowing gate on its own, which matches its stated limit.\n\n(2) Gap 1 uses TWO tests because one cannot show both mechanisms. Test A (crosscheck, the cheap repro) demonstrates the zero-match false-ok: oracle_from_sheets returns a named no_ontime_rows, but crosscheck_pack drops it and returns ok:true, reason 'live', source_oracle null (core xlsx_orch.py:231-237 and :338-351). Test B (golden) demonstrates the 0.0-is-falsy fall-through to _nearest (core :441). Test B patches dms_core.xlsx_orch.FRTR_ONTIME and FRTR_TOTAL to 1000 and 2000 so the Export sheet has 1000 rows instead of 184005; FRTR_AVG and the tolerances are real. I ran the real-size variant once while building (184005-row Export, labeled Average Cost 0 plus a 300.27 cell) and it returned ok:true, reason frtr_golden, avg_cost 300.27, so the patch changes nothing about the mechanism. Not covered by a test: the extract cells of this gap (G4 and G8). I confirmed by a one-off run that extract of an Analysis sheet with ['Avg Cost','RM 300.27'] and ['Total','200,000'] returns ok:true, status stored, and inspected.analysis_labeled contains only {'total': 200000.0}, with inspected.error null. There is no non-prescriptive assertion for what the gated response should be, so I left it. The bare-500 branches (unreadable or locked file, read-only space_docs) are not reproducible portably in-process and are not tested. Also seen in a one-off run (not tested because the gated behaviour is ambiguous): a workbook with rows [A,TRUE,100.0] and [B,TRUE,'RM 300.27'] gets ok:true with source_oracle avg_cost 100.0, ontime_count 1, total_count 2, so the text-cost row is silently dropped and a wrong number is served with no flag.\n\n(3) Gap 2 covers the extract and golden routes only. The crosscheck route has no space_id field in its request body (studio.py:167-170), so there is no coherent gated behaviour to assert for the crosscheck G1 cell without prescribing a new request field. The test row therefore lists extract and golden only. The test uses substance-based leak checks (a FINANCE-only label in the response, a byte-identical copy landing in WAREHOUSE_OPS's space_docs, or golden grading FINANCE's workbook), not specific refusal reason names, so any fix that refuses (403 or a named reason) passes it.\n\n(4) Gap 3 header correction. The gap's repro header 'Cost - IC 900101-14-5566' would NOT be picked as the crosscheck cost column: _COST_COL only matches unit cost, a bare 'cost', spend, amount or baserate (core xlsx_orch.py:75). I used 'Spend IC 900101-14-5566' and verified source_oracle.cost_col comes back verbatim. Only response masking is asserted; extract persisting the raw bytes is the route's stated purpose (tracked_note), so the record-side half is not tested. The test probes all three routes and asserts none returns the raw IC.\n\n(5) gap() marks: row= uses the matrix entry ids each test actually exercises (comma-joined); gate= is 'G4,G8' for gap 1, 'G1' for gap 2, 'G5' for gap 3; ticket='new'. A report script reading mark.kwargs should split rows and gates on commas. gap_id is identical for the two gap-1 tests.\n\n(6) Assertion robustness: gap requests are guarded only by a status < 500 control (routes were already proven by controls), so a future fix that returns 403/409/422 xpasses instead of tripping a ControlFailed. Synthetic data only: IC 900101-14-5566 and workbooks written with dms_core.xlsx_ooxml (stdlib zip). No network, no Docker, no servers."
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_lanes.py",
+   "gaps": [
+    {
+     "gap_id": "bronze-sheet-trycast-drops-rows-silently",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_lanes.py::test_bronze_sheet_sum_does_not_silently_drop_an_unparseable_cell"
+     ],
+     "control": "Same workbook shape with every cell numeric (clean_sales.xlsx / Sales, ingested into FINANCE via the real ingest_batch) is answered by the bronze lane (route bronze_sheet, not abstained) with rows exactly equal to an independent oracle (Electronics 3000.0, Home 1600.0, Sports 300.0), 3000.0 in the rendered text, and no dropped-row notice (also calibrates the notice regex). Fixture premise also asserted: the dirty copy's sales_value_myr column is VARCHAR and holds the 'RM 1200' cell in all 7 rows. All pass today.",
+     "failure_message": "L0_CERTIFIED shows Electronics=1800.0 (the sheet holds 3000.0 with 'RM 1200' read as 1200) and says nothing about the one cell it dropped. text='Found 3 row(s).\\n  - category=Electronics, sales_value_myr=1800.0\\n  - category=Home, sales_value_myr=1600.0\\n  - category=Sports, sales_value_myr=300.0' assumptions=['bronze sheet gr",
+     "user_sees": "POST /v1/chat/ask on granted.xlsx / Sales with one text cell 'RM 1200' returns 200 L0_CERTIFIED with Electronics 1800.0 instead of 3000.0, and the only note is the generic 'hanging/blank measure rows dropped' with no count; the audit receipt even says nothing was excluded.",
+     "reason": ""
+    },
+    {
+     "gap_id": "bronze-sheet-l0-minted-locally",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_lanes.py::test_bronze_sheet_l0_is_certified_through_a_cortex_submit_and_ledger_entry"
+     ],
+     "control": "In the same harness and Space, the pack question (SPEND_BY_COUNTRY_Q in FINANCE) returns L1_GOVERNED_METRIC with exactly one SQL submit equal to SPEND_BY_COUNTRY_SQL, one ledger append ask.governed_metric, and audit_id equal to the ledger entry id led_gm. The bronze request is also confirmed to reach the bronze lane (route bronze_sheet) with rows equal to the oracle. All pass today.",
+     "failure_message": "L0_CERTIFIED with audit_id='ans_bronze_granted_Sales': this lane made 0 Cortex SQL submit(s) and 0 ledger append(s); a governed answer carries the ledger entry id 'led_gm'",
+     "user_sees": "A clean granted.xlsx / Sales top-3 question returns 200 L0_CERTIFIED, the top trust badge, with audit_id 'ans_bronze_granted_Sales' that points at nothing in the ledger, because DMS computed the rows in its own DuckDB with no Cortex submit and no ledger append.",
+     "reason": ""
+    },
+    {
+     "gap_id": "stored-sql-no-fanout-guard",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_lanes.py::test_steward_registered_fanout_join_is_not_served_as_a_certified_figure"
+     ],
+     "control": "Fixture premise: running the fan-out join directly on the seed doubles WH-A (14410.0 vs 7205.0) and leaves WH-C unchanged. A single-table VQ (SUM over transactions GROUP BY location_id) registers with 200 via POST /v1/studio/verified-queries and is served by POST /v1/chat/ask as route verified_query, L0_CERTIFIED, rows exactly equal to the direct-seed oracle, WH-A 7205.0 in the rendered text, one SQL submit and one ask.verified_query ledger append. All pass today.",
+     "failure_message": "L0_CERTIFIED served WH-A revenue_myr=14410.0 and WH-B=36365.0; the transactions table sums to 7205.0 and 18182.5. The registration was accepted (200). text='Found 5 row(s).\\n  - location_id=WH-B, revenue_myr=36365.0\\n  - location_id=WH-A, revenue_myr=14410.0\\n  - location_id=WH-C, revenue_myr=2640.0\\n  - location_id=WH-D, revenue_myr=11",
+     "user_sees": "A steward-registered transactions-JOIN-inventory VQ is accepted with 200, and 'Revenue by warehouse' then returns 200 L0_CERTIFIED with WH-A 14410.0 and WH-B 36365.0, exactly double the true 7205.0 and 18182.5.",
+     "reason": ""
+    },
+    {
+     "gap_id": "rule12-aggregate-zero-row-green",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_lanes.py::test_zero_match_filter_that_returns_one_null_aggregate_row_is_not_a_confident_answer"
+     ],
+     "control": "Fixture premise: on the seed, SUM(quantity_kg) WHERE sku='BETA' returns [{total: None}] and WHERE sku='SKU-BETA' returns 900.0. Control 1: the SKU-BETA ask (engine badge generated) returns L2_VALIDATED with rows [{total: 900.0}] and '900.0' in the text. Control 2: the identical BETA ask with rows [] already abstains (ABSTAIN, no rows, 'No matching rows' text) via the hard-rule-12 net. The gap request is confirmed to reach Cortex.ask exactly once. All pass today.",
+     "failure_message": "L2_VALIDATED with rows=[{'total': None}] values=[{'id': 'v_count', 'value': 1.0, 'label': 'row_count'}] for a filter that matched no row (SUM over nothing is NULL). text='Total quantity of BETA in stock.'",
+     "user_sees": "In Warehouse Ops, 'total quantity of BETA in stock' (the seed stores SKU-BETA) returns 200 L2_VALIDATED, not abstained, with one row whose total is null and a synthetic row_count value of 1, instead of the 'No matching rows' abstention an empty result gets.",
+     "reason": ""
+    }
+   ],
+   "notes": "All four gaps reproduced; one new file only (tests/gate_matrix/test_gap_lanes.py), no product code touched. Plain run: 4 xfailed (~11s). --runxfail: 4 plain AssertionErrors at the gap assertion, no ControlFailed. Mutation check (scratch plugin in the scratchpad, not in the repo): simulating each gate closing flips the matching test to XPASS(strict): disclose a '1 of 7 rows dropped' note -> trycast test; demote the bronze badge off L0 -> G7 test; reject the join at registration (400) or drop it at serve time -> fan-out test; empty a [{total:None}] row before the envelope map -> rule-12 test. So each assertion is satisfiable and not vacuous. The trycast control deliberately does not check the badge, so a G7 fix cannot turn it into a ControlFailed.\n\nThings to know:\n(1) cascade-attach and mcp:ask cells for G4/G7 are not exercised as separate cells. I ran the bronze ask with cascade=True: the envelope is byte-for-byte the same bronze_sheet L0 answer, cascade not engaged (no trace attached), with only the generic 'hanging/blank measure rows dropped' assumption and no count. That resolves the tracer disagreement: nothing discloses a count; the generic string does not describe a non-blank 'RM 1200'. The gap rows therefore name only chat-ask:bronze-sheet; mcp:ask needs DMS_MCP=1 and was not run.\n(2) Also seen in the dirty-sheet envelope: sql_used omits the WHERE TRY_CAST(...) IS NOT NULL predicate that dropped the row, and audit_receipt.exclude says 'N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded', which is false for that run. The test accepts a disclosure in text, assumptions or audit_receipt.exclude.\n(3) The ingest itself flags the sheet (TABULAR_DIRTY, column_type_inconsistency, need_attention=1), but the ask path never carries that forward.\n(4) stored-sql-no-fanout-guard: only the verified-query half is demonstrated; the governed-pack half is not demonstrable on the seed, so the gap row is chat-ask:verified-query only. The Studio route 403s gate_unavailable under the fake (mutation route fails closed with no reachable F5 gate), so the test stubs dms_api.routes.studio.compliance_gate to allow, as tests/test_vq02_verified_register.py does. The fan-out figures are real only in the sense that RecordingCortex executes the SQL on the tmp DMS seed (inventory has two rows each for WH-A and WH-B); the test does not claim real Cortex would return them. The test accepts a 400/422 with a detail at registration, an abstain at serve time, or the true figures as the gated outcomes.\n(5) rule12: the engine badge must be 'generated' for L2_VALIDATED; 'validated' is unknown to DMS and abstains, 'certified' makes the NULL row ship L0_CERTIFIED. The engine prose ('Total quantity of BETA in stock.') is the fixture's neutral string, so the test claims only that DMS keeps a confident badge, not what a real engine would say. I did not assert the COUNT(*)=0 variant: I ran it, it ships L2_VALIDATED with value 0, but envelope.py:1448 documents that as intentional, so it is a design carve-out rather than an unambiguous gap.\n(6) dms_* imports in the test file are lazy because conftest's offline guard is module-scoped and runs after collection-time imports."
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_generative_doc.py",
+   "gaps": [
+    {
+     "gap_id": "generative-sql-ships-over-failed-verify-ontology",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_generative_doc.py::test_insights_sql_over_a_lake_whose_ontology_failed_verify_abstains"
+     ],
+     "control": "Three controls, all passing today. (1) On the clean seed the same Insights query_sql ask in FINANCE returns 200, L2_VALIDATED, abstained False, rows present, exactly one Insights call and one Cortex SQL submit. (2) After adding one orphan inventory lot (SKU-ORPH, supplier SUP-99) plus an outbound transaction on it, demo_ontology(...).verify reports fk_intact on lot_from_supplier. (3) On that same orphan lake a typed query_plan ask already abstains with 'ontology_unverified' in the text. The gap request is the same question with Insights returning SQL instead of a plan.",
+     "failure_message": "shipped badge=L2_VALIDATED abstained=False rows=4 total=25654.5 but the lake's outbound value is 30654.5 (the orphan's value was dropped by the INNER JOIN); text='Found 4 row(s).\\n  - supplier_name=Orbit Packing, revenue=2640.0\\n  - supplier_name=Northshore Materials, revenue=4955.0\\n  - supplier_na",
+     "user_sees": "A confident L2_VALIDATED answer, 'Found 4 row(s)' with per-supplier revenue totalling 25,654.5, when the lake's outbound value is 30,654.5 because the orphan-supplier lot was silently dropped by the INNER JOIN, instead of an ABSTAIN naming ontology_unverified / fk_intact on lot_from_supplier.",
+     "reason": "Demonstrated. Notes: the repro in gaps.json (an orphan inventory row alone) fails verify but drops no value, because that SKU has no transactions; the test adds an outbound transaction for the orphan SKU so the wrong number is visible. Models an armed deployment: the recording fake gets a per-instance compute_insights attribute (the attribute _insights_compute_seam looks for), because the default demo key is refused before any SQL arrives. The gap assertion needs abstained True, badge ABSTAIN, no rows, 'ontology_unverified' and 'lot_from_supplier' in the text, and no new Cortex SQL submit. A simulated fix (maybe_generative_ask handed demo_ontology(warehouse)) made the test XPASS(strict) with controls intact, so the assertions are satisfiable by the existing A2-02 guard."
+    },
+    {
+     "gap_id": "generative-keep-gt-rows-not-in-ledgered-sql",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_generative_doc.py::test_keep_gt_rows_shown_are_what_the_displayed_and_ledgered_sql_returns"
+     ],
+     "control": "Same ask (FINANCE, 'Which locations are above 70 percent utilisation?', Insights returning a typed utilisation_pct plan) WITHOUT keep_gt passes today: 200, L2_VALIDATED, abstained False, 5 rows; re-executing envelope.sql_used on the seed returns exactly the displayed rows; and the ask.generated_ontology ledger payload SQL equals sql_used. With keep_gt=70 the answer is still L2_VALIDATED, not abstained, has rows and sql_used, so the failure cannot be an abstain or a broken ask.",
+     "failure_message": "customer was shown 3 row(s) ('Found 3 row(s).') but the displayed SQL returns 5 and the ledgered SQL returns 5",
+     "user_sees": "The answer says 'Found 3 row(s)' (WH-E 97.8, WH-C 96.7, WH-A 72.0), but the sql_used shown with it and the SQL appended to the ledger both return 5 rows (including WH-B 56.3 and WH-D 25.8), so an auditor re-running the cited query cannot reproduce what the customer saw.",
+     "reason": "Demonstrated. Notes: the gaps.json example 'above 90 percent capacity' is a certified pack question (L1_GOVERNED_METRIC) that never reaches the generative lane, so the test uses 'above 70 percent utilisation' with the utilisation_pct measure; keep_gt rides in on the Insights typed query_plan payload, supplied through the armed compute_insights attribute (armed deployments only). The gate assertion is re-run equality (displayed SQL and ledgered SQL each return exactly the shown rows), which a fix satisfies either by putting the predicate into the SQL or by showing the full result. A simulated fix (disabling the Python keep) made the test XPASS(strict) with controls intact."
+    },
+    {
+     "gap_id": "e9-bare-integer-uncited-in-doc-lane",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_generative_doc.py::test_doc_answer_with_an_uncited_bare_integer_total_is_demoted",
+      "tests/gate_matrix/test_gap_generative_doc.py::test_doc_abstain_with_an_empty_engine_answer_names_a_reason"
+     ],
+     "control": "Primary test: a doc_rag answer 'The total is 12,500.00' whose snippet lacks the figure is already withheld (200, ABSTAIN, abstained True, '12,500.00' absent from the text); a doc answer quoting a figure the snippet really contains ('12,500.00') is served L2_VALIDATED with its source, so the doc lane is serving and the figure check is what refuses; the gap response is on the doc route with sql_used '-- document retrieval (no SQL)'. Secondary test: the same lane's figure-demotion abstain names its reason ('could not certify a figure'), and the no-hit ask does abstain.",
+     "failure_message": "shipped badge=L2_VALIDATED abstained=False text='The total is 12500'; the cited snippet does not contain 12500",
+     "user_sees": "A doc-retrieval answer 'The total is 12500' under an L2_VALIDATED badge with its source card attached, although no query ran and the cited snippet does not contain 12500; separately, a no-hit doc ask with an empty engine answer renders only 'Abstained.' with 'live Cortex ask' as the sole assumption.",
+     "reason": "Demonstrated, two tests for the two facets in the gap title. Secondary test failure_message: \"customer reads 'Abstained.'; assumptions=['live Cortex ask']\". The bare-'Abstained.' facet is the DMS-owned fallback (text = resp.answer or 'Abstained.' in map_ask_response_to_envelope); a Cortex that itself sends the text 'Abstained.' is passed through verbatim, so that facet is weaker than the integer one. The primary assertion is 'demoted (ABSTAIN) or the figure absent from the rendered text'. Fixture note: the first attempt returned 503 (E7: drillthrough_token too short), which require_envelope would have turned into ControlFailed rather than an XFAIL; the token was lengthened. A simulated fix (counting 4+ digit integers in _money_like; a non-bare abstain text) made both tests XPASS(strict) with controls intact."
+    },
+    {
+     "gap_id": "space-refusal-envelope-no-served-attribution",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_generative_doc.py::test_space_refusal_envelope_carries_served_attribution"
+     ],
+     "control": "Two ordinary live_ask envelopes carry served_attribution today: the engine-abstain envelope in WAREHOUSE_OPS (the same question) and the FINANCE pack answer (L1_GOVERNED_METRIC), both with a value in {reported, missing, none}. The gap response is confirmed to be the Space-refusal branch (200, ABSTAIN, assumptions == ['refused by the Space boundary'], text names 'transactions' and 'Warehouse Ops'), valid E1-E9, with exactly one Cortex ask attempted before the refusal was rendered.",
+     "failure_message": "refusal envelope keys: ['abstained', 'answer_id', 'as_of', 'ask_mode', 'assumptions', 'audit_id', 'audit_receipt', 'badge', 'chart', 'contributing_sources', 'demo_fallback_used', 'drillthrough_token', 'grounded_tables', 'route', 'rows', 'session_id', 'space_id', 'sql_used', 'suggestions', 'text', 'v",
+     "user_sees": "A 200 Space-refusal ABSTAIN envelope with no served_attribution key (and no generate_legs), although the Cortex ask (a model call) had already been attempted before the refusal; every other ask envelope says reported/missing/none.",
+     "reason": "Demonstrated using the harness's ask_raises hook (AskServiceError path_not_allowed). The Insights-generate variant of the trace (a model call whose served_* is discarded by the exception) was not exercised; the test asserts the key is present with a value in {reported, missing, none}, not which value. A simulated fix (stamping served_attribution in _space_refusal_envelope) made the test XPASS(strict) with controls intact."
+    }
+   ],
+   "notes": "All five tests are strict xfails: the file run is '5 xfailed', no FAILED or ERROR; --runxfail gives 5 plain AssertionErrors; each test also runs alone (-k) as 1 xfailed. The whole tests/gate_matrix folder run (including other agents' files present at that moment) was '19 passed, 50 xfailed'. I simulated each fix with a throwaway pytest plugin in the scratchpad (not in the repo): every gap test turned into XPASS(strict) with its controls still passing, so each assertion is satisfiable by a plausible fix and none fails for an unrelated reason. Nothing outside tests/gate_matrix/test_gap_generative_doc.py was created or edited in the worktree; no git state changes. The two generative gaps (G2, G7) are reachable only on an armed deployment (real CORTEX_API_KEY); they are modelled by assigning a compute_insights callable on the RecordingCortex instance, which is the attribute Executor._insights_compute_seam probes, so the test does not claim the default config reaches them. Pitfalls found: question wording matters, because a pack question never reaches the generative lane; the doc fixture needs a drillthrough_token of enough length or the ask returns 503 (E7), which the harness correctly turns into ControlFailed."
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_demo_flags.py",
+   "gaps": [
+    {
+     "gap_id": "demo-lane-bypasses-all-gates",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_serves_revenue_to_a_space_with_no_transactions_grant[demo_mode]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_serves_revenue_to_a_space_with_no_transactions_grant[no_cortex_fallback]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_answers_a_year_with_no_data_with_the_all_time_total[demo_mode]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_answers_a_year_with_no_data_with_the_all_time_total[no_cortex_fallback]"
+     ],
+     "control": "Test 1 (G1, WAREHOUSE_OPS): in live mode the same revenue question in WAREHOUSE_OPS returns 200, ABSTAIN, no rows or values, no revenue figure in the text, and the manifest bound to Cortex names inventory/locations/shipments but not transactions; the same ask in FINANCE binds a manifest that does name transactions. After switching to the demo lane (DMS_ASK_MODE=demo, or DMS_DEMO_FALLBACK=1 with app.state.cortex=None) the FINANCE revenue ask returns ask_mode demo, L2_VALIDATED, the all-time total. Test 2 (G8, FINANCE): the seed has 0 transactions dated 2099; in the same demo lane a forecast ask ('What will revenue be next quarter?') abstains with no figure (the lane's own gate works); 'What was total revenue?' returns the all-time total at L2_VALIDATED. All controls passed (ControlFailed not raised) on every param.",
+     "failure_message": "AssertionError: demo lane answered a Warehouse Ops revenue ask from transactions, which that Space does not grant: HTTP 200 badge=L2_VALIDATED abstained=False ask_mode=demo text='Total outbound revenue was RM 25,654.50.' detail=None rows=[{'metric': 'total_revenue', 'revenue_myr': 25654.5}]",
+     "user_sees": "In demo mode (or the no-Cortex fallback) a Warehouse Ops user is told 'Total outbound revenue was RM 25,654.50.' under an L2_VALIDATED badge from a table that Space does not grant, and 'revenue in 2099' returns that same all-time total instead of an abstain.",
+     "reason": "Reproduced in-process through the real create_app() and Executor.demo_ask. The 2099 near-miss assertion (G8) fails with: demo lane ignored the year and answered a 2099 revenue ask with the all-time total: HTTP 200 badge=L2_VALIDATED ... text='Total outbound revenue was RM 25,654.50.'. Source: apps/api/dms_api/routes/chat.py:249-255 and :260-263 (demo_ask called with no grant step); packages/executor/dms_executor/demo_ask.py:337-343 and 308-326 (literal revenue SQL, year token ignored)."
+    },
+    {
+     "gap_id": "demo-fallback-converts-live-refusal-to-demo-numbers",
+     "outcome": "demonstrated",
+     "test_node_ids": [
+      "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_an_unscreened_policy_refusal_with_demo_numbers[manifest_malformed]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_an_unscreened_policy_refusal_with_demo_numbers[sql_not_analyzable]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_an_unscreened_policy_refusal_with_demo_numbers[manifest_not_yet_valid]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_a_failed_live_attempt_with_demo_numbers[verified_query_submit_refused]",
+      "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_a_failed_live_attempt_with_demo_numbers[envelope_invariant_E7]"
+     ],
+     "control": "Test 3 (ask-error entry, FINANCE): with DMS_DEMO_FALLBACK=0 the same injected Cortex.ask error returns HTTP 403 with detail.code equal to the code (manifest_malformed / sql_not_analyzable / manifest_not_yet_valid); with the flag on, path_not_allowed is refused (200 ABSTAIN 'refused by the Space boundary', no figures, demo_fallback_used false); the gap request is confirmed to have reached Cortex.ask. Test 4 (exception entry): verified-query param: flag on, path_not_allowed through the ask path is refused with no figures; flag off, the steward-query SubmitError is a named 503 live_ask_failed quoting path_not_allowed and exactly one steward SQL submit was recorded. E7 param: flag on, a valid engine answer (RM 5.00, token of 8+ chars) is served live; flag off, the same answer with a 3-char drillthrough_token is a named 503 quoting E7. All controls passed.",
+     "failure_message": "AssertionError: flag on, Cortex refused with manifest_malformed and the customer was not told: HTTP 200 badge=L2_VALIDATED abstained=False ask_mode=demo text='Total outbound revenue was RM 25,654.50.' detail=None values=[{'id': 'v_rev', 'value': 25654.5, 'unit': 'MYR', 'label': 'Total revenue'}]",
+     "user_sees": "With DMS_DEMO_FALLBACK=1, a Cortex refusal such as manifest_malformed or sql_not_analyzable, a steward query refused with path_not_allowed, or an engine answer that fails an envelope check (E7) comes back as HTTP 200 'Total outbound revenue was RM 25,654.50.' at L2_VALIDATED with a fallback note, instead of the named 403/503 or an abstain.",
+     "reason": "Reproduced in-process with the RecordingCortex raising from ask/submit. Source: apps/api/dms_api/routes/chat.py:34-49 (_POLICY_CODES omits sql_not_analyzable, manifest_malformed, manifest_not_yet_valid that _STATUS_BY_CODE lists as 403), :328-331 (AskServiceError fallback), :336-340 (plain Exception fallback); packages/executor/dms_executor/verified_queries.py:347 (submit() uncaught)."
+    }
+   ],
+   "notes": "9 test items (4 test functions, parametrized), all XFAIL under the standard run and all FAIL on the gap assertion line (not a control) under --runxfail. Whole tests/gate_matrix folder: 19 passed, 50 xfailed (other writers' files present in the folder). No product code, harness or other file touched; scratch probes lived in the scratchpad dir only.\n\nGate labels used: G1 'grant / Space check' (test 1) and G8 'named abstain on failure' (tests 2-4). Gap demo-lane-bypasses-all-gates has two tests because one request cannot show both (different Space, different control). G2/G6/G7 cells of that gap (no ontology verify, no served_attribution, no submit/ledger on the demo lane) have no test: they are by-design for an offline lane and no gated behaviour is defined for them, so a test would invent behaviour. Likewise the G1 cells of gap 2 are the same root cause as test 1 plus test 3 and are not separately tested.\n\nThe no-cortex lane is emulated by setting h.app.state.cortex = None with DMS_DEMO_FALLBACK=1 (what a TestClient without lifespan has). Ask-mode lane is DMS_ASK_MODE=demo set via h.set_env.\n\nNot reproduced as stated: the 'AssertionError E4/E9' variant in the gap-2 title. I sent AskResponse values that violate E4 (orphan figure in prose) and E9 (figure with no executed query) through the live path: map_ask_response_to_envelope demotes both to a named 200 ABSTAIN (assumptions 'prose figure not in query result: withheld (E4)' and 'L3 retrieval path: uncited figures withheld (E9)') with the flag on or off, so no AssertionError reaches chat.py's broad handler. An envelope invariant that does escape is E7 (drillthrough_token shorter than 8 chars with contributing_sources set): flag off gives 503 live_ask_failed 'E7: drillthrough_token looks too short to verify', flag on gives demo numbers. That is the AssertionError variant the test uses (param envelope_invariant_E7). Whether an invariant failure counts as a 'policy refusal' is a judgement: the in-code comment only forbids masking policy refusals, so the E7 param is the weakest of the five; the assertion there is deliberately loose (a failed live attempt must not return HTTP 200 with abstained false).\n\nAssertion shapes: tests 1 and 2 accept only a 200 ABSTAIN envelope with no rows/values and no all-time figure (the live Space-refusal precedent, dms#2). Test 3 requires the flag-off shape (403 with the named code), which control 1 proves reachable. Test 4 only requires that the response is not a confident answer. Revenue figure is read from the seeded tmp warehouse (total_outbound_revenue), not hard-coded. The injected engine refusals are fakes (RuntimeError text with the code, classified by classify_submit_error); the tests claim nothing about what the real engine emits."
+  }
+ ],
+ "verdicts": [
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_followup.py",
+   "plain_run": "9 xfailed, 1 warning in 18.17s",
+   "runxfail_run": "9 failed, 1 warning in 17.70s",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_figure_goes_through_cortex_submit_and_the_ledger[chat-average]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: the gap line (171) asserts abstained / audit_id plus Cortex call counts with strict `len(sql_submits) == 2` and `len(appends) == 2`; it does not assert the follow-up's rendered text or rows, so a fix that submits and ledgers but computes a wrong figure would still XPASS. Fails at line 171 with the intended message (L2_VALIDATED 'Average of the prior 3 figures is RM 9,946.67.', audit_id='ans_followup', 1 submit + 1 append). Passes under a scratch-simulated closed gate (submit + ledger + audit_id from the ledger)."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_figure_goes_through_cortex_submit_and_the_ledger[chat-add]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: same as chat-average (call-count + audit_id assertion, strict == 2, no assertion on the follow-up text or rows). Fails at line 171 with 'Prior figure plus 2000 is RM 31,840.00.', audit_id='ans_followup'."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_figure_goes_through_cortex_submit_and_the_ledger[mcp-average]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: same as chat-average. The MCP route does reach the same follow-up lane (control parent is L1_GOVERNED_METRIC via /v1/mcp/call, gap fails at line 171 with the same L2_VALIDATED figure), so this is not a 404 or wrong-route failure."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_without_a_space_abstains_no_space",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING spec coupling: the gap requires an abstain naming the literal token no_space. The repo cannot confirm that (docs/subagents_findings/gate-matrix.md only says FOLLOWUP-CONTRACT-01 has 'no shared grant function'; the 'item 3' text lives in the dms#303 thread). The test's own control shows the pack lane answers a no-Space ask as L1, and Executor.grantable_tables documents space_id=None as the personal context where the demo set stands, so a fix that grants the follow-up under the same personal-context default would never XPASS this test. Only the bronze lane (control 2) fails closed with no_space. Fails at line 229 with 'Prior figure plus 2000 is RM 31,840.00.' (L2_VALIDATED), the intended reason."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_after_the_grant_is_revoked_abstains_ungranted_table",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_does_not_label_a_non_ringgit_figure_as_ringgit[percent-average]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_does_not_label_a_non_ringgit_figure_as_ringgit[count-add]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_after_a_failed_turn_does_not_reuse_the_older_figures[space-refusal]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_followup.py::test_followup_after_a_failed_turn_does_not_reuse_the_older_figures[timeout]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_grants.py",
+   "plain_run": "4 xfailed, 1 warning in 12.60s (0 failed, 0 error)",
+   "runxfail_run": "4 failed, 1 warning in 11.50s (all four are AssertionError on the gap assertion; none is ControlFailed or an import/fixture error)",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_grants.py::test_ask_without_a_space_does_not_widen_to_a_table_no_space_grants",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound. Three controls run first and raise ControlFailed: FINANCE is refused alerts by the manifest-honouring fake engine (the test also checks that cortex.asks has exactly one entry), FINANCE is answered on locations, and a no-space pack question is answered L1_GOVERNED_METRIC. The gap request goes through require_envelope. It fails on 'no-space ask was served: badge=L2_VALIDATED rows=[AL-1, AL-2, AL-4, AL-5 alert rows]', and the bound manifest it prints includes 'alerts'. That matches the cause in code: Executor.grantable_tables(space_id=None) returns every DEMO_TABLES entry. Rows, badge and abstained are all asserted. With the gate simulated closed (grantable_tables(None) limited to company_default_tables(); a scratch plugin outside the repo) the test passes under --runxfail, and the other three tests stay red. Minor limitation: it would also fail on a build that fixes this by returning non-200 for a no-space ask, because require_envelope demands HTTP 200. Control 3 makes that fix implausible."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_grants.py::test_generative_ladder_refuses_an_ungranted_tick_by_name",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound for the claim it makes. Control 1 shows the product ladder refuses the tick with 403 grounding_not_grantable naming alerts. Control 2 shows the generative ladder is live and gives a named 'generative miss'. Both use control(). The gap request fails with HTTP 200, an ABSTAIN envelope, grounded_tables=[] and the GEN-01 generative-miss assumption. Code confirms the cause: _live_ask builds `requested` as the tick intersected with granted, so the ungranted tick is dropped. With the gate simulated closed (GroundingRefused raised at the top of _live_ask) it passes under --runxfail. Weakness (low): the gap request has no 'reached the answer path' guard. Its expected good state is a 403, so require_envelope cannot be used. If it later returned 400 ask_path_not_allowed, 404 or 422, the assertion would still raise AssertionError and be absorbed as an XFAIL for the wrong reason. Controls 1 and 2 use the same space and env today, which mitigates this. A guard such as control(s not in (400, 404, 422) and s < 500) before the gap assert would close it. The assertion is on HTTP status and detail.code, not rendered text, which is acceptable for a refusal."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_grants.py::test_cascade_refuses_an_ungranted_tick_by_name",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound for the claim it makes. Control 1 shows the cascade is engaged: it abstains with a constraint_trace on CASCADE_Q with no tick. Control 2 turns the cascade off and shows the tick is refused 403 grounding_not_grantable. Both use control(). The gap request fails with HTTP 200, an ABSTAIN from the cascade ('cannot certify the sense constraint...') and grounded_tables=[]. Code confirms the cause: `requested` drops the ungranted tick before cascade_abstain_envelope(grounded_tables=requested). With the gate simulated closed it passes under --runxfail. The weakness is the same as for the generative-ladder test: no guard that the gap request reached the answer path rather than returning 400, 404 or 422, which would be absorbed as an XFAIL (low). Asserted on HTTP status and detail.code, not rendered text."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_grants.py::test_bronze_ask_does_not_read_another_spaces_table_through_the_warehouse_alias",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound. Controls run first and raise ControlFailed: WAREHOUSE_OPS is answered L0_CERTIFIED with the OPS-ONLY-CATEGORY row; FINANCE is refused with 'ungranted_table' in the text and no rows; and a fixture control checks grantable_tables, which holds bronze.warehouse_foo_Sales and not bronze.foo_Sales. The gap request goes through require_envelope and fails on 'FINANCE was served WAREHOUSE_OPS's foo_Sales: badge=L0_CERTIFIED rows=[OPS-ONLY-CATEGORY 900, ...] grounded_tables=[bronze.foo_Sales]'. The only change between control 2 (refused) and the gap request (served) is FINANCE uploading warehouse_foo_Sales. This matches table_is_granted in ontology.py:398-404 (`f\"warehouse_{t}\" in allowed`). With the alias simulated away it passes under --runxfail, and the other three tests stay red. Rows, badge and abstained text are all asserted. Minor limitation: the gap assertion requires `abstained is True`. A hypothetical fix that resolves the alias to FINANCE's own warehouse_foo_Sales and answers from it ([fin-a], not abstained) would fail this test even though no cross-Space leak remains. The leak check `not any(OPS_SECRET)` alone is the core gap, and the abstain requirement is a stricter choice. Not a defect today."
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_mask_envelope.py",
+   "plain_run": "8 xfailed, 1 warning in 19.12s",
+   "runxfail_run": "8 failed, 1 warning in 17.50s",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_ask_abstain_receipt_why_is_masked_like_assumptions",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_cascade_encoding_source_cards_are_masked_like_the_trace",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_xlsx_export_masks_the_audit_receipt_like_sql_used",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_bi_export_masks_the_audit_receipt_like_sql_used",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_verified_query_ledger_payload_masks_sql_like_the_envelope",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": false,
+     "problem": "Mechanically sound: controls run first via control()/require_envelope (ControlFailed), the gap assertion at line 360 fails with the intended AssertionError, and the test passes under a simulated masked-ledger fix. Caveat for the orchestrator: the gap assertion is on the LedgerAppendRequest payload DMS hands to Cortex, not on rendered text, rows, badge or status. The user-visible parts (envelope sql_used masked, rows present) are only controls. No DMS UI/route renders that payload (audit.py returns ledger_ref pointers only), and dms_core.pii.mask_payload documents its scope as customer-visible fields. The premise that the ledger entry must hold masked SQL is supported only by the matrix G5 wording (the envelope and the record), not by CLAUDE.md or code; a build that keeps raw SQL in an access-controlled ledger would also be a legitimate design. Treat as a policy-dependent gap and route to prd-agent before it is cited as a defect."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_mcp_ask_ledger_payload_masks_sql_like_the_envelope",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": false,
+     "problem": "Mechanically sound: control checks on the MCP route (HTTP 200, ok true, L0_CERTIFIED, masked sql_used, Cortex handed the real SQL, exactly one ask.verified_query append) all precede the gap assertion at line 394, which fails with the intended AssertionError. Same caveat as the verified-query test: the gap assertion is on the ledger payload (not user-visible output), and the premise that the ledger entry must be masked is a policy call not stated in CLAUDE.md. It is also the same defect as the verified-query test reached through a different route, since both go through Executor._ledger_verified_query."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_generative_insights_sql_ledger_payload_masks_sql_like_the_envelope",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": false,
+     "problem": "Mechanically sound: the control asserts HTTP 200, L2_VALIDATED, route generated, masked envelope sql_used and a single ask.generated_ontology append, then the gap assertion at line 426 fails with the intended AssertionError. The compute_insights stand-in is attached to the fake and is reached, since the generated route control passes. Same caveat as the other ledger tests: the gap assertion is on the Cortex ledger payload, not rendered output, and the masked-ledger premise is not stated in CLAUDE.md. This is the most realistic of the three, because a model-written SELECT can lift a literal from the question."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_envelope.py::test_engine_error_detail_is_masked_like_an_answer",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_mask_surfaces.py",
+   "plain_run": "5 xfailed, 1 warning in 9.78s",
+   "runxfail_run": "5 failed, 1 warning in 8.84s",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_surfaces.py::test_library_and_mcp_previews_return_personal_values_raw",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_surfaces.py::test_drillthrough_rows_come_back_unmasked",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_surfaces.py::test_insights_routes_return_cortex_payload_unmasked",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_surfaces.py::test_drillthrough_cortex_422_is_an_empty_success_not_a_named_failure",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING nit, test is sound: the gap predicate `named` accepts only status>=400 with detail as a dict carrying `code` or a non-empty str. A fix that re-raises Cortex's 422 as HTTP 422 with FastAPI's list-shaped detail would not satisfy it (XFAIL would persist). Matches this repo's own 502 {code, message} convention, so acceptable."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_mask_surfaces.py::test_drillthrough_drops_the_cap_and_approximate_flags",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_exports.py",
+   "plain_run": "2 xfailed, 1 warning in 5.64s",
+   "runxfail_run": "2 failed, 1 warning in 6.73s (both AssertionError at the gap assertion: line 171 for test 1, line 223 for test 2; neither is ControlFailed)",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_exports.py::test_export_routes_restate_an_answer_this_app_never_issued",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Fails today for the intended reason, but it can flip for the wrong reason. Under --runxfail it fails at line 171 with AssertionError 'export restated an envelope this app never issued: export.xlsx -> HTTP 200 (Cover badge L0_CERTIFIED), export.bi -> HTTP 200 (table [{region: KL, revenue: 9999999}])', after four controls pass (the control ask is L1_GOVERNED_METRIC with rows, and xlsx and BI both return 200 and restate it). The assertion is on HTTP status only; the invented badge and figure appear in the failure text, not in the assert. Weakness: the forged envelope is incomplete. I ran assert_envelope_valid on it in-process and it fails with 'E3: non-abstain requires sql_used'. The forgery also lacks audit_id, text and sources. So a build that only wires envelope-completeness validation into the export routes (no provenance tie) would refuse the forgery with a 4xx and strict-xfail would report XPASS, 'gap closed'. Meanwhile a deep-copy of the real asked envelope with one row value changed to 9999999 still exports 200 on both routes today (I verified), with the L1 badge and audit_id intact, so the provenance gap would remain open. Recommended: build the forgery by deep-copying `asked` and changing answer_id and the figure (a complete, shape-valid envelope), and optionally add a tampered-copy variant. Minor: asserting 4xx only means a build that labels or downgrades the forged export instead of refusing would still fail this test."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_exports.py::test_bi_export_of_a_demo_fallback_answer_says_it_is_demo",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound for the failure today: the controls pass first and the failure is at line 223, 'export.bi restated demo-fallback figures [{metric: total_revenue, revenue_myr: 25654.5}] (envelope ask_mode=demo, demo_fallback_used=True) with no demo marker'. The log confirms the ask took the demo fallback ('live ask failed (submit_failed); demo fallback'). The controls check ask_mode demo, demo_fallback_used, the banner flag and rows, then xlsx 200 with Cover ask_mode=demo, then BI 200 with ok and table equal to the rows. The assertion is on the BI output the user pastes (response body and Power Query M header). I confirmed the real BI output has no demo wording anywhere: the M header is the static two lines and the Superset stub has only status, blocked, needs_you and filename. Caveat on flip-fidelity: the marker detector _demo_markers is narrow. It only accepts the keys ask_mode, demo_fallback_used or demo_fallback_banner with value 'demo' or True, or a '//' comment line in power_query_m that contains 'demo'. A correct fix that labels the export elsewhere (text in needs_you, a differently named key such as data_label or warning, the Superset table_name or description, or a non-comment M line) would stay XFAIL and hide that the gap closed. Also, a fix that blocks demo exports with a 4xx would raise ControlFailed on the 'BI export: HTTP 200' control rather than XPASS; that is loud and acceptable but needs a human edit. Redundant but harmless: assert_envelope(env) after require_envelope."
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_xlsx_orch.py",
+   "plain_run": "4 xfailed, 1 warning in 4.93s (0 failed, 0 error)",
+   "runxfail_run": "4 failed, 1 warning in 5.08s (all four are AssertionError raised at the gap assertion: lines 203, 268, 377, 475; no ControlFailed, KeyError, 404 or import error)",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_xlsx_orch.py::test_crosscheck_text_flags_and_costs_do_not_answer_ok_without_a_named_reason",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Mechanics sound. Controls 0/1/2 all use control() and pass before the gap request (403 gate_unavailable; clean workbook gives oracle ontime_count 2, total 3, avg 300.0; no-OnTime-header workbook gives a named ontime_col_missing refusal). Under --runxfail it fails at line 203 with the intended message (ok:true, reason 'live', source_oracle null, text_cells.xlsx). Not a typo or wrong-function failure: crosscheck_pack throws away oracle_from_sheets' named no_ontime_rows at packages/core/dms_core/xlsx_orch.py:348. PROBLEM (medium, over-narrow gap assertion): the assertion accepts only (a) ok False, (b) a non-empty source_oracle.reason, or (c) a top-level reason other than 'live'. A fix that cures the coercion itself (G4 typed ingest: treat 'On Time' as true and strip 'RM ') is a correct build, but it is not accepted. I simulated it by patching core._truthy and core._as_float: crosscheck_pack then returns ok:true, reason 'live', source_oracle {ok:True, avg_cost:295.135, ontime_count:2, total_count:3} with no 'reason' key, and the assertion expression evaluates False. So the strict xfail would not flip to XPASS for the coercion fix, and the gap would silently stay 'open'. A fix that abstains but names the reason under another key (for example a top-level oracle_reason or warnings field with ok:true and source_oracle null) also fails the assertion. Suggested widening, not applied: also pass when source_oracle is a dict with ok True and ontime_count == 2 (avg about 295.135)."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_xlsx_orch.py::test_golden_zero_average_is_not_replaced_by_the_nearest_cell",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound. Controls pass via control(): 403 gate_unavailable, correct workbook gives ok True / frtr_golden, and a wrong non-zero average (12.34) gives golden_miss with avg_cost 12.34 even though the 300.27 chart cell is present. That last control isolates the falsy-zero fishing as the trigger. Under --runxfail it fails at line 268 on 'assert body.get(\"ok\") is False' with body ok True, reason frtr_golden, avg_cost 300.27. I confirmed the 0 cell round-trips through write_xlsx_sheets and parse_xlsx_grids as 0, not dropped (a dropped cell would reach the same nearest-cell path for a different reason). I also ran evaluate_frtr_golden with the real constants (184005 / 200000) on in-memory grids: ok True / frtr_golden / 300.27, so the docstring claim about the real-size run holds. The monkeypatch of core.FRTR_ONTIME and FRTR_TOTAL is effective because the globals are read at call time. A correctly gated build (labeled 0 refused as golden_miss) passes the assertion, so it is not a tautology."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_xlsx_orch.py::test_one_space_cannot_read_or_copy_another_spaces_stored_workbook",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound, with minor notes. Controls pass via control(): 403 gate_unavailable; an outside-root path gives path_not_allowlisted; FINANCE stores its own workbook under a FINANCE path; WAREHOUSE_OPS stores and re-extracts its own workbook without FINANCE's label. Under --runxfail it fails at line 377 with the intended leaks: extract copied FINANCE's file into space_docs/WAREHOUSE_OPS/xlsx_orch/p9/finance_result.xlsx, both extract and golden returned the 'finance only q3 margin' label, and golden returned golden_miss (graded) for WAREHOUSE_OPS. Both status codes are checked < 500 first, so a crash cannot be absorbed. The assertion checks response bodies and the on-disk copy and would pass on a build that refuses (ok False or 403, no copy, no label). Minor notes, not blocking. (1) The controls post the source from tmp_path/inputs, which is outside any space_docs/<space> tree, which matches existing tests/test_xlsx_orch.py, so only an unusually strict fix would turn control 2 into a ControlFailed. (2) space_id is caller-supplied in the request body, so the 'cross-Space' framing assumes the request's space_id is the authority. That is a judgement about the matrix row, not a test defect."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_xlsx_orch.py::test_workbook_labels_and_headers_are_masked_in_the_response",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound. Controls pass via control(): 403 gate_unavailable; mask_payload masks the IC (DMSMASK_ present, raw IC absent), so a leak is the route's omission; extract is ok / stored with analysis_numbers containing 4521.5 and 300.27 and export_row_count 2; crosscheck is ok with oracle ontime_count 2 and avg 300.0; golden on the stored path is golden_miss and still carries 4521.5. Under --runxfail it fails at line 475 with the raw IC 900101-14-5566 present in all three bodies (extract analysis_labeled key, crosscheck source_oracle.cost_col 'Spend IC ...', golden analysis_labeled key). The 'Spend' header is correct, because _COST_COL matches spend and the control proves the oracle ran. The assertion is on rendered response JSON, and a masking fix passes it without disturbing the numeric controls. No tautology found. One non-blocking observation: the response returns the caller's own workbook labels to the same caller, so the severity of the G5 row is a PRD question, not a test defect."
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_lanes.py",
+   "plain_run": "4 xfailed, 1 warning in 13.44s (the warning is a Starlette httpx deprecation notice; 0 failed, 0 error)",
+   "runxfail_run": "4 failed, 1 warning in 12.92s (each fails with AssertionError on the gate assertion at lines 188, 240, 338, 413; result was identical across three runs)",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_lanes.py::test_bronze_sheet_sum_does_not_silently_drop_an_unparseable_cell",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound for 'fails today': under --runxfail it fails at line 188 with L0_CERTIFIED, Electronics=1800.0 (1000+800, 'RM 1200' dropped), text 'Found 3 row(s)...', assumptions only 'hanging/blank measure rows dropped'. Controls (clean sheet exact, fixture VARCHAR premise) run first and raise ControlFailed. I also printed the envelope: audit_receipt.exclude.why says 'N/A: ... none excluded', which is false for the dirty sheet, so the gap is real. Two weaknesses for the fixed build. (1) The 'abstains' branch of the gap assertion is unreachable: line 183 is control(env['route']=='bronze_sheet' and env['rows'], ...). assert_envelope_valid E13 forces an abstained envelope to have rows == [] (include.row_count must be 0 and equal len(envelope.rows)). A fix that abstains therefore raises ControlFailed (hard FAILED) instead of passing or XPASSing, although the docstring comment lists abstaining as a correct outcome. Line 183 should require only route/status and rows only when not abstained. (2) _DROP_NOTICE is narrow: it needs a drop word within 60 chars of a standalone '1'. I probed it: 'Excluded one non-numeric cell', 'The total covers 6 of 7 rows; row 3 (RM 1200) is non-numeric and excluded', 'A text cell RM 1200 was ignored', 'dropped 1.0 rows', '1 value could not be parsed' all return False. A disclosure-style fix worded like that leaves the test in XFAIL (strict xfail cannot flag it), so the gap would stay open in CI after being fixed. Minor: the failure message says it 'says nothing about the one cell', but a generic always-present 'rows dropped' assumption exists; the test handles this correctly by requiring a count of 1 and calibrating on the clean sheet."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_lanes.py::test_bronze_sheet_l0_is_certified_through_a_cortex_submit_and_ledger_entry",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_lanes.py::test_steward_registered_fanout_join_is_not_served_as_a_certified_figure",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound. Fails at line 338: L0_CERTIFIED served WH-A=14410.0 and WH-B=36365.0 against oracle 7205.0 and 18182.5, registration accepted with 200. The oracle comes from execute_sql on the seed, not from the lane. Controls run first (fixture premise that the join doubles WH-A only, single-table VQ registered and served at L0 with exact rows, one SQL submit and one ask.verified_query ledger append). Both fixed-build outcomes are reachable: abstain, or serve the true figures. A 400/422 refusal at registration returns early and strict xfail then reports XPASS. Minor robustness only: a correct registration refusal with 403/409 would hit control(reg.status_code == 200 ...) and raise ControlFailed rather than pass. The registration goes to the harness tmp warehouse, not the repo data/ dir."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_lanes.py::test_zero_match_filter_that_returns_one_null_aggregate_row_is_not_a_confident_answer",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Sound. Fails at line 413 with L2_VALIDATED, rows=[{'total': None}], values=[row_count 1.0], text 'Total quantity of BETA in stock.' Premises are checked against the real seed: BETA gives [{'total': None}] and SKU-BETA gives [{'total': 900.0}]. Control 1 (SKU-BETA gives L2 with 900.0) and control 2 (same SQL with rows=[] abstains with 'No matching rows') both run first. The hard-rule-12 net in envelope.py only tests 'not rows_out', which a single NULL aggregate row passes, so this is a different function refusing for the same intended reason, not a typo. assert_envelope(env) runs before the assertion. Minor: the stand-in engine text carries no figure, so only the green-badge half of 'plausible number + green badge' is exercised."
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_generative_doc.py",
+   "plain_run": "5 xfailed, 1 warning in 16.13s (0 failed, 0 error)",
+   "runxfail_run": "5 failed, 1 warning in 15.31s (every failure is a plain AssertionError at the gap assertion: lines 214, 288, 383, 432, 506; no ControlFailed, KeyError, ImportError or HTTP error)",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_generative_doc.py::test_insights_sql_over_a_lake_whose_ontology_failed_verify_abstains",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING, test is sound. Verified by probe: runxfail fails at line 214 with badge=L2_VALIDATED, 4 rows, total 25654.5 vs true outbound 30654.5 (orphan value dropped). Three controls (clean L2 answer, fk_intact on lot_from_supplier is the ONLY violation so the 3-item truncation in violation_reason cannot hide it, typed plan abstains ontology_unverified) all precede the gap and raise ControlFailed. I emulated a correct gate (maybe_generative_ask with ontology=demo_ontology) on the same orphan lake: it returns ABSTAIN, rows [], text containing both 'ontology_unverified' and 'lot_from_supplier', zero submits, so every gap assertion is satisfiable by the existing A2-02 gate. Two caveats for the reader. (1) generative_ask.py:1098-1101 and load_verified_ontology's docstring say dropping the default demo ontology on failure is deliberate (BIRD/live lakes keep answering SQL; tests/test_a2_02_declared_ontology_refuses_sql.py::test_no_declared_ontology_keeps_answering_sql locks it in on a non-demo lake), so this gap is a policy claim that the demo lake, which that ontology was written for, should not follow that exception. (2) The typed-plan lane on this same lake abstains with bare 'ontology_unverified' (no link name), so a fix that only matches that lane closes the abstain but still fails the 'lot_from_supplier' assert and stays a silent xfail under strict mode."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_generative_doc.py::test_keep_gt_rows_shown_are_what_the_displayed_and_ledgered_sql_returns",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_generative_doc.py::test_doc_answer_with_an_uncited_bare_integer_total_is_demoted",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_generative_doc.py::test_doc_abstain_with_an_empty_engine_answer_names_a_reason",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "Fails for the intended AssertionError (customer reads 'Abstained.') but is mis-scoped and should not be accepted as written. (a) It is not a doc-retrieval gate and not the E9 gap: the gap request is route='abstain' with no sources, and a probe shows the identical 'Abstained.' text for answer='' under route='doc_rag' and under an unrelated question ('How many unicorns do we have?'), so it is just the generic 'text = resp.answer or \"Abstained.\"' fallback at dms_executor/__init__.py:951. Yet it carries the same gap_id 'e9-bare-integer-uncited-in-doc-lane' as the previous test, so when the E9 gap closes and that test is unmarked, this one stays as a mislabelled xfail. (b) Its control is not a sibling of the failing path: the control proves the E9 figure-demotion text, a different branch from the empty-answer fallback, so it cannot show the fixture is sound for the gap. (c) The premise that the engine sends an empty answer is invented: the repo's own doc-RAG fake (tests/test_rag_ask_boundary_envelope.py:35-41) models the no-hit abstain as answer='Abstained.' coming from the ENGINE, which this test would not catch and a DMS-side fix for empty strings would not change. (d) The assertion is weak: text.rstrip('.').lower() != 'abstained' passes on 'Abstained!' or any trivial rewording, so it does not require a reason to be named. Recommend dropping it, or re-scoping as a UX finding with its own gap_id, evidence of real Cortex output, and an assertion that names a reason."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_generative_doc.py::test_space_refusal_envelope_carries_served_attribution",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    }
+   ],
+   "product_files_modified": []
+  },
+  {
+   "file": "E:/DMS-wt/gate-matrix/tests/gate_matrix/test_gap_demo_flags.py",
+   "plain_run": "9 xfailed, 1 warning in 23.83s",
+   "runxfail_run": "9 failed, 1 warning in 19.73s",
+   "tests": [
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_serves_revenue_to_a_space_with_no_transactions_grant[demo_mode]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: the gap assertion is sound. Under --runxfail it fails with AssertionError at line 181 (HTTP 200 badge=L2_VALIDATED text='Total outbound revenue was RM 25,654.50.' rows=[...]). It also XPASSes (strict) under a simulated fix, so it is not a tautology. Weakness: CONTROL 1 ('the live lane enforces the Space grant ... customer gets an ABSTAIN') is not evidence of grant enforcement. The ABSTAIN comes from RecordingCortex's canned default ('Cannot answer from this Space.'). I verified Finance, which does hold transactions, gets the identical abstain from the live lane. The only real signal in that control is the bound-manifest check (Warehouse Ops row_predicates = inventory, locations, shipments; Finance = inventory, locations, suppliers, transactions). The comment overclaims and should say the manifest differs, not that the live lane refuses."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_serves_revenue_to_a_space_with_no_transactions_grant[no_cortex_fallback]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: same as the [demo_mode] case. The gap is real (fails at line 181 with AssertionError). CONTROL 2 asserts ask_mode == 'demo' after app.state.cortex = None, so the lane really is the no-Cortex fallback. CONTROL 1's live-lane abstain is the fake's default response, not grant enforcement."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_answers_a_year_with_no_data_with_the_all_time_total[demo_mode]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "MINOR: sound. Fails with AssertionError at line 233 (text 'RM 25,654.50', values [v_rev 25654.5]). Controls are real: zero 2099 rows, predictive ask abstains on the demo lane, and the unqualified ask returns the all-time figure in the same format. XPASSes (strict) under a simulated fix. The gap assertion demands abstained=True, badge ABSTAIN and no values, so an honest 'RM 0.00' answer would never close the gap. That matches the repo convention (zero-match demoted to ABSTAIN), so only worth a note."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_demo_lane_answers_a_year_with_no_data_with_the_all_time_total[no_cortex_fallback]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": ""
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_an_unscreened_policy_refusal_with_demo_numbers[manifest_malformed]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: the gap assertion is correct. Under --runxfail it fails with AssertionError at line 288 ('assert (200 == 403)', demo envelope L2_VALIDATED RM 25,654.50). CONTROL 1 (flag off gives 403 with this code) proves the injected error classifies correctly. It XPASSes (strict) when the code is added to _POLICY_CODES. Two control weaknesses. (a) CONTROL 2 is described as 'a screened policy code (path_not_allowed) is refused', but path_not_allowed never reaches the _POLICY_CODES screen: chat.py:317 returns the Space-boundary ABSTAIN envelope first. I verified that with _POLICY_CODES monkeypatched to an empty frozenset, all 3 cases still pass every control and XFAIL. So no control proves the screen works. A code that does hit it, such as statement_not_allowed or manifest_expired, returns 403 with the flag on (verified). (b) The controls and the gap assertion do not depend on the question. With REVENUE_Q replaced by 'hello there' the test still XFAILs at 200 vs 403, so 'converted to demo numbers' is only visible in the failure message, not asserted."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_an_unscreened_policy_refusal_with_demo_numbers[sql_not_analyzable]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: same as [manifest_malformed]. The gap assertion is correct (fails at line 288 with 200 == 403). CONTROL 2 uses path_not_allowed, which is intercepted before the _POLICY_CODES screen, so it does not exercise the screen."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_an_unscreened_policy_refusal_with_demo_numbers[manifest_not_yet_valid]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "NON-BLOCKING: same as [manifest_malformed]. The gap assertion is correct (fails at line 288 with 200 == 403). CONTROL 2 does not exercise the _POLICY_CODES screen."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_a_failed_live_attempt_with_demo_numbers[verified_query_submit_refused]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "MINOR: sound and the strongest of the four. Control 1 shows the same path_not_allowed refusal through the ask path is refused with the flag on. Control 2 shows the steward SQL really reaches Cortex.submit once and gives a named 503 with the flag off. The SubmitError really is a plain Exception (manifest.py:227), not an AskServiceError. Fails at line 416 with AssertionError. The final assertion is the weak negative 'not (200 and abstained is False)', so any non-200 response, including an unnamed 500, would close the gap although the gap id says 'named abstain'. Applies to both params."
+    },
+    {
+     "node_id": "tests/gate_matrix/test_gap_demo_flags.py::test_fallback_flag_answers_a_failed_live_attempt_with_demo_numbers[envelope_invariant_E7]",
+     "control_passed_before_gap_assert": true,
+     "fails_on_gap_assertion": true,
+     "asserts_user_visible_output": true,
+     "problem": "SEMANTIC CONCERN, mechanically sound: this variant fails at line 416 with AssertionError after real controls. A valid engine answer is served live, the E7 violation gives a named 503 with the flag off, and the injected answer reaches Cortex.ask. XPASSes (strict) under a simulated fix. But unlike the verified-query case it has no control showing a sibling failure is refused with the flag on, and the behaviour it calls a gap is the documented design of chat.py:336-340. Any non-policy failure falls back to demo with the flag on; I verified a submit_failed AskServiceError gets the same 200 demo envelope. That envelope is bannered (demo_fallback_used=True, demo_fallback_banner=True, assumptions say 'not a live Cortex answer'), and hard rule 11 only forbids an unbannered fallback. The assertion ignores the banner. It asserts 'no demo fallback on any live failure', not 'refusals are not masked'. gate-matrix.md item 6 lists it as a gap, so it may be intended, but it needs a PRD or founder decision rather than being presented as the same defect as the other three."
+    }
+   ],
+   "product_files_modified": []
+  }
+ ],
+ "writersFailed": []
+}
