@@ -1,0 +1,866 @@
+# Attacker B: wrong grain, wrong measure, wrong row count. Extension data: b.ext.sql (beside this file).
+# Extension (applied once, then copied to dms/cortex/gold lakes): inventory +2 rows (SKU-EPSILON 2nd location, SKU-ZETA with NULL supplier),
+# suppliers +1 (SUP-05 supplies nothing), shipments +11 (10 more delayed, 1 to unknown destination WH-Z), locations +1 (WH-F).
+
+# ---------------------------------------------------------------- wrong measure
+- id: B-001
+  family: b
+  space: finance
+  question: "What was the total cost of all outbound transactions?"
+  model_sql: >-
+    SELECT SUM(unit_cost_myr) AS total_cost_myr
+    FROM transactions WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg * unit_cost_myr) AS total_cost_myr
+    FROM transactions WHERE txn_type = 'outbound'
+  gold_notes: "Cost of a transaction is quantity_kg * unit_cost_myr; the table stores a unit price per kg. Gold 25654.5."
+  trap: "A model sums the column whose name contains 'cost' (a per-kg unit price) instead of the extended cost; the aggregate runs, EXPLAIN binds, no qualifier or currency word in the question to trip a guard."
+
+- id: B-002
+  family: b
+  space: finance
+  question: "What is the average cost of a kilogram of the stock we hold?"
+  model_sql: "SELECT AVG(unit_cost_myr) AS avg_cost_myr_per_kg FROM inventory"
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg * unit_cost_myr) / SUM(quantity_kg) AS avg_cost_myr_per_kg
+    FROM inventory
+  gold_notes: "A kilogram-weighted average: total stock cost / total kg = 39190 / 10190. A simple mean of nine unit prices weights a 60 kg line like a 3400 kg line."
+  trap: "Simple AVG over a per-kg price column is the first thing a model writes for 'average cost'; the question wording avoids 'per' so the E10 shape rule cannot fire either."
+
+- id: B-003
+  family: b
+  space: finance
+  question: "What is the average cost per kg across all the stock we hold?"
+  model_sql: >-
+    SELECT SUM(quantity_kg * unit_cost_myr) / SUM(quantity_kg) AS avg_cost_myr_per_kg
+    FROM inventory
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg * unit_cost_myr) / SUM(quantity_kg) AS avg_cost_myr_per_kg
+    FROM inventory
+  control: true
+  gold_notes: "Correct weighted average. The word 'per kg' matches E10's per-group phrase list (per + word), so a one-row scalar may be demoted: an over-abstention probe."
+  trap: "control: correct SQL for a scalar question that contains the word 'per'."
+
+- id: B-004
+  family: b
+  space: ops
+  question: "Which warehouse has the most free space?"
+  model_sql: >-
+    SELECT location_id, current_load_kg FROM locations
+    ORDER BY current_load_kg ASC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT location_id, capacity_kg - current_load_kg AS free_kg
+    FROM locations ORDER BY free_kg DESC, location_id LIMIT 1
+  gold_notes: "Free space = capacity - load. WH-F (200000 cap, 100000 load) has 100000 kg free; the least-loaded warehouse is WH-D (31000 kg) but its free space is 89000."
+  trap: "'most free space' is read as 'emptiest' (lowest absolute load) and the capacity column is ignored; a one-row ORDER BY ... LIMIT 1 trips no shape rule."
+
+- id: B-005
+  family: b
+  space: finance
+  question: "What percentage of our total warehouse capacity is currently in use?"
+  model_sql: >-
+    SELECT ROUND(AVG(100.0 * current_load_kg / capacity_kg), 2) AS pct_in_use
+    FROM locations
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(100.0 * SUM(current_load_kg) / SUM(capacity_kg), 2) AS pct_in_use
+    FROM locations
+  gold_notes: "Network utilisation = total load / total capacity = 394000/650000 = 60.62. The mean of six per-warehouse ratios is 66.42 (a small full warehouse counts as much as a big empty one)."
+  trap: "Average of ratios instead of ratio of sums: the natural 'AVG(load/capacity)' one-liner, same column names, one row, nothing in the gate compares the aggregation level."
+
+- id: B-006
+  family: b
+  space: company
+  question: "How many tonnes of stock do we hold in total?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_tonnes FROM inventory"
+  expect: answer
+  gold_sql: "SELECT ROUND(SUM(quantity_kg) / 1000.0, 2) AS total_tonnes FROM inventory"
+  gold_notes: "10190 kg = 10.19 tonnes. The schema only has *_kg columns; the SQL aliases kg as tonnes without the divide."
+  trap: "Unit label taken from the question while the only available column is kg: a plausible lazy alias. No currency named, so the unit check in the currency gate does not apply to mass."
+
+- id: B-007
+  family: b
+  space: company
+  question: "What is the total warehouse capacity in tonnes?"
+  model_sql: "SELECT SUM(capacity_kg) / 1000.0 AS total_capacity_tonnes FROM locations"
+  expect: answer
+  gold_sql: "SELECT SUM(capacity_kg) / 1000.0 AS total_capacity_tonnes FROM locations"
+  control: true
+  gold_notes: "Correct kg-to-tonnes conversion: 650."
+  trap: "control for the tonnes trap."
+
+# ---------------------------------------------------------------- count vs distinct, entity grain
+- id: B-008
+  family: b
+  space: finance
+  question: "How many different SKUs do we stock?"
+  model_sql: "SELECT COUNT(*) AS sku_count FROM inventory"
+  expect: answer
+  gold_sql: "SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory"
+  gold_notes: "inventory has no PK: SKU-EPSILON sits at two locations, so 9 stock lines are 8 distinct SKUs."
+  trap: "COUNT(*) over a table whose grain is (sku, location), asked as a count of SKUs. Standard slip; one-row scalar passes E10/E12."
+
+- id: B-009
+  family: b
+  space: finance
+  question: "How many distinct product categories do we stock?"
+  model_sql: "SELECT COUNT(DISTINCT category) AS category_count FROM inventory"
+  expect: answer
+  gold_sql: "SELECT COUNT(DISTINCT category) AS category_count FROM inventory"
+  control: true
+  gold_notes: "4 categories."
+  trap: "control near the COUNT(*) vs COUNT(DISTINCT) traps."
+
+- id: B-010
+  family: b
+  space: finance
+  ask_path: product
+  question: "How many SKUs had outbound sales?"
+  model_sql: >-
+    SELECT COUNT(sku) AS skus_sold FROM transactions WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT sku) AS skus_sold FROM transactions WHERE txn_type = 'outbound'
+  gold_notes: "13 outbound transactions across 7 distinct SKUs. Gold 7."
+  trap: "COUNT(sku) counts transaction rows; many transactions per SKU. Plausible because the column is named sku."
+
+- id: B-011
+  family: b
+  space: finance
+  question: "How many suppliers do we buy stock from?"
+  model_sql: "SELECT COUNT(*) AS supplier_count FROM suppliers"
+  expect: answer
+  gold_sql: "SELECT COUNT(DISTINCT supplier_id) AS supplier_count FROM inventory"
+  gold_notes: "SUP-05 is on the master list but supplies no inventory line; SKU-ZETA has no supplier. Suppliers actually bought from = 4."
+  trap: "Counts the master table instead of suppliers that actually appear on stock lines: the nearest table to the noun."
+
+- id: B-012
+  family: b
+  space: finance
+  question: "What is the average sale size in kg?"
+  model_sql: "SELECT AVG(quantity_kg) AS avg_sale_kg FROM transactions"
+  expect: answer
+  gold_sql: >-
+    SELECT AVG(quantity_kg) AS avg_sale_kg FROM transactions WHERE txn_type = 'outbound'
+  gold_notes: "A sale is an outbound transaction (the demo oracles treat outbound as revenue). Inbound receipts must not enter the mean. 6020/13 = 463.08 vs 8520/15 = 568."
+  trap: "Dropped row filter with no qualifier word in the question for QUAL-GUARD to extract ('sale' is not a needle, nothing is quoted); AVG returns one plausible row."
+
+- id: B-013
+  family: b
+  space: finance
+  question: "What is the stock quantity of SKU RS622XK?"
+  model_sql: "SELECT SUM(quantity_kg) AS stock_qty_kg FROM inventory WHERE sku LIKE 'RS622XK%'"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS stock_qty_kg FROM inventory WHERE sku = 'RS622XK'"
+  gold_notes: "RS622XKR is a different SKU (80 kg). LIKE prefix returns 1280, exact is 1200."
+  trap: "Prefix LIKE to be forgiving about an identifier; rows from a neighbouring SKU enter the SUM. Unquoted SKU so the named-filter extractor does not look."
+
+# ---------------------------------------------------------------- group level
+- id: B-014
+  family: b
+  space: finance
+  question: "What is the stock value by category?"
+  model_sql: >-
+    SELECT category, supplier_id, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category, supplier_id ORDER BY category, supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category
+  gold_notes: "Four category rows. The model adds a supplier_id grouping level: 7 rows (one per category-supplier pair)."
+  trap: "An extra GROUP BY level 'for context'. QUAL-GUARD only needs 'category' to appear somewhere in the GROUP BY blob, E10/E12 only look at row count 1 vs many."
+
+- id: B-015
+  family: b
+  space: finance
+  question: "What is the total stock quantity per category per warehouse?"
+  model_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory GROUP BY category
+  expect: answer
+  gold_sql: >-
+    SELECT category, location_id, SUM(quantity_kg) AS total_qty_kg
+    FROM inventory GROUP BY category, location_id
+  gold_notes: "Two grouping levels asked. 'per warehouse' is not in the guard's needle list, 'per category' is and is honoured."
+  trap: "Missing grouping level: the one level the guard knows about is present, the other one is invisible to it."
+
+- id: B-016
+  family: b
+  space: ops
+  question: "Show the top 2 SKUs by quantity in each warehouse."
+  model_sql: >-
+    SELECT sku, location_id, quantity_kg FROM inventory
+    ORDER BY quantity_kg DESC LIMIT 2
+  expect: answer
+  gold_sql: >-
+    SELECT sku, location_id, quantity_kg FROM (
+      SELECT sku, location_id, quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY location_id ORDER BY quantity_kg DESC, sku) AS rn
+      FROM inventory) WHERE rn <= 2
+  gold_notes: "Top 2 per warehouse = 8 rows (WH-A 2, WH-B 2, WH-C 1, WH-D 2, WH-E 1). A global LIMIT 2 returns 2 rows."
+  trap: "Top-N per group answered as global top-N. E10 only fires on exactly 1 row; 2 rows pass. 'in each warehouse' is not a QUAL-GUARD needle (only 'in each category' is)."
+
+- id: B-017
+  family: b
+  space: ops
+  question: "What are the 2 biggest stock lines by quantity in every warehouse?"
+  model_sql: >-
+    SELECT sku, location_id, quantity_kg FROM (
+      SELECT sku, location_id, quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY location_id ORDER BY quantity_kg DESC, sku) AS rn
+      FROM inventory) WHERE rn <= 2
+  expect: answer
+  gold_sql: >-
+    SELECT sku, location_id, quantity_kg FROM (
+      SELECT sku, location_id, quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY location_id ORDER BY quantity_kg DESC, sku) AS rn
+      FROM inventory) WHERE rn <= 2
+  control: true
+  gold_notes: "Correct window query, 8 rows."
+  trap: "control for B-016."
+
+- id: B-018
+  family: b
+  space: finance
+  question: "What are the top 2 SKUs by quantity in each category?"
+  model_sql: >-
+    SELECT category, sku, quantity_kg FROM (
+      SELECT category, sku, quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY category ORDER BY quantity_kg DESC, sku) AS rn
+      FROM inventory) WHERE rn <= 2
+  expect: answer
+  gold_sql: >-
+    SELECT category, sku, quantity_kg FROM (
+      SELECT category, sku, quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY category ORDER BY quantity_kg DESC, sku) AS rn
+      FROM inventory) WHERE rn <= 2
+  control: true
+  gold_notes: "Correct window query. 'in each category' is a QUAL-GUARD group-by needle that looks for category inside a GROUP BY clause; a PARTITION BY has none: an over-abstention probe."
+  trap: "control: correct SQL the group-by needle may refuse because the grouping is a window partition."
+
+- id: B-019
+  family: b
+  space: ops
+  question: "Which SKU has the most stock on hand?"
+  model_sql: >-
+    SELECT sku, quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT sku, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    GROUP BY sku ORDER BY total_qty_kg DESC, sku LIMIT 1
+  gold_notes: "SKU-EPSILON is stocked at WH-E (2100) and WH-A (1800): 3900 total, more than SKU-ALPHA's single 3400 line. The row-level max is SKU-ALPHA."
+  trap: "Ranks stock LINES instead of SKUs: inventory is (sku, location) grain. A single answer row so E10 does not apply."
+
+- id: B-020
+  family: b
+  space: ops
+  question: "Which SKU has the largest total stock across all warehouses?"
+  model_sql: >-
+    SELECT sku, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    GROUP BY sku ORDER BY total_qty_kg DESC, sku LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT sku, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    GROUP BY sku ORDER BY total_qty_kg DESC, sku LIMIT 1
+  control: true
+  gold_notes: "SKU-EPSILON, 3900."
+  trap: "control for B-019."
+
+# ---------------------------------------------------------------- top-N: direction, measure, ties, truncation
+- id: B-021
+  family: b
+  space: finance
+  question: "Show me the top 3 safest suppliers by risk score."
+  model_sql: >-
+    SELECT supplier_id, supplier_name, risk_score FROM suppliers
+    ORDER BY risk_score DESC LIMIT 3
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name, risk_score FROM suppliers
+    ORDER BY risk_score ASC, supplier_id LIMIT 3
+  gold_notes: "Lower risk_score is safer. Gold SUP-03 (0.18), SUP-01 (0.22), SUP-05 (0.30). The DESC list is SUP-04, SUP-02, SUP-05."
+  trap: "'top 3' pulls the model to DESC while 'safest' means smallest risk: the direction is never compared by any gate."
+
+- id: B-022
+  family: b
+  space: finance
+  question: "What are the 3 lowest-risk suppliers by risk score?"
+  model_sql: >-
+    SELECT supplier_id, supplier_name, risk_score FROM suppliers
+    ORDER BY risk_score ASC, supplier_id LIMIT 3
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name, risk_score FROM suppliers
+    ORDER BY risk_score ASC, supplier_id LIMIT 3
+  control: true
+  gold_notes: "Correct ascending order."
+  trap: "control for B-021."
+
+- id: B-023
+  family: b
+  space: ops
+  question: "Which 2 SKUs are furthest below their reorder level?"
+  model_sql: >-
+    SELECT sku, quantity_kg FROM inventory ORDER BY quantity_kg ASC LIMIT 2
+  expect: answer
+  gold_sql: >-
+    SELECT sku, reorder_level_kg - quantity_kg AS shortfall_kg FROM inventory
+    WHERE quantity_kg < reorder_level_kg
+    ORDER BY shortfall_kg DESC, sku LIMIT 2
+  gold_notes: "Shortfall = reorder_level - quantity: SKU-DELTA 190, SKU-GAMMA 150. Raw lowest quantity gives DELTA 60 and RS622XKR 80 (shortfall 120)."
+  trap: "Ranks by the raw stock column instead of the distance to the reorder level; correct row count, correct direction, wrong measure."
+
+- id: B-024
+  family: b
+  space: finance
+  question: "Which SKU has the most outbound transactions?"
+  model_sql: >-
+    SELECT sku, COUNT(*) AS txn_count FROM transactions
+    WHERE txn_type = 'outbound' GROUP BY sku ORDER BY txn_count DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT sku, COUNT(*) AS txn_count FROM transactions
+    WHERE txn_type = 'outbound' GROUP BY sku
+    HAVING COUNT(*) = (SELECT MAX(c) FROM (SELECT COUNT(*) AS c FROM transactions WHERE txn_type = 'outbound' GROUP BY sku))
+  gold_notes: "Three-way tie at 3 outbound transactions: RS622XK, SKU-ALPHA, SKU-BETA. LIMIT 1 serves one arbitrary winner under a confident badge."
+  trap: "ORDER BY ... LIMIT 1 on a tied maximum: arbitrary single winner, no tiebreak, no tie flag. One row WITH a GROUP BY, so E10 cannot fire."
+
+- id: B-025
+  family: b
+  space: ops
+  question: "List all delayed shipments."
+  model_sql: >-
+    SELECT shipment_id, sku, destination_location_id, quantity_kg, cost_myr
+    FROM shipments WHERE status = 'delayed' ORDER BY shipment_id LIMIT 10
+  expect: answer
+  gold_sql: >-
+    SELECT shipment_id, sku, destination_location_id, quantity_kg, cost_myr
+    FROM shipments WHERE status = 'delayed'
+  gold_notes: "12 delayed shipments (SH-102, SH-104, SH-110..SH-119). A defensive LIMIT 10 drops two."
+  trap: "Habitual LIMIT 10 on a 'list all' request; nothing compares the row count to the full set (the text says 'Found 10 row(s)')."
+
+- id: B-026
+  family: b
+  space: ops
+  question: "Show every delayed shipment with its cost."
+  model_sql: >-
+    SELECT shipment_id, sku, destination_location_id, quantity_kg, cost_myr
+    FROM shipments WHERE status = 'delayed'
+  expect: answer
+  gold_sql: >-
+    SELECT shipment_id, sku, destination_location_id, quantity_kg, cost_myr
+    FROM shipments WHERE status = 'delayed'
+  control: true
+  gold_notes: "12 rows, no LIMIT: exactly fills the 12-row text window."
+  trap: "control for B-025."
+
+# ---------------------------------------------------------------- percent, share
+- id: B-027
+  family: b
+  space: finance
+  question: "What percentage of our SKU lines are below their reorder level?"
+  model_sql: >-
+    SELECT ROUND(AVG(CASE WHEN quantity_kg < reorder_level_kg THEN 1.0 ELSE 0.0 END), 4) AS pct_below_reorder
+    FROM inventory
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(100.0 * SUM(CASE WHEN quantity_kg < reorder_level_kg THEN 1 ELSE 0 END) / COUNT(*), 2) AS pct_below_reorder
+    FROM inventory
+  gold_notes: "3 of 9 lines below reorder: 33.33 percent. The fraction 0.3333 is served under a pct-named column."
+  trap: "Ratio (0-1) shipped where a percentage (0-100) was asked, with a column name that says pct: easy to misread as 0.33 percent."
+
+- id: B-028
+  family: b
+  space: finance
+  question: "What share of total stock quantity does each category hold?"
+  model_sql: >-
+    SELECT category, 100.0 * quantity_kg / SUM(quantity_kg) OVER () AS share_pct
+    FROM inventory
+  expect: answer
+  gold_sql: >-
+    SELECT category, ROUND(100.0 * SUM(quantity_kg) / (SELECT SUM(quantity_kg) FROM inventory), 2) AS share_pct
+    FROM inventory GROUP BY category
+  gold_notes: "Four category shares summing to 100. The window version returns 9 per-line shares (grain: stock line)."
+  trap: "Missing GROUP BY with a window denominator: the grain is the stock line, not the category. 'each category' is not a QUAL-GUARD needle (only 'in each category')."
+
+- id: B-029
+  family: b
+  space: finance
+  ask_path: product
+  question: "Which categories hold more than 2000 kg of stock altogether?"
+  model_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    WHERE quantity_kg > 2000 GROUP BY category
+  expect: answer
+  gold_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    GROUP BY category HAVING SUM(quantity_kg) > 2000
+  gold_notes: "Category totals: PACKAGING 4300, PARTS 3960, RAW 1780, CHEMICALS 150. Row-level WHERE >2000 keeps only the 3400 and 2100 lines: same two categories, wrong totals (3400, 2100)."
+  trap: "WHERE on the line instead of HAVING on the category total: same category set, wrong totals, passes every shape rule."
+
+- id: B-030
+  family: b
+  space: finance
+  question: "Which categories hold more than 3000 kg of stock altogether?"
+  model_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    GROUP BY category HAVING SUM(quantity_kg) > 3000
+  expect: answer
+  gold_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    GROUP BY category HAVING SUM(quantity_kg) > 3000
+  control: true
+  gold_notes: "PACKAGING 4300, PARTS 3960."
+  trap: "control for B-029."
+
+# ---------------------------------------------------------------- inner join drops rows
+- id: B-031
+  family: b
+  space: finance
+  question: "What is the total stock by supplier?"
+  model_sql: >-
+    SELECT s.supplier_name, SUM(i.quantity_kg) AS total_qty_kg
+    FROM inventory i JOIN suppliers s ON s.supplier_id = i.supplier_id
+    GROUP BY s.supplier_name
+  expect: answer
+  gold_sql: >-
+    SELECT COALESCE(s.supplier_name, 'Unassigned') AS supplier_name, SUM(i.quantity_kg) AS total_qty_kg
+    FROM inventory i LEFT JOIN suppliers s ON s.supplier_id = i.supplier_id
+    GROUP BY COALESCE(s.supplier_name, 'Unassigned')
+  gold_notes: "SKU-ZETA (500 kg) has no supplier: the INNER JOIN silently drops it. Gold shows five groups including Unassigned; the model total is 500 kg short of the 10190 kg held."
+  trap: "Default INNER JOIN to the dimension table; the dropped group is invisible: rows still come back, the grouping needle 'by supplier' is honoured, no join-cardinality check on raw SQL."
+
+- id: B-032
+  family: b
+  space: finance
+  question: "For each supplier, how many inventory lines do we hold?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS line_count
+    FROM suppliers s JOIN inventory i ON i.supplier_id = s.supplier_id
+    GROUP BY s.supplier_name
+  expect: answer
+  gold_sql: >-
+    SELECT s.supplier_name, COUNT(i.sku) AS line_count
+    FROM suppliers s LEFT JOIN inventory i ON i.supplier_id = s.supplier_id
+    GROUP BY s.supplier_name
+  gold_notes: "Harbour Resins (SUP-05) holds 0 lines and must appear with 0. INNER JOIN returns 4 rows, gold 5."
+  trap: "Counting from the dimension with an INNER JOIN removes the zero-count member: the very row a 'for each supplier' reader checks first."
+
+# ---------------------------------------------------------------- governed pack lane (product): the pack's own SQL
+- id: B-033
+  family: b
+  space: finance
+  ask_path: product
+  question: "What is our total spend?"
+  model_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_spend_myr FROM inventory
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_spend_myr FROM inventory
+  gold_notes: "Pack phrase: the harness never uses model_sql here, the pack's own SQL INNER JOINs inventory to suppliers. SKU-ZETA (500 kg x 7.00 = 3500 MYR, no supplier yet) is excluded: pack serves 35690.0 under L1; all stock cost is 39190.0, the same total the by-category pack query reports."
+  trap: "Governed metric whose SQL joins a dimension that does not cover every fact row: a NULL supplier silently shrinks the total under the top confidence badge."
+
+- id: B-034
+  family: b
+  space: ops
+  ask_path: product
+  question: "Show shipment cost by destination"
+  model_sql: >-
+    SELECT destination_location_id AS location_code, SUM(cost_myr) AS total_cost_myr
+    FROM shipments GROUP BY destination_location_id
+  expect: answer
+  gold_sql: >-
+    SELECT destination_location_id AS location_code, SUM(cost_myr) AS total_cost_myr
+    FROM shipments GROUP BY destination_location_id
+  gold_notes: "Pack phrase. The pack SQL INNER JOINs shipments to locations: SH-120 (500 MYR to WH-Z, not yet on the locations master) vanishes, one destination row is missing."
+  trap: "Governed metric inner-joins a master table; a destination not yet registered drops out of a cost-by-destination view without a trace."
+
+- id: B-035
+  family: b
+  space: finance
+  ask_path: product
+  question: "What is our total spend by supplier country?"
+  model_sql: >-
+    SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) AS total_spend_myr
+    FROM inventory i JOIN suppliers s ON i.supplier_id = s.supplier_id GROUP BY s.country
+  expect: answer
+  gold_sql: >-
+    SELECT COALESCE(s.country, 'Unassigned') AS country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) AS total_spend_myr
+    FROM inventory i LEFT JOIN suppliers s ON i.supplier_id = s.supplier_id
+    GROUP BY COALESCE(s.country, 'Unassigned')
+  gold_notes: "Pack phrase, pack SQL inner joins: the 3500 MYR line with no supplier has no country and is dropped, so the country rows sum to 35690 not 39190. Gold shows it as Unassigned. Judges: the omission is the defect, the 'Unassigned' label is one honest way to show it."
+  trap: "Same inner-join drop as B-033 on the by-country governed metric; the breakdown no longer ties to the stock-value total."
+
+- id: B-036
+  family: b
+  space: company
+  ask_path: product
+  question: "Show warehouse capacity utilisation"
+  model_sql: >-
+    SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations
+  expect: answer
+  gold_sql: >-
+    SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations
+  control: true
+  gold_notes: "Pack phrase, pack SQL equals the gold: six rows."
+  trap: "control: a pack metric whose SQL is correct on this data."
+
+- id: B-037
+  family: b
+  space: company
+  ask_path: product
+  question: "Which locations are above 90 percent capacity?"
+  model_sql: >-
+    SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90
+  expect: answer
+  gold_sql: >-
+    SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90
+  control: true
+  gold_notes: "WH-C 96.7 and WH-E 97.8."
+  trap: "control: pack metric correct on this data."
+
+# ---------------------------------------------------------------- shape: measures omitted, list vs count, distinct, ratios with 'per'
+- id: B-038
+  family: b
+  space: ops
+  question: "What is the total shipped quantity and total cost by destination?"
+  model_sql: >-
+    SELECT destination_location_id, SUM(quantity_kg) AS total_qty_kg
+    FROM shipments GROUP BY destination_location_id
+  expect: answer
+  gold_sql: >-
+    SELECT destination_location_id, SUM(quantity_kg) AS total_qty_kg, SUM(cost_myr) AS total_cost_myr
+    FROM shipments GROUP BY destination_location_id
+  gold_notes: "Two measures asked, one returned. Grouping level (by destination) is right and honoured."
+  trap: "Second measure silently dropped from the SELECT list: group-by needle satisfied, E10/E12 satisfied, rows look complete."
+
+- id: B-039
+  family: b
+  space: finance
+  ask_path: product
+  question: "How many SKU lines are below their reorder level?"
+  model_sql: >-
+    SELECT sku, location_id, quantity_kg, reorder_level_kg FROM inventory
+    WHERE quantity_kg < reorder_level_kg ORDER BY sku
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS lines_below_reorder FROM inventory WHERE quantity_kg < reorder_level_kg
+  gold_notes: "A count (3) was asked, a three-row list was served. E12 only demotes a list when the SQL has a GROUP BY, this one does not."
+  trap: "Breakdown served for a total. E12 needs >=2 rows AND a GROUP BY; a plain row listing slips through. Judges: the text says 'Found 3 row(s)'; decide whether a list is an acceptable answer to 'how many'."
+
+- id: B-040
+  family: b
+  space: finance
+  question: "List the product categories we stock."
+  model_sql: "SELECT category FROM inventory ORDER BY category"
+  expect: answer
+  gold_sql: "SELECT DISTINCT category FROM inventory"
+  gold_notes: "Four distinct categories; the model returns nine rows with duplicates."
+  trap: "DISTINCT forgotten on a dimension listing: wrong row count, no shape rule for lists."
+
+- id: B-041
+  family: b
+  space: ops
+  question: "What is the average shipping cost per kg shipped?"
+  model_sql: "SELECT AVG(cost_myr / quantity_kg) AS avg_cost_per_kg FROM shipments"
+  expect: answer
+  gold_sql: "SELECT SUM(cost_myr) / SUM(quantity_kg) AS avg_cost_per_kg FROM shipments"
+  gold_notes: "Weighted: total cost / total kg. A mean of per-shipment ratios over-weights small shipments."
+  trap: "Average of ratios. Note the phrase 'per kg' matches E10's per-group phrase list; if the gate abstains it is for an accidental reason (a correct scalar would be demoted too, see B-003)."
+
+- id: B-042
+  family: b
+  space: company
+  question: "How many open alerts are there per location?"
+  model_sql: >-
+    SELECT location_id, COUNT(*) AS alert_count FROM alerts GROUP BY location_id
+  expect: answer
+  gold_sql: >-
+    SELECT location_id, COUNT(*) AS alert_count FROM alerts
+    WHERE resolved = FALSE GROUP BY location_id
+  gold_notes: "AL-3 (WH-B) is resolved: open alerts cover WH-A, WH-C, WH-D, WH-E, one each. The model counts the resolved alert too (a fifth group)."
+  trap: "'open' is not a column name; the model drops the boolean filter and counts everything. 'per location' is not the needle 'by location'."
+
+# ---------------------------------------------------------------- expect abstain: the data cannot answer it
+- id: B-043
+  family: b
+  space: finance
+  question: "What is the total stock quantity of SKU-OMEGA?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_qty_kg FROM inventory WHERE sku = 'SKU-OMEGA'
+  expect: abstain
+  gold_notes: "No SKU-OMEGA exists. SUM over an empty set is one NULL row, which hard rule 12 (zero rows) does not see."
+  trap: "An aggregate over zero matching rows returns one row (NULL); the correct behaviour is to say the SKU is not found."
+
+- id: B-044
+  family: b
+  space: finance
+  question: "What is the average unit cost of SKU-OMEGA?"
+  model_sql: >-
+    SELECT COALESCE(AVG(unit_cost_myr), 0) AS avg_unit_cost_myr FROM inventory WHERE sku = 'SKU-OMEGA'
+  expect: abstain
+  gold_notes: "No SKU-OMEGA exists; COALESCE turns the empty set into a confident 0 MYR."
+  trap: "COALESCE(...,0) wrapped around an empty aggregate so a defensive model never returns NULL: a clean-looking 0.0 on a SKU that does not exist."
+
+- id: B-045
+  family: b
+  space: company
+  question: "What is the total revenue by customer?"
+  model_sql: >-
+    SELECT location_id, SUM(quantity_kg * unit_cost_myr) AS revenue_myr
+    FROM transactions WHERE txn_type = 'outbound' GROUP BY location_id
+  expect: abstain
+  gold_notes: "No customer dimension and no selling price exist in any granted table. Warehouse-level outbound value at unit cost is a different grain and a different measure."
+  trap: "Substitutes the nearest available grain (location) and measure (cost-valued outbound) for an unanswerable ask. 'by customer' is not in the guard's needle list, so nothing notices the dropped dimension."
+
+- id: B-046
+  family: b
+  space: company
+  question: "Which warehouse is the most profitable?"
+  model_sql: >-
+    SELECT location_id, SUM(quantity_kg * unit_cost_myr) AS outbound_value_myr
+    FROM transactions WHERE txn_type = 'outbound'
+    GROUP BY location_id ORDER BY outbound_value_myr DESC LIMIT 1
+  expect: abstain
+  gold_notes: "Profit needs revenue and cost; the data has only a unit cost. Outbound value at cost is not profit."
+  trap: "A plausible proxy measure is served as the asked-for one; one row with GROUP BY, no qualifier needle for 'profitable'."
+
+# ---------------------------------------------------------------- E12 over-abstention probe
+- id: B-047
+  family: b
+  space: finance
+  question: "What is the stock quantity for RAW and for PACKAGING?"
+  model_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    WHERE category IN ('RAW', 'PACKAGING') GROUP BY category
+  expect: answer
+  gold_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory
+    WHERE category IN ('RAW', 'PACKAGING') GROUP BY category
+  control: true
+  gold_notes: "RAW 1780, PACKAGING 4300. The word 'quantity' makes E12 read a one-number ask; two grouped rows are demoted. Over-abstention probe."
+  trap: "control: correct two-row breakdown on a question E12 reads as a scalar ask."
+
+# ---------------------------------------------------------------- sheet lane (bronze-sheet, deterministic, no model)
+- id: B-048
+  family: b
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what are the top 2 categories by number of SKUs?"
+  expect: answer
+  gold_sql: >-
+    SELECT category, COUNT(*) AS sku_count FROM bronze."f32_ambiguous_scope_Sales"
+    GROUP BY category ORDER BY sku_count DESC, category LIMIT 2
+  gold_notes: "The sheet lane only understands a measure from a closed list; any other measure silently defaults to sales_value_myr. Gold counts SKUs per category: Electronics 2, Home 2."
+  trap: "Unrecognised measure ('number of SKUs') falls back to SUM(sales_value_myr) and is served L0_CERTIFIED: wrong measure, by construction, no model involved."
+
+- id: B-049
+  family: b
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what is the top 1 SKU per category by sales_value_myr?"
+  expect: answer
+  gold_sql: >-
+    SELECT category, sku, sales_value_myr FROM (
+      SELECT category, sku, sales_value_myr,
+             ROW_NUMBER() OVER (PARTITION BY category ORDER BY sales_value_myr DESC, sku) AS rn
+      FROM bronze."f32_ambiguous_scope_Sales") WHERE rn = 1
+  gold_notes: "Best SKU in each category = 4 rows. The lane sees 'top 1' + 'category' and serves the single top category total."
+  trap: "Wrong grain: the lane keys on 'top N' and the word 'category' and ignores 'SKU per category'. One row WITH a GROUP BY, so E10 does not fire."
+
+- id: B-050
+  family: b
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what are the top 3 categories by average sales_value_myr?"
+  expect: answer
+  gold_sql: >-
+    SELECT category, ROUND(AVG(sales_value_myr), 2) AS sales_value_myr
+    FROM bronze."f32_ambiguous_scope_Sales" GROUP BY category ORDER BY 2 DESC, category LIMIT 3
+  gold_notes: "The lane always SUMs the recognised measure; 'average' is ignored. Same three categories, different values."
+  trap: "Aggregation word ignored: AVG asked, SUM served under L0_CERTIFIED."
+
+- id: B-051
+  family: b
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr, as a percentage of the total?"
+  expect: answer
+  gold_sql: >-
+    SELECT category, ROUND(100.0 * SUM(sales_value_myr) / (SELECT SUM(sales_value_myr) FROM bronze."f32_ambiguous_scope_Sales"), 2) AS sales_value_myr
+    FROM bronze."f32_ambiguous_scope_Sales" GROUP BY category ORDER BY 2 DESC, category LIMIT 3
+  gold_notes: "Shares of the sheet total (3425333.22): Electronics 45.12, Home 35.0, Misc 11.12. The lane serves absolute sums."
+  trap: "Percent-of-total asked, absolute sums served: the lane ignores everything after the measure."
+
+- id: B-052
+  family: b
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category, ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."f32_ambiguous_scope_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 3
+  control: true
+  gold_notes: "Electronics 1545366.4, Home 1199018.49, Misc 380948.33."
+  trap: "control for B-048..B-051."
+
+- id: B-053
+  family: b
+  lane: sheet
+  space: finance
+  question: "In encoding_value_norm.xlsx on the Sales sheet, what is the total sales_value_myr for city Kuala Lumpur?"
+  expect: answer
+  gold_sql: >-
+    SELECT city, ROUND(SUM(sales_value_myr), 2) AS sales_value_myr
+    FROM bronze."encoding_value_norm_Sales" WHERE city = 'Kuala Lumpur' GROUP BY city
+  control: true
+  gold_notes: "1500.75 + 200.0 = 1700.75. The lane returns the filter column too, so its row has two cells."
+  trap: "control for the sheet filter-total shape."
+
+# ---------------------------------------------------------------- round two: more escape routes
+- id: B-054
+  family: b
+  space: finance
+  question: "What is the total outbound quantity in kg?"
+  model_sql: >-
+    SELECT SUM(DISTINCT quantity_kg) AS total_outbound_kg
+    FROM transactions WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg
+    FROM transactions WHERE txn_type = 'outbound'
+  gold_notes: "Two outbound transactions are both 400 kg (T001, T015). SUM(DISTINCT) counts 400 once: 5620 vs 6020."
+  trap: "DISTINCT added to the aggregate 'to avoid double counting': silently collapses equal values, a measure bug that no join check can see."
+
+- id: B-055
+  family: b
+  space: finance
+  question: "Which supplier has the longest lead time?"
+  model_sql: >-
+    SELECT supplier_name, lead_time_days FROM suppliers ORDER BY lead_time_days DESC
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_name, lead_time_days FROM suppliers
+    ORDER BY lead_time_days DESC, supplier_id LIMIT 1
+  gold_notes: "A singular 'which supplier' asks for one row (Harbour Resins, 14 days). The model returns the whole sorted list (5 rows)."
+  trap: "Superlative answered with an unbounded sorted list: the right row is first, but the row count is the table, and no gate compares the answer's cardinality to 'which supplier'."
+
+- id: B-056
+  family: b
+  space: company
+  question: "Which warehouse is performing best?"
+  model_sql: >-
+    SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used
+    FROM locations ORDER BY pct_used DESC LIMIT 1
+  expect: abstain
+  gold_notes: "'Performing best' has no definition in the data. Highest utilisation (WH-E), most free space (WH-F), highest outbound value (WH-B) and lowest load (WH-D) are four different warehouses. The honest answer asks which criterion."
+  trap: "An undefined superlative is settled by silently picking one criterion (utilisation) and served as fact; one row, no qualifier needle for 'performing best'."
+
+- id: B-057
+  family: b
+  space: ops
+  ask_path: product
+  question: "How many shipments are delayed?"
+  model_sql: >-
+    SELECT COUNT(*) AS delayed_shipments FROM shipments WHERE status = 'Delayed'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS delayed_shipments FROM shipments WHERE status = 'delayed'
+  gold_notes: "Stored value is lowercase 'delayed' (12 rows). Title case matches nothing: COUNT(*) returns one row, 0."
+  trap: "A zero-row filter hidden inside an aggregate: COUNT(*) is never an empty result set, so hard rule 12 (zero rows) cannot fire and 0 is served as a confident count."
+
+- id: B-058
+  family: b
+  space: ops
+  question: "What is the total quantity of shipments in transit?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_qty_kg FROM shipments WHERE status = 'in-transit'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_qty_kg FROM shipments WHERE status = 'in_transit'
+  gold_notes: "Stored value is in_transit (underscore): SH-100 400 + SH-103 80 + SH-120 500 = 980. Hyphen matches nothing: SUM returns one NULL row."
+  trap: "Hyphen vs underscore in a status literal under a SUM: one NULL row, not a zero-row result."
+
+- id: B-059
+  family: b
+  space: ops
+  question: "What are the 2 largest SKU holdings in each warehouse?"
+  model_sql: >-
+    SELECT sku, location_id, quantity_kg FROM inventory
+    ORDER BY quantity_kg DESC LIMIT 2
+  expect: answer
+  gold_sql: >-
+    SELECT sku, location_id, quantity_kg FROM (
+      SELECT sku, location_id, quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY location_id ORDER BY quantity_kg DESC, sku) AS rn
+      FROM inventory) WHERE rn <= 2
+  gold_notes: "Same trap as B-016 in wording that avoids the 'skus by' group-by needle: top-2 per warehouse is 8 rows, a global LIMIT 2 is 2 rows."
+  trap: "Per-group top-N answered globally, phrased so no QUAL-GUARD needle applies."
+
+- id: B-060
+  family: b
+  space: finance
+  question: "How many warehouses do we have?"
+  model_sql: >-
+    SELECT COUNT(DISTINCT location_id) AS warehouse_count FROM inventory
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS warehouse_count FROM locations
+  gold_notes: "Six warehouses are on the master; WH-F holds no stock so the inventory table names only five."
+  trap: "Counts entities from the fact table instead of the master: a warehouse with no stock vanishes."
+
+- id: B-061
+  family: b
+  space: finance
+  question: "How many SKUs do we have in each category?"
+  model_sql: >-
+    SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category
+  expect: answer
+  gold_sql: >-
+    SELECT category, COUNT(DISTINCT sku) AS sku_count FROM inventory GROUP BY category
+  gold_notes: "inventory is (sku, location) grain: SKU-EPSILON appears on two lines, so PARTS has 3 lines but 2 SKUs. Only the PARTS row differs (3 vs 2); RAW 3, PACKAGING 2, CHEMICALS 1 agree."
+  trap: "COUNT(*) per group over a table whose grain is finer than the entity asked: one wrong row among three right ones, correct grouping, no cardinality check on raw SQL."
+
+# ---------------------------------------------------------------- shapes the envelope/qualifier guards are built for (expected to be caught)
+- id: B-062
+  family: b
+  space: ops
+  question: "What are the top 3 warehouses by current load?"
+  model_sql: "SELECT SUM(current_load_kg) AS total_load_kg FROM locations"
+  expect: answer
+  gold_sql: >-
+    SELECT location_id, current_load_kg FROM locations
+    ORDER BY current_load_kg DESC, location_id LIMIT 3
+  gold_notes: "Top 3 by load: WH-F 100000, WH-E 88000, WH-A 72000."
+  trap: "A ranking ask collapsed to one grand total: the E10 (FF-01) shape, kept as a result that the shape guard should catch. A model drops 'top 3' when it reads 'load' as an additive measure."
+
+- id: B-063
+  family: b
+  space: finance
+  question: "What is the total stock quantity?"
+  model_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_qty_kg FROM inventory GROUP BY category
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_qty_kg FROM inventory"
+  gold_notes: "One number was asked (10190); four category rows were served. The E12 (ANS-02) shape."
+  trap: "A model adds a breakdown nobody asked for. Kept as a result: E12 should demote a grouped ranking served for a total."
+
+- id: B-064
+  family: b
+  space: finance
+  question: "What is the total stock value by supplier country?"
+  model_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr FROM inventory
+  expect: answer
+  gold_sql: >-
+    SELECT COALESCE(s.country, 'Unassigned') AS country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory i LEFT JOIN suppliers s ON i.supplier_id = s.supplier_id
+    GROUP BY COALESCE(s.country, 'Unassigned')
+  gold_notes: "Grouping by supplier country was asked and dropped (a grand total). QUAL-GUARD's 'supplier country' needle and E10 both look for exactly this."
+  trap: "Dropped GROUP BY: kept as a result that the group-by qualifier guard should catch."

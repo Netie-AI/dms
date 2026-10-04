@@ -1,0 +1,1059 @@
+# Family D: TYPE TRAPS (money as text, NULLs, zoned timestamps, numeric-looking strings, booleans as text).
+# Extension data: d.ext.sql (a customer SQL source ingested as all-VARCHAR plus hand-keyed legacy columns).
+# Shipping cost text parse used in gold (P): UPPER, strip 'RM', strip ',', '(' -> '-', strip ')', strip spaces, TRY_CAST DOUBLE.
+
+# ------------------------------------------------------------------ money as text (ops / company)
+- id: D-001
+  family: d
+  space: ops
+  question: "What is the total shipping cost across all shipments?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REPLACE(cost_myr, ',', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+  gold_notes: "Documented parse of the hand-keyed text: strip RM prefix and thousands commas, accounting parentheses = negative (credit note), trim padding, unparseable 'TBC' and NULL contribute nothing. Recorded amounts: 820 + 2310.50 + 1540 - 190 + 460 + 95 + 1200 = 6235.50. The model SQL drops 'RM 2,310.50' and '(190.00)' because TRY_CAST returns NULL for them: 4115."
+  trap: "Models see a VARCHAR cost column and the first dirty samples (thousands commas). They clean the commas they noticed with REPLACE and wrap the cast in TRY_CAST so the query will not error. TRY_CAST turns every cell that still has an 'RM' prefix or accounting parentheses into NULL, SUM skips NULL, and a total that is short by the biggest shipment ships under a green badge. Models a customer SQL source ingested as all-VARCHAR (main stringifies every column)."
+
+- id: D-002
+  family: d
+  space: company
+  question: "What is the total shipment cost?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REGEXP_REPLACE(cost_myr, '[^0-9.]', '', 'g') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+  gold_notes: "Same documented parse as D-001: 6235.50. Stripping every non-digit character also strips the minus sign and the accounting parentheses, so the 190.00 credit note is ADDED: 820 + 2310.50 + 1540 + 190 + 460 + 95 + 1200 = 6615.50."
+  trap: "The canonical 'clean a money string' idiom: REGEXP_REPLACE everything that is not a digit or dot, then cast. It handles 'RM ' and thousands commas in one step, which is why a model reaches for it, but it deletes the sign: '(190.00)' (an accounting credit) becomes +190. TRY_CAST makes the TBC row vanish instead of erroring, so nothing fails."
+
+- id: D-003
+  family: d
+  space: ops
+  question: "Which shipment has the highest cost?"
+  model_sql: |-
+    SELECT shipment_id, cost_myr
+    FROM shipments
+    ORDER BY cost_myr DESC
+    LIMIT 1
+  expect: answer
+  gold_sql: |-
+    SELECT shipment_id,
+           TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) AS cost_myr
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) IS NOT NULL
+    ORDER BY 2 DESC, shipment_id
+    LIMIT 1
+  gold_notes: "SH-101 (RM 2,310.50 = 2310.5) is the largest recorded cost. A byte-order sort of the text column puts 'TBC' first, so the model names SH-105, a shipment with no recorded cost."
+  trap: "Column is called cost_myr, so the model assumes a number and writes the plain ORDER BY ... DESC LIMIT 1 one-liner. On a VARCHAR column that sorts by bytes: 'TBC' > 'RM 2,310.50' > '95' > '820.00' > '460.00' > '1,540.00'. The answer is a real shipment id and a real cell value, just the wrong shipment."
+
+- id: D-004
+  family: d
+  space: ops
+  question: "How many shipments cost more than 500?"
+  model_sql: |-
+    SELECT COUNT(*) AS shipments_over_500
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(cost_myr, ',', '') AS DOUBLE) > 500
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS shipments_over_500
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) > 500
+  gold_notes: "Parsed costs over 500: 820, 2310.50, 1540, 1200 = 4. The model SQL cannot read 'RM 2,310.50' (TRY_CAST NULL, comparison NULL, row dropped) so it counts 3. A bare integer, which the envelope's money-in-prose check ignores."
+  trap: "Threshold counts are the most common question over a cost column. TRY_CAST + REPLACE(',') is the usual defensive cast. The row it drops is the largest shipment, and COUNT(*) returns exactly one plausible integer."
+
+- id: D-005
+  family: d
+  space: ops
+  question: "How many inventory SKUs have never been shipped?"
+  model_sql: |-
+    SELECT COUNT(*) AS never_shipped
+    FROM inventory
+    WHERE sku NOT IN (SELECT sku FROM shipments)
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS never_shipped
+    FROM inventory i
+    WHERE NOT EXISTS (SELECT 1 FROM shipments s WHERE s.sku = i.sku)
+  gold_notes: "inventory has 8 distinct SKUs. Shipments name all of them except RS622XKR and SKU-ZETA, so the answer is 2. shipments holds one row (SH-106) with a NULL sku, and x NOT IN (subquery containing NULL) is never true, so the NOT IN form counts 0."
+  trap: "NOT IN (SELECT ...) is the first anti-join a model writes. A single unlinked shipment (NULL sku) makes the whole predicate UNKNOWN for every row, so COUNT(*) returns 0, a perfectly valid one-row aggregate that rule 12 (empty result) does not treat as empty."
+
+- id: D-006
+  family: d
+  space: ops
+  question: "How many shipments have yet to be delivered?"
+  model_sql: |-
+    SELECT COUNT(*) AS undelivered
+    FROM shipments
+    WHERE status <> 'delivered'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS undelivered
+    FROM shipments
+    WHERE status IS NULL OR LOWER(TRIM(status)) <> 'delivered'
+  gold_notes: "Normalised status: delivered = SH-101, SH-105, SH-107 ('DELIVERED'), SH-108 ('delivered '). Everything else is undelivered, including SH-106 whose status was never recorded (NULL): 100, 102, 103, 104, 106 = 5. The model SQL counts the two case/space variants as undelivered (+2) and drops the NULL status row (-1): 6."
+  trap: "'<> value' is the natural negation. Two things go wrong on messy text: variants of the value ('DELIVERED', 'delivered ') count as the opposite, and NULL <> 'delivered' is UNKNOWN so the never-recorded row disappears. Both errors move the count, so the number is plausible and nothing is empty."
+
+- id: D-007
+  family: d
+  space: company
+  question: "How many shipments have been delivered?"
+  model_sql: |-
+    SELECT COUNT(*) AS delivered_shipments
+    FROM shipments
+    WHERE status = 'delivered'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS delivered_shipments
+    FROM shipments
+    WHERE LOWER(TRIM(status)) = 'delivered'
+  gold_notes: "SH-101, SH-105, SH-107 ('DELIVERED'), SH-108 ('delivered ') = 4. Exact-literal match finds 2."
+  trap: "The seed's own statuses are lowercase snake_case, so the exact literal 'delivered' is what the model has seen. Hand-keyed rows ('DELIVERED', trailing space) are separate strings under =. Filter parses, executes and matches a plausible subset: no empty result, nothing for rule 12 to catch."
+
+- id: D-008
+  family: d
+  space: ops
+  question: "How many shipments went out on 2026-07-01?"
+  model_sql: |-
+    SELECT COUNT(*) AS shipments_shipped
+    FROM shipments
+    WHERE CAST(shipped_at AS DATE) = DATE '2026-07-01'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS shipments_shipped
+    FROM shipments
+    WHERE CAST(CAST(shipped_at AS TIMESTAMPTZ) AT TIME ZONE 'Asia/Kuala_Lumpur' AS DATE) = DATE '2026-07-01'
+  gold_notes: "shipped_at is a timestamptz stringified from a UTC session ('2026-06-30 16:30:00+00:00'). This is a Malaysian business (RM, WH-A..E), so the calendar day is Asia/Kuala_Lumpur (+08:00). SH-100 = 2026-07-01 00:30 KL, SH-107 = 2026-07-01 11:00 KL, so 2. CAST of the text to DATE takes the UTC date and ignores the offset: SH-100 lands on 2026-06-30, so the model counts 1. ASSUMPTION: business timezone = Asia/Kuala_Lumpur."
+  trap: "CAST(text AS DATE) is the shortest way to get a day out of a string, and it silently discards the +00:00 offset. A shipment keyed at 00:30 local time is counted on the previous day. Plausible because a model sees an ISO-looking string and has no reason to doubt it is already local."
+
+- id: D-009
+  family: d
+  space: ops
+  question: "How many shipments went out on 2026-07-08?"
+  model_sql: |-
+    SELECT COUNT(*) AS shipments_shipped
+    FROM shipments
+    WHERE LEFT(shipped_at, 10) = '2026-07-08'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS shipments_shipped
+    FROM shipments
+    WHERE CAST(CAST(shipped_at AS TIMESTAMPTZ) AT TIME ZONE 'Asia/Kuala_Lumpur' AS DATE) = DATE '2026-07-08'
+  gold_notes: "SH-102 shipped_at = '2026-07-07 23:00:00+00:00' = 2026-07-08 07:00 in Kuala Lumpur, so 1 shipment went out on 2026-07-08 local. Taking the first 10 characters (the UTC date) finds none: the model answers 0. ASSUMPTION: business timezone = Asia/Kuala_Lumpur."
+  trap: "LEFT(ts_text, 10) / LIKE '2026-07-08%' are the other idiomatic ways to filter an ISO string by day. The result is COUNT(*) = 0: a valid one-row aggregate over zero matching rows, which hard rule 12 (empty result) does not see, shipped as 'zero shipments went out that day'."
+
+- id: D-010
+  family: d
+  space: ops
+  control: true
+  question: "How many shipments went out on 2026-07-01?"
+  model_sql: |-
+    SELECT COUNT(*) AS shipments_shipped
+    FROM shipments
+    WHERE CAST(CAST(shipped_at AS TIMESTAMPTZ) AT TIME ZONE 'Asia/Kuala_Lumpur' AS DATE) = DATE '2026-07-01'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS shipments_shipped
+    FROM shipments
+    WHERE CAST(CAST(shipped_at AS TIMESTAMPTZ) AT TIME ZONE 'Asia/Kuala_Lumpur' AS DATE) = DATE '2026-07-01'
+  gold_notes: "Control for D-008: the same question with the offset honoured. Expected 2."
+
+- id: D-011
+  family: d
+  space: ops
+  question: "What is the total gross weight shipped, in kg?"
+  model_sql: |-
+    SELECT SUM(CAST(REGEXP_EXTRACT(gross_weight, '[0-9.]+') AS DOUBLE)) AS total_gross_kg
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(CASE WHEN LOWER(gross_weight) LIKE '%tonne%' THEN 1000.0 ELSE 1.0 END * CAST(REGEXP_EXTRACT(gross_weight, '[0-9.]+') AS DOUBLE)) AS total_gross_kg
+    FROM shipments
+  gold_notes: "gross_weight is text with the unit typed in: '415 kg', '0.14 tonne', ... 1 tonne = 1000 kg. In kg: 415 + 140 + 262 + 85 + 210 + 63 + 11 + 16 + 42 = 1244. Pulling out only the digits adds 0.14 and 0.21 as if they were kg: 894.35."
+  trap: "Units glued to numbers. REGEXP_EXTRACT / REGEXP_REPLACE of the number is the standard extraction and the question already says 'in kg', so the model assumes the unit suffix is always kg. Two rows are in tonnes; their magnitudes are added as kg and the total is low by 349.65 kg."
+
+- id: D-012
+  family: d
+  space: ops
+  question: "What is the total invoice amount across all shipments?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REGEXP_REPLACE(invoice_total, '[^0-9.]', '', 'g') AS DOUBLE)) AS total_invoice
+    FROM shipments
+  expect: abstain
+  gold_notes: "invoice_total holds 'RM 820.00', 'USD 450.00', 'SGD 60.00', ... There is no FX rate anywhere in the six tables, so a single total across RM, USD and SGD cannot be stated. A correct gate abstains (or names the currencies); a confident figure adds ringgit, dollars and Singapore dollars."
+  trap: "A model that strips non-numeric characters to read the amounts sums 'RM 820.00' + 'USD 450.00' + 'SGD 60.00' + ... = 4,625 as if they were one currency. The question names no currency, so the currency gate (which only fires when the question names one) does not engage, and the column has no _myr suffix to make the mismatch visible."
+
+- id: D-013
+  family: d
+  space: ops
+  question: "What is the total invoice amount in RM?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REGEXP_REPLACE(invoice_total, '[^0-9.]', '', 'g') AS DOUBLE)) AS total_invoice_myr
+    FROM shipments
+  expect: abstain
+  gold_notes: "Question asks for ringgit; invoice_total mixes RM, USD and SGD invoices with no FX rate, so an RM total is not computable. Summing only the RM-prefixed rows would silently drop USD/SGD; summing everything mixes units. Either confident figure is wrong. Expected: abstain. Likely caught by the currency gate (a named currency with an unlabelled column)."
+  trap: "Same SQL as D-012 but the question names RM, so the currency gate engages. Included to see what the gate does when the measure column carries no unit suffix and mixes currencies inside its values."
+
+- id: D-014
+  family: d
+  space: ops
+  question: "What is the total shipping cost to WH-E?"
+  model_sql: |-
+    SELECT COALESCE(SUM(TRY_CAST(REPLACE(cost_myr, ',', '') AS DOUBLE)), 0) AS total_cost_myr
+    FROM shipments
+    WHERE destination_location_id = 'WH-E'
+  expect: abstain
+  gold_notes: "The only shipment to WH-E is SH-105 whose cost is the text 'TBC' (to be confirmed). No amount has been recorded, so a total shipping cost to WH-E cannot be stated. A confident 0 means 'it cost nothing' - a wrong number. Expected: abstain."
+  trap: "COALESCE(SUM(...), 0) is how models (and the demo pack's own TOTAL_SPEND query) make a total 'never NULL'. TRY_CAST turns 'TBC' into NULL, SUM of nothing is NULL, COALESCE makes it 0, and a one-row aggregate is non-empty so rule 12 does not fire: 'total_cost_myr=0.0' under a green badge."
+
+- id: D-015
+  family: d
+  space: ops
+  question: "What is the total shipping cost to WH-E?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REPLACE(cost_myr, ',', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+    WHERE destination_location_id = 'WH-E'
+  expect: abstain
+  gold_notes: "Same data as D-014 (only 'TBC'), but without COALESCE: the aggregate returns a single NULL. A confident badge over a NULL answer is wrong. Expected: abstain."
+  trap: "No COALESCE: SUM over zero parseable cells is NULL. The result set has one row, so it is 'non-empty' and rule 12 does not apply; the envelope then has no numeric cell and synthesises a row-count value (v_count = 1) so E3 is satisfied, i.e. a customer-visible '1' next to a NULL."
+
+- id: D-016
+  family: d
+  space: ops
+  ask_path: product
+  question: "Show shipment cost by destination"
+  model_sql: |-
+    SELECT l.location_code, SUM(TRY_CAST(REPLACE(s.cost_myr, ',', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments s
+    JOIN locations l ON s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: |-
+    SELECT l.location_code,
+           SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(s.cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments s
+    JOIN locations l ON s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  gold_notes: "Per destination, parsed: WH-A 1540, WH-B 3225.5 (820 + 2310.50 + 95), WH-C -190, WH-D 1660, WH-E no recorded amount (NULL). The model SQL gives WH-B 915 and WH-C NULL. This question is a demo-pack phrase: its own certified SQL is SUM(s.cost_myr) which cannot bind on a VARCHAR column, so the ladder falls to the generative leg and serves L2 numbers."
+  trap: "A demo-pack phrase whose certified SQL (SUM over cost_myr) breaks once the column lands as text. The pack lane silently misses (submit failure -> None) and the ladder continues to the generative leg, where the model repairs the cast with the usual REPLACE(',') + TRY_CAST and loses the RM-prefixed and parenthesised cells. The customer sees a grouped table, per-destination figures, no sign anything fell back."
+
+- id: D-017
+  family: d
+  space: ops
+  control: true
+  question: "How many shipments cost more than 500?"
+  model_sql: |-
+    SELECT COUNT(*) AS shipments_over_500
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) > 500
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS shipments_over_500
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) > 500
+  gold_notes: "Control for D-004: explicit parse of every dirty pattern. Expected 4."
+
+- id: D-018
+  family: d
+  space: company
+  control: true
+  question: "What is the total shipment cost?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE)) AS total_cost_myr
+    FROM shipments
+  gold_notes: "Control for D-002: the documented parse. Expected 6235.50."
+
+# ------------------------------------------------------------------ numeric strings, NULLs, text dates (finance)
+- id: D-019
+  family: d
+  space: company
+  question: "What is the longest supplier lead time in days?"
+  model_sql: |-
+    SELECT MAX(lead_time_days) AS max_lead_time_days
+    FROM suppliers
+  expect: answer
+  gold_sql: |-
+    SELECT MAX(CAST(lead_time_days AS INTEGER)) AS max_lead_time_days
+    FROM suppliers
+  gold_notes: "lead_time_days landed as VARCHAR holding integers ('7','12','5','9','10','6','14','3'). Numeric maximum 14 (Utara Resin). MAX over text compares bytes, so '9' > '7' > '6' > '5' > '3' > '14' > '12' > '10': the model returns '9'."
+  trap: "A SQL source's INTEGER column is stringified on ingest. The column is still called lead_time_days, MAX is the obvious aggregate, and the value returned ('9') is a real cell and a bare integer: the envelope's money-in-prose check ignores bare integers, so it ships as 'max_lead_time_days=9'."
+
+- id: D-020
+  family: d
+  space: finance
+  ask_path: product
+  question: "Which supplier has the longest lead time?"
+  model_sql: |-
+    SELECT supplier_name, lead_time_days
+    FROM suppliers
+    ORDER BY lead_time_days DESC
+    LIMIT 1
+  expect: answer
+  gold_sql: |-
+    SELECT supplier_name, CAST(lead_time_days AS INTEGER) AS lead_time_days
+    FROM suppliers
+    ORDER BY CAST(lead_time_days AS INTEGER) DESC, supplier_id
+    LIMIT 1
+  gold_notes: "Numeric order: Utara Resin 14 days is the longest. Byte order puts '9' first: the model names Orbit Packing (9 days)."
+  trap: "ORDER BY the column DESC LIMIT 1 is the standard 'which X has the highest Y' query. With lead time stored as text the sort is lexicographic, so the supplier with '9' beats the one with '14' and '12'. Real supplier, real number, wrong winner."
+
+- id: D-021
+  family: d
+  space: finance
+  question: "What is the average supplier lead time in days?"
+  model_sql: |-
+    SELECT ROUND(AVG(CAST(lead_time_days AS INTEGER)), 0) AS avg_lead_time_days
+    FROM suppliers
+  expect: answer
+  gold_sql: |-
+    SELECT AVG(CAST(lead_time_days AS INTEGER)) AS avg_lead_time_days
+    FROM suppliers
+  gold_notes: "Mean of 7,12,5,9,10,6,14,3 = 66/8 = 8.25 days. The model rounds to whole days (8). LOW SEVERITY: display rounding; the question did not ask for rounding."
+  trap: "Lead time is an integer-valued column and 'days' sounds whole, so a model rounds the mean to 0 decimals. The rounded value is not the figure the data supports (8.25), and the envelope cannot tell a rounded aggregate from an exact one."
+
+- id: D-022
+  family: d
+  space: finance
+  control: true
+  question: "What is the longest supplier lead time in days?"
+  model_sql: |-
+    SELECT MAX(CAST(lead_time_days AS INTEGER)) AS max_lead_time_days
+    FROM suppliers
+  expect: answer
+  gold_sql: |-
+    SELECT MAX(CAST(lead_time_days AS INTEGER)) AS max_lead_time_days
+    FROM suppliers
+  gold_notes: "Control for D-019: explicit cast. Expected 14."
+
+- id: D-023
+  family: d
+  space: company
+  question: "What is the average supplier risk score?"
+  model_sql: |-
+    SELECT AVG(COALESCE(risk_score, 0)) AS avg_risk_score
+    FROM suppliers
+  expect: answer
+  gold_sql: |-
+    SELECT AVG(risk_score) AS avg_risk_score
+    FROM suppliers
+  gold_notes: "risk_score is NULL for SUP-05 and SUP-08 (not yet scored). AVG ignores NULL: (0.22 + 0.41 + 0.18 + 0.55 + 0.30 + 0.60) / 6 = 0.37667. COALESCE(...,0) treats 'not scored' as zero risk and divides by 8: 0.2825. A missing score is not a score of zero."
+  trap: "Defensive COALESCE(x, 0) before an aggregate is a reflex ('so NULLs do not break the maths'). For AVG it changes the denominator: unscored suppliers count as perfectly safe, and the portfolio looks about 25 percent less risky than the scored suppliers say."
+
+- id: D-024
+  family: d
+  space: finance
+  control: true
+  question: "What is the average supplier risk score?"
+  model_sql: |-
+    SELECT AVG(risk_score) AS avg_risk_score
+    FROM suppliers
+  expect: answer
+  gold_sql: |-
+    SELECT AVG(risk_score) AS avg_risk_score
+    FROM suppliers
+  gold_notes: "Control for D-023: plain AVG over the scored suppliers. Expected 0.37667."
+
+- id: D-025
+  family: d
+  space: finance
+  question: "How many suppliers have had no audit since 2025-10-02?"
+  model_sql: |-
+    SELECT COUNT(*) AS overdue_suppliers
+    FROM suppliers
+    WHERE last_audit_date < DATE '2025-10-02'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS overdue_suppliers
+    FROM suppliers
+    WHERE last_audit_date IS NULL OR last_audit_date < DATE '2025-10-02'
+  gold_notes: "Last audited before 2025-10-02: SUP-01 (2025-01-01), SUP-03 (2024-06-01). Never audited (NULL): SUP-05, SUP-06. 'Had no audit since' includes never-audited suppliers: 4. The model SQL cannot see NULL dates (NULL < date is UNKNOWN) and returns 2."
+  trap: "A date comparison is the natural reading of 'no audit since X'. NULL last_audit_date means the supplier has never been audited, the worst overdue case, and it is silently excluded. QUAL-GUARD sees a WHERE clause and a 2025 literal and is satisfied; the count is small, plausible and low by half."
+
+- id: D-026
+  family: d
+  space: finance
+  control: true
+  question: "How many suppliers have had no audit since 2025-10-02?"
+  model_sql: |-
+    SELECT COUNT(*) AS overdue_suppliers
+    FROM suppliers
+    WHERE last_audit_date IS NULL OR last_audit_date < DATE '2025-10-02'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS overdue_suppliers
+    FROM suppliers
+    WHERE last_audit_date IS NULL OR last_audit_date < DATE '2025-10-02'
+  gold_notes: "Control for D-025. Expected 4."
+
+- id: D-027
+  family: d
+  space: finance
+  ask_path: product
+  question: "How many suppliers are based in MY?"
+  model_sql: |-
+    SELECT COUNT(*) AS my_suppliers
+    FROM suppliers
+    WHERE country = 'MY'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS my_suppliers
+    FROM suppliers
+    WHERE UPPER(TRIM(country)) = 'MY'
+  gold_notes: "SUP-01 'MY', SUP-03 'MY', SUP-05 'MY ' (CHAR-padded), SUP-06 'my' = 4. Exact match finds 2."
+  trap: "The seed spells the country code 'MY' and the model copies it. Padded and lower-cased variants from a legacy source (CHAR(3) columns come back right-padded) are different strings under =. Result is a small positive count, so rule 12 does not apply."
+
+- id: D-028
+  family: d
+  space: finance
+  question: "How many suppliers have no country recorded?"
+  model_sql: |-
+    SELECT COUNT(*) AS suppliers_without_country
+    FROM suppliers
+    WHERE country IS NULL
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS suppliers_without_country
+    FROM suppliers
+    WHERE country IS NULL OR TRIM(country) = ''
+  gold_notes: "SUP-07 has country NULL and SUP-08 has an empty string: both mean 'no country recorded' = 2. IS NULL alone finds 1."
+  trap: "'No value recorded' maps to IS NULL in a model's head. SQL sources and CSV exports mix NULL with empty strings; after stringification an empty cell is '' not NULL. The count is plausible and low by one."
+
+- id: D-029
+  family: d
+  space: finance
+  question: "How many suppliers have their next audit due before 2026-12-01?"
+  model_sql: |-
+    SELECT COUNT(*) AS audits_due
+    FROM suppliers
+    WHERE TRY_STRPTIME(next_audit_due, '%m/%d/%Y') < DATE '2026-12-01'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS audits_due
+    FROM suppliers
+    WHERE TRY_STRPTIME(next_audit_due, '%d/%m/%Y') < DATE '2026-12-01'
+  gold_notes: "next_audit_due is day-first text (Malaysian locale): '25/08/2026', '30/11/2026' and '15/10/2026' prove it (no 25th month). Day-first: SUP-01 (5 Nov), SUP-02 (25 Aug), SUP-04 (30 Nov), SUP-07 (15 Oct) are before 2026-12-01 = 4; SUP-03 (3 Dec), SUP-05 (12 Jan 2027), SUP-08 (1 Dec, not before) are not. Month-first parsing (US default) turns 05/11 into May 11, 03/12 into Mar 12, 01/12 into Jan 12, and TRY_STRPTIME silently drops the three rows that cannot be month-first: 3."
+  trap: "A model that must turn dd/mm/yyyy text into a date defaults to the US format and, having learned that plain strptime errors on '25/08/2026', switches to TRY_STRPTIME. The bad rows become NULL instead of an error, ambiguous rows are misread, and the count is off by one with no sign that three cells were dropped."
+
+# ------------------------------------------------------------------ text money, dirty keys (finance)
+- id: D-030
+  family: d
+  space: finance
+  question: "What is the total value of outbound stock movements, quantity times unit cost?"
+  model_sql: |-
+    SELECT SUM(quantity_kg * TRY_CAST(unit_cost_myr AS DOUBLE)) AS outbound_value_myr
+    FROM transactions
+    WHERE LOWER(TRIM(txn_type)) = 'outbound'
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(quantity_kg * TRY_CAST(REPLACE(REPLACE(UPPER(unit_cost_myr), 'RM', ''), ' ', '') AS DOUBLE)) AS outbound_value_myr
+    FROM transactions
+    WHERE LOWER(TRIM(txn_type)) = 'outbound'
+  gold_notes: "unit_cost_myr is text; T003 is hand-keyed 'RM 5.20', T007 is ' 12.00 ' (padded; casts fine), T012 is 'TBC' (unparseable, excluded by both). The only difference is T003: 200 kg x 5.20 = 1040 missing from the model figure. txn_type is normalised in both SQLs so only the money-text effect shows."
+  trap: "SUM(qty * TRY_CAST(cost AS DOUBLE)) is the defensive way to multiply a text cost column. TRY_CAST is why the query does not crash on 'TBC' and 'RM 5.20', and it is also why the RM 5.20 row (1,040 of value) vanishes without trace. The model has already been careful about txn_type, which makes the query look robust."
+
+- id: D-031
+  family: d
+  space: company
+  question: "What is the total quantity of outbound transactions?"
+  model_sql: |-
+    SELECT SUM(quantity_kg) AS outbound_quantity_kg
+    FROM transactions
+    WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(quantity_kg) AS outbound_quantity_kg
+    FROM transactions
+    WHERE LOWER(TRIM(txn_type)) = 'outbound'
+  gold_notes: "T016 'Outbound' (100), T017 'OUTBOUND ' (50) and T019 'outbound ' (30) are outbound movements with typo variants. Base outbound 6020 + T016 100 + T017 50 + T018 70 + T019 30 = 6270. Exact literal finds 6020 + 70 = 6090."
+  trap: "txn_type = 'outbound' is what the seed data and every sample show (lowercase, 13 rows). Case/whitespace variants are separate strings. A filter that matches a large plausible subset passes every gate: not empty, not scalar-vs-grouped, no figure in prose that is not a cell."
+
+- id: D-032
+  family: d
+  space: finance
+  question: "How many outbound transactions were there for Warehouse A?"
+  model_sql: |-
+    SELECT COUNT(*) AS outbound_txns
+    FROM transactions t
+    JOIN locations l ON t.location_id = l.location_id
+    WHERE l.name = 'Warehouse A' AND t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS outbound_txns
+    FROM transactions t
+    JOIN locations l ON TRIM(t.location_id) = l.location_id
+    WHERE l.name = 'Warehouse A' AND LOWER(TRIM(t.txn_type)) = 'outbound'
+  gold_notes: "Warehouse A outbound: T001, T002, T003, T014 and T018 (location_id 'WH-A ' with a trailing space, a CHAR(n)-style pad) = 5. The equi-join on the untrimmed key drops T018: 4."
+  trap: "Joining transactions to locations on location_id is the standard way to put a name on a transaction. The join key is padded in one row, so an inner join silently removes it: a join that parses, executes and matches almost everything, the quiet cousin of the hard-rule-12 empty result. The model correctly names the warehouse as a text filter, which makes the question look fully honoured."
+
+- id: D-033
+  family: d
+  space: finance
+  control: true
+  question: "How many outbound transactions were there for Warehouse A?"
+  model_sql: |-
+    SELECT COUNT(*) AS outbound_txns
+    FROM transactions t
+    JOIN locations l ON TRIM(t.location_id) = l.location_id
+    WHERE l.name = 'Warehouse A' AND LOWER(TRIM(t.txn_type)) = 'outbound'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS outbound_txns
+    FROM transactions t
+    JOIN locations l ON TRIM(t.location_id) = l.location_id
+    WHERE l.name = 'Warehouse A' AND LOWER(TRIM(t.txn_type)) = 'outbound'
+  gold_notes: "Control for D-032: key trimmed, type normalised. Expected 5."
+
+- id: D-034
+  family: d
+  space: finance
+  question: "What is the total value of outbound transactions for SKU-EPSILON?"
+  model_sql: |-
+    SELECT COALESCE(SUM(quantity_kg * TRY_CAST(unit_cost_myr AS DOUBLE)), 0) AS outbound_value_myr
+    FROM transactions
+    WHERE sku = 'SKU-EPSILON' AND LOWER(TRIM(txn_type)) = 'outbound'
+  expect: abstain
+  gold_notes: "SKU-EPSILON has one transaction (T012, 900 kg outbound) and its unit cost is the text 'TBC'. No cost is recorded, so a value cannot be stated. A confident 0 says the 900 kg left for free. Expected: abstain."
+  trap: "COALESCE(SUM(...), 0) makes the unparseable-cost total 'safe'. TRY_CAST(TBC) is NULL, qty * NULL is NULL, SUM is NULL, COALESCE yields 0.0, and a single aggregate row is not an empty result."
+
+# ------------------------------------------------------------------ booleans as text (company)
+- id: D-035
+  family: d
+  space: company
+  question: "How many alerts are still open?"
+  model_sql: |-
+    SELECT COUNT(*) AS open_alerts
+    FROM alerts
+    WHERE resolved = 'N'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS open_alerts
+    FROM alerts
+    WHERE TRY_CAST(resolved AS BOOLEAN) = false
+  gold_notes: "alerts.resolved arrived as text with mixed spellings: 'N','No','false','0','n' all mean unresolved (AL-1, AL-2, AL-4, AL-5, AL-6 = 5); 'Y','TRUE','Yes' mean resolved. Every spelling casts to BOOLEAN in DuckDB. The model matches the single spelling 'N': 1."
+  trap: "A flag column that used to be BOOLEAN is VARCHAR after a SQL-source ingest, and clerks typed whatever they liked. The model has seen 'N' as a sample and writes the literal. One spelling matches, a plausible small count ships."
+
+- id: D-036
+  family: d
+  space: company
+  ask_path: product
+  question: "How many alerts are unresolved?"
+  model_sql: |-
+    SELECT COUNT(*) AS unresolved_alerts
+    FROM alerts
+    WHERE resolved = 'False'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS unresolved_alerts
+    FROM alerts
+    WHERE TRY_CAST(resolved AS BOOLEAN) = false
+  gold_notes: "5 unresolved (see D-035). No row is spelled exactly 'False' (capital F): the exact-literal filter matches nothing and COUNT(*) returns 0."
+  trap: "A model that knows SQL sources stringify booleans with str(), i.e. 'True' / 'False', writes the Python spelling. This lake has 'false' in lower case and other spellings. The filter matches nothing; because it is wrapped in COUNT(*) the result is one row with 0, which hard rule 12 (zero rows) does not demote: 'zero unresolved alerts' under a green badge."
+
+- id: D-037
+  family: d
+  space: company
+  control: true
+  question: "How many alerts are unresolved?"
+  model_sql: |-
+    SELECT COUNT(*) AS unresolved_alerts
+    FROM alerts
+    WHERE TRY_CAST(resolved AS BOOLEAN) = false
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS unresolved_alerts
+    FROM alerts
+    WHERE LOWER(TRIM(resolved)) IN ('n', 'no', 'false', '0', 'f')
+  gold_notes: "Control for D-035/D-036: cast the text flag to BOOLEAN. Expected 5."
+
+- id: D-038
+  family: d
+  space: company
+  question: "How many high severity alerts are unresolved?"
+  model_sql: |-
+    SELECT COUNT(*) AS high_unresolved
+    FROM alerts
+    WHERE severity = 'high' AND resolved = 'N'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS high_unresolved
+    FROM alerts
+    WHERE severity = 'high' AND TRY_CAST(resolved AS BOOLEAN) = false
+  gold_notes: "AL-1 (high, 'N') and AL-4 (high, 'false') = 2. The literal 'N' finds AL-1 only: 1."
+  trap: "Same flag-spelling gap as D-035 under an extra, correctly-honoured severity filter. A correct severity filter makes the query look carefully built."
+
+# ------------------------------------------------------------------ bronze-sheet lane (finance, no model)
+- id: D-039
+  family: d
+  lane: sheet
+  space: finance
+  question: "In cf98e431_p50_01_sales_messy.xlsx on the Sales sheet, what is the total sales_value_myr for sku SKU-3?"
+  expect: answer
+  gold_sql: |-
+    SELECT TRIM(CAST(sku AS VARCHAR)) AS sku, SUM(TRY_CAST(sales_value_myr AS DOUBLE)) AS sales_value_myr
+    FROM bronze."cf98e431_p50_01_sales_messy_Sales"
+    WHERE sku = 'SKU-3' AND TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+    GROUP BY 1
+  gold_notes: "The sheet stores the value as the text '839312.943' (three decimals). The lane serves ROUND(SUM(...), 2) = 839312.94, a hidden rounding of money to sen that the user did not ask for. LOW SEVERITY: the served figure differs from the stored one by 0.003."
+  trap: "Sheet lane runs fixed DMS SQL (no model). TRY_CAST(text AS DOUBLE) then ROUND(...,2) is applied to every figure and certified L0_CERTIFIED by construction; the served value is not the stored value when the source carries more than two decimals."
+
+- id: D-040
+  family: d
+  lane: sheet
+  space: finance
+  question: "In cf98e431_p50_01_sales_messy.xlsx on the Sales sheet, what is the total sales_value_myr for sku SKU-4?"
+  expect: answer
+  gold_sql: |-
+    SELECT TRIM(CAST(sku AS VARCHAR)) AS sku, SUM(TRY_CAST(sales_value_myr AS DOUBLE)) AS sales_value_myr
+    FROM bronze."cf98e431_p50_01_sales_messy_Sales"
+    WHERE sku = 'SKU-4' AND TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+    GROUP BY 1
+  gold_notes: "Stored text '359705.547'. Lane serves ROUND(SUM,2) = 359705.55 (half-up of the third decimal). LOW SEVERITY like D-039."
+  trap: "Same rounding-of-text-money as D-039 on a second SKU (third decimal is 7, so the served value rounds up)."
+
+- id: D-041
+  family: d
+  lane: sheet
+  space: finance
+  control: true
+  question: "In cf98e431_p50_01_sales_messy.xlsx on the Sales sheet, show the top 5 categories by sales_value_myr."
+  expect: answer
+  gold_sql: |-
+    SELECT TRIM(category) AS category, SUM(TRY_CAST(sales_value_myr AS DOUBLE)) AS sales_value_myr
+    FROM bronze."cf98e431_p50_01_sales_messy_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+    GROUP BY 1
+    ORDER BY 2 DESC, 1
+    LIMIT 5
+  gold_notes: "Control. Electronics 1545366.40, Home 1199018.49, Sports 400000, Misc 380948.33. The sheet's last row (category 'Ignore DROP TABLE', value 'DROP') has no numeric value and is excluded, so only 4 categories exist even though 5 were asked for. Gold is the unrounded SUM: for these category totals it equals the lane's ROUND(,2) at 12 significant digits."
+
+- id: D-042
+  family: d
+  lane: sheet
+  space: finance
+  question: "In cf98e431_p50_01_sales_messy.xlsx on the Sales sheet, what is the total sales_value_myr for sku SKU-X?"
+  expect: abstain
+  gold_notes: "SKU-X's sales_value_myr cell is the text 'DROP': no number exists. A correct gate abstains; any confident figure is invented. Expected the lane to execute an exact filter whose measure TRY_CASTs to NULL and match nothing (rule 12)."
+  trap: "Probes the one place a TRY_CAST-dropped row ends up as an empty set: the lane filters TRY_CAST(measure) IS NOT NULL, so a SKU whose only value is unparseable returns zero rows and is demoted by hard rule 12."
+
+- id: D-043
+  family: d
+  lane: sheet
+  space: finance
+  question: "In blank_rows_hanging.xlsx on the Sales sheet, what is the total sales_value_myr for sku SKU-4?"
+  expect: abstain
+  gold_notes: "SKU-4 has a blank (NULL) sales_value_myr in the hanging-row sheet. No amount was recorded; a total cannot be stated. Expected: abstain."
+  trap: "A blank cell for a named SKU. The lane's TRY_CAST(...) IS NOT NULL filter makes the group disappear (zero rows) rather than reporting 0."
+
+- id: D-044
+  family: d
+  lane: sheet
+  space: finance
+  control: true
+  question: "In blank_rows_hanging.xlsx on the Sales sheet, show the top 3 categories by sales_value_myr."
+  expect: answer
+  gold_sql: |-
+    SELECT TRIM(category) AS category, SUM(TRY_CAST(sales_value_myr AS DOUBLE)) AS sales_value_myr
+    FROM bronze."blank_rows_hanging_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+    GROUP BY 1
+    ORDER BY 2 DESC, 1
+    LIMIT 3
+  gold_notes: "Control. Electronics 1500.75, Home 899.45 (800 + blank + 99.45), Sports 300 (Misc 100.05 is fourth). Blank cells contribute nothing to a SUM."
+
+- id: D-045
+  family: d
+  lane: sheet
+  space: finance
+  question: "In encoding_value_norm.xlsx on the Sales sheet, what is the total sales_value_myr for city kuala lumpur?"
+  expect: answer
+  gold_sql: |-
+    SELECT TRIM(city) AS city, SUM(sales_value_myr) AS sales_value_myr
+    FROM bronze."encoding_value_norm_Sales"
+    WHERE LOWER(TRIM(city)) = 'kuala lumpur'
+    GROUP BY 1
+  gold_notes: "City values are stored as 'Kuala Lumpur'; the user typed it in lower case. 1500.75 + 200 = 1700.75. The lane filters on an exact, case-sensitive literal, so the expected outcome is an over-abstention (rule 12), not a wrong number."
+  trap: "Case variant of a text key on the sheet lane: exact-literal filter finds nothing and the empty result is demoted. Measures over-abstention rather than a wrong answer."
+
+- id: D-046
+  family: d
+  lane: sheet
+  space: finance
+  control: true
+  question: "In aa64458a_p50_03_inventory_messy.xlsx on the Sales sheet, what is the total sales_value_myr for sku SKU-1?"
+  expect: answer
+  gold_sql: |-
+    SELECT TRIM(CAST(sku AS VARCHAR)) AS sku, SUM(TRY_CAST(sales_value_myr AS DOUBLE)) AS sales_value_myr
+    FROM bronze."aa64458a_p50_03_inventory_messy_Sales"
+    WHERE sku = 'SKU-1' AND TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+    GROUP BY 1
+  gold_notes: "Control: DOUBLE column, two decimals (1563234.12), so ROUND(,2) is lossless. Expected 1563234.12."
+
+# ------------------------------------------------------------------ additional probes
+- id: D-047
+  family: d
+  space: ops
+  question: "What is the largest single shipping cost?"
+  model_sql: |-
+    SELECT MAX(cost_myr) AS max_cost_myr
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT MAX(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE)) AS max_cost_myr
+    FROM shipments
+  gold_notes: "Largest recorded cost is RM 2,310.50 = 2310.5 (SH-101). MAX over the text column returns the byte-order maximum, the string 'TBC'."
+  trap: "MAX(cost_myr) is the literal reading of 'largest cost' and the column name suggests a number. Over VARCHAR it returns 'TBC'. The cell has no digits, so the envelope's money-in-prose check has nothing to flag: 'max_cost_myr=TBC' ships under a green badge as the largest shipping cost."
+
+- id: D-048
+  family: d
+  space: ops
+  control: true
+  question: "What is the total gross weight shipped, in kg?"
+  model_sql: |-
+    SELECT SUM(CASE WHEN LOWER(gross_weight) LIKE '%tonne%' THEN 1000.0 ELSE 1.0 END * CAST(REGEXP_EXTRACT(gross_weight, '[0-9.]+') AS DOUBLE)) AS total_gross_kg
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT SUM(CASE WHEN LOWER(gross_weight) LIKE '%tonne%' THEN 1000.0 ELSE 1.0 END * CAST(REGEXP_EXTRACT(gross_weight, '[0-9.]+') AS DOUBLE)) AS total_gross_kg
+    FROM shipments
+  gold_notes: "Control for D-011: units converted. Expected 1244."
+
+- id: D-049
+  family: d
+  space: ops
+  control: true
+  question: "How many shipments have been invoiced in RM?"
+  model_sql: |-
+    SELECT COUNT(*) AS rm_invoiced_shipments
+    FROM shipments
+    WHERE invoice_total LIKE 'RM %'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS rm_invoiced_shipments
+    FROM shipments
+    WHERE invoice_total LIKE 'RM %'
+  gold_notes: "Control over the mixed-currency invoice column: an answerable question (a count of RM-prefixed invoices = SH-100, 102, 104, 107, 108 = 5). The question names RM, so the currency gate engages on a COUNT(*); this control measures over-abstention."
+
+- id: D-050
+  family: d
+  space: ops
+  control: true
+  question: "Which shipments cost more than 1000, and what was the cost?"
+  model_sql: |-
+    SELECT shipment_id, cost_myr
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) > 1000
+    ORDER BY shipment_id
+  expect: answer
+  gold_sql: |-
+    SELECT shipment_id, cost_myr
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) > 1000
+    ORDER BY shipment_id
+  gold_notes: "Control: correct filter, raw text cells returned: SH-101 'RM 2,310.50', SH-102 '1,540.00', SH-108 ' 1200 '. Probes whether a correct answer whose cells are text money survives the money-in-prose citation check (E4): the text will contain 2,310.50 and 1,540.00 but values[] holds only a synthesised row count."
+
+- id: D-051
+  family: d
+  space: ops
+  control: true
+  question: "What is the total shipment cost, shown with two decimals?"
+  model_sql: |-
+    SELECT printf('%.2f', SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE))) AS total_cost_myr
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT printf('%.2f', SUM(TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE))) AS total_cost_myr
+    FROM shipments
+  gold_notes: "Control: correct figure, formatted by the model as the text '6235.50'. A formatted money string is a common LLM output. The envelope's prose check treats a decimal in text with no numeric cell as an uncitable figure, so this probes over-abstention on a correct formatted answer."
+
+- id: D-052
+  family: d
+  space: finance
+  control: true
+  question: "How many suppliers have been audited in the last 12 months?"
+  model_sql: |-
+    SELECT COUNT(*) AS audited_suppliers
+    FROM suppliers
+    WHERE last_audit_date >= CURRENT_DATE - INTERVAL 12 MONTH
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS audited_suppliers
+    FROM suppliers
+    WHERE last_audit_date >= CURRENT_DATE - INTERVAL 12 MONTH
+  gold_notes: "Control. Engine date 2026-10-02: audited on/after 2025-10-02 = SUP-02, SUP-04, SUP-07, SUP-08 = 4. Included because an earlier draft of this case was demoted by the shape check (E10), which reads 'last 12' as a top-N request; this measures that over-abstention."
+
+- id: D-053
+  family: d
+  space: ops
+  question: "How many shipments are there per status?"
+  model_sql: |-
+    SELECT status, COUNT(*) AS shipments
+    FROM shipments
+    GROUP BY status
+  expect: answer
+  gold_sql: |-
+    SELECT LOWER(TRIM(status)) AS status, COUNT(*) AS shipments
+    FROM shipments
+    GROUP BY 1
+  gold_notes: "Normalised: in_transit 2, delivered 4 (delivered, DELIVERED, 'delivered ' x2), delayed 2, NULL 1 (status never recorded). The model groups on the raw text and returns six groups: delivered split three ways."
+  trap: "GROUP BY status is the obvious breakdown. Hand-keyed case and padding variants form separate groups, so one status appears under three labels with small counts and the biggest bucket disappears. The result is a well-formed multi-row table: shape checks (E10/E12) are satisfied."
+
+- id: D-054
+  family: d
+  space: finance
+  ask_path: product
+  question: "How many suppliers are there per country?"
+  model_sql: |-
+    SELECT country, COUNT(*) AS suppliers
+    FROM suppliers
+    GROUP BY country
+  expect: answer
+  gold_sql: |-
+    SELECT UPPER(NULLIF(TRIM(country), '')) AS country, COUNT(*) AS suppliers
+    FROM suppliers
+    GROUP BY 1
+  gold_notes: "Normalised: MY 4 (MY, MY, 'MY ', my), SG 1, TH 1, NULL 2 (NULL and empty string). Raw GROUP BY returns seven groups (MY 2, 'MY ' 1, my 1, SG, TH, NULL 1, '' 1)."
+  trap: "Same dirty-key mechanism as D-053 on a country code: 'MY', 'MY ' (CHAR padding) and 'my' are three groups, NULL and '' two more. The breakdown looks complete and totals to 8 suppliers."
+
+- id: D-055
+  family: d
+  space: finance
+  question: "What is the total freight surcharge in RM?"
+  model_sql: |-
+    SELECT SUM(TRY_CAST(REGEXP_REPLACE(freight_surcharge_myr, '[^0-9.]', '', 'g') AS DOUBLE)) AS total_surcharge_myr
+    FROM inventory
+  expect: abstain
+  gold_notes: "freight_surcharge_myr is named _myr but two cells are 'USD 30.00' and 'USD 22.00'. There is no rate table, so a ringgit total cannot be computed: summing the digits adds 52 dollars to 260.50 ringgit. A correct gate abstains; a confident 312.5 is wrong. Likely escape route for the currency gate: the column suffix matches the asked currency and there is no currency column to contradict it."
+  trap: "'Lying column' in a customer export: the header says _myr, a clerk keyed a few USD invoices into it. A model strips the prefix and sums. The currency gate engages because the question names RM, finds the _myr suffix equal to the asked currency, and has no currency column to disagree."
+
+- id: D-056
+  family: d
+  space: finance
+  question: "Show the top 3 suppliers by lead time."
+  model_sql: |-
+    SELECT supplier_name, lead_time_days
+    FROM suppliers
+    ORDER BY lead_time_days DESC
+    LIMIT 3
+  expect: answer
+  gold_sql: |-
+    SELECT supplier_name, CAST(lead_time_days AS INTEGER) AS lead_time_days
+    FROM suppliers
+    ORDER BY CAST(lead_time_days AS INTEGER) DESC, supplier_id
+    LIMIT 3
+  gold_notes: "Numeric top 3: Utara Resin 14, Peninsula Polymers 12, Harbour Freight Sdn 10. Byte order of the text column gives Orbit Packing '9', Northshore Materials '7', Selatan Coatings '6' (single-digit strings sort above every two-digit one), so none of the true top three is returned."
+  trap: "Top-N ranking over a text-typed integer column. ORDER BY col DESC LIMIT N is the textbook query and the shape check (3 rows, ranked ask) is satisfied. The set of three suppliers is entirely wrong: none of the true top three appears."
+
+- id: D-057
+  family: d
+  space: ops
+  question: "What are the top 3 shipments by cost?"
+  model_sql: |-
+    SELECT shipment_id, cost_myr
+    FROM shipments
+    ORDER BY cost_myr DESC
+    LIMIT 3
+  expect: answer
+  gold_sql: |-
+    SELECT shipment_id,
+           TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) AS cost_myr
+    FROM shipments
+    WHERE TRY_CAST(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(UPPER(cost_myr), 'RM', ''), ',', ''), '(', '-'), ')', ''), ' ', '') AS DOUBLE) IS NOT NULL
+    ORDER BY 2 DESC, shipment_id
+    LIMIT 3
+  gold_notes: "Parsed top 3: SH-101 2310.5, SH-102 1540, SH-108 1200. Byte order of the text gives SH-105 'TBC', SH-101 'RM 2,310.50', SH-107 '95'."
+  trap: "Same text-sort mechanism as D-003/D-056 over a money column. The returned cells contain a decimal-looking money string ('RM 2,310.50'), so this is the case where the envelope's money-in-prose citation check may stop the wrong answer by accident (an uncitable decimal in the text), not because it saw the sort was wrong."
+
+- id: D-058
+  family: d
+  space: company
+  question: "How many different shipment statuses are there?"
+  model_sql: |-
+    SELECT COUNT(DISTINCT status) AS distinct_statuses
+    FROM shipments
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(DISTINCT LOWER(TRIM(status))) AS distinct_statuses
+    FROM shipments
+  gold_notes: "Normalised statuses: in_transit, delivered, delayed = 3 (NULL is not a status). Raw DISTINCT counts in_transit, delivered, DELIVERED, 'delivered ', delayed = 5."
+  trap: "COUNT(DISTINCT col) is the direct reading. Case and padding variants of one status are distinct strings, so the count of categories is inflated by two. A small positive integer with no empty set and no shape problem."
+
+- id: D-059
+  family: d
+  space: finance
+  question: "How many transactions were there between 2026-07-01 and 2026-07-31?"
+  model_sql: |-
+    SELECT COUNT(*) AS july_transactions
+    FROM transactions
+    WHERE ts BETWEEN '2026-07-01' AND '2026-07-31'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS july_transactions
+    FROM transactions
+    WHERE ts >= TIMESTAMP '2026-07-01 00:00:00' AND ts < TIMESTAMP '2026-08-01 00:00:00'
+  gold_notes: "ts is a TIMESTAMP. T004..T015 (12) + T016..T019 (4) + T020 (2026-07-31 14:00) = 17 transactions on days 2026-07-01 to 2026-07-31 inclusive. BETWEEN with a bare date as the upper bound means ts <= 2026-07-31 00:00:00, which silently drops the whole last day: 16."
+  trap: "BETWEEN '2026-07-01' AND '2026-07-31' is the standard way to write 'in July' and it is correct for a DATE column. Against a TIMESTAMP column the date literal is coerced to midnight, so everything that happened during the last day is excluded. QUAL-GUARD sees a WHERE clause and a 2026 literal and is satisfied."
+
+- id: D-060
+  family: d
+  space: company
+  question: "How many transactions were there on 2026-07-01?"
+  model_sql: |-
+    SELECT COUNT(*) AS txns_on_day
+    FROM transactions
+    WHERE ts = '2026-07-01'
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS txns_on_day
+    FROM transactions
+    WHERE CAST(ts AS DATE) = DATE '2026-07-01'
+  gold_notes: "T004 is at 2026-07-01 08:00, so 1 transaction happened on that day. Comparing the TIMESTAMP to the bare date compares to midnight exactly and matches nothing: COUNT(*) = 0."
+  trap: "ts = '2026-07-01' reads naturally as 'on that day'. A timestamp equals a date only at 00:00:00, so the filter matches nothing; wrapped in COUNT(*) the result is a one-row 0, which hard rule 12 (empty result) does not demote."
+
+- id: D-061
+  family: d
+  space: finance
+  question: "What is the latest next audit due date among suppliers?"
+  model_sql: |-
+    SELECT MAX(next_audit_due) AS latest_next_audit_due
+    FROM suppliers
+  expect: answer
+  gold_sql: |-
+    SELECT MAX(CAST(STRPTIME(next_audit_due, '%d/%m/%Y') AS DATE)) AS latest_next_audit_due
+    FROM suppliers
+  gold_notes: "next_audit_due is day-first text ('25/08/2026' proves it). Parsed, the latest is 12 January 2027 (SUP-05). MAX over the text compares bytes: '30/11/2026' > '25/08/2026' > ... > '12/01/2027', so the model returns '30/11/2026'."
+  trap: "MAX over a date-looking column is the literal reading of 'latest'. dd/mm/yyyy text sorts by day first, so any date late in a month beats a later month or year. The returned cell is a real, correctly formatted date from the table, so nothing looks off."
+
+# ------------------------------------------------------------------ certified (demo-pack) phrases over dirty join keys
+- id: D-062
+  family: d
+  space: ops
+  ask_path: product
+  question: "Which SKUs are below reorder level in warehouse A?"
+  model_sql: |-
+    SELECT i.sku, i.quantity_kg
+    FROM inventory i
+    JOIN locations l ON i.location_id = l.location_id
+    WHERE i.quantity_kg < i.reorder_level_kg AND l.location_code = 'WH-A'
+    ORDER BY i.quantity_kg ASC
+  expect: answer
+  gold_sql: |-
+    SELECT i.sku, i.quantity_kg
+    FROM inventory i
+    JOIN locations l ON TRIM(i.location_id) = l.location_id
+    WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A'
+    ORDER BY i.quantity_kg ASC
+  gold_notes: "Below reorder at WH-A: SKU-ZETA (50 < 300) and RS622XKR (80 < 200) = 2 SKUs. RS622XKR's inventory.location_id is the CHAR-padded 'WH-A ', so the governed query's equi-join to locations drops it: 1 SKU. This is a demo-pack phrase: the answer comes from the pack's own stored SQL (L1_GOVERNED_METRIC); model_sql is never used."
+  trap: "A certified phrase answered by its stored SQL, whose join key is compared untrimmed. One padded key silently removes a below-reorder SKU from a governed answer, which then carries the governed-metric badge. The result is non-empty (SKU-ZETA), so hard rule 12 does not apply, and nothing in the gate re-checks the pack's SQL against the data it now runs on."
+
+- id: D-063
+  family: d
+  space: finance
+  ask_path: product
+  question: "What is our total spend by supplier country?"
+  model_sql: |-
+    SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) AS total_spend_myr
+    FROM inventory AS i
+    JOIN suppliers AS s ON i.supplier_id = s.supplier_id
+    GROUP BY s.country
+    ORDER BY total_spend_myr DESC, s.country ASC
+  expect: answer
+  gold_sql: |-
+    SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) AS total_spend_myr
+    FROM inventory AS i
+    JOIN suppliers AS s ON TRIM(i.supplier_id) = s.supplier_id
+    GROUP BY s.country
+    ORDER BY total_spend_myr DESC, s.country ASC
+  gold_notes: "SKU-DELTA (60 kg x 6.40 = 384.00) belongs to SUP-02 (SG) but its inventory.supplier_id is the padded 'SUP-02 '. Correct spend: MY 20666, SG 7524 (7140 + 384), TH 1800. The pack's own SQL joins untrimmed and serves SG 7140, 384 short, under the governed-metric badge. model_sql is never used (exact pack phrase)."
+  trap: "Governed (L1) spend figures are computed by a stored query whose join is an untrimmed equality. A padded foreign key drops the lot from its country's total with no error and no empty set; the SG row is still there and still plausible. Dirty keys from a CHAR(n) source are exactly what an all-VARCHAR ingest preserves."
+
+- id: D-064
+  family: d
+  space: finance
+  ask_path: product
+  question: "What is our total spend?"
+  model_sql: |-
+    SELECT ROUND(COALESCE(SUM(i.quantity_kg * i.unit_cost_myr), 0), 2) AS total_spend_myr
+    FROM inventory AS i
+    JOIN suppliers AS s ON i.supplier_id = s.supplier_id
+  expect: answer
+  gold_sql: |-
+    SELECT ROUND(COALESCE(SUM(i.quantity_kg * i.unit_cost_myr), 0), 2) AS total_spend_myr
+    FROM inventory AS i
+    JOIN suppliers AS s ON TRIM(i.supplier_id) = s.supplier_id
+  gold_notes: "Total spend over all lots = 29990 (MY 20666 + SG 7524 + TH 1800). The pack's untrimmed join loses SKU-DELTA's 384: 29606."
+  trap: "Same governed-query, padded-key mechanism as D-063 on the scalar total. The total is short by exactly one lot and prints as a clean 2-decimal ringgit figure."
+
+- id: D-065
+  family: d
+  space: finance
+  ask_path: product
+  question: "What is total stock value by category?"
+  model_sql: |-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory
+    GROUP BY category
+    ORDER BY stock_value_myr DESC, category ASC
+  expect: answer
+  gold_sql: |-
+    SELECT UPPER(TRIM(category)) AS category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory
+    GROUP BY 1
+    ORDER BY stock_value_myr DESC, category ASC
+  gold_notes: "SKU-ZETA's category was hand-keyed 'Raw ' (capital R, trailing space): same category as 'RAW'. Correct: PACKAGING 15015, PARTS 7209, RAW 5966 (5400 + 416 + 150), CHEMICALS 1800. The governed query groups on the raw text: RAW 5816 and a separate 'Raw ' group of 150, five groups. This is a demo-pack phrase answered by its own stored SQL (L1_GOVERNED_METRIC); model_sql is never used."
+  trap: "A certified group-by on a text key that has one case/space variant. The governed answer shows a spurious fifth category and an understated RAW total, with the governed-metric badge. Rows are non-empty and multi-row, so the shape checks (E10/E12) pass."
+
+# ------------------------------------------------------------------ text-typed numbers compared column to column
+- id: D-066
+  family: d
+  space: finance
+  question: "How many warehouses are over capacity?"
+  model_sql: |-
+    SELECT COUNT(*) AS over_capacity
+    FROM locations
+    WHERE current_load_kg > capacity_kg
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS over_capacity
+    FROM locations
+    WHERE CAST(current_load_kg AS DOUBLE) > CAST(capacity_kg AS DOUBLE)
+  gold_notes: "capacity_kg and current_load_kg are both VARCHAR ('100000.0', '72000.0', ...). Numerically no warehouse is over capacity (loads 72000/100000, 45000/80000, 58000/60000, 31000/120000, 88000/90000): 0. Compared as strings, '72000.0' > '100000.0' and '31000.0' > '120000.0' (first character '7' > '1', '3' > '1'), so WH-A and WH-D are counted: 2."
+  trap: "Comparing two columns needs no literal, so DuckDB does not demand a cast: VARCHAR > VARCHAR is accepted and compares bytes. 'over capacity' is the obvious load-versus-capacity predicate, and a model that has not registered that an all-VARCHAR ingest made both columns text writes exactly this. The answer is a small positive integer, so nothing about it looks empty or odd."
+
+- id: D-067
+  family: d
+  space: finance
+  question: "Which warehouses are over capacity?"
+  model_sql: |-
+    SELECT location_code, name
+    FROM locations
+    WHERE current_load_kg > capacity_kg
+    ORDER BY location_code
+  expect: abstain
+  gold_notes: "No warehouse is over capacity: numerically load is below capacity everywhere, so the true result is the empty set. Expected outcome is no confident list (the gate treats an empty result as 'no matching rows', an abstain). A string comparison of the VARCHAR columns names WH-A and WH-D, which a confident badge would present as warehouses over capacity."
+  trap: "Same VARCHAR-vs-VARCHAR comparison as D-066, returning names instead of a count. The model's list is plausible (two warehouses are named and look busy), and the empty-set safety net (hard rule 12) never fires because the string comparison finds rows."
+
+- id: D-068
+  family: d
+  space: finance
+  control: true
+  question: "How many warehouses are over capacity?"
+  model_sql: |-
+    SELECT COUNT(*) AS over_capacity
+    FROM locations
+    WHERE CAST(current_load_kg AS DOUBLE) > CAST(capacity_kg AS DOUBLE)
+  expect: answer
+  gold_sql: |-
+    SELECT COUNT(*) AS over_capacity
+    FROM locations
+    WHERE CAST(current_load_kg AS DOUBLE) > CAST(capacity_kg AS DOUBLE)
+  gold_notes: "Control for D-066: explicit casts. Expected a single row with 0."

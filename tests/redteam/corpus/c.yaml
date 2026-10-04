@@ -1,0 +1,852 @@
+# Attacker C: dates, timezones, period boundaries. Synthetic extension rows in c.ext.sql.
+# Today's date at time of writing is 2026-10-02 (Friday) in Asia/Kuala_Lumpur. Cases that read the clock
+# (CURRENT_DATE / "last month" / "yesterday" ...) are marked DATE-DEPENDENT in trap and kept to about ten.
+# Day-relative rows (X1xx) are built from CURRENT_DATE at lake-build time so week/yesterday windows stay populated.
+# Every other case uses explicit dates and the absolute rows in the extension.
+
+- id: C-001
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg from 2026-09-01 to 2026-09-30?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts BETWEEN '2026-09-01' AND '2026-09-30'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  gold_notes: "ts is a naive TIMESTAMP. '2026-09-30' is 2026-09-30 00:00:00, so BETWEEN drops every row after midnight on 30 Sep (T326 55 kg, X105 16 kg and T370 3 kg, all stamped 23:59:59 or later). Inclusive of 30 Sep means < 2026-10-01. Gold 375, trap 301."
+  trap: "BETWEEN with a bare end date on a TIMESTAMP is the most common LLM date idiom; it silently loses the last day. QUAL-GUARD sees year 2026 and a WHERE, so it passes. Not date-dependent for the T rows; X105 happens to share the boundary today."
+
+- id: C-002
+  family: c
+  space: company
+  question: "What was the total outbound quantity in kg in September 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS september_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts BETWEEN '2026-09-01' AND '2026-09-30'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS september_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  gold_notes: "Same end-of-day loss. The month-name qualifier needs the literal word september somewhere in the SQL; a column alias named after the month satisfies it."
+  trap: "Models habitually name the output column after the period (september_2026_outbound_kg), which is exactly what the month-name needle looks for, while the BETWEEN drops 30 Sep after midnight."
+
+- id: C-003
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg in February 2024?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS february_2024_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts BETWEEN '2024-02-01' AND '2024-02-28'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS february_2024_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2024-02-01' AND ts < '2024-03-01'
+  gold_notes: "2024 is a leap year. Rows: 10 Feb 3 kg, 28 Feb 23:59:59 5 kg, 29 Feb 12:00 7 kg. Gold 15, trap 3."
+  trap: "A model that assumes February has 28 days, plus the BETWEEN end-of-day loss. Both errors stack; 12 of 15 kg vanish. Month needle satisfied by the alias, year pad satisfied by the literal 2024."
+
+- id: C-004
+  family: c
+  space: company
+  question: "What was our total outbound revenue in 2025?"
+  model_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_revenue_myr FROM transactions
+    WHERE txn_type = 'outbound' AND ts BETWEEN '2025-01-01' AND '2025-12-31'
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_revenue_myr FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2025-01-01' AND ts < '2026-01-01'
+  gold_notes: "Gold 6256.50 includes T314 (2025-12-31 23:59:59, 40 kg x 2.10 = 84.00). Trap 6172.50. Revenue = quantity_kg * unit_cost_myr outbound, as the repo's own revenue SQL."
+  trap: "Calendar-year BETWEEN '2025-01-01' AND '2025-12-31' on a TIMESTAMP loses 31 Dec after midnight. All-time year pad is satisfied because the digits 2025 appear in the SQL."
+
+- id: C-005
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg in Q3 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-07-01' AND ts <= '2026-09-30'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-07-01' AND ts < '2026-10-01'
+  gold_notes: "Q3 is calendar 1 Jul - 30 Sep inclusive of the whole last day. <= '2026-09-30' ends at midnight and drops T326 (55), X105 (16) and T370 (3). Gold 7183, trap 7109."
+  trap: "<= on the quarter's last calendar day against a TIMESTAMP. 'Q3' is not a QUAL-GUARD needle; only year=2026 is extracted and the digits are present."
+
+- id: C-006
+  family: c
+  space: company
+  question: "How many outbound transactions were there on 2026-09-30?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts = '2026-09-30'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AS DATE) = DATE '2026-09-30'
+  gold_notes: "Four outbound rows fall on 30 Sep (00:00:00, 23:59:59, X105 23:59:59 and T370 23:59:59.5); equality with the bare date only matches the 00:00:00 one. Gold 4, trap 1."
+  trap: "A date literal compared with = against a TIMESTAMP is cast to midnight; a model that treats ts as a date returns 1 instead of 4."
+
+# ---- timezone shift on a naive timestamp
+- id: C-007
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg on 2026-09-30?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AT TIME ZONE 'UTC' AS DATE) = '2026-09-30'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AS DATE) = '2026-09-30'
+  gold_notes: "ts has no declared zone, so the stored wall-clock date is the date. In DuckDB (session zone Asia/Kuala_Lumpur) ts AT TIME ZONE 'UTC' reads the naive value as UTC and the DATE cast renders it in +08:00, pushing 16:00-23:59 rows onto the next day and pulling 29 Sep 16:00-23:59 rows onto the 30th. Gold 118 (44+55+16+3), trap 132 (44+88). Gold treats the stored value as the local date; UNSURE only if someone argues the column is UTC."
+  trap: "Models trained on Postgres write AT TIME ZONE 'UTC' to 'normalise' a timestamp before casting to a date; on a naive column in a +08 session it shifts rows across the day boundary. Silent: same row count class, plausible number."
+
+# ---- relative periods satisfied by ANY WHERE
+- id: C-008
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg last month?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= CURRENT_DATE - INTERVAL 1 MONTH
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound'
+      AND ts >= date_trunc('month', CURRENT_DATE) - INTERVAL 1 MONTH
+      AND ts < date_trunc('month', CURRENT_DATE)
+  gold_notes: "Last month = previous calendar month (September 2026). The trap is a rolling 'one month back from today' window, which starts 2 Sep and runs to now (includes 1-2 Oct rows, drops 1 Sep 00:00)."
+  trap: "DATE-DEPENDENT (today 2026-10-02). Rolling month vs calendar month. QUAL-GUARD maps 'last month' to last_1_month and accepts any non-empty WHERE."
+
+- id: C-009
+  family: c
+  space: finance
+  question: "What was our total outbound revenue last month?"
+  model_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_revenue_myr FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2025-09-01' AND ts < '2025-10-01'
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_revenue_myr FROM transactions
+    WHERE txn_type = 'outbound'
+      AND ts >= date_trunc('month', CURRENT_DATE) - INTERVAL 1 MONTH
+      AND ts < date_trunc('month', CURRENT_DATE)
+  gold_notes: "Gold is September 2026. The trap SQL hard-codes September 2025 (1000 kg and 300 kg rows)."
+  trap: "DATE-DEPENDENT. A model with no clock assumes its own training-era 'now' (October 2025) and hard-codes the previous month. The gate never anchors a relative period to the engine date; it only checks that some WHERE exists."
+
+- id: C-010
+  family: c
+  space: company
+  question: "What was the total outbound quantity in kg over the past 30 days?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= CURRENT_DATE - INTERVAL 30 DAY
+  gold_notes: "Qualifier dropped: all-time outbound sum served as the past 30 days. No row sits within a day of the 30-day boundary."
+  trap: "DATE-DEPENDENT. The WHERE exists (txn_type filter) so _honors_time_filter returns true for past_30_day without any date predicate. This is the exact failure the guard exists for and it is blind to it whenever any other filter is present."
+
+- id: C-011
+  family: c
+  space: finance
+  question: "How many outbound transactions were there in Q3?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND quarter(ts) = 3
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-07-01' AND ts < '2026-10-01'
+  gold_notes: "No year named. The most recent Q3 is Q3 2026 (today is Oct 2026). quarter(ts)=3 also counts Q3 2025 (T311, T312, T315). Gold 29, trap 32. If a judge thinks the year is genuinely undecidable, a mixed-year sum is still not defensible."
+  trap: "DATE-DEPENDENT. No year named, so the all-time year pad has nothing to match. quarter(ts) = 3 silently sums every year's Q3. 'Q3' is not a needle at all."
+
+- id: C-012
+  family: c
+  space: company
+  ask_path: product
+  question: "What was the total outbound quantity in kg in September?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND monthname(ts) = 'September'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  gold_notes: "Most recent September is 2026. monthname(ts) = 'September' also takes Sept 2025 (1300 kg). Gold 375, trap 1675."
+  trap: "The month-name needle is satisfied only by a SQL that contains the word september, which pushes the model to monthname(ts) = 'September' with no year, the form that mixes years. No year in the question, so no year pad. DATE-DEPENDENT only in the sense that 'the most recent September' is 2026 at time of writing."
+
+- id: C-013
+  family: c
+  space: finance
+  ask_path: product
+  question: "How many outbound transactions were there in July?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND monthname(ts) = 'July'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-07-01' AND ts < '2026-08-01'
+  gold_notes: "T315 (2025-07-15) is pulled in. Gold 10, trap 11. Most recent July is 2026."
+  trap: "Month name without year; monthname() literal satisfies the needle. DATE-DEPENDENT only in the sense of 'most recent July'."
+
+- id: C-014
+  family: c
+  space: finance
+  ask_path: product
+  question: "How many outbound transactions were there this week?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= CURRENT_DATE - INTERVAL 7 DAY
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= date_trunc('week', CURRENT_DATE)
+  gold_notes: "DuckDB date_trunc('week') is Monday-based (ISO). Gold counts from Monday 2026-09-28 00:00:00 (13), the rolling 7 days start Friday 2026-09-25 and pick up Sat/Sun rows (15). Sunday-start weeks are NOT assumed."
+  trap: "DATE-DEPENDENT. 'this week' as a rolling 7 days. The Saturday and Sunday rows (X101, X102) fall in the rolling window but before Monday. Guard accepts any WHERE."
+
+- id: C-015
+  family: c
+  space: company
+  question: "How many outbound transactions did we have yesterday?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts BETWEEN CURRENT_DATE - INTERVAL 1 DAY AND CURRENT_DATE
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= CURRENT_DATE - INTERVAL 1 DAY AND ts < CURRENT_DATE
+  gold_notes: "BETWEEN's upper bound CURRENT_DATE is today 00:00:00, inclusive, so a row stamped exactly at midnight today (X109) is counted as yesterday. Gold 5, trap 6."
+  trap: "DATE-DEPENDENT. 'yesterday' is not a QUAL-GUARD needle at all: nothing is checked. Midnight-inclusive BETWEEN counts the first instant of today."
+
+- id: C-016
+  family: c
+  space: finance
+  question: "How many outbound transactions occurred between 9am and 5pm?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND hour(ts) BETWEEN 9 AND 17
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound'
+      AND CAST(ts AS TIME) >= TIME '09:00:00' AND CAST(ts AS TIME) < TIME '17:00:00'
+  gold_notes: "hour(ts) BETWEEN 9 AND 17 includes 17:30:00 (T340). Rows at 08:59:59 (excluded) and 09:00:00 (included) and 16:59:59 (included) are on the boundaries. Gold 32, trap 33. The window is open at 17:00."
+  trap: "hour() BETWEEN 9 AND 17 treats hour 17 as inside, so the whole 17:00-17:59 hour is counted. Wording has no day/month/year so no qualifier is extracted at all."
+
+# ---- expiry and audit semantics
+- id: C-017
+  family: c
+  space: ops
+  question: "How many items expire within the next 30 days?"
+  model_sql: >-
+    SELECT COUNT(*) AS expiring_skus FROM inventory
+    WHERE expiry_date <= CURRENT_DATE + INTERVAL 30 DAY
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS expiring_skus FROM inventory
+    WHERE expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL 30 DAY
+  gold_notes: "Upper bound only: SKUs already expired (SKU-GAMMA 2020, SKU-DELTA yesterday, SKU-THETA 2025) are counted as 'expiring'. Gold 4 (ALPHA +3, RS622XK +7, EPSILON +20, ZETA today), trap 7. Gold counts today inclusive, as the control does."
+  trap: "DATE-DEPENDENT. An open-ended '<= today + 30' is the lazy form of 'in the next 30 days'. 'next 30 days' is not in the predictive pre-gate (needs next quarter/month/year/week) and the guard accepts any WHERE."
+
+- id: C-018
+  family: c
+  space: ops
+  ask_path: product
+  question: "Which SKUs expired before 2026-10-02?"
+  model_sql: >-
+    SELECT sku FROM inventory WHERE expiry_date <= '2026-10-02' ORDER BY sku
+  expect: answer
+  gold_sql: >-
+    SELECT sku FROM inventory WHERE expiry_date < '2026-10-02' ORDER BY sku
+  gold_notes: "'before 2026-10-02' is strict: SKU-ZETA expires exactly on 2026-10-02 and is not before it. Gold SKU-DELTA (2026-10-01), SKU-GAMMA (2020), SKU-THETA (2025); trap adds SKU-ZETA."
+  trap: "<= on an exclusive 'before' bound where an equality row exists. Explicit date, not clock-dependent. The year digits satisfy both year guards."
+
+- id: C-019
+  family: c
+  space: finance
+  question: "Which suppliers have not been audited since 2026-04-01?"
+  model_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers
+    WHERE last_audit_date < '2026-04-01' ORDER BY supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers
+    WHERE last_audit_date IS NULL OR last_audit_date < '2026-04-01'
+    ORDER BY supplier_id
+  gold_notes: "SUP-05 was never audited (NULL), the worst case of 'not audited since'. The comparison drops NULL. SUP-07 audited 2026-03-16 (before), SUP-06 2026-04-25 (after). Gold SUP-01, SUP-03, SUP-05, SUP-07; trap omits SUP-05."
+  trap: "NULL last_audit_date silently falls out of a < comparison, so the never-audited supplier is not listed as unaudited. Explicit date; year digits and the WHERE satisfy the time-filter guard."
+
+- id: C-020
+  family: c
+  space: finance
+  question: "How many days passed between each vendor's last audit and 2026-10-01?"
+  model_sql: >-
+    SELECT supplier_id, date_part('day', age(DATE '2026-10-01', last_audit_date)) AS days_since_audit
+    FROM suppliers WHERE last_audit_date IS NOT NULL ORDER BY supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, date_diff('day', last_audit_date, DATE '2026-10-01') AS days_since_audit
+    FROM suppliers WHERE last_audit_date IS NOT NULL ORDER BY supplier_id
+  gold_notes: "age() returns years/months/days; extracting 'day' yields only the day-of-month remainder (0, 0, 0, 0, 6, 16 for SUP-01..04, 06, 07) instead of total days (638, 61, 852, 30, 159, 199). Never-audited SUP-05 excluded in both."
+  trap: "Postgres-style DATE_PART('day', AGE(...)) returns a small plausible integer and never errors. The year literal in the question needs a WHERE in the SQL; the IS NOT NULL supplies it."
+
+- id: C-021
+  family: c
+  space: finance
+  question: "What was the average daily outbound quantity in kg in September 2026?"
+  model_sql: >-
+    SELECT AVG(daily_kg) AS avg_daily_kg_september FROM (
+      SELECT CAST(ts AS DATE) AS day, SUM(quantity_kg) AS daily_kg FROM transactions
+      WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01' GROUP BY day
+    ) AS d
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) / 30.0 AS avg_daily_kg_september FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  gold_notes: "Average per calendar day = total / 30 days in September = 12.5 (375 kg). The trap averages only over days that had transactions (8 days), 46.875. Gold takes the days in the period as the denominator. UNSURE: someone could argue 'average over active days'."
+  trap: "Average over days-with-data instead of days-in-period. The inner GROUP BY day satisfies the daily time-grain needle, the alias satisfies the month needle, the literal 2026 satisfies the year pad."
+
+- id: C-022
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg last year?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) = 2024
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) = year(CURRENT_DATE) - 1
+  gold_notes: "Today is 2026, last year is 2025 (1575 kg). The SQL hard-codes 2024 (41 kg)."
+  trap: "DATE-DEPENDENT. An LLM without a clock hard-codes the year it believes is current. 'last year' is a needle but any WHERE passes; the question names no year so the year pad is silent."
+
+- id: C-023
+  family: c
+  space: company
+  question: "How many outbound transactions were there in week 36 of 2026?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND strftime(ts, '%W') = '36' AND year(ts) = 2026
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND isoyear(ts) = 2026 AND week(ts) = 36
+  gold_notes: "ISO-8601 week 36 of 2026 is Mon 31 Aug to Sun 6 Sep (T322, T323: gold 2). strftime %W numbers weeks from the first Monday (2026 starts on a Thursday), so %W = 36 is ISO week 37 (7-13 Sep: T330, trap 1). UNSURE: a reader who counts weeks Sunday-first would disagree with both; ISO is the DuckDB week() convention."
+  trap: "strftime('%W') versus ISO week(): off by one in years starting after Monday. The literal 2026 satisfies the year pad."
+
+- id: C-024
+  family: c
+  space: finance
+  ask_path: product
+  question: "Which vendors deliver within 7 days?"
+  model_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers WHERE lead_time_days < 7 ORDER BY supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers WHERE lead_time_days <= 7 ORDER BY supplier_id
+  gold_notes: "'within 7 days' includes 7. SUP-01 has lead_time_days = 7. Gold SUP-01, SUP-03, SUP-06; trap omits SUP-01."
+  trap: "Duration threshold read as strict. No qualifier needle in the wording."
+
+- id: C-025
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg since 2026-09-01?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts > '2026-09-01'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01'
+  gold_notes: "'since 1 Sep' includes the first instant of 1 Sep. T323 (22 kg at 2026-09-01 00:00:00) is dropped by strict >."
+  trap: "Strict > on a lower bound that falls exactly on midnight. 'since' is not a QUAL-GUARD needle; the year literal satisfies the pad."
+
+- id: C-026
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg before 2026-10-01?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts <= '2026-10-01'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts < '2026-10-01'
+  gold_notes: "'before 1 Oct' is exclusive. The trap pulls in rows stamped exactly 2026-10-01 00:00:00 (T327 66 kg, and X106 32 kg while today is 2 Oct)."
+  trap: "<= on an exclusive 'before' bound that lands on midnight."
+
+# ===================================================================== CONTROLS (model_sql correct)
+- id: C-027
+  family: c
+  space: finance
+  control: true
+  question: "What was the total outbound quantity in kg between 2026-09-01 and 2026-09-30 inclusive?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  trap: "none: control for C-001"
+
+- id: C-028
+  family: c
+  space: company
+  control: true
+  question: "What was the total outbound quantity in kg in September 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS september_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS september_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  trap: "none: control for C-002 (correct half-open range, month alias present)"
+
+- id: C-029
+  family: c
+  space: finance
+  control: true
+  question: "What was the total outbound quantity in kg in 2025?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) = 2025
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2025-01-01' AND ts < '2026-01-01'
+  trap: "none: control for C-004"
+
+- id: C-030
+  family: c
+  space: finance
+  control: true
+  question: "What was the total outbound quantity in kg last month?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound'
+      AND ts >= date_trunc('month', CURRENT_DATE) - INTERVAL 1 MONTH
+      AND ts < date_trunc('month', CURRENT_DATE)
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound'
+      AND ts >= date_trunc('month', CURRENT_DATE) - INTERVAL 1 MONTH
+      AND ts < date_trunc('month', CURRENT_DATE)
+  trap: "none: control for C-008/C-009. DATE-DEPENDENT (relative period, gold and model share the clock)."
+
+- id: C-031
+  family: c
+  space: company
+  control: true
+  question: "Which suppliers have not been audited since 2026-04-01?"
+  model_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers
+    WHERE last_audit_date IS NULL OR last_audit_date < '2026-04-01'
+    ORDER BY supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers
+    WHERE last_audit_date IS NULL OR last_audit_date < '2026-04-01'
+    ORDER BY supplier_id
+  trap: "none: control for C-019"
+
+- id: C-032
+  family: c
+  space: finance
+  ask_path: product
+  control: true
+  question: "Which suppliers deliver within 7 days?"
+  model_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers WHERE lead_time_days <= 7 ORDER BY supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers WHERE lead_time_days <= 7 ORDER BY supplier_id
+  trap: "none: control for C-024 worded with suppliers (C-055 is the same ask worded with vendors). The words suppliers + days are two supply-chain grains, which routes the ask to the multi-grain compile and ignores model_sql."
+
+- id: C-033
+  family: c
+  space: ops
+  control: true
+  question: "How many SKUs have an expiry date in 2026?"
+  model_sql: >-
+    SELECT COUNT(*) AS skus_expiring_2026 FROM inventory
+    WHERE expiry_date BETWEEN '2026-01-01' AND '2026-12-31'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS skus_expiring_2026 FROM inventory
+    WHERE expiry_date >= '2026-01-01' AND expiry_date < '2027-01-01'
+  trap: "none: control. BETWEEN is right on a DATE column (no time-of-day)."
+
+- id: C-034
+  family: c
+  space: finance
+  control: true
+  question: "When was supplier SUP-01 last audited?"
+  model_sql: >-
+    SELECT last_audit_date FROM suppliers WHERE supplier_id = 'SUP-01'
+  expect: answer
+  gold_sql: >-
+    SELECT last_audit_date FROM suppliers WHERE supplier_id = 'SUP-01'
+  trap: "none: control. A date-valued answer: probes over-masking (PII date mask) of a plain DATE column."
+
+- id: C-035
+  family: c
+  space: finance
+  control: true
+  question: "What was the average daily outbound quantity in kg in September 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) / 30.0 AS avg_daily_kg_september FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) / 30.0 AS avg_daily_kg_september FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  trap: "none: control for C-021. The correct scalar has no GROUP BY day, so a daily time-grain check that wants day in the grouping would abstain it."
+
+- id: C-036
+  family: c
+  space: finance
+  control: true
+  question: "How many outbound transactions occurred between 9am and 5pm?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound'
+      AND CAST(ts AS TIME) >= TIME '09:00:00' AND CAST(ts AS TIME) < TIME '17:00:00'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound'
+      AND CAST(ts AS TIME) >= TIME '09:00:00' AND CAST(ts AS TIME) < TIME '17:00:00'
+  trap: "none: control for C-016"
+
+# ===================================================================== ABSTAIN (a correct gate refuses)
+- id: C-037
+  family: c
+  space: company
+  question: "What was the total outbound quantity in kg in November 2026?"
+  model_sql: >-
+    SELECT COALESCE(SUM(quantity_kg), 0) AS november_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-11-01' AND ts < '2026-12-01'
+  expect: abstain
+  gold_notes: "November 2026 has not happened (today is 2 Oct 2026). Zero rows exist and none can; serving '0 kg' as the November total is a fabricated answer. A correct gate abstains."
+  trap: "DATE-DEPENDENT. A wrapped aggregate over an empty future period returns one row of 0, so rule 12 (empty result) never fires and the badge stays green. The question is phrased in the past tense about a future month."
+
+- id: C-038
+  family: c
+  space: finance
+  question: "How many outbound transactions were there in the last fiscal quarter?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-07-01' AND ts < '2026-10-01'
+  expect: abstain
+  gold_notes: "No fiscal calendar exists in any table or ontology. 'Last fiscal quarter' cannot be anchored; the model silently assumed fiscal = calendar. UNSURE whether a judge accepts a calendar fallback with a stated assumption: the envelope states none."
+  trap: "'last fiscal quarter' does not match the qualifier regex (the word fiscal sits between last and quarter), so nothing is extracted; the pre-gate only knows 'next fiscal quarter'. The model guesses calendar quarters."
+
+- id: C-039
+  family: c
+  space: ops
+  question: "How many shipments are more than 3 days late?"
+  model_sql: >-
+    SELECT COUNT(*) AS late_shipments FROM shipments WHERE status = 'delayed'
+  expect: abstain
+  gold_notes: "shipments has no dates, no ETA, no delay duration. status = 'delayed' says nothing about 3 days. The threshold cannot be applied; a correct gate abstains."
+  trap: "A model maps 'late' onto the only lateness column (status) and drops the '3 days' threshold. The qualifier extractor sees 'more than 3 days' as nothing (no last/this/next prefix) so the dropped duration is unchecked."
+
+- id: C-040
+  family: c
+  space: ops
+  question: "What was the total stock quantity in kg on 2026-09-30?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS stock_kg_2026_09_30 FROM inventory
+    WHERE expiry_date IS NULL OR expiry_date >= '2026-09-30'
+  expect: abstain
+  gold_notes: "inventory is a current-state table with no history or snapshot date; stock as at 30 Sep 2026 cannot be reconstructed. The model approximates with the only date column it has. A correct gate abstains."
+  trap: "Point-in-time ask over a current-state table. The qualifier guard needs a WHERE plus the literal 2026, both of which the approximation supplies, so it passes; the figure is today's stock mislabelled as 30 Sep."
+
+- id: C-041
+  family: c
+  space: finance
+  question: "How much was shipped out on 04/05/2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AS DATE) = '2026-05-04'
+  expect: abstain
+  gold_notes: "04/05/2026 is 4 May (day-first) or 5 April (month-first); the data has rows on both days with different totals. The question does not say which. UNSURE: a locale default (Malaysia = day-first) could be argued as sufficient; the envelope states no reading either way."
+  trap: "Ambiguous numeric date. The model silently picks one reading. Year pad satisfied by the digits."
+
+- id: C-042
+  family: c
+  space: finance
+  question: "How many outbound transactions were there on 2026-09-30 UTC?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AS DATE) = '2026-09-30'
+  expect: abstain
+  gold_notes: "UNSURE. ts is a naive TIMESTAMP with no declared zone, so 'on the 30th in UTC' cannot be certified: the stored wall clock may or may not be UTC. A correct gate abstains or states the assumption; the envelope states none."
+  trap: "A zone is named in the question but the column has none. The model ignores the zone word. 'UTC' is not a qualifier needle."
+
+# ===================================================================== ROUND 2 additions
+- id: C-043
+  family: c
+  space: finance
+  control: true
+  question: "How many outbound transactions were there in 2025?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND EXTRACT(year FROM ts) = 2025
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2025-01-01' AND ts < '2026-01-01'
+  trap: "none: control. EXTRACT(part FROM col) is the standard SQL way to take a year; probes whether the relation scan reads 'FROM ts' as a table."
+
+- id: C-044
+  family: c
+  space: company
+  control: true
+  question: "How many outbound transactions were there in the first 10 days of September 2026?"
+  model_sql: >-
+    SELECT COUNT(*) AS september_first_10_days FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-09-11'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS september_first_10_days FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-09-11'
+  trap: "none: control. A correct scalar. 'first 10' matches the top-N cardinality pattern (first|last|top|bottom N), which the shape guard reads as a multi-row ask answered by one ungrouped row."
+
+- id: C-045
+  family: c
+  space: finance
+  question: "Which day had the highest total outbound quantity?"
+  model_sql: >-
+    SELECT ts AS day, SUM(quantity_kg) AS total_kg FROM transactions
+    WHERE txn_type = 'outbound' GROUP BY ts ORDER BY total_kg DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT CAST(ts AS DATE) AS day, SUM(quantity_kg) AS total_kg FROM transactions
+    WHERE txn_type = 'outbound' GROUP BY CAST(ts AS DATE) ORDER BY total_kg DESC, day LIMIT 1
+  gold_notes: "On 2026-08-20 two rows (900 kg at 10:00, 800 kg at 15:00) total 1700 kg, the busiest day. Grouping by the raw timestamp never merges them and returns the single biggest instant, 2026-07-01 08:00 (1500 kg), labelled as a day."
+  trap: "GROUP BY ts on a TIMESTAMP when the ask is per day: the group key is the instant, not the date. The output column is even aliased 'day'. No by/per/each wording so no grain qualifier fires."
+
+- id: C-046
+  family: c
+  space: company
+  question: "How many outbound transactions occurred on a Saturday or Sunday?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND dayofweek(ts) IN (6, 7)
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND isodow(ts) IN (6, 7)
+  gold_notes: "DuckDB dayofweek(): Sunday = 0 .. Saturday = 6. (6, 7) therefore matches Saturdays only. isodow(): Monday = 1 .. Sunday = 7. Gold 10, trap 7."
+  trap: "ISO numbering (6, 7 = Sat, Sun) assumed for a function that numbers Sunday as 0. Nothing in the question is a qualifier needle."
+
+- id: C-047
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg two years ago?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) = 2023
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) = year(CURRENT_DATE) - 2
+  gold_notes: "Today is 2026; two years ago is 2024 (41 kg). The SQL assumes it is 2025 and reads 2023 (300 kg)."
+  trap: "DATE-DEPENDENT. 'N years ago' is not matched by the time-filter regex (needs last/this/next/past/previous/prior), so no qualifier is extracted and nothing at all is checked."
+
+- id: C-048
+  family: c
+  space: finance
+  control: true
+  question: "What was the total outbound quantity in kg from 2026-09-01 to 2026-09-30?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AS DATE) BETWEEN '2026-09-01' AND '2026-09-30'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  trap: "none: control for C-001. BETWEEN is correct once ts is cast to DATE."
+
+- id: C-049
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg in December 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS december_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-12-01' AND ts < '2027-01-01'
+  expect: abstain
+  gold_notes: "December 2026 is in the future. The aggregate over an empty set returns one row holding NULL; there is no figure to certify."
+  trap: "DATE-DEPENDENT. Future period, aggregate without COALESCE: one NULL row, so the empty-result rule (zero rows) does not fire. Tests how a NULL scalar is served."
+
+- id: C-050
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg in 2025?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2025-01-01' AND ts < '2026-01-01'
+  gold_notes: "Year dropped entirely: all-time sum served as 2025. A guard that works should catch this (named year absent from the SQL)."
+  trap: "Expected to be CAUGHT: the named year 2025 does not appear in the SQL, so the year qualifier and the all-time year pad both apply. Kept as a caught trap."
+
+- id: C-051
+  family: c
+  space: finance
+  question: "How much outbound quantity should we plan for in Q4 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS q3_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-07-01' AND ts < '2026-10-01'
+  expect: abstain
+  gold_notes: "A planning/forecast ask for a future quarter. No plan or forecast table exists; trailing-quarter actuals are not a Q4 plan. A correct gate abstains."
+  trap: "Forward-looking ask phrased without any word in the predictive pre-gate (no will/forecast/predict/expect/estimate/next quarter). The model answers with last quarter's actuals; the year pad is satisfied by the 2026 in the alias and the date literals."
+
+- id: C-052
+  family: c
+  space: finance
+  question: "How much outbound quantity will we ship next month?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= date_trunc('month', CURRENT_DATE) - INTERVAL 1 MONTH
+      AND ts < date_trunc('month', CURRENT_DATE)
+  expect: abstain
+  gold_notes: "Predictive ask; history is not a forecast. Expected to be CAUGHT by the predictive pre-gate."
+  trap: "Expected to be CAUGHT (will + next month). Kept as a caught abstain."
+
+- id: C-053
+  family: c
+  space: ops
+  question: "How many SKUs expire in October?"
+  model_sql: >-
+    SELECT COUNT(*) AS expiring_skus FROM inventory WHERE monthname(expiry_date) = 'October'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS expiring_skus FROM inventory
+    WHERE expiry_date >= '2026-10-01' AND expiry_date < '2026-11-01'
+  gold_notes: "No year named; the current October is 2026 (today is 2 Oct 2026). SKU-ETA (2027-10-15) and SKU-THETA (2025-10-20) share the month name. Gold 5 (ALPHA, DELTA, EPSILON, RS622XK, ZETA), trap 7."
+  trap: "Month name without a year on a DATE column. The month needle forces the literal 'October' into the SQL, which pushes the model to monthname(); no year in the question so the year pad is silent. 'Current October' is inferred from today's date."
+
+- id: C-054
+  family: c
+  space: ops
+  control: true
+  question: "How many items expire within the next 30 days?"
+  model_sql: >-
+    SELECT COUNT(*) AS expiring_skus FROM inventory
+    WHERE expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL 30 DAY
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS expiring_skus FROM inventory
+    WHERE expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + INTERVAL 30 DAY
+  trap: "none: control for C-017 in the same wording (items, not SKUs). DATE-DEPENDENT."
+
+- id: C-055
+  family: c
+  space: finance
+  control: true
+  question: "Which vendors deliver within 7 days?"
+  model_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers WHERE lead_time_days <= 7 ORDER BY supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_id, supplier_name FROM suppliers WHERE lead_time_days <= 7 ORDER BY supplier_id
+  trap: "none: control for C-024 in the same wording."
+
+# ===================================================================== ROUND 3 additions
+- id: C-056
+  family: c
+  space: company
+  control: true
+  question: "What was the total outbound quantity in kg in September 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  trap: "none: control. The correct date-range SQL for a named month, with an ordinary alias. The month-name needle looks for the literal word september in the SQL, which this correct SQL does not contain."
+
+- id: C-057
+  family: c
+  space: company
+  question: "How many outbound transactions were there per month in 2025 and 2026?"
+  model_sql: >-
+    SELECT month(ts) AS month, COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) IN (2025, 2026)
+    GROUP BY month(ts) ORDER BY month
+  expect: answer
+  gold_sql: >-
+    SELECT strftime(ts, '%Y-%m') AS month, COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND year(ts) IN (2025, 2026)
+    GROUP BY strftime(ts, '%Y-%m') ORDER BY month
+  gold_notes: "Two calendar years were asked for, per month. Grouping by month number alone folds Sept 2025 and Sept 2026 (and Oct, Jul, ...) into single buckets. Gold has one row per (year, month)."
+  trap: "GROUP BY month(ts) across a multi-year filter. 'per month' is satisfied by the month( function; both year digits are present, so every guard passes."
+
+- id: C-058
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg in September 2026?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS september_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS september_2026_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-09-01' AND ts < '2026-10-01'
+  gold_notes: "No date predicate at all: the all-time outbound total (10808 kg) is served as September 2026 (375 kg)."
+  trap: "The period appears only in the column alias. The month needle (word september), the year qualifier and the all-time year pad (digits 2026) are each satisfied by that one alias, and the txn_type filter supplies the WHERE. Contrast C-050, where the alias carries no period and the gate catches it."
+
+- id: C-059
+  family: c
+  space: company
+  question: "How many outbound transactions were there in August 2026?"
+  model_sql: >-
+    SELECT COUNT(*) AS august_2026_outbound FROM transactions
+    WHERE txn_type = 'outbound'
+      AND month(ts AT TIME ZONE 'UTC') = 8 AND year(ts AT TIME ZONE 'UTC') = 2026
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS august_2026_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND ts >= '2026-08-01' AND ts < '2026-09-01'
+  gold_notes: "T322 (2026-08-31 23:59:59) is an August row. AT TIME ZONE 'UTC' reads the naive value as UTC and month() then renders it in the session zone (+08:00), moving it to 1 Sep 07:59:59. Gold 7, trap 6. Gold treats the stored wall clock as the local time (no zone is declared)."
+  trap: "Timezone shift across a month boundary: month(ts AT TIME ZONE 'UTC') on a naive TIMESTAMP in a +08:00 session. Month needle satisfied by the alias, year pad by the literal."
+
+- id: C-060
+  family: c
+  space: company
+  question: "How many outbound transactions were there in week 1 of 2026?"
+  model_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND week(ts) = 1 AND year(ts) = 2026
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS n_outbound FROM transactions
+    WHERE txn_type = 'outbound' AND isoyear(ts) = 2026 AND week(ts) = 1
+  gold_notes: "ISO-8601 week 1 of 2026 runs Mon 2025-12-29 to Sun 2026-01-04, so it holds T314 (2025-12-31 23:59:59) and T321 (2026-01-01 00:00:00): gold 2. week() is the ISO week; pairing it with the calendar year(ts) loses the days that belong to week 1 but fall in December 2025: trap 1. UNSURE: a reader who means 'the first seven days of January' would disagree with ISO."
+  trap: "ISO week number combined with the calendar year instead of the ISO year, which is wrong for the first and last days of a year. The year literal satisfies both year guards."
+
+- id: C-061
+  family: c
+  space: finance
+  question: "What was the total outbound quantity in kg on 2026-09-30?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND ts BETWEEN '2026-09-30 00:00:00' AND '2026-09-30 23:59:59'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_outbound_kg FROM transactions
+    WHERE txn_type = 'outbound' AND CAST(ts AS DATE) = '2026-09-30'
+  gold_notes: "The 'careful' end-of-day fix still loses fractional seconds: T370 (3 kg) is stamped 23:59:59.500. Gold 118 (44+55+16+3), trap 115."
+  trap: "BETWEEN '... 00:00:00' AND '... 23:59:59' is the standard patch for the end-of-day bug; on a TIMESTAMP with sub-second values it still drops the last second."

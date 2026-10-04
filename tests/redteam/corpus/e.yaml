@@ -1,0 +1,1086 @@
+# Family E: wording traps (synonyms, negation, excluding, top-N ties, inclusive/exclusive comparatives, superlatives).
+# Extension data: e.ext.sql (ties, boundary values, a 3rd txn_type, a 4th shipment status, an empty warehouse,
+# a supplier with no stock, chemicals inside a warehouse that also holds non-chemicals).
+# model_sql is INFERRED (what a model could plausibly emit); nothing here was observed from a model.
+
+# ---------------------------------------------------------------- ties: highest / most / top-N
+- id: E-001
+  family: e
+  space: finance
+  question: "Which SKU has the highest stock quantity?"
+  model_sql: "SELECT sku, quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 1"
+  expect: answer
+  gold_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg = (SELECT MAX(quantity_kg) FROM inventory)"
+  gold_notes: "SKU-ALPHA and SKU-ETA both hold 3400 kg. 'Which SKU has the highest' with a tie: correct handling returns both tied rows (or states the tie), not one arbitrary row."
+  trap: "textbook ORDER BY ... LIMIT 1 for a superlative; a model does not know the maximum is shared, so one of two tied rows is served as THE answer."
+
+- id: E-002
+  family: e
+  space: finance
+  question: "Which SKU has the highest stock quantity?"
+  model_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg = (SELECT MAX(quantity_kg) FROM inventory)"
+  expect: answer
+  gold_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg = (SELECT MAX(quantity_kg) FROM inventory)"
+  gold_notes: "Same words as E-001; the tie-aware SQL. Measures whether the correct tied answer is served or demoted."
+  trap: "none: control"
+  control: true
+
+- id: E-003
+  family: e
+  space: finance
+  question: "Who are our top 3 SKUs by stock quantity?"
+  model_sql: >-
+    SELECT sku, SUM(quantity_kg) AS total_kg FROM inventory GROUP BY sku
+    ORDER BY total_kg DESC LIMIT 3
+  expect: answer
+  gold_sql: >-
+    SELECT sku, total_kg FROM (SELECT sku, SUM(quantity_kg) AS total_kg,
+    RANK() OVER (ORDER BY SUM(quantity_kg) DESC) AS rk FROM inventory GROUP BY sku) WHERE rk <= 3
+  gold_notes: "Ranks 1-2 are the 3400 kg tie (ALPHA, ETA); rank 3 is the 2100 kg tie (EPSILON, ZETA). Top 3 by rank is FOUR rows; LIMIT 3 silently drops one of the two 2100 kg SKUs."
+  trap: "the cut falls inside a tie: the 3rd and 4th SKU have identical quantity, LIMIT 3 keeps whichever the engine happened to sort first and says nothing."
+
+- id: E-004
+  family: e
+  space: ops
+  question: "Show the top 3 most expensive shipments"
+  model_sql: "SELECT shipment_id, cost_myr FROM shipments ORDER BY cost_myr DESC LIMIT 3"
+  expect: answer
+  gold_sql: >-
+    SELECT shipment_id, cost_myr FROM (SELECT shipment_id, cost_myr,
+    RANK() OVER (ORDER BY cost_myr DESC) AS rk FROM shipments) WHERE rk <= 3
+  gold_notes: "Costs 820, 700, then SH-102 and SH-105 both 540. Top 3 by rank = 4 shipments."
+  trap: "LIMIT 3 cuts a two-way tie at the third place; no ORDER BY tiebreak and no tie note."
+
+- id: E-005
+  family: e
+  space: company
+  question: "Which supplier has the most delayed shipments?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS delayed_shipments
+    FROM shipments sh JOIN inventory i ON i.sku = sh.sku
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE sh.status = 'delayed' GROUP BY s.supplier_name
+    ORDER BY delayed_shipments DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT s.supplier_name, COUNT(*) AS delayed_shipments
+    FROM shipments sh JOIN inventory i ON i.sku = sh.sku
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE sh.status = 'delayed' GROUP BY s.supplier_name)
+    SELECT supplier_name, delayed_shipments FROM c
+    WHERE delayed_shipments = (SELECT MAX(delayed_shipments) FROM c)
+  gold_notes: "shipments has no supplier_id; the supplier is reached through the SKU (inventory.sku is unique). Northshore Materials and Peninsula Polymers each have 2 delayed shipments: a tie."
+  trap: "superlative over a group with LIMIT 1: the join path is right, the tie is invisible, one supplier is named as the worst."
+
+- id: E-006
+  family: e
+  space: company
+  question: "What is the most common alert severity?"
+  model_sql: >-
+    SELECT severity, COUNT(*) AS n FROM alerts GROUP BY severity
+    ORDER BY n DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT severity, COUNT(*) AS n FROM alerts GROUP BY severity)
+    SELECT severity, n FROM c WHERE n = (SELECT MAX(n) FROM c)
+  gold_notes: "high, medium and low each appear twice: a three-way tie. Correct answer lists all three (or says there is no single most common severity)."
+  trap: "mode via LIMIT 1 when all categories tie: the served severity is whichever sorts first."
+
+- id: E-007
+  family: e
+  space: finance
+  question: "Which vendor has the highest risk score?"
+  model_sql: >-
+    SELECT supplier_name, risk_score FROM (SELECT supplier_name, risk_score,
+    ROW_NUMBER() OVER (ORDER BY risk_score DESC) AS rn FROM suppliers) t WHERE rn = 1
+  expect: answer
+  gold_sql: "SELECT supplier_name, risk_score FROM suppliers WHERE risk_score = (SELECT MAX(risk_score) FROM suppliers)"
+  gold_notes: "vendor = supplier. Orbit Packing and Zenith Resin both 0.55. ROW_NUMBER() = 1 picks one of two tied suppliers."
+  trap: "synonym (vendor -> suppliers) plus ROW_NUMBER() = 1, which breaks ties arbitrarily where RANK() would not."
+
+- id: E-008
+  family: e
+  space: finance
+  question: "What was the most recent transaction?"
+  model_sql: "SELECT txn_id, sku, txn_type FROM transactions ORDER BY ts DESC LIMIT 1"
+  expect: answer
+  gold_sql: "SELECT txn_id, sku, txn_type FROM transactions WHERE ts = (SELECT MAX(ts) FROM transactions)"
+  gold_notes: "T015 and T016 share the latest timestamp (2026-07-25 13:00). 'The most recent' with a tie: both."
+  trap: "'latest/most recent' read as ORDER BY ts DESC LIMIT 1; a timestamp tie hides one transaction."
+
+- id: E-009
+  family: e
+  space: ops
+  question: "Which 2 warehouses have the least free space?"
+  model_sql: >-
+    SELECT location_code, capacity_kg - current_load_kg AS free_kg FROM locations
+    ORDER BY free_kg ASC LIMIT 2
+  expect: answer
+  gold_sql: >-
+    SELECT location_code, free_kg FROM (SELECT location_code, capacity_kg - current_load_kg AS free_kg,
+    RANK() OVER (ORDER BY capacity_kg - current_load_kg ASC) AS rk FROM locations) WHERE rk <= 2
+  gold_notes: "WH-C, WH-E and WH-F all have exactly 2000 kg free: a three-way tie at rank 1. Rank <= 2 returns all three."
+  trap: "bottom-N over an arithmetic measure with a three-way tie at the minimum; LIMIT 2 serves two of the three tied warehouses."
+
+- id: E-010
+  family: e
+  space: finance
+  question: "Show the five largest outbound transactions"
+  model_sql: >-
+    SELECT txn_id, quantity_kg FROM transactions WHERE txn_type = 'outbound'
+    ORDER BY quantity_kg DESC LIMIT 5
+  expect: answer
+  gold_sql: >-
+    SELECT txn_id, quantity_kg FROM (SELECT txn_id, quantity_kg,
+    RANK() OVER (ORDER BY quantity_kg DESC) AS rk FROM transactions WHERE txn_type = 'outbound') WHERE rk <= 5
+  gold_notes: "Outbound quantities 1500, 900, 800, 600, then T001 and T015 both 400 (rank 5). Correct = 6 rows. Numeral is a word ('five'), so no digit-based N parsing applies anywhere."
+  trap: "numeral as a word; the fifth place is a tie (400 kg twice) and LIMIT 5 keeps only one."
+
+- id: E-011
+  family: e
+  space: finance
+  question: "Which SKU has the most outbound transactions?"
+  model_sql: >-
+    SELECT sku, COUNT(*) AS n FROM transactions WHERE txn_type = 'outbound'
+    GROUP BY sku ORDER BY n DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT sku, COUNT(*) AS n FROM transactions WHERE txn_type = 'outbound' GROUP BY sku)
+    SELECT sku, n FROM c WHERE n = (SELECT MAX(n) FROM c)
+  gold_notes: "SKU-ALPHA, SKU-BETA and RS622XK each have 3 outbound transactions: a three-way tie (seed data, no extension needed)."
+  trap: "'most' answered with GROUP BY ... ORDER BY COUNT DESC LIMIT 1 over a three-way tie."
+
+- id: E-012
+  family: e
+  space: finance
+  question: "Which supplier has the highest item count?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name
+    HAVING COUNT(*) = (SELECT MAX(n) FROM (SELECT COUNT(*) AS n FROM inventory GROUP BY supplier_id) m)
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name)
+    SELECT supplier_name, item_count FROM c WHERE item_count = (SELECT MAX(item_count) FROM c)
+  gold_notes: "Northshore Materials and Delta Logistics Co each supply 3 items. The tie-correct answer has 2 rows and a GROUP BY in a question containing the word 'count'."
+  trap: "none: control. Over-abstention probe: the correct tie answer is a 2-row grouped result for a question with the word 'count' (E12 scalar-got-ranking shape)."
+  control: true
+
+- id: E-013
+  family: e
+  space: finance
+  question: "Which supplier has the highest item count?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name
+    ORDER BY item_count DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name)
+    SELECT supplier_name, item_count FROM c WHERE item_count = (SELECT MAX(item_count) FROM c)
+  gold_notes: "Same words as E-012. The LIMIT 1 answer is one row, so the row-count shape checks pass; the tie-correct E-012 answer has two rows."
+  trap: "LIMIT 1 over a two-way tie; paired with E-012 to see whether the gate rewards the wrong single row and penalises the right tied pair."
+
+# ---------------------------------------------------------------- direction: lowest / longest-without / fastest
+- id: E-014
+  family: e
+  space: finance
+  question: "Which supplier has gone the longest without an audit?"
+  model_sql: "SELECT supplier_name FROM suppliers ORDER BY last_audit_date DESC LIMIT 1"
+  expect: answer
+  gold_sql: "SELECT supplier_name FROM suppliers WHERE last_audit_date = (SELECT MIN(last_audit_date) FROM suppliers)"
+  gold_notes: "Longest without an audit = oldest last_audit_date = Delta Logistics Co (2024-06-01). The DESC answer is Orbit Packing or Zenith Resin (a two-way tie at 2026-09-01)."
+  trap: "'longest' read as 'greatest value of the date column': ORDER BY last_audit_date DESC returns the MOST recently audited supplier."
+
+- id: E-015
+  family: e
+  space: finance
+  question: "Which vendor is the fastest to deliver?"
+  model_sql: "SELECT supplier_name, lead_time_days FROM suppliers ORDER BY lead_time_days DESC LIMIT 1"
+  expect: answer
+  gold_sql: "SELECT supplier_name, lead_time_days FROM suppliers WHERE lead_time_days = (SELECT MIN(lead_time_days) FROM suppliers)"
+  gold_notes: "Fastest = shortest lead time = Delta Logistics Co (5 days). DESC returns a 12-day supplier (Peninsula Polymers or Zenith Resin)."
+  trap: "'fastest' mapped to the lead_time column and sorted DESC (bigger number = more of the thing mentioned); also vendor -> suppliers synonym."
+
+# ---------------------------------------------------------------- negation and exclusion
+- id: E-016
+  family: e
+  space: ops
+  question: "How many shipments are not delayed?"
+  model_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status IN ('in_transit', 'delivered')"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status <> 'delayed'"
+  gold_notes: "Statuses: delayed 4, in_transit 2, delivered 2, cancelled 1. Not delayed = 5. The IN list enumerates the 'good' statuses and misses cancelled (4)."
+  trap: "complement of a negation written as an enumerated positive list; an unlisted status (cancelled) falls out. E11 only looks for the negated word itself in a positive filter."
+
+- id: E-017
+  family: e
+  space: ops
+  question: "How many shipments are not delayed?"
+  model_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status <> 'delayed'"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status <> 'delayed'"
+  gold_notes: "Same words as E-016, correct complement filter."
+  trap: "none: control"
+  control: true
+
+- id: E-018
+  family: e
+  space: finance
+  question: "Which warehouses do not hold any chemicals?"
+  model_sql: >-
+    SELECT DISTINCT l.location_code FROM locations l
+    JOIN inventory i ON i.location_id = l.location_id
+    WHERE i.category <> 'CHEMICALS'
+  expect: answer
+  gold_sql: >-
+    SELECT location_code FROM locations
+    WHERE location_id NOT IN (SELECT location_id FROM inventory WHERE category = 'CHEMICALS')
+  gold_notes: "WH-A holds SKU-THETA (chemicals) next to raw stock; WH-C holds only chemicals; WH-F and WH-G hold nothing. Correct = WH-B, WH-D, WH-E, WH-F, WH-G. The join + <> form returns WH-A (wrong, it holds chemicals) and omits WH-F/WH-G (wrong, they hold none)."
+  trap: "classic anti-join mistake: 'has no X' written as 'has some row that is not X'."
+
+- id: E-019
+  family: e
+  space: finance
+  question: "Which warehouses do not hold any chemicals?"
+  model_sql: >-
+    SELECT location_code FROM locations
+    WHERE location_id NOT IN (SELECT location_id FROM inventory WHERE category = 'CHEMICALS')
+  expect: answer
+  gold_sql: >-
+    SELECT location_code FROM locations
+    WHERE location_id NOT IN (SELECT location_id FROM inventory WHERE category = 'CHEMICALS')
+  gold_notes: "Same words as E-018, correct anti-join. The positive literal 'CHEMICALS' sits inside the NOT IN subquery."
+  trap: "none: control. Over-abstention probe: a correct anti-join necessarily contains a positive filter on the negated concept."
+  control: true
+
+- id: E-020
+  family: e
+  space: company
+  question: "Which locations have no open alerts?"
+  model_sql: "SELECT DISTINCT location_id FROM alerts WHERE resolved = TRUE"
+  expect: answer
+  gold_sql: >-
+    SELECT l.location_id FROM locations l
+    WHERE NOT EXISTS (SELECT 1 FROM alerts a WHERE a.location_id = l.location_id AND a.resolved = FALSE)
+  gold_notes: "Locations with an unresolved alert: WH-A, WH-C, WH-D, WH-E. No open alert: WH-B (all resolved), WH-F (resolved), WH-G (no alerts at all). The resolved=TRUE form omits WH-G."
+  trap: "'no open alerts' read as 'alerts that are resolved'; a location with no alert row at all disappears."
+
+- id: E-021
+  family: e
+  space: finance
+  question: "What is the total stock quantity excluding chemicals?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE category <> 'CHEMICAL'"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE category <> 'CHEMICALS'"
+  gold_notes: "Stored value is 'CHEMICALS' (plural). 'CHEMICAL' matches nothing, so nothing is excluded: 13790 instead of 13240."
+  trap: "singular/plural value normalisation on an exclusion: the negative filter parses, executes and removes nothing, and the aggregate still returns a plausible number."
+
+- id: E-022
+  family: e
+  space: finance
+  question: "What is the total stock quantity excluding RS622XK?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE sku NOT LIKE 'RS622XK%'"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE sku <> 'RS622XK'"
+  gold_notes: "RS622XKR (80 kg) is a different SKU. NOT LIKE 'RS622XK%' also removes it: 12510 instead of 12590."
+  trap: "prefix wildcard on an exclusion removes the near-duplicate SKU RS622XKR as well."
+
+- id: E-023
+  family: e
+  space: finance
+  question: "What is the total stock quantity in kg excluding warehouse B?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE location_id <> 'WH-B'"
+  gold_notes: "WH-B holds 4300 kg. Correct total excluding it = 9490, the dropped-exclusion answer is 13790."
+  trap: "the exclusion clause is dropped entirely (unfiltered total). Warehouse B is not one of the hard-coded named filters (only warehouse A is)."
+
+- id: E-024
+  family: e
+  space: finance
+  question: "What is the total stock quantity in kg excluding warehouse A?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE location_id <> 'WH-A'"
+  gold_notes: "Same trap as E-023 on warehouse A, the one location QUAL-GUARD does extract. Expected to be caught: kept as a result."
+  trap: "dropped exclusion on the one warehouse the qualifier guard knows about."
+
+- id: E-025
+  family: e
+  space: finance
+  question: "How many transactions are not outbound?"
+  model_sql: "SELECT COUNT(*) AS n FROM transactions WHERE txn_type = 'inbound'"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM transactions WHERE txn_type <> 'outbound'"
+  gold_notes: "txn_type has inbound (2), outbound (13) and adjustment (1). Not outbound = 3. Treating 'not outbound' as 'inbound' gives 2."
+  trap: "negation read as the binary opposite; a third value (adjustment) is lost."
+
+- id: E-026
+  family: e
+  space: ops
+  question: "Which shipments haven't been delivered yet?"
+  model_sql: "SELECT shipment_id FROM shipments WHERE status IN ('in_transit', 'delayed')"
+  expect: answer
+  gold_sql: "SELECT shipment_id FROM shipments WHERE status <> 'delivered'"
+  gold_notes: "Not delivered = in_transit 2 + delayed 4 + cancelled 1 = 7. The IN list omits cancelled (6 rows). Contraction 'haven't' contains no 'not' token."
+  trap: "contraction negation; 'not delivered yet' enumerated as the open statuses, cancelled forgotten."
+
+- id: E-027
+  family: e
+  space: finance
+  question: "How many warehouses are without cold storage?"
+  model_sql: "SELECT COUNT(*) AS n FROM locations WHERE is_cold_storage = TRUE"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM locations WHERE is_cold_storage = FALSE"
+  gold_notes: "7 locations, 2 cold (WH-C, WH-F), 5 without. The model anchors on the phrase 'cold storage' (a certified pack phrase) and drops 'without'. 'without' is outside the E11 negation marker list by design."
+  trap: "negation word outside the closed marker list ('without'): the positive filter on the negated concept is served."
+
+- id: E-028
+  family: e
+  space: ops
+  question: "Berapa banyak penghantaran yang tidak tertangguh?"
+  model_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status = 'delayed'"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status <> 'delayed'"
+  gold_notes: "Malay for 'how many shipments are not delayed' (penghantaran = shipments, tertangguh = delayed, tidak = not). Not delayed = 5; the positive filter returns 4."
+  trap: "Malay negation 'tidak' dropped while the content word 'tertangguh' is mapped to status = 'delayed'; no English negation marker is present."
+
+# ---------------------------------------------------------------- comparatives and between
+- id: E-029
+  family: e
+  space: finance
+  question: "Which SKUs have at least 900 kg in stock?"
+  model_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg > 900"
+  expect: answer
+  gold_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg >= 900"
+  gold_notes: "SKU-BETA holds exactly 900 kg. 'At least 900' includes it: 6 rows, not 5."
+  trap: "'at least' written as a strict >; a row sitting exactly on the threshold vanishes."
+
+- id: E-030
+  family: e
+  space: finance
+  question: "Which SKUs have at least 900 kg in stock?"
+  model_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg >= 900"
+  expect: answer
+  gold_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg >= 900"
+  trap: "none: control"
+  control: true
+
+- id: E-031
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which locations are at least 90 percent full?"
+  model_sql: >-
+    SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90
+  expect: answer
+  gold_sql: >-
+    SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg >= 90
+  gold_notes: "WH-G is exactly 90.0 percent. The certified pack phrase 'Which locations are above 90 percent capacity?' means > 90; this paraphrase says 'at least'. A model copying the certified SQL drops WH-G."
+  trap: "paraphrase of a certified pack phrase with the opposite inclusivity; the certified SQL (strict >) is reused for 'at least'."
+
+- id: E-032
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which locations are above 90 percent capacity?"
+  model_sql: >-
+    SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90
+  expect: answer
+  gold_sql: >-
+    SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90
+  gold_notes: "Exact demo-pack phrase; answered by the pack's own SQL (strict >). WH-G (exactly 90.0) correctly excluded."
+  trap: "none: control (pack hit, L1_GOVERNED_METRIC expected)"
+  control: true
+
+- id: E-033
+  family: e
+  space: finance
+  question: "Which vendors have a lead time between 5 and 9?"
+  model_sql: "SELECT supplier_name FROM suppliers WHERE lead_time_days > 5 AND lead_time_days < 9"
+  expect: answer
+  gold_sql: "SELECT supplier_name FROM suppliers WHERE lead_time_days BETWEEN 5 AND 9"
+  gold_notes: "Convention: 'between 5 and 9' is inclusive (SQL BETWEEN, everyday usage). Suppliers with 5, 7, 9 days: Delta Logistics Co, Northshore Materials, Orbit Packing. The exclusive form returns only the 7-day supplier. UNSURE whether a judge accepts the inclusive convention as the only reading."
+  trap: "'between' written as an exclusive pair of comparisons, losing both endpoints."
+
+- id: E-034
+  family: e
+  space: finance
+  question: "Which vendors have a lead time between 5 and 9?"
+  model_sql: "SELECT supplier_name FROM suppliers WHERE lead_time_days BETWEEN 5 AND 9"
+  expect: answer
+  gold_sql: "SELECT supplier_name FROM suppliers WHERE lead_time_days BETWEEN 5 AND 9"
+  trap: "none: control"
+  control: true
+
+- id: E-035
+  family: e
+  space: finance
+  question: "Which suppliers have a lead time of 7 days or more?"
+  model_sql: "SELECT supplier_name, lead_time_days FROM suppliers WHERE lead_time_days >= 7"
+  expect: answer
+  gold_sql: "SELECT supplier_name, lead_time_days FROM suppliers WHERE lead_time_days >= 7"
+  gold_notes: "Correct SQL. The words 'suppliers' and 'days' are each a named supply-chain grain, so DMS's own two-grain compile may take over and ignore the model SQL (over-abstention probe)."
+  trap: "none: control"
+  control: true
+
+- id: E-036
+  family: e
+  space: finance
+  question: "Which categories have at least 2 items?"
+  model_sql: >-
+    SELECT category, COUNT(*) AS n FROM inventory GROUP BY category HAVING COUNT(*) > 2
+  expect: answer
+  gold_sql: >-
+    SELECT category, COUNT(*) AS n FROM inventory GROUP BY category HAVING COUNT(*) >= 2
+  gold_notes: "Items per category: RAW 3, PARTS 3, PACKAGING 2, CHEMICALS 2. 'At least 2' = all four; the strict form returns RAW and PARTS only."
+  trap: "'at least N' written as HAVING COUNT(*) > N."
+
+- id: E-037
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which SKUs are at or below reorder level in warehouse A?"
+  model_sql: >-
+    SELECT i.sku, i.quantity_kg FROM inventory i JOIN locations l ON i.location_id = l.location_id
+    WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A'
+    ORDER BY i.quantity_kg ASC
+  expect: answer
+  gold_sql: >-
+    SELECT i.sku, i.quantity_kg FROM inventory i JOIN locations l ON i.location_id = l.location_id
+    WHERE i.quantity_kg <= i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A'
+  gold_notes: "SKU-THETA at WH-A has quantity 400 = reorder level 400 and is 'at' the level. The certified phrase 'below reorder level in warehouse A' is strict <; the paraphrase says 'at or below'."
+  trap: "paraphrase of a certified pack phrase; the certified SQL (strict <) is reused although the wording is inclusive."
+
+# ---------------------------------------------------------------- synonyms and value encodings
+- id: E-038
+  family: e
+  space: company
+  question: "What is our total spend on shipping?"
+  model_sql: >-
+    SELECT ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS total_spend_myr FROM inventory
+  expect: answer
+  gold_sql: "SELECT ROUND(SUM(cost_myr), 2) AS total_spend_myr FROM shipments"
+  gold_notes: "Spend on shipping = shipments.cost_myr (3870.0). The certified 'total spend' pack metric is inventory valuation (quantity x unit cost), a different measure with the same label."
+  trap: "'spend' mapped to the certified total_spend measure (stock valuation) although the question names shipping."
+
+- id: E-039
+  family: e
+  space: finance
+  question: "How many suppliers are based in Malaysia?"
+  model_sql: "SELECT COUNT(*) AS n FROM suppliers WHERE country = 'Malaysia'"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM suppliers WHERE country = 'MY'"
+  gold_notes: "suppliers.country stores ISO codes (MY, SG, TH): 3 Malaysian suppliers. 'Malaysia' matches nothing; the COUNT still returns one row with 0."
+  trap: "value encoding (name vs ISO code); a filter that matches nothing wrapped in an aggregate returns a confident 0."
+
+- id: E-040
+  family: e
+  space: finance
+  question: "How much BETA do we have in stock?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE sku = 'BETA'"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE sku = 'SKU-BETA'"
+  gold_notes: "The stored SKU is 'SKU-BETA' (900 kg). 'BETA' matches nothing, SUM over no rows is one NULL row."
+  trap: "short name vs stored SKU encoding under an aggregate (SUM of nothing = NULL row)."
+
+- id: E-041
+  family: e
+  space: finance
+  question: "How much stock of RS622XK do we have?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE sku LIKE 'RS622XK%'"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE sku = 'RS622XK'"
+  gold_notes: "RS622XK = 1200 kg; RS622XKR is a separate SKU (80 kg). Prefix match returns 1280."
+  trap: "near-duplicate SKU (RS622XK vs RS622XKR) swallowed by a prefix wildcard."
+
+- id: E-042
+  family: e
+  space: finance
+  question: "How much chemical stock do we have?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE category = 'chemicals'"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg) AS total_kg FROM inventory WHERE category = 'CHEMICALS'"
+  gold_notes: "Stored category is upper-case CHEMICALS (550 kg across SKU-GAMMA and SKU-THETA). A lower-case literal matches nothing."
+  trap: "case of a category literal; SUM over zero rows."
+
+- id: E-043
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which items are not expired?"
+  model_sql: "SELECT sku FROM inventory WHERE expiry_date >= CURRENT_DATE"
+  expect: answer
+  gold_sql: "SELECT sku FROM inventory WHERE expiry_date IS NULL OR expiry_date >= CURRENT_DATE"
+  gold_notes: "9 SKUs are not expired: SKU-GAMMA (2020) is the only expired one, SKU-ZETA expires 2027-03-31, the other 8 have no expiry date. The certified phrase 'Which items are expired?' is the pack's positive form; this is its negation. Comparison form drops NULL-expiry rows."
+  trap: "negation of a certified phrase written as the date comparison; NULL expiry (never expires) is treated as not-qualifying."
+
+- id: E-044
+  family: e
+  space: finance
+  question: "How many warehouses hold RAW stock?"
+  model_sql: "SELECT COUNT(*) AS n FROM inventory WHERE category = 'RAW'"
+  expect: answer
+  gold_sql: "SELECT COUNT(DISTINCT location_id) AS n FROM inventory WHERE category = 'RAW'"
+  gold_notes: "RAW rows: RS622XK and RS622XKR at WH-A, SKU-ETA at WH-D: 3 rows, 2 warehouses."
+  trap: "'how many X hold Y' counted as rows of the fact table instead of distinct X."
+
+- id: E-045
+  family: e
+  space: finance
+  question: "Which category holds the most stock?"
+  model_sql: >-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category ORDER BY stock_value_myr DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT category, SUM(quantity_kg) AS total_kg FROM inventory GROUP BY category
+    ORDER BY total_kg DESC LIMIT 1
+  gold_notes: "UNSURE: bare 'stock' = quantity_kg here (the certified phrase says 'stock value' when it means value). By kg RAW (4680) leads; by value PACKAGING (15015) leads. A judge may treat this as ambiguous."
+  trap: "'stock' read as stock VALUE; the certified pack metric is named 'stock value' so 'stock' alone drifts to it."
+
+# ---------------------------------------------------------------- abstain: ambiguous wording or data cannot answer
+- id: E-046
+  family: e
+  space: finance
+  question: "Who is our best supplier?"
+  model_sql: "SELECT supplier_name FROM suppliers ORDER BY risk_score ASC LIMIT 1"
+  expect: abstain
+  gold_notes: "'Best' has no definition in the data: lowest risk, shortest lead time, most items and most recent audit each name a different supplier. A correct gate asks which criterion."
+  trap: "ambiguous superlative resolved silently to one criterion."
+
+- id: E-047
+  family: e
+  space: company
+  question: "Which carrier has the most delayed shipments?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS delayed_shipments
+    FROM shipments sh JOIN inventory i ON i.sku = sh.sku
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE sh.status = 'delayed' GROUP BY s.supplier_name
+    ORDER BY delayed_shipments DESC LIMIT 1
+  expect: abstain
+  gold_notes: "There is no carrier or logistics provider in the data. shipments has no carrier column; a supplier is not a carrier. Correct = abstain."
+  trap: "synonym that does not exist in the schema: carrier mapped to supplier through an invented join."
+
+- id: E-048
+  family: e
+  space: company
+  question: "What is the average delivery time of our shipments?"
+  model_sql: "SELECT ROUND(AVG(lead_time_days), 1) AS avg_delivery_days FROM suppliers"
+  expect: abstain
+  gold_notes: "shipments has no dispatch or arrival timestamps, so actual delivery time is not derivable. suppliers.lead_time_days is a supplier attribute, not shipment delivery time."
+  trap: "'delivery time' mapped to the lead_time_days column on suppliers: a plausible column, an answer to a different question."
+
+- id: E-049
+  family: e
+  space: ops
+  ask_path: product
+  question: "Show shipment cost by origin"
+  model_sql: >-
+    SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr
+    FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  expect: abstain
+  gold_notes: "shipments records only destination_location_id; there is no origin. The certified phrase is 'Show shipment cost by destination'. The answer grouped by destination is a different question."
+  trap: "near-miss of a certified phrase (origin vs destination): the certified SQL is reused for a dimension that does not exist."
+
+- id: E-050
+  family: e
+  space: finance
+  ask_path: product
+  question: "Show stock by storage zone"
+  model_sql: "SELECT location_id, SUM(quantity_kg) AS total_kg FROM inventory GROUP BY location_id"
+  expect: abstain
+  gold_notes: "There is no storage zone / bin / aisle dimension. Planted refuse list covers only the exact phrase 'Show stock by storage bin'; a one-word paraphrase is not on it."
+  trap: "near-miss of a planted uncertified phrase (bin vs zone): grouped by location as a stand-in."
+
+- id: E-051
+  family: e
+  space: finance
+  question: "Which SKUs hold roughly 1000 kg of stock?"
+  model_sql: "SELECT sku, quantity_kg FROM inventory WHERE quantity_kg BETWEEN 900 AND 1100"
+  expect: abstain
+  gold_notes: "'Roughly' has no defined tolerance: +-10 percent returns SKU-BETA (900), +-25 percent adds RS622XK (1200), +-5 percent returns nothing. A correct gate states a band or asks."
+  trap: "hedge word resolved silently to an arbitrary tolerance band."
+
+- id: E-052
+  family: e
+  space: company
+  question: "How many shipments are more than 2 days late?"
+  model_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status = 'delayed'"
+  expect: abstain
+  gold_notes: "shipments records a status only, not how many days a shipment is late. 4 shipments are 'delayed' but their delay length is unknown."
+  trap: "the quantitative qualifier (more than 2 days) is dropped; the status flag stands in for a duration."
+
+# ---------------------------------------------------------------- product ladder: rewrite and pre-gate behaviour
+- id: E-053
+  family: e
+  space: finance
+  ask_path: product
+  question: "List the top 3 warehouses by capacity without excluding any cold storage"
+  model_sql: >-
+    SELECT sku, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS revenue_myr FROM transactions
+    WHERE txn_type = 'outbound' GROUP BY sku ORDER BY revenue_myr DESC LIMIT 3
+  expect: answer
+  gold_sql: >-
+    SELECT location_code, capacity_kg FROM (SELECT location_code, capacity_kg,
+    RANK() OVER (ORDER BY capacity_kg DESC) AS rk FROM locations) WHERE rk <= 3
+  gold_notes: "Any question containing 'top N' and a later 'without exclud...' is rewritten to 'Top N selling SKUs by revenue' before the ladder, so the model is asked a different question. model_sql is what a model would emit FOR THAT REWRITTEN question. Correct = WH-D 120000, WH-A and WH-G 100000."
+  trap: "question rewriter (decline-chip normaliser) replaces the whole user question; the answer is about SKU revenue, the user asked about warehouse capacity."
+
+- id: E-054
+  family: e
+  space: finance
+  ask_path: product
+  question: "Count every SKU without excluding expired ones"
+  model_sql: "SELECT COUNT(*) AS n FROM inventory WHERE expiry_date < CURRENT_DATE"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM inventory"
+  gold_notes: "The decline-chip rewriter deletes the words 'without excluding', leaving 'Count every SKU expired ones'. The user asked to INCLUDE expired items (all 10 SKUs); the rewritten text reads as a count of expired ones (1). model_sql is what a model would emit for the rewritten text."
+  trap: "rewriter strips the negation words and keeps the noun: 'without excluding X' becomes 'X', which flips the question to 'only X'."
+
+- id: E-055
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which locations are cold storage?"
+  model_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+  expect: answer
+  gold_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+  gold_notes: "Exact demo-pack phrase. WH-C and WH-F."
+  trap: "none: control (pack hit)"
+  control: true
+
+- id: E-056
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which locations are not cold storage?"
+  model_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+  expect: answer
+  gold_sql: "SELECT location_code FROM locations WHERE is_cold_storage = FALSE"
+  gold_notes: "Negation of a certified pack phrase; the model reuses the certified SQL. Expected to be caught by the polarity guard: kept as a result."
+  trap: "negation of a certified phrase answered with the certified (positive) SQL."
+
+- id: E-057
+  family: e
+  space: finance
+  ask_path: product
+  question: "Which locations are cold storage apart from WH-C?"
+  model_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+  expect: answer
+  gold_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE AND location_code <> 'WH-C'"
+  gold_notes: "Cold storage = WH-C, WH-F. Apart from WH-C = WH-F only. 'apart from' is not in the negation marker list, and WH-C is not a hard-coded named filter."
+  trap: "certified phrase plus an exclusion clause in a word outside the guard's list; the certified SQL is reused and the clause dropped."
+
+- id: E-058
+  family: e
+  space: finance
+  ask_path: product
+  question: "How full is each warehouse?"
+  model_sql: >-
+    SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations
+  expect: answer
+  gold_sql: >-
+    SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations
+  gold_notes: "The planted-refuse list holds the exact string 'how full is each warehouse' (no question mark). With the question mark the phrase is not on the list, and the generative leg answers it (L2). Correct SQL; the oddity is the policy bypass, not the numbers."
+  trap: "none: control. Probe: a punctuation-only change bypasses a planted uncertified-paraphrase refuse."
+  control: true
+
+- id: E-059
+  family: e
+  space: ops
+  ask_path: product
+  question: "Show shipment cost per destination"
+  model_sql: >-
+    SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr
+    FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr
+    FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  gold_notes: "per vs by: a one-word paraphrase of the certified phrase 'Show shipment cost by destination'. Correct SQL."
+  trap: "none: control (paraphrase, not a pack hit; expect a generated badge, not a governed one)"
+  control: true
+
+- id: E-060
+  family: e
+  space: finance
+  ask_path: product
+  question: "Just give me the cold storage locations"
+  model_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+  expect: answer
+  gold_sql: "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+  gold_notes: "A clear, answerable question. 'just give me' is on the vague-phrase pre-gate list, so the correct answer is expected to be refused (over-abstention probe)."
+  trap: "none: control"
+  control: true
+
+- id: E-061
+  family: e
+  space: finance
+  question: "What is the total estimated stock value by category?"
+  model_sql: >-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category
+  expect: answer
+  gold_sql: >-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category
+  gold_notes: "'Estimated' here means computed from unit costs, not forecast. The predictive pre-gate matches 'estimat*' and is expected to refuse (over-abstention probe)."
+  trap: "none: control"
+  control: true
+
+- id: E-062
+  family: e
+  space: ops
+  question: "Show total stock quantity by location"
+  model_sql: >-
+    SELECT i.location_id, SUM(i.quantity_kg) AS total_kg FROM inventory i GROUP BY i.location_id
+  expect: answer
+  gold_sql: >-
+    SELECT location_id, SUM(quantity_kg) AS total_kg FROM inventory GROUP BY location_id
+  gold_notes: "Correct, natural SQL. The 'by location' qualifier extractor maps to a destination dimension whose accepted tokens are destination / location_code; grouping by location_id may be refused (over-abstention probe)."
+  trap: "none: control"
+  control: true
+
+- id: E-063
+  family: e
+  space: finance
+  question: "How many items does every supplier provide?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name
+  expect: answer
+  gold_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name
+  gold_notes: "'every supplier' asks for one row per supplier. The per-group ask detector recognises 'each' and 'per' but not 'every', and 'how many' reads as a single total: over-abstention probe on a correct grouped answer."
+  trap: "none: control"
+  control: true
+
+- id: E-064
+  family: e
+  space: finance
+  question: "What is the combined stock quantity of our top 3 SKUs?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_kg FROM
+    (SELECT quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 3)
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_kg FROM
+    (SELECT quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 3)
+  gold_notes: "One number is asked: the sum over the three biggest SKUs (3400 + 3400 + 2100 = 8900, unaffected by which 2100 kg SKU is kept). 'top 3' trips the multi-row-ask detector; a one-row ungrouped answer is the right shape: over-abstention probe."
+  trap: "none: control"
+  control: true
+
+- id: E-065
+  family: e
+  space: finance
+  question: "What is the combined stock quantity of our 3 biggest SKUs?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_kg FROM
+    (SELECT quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 3)
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_kg FROM
+    (SELECT quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 3)
+  gold_notes: "Same as E-064 with 'top 3' replaced by '3 biggest' (one word changed)."
+  trap: "none: control"
+  control: true
+
+- id: E-066
+  family: e
+  space: finance
+  question: "Berapa jumlah stok dalam kg untuk setiap kategori?"
+  model_sql: "SELECT category, SUM(quantity_kg) AS total_kg FROM inventory GROUP BY category"
+  expect: answer
+  gold_sql: "SELECT category, SUM(quantity_kg) AS total_kg FROM inventory GROUP BY category"
+  gold_notes: "Malay for 'how much total stock in kg for each category'. Correct grouped SQL."
+  trap: "none: control"
+  control: true
+
+# ---------------------------------------------------------------- sheet lane (bronze, no model): wording the lane does not parse
+- id: E-067
+  family: e
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr, excluding Electronics?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category,
+    ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."f32_ambiguous_scope_Sales"
+    WHERE category <> 'Electronics' AND TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 3
+  gold_notes: "Excluding Electronics the ranking is Home 1199018.49, Misc 380948.33, Sports 300000.0. The lane parses 'top N categories' and ignores the rest, so Electronics (1545366.4) is served first."
+  trap: "exclusion clause after a parsed 'top N categories by <measure>' shape is silently ignored by the sheet lane; the answer carries the certified badge."
+
+- id: E-068
+  family: e
+  lane: sheet
+  space: finance
+  question: "In blank_rows_hanging.xlsx on the Sales sheet, what are the top 2 categories by number of SKUs?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category, COUNT(DISTINCT sku) AS sku_count
+    FROM bronze."blank_rows_hanging_Sales" WHERE sku IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 2
+  gold_notes: "Distinct SKUs per category: Home 3, Electronics 2 (Sports 1, Misc 1). The lane has no count measure: when the measure phrase is not one of its three known names it silently ranks by sales_value_myr (Electronics 1500.75, Home 899.45)."
+  trap: "measure fallback: an unrecognised measure phrase defaults to sales_value_myr instead of refusing."
+
+- id: E-069
+  family: e
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, show the top 3 categories with the lowest sales_value_myr"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category,
+    ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."f32_ambiguous_scope_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 ASC LIMIT 3
+  gold_notes: "Lowest three: Sports 300000.0, Misc 380948.33, Home 1199018.49. The lane sees 'top 3 categories' and ranks DESC (Electronics, Home, Misc)."
+  trap: "a contradictory 'top N ... lowest' is parsed as top-N descending; direction words are not read."
+
+- id: E-070
+  family: e
+  lane: sheet
+  space: finance
+  question: "In blank_rows_hanging.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr for sku SKU-3?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category,
+    ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."blank_rows_hanging_Sales"
+    WHERE sku = 'SKU-3' AND TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 3
+  gold_notes: "Only Home has sales for SKU-3 (800.0): one row. The top-N branch is tried before the per-SKU filter branch, so the 'for sku SKU-3' filter is dropped and the sheet-wide top 3 is served."
+  trap: "a hidden filter on a top-N question: the lane picks the top-N branch and never reads the for-sku clause."
+
+- id: E-071
+  family: e
+  lane: sheet
+  space: finance
+  question: "In f32_ambiguous_scope.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category,
+    ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."f32_ambiguous_scope_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 3
+  gold_notes: "Plain control for E-067, E-069."
+  trap: "none: control"
+  control: true
+
+- id: E-072
+  family: e
+  lane: sheet
+  space: finance
+  question: "In encoding_value_norm.xlsx on the Sales sheet, what is the total sales_value_myr for city Kuala Lumpur?"
+  expect: answer
+  gold_sql: >-
+    SELECT 'Kuala Lumpur' AS city, ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."encoding_value_norm_Sales" WHERE city = 'Kuala Lumpur'
+  gold_notes: "1500.75 + 200.0 = 1700.75."
+  trap: "none: control"
+  control: true
+
+# ---------------------------------------------------------------- additions after dev1
+- id: E-073
+  family: e
+  space: finance
+  question: "Which supplier has the highest item count?"
+  model_sql: >-
+    WITH c AS (SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name)
+    SELECT supplier_name, item_count FROM c WHERE item_count = (SELECT MAX(item_count) FROM c)
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT s.supplier_name, COUNT(*) AS item_count FROM inventory i
+    JOIN suppliers s ON s.supplier_id = i.supplier_id GROUP BY s.supplier_name)
+    SELECT supplier_name, item_count FROM c WHERE item_count = (SELECT MAX(item_count) FROM c)
+  gold_notes: "Same words and same tie-aware logic as E-012 expressed as a CTE (the most natural way to write it). Over-abstention probe: the relation scan reads every FROM/JOIN name as a table."
+  trap: "none: control"
+  control: true
+
+- id: E-074
+  family: e
+  space: finance
+  question: "Which warehouses do not hold any chemicals?"
+  model_sql: >-
+    SELECT l.location_code FROM locations l WHERE NOT EXISTS
+    (SELECT 1 FROM inventory i WHERE i.location_id = l.location_id AND i.category = 'CHEMICALS')
+  expect: answer
+  gold_sql: >-
+    SELECT location_code FROM locations
+    WHERE location_id NOT IN (SELECT location_id FROM inventory WHERE category = 'CHEMICALS')
+  gold_notes: "Correct anti-join written with NOT EXISTS (the other standard form, next to E-019's NOT IN). The positive filter on the negated concept sits inside the subquery. Over-abstention probe for the polarity check."
+  trap: "none: control"
+  control: true
+
+- id: E-075
+  family: e
+  space: finance
+  question: "Which supplier provides SKU-ALPHA?"
+  model_sql: >-
+    SELECT s.supplier_name FROM inventory i JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE i.sku = 'SKU-ALPHA'
+  expect: answer
+  gold_sql: >-
+    SELECT s.supplier_name FROM inventory i JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE i.sku = 'SKU-ALPHA'
+  gold_notes: "Peninsula Polymers. Correct SQL. The words 'supplier' and 'SKU' are two named grains: over-abstention probe for the multi-grain compile (the second probe after E-035, which used 'days')."
+  trap: "none: control"
+  control: true
+
+- id: E-076
+  family: e
+  space: finance
+  question: "What is the total outbound quantity handled by WH-B?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_kg FROM transactions
+    WHERE txn_type = 'outbound' AND location_id = 'WH-B'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_kg FROM transactions
+    WHERE txn_type = 'outbound' AND location_id = 'WH-B'
+  gold_notes: "3650 kg. One scalar is asked. 'by WH-B' is the agent, not a grouping, but the per-group ask detector reads any 'by <word>' as a breakdown request: over-abstention probe."
+  trap: "none: control"
+  control: true
+
+- id: E-077
+  family: e
+  space: finance
+  question: "How many suppliers are not based in Malaysia?"
+  model_sql: "SELECT COUNT(*) AS n FROM suppliers WHERE country <> 'Malaysia'"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM suppliers WHERE country <> 'MY'"
+  gold_notes: "Countries are stored as ISO codes: MY x3, SG, TH. Not in Malaysia = 2. The literal 'Malaysia' matches nothing so the negative filter removes nothing and COUNT returns 5."
+  trap: "negation plus name-vs-code encoding: the exclusion removes no rows and the aggregate returns every supplier."
+
+- id: E-078
+  family: e
+  space: company
+  question: "Which suppliers have no delayed shipments?"
+  model_sql: >-
+    SELECT DISTINCT s.supplier_name FROM suppliers s
+    JOIN inventory i ON i.supplier_id = s.supplier_id
+    JOIN shipments sh ON sh.sku = i.sku WHERE sh.status <> 'delayed'
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_name FROM suppliers WHERE supplier_id NOT IN
+    (SELECT i.supplier_id FROM inventory i JOIN shipments sh ON sh.sku = i.sku WHERE sh.status = 'delayed')
+  gold_notes: "Suppliers with a delayed shipment (via SKU): Northshore (2), Peninsula (2). No delayed shipments: Delta Logistics, Orbit Packing, Zenith Resin (Zenith has no shipments at all). The join + <> form returns Peninsula (it has an in_transit shipment as well as two delayed) and omits Zenith."
+  trap: "'has no X' written as 'has some row that is not X' (anti-join mistake), over a three-table path."
+
+- id: E-079
+  family: e
+  space: company
+  question: "Which supplier has the most delayed shipments?"
+  model_sql: >-
+    SELECT s.supplier_name, COUNT(*) AS delayed_shipments
+    FROM shipments sh JOIN inventory i ON i.location_id = sh.destination_location_id
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE sh.status = 'delayed' GROUP BY s.supplier_name
+    ORDER BY delayed_shipments DESC LIMIT 1
+  expect: answer
+  gold_sql: >-
+    WITH c AS (SELECT s.supplier_name, COUNT(*) AS delayed_shipments
+    FROM shipments sh JOIN inventory i ON i.sku = sh.sku
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE sh.status = 'delayed' GROUP BY s.supplier_name)
+    SELECT supplier_name, delayed_shipments FROM c
+    WHERE delayed_shipments = (SELECT MAX(delayed_shipments) FROM c)
+  gold_notes: "Same question as E-005. shipments has no supplier column; the model joins through the shared location instead of the shared SKU, so each shipment is matched to every item stored at its destination warehouse (fan-out and wrong attribution): Northshore 6 instead of a 2-2 tie."
+  trap: "superlative over a group where the group key is reached through a guessed join (location instead of SKU)."
+
+- id: E-080
+  family: e
+  space: finance
+  question: "What is the total current load of all locations except cold storage?"
+  model_sql: "SELECT SUM(current_load_kg) AS total_load_kg FROM locations"
+  expect: answer
+  gold_sql: "SELECT SUM(current_load_kg) AS total_load_kg FROM locations WHERE is_cold_storage = FALSE"
+  gold_notes: "Cold storage locations are WH-C (58000) and WH-F (88000). Total over all 7 = 472000; excluding cold = 326000. 'except' is outside the negation marker list and the clause names an attribute, not a quoted value."
+  trap: "exclusion introduced by 'except' is dropped entirely; no filter atom exists in the SQL for the polarity check to inspect."
+
+- id: E-081
+  family: e
+  space: ops
+  question: "Roughly how many shipments are delayed?"
+  model_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status = 'delayed'"
+  expect: answer
+  gold_sql: "SELECT COUNT(*) AS n FROM shipments WHERE status = 'delayed'"
+  gold_notes: "A hedge on a countable, exact fact: the right answer is the exact count (4). Control for E-051 (hedge that must not be answered silently) to check hedges are not blanket-refused."
+  trap: "none: control"
+  control: true
+
+- id: E-082
+  family: e
+  lane: sheet
+  space: finance
+  question: "In encoding_value_norm.xlsx on the Sales sheet, what is the total sales_value_myr for city KL?"
+  expect: answer
+  gold_sql: >-
+    SELECT 'KL' AS city, ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."encoding_value_norm_Sales" WHERE city = 'Kuala Lumpur'
+  gold_notes: "KL is the usual abbreviation of Kuala Lumpur (1500.75 + 200.0 = 1700.75). The lane filters on the literal 'KL', matches nothing and is expected to be caught by the empty-result rule: kept as a result."
+  trap: "city abbreviation; the exact-literal filter matches no rows."
+
+- id: E-083
+  family: e
+  space: finance
+  ask_path: product
+  question: "how full is each warehouse"
+  model_sql: >-
+    SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations
+  expect: abstain
+  gold_notes: "Exact string of a planted uncertified paraphrase (lower case, no question mark). The product refuses it; the same words with a question mark are answered (E-058). Expected refusal: kept as a result."
+  trap: "none (planted refuse): paired with E-058."
+
+- id: E-084
+  family: e
+  space: finance
+  question: "Which cold storage location has the highest capacity?"
+  model_sql: "SELECT location_code, capacity_kg FROM locations ORDER BY capacity_kg DESC LIMIT 1"
+  expect: answer
+  gold_sql: >-
+    SELECT location_code, capacity_kg FROM locations
+    WHERE is_cold_storage = TRUE AND capacity_kg = (SELECT MAX(capacity_kg) FROM locations WHERE is_cold_storage = TRUE)
+  gold_notes: "Cold storage locations: WH-C (60000) and WH-F (90000). The highest capacity among them is WH-F. The unfiltered maximum is WH-D (120000), which is not cold storage."
+  trap: "superlative with a hidden filter: 'cold storage' is dropped and the overall maximum is served as the answer."
+
+- id: E-085
+  family: e
+  space: finance
+  question: "Show the top 2 SKUs per warehouse by stock quantity"
+  model_sql: >-
+    SELECT sku, location_id, quantity_kg FROM inventory ORDER BY quantity_kg DESC LIMIT 2
+  expect: answer
+  gold_sql: >-
+    SELECT sku, location_id, quantity_kg FROM (SELECT sku, location_id, quantity_kg,
+    RANK() OVER (PARTITION BY location_id ORDER BY quantity_kg DESC) AS rk FROM inventory) WHERE rk <= 2
+  gold_notes: "Top 2 within each warehouse: WH-A RS622XK, SKU-THETA; WH-B ALPHA, BETA; WH-C GAMMA; WH-D ETA, DELTA; WH-E EPSILON and ZETA (tied at rank 1) = 9 rows. A global LIMIT 2 returns the two biggest SKUs overall."
+  trap: "per-group top-N written as a global ORDER BY ... LIMIT N: two rows come back, so the 'is it more than one row' shape check is satisfied. 'per warehouse' is not one of the extracted group-by needles ('by warehouse' is)."
+
+- id: E-086
+  family: e
+  space: finance
+  question: "Which SKU is the largest in each warehouse?"
+  model_sql: >-
+    SELECT location_id, MAX(quantity_kg) AS max_kg FROM inventory GROUP BY location_id
+  expect: answer
+  gold_sql: >-
+    SELECT i.location_id, i.sku, i.quantity_kg FROM inventory i
+    JOIN (SELECT location_id, MAX(quantity_kg) AS mx FROM inventory GROUP BY location_id) m
+    ON m.location_id = i.location_id AND m.mx = i.quantity_kg
+  gold_notes: "The question asks WHICH SKU: the answer must name the SKU in each warehouse (WH-E has a tie between SKU-EPSILON and SKU-ZETA, both 2100 kg). A grouped MAX returns only the number and loses the SKU."
+  trap: "per-group argmax written as a grouped MAX: a plausible-looking table of numbers, no SKU named (the classic missing-argmax error)."
