@@ -22,11 +22,13 @@ from rt_grader import (
 )
 
 
-def _env(rows: list[dict[str, Any]], *, text: str | None = None, badge: str = "L2_VALIDATED") -> dict[str, Any]:
+def _env(
+    rows: list[dict[str, Any]], *, text: str | None = None, badge: str = "L2_VALIDATED"
+) -> dict[str, Any]:
     """A real, valid envelope built by the real constructor."""
     from dms_executor.envelope import build_answer_envelope
 
-    body = text if text is not None else "Found %d row(s)." % len(rows)
+    body = text if text is not None else f"Found {len(rows)} row(s)."
     return build_answer_envelope(
         answer_id="ans_rt_unit",
         text=body,
@@ -45,7 +47,10 @@ def _abstain_env(reason: str = "GEN-01: validate:ungranted:alerts") -> dict[str,
 
     return build_answer_envelope(
         answer_id="ans_rt_abstain",
-        text="I cannot certify an ontology-grounded query for that question, so I am not executing one.",
+        text=(
+            "I cannot certify an ontology-grounded query for that question, "
+            "so I am not executing one."
+        ),
         badge="ABSTAIN",
         abstained=True,
         assumptions=[reason],
@@ -170,12 +175,20 @@ def test_ragged_served_rows_are_wrong() -> None:
 def test_prose_tokens_skip_identifiers_dates_and_row_count_is_allowed() -> None:
     text = "Found 2 row(s).\n  - sku=SKU-00397, ts=2026-07-01 10:00:00, total=1,234.50"
     assert prose_tokens(text) == ["2", "1234.50"]
-    env = {"text": text, "rows": [{"sku": "SKU-00397", "total": 1234.5}, {"sku": "SKU-1", "total": 2.5}], "values": []}
+    env = {
+        "text": text,
+        "rows": [{"sku": "SKU-00397", "total": 1234.5}, {"sku": "SKU-1", "total": 2.5}],
+        "values": [],
+    }
     assert prose_check(env, "q") == []
 
 
 def test_prose_number_not_in_rows_is_flagged() -> None:
-    env = {"text": "Found 1 row(s). Margin improved by 777 units.", "rows": [{"a": 5}], "values": []}
+    env = {
+        "text": "Found 1 row(s). Margin improved by 777 units.",
+        "rows": [{"a": 5}],
+        "values": [],
+    }
     assert prose_check(env, "q") == ["777"]
 
 
@@ -189,12 +202,16 @@ def test_headline_must_equal_gold_for_single_value() -> None:
     hard, _ = headline_check(env, [{"total": 29840.0}])
     assert any(x.startswith("headline_value_not_gold") for x in hard)
     assert any(x.startswith("headline_text_mismatch") for x in hard)
-    ok_hard, _ = headline_check(_env([{"total": 29840.0}], text="Found 1 row(s).\n  - total=29840.0"), [{"total": 29840.0}])
+    ok_hard, _ = headline_check(
+        _env([{"total": 29840.0}], text="Found 1 row(s).\n  - total=29840.0"), [{"total": 29840.0}]
+    )
     assert ok_hard == []
 
 
 # ------------------------------------------------------------------ verdicts
-def _grade(env: Any, *, expect: str = "answer", status: int | None = 200, gold: Any = None, **kw: Any) -> dict[str, Any]:
+def _grade(
+    env: Any, *, expect: str = "answer", status: int | None = 200, gold: Any = None, **kw: Any
+) -> dict[str, Any]:
     gold_rows = [{"x": 1}] if gold is None else gold
     return grade(
         expect=expect,
@@ -248,10 +265,18 @@ def test_http_refusal_verdicts() -> None:
 
 def test_harness_error_paths() -> None:
     assert _grade(None, status=None, exception="X: y")["verdict"] == "HARNESS_ERROR"
-    assert _grade(_env([{"x": 1}]), discarded="crossed_midnight:discarded")["verdict"] == "HARNESS_ERROR"
+    assert (
+        _grade(_env([{"x": 1}]), discarded="crossed_midnight:discarded")["verdict"]
+        == "HARNESS_ERROR"
+    )
     gold_err = grade(
-        expect="answer", question="q", http_status=200, http_body=_env([{"x": 1}]),
-        gold_sql="SELECT nope", gold_rows=None, gold_error="BinderException",
+        expect="answer",
+        question="q",
+        http_status=200,
+        http_body=_env([{"x": 1}]),
+        gold_sql="SELECT nope",
+        gold_rows=None,
+        gold_error="BinderException",
     )
     assert gold_err["verdict"] == "HARNESS_ERROR"
 
@@ -269,7 +294,10 @@ def test_abstain_reason_skips_bookkeeping_notes() -> None:
     assert abstain_reason(demoted).endswith("(E10/FF-01)")
     named = {"assumptions": ["GEN-01 ontology compile", "GEN-01: validate:ungranted:alerts"]}
     assert abstain_reason(named) == "validate:ungranted:alerts"
-    bare = {"assumptions": ["GEN-01 ontology compile", "include: x"], "text": "Nothing to say.\nmore"}
+    bare = {
+        "assumptions": ["GEN-01 ontology compile", "include: x"],
+        "text": "Nothing to say.\nmore",
+    }
     assert abstain_reason(bare) == "Nothing to say."
 
 

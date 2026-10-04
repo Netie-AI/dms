@@ -62,7 +62,6 @@ def ensure_paths() -> None:
 ensure_paths()
 
 import httpx  # noqa: E402
-
 from rt_cases import SPACE_IDS, Case, CaseError, ext_sql_path_for, load_cases  # noqa: E402
 from rt_data import FamilyDb, build_family_db, run_gold, sha256_file, table_counts  # noqa: E402
 from rt_grader import grade  # noqa: E402
@@ -332,7 +331,9 @@ def _clock_read() -> dict[str, str]:
 
     con = duckdb.connect()
     try:
-        d, tz = con.execute("SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')").fetchone()
+        d, tz = con.execute(
+            "SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')"
+        ).fetchone()
     finally:
         con.close()
     return {"current_date": d, "timezone": tz, "utc_date": datetime.now(UTC).strftime("%Y-%m-%d")}
@@ -368,14 +369,13 @@ class Harness:
         os.environ["DMS_ASK_MODE"] = "live"
         os.environ["DMS_SYNC_BRONZE"] = "0"
 
-        from dms_executor import Executor
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-
         from dms_api.middleware_actor import RejectIdentityHeadersMiddleware
         from dms_api.routes import chat
         from dms_api.settings import Settings, get_settings
         from dms_api.store.memory import DemoSpaceStore
+        from dms_executor import Executor
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
 
         class _RecordingExecutor(Executor):
             last_exception: str | None = None
@@ -390,7 +390,9 @@ class Harness:
 
         self.cortex = RedteamCortex(db.cortex, wire=wire)
         self.executor = _RecordingExecutor(
-            cortex=self.cortex, minter=_stub_minter(), warehouse_path=db.dms  # type: ignore[arg-type]
+            cortex=self.cortex,
+            minter=_stub_minter(),
+            warehouse_path=db.dms,  # type: ignore[arg-type]
         )
         settings = Settings(
             _env_file=None,
@@ -561,7 +563,8 @@ def run_header(run_id: str, families: dict[str, dict[str, Any]]) -> dict[str, An
         "model_sql": "INFERRED, injected through a Cortex stub; never observed from a model",
         "not_exercised": [
             "F5 compliance gate (stub Cortex has no base_url: soft gate_unavailable)",
-            "Cortex manifest signature / path allow-list / sqlglot guardrail / EXPLAIN gate / row cap",
+            "Cortex manifest signature / path allow-list / sqlglot guardrail / "
+            "EXPLAIN gate / row cap",
             "OpenVault, any model, the real ledger chain",
         ],
         "families": families,
@@ -626,7 +629,9 @@ def run_cases(
         "finished_at_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cases": len(records),
         "verdicts": dict(verdicts),
-        "badge_label_violations": sum(1 for r in records if not r["mechanical"]["badge_label"]["ok"]),
+        "badge_label_violations": sum(
+            1 for r in records if not r["mechanical"]["badge_label"]["ok"]
+        ),
         "gold_pristine": {f: sha256_file(p) == h for f, (p, h) in gold_hashes.items()},
         "network_attempts": list(NETWORK_ATTEMPTS),
     }
@@ -645,7 +650,8 @@ def write_packets(records: list[dict[str, Any]], out_root: Path) -> tuple[Path, 
     pp = out_root / "judge_packets.jsonl"
     kp = out_root / "packet_key.json"
     pp.write_text(
-        "".join(json.dumps(_jsonable(p), ensure_ascii=False) + "\n" for p in packets), encoding="utf-8"
+        "".join(json.dumps(_jsonable(p), ensure_ascii=False) + "\n" for p in packets),
+        encoding="utf-8",
     )
     kp.write_text(json.dumps(key, indent=2), encoding="utf-8")
     return pp, kp

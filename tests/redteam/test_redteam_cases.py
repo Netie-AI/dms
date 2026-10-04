@@ -36,7 +36,9 @@ def test_sample_file_loads_three_cases() -> None:
     cases = load_cases(SAMPLE)
     assert [c.id for c in cases] == ["B-001", "B-002", "D-001"]
     assert cases[0].control and not cases[1].control
-    assert cases[2].lane == "sheet" and cases[2].ask_path == "product" and cases[2].model_sql is None
+    assert (
+        cases[2].lane == "sheet" and cases[2].ask_path == "product" and cases[2].model_sql is None
+    )
     assert [c.id for c in load_cases(SAMPLE, family="b")] == ["B-001", "B-002"]
 
 
@@ -92,8 +94,11 @@ def test_expect_abstain_needs_no_gold() -> None:
 
 def test_duplicate_ids_and_non_list_are_rejected(tmp_path: Path) -> None:
     f = tmp_path / "a.yaml"
-    f.write_text("- id: A-001\n  family: a\n  question: q\n  expect: abstain\n  model_sql: SELECT 1\n"
-                 "- id: A-001\n  family: a\n  question: q\n  expect: abstain\n  model_sql: SELECT 1\n", encoding="utf-8")
+    f.write_text(
+        "- id: A-001\n  family: a\n  question: q\n  expect: abstain\n  model_sql: SELECT 1\n"
+        "- id: A-001\n  family: a\n  question: q\n  expect: abstain\n  model_sql: SELECT 1\n",
+        encoding="utf-8",
+    )
     with pytest.raises(CaseError, match="duplicate case id"):
         load_cases(f)
     g = tmp_path / "b.yaml"
@@ -114,7 +119,9 @@ def test_ext_sql_path_is_found_next_to_the_family_file(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------------ extension SQL guard
 def test_split_statements_respects_quotes_and_comments() -> None:
-    sql = "-- c\nINSERT INTO alerts VALUES ('A;1','x');  -- tail\nUPDATE alerts SET resolved = TRUE;"
+    sql = (
+        "-- c\nINSERT INTO alerts VALUES ('A;1','x');  -- tail\nUPDATE alerts SET resolved = TRUE;"
+    )
     assert split_sql_statements(sql) == [
         "INSERT INTO alerts VALUES ('A;1','x')",
         "UPDATE alerts SET resolved = TRUE",
@@ -161,8 +168,11 @@ def test_extension_rejects_everything_else(stmt: str) -> None:
 
 def test_bad_extension_fails_the_build_before_anything_is_applied(tmp_path: Path) -> None:
     ext = tmp_path / "x.ext.sql"
-    ext.write_text("INSERT INTO inventory VALUES ('SKU-Z','WH-A',1,1,1,'SUP-01','RAW',NULL);\n"
-                   "CREATE TABLE sneaky (a INT);\n", encoding="utf-8")
+    ext.write_text(
+        "INSERT INTO inventory VALUES ('SKU-Z','WH-A',1,1,1,'SUP-01','RAW',NULL);\n"
+        "CREATE TABLE sneaky (a INT);\n",
+        encoding="utf-8",
+    )
     with pytest.raises(ExtensionSqlError, match="CREATE|blocked"):
         build_family_db("a", ext, tmp_path / "db")
 
@@ -188,7 +198,9 @@ def test_three_copies_are_equal_and_gold_is_hashed(tmp_path: Path) -> None:
     )
     db = build_family_db("a", ext, tmp_path / "db")
     assert db.ext_statements == 2
-    assert table_counts(db.dms) == table_counts(db.cortex) == table_counts(db.gold) == db.table_counts
+    assert (
+        table_counts(db.dms) == table_counts(db.cortex) == table_counts(db.gold) == db.table_counts
+    )
     assert db.table_counts["inventory"] == 8 and db.table_counts["suppliers"] == 5
     assert len(db.gold_sha256) == 64
     assert len({db.dms, db.cortex, db.gold}) == 3

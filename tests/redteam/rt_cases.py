@@ -127,7 +127,10 @@ def validate_case(raw: Any, *, source: str = "") -> Case:
     ask_path_raw = raw.get("ask_path")
     if lane == "gen":
         if grounded:
-            raise CaseError(f"{tag}: grounded_tables is for lane sheet only (a grounded ask skips the generative lane)")
+            raise CaseError(
+                f"{tag}: grounded_tables is for lane sheet only "
+                "(a grounded ask skips the generative lane)"
+            )
         if not isinstance(model_sql, str) or not model_sql.strip():
             raise CaseError(f"{tag}: lane gen requires a non-empty model_sql")
         if not is_select_sql(model_sql):
@@ -140,7 +143,9 @@ def validate_case(raw: Any, *, source: str = "") -> Case:
             raise CaseError(f"{tag}: lane sheet runs no model; model_sql must be absent")
         ask_path = str(ask_path_raw or "product").strip().lower()
         if ask_path != "product":
-            raise CaseError(f"{tag}: lane sheet runs on the product ladder only (the bronze-sheet lane)")
+            raise CaseError(
+                f"{tag}: lane sheet runs on the product ladder only (the bronze-sheet lane)"
+            )
         model_sql = None
 
     gold_sql = raw.get("gold_sql")

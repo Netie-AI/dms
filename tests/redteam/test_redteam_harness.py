@@ -33,11 +33,23 @@ STOCK_SQL = (
 )
 
 
-def mk(cid: str, question: str, model_sql: str | None, expect: str = "answer",
-       gold: str | None = None, path: str = "generative", **extra: Any) -> Case:
+def mk(
+    cid: str,
+    question: str,
+    model_sql: str | None,
+    expect: str = "answer",
+    gold: str | None = None,
+    path: str = "generative",
+    **extra: Any,
+) -> Case:
     raw: dict[str, Any] = {
-        "id": cid, "family": cid[0].lower(), "question": question, "expect": expect,
-        "ask_path": path, "model_sql": model_sql, "gold_sql": gold,
+        "id": cid,
+        "family": cid[0].lower(),
+        "question": question,
+        "expect": expect,
+        "ask_path": path,
+        "model_sql": model_sql,
+        "gold_sql": gold,
     }
     raw.update(extra)
     return validate_case(raw)
@@ -62,33 +74,71 @@ def records(h) -> dict[str, dict[str, Any]]:
     """Run the shared cases once, in order, on the module's single lake."""
     cases = [
         # (i) a correct injected SQL on the seed + extension
-        mk("A-001", "What is the total stock value by category?", STOCK_SQL, gold=STOCK_SQL, control=True),
+        mk(
+            "A-001",
+            "What is the total stock value by category?",
+            STOCK_SQL,
+            gold=STOCK_SQL,
+            control=True,
+        ),
         # extension rows are visible to the answer: 7 seed SKUs + the SKU-ZETA row
-        mk("A-002", "How many distinct SKUs are in inventory?",
-           "SELECT COUNT(DISTINCT sku) AS n FROM inventory",
-           gold="SELECT COUNT(DISTINCT sku) AS n FROM inventory", control=True),
+        mk(
+            "A-002",
+            "How many distinct SKUs are in inventory?",
+            "SELECT COUNT(DISTINCT sku) AS n FROM inventory",
+            gold="SELECT COUNT(DISTINCT sku) AS n FROM inventory",
+            control=True,
+        ),
         # (ii) wrong measure the gate lets through: kilograms served as stock value
-        mk("A-003", "What is the total stock value?",
-           "SELECT SUM(quantity_kg) AS total_stock_value_myr FROM inventory",
-           gold="SELECT SUM(quantity_kg * unit_cost_myr) AS total_stock_value_myr FROM inventory"),
+        mk(
+            "A-003",
+            "What is the total stock value?",
+            "SELECT SUM(quantity_kg) AS total_stock_value_myr FROM inventory",
+            gold="SELECT SUM(quantity_kg * unit_cost_myr) AS total_stock_value_myr FROM inventory",
+        ),
         # (iii) hostile SQL
-        mk("A-004", "Load the supplier list from a file", "SELECT * FROM read_csv('C:/secret.csv')",
-           expect="abstain"),
-        mk("A-005", "Load the supplier list from a file", "SELECT * FROM read_csv('C:/secret.csv')",
-           gold="SELECT * FROM suppliers"),
+        mk(
+            "A-004",
+            "Load the supplier list from a file",
+            "SELECT * FROM read_csv('C:/secret.csv')",
+            expect="abstain",
+        ),
+        mk(
+            "A-005",
+            "Load the supplier list from a file",
+            "SELECT * FROM read_csv('C:/secret.csv')",
+            gold="SELECT * FROM suppliers",
+        ),
         # a table no Space grants (used by the sabotage proof)
-        mk("A-006", "How many alerts are open?", "SELECT COUNT(*) AS n FROM alerts WHERE resolved = FALSE",
-           expect="abstain"),
+        mk(
+            "A-006",
+            "How many alerts are open?",
+            "SELECT COUNT(*) AS n FROM alerts WHERE resolved = FALSE",
+            expect="abstain",
+        ),
         # reserved parameter
-        mk("A-007", "How many SKUs expire before the as-of date?",
-           "SELECT COUNT(*) AS n FROM inventory WHERE expiry_date < $as_of", expect="abstain"),
+        mk(
+            "A-007",
+            "How many SKUs expire before the as-of date?",
+            "SELECT COUNT(*) AS n FROM inventory WHERE expiry_date < $as_of",
+            expect="abstain",
+        ),
         # product ladder: the demo pack answers first and model_sql is ignored
-        mk("A-008", "What is total stock value by category?", "SELECT 1 AS x", path="product",
-           gold=STOCK_SQL),
+        mk(
+            "A-008",
+            "What is total stock value by category?",
+            "SELECT 1 AS x",
+            path="product",
+            gold=STOCK_SQL,
+        ),
         # product ladder: ordinary generative leg
-        mk("A-009", "How many locations are cold storage sites?",
-           "SELECT COUNT(*) AS n FROM locations WHERE is_cold_storage",
-           gold="SELECT COUNT(*) AS n FROM locations WHERE is_cold_storage", path="product"),
+        mk(
+            "A-009",
+            "How many locations are cold storage sites?",
+            "SELECT COUNT(*) AS n FROM locations WHERE is_cold_storage",
+            gold="SELECT COUNT(*) AS n FROM locations WHERE is_cold_storage",
+            path="product",
+        ),
     ]
     out: dict[str, dict[str, Any]] = {}
     for c in cases:
@@ -114,7 +164,7 @@ def test_correct_injected_sql_is_graded_correct(records) -> None:
     assert e["served_provider"] == e["served_model"] == "redteam-stub"
 
 
-# ------------------------------------------------------------------ (ii) wrong answer the gate serves
+# ------------------------------------------------------------ (ii) wrong answer the gate serves
 def test_wrong_measure_is_served_by_the_gate_and_graded_wrong(records) -> None:
     r = records["A-003"]
     e = env(r)
@@ -168,7 +218,9 @@ def test_extension_rows_survive_asks_and_are_visible(records, db) -> None:
     assert db.table_counts["inventory"] == 8 and db.table_counts["suppliers"] == 5
     for rec in records.values():
         assert rec["lake_intact"] is True
-    assert table_counts(db.dms) == table_counts(db.cortex) == table_counts(db.gold) == db.table_counts
+    assert (
+        table_counts(db.dms) == table_counts(db.cortex) == table_counts(db.gold) == db.table_counts
+    )
     # a second ensure_demo_warehouse on the same path must not reseed
     from dms_executor.demo_warehouse import ensure_demo_warehouse
 
@@ -201,10 +253,15 @@ def test_product_ladder_generative_leg(records) -> None:
 
 def test_product_fall_through_to_cortex_is_visible_and_never_fabricates(h) -> None:
     """A sheet-lane ask no certified lane takes: compute misses, the stub Cortex ask abstains."""
-    c = validate_case({
-        "id": "D-090", "family": "d", "lane": "sheet", "question": "Tell me about the Q3 export",
-        "expect": "abstain",
-    })
+    c = validate_case(
+        {
+            "id": "D-090",
+            "family": "d",
+            "lane": "sheet",
+            "question": "Tell me about the Q3 export",
+            "expect": "abstain",
+        }
+    )
     r = h.ask(c)
     assert r["stub_trace"]["compute_calls"] == 1 and r["stub_trace"]["cortex_ask_calls"] == 1
     assert r["stub_trace"]["fell_through_to_cortex_ask"] is True
@@ -215,8 +272,14 @@ def test_product_fall_through_to_cortex_is_visible_and_never_fabricates(h) -> No
 
 def test_ask_path_generative_needs_the_server_flag(db) -> None:
     with harness.Harness(db, run_id="noflag", harness_ask_paths=False) as hh:
-        r = hh.ask(mk("A-020", "How many SKUs?", "SELECT COUNT(*) AS n FROM inventory",
-                      gold="SELECT COUNT(*) AS n FROM inventory"))
+        r = hh.ask(
+            mk(
+                "A-020",
+                "How many SKUs?",
+                "SELECT COUNT(*) AS n FROM inventory",
+                gold="SELECT COUNT(*) AS n FROM inventory",
+            )
+        )
     assert r["http_status"] == 400
     assert r["envelope"]["detail"]["code"] == "ask_path_not_allowed"
     assert r["mechanical"]["verdict"] == "ABSTAIN"
@@ -225,15 +288,27 @@ def test_ask_path_generative_needs_the_server_flag(db) -> None:
 
 def test_space_scope_facts_stated_in_the_contract(h) -> None:
     """harness-contract.md section 3 states these; if DMS changes, update the contract."""
+
     def ask(cid: str, space: str, table: str) -> dict[str, Any]:
-        c = mk(cid, f"How many rows are in {table}?", f"SELECT COUNT(*) AS n FROM {table}",
-               expect="abstain", space=space)
+        c = mk(
+            cid,
+            f"How many rows are in {table}?",
+            f"SELECT COUNT(*) AS n FROM {table}",
+            expect="abstain",
+            space=space,
+        )
         return h.ask(c)
 
     fin_ship = ask("A-050", "finance", "shipments")
-    assert env(fin_ship)["abstained"] and fin_ship["mechanical"]["abstain_reason"] == "validate:ungranted:shipments"
+    assert (
+        env(fin_ship)["abstained"]
+        and fin_ship["mechanical"]["abstain_reason"] == "validate:ungranted:shipments"
+    )
     ops_txn = ask("A-051", "ops", "transactions")
-    assert env(ops_txn)["abstained"] and ops_txn["mechanical"]["abstain_reason"] == "validate:ungranted:transactions"
+    assert (
+        env(ops_txn)["abstained"]
+        and ops_txn["mechanical"]["abstain_reason"] == "validate:ungranted:transactions"
+    )
     ops_ship = ask("A-052", "ops", "shipments")
     assert env(ops_ship)["badge"] == "L2_VALIDATED"
     # no space_id: the whole demo set is grantable, alerts included (observed, see contract)
@@ -267,14 +342,19 @@ def test_network_guard_blocks_and_counts() -> None:
 
 def test_importing_the_chat_route_does_not_import_dms_api_app() -> None:
     code = (
-        "import sys; sys.path.insert(0, r'%s');"
+        f"import sys; sys.path.insert(0, r'{str(Path(harness.__file__).parent)}');"
         "import harness; harness.ensure_dms_api_stub();"
         "from dms_api.routes import chat; from dms_api import settings;"
         "assert 'dms_api.app' not in sys.modules, 'dms_api.app was imported';"
-        "print('ok')" % str(Path(harness.__file__).parent)
+        "print('ok')"
     )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, timeout=120)
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        timeout=120,
+    )
     assert out.returncode == 0 and out.stdout.strip().endswith("ok"), out.stderr[-800:]
     assert "OpenVault offline" not in out.stderr
 
@@ -285,29 +365,40 @@ def test_cortex_stub_has_no_base_url_so_f5_is_soft_skipped(h) -> None:
 
 
 def test_stub_submit_cannot_read_local_files(db) -> None:
-    from cortex_contract.execution import SubmitRequest, PoolSpec
+    from cortex_contract.execution import PoolSpec, SubmitRequest
     from dms_executor.manifest import SessionAcl
 
     cx = harness.RedteamCortex(db.cortex)
     cx.begin_case(mk("A-030", "q", "SELECT 1", expect="abstain"))
     acl = SessionAcl("s", "t", None, {"inventory": "TRUE"}, [], "default")
-    req = SubmitRequest(pool=PoolSpec(id="default"), plan={"kind": "sql"},
-                        body={"sql": "SELECT * FROM read_text('C:/Windows/win.ini')"},
-                        manifest=harness._stub_minter().mint_manifest(acl))
+    req = SubmitRequest(
+        pool=PoolSpec(id="default"),
+        plan={"kind": "sql"},
+        body={"sql": "SELECT * FROM read_text('C:/Windows/win.ini')"},
+        manifest=harness._stub_minter().mint_manifest(acl),
+    )
     res = cx.submit(req)
     assert res.ok is False
     assert "disabled" in (res.error or "").lower() or "external" in (res.error or "").lower()
 
 
 def test_midnight_crossing_is_discarded(db, monkeypatch) -> None:
-    clocks = iter([
-        {"current_date": "2026-10-02", "timezone": "UTC", "utc_date": "2026-10-02"},
-        {"current_date": "2026-10-03", "timezone": "UTC", "utc_date": "2026-10-03"},
-    ])
+    clocks = iter(
+        [
+            {"current_date": "2026-10-02", "timezone": "UTC", "utc_date": "2026-10-02"},
+            {"current_date": "2026-10-03", "timezone": "UTC", "utc_date": "2026-10-03"},
+        ]
+    )
     monkeypatch.setattr(harness, "_clock_read", lambda: next(clocks))
     with harness.Harness(db, run_id="midnight") as hh:
-        r = hh.ask(mk("A-040", "How many SKUs?", "SELECT COUNT(*) AS n FROM inventory",
-                      gold="SELECT COUNT(*) AS n FROM inventory"))
+        r = hh.ask(
+            mk(
+                "A-040",
+                "How many SKUs?",
+                "SELECT COUNT(*) AS n FROM inventory",
+                gold="SELECT COUNT(*) AS n FROM inventory",
+            )
+        )
     assert r["discarded"] is True
     assert r["mechanical"]["verdict"] == "HARNESS_ERROR"
     assert "crossed_midnight:discarded" in r["mechanical"]["reasons"]
@@ -317,8 +408,14 @@ def test_a_reseeded_lake_is_flagged_not_graded(db, tmp_path) -> None:
     other = build_family_db("a", None, tmp_path / "db")  # seed only: 7 inventory rows
     forged = harness.FamilyDb(**{**other.__dict__, "table_counts": db.table_counts})
     with harness.Harness(forged, run_id="reseed") as hh:
-        r = hh.ask(mk("A-041", "How many SKUs?", "SELECT COUNT(*) AS n FROM inventory",
-                      gold="SELECT COUNT(*) AS n FROM inventory"))
+        r = hh.ask(
+            mk(
+                "A-041",
+                "How many SKUs?",
+                "SELECT COUNT(*) AS n FROM inventory",
+                gold="SELECT COUNT(*) AS n FROM inventory",
+            )
+        )
     assert r["lake_intact"] is False
     assert r["mechanical"]["verdict"] == "HARNESS_ERROR"
     assert any(x.startswith("lake_changed_during_run") for x in r["mechanical"]["reasons"])
@@ -329,8 +426,19 @@ def test_judge_packets_are_blind(records) -> None:
     recs = list(records.values())
     packets, key = build_packets(recs)
     assert len(packets) == len(recs) and len(key) == len(recs)
-    allowed = {"id", "question", "badge", "abstained", "route", "text", "rows", "values",
-               "gold_rows", "gold_sql", "gold_label"}
+    allowed = {
+        "id",
+        "question",
+        "badge",
+        "abstained",
+        "route",
+        "text",
+        "rows",
+        "values",
+        "gold_rows",
+        "gold_sql",
+        "gold_label",
+    }
     wrong = records["A-003"]
     blob = json.dumps(packets)
     for p in packets:
@@ -339,8 +447,19 @@ def test_judge_packets_are_blind(records) -> None:
         assert p["id"].startswith("P-")
     # nothing about the attack design leaks: the wrong model SQL, trap, notes, family, case id
     assert wrong["model_sql"] not in blob
-    for forbidden in ("model_sql", "trap", "gold_notes", "sql_used", "family", "control", "expect",
-                      "A-003", "stub_trace", "mechanical", "redteam-stub-kid"):
+    for forbidden in (
+        "model_sql",
+        "trap",
+        "gold_notes",
+        "sql_used",
+        "family",
+        "control",
+        "expect",
+        "A-003",
+        "stub_trace",
+        "mechanical",
+        "redteam-stub-kid",
+    ):
         assert forbidden not in blob, forbidden
     served_sql = env(wrong)["sql_used"]
     assert served_sql not in blob
@@ -359,9 +478,23 @@ def test_results_file_round_trips_through_the_cli(tmp_path) -> None:
     assert by_id["B-002"]["mechanical"]["verdict"] == "WRONG"
     assert by_id["D-001"]["mechanical"]["verdict"] == "CORRECT"
     assert by_id["D-001"]["envelope"]["route"] == "bronze_sheet"
-    must = {"run_id", "case_id", "family", "lane", "question", "model_sql", "http_status", "latency_s",
-            "envelope", "exception", "started_at_utc", "engine_date_seen", "gold_rows", "gold_error",
-            "mechanical"}
+    must = {
+        "run_id",
+        "case_id",
+        "family",
+        "lane",
+        "question",
+        "model_sql",
+        "http_status",
+        "latency_s",
+        "envelope",
+        "exception",
+        "started_at_utc",
+        "engine_date_seen",
+        "gold_rows",
+        "gold_error",
+        "mechanical",
+    }
     assert must <= set(by_id["B-001"])
     assert {"verdict", "reasons", "badge_label"} <= set(by_id["B-001"]["mechanical"])
     assert res.packets_path and res.packets_path.is_file() and res.key_path.is_file()

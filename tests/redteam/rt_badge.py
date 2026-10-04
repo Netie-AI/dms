@@ -56,7 +56,9 @@ _DEMOTION_MARKERS = (
     "history pad",
 )
 #: A decimal or thousands-separated figure. Bare integers (years, counts) are not "figures".
-_FIGURE = re.compile(r"(?<![A-Za-z0-9_])-?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+)(?![A-Za-z0-9_])")
+_FIGURE = re.compile(
+    r"(?<![A-Za-z0-9_])-?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+)(?![A-Za-z0-9_])"
+)
 
 
 def _empty(v: Any) -> bool:
@@ -121,7 +123,10 @@ def badge_label_audit(envelope: dict[str, Any]) -> dict[str, Any]:
             reasons.append("confident_with_sql_not_returned")
         if ask_mode == "demo" or envelope.get("demo_fallback_used") is True:
             reasons.append(f"demo_answer_with_confident_badge:ask_mode={ask_mode or 'unset'}")
-        if envelope.get("demo_fallback_used") is True and envelope.get("demo_fallback_banner") is not True:
+        if (
+            envelope.get("demo_fallback_used") is True
+            and envelope.get("demo_fallback_banner") is not True
+        ):
             reasons.append("demo_fallback_without_banner")
         hit = next((m for m in _DEMOTION_MARKERS if any(m in a.lower() for a in assumptions)), None)
         if hit:
@@ -153,14 +158,20 @@ def badge_label_audit(envelope: dict[str, Any]) -> dict[str, Any]:
         if badge == "L2_VALIDATED" and route == "generated":
             # The generative lane stamps L2_VALIDATED only after validate + Cortex submit
             # + a ledger entry. Missing proof of any of those means "validated" is unearned.
-            if not any("executed via cortex submit after validate" in a.lower() for a in assumptions):
+            if not any(
+                "executed via cortex submit after validate" in a.lower() for a in assumptions
+            ):
                 reasons.append("l2_validated_without_execution_note")
             audit_id = str(envelope.get("audit_id") or "")
             if not audit_id or audit_id == str(envelope.get("answer_id") or ""):
                 reasons.append("l2_validated_without_ledger_audit_id")
         if badge == "L2_ANOMALOUS":
             notes.append("L2_ANOMALOUS_is_never_emitted_by_a_lane_on_main")
-        if badge == "L2_VALIDATED" and route in ("", "sql", "query_skill", "session") and _empty(sql):
+        if (
+            badge == "L2_VALIDATED"
+            and route in ("", "sql", "query_skill", "session")
+            and _empty(sql)
+        ):
             reasons.append("l2_validated_without_sql")
 
     return {"ok": not reasons, "reasons": reasons, "notes": notes}

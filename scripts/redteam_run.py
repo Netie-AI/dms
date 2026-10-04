@@ -40,9 +40,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ext", help="extension SQL file (default: <family>.ext.sql next to the YAML)")
     ap.add_argument("--judge-packets", action="store_true", help="also write blind judge packets")
     ap.add_argument("--results", help="build packets from an existing results.jsonl (no run)")
-    ap.add_argument("--no-harness-paths", action="store_true",
-                    help="server flag DMS_HARNESS_ASK_PATHS off: ask_path generative returns HTTP 400")
-    ap.add_argument("--print", dest="print_", action="store_true", help="print JSONL / packets to stdout")
+    ap.add_argument(
+        "--no-harness-paths",
+        action="store_true",
+        help="server flag DMS_HARNESS_ASK_PATHS off: ask_path generative returns HTTP 400",
+    )
+    ap.add_argument(
+        "--print", dest="print_", action="store_true", help="print JSONL / packets to stdout"
+    )
     args = ap.parse_args(argv)
 
     if args.results:
@@ -72,9 +77,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"case file error: {exc}", file=sys.stderr)
         return 2
     print(f"run {res.run_id}: {res.footer['cases']} case(s) -> {res.results_path}", file=sys.stderr)
-    print(f"verdicts: {res.footer['verdicts']}  badge_label_violations: "
-          f"{res.footer['badge_label_violations']}  gold_pristine: {res.footer['gold_pristine']}  "
-          f"network_attempts: {len(res.footer['network_attempts'])}", file=sys.stderr)
+    print(
+        f"verdicts: {res.footer['verdicts']}  badge_label_violations: "
+        f"{res.footer['badge_label_violations']}  gold_pristine: {res.footer['gold_pristine']}  "
+        f"network_attempts: {len(res.footer['network_attempts'])}",
+        file=sys.stderr,
+    )
     if args.print_:
         for line in res.lines():
             print(json.dumps(harness._jsonable(line), ensure_ascii=False))

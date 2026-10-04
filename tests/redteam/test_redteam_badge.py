@@ -130,7 +130,9 @@ def test_l2_without_execution_note_or_ledger_id() -> None:
     assert _has(badge_label_audit(env), "l2_validated_without_execution_note")
     env2 = _good() | {"audit_id": "ans_gen01"}
     assert _has(badge_label_audit(env2), "l2_validated_without_ledger_audit_id")
-    assert _has(badge_label_audit(_good() | {"audit_id": ""}), "l2_validated_without_ledger_audit_id")
+    assert _has(
+        badge_label_audit(_good() | {"audit_id": ""}), "l2_validated_without_ledger_audit_id"
+    )
 
 
 def test_demo_mode_with_confident_badge() -> None:
@@ -152,7 +154,11 @@ def test_confident_badge_over_a_demotion_note() -> None:
 
 
 def test_by_construction_routes() -> None:
-    sheet = _good() | {"route": "bronze_sheet", "badge": "L0_CERTIFIED", "assumptions": ["bronze sheet x::Sales"]}
+    sheet = _good() | {
+        "route": "bronze_sheet",
+        "badge": "L0_CERTIFIED",
+        "assumptions": ["bronze sheet x::Sales"],
+    }
     sheet.pop("plan_origin")
     sheet.pop("plan_source")
     a = badge_label_audit(sheet)
@@ -163,7 +169,11 @@ def test_by_construction_routes() -> None:
 
 
 def test_engine_assigned_route_is_a_note_not_a_violation() -> None:
-    env = _good() | {"route": "sql", "badge": "L1_GOVERNED_METRIC", "assumptions": ["live Cortex ask"]}
+    env = _good() | {
+        "route": "sql",
+        "badge": "L1_GOVERNED_METRIC",
+        "assumptions": ["live Cortex ask"],
+    }
     env.pop("plan_origin")
     env.pop("plan_source")
     a = badge_label_audit(env)

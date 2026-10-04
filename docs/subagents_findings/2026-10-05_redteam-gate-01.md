@@ -9,7 +9,8 @@
 
 - **338 adversarial cases**, 5 families, one frozen snapshot (corpus copied to `tests/redteam/corpus/`).
 - Mechanical grader: **231 WRONG**, 37 ABSTAIN, 70 CORRECT. Every WRONG carried a confident badge.
-- Three blind judges agreed on all but 2 cases (336 unanimous); judge majority: 228 WRONG. A **separate verifier re-derived the correct answer blind from the data** for all 231 suspected wrong answers: **207 confirmed wrong, 19 ambiguous, 5 not confirmed**. Badge unearned on all 207 confirmed.
+- Three blind judges agreed on all but 2 cases (336 unanimous); judge majority: 228 WRONG. A **separate verifier re-derived the correct answer blind from the data** for all 231 suspected wrong answers: **207 confirmed wrong, 19 ambiguous, 5 not confirmed**.
+- **Floor on the confirmed count.** 73 of the 207 involve a case a verifier listed as a judgment call a reasonable person could dispute (for most, the verifier said its verdict held under every alternative reading it checked, but that is its own claim). Without them the floor is **134**; also dropping the 5 that depend on today's date, **129**. Quote the floor, not 207, until Verify reruns it.
 - **Controls (correct model SQL): 0 wrong of 88** (rule-of-three upper bound 0.034); 63 answered correctly; 25 wrongly abstained (over-abstention). The gate does not corrupt a right answer; it fails to catch a wrong one.
 - **These are adversarially chosen cases. The WRONG share (about 68%) is a property of the test design, not an error rate and not an accuracy number.** It says what the gate does not catch, not how often a model emits it.
 
@@ -79,10 +80,11 @@ Each representative case, with the injected SQL, what the customer was served an
 
 ## 5. Badge labelling
 
-- `L2_VALIDATED` on **193 of 207** confirmed-wrong answers; the rest carried `L0_CERTIFIED` (sheet lane) or `L1_GOVERNED_METRIC` (pack lane). Badge unearned on all 207 (verifier `badge_ok=false`).
+- `L2_VALIDATED` on **193 of 207** confirmed-wrong answers; the other 14 carried `L0_CERTIFIED` (sheet lane) or `L1_GOVERNED_METRIC` (pack lane): B-033, B-034, B-048, B-049, B-050, B-051, D-062, D-063, D-064, D-065, E-067, E-068, E-069, E-070. The verifier set `badge_ok=false` wherever the answer was wrong, so that field follows from the verdict and is **not an independent finding**; the independent point is section 2 (what the gate established).
+- **UI mitigates `L2_VALIDATED`, not `L0`/`L1`.** The Studio chip renders `L2_VALIDATED` as "generated - check sources" (`apps/ui/src/lib/badgeCopy.ts:15`), so for L2 the customer-visible over-claim is softer than the API badge value. The unhedged over-claims are the L0/L1 cases above.
 - The harness's own badge-label audit (`tests/redteam/rt_badge.py`) found **0 violations**: it checks that the label is *consistent* with route, rows and abstain flag. It cannot see that the label is *unearned*. Both statements are true; the second is the finding.
 - Label oddities seen in dev runs (attacker-reported unless noted): a `SUM` over zero rows served `total_kg=None` with a synthesised `v_count=1` value (E-040/E-042, C-049); a PII-mask token corrupting served prose while the rows are right (B-028: `share_pct=1.DMSMASK_account_01`, verifier-noted); the sheet lane serving `L0_CERTIFIED` while ignoring "excluding X", a `for sku X` filter, "lowest" and unknown measures (E-067..E-070, B-048..B-051), with nothing in `assumptions` about the ignored clause.
-- Near-miss pack phrases never earned a wrong `L1` in the cases that tried (the matcher is exact-normalised). The pack lane itself dropped rows on dirty keys (D-062..D-065, B-033..B-035), but those rest on a disputed reading of "spend" and are not in the confirmed count.
+- Near-miss pack phrases never earned a wrong `L1` in the cases that tried (the matcher is exact-normalised). The pack lane itself served wrong figures under `L1_GOVERNED_METRIC` on dirty keys and NULL-supplier lines: D-062..D-065, B-033 and B-034 are in the confirmed count (D-063, D-064 and B-033 also rest on how "spend" is read, which the verifier flagged; B-035 is ambiguous).
 
 ## 6. Over-abstention (correct SQL refused)
 
@@ -116,7 +118,7 @@ I replayed the same 338 cases against PR #311's own head (14d6765, `GRAIN-GUARD-
 | STALE_OR_FIXED_PERIOD | 2 | 2 | 0 | 0 |
 | UNGRANTED_ACCESS | 1 | 0 | 0 | 1 |
 
-Read: #311 closes fan-out (28 of 29 become abstains) at an over-abstention cost, and leaves measure, filter, period, wording, ties and text-type causes mostly untouched. I found no open PR or issue that owns that residue (I did not search exhaustively).
+Read: #311 closes fan-out (28 of 29 become abstains) at an over-abstention cost, and leaves measure, filter, period, wording, ties and text-type causes mostly untouched. Who owns that residue was not established here: this report did not search issues exhaustively, and the PRD intake maps each class to an owner.
 
 ## 8. Evidence and reproduction
 

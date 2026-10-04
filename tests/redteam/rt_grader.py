@@ -132,9 +132,7 @@ def compare_rows(
 
     by_name = s_cols == g_cols
     if not by_name:
-        labels.append(
-            f"column_name_mismatch:served={sorted(s_cols)} gold={sorted(g_cols)}"
-        )
+        labels.append(f"column_name_mismatch:served={sorted(s_cols)} gold={sorted(g_cols)}")
         if len(s_cols) != len(g_cols):
             reasons.append(f"column_count_mismatch:{len(s_cols)}/{len(g_cols)}")
             return {"ok": False, "reasons": reasons, "label_issues": labels}
@@ -142,7 +140,10 @@ def compare_rows(
     served_rows = served
     if by_name:
         numeric_gold = {
-            c for c in g_cols if gold and all(r[c] is None or _is_numeric_cell(r[c]) for r in gold)
+            c
+            for c in g_cols
+            if gold
+            and all(r[c] is None or _is_numeric_cell(r[c]) for r in gold)
             and any(_is_numeric_cell(r[c]) for r in gold)
         }
         coerced: set[str] = set()
@@ -219,7 +220,7 @@ def _allowed_numbers(env: dict[str, Any], question: str) -> set[Decimal]:
     allowed: set[Decimal] = set()
     rows = env.get("rows") or []
     for r in rows if isinstance(rows, list) else []:
-        for v in (r.values() if isinstance(r, dict) else []):
+        for v in r.values() if isinstance(r, dict) else []:
             d = _as_decimal(v)
             if d is not None and not isinstance(v, bool):
                 allowed.add(_num_key(d))
@@ -253,7 +254,9 @@ def prose_check(env: dict[str, Any], question: str) -> list[str]:
     return bad
 
 
-def headline_check(env: dict[str, Any], gold_rows: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+def headline_check(
+    env: dict[str, Any], gold_rows: list[dict[str, Any]]
+) -> tuple[list[str], list[str]]:
     """Single-value gold: (hard reasons, label issues)."""
     if len(gold_rows) != 1 or len(gold_rows[0]) != 1:
         return [], []
@@ -273,12 +276,17 @@ def headline_check(env: dict[str, Any], gold_rows: list[dict[str, Any]]) -> tupl
     ]
     if gkey not in vals:
         hard.append(f"headline_value_not_gold:gold={gold_v!r} values={[str(v) for v in vals][:5]}")
-    toks = [k for k in (_token_key(t) for t in prose_tokens(str(env.get("text") or ""))) if k is not None]
+    toks = [
+        k
+        for k in (_token_key(t) for t in prose_tokens(str(env.get("text") or "")))
+        if k is not None
+    ]
     rows_n = _num_key(Decimal(len(env.get("rows") or [])))
     stated = [k for k in toks if k != rows_n or k == gkey]
     if gkey not in stated:
         if stated:
-            hard.append(f"headline_text_mismatch:gold={gold_v!r} text_figures={[str(k) for k in stated][:5]}")
+            figures = [str(k) for k in stated][:5]
+            hard.append(f"headline_text_mismatch:gold={gold_v!r} text_figures={figures}")
         else:
             labels.append("text_does_not_state_headline")
     return hard, labels
