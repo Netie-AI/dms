@@ -18,8 +18,10 @@ Fail-closed preflight (both modes), before any network call:
   2. Every file in MANIFEST.json matches its sha256, and the manifest root hash equals
      PACK_D_ROOT_SHA256 (or an explicit --expect-root, which is labelled "not pack D").
   3. scan/result.json in the pack says PASS (counts-only personal-data scan).
-  4. Every gold SQL, run on --oracle-db, reproduces the frozen gold rows. A drifted
-     oracle is CONFIG, not a score.
+  4. Every gold SQL, run on --oracle-db, reproduces the frozen gold rows, and every
+     table of --oracle-db matches db/fingerprint.json (rows hashed per table), so a
+     database edited where no gold query looks is caught too. A drifted oracle is
+     CONFIG, not a score.
 
 No scored round has been run from this script. The first live run is a baseline with
 no target (EPIC-A1), and it waits for the A1 baseline gates. No accuracy figure is
@@ -36,6 +38,8 @@ import os
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -123,7 +127,12 @@ def verify_pack(pack_dir: Path, expect_root: str | None = None) -> dict[str, Any
     want = expect_root or PACK_D_ROOT_SHA256
     if root != want:
         raise PackError(f"pack root {root[:12]} is not the pinned root {want[:12]}")
-    for need in ("pack/questions.json", "pack/gold_results.json", "scan/result.json"):
+    for need in (
+        "pack/questions.json",
+        "pack/gold_results.json",
+        "scan/result.json",
+        "db/fingerprint.json",
+    ):
         if need not in files:
             raise PackError(f"manifest does not cover {need}")
     scan = json.loads((pack_dir / "scan" / "result.json").read_text(encoding="utf-8"))
@@ -170,6 +179,66 @@ def check_oracle(cases: list[dict[str, Any]], gold: dict[str, Any], oracle_db: P
     return drift
 
 
+def _json_cell(value: Any) -> Any:
+    """Cell rendering for the fingerprint. Must match the pack's tools/packlib.to_json_cell."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    return str(value)
+
+
+def db_fingerprint(db: Path) -> dict[str, dict[str, Any]]:
+    """Per base table: row count, column count, sha256 of rows sorted by every column.
+
+    Same recipe as the pack's tools/freeze.py, so the database the scorer treats as
+    truth must be the database the pack was frozen against, not just agree on the
+    gold queries.
+    """
+    import duckdb
+
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        tables = [
+            r[0]
+            for r in con.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' ORDER BY 1"
+            ).fetchall()
+        ]
+        out: dict[str, dict[str, Any]] = {}
+        for table in tables:
+            cols = [r[0] for r in con.execute(f'DESCRIBE "{table}"').fetchall()]
+            order = ", ".join(f'"{c}"' for c in cols)
+            digest = hashlib.sha256()
+            n = 0
+            for row in con.execute(f'SELECT * FROM "{table}" ORDER BY {order}').fetchall():
+                line = json.dumps([_json_cell(v) for v in row], ensure_ascii=False)
+                digest.update((line + "\n").encode())
+                n += 1
+            out[table] = {"rows": n, "columns": len(cols), "sha256": digest.hexdigest()}
+        return out
+    finally:
+        con.close()
+
+
+def check_fingerprint(pack_dir: Path, oracle_db: Path) -> list[str]:
+    """Tables whose rows differ from the frozen fingerprint ('missing:'/'extra:' too)."""
+    frozen = json.loads((pack_dir / "db" / "fingerprint.json").read_text(encoding="utf-8"))
+    want = frozen.get("tables")
+    if not isinstance(want, dict) or not want:
+        raise PackError("db/fingerprint.json lists no tables")
+    got = db_fingerprint(oracle_db)
+    diff = [f"missing:{t}" for t in sorted(set(want) - set(got))]
+    diff += [f"extra:{t}" for t in sorted(set(got) - set(want))]
+    diff += [t for t in sorted(set(want) & set(got)) if want[t] != got[t]]
+    return diff
+
+
 def preflight(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if args.pack is None:
         raise PackError("--pack DIR is required (the frozen pack repo, outside dms)")
@@ -181,6 +250,11 @@ def preflight(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, 
     drift = check_oracle(cases, gold, Path(args.oracle_db))
     if drift:
         raise PackError(f"oracle drift on {len(drift)} case(s): {', '.join(drift[:5])}")
+    changed = check_fingerprint(pack_dir, Path(args.oracle_db))
+    if changed:
+        raise PackError(
+            f"oracle fingerprint differs on {len(changed)} table(s): {', '.join(changed[:5])}"
+        )
     return manifest, cases
 
 

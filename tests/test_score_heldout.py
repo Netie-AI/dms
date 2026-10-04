@@ -25,6 +25,7 @@ from score_heldout import (  # noqa: E402
     EXIT_PASS,
     PackError,
     Scored,
+    db_fingerprint,
     main,
     manifest_root,
     score,
@@ -53,11 +54,16 @@ def _seal(pack: Path) -> str:
     return root
 
 
-def _make_pack(tmp_path: Path, *, scan: str = "PASS") -> tuple[Path, Path, str]:
+def _make_pack(
+    tmp_path: Path, *, scan: str = "PASS", fingerprint: bool = True
+) -> tuple[Path, Path, str]:
     db = tmp_path / "oracle.duckdb"
     con = duckdb.connect(str(db))
     con.execute("CREATE TABLE sales(region VARCHAR, amount DECIMAL(18,2))")
     con.execute("INSERT INTO sales VALUES ('North', 10.10), ('North', 5.00), ('South', 7.25)")
+    # No gold query reads this table: only the fingerprint can see an edit to it.
+    con.execute("CREATE TABLE notes(id INTEGER, body VARCHAR, noted DATE)")
+    con.execute("INSERT INTO notes VALUES (1, 'a', DATE '2025-01-02'), (2, NULL, NULL)")
     con.close()
     pack = tmp_path / "pack_repo"
     questions = [
@@ -92,6 +98,8 @@ def _make_pack(tmp_path: Path, *, scan: str = "PASS") -> tuple[Path, Path, str]:
     _write(pack / "pack" / "questions.json", {"questions": questions})
     _write(pack / "pack" / "gold_results.json", gold)
     _write(pack / "scan" / "result.json", {"verdict": scan})
+    if fingerprint:
+        _write(pack / "db" / "fingerprint.json", {"tables": db_fingerprint(db)})
     return pack, db, _seal(pack)
 
 
@@ -152,6 +160,32 @@ def test_drifted_oracle_is_config_not_a_score(tmp_path: Path, capsys) -> None:
     con.close()
     assert main(_args(pack, db, root)) == EXIT_CONFIG
     assert "oracle drift" in capsys.readouterr().out
+
+
+def test_edit_no_gold_query_reads_is_caught_by_the_fingerprint(tmp_path: Path, capsys) -> None:
+    pack, db, root = _make_pack(tmp_path)
+    con = duckdb.connect(str(db))
+    con.execute("UPDATE notes SET body = 'tuned' WHERE id = 1")
+    con.close()
+    assert main(_args(pack, db, root)) == EXIT_CONFIG
+    out = capsys.readouterr().out
+    assert "oracle fingerprint differs on 1 table(s): notes" in out
+    assert "oracle drift" not in out  # every gold query still reproduces
+
+
+def test_an_extra_table_in_the_oracle_is_caught(tmp_path: Path, capsys) -> None:
+    pack, db, root = _make_pack(tmp_path)
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE answers(id INTEGER)")
+    con.close()
+    assert main(_args(pack, db, root)) == EXIT_CONFIG
+    assert "extra:answers" in capsys.readouterr().out
+
+
+def test_a_pack_without_a_fingerprint_is_refused(tmp_path: Path) -> None:
+    pack, _db, root = _make_pack(tmp_path, fingerprint=False)
+    with pytest.raises(PackError, match=r"does not cover db/fingerprint\.json"):
+        verify_pack(pack, expect_root=root)
 
 
 def test_pack_inside_the_dms_tree_is_refused(tmp_path: Path) -> None:
