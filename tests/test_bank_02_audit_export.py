@@ -1012,6 +1012,40 @@ _SECRET_SHAPES += [
 ]
 
 
+#: Shapes found by the third independent verify (an escape in a JSON key, SET PASSWORD
+#: FOR, kubectl, .netrc, Stripe and webhook keys, Azure keys and SAS, .pgpass, mysql -p).
+_SECRET_SHAPES += [
+    (
+        "json key with a unicode escape",
+        '{"pass' + chr(92) + 'u0077ord":"FAKEZQX9uesc"}',
+        "FAKEZQX9uesc",
+    ),
+    ("SET PASSWORD FOR user", "SET PASSWORD FOR bob = PASSWORD('FAKEZQX9spf')", "FAKEZQX9spf"),
+    (
+        "kubectl --from-literal DB_PASS",
+        "kubectl create secret generic s --from-literal=DB_PASS=FAKEZQX9lit",
+        "FAKEZQX9lit",
+    ),
+    (".netrc password", "machine example.com login bob password FAKEZQX9netrc", "FAKEZQX9netrc"),
+    ("stripe test key", "key sk_" + "test_FAKEZQX9stripe1234567890", "FAKEZQX9stripe1234567890"),
+    ("stripe restricted key", "rk_" + "live_FAKEZQX9restr1234567890", "FAKEZQX9restr1234567890"),
+    ("webhook signing secret", "whsec_" + "FAKEZQX9webhook1234567890", "FAKEZQX9webhook1234567890"),
+    (
+        "short Azure AccountKey",
+        "DefaultEndpointsProtocol=https;AccountName=a;AccountKey=FAKEZQX9az==;EndpointSuffix=x",
+        "FAKEZQX9az",
+    ),
+    (
+        "SAS signature",
+        "https://a.blob.example.net/c?sv=2020&sig=FAKEZQX9sas%2Bsig%3D&se=2030",
+        "FAKEZQX9sas",
+    ),
+    (".pgpass line", "db.internal:5432:sales:app:FAKEZQX9pgpass", "FAKEZQX9pgpass"),
+    ("mysql -p attached", "mysql -u root -pFAKEZQX9mysql -h db", "FAKEZQX9mysql"),
+    ("mysql -p quoted", "mysql -u root -p'FAKEZQX9mysq' -h db", "FAKEZQX9mysq"),
+]
+
+
 def _placements() -> list[tuple[str, str, bool, str]]:
     """Every shape as a question, inside a SQL string literal, and inside SQL comments."""
     out: list[tuple[str, str, bool, str]] = []
@@ -1626,3 +1660,172 @@ def test_ordinary_prose_is_exported_unchanged_with_no_redactions() -> None:
 
     assert [r["question"] for r in rows] == _PROSE_UNCHANGED
     assert {r["redactions"] for r in rows} == {"0"}
+
+
+# === Verify round 3: R3-2 (the real contract's verify shape) ============================
+#
+# Contract 1.2.0 (contract/openapi-1.2.0.json) defines ChainVerification as {ok, broken_at}
+# and nothing else. These tests drive the REAL CortexClient over an httpx MockTransport with
+# that shape; the extended shape adds a "checked" count some engines send.
+
+
+def _allow_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_api.routes.audit as audit_routes
+    import dms_api.routes.chat as chat_routes
+
+    def allow(*, action: str, **_kw: Any) -> ComplianceDecision:
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    monkeypatch.setattr(audit_routes, "compliance_gate", allow)
+    monkeypatch.setattr(chat_routes, "compliance_gate", allow)
+
+
+def _contract_cortex(verify_body: dict[str, Any]) -> Any:
+    """The real CortexClient, whose ledger/verify answers ``verify_body`` over a MockTransport."""
+    import httpx
+    from cortex_client import CortexClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/contract/ledger/verify":
+            return httpx.Response(200, json=verify_body)
+        return httpx.Response(404, json={"detail": "not found"})
+
+    client = CortexClient("http://cortex.test")
+    client._client.set_httpx_client(
+        httpx.Client(base_url="http://cortex.test", transport=httpx.MockTransport(handler))
+    )
+    return client
+
+
+def _export_against(
+    monkeypatch: pytest.MonkeyPatch,
+    verify_body: dict[str, Any],
+    *,
+    pointers: int = 1,
+) -> Any:
+    from dms_core.control_plane.ask_audit import record_from_envelope
+
+    _allow_gates(monkeypatch)
+    app = create_app()
+    app.state.cortex = _contract_cortex(verify_body)
+    app.state.ask_service = StubAsk(_envelope())
+    client = TestClient(app)
+    for n in range(pointers):
+        app.state.ask_audit_store.record(
+            record_from_envelope(
+                _envelope(audit_id=f"led_{n + 1}", answer_id=f"ans_{n + 1}"),
+                question=f"ask {n}",
+                actor=DEPLOYMENT_ACTOR,
+                actor_kind="deployment",
+                space_id=FINANCE,
+                executed_sql="SELECT 1 FROM inventory",
+                tables_read=("inventory",),
+                row_count=1,
+            )
+        )
+    return _export(client)
+
+
+def test_the_real_verify_shape_with_no_count_reads_verified_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dms_core.control_plane.ask_audit_export import VERIFY_SCOPE_NO_COUNT
+
+    r = _export_against(monkeypatch, {"ok": True, "broken_at": None}, pointers=3)
+
+    row = _csv_rows(r.text)[0]
+    assert row["export_verified"] == "true"
+    assert row["ledger_verify_status"] == "ok"
+    assert row["ledger_entries_checked"] == ""
+    assert row["ledger_verify_scope"] == VERIFY_SCOPE_NO_COUNT
+    assert "entries_checked not reported by Cortex contract 1.2.0" in VERIFY_SCOPE_NO_COUNT
+    assert r.headers["x-audit-export-verified"] == "true"
+    assert r.headers["x-audit-verify-scope"] == VERIFY_SCOPE_NO_COUNT
+
+
+def test_the_real_verify_shape_broken_at_becomes_the_first_break(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    r = _export_against(monkeypatch, {"ok": False, "broken_at": 3})
+
+    row = _csv_rows(r.text)[0]
+    assert row["ledger_verify_status"] == "break"
+    assert row["ledger_first_break"] == "3"
+    assert row["export_verified"] == "false"
+    assert r.headers["x-audit-ledger-verify"] == "break"
+
+
+def test_the_client_reads_broken_at_and_does_not_invent_a_count() -> None:
+    intact = _contract_cortex({"ok": True, "broken_at": None}).verify_ledger()
+    broken = _contract_cortex({"ok": False, "broken_at": 3}).verify_ledger()
+    counted = _contract_cortex({"ok": True, "broken_at": None, "checked": 0}).verify_ledger()
+
+    assert (intact.ok, intact.first_break, intact.checked) == (True, None, None)
+    assert (broken.ok, broken.first_break, broken.checked) == (False, "3", None)
+    assert counted.checked == 0, "a reported zero is zero; only an absent count is unknown"
+
+
+def test_when_cortex_does_report_a_count_the_count_rules_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dms_core.control_plane.ask_audit_export import VERIFY_SCOPE
+
+    healthy = _export_against(
+        monkeypatch, {"ok": True, "broken_at": None, "checked": 5}, pointers=3
+    )
+    row = _csv_rows(healthy.text)[0]
+    assert row["export_verified"] == "true" and row["ledger_entries_checked"] == "5"
+    assert row["ledger_verify_scope"] == VERIFY_SCOPE
+
+    empty = _export_against(monkeypatch, {"ok": True, "broken_at": None, "checked": 0})
+    assert _csv_rows(empty.text)[0]["ledger_verify_status"] == "incomplete"
+
+    short = _export_against(monkeypatch, {"ok": True, "broken_at": None, "checked": 1}, pointers=3)
+    row = _csv_rows(short.text)[0]
+    assert row["ledger_verify_status"] == "incomplete" and row["export_verified"] == "false"
+
+
+# === Verify round 3: R3-1 (a scrub that cannot be stalled) ===============================
+
+
+def test_an_adversarial_question_does_not_stall_the_ask() -> None:
+    client, _app = _stub_stack(_envelope())
+    adversarial = [
+        'password="' + chr(92) * 33,  # about 1 s of scrub on b426b53, x2.7 per two more
+        'password="' + chr(92) * 44,  # 7.8 s on b426b53
+        'password="' + chr(92) * 54,  # never returned on b426b53
+        'password="' + chr(92) * 5_000,
+        "a://b:" * 2_000,
+        "/* " * 4_000,
+    ]
+    for q in adversarial:
+        t0 = time.perf_counter()
+        r = _ask(client, q)
+        took = time.perf_counter() - t0
+        assert r.status_code == 200
+        assert took < 1.0, f"a {len(q)}-char question took {took:.1f}s"
+    benign = time.perf_counter()
+    assert _ask(client, "How many units?").status_code == 200
+    assert time.perf_counter() - benign < 2.0
+
+
+def test_a_credential_word_inside_a_value_already_taken_is_that_secrets_text() -> None:
+    """The scrub bounds its read of an unquoted value, then extends an accepted one to its end."""
+    from dms_core.control_plane.ask_audit import scrub_counted
+
+    tail = "ENDMARKER9zq"
+    long_secret = "FAKEZQX9" + "k" * 3_000 + tail
+    for text in (
+        f"password={long_secret} and then more",
+        f"DB_PASS: {long_secret}.",
+        f"password=password=password={long_secret}",
+    ):
+        clean, removed = scrub_counted(text)
+        assert removed >= 1
+        assert "FAKEZQX9" not in clean and tail not in clean, (
+            f"a long value leaked: {clean[:120]!r}"
+        )
+        assert "k" * 20 not in clean
+    # a credential word inside a value that is taken is part of that value
+    clean, _ = scrub_counted("password=FAKEZQX9outer password=FAKEZQX9inner")
+    assert "FAKEZQX9" not in clean

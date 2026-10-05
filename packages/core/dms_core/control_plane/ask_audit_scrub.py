@@ -7,12 +7,13 @@ Two passes, in this order, over the question and over the executed SQL:
 2. ``mask_pii_counted`` passes the text through the same DMS masker the customer
    envelope uses (``dms_core.pii``), so the audit export holds no personal data
    the envelope masks. Secrets go first: masking turns ``ss@db.internal`` into a
-   mask token, which would break a ``scheme://user:pass/ss@host`` match.
+   mask token, which would otherwise break a ``scheme://user:pass/ss@host`` match.
 
 Matching runs on a normalised view of the text (NFKC, lookalike letters folded,
-zero-width characters and /* */ comments dropped, ``%3D``-style escapes decoded) so
-that ``pass/**/word=``, a Cyrillic ``a``, a fullwidth ``=`` or ``password%3D`` do
-not hide a pair. Replacement is made on the ORIGINAL text, so what is kept is not
+zero-width characters and block comments dropped, percent escapes such as ``%3D``
+and JSON unicode escapes decoded) so that ``pass/**/word=``, a Cyrillic ``a``, a
+fullwidth ``=``, ``password%3D`` or a JSON key spelled with a unicode escape do not
+hide a pair. Replacement is made on the ORIGINAL text, so what is kept is not
 altered.
 
 Two failure modes bound the patterns. A leak is a secret left in the record. An
@@ -21,6 +22,17 @@ audit record at write time. So a prose ``word: value`` needs a token-looking val
 or an explicit assignment, patterns need a left word boundary, and nothing here
 rewrites an SQL identifier, number or bare column comparison: in SQL, only the
 contents of quoted literals and of comments are read as prose.
+
+How the scrub is bounded (ReDoS). This runs on the request path of every ask and
+Python's ``re`` holds the GIL, so a pattern that backtracks stalls the whole API
+process. Every pattern is therefore linear: its alternatives are disjoint, its
+repeats are possessive (``*+``, ``++``) or bounded, and a scan that needs "the
+next block-comment close" or "the last at-sign" is a ``str.find`` over a bounded
+token, not a lazy regex. The input is bounded twice: the caller cuts to a window
+(the cap plus a margin) before any pattern runs, and ``scrub_counted`` itself
+refuses to read past ``MAX_SCRUB_CHARS``. ``tests/test_bank_02_scrub_redos.py``
+fuzzes every pattern in this module with adversarial input at the production
+window sizes and at 1 MB, and checks that time grows linearly.
 """
 
 from __future__ import annotations
@@ -31,6 +43,12 @@ import unicodedata
 from dms_core.pii import MASK_TOKEN_RE, fail_closed_mask_payload
 
 REDACTED = "[redacted]"
+
+#: ``scrub_counted`` reads no further than this, whatever it is given. Callers cut
+#: to their own, smaller window first; this is the backstop.
+MAX_SCRUB_CHARS = 64_000
+#: ``has_sql_statement`` reads no further than this.
+_STATEMENT_SCAN_CAP = 100_000
 
 _INVISIBLE = frozenset("\u200b\u200c\u200d\u200e\u200f\u2060\u00ad\ufeff")
 #: Letters from other scripts that read as Latin ones, for the words below.
@@ -68,72 +86,119 @@ _PERCENT = {
     "7b": "{",
     "7d": "}",
 }
+_HEX = frozenset("0123456789abcdefABCDEF")
 
 _NAME_CORE = (
-    r"(?:pass(?:word|wd|phrase)|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
-    r"private[_-]?key|credentials?)"
+    r"(?:pass(?:word|wd|phrase)?|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
+    r"private[_-]?key|account[_-]?key|shared[_-]?access[_-]?key|credentials?)"
 )
-_FAMILY = re.compile(r"(?i)pass(?:word|wd|phrase)|pwd")
-_NAME = rf"(?<![A-Za-z0-9])[A-Za-z0-9_.-]{{0,40}}?{_NAME_CORE}[A-Za-z0-9_]*"
+_FAMILY = re.compile(r"(?i)pass(?:word|wd|phrase)?|pwd")
+#: The bare word ``pass`` as a whole name (DB_PASS, --pass): read only as an explicit assignment.
+_BARE_PASS = re.compile(r"(?i)(?:^|[^A-Za-z0-9])pass$")
+#: A credential name is a core word with up to 40 name characters on either side, starting
+#: at a word start. It is found from the core word outward, in a few C-level steps per
+#: occurrence, because a single regex that lets the prefix and suffix float around the core
+#: word re-tries the core at every position and is slow on ``password_password_...``.
+_CORE_RX = re.compile(r"(?i)" + _NAME_CORE)
+_NAME_RUN = re.compile(r"[A-Za-z0-9_.-]*+")
+_NAME_SEP = re.compile(r"[_.-]")
+_NAME_TRAIL = re.compile(r"[A-Za-z0-9_]{0,40}+")
+_ALNUM = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 _PRIVATE_KEY_BLOCK = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S
+    r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----.*?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|\Z)",
+    re.S,
 )
-_KEY_BODY = re.compile(r"(?<!\S)(?:[A-Za-z0-9+/]{40,}={0,2}[ \t]*\r?\n)+[A-Za-z0-9+/]{4,}={0,2}")
+_KEY_BODY = re.compile(
+    r"(?<!\S)(?:[A-Za-z0-9+/]{40,}+={0,2}+[ \t]{0,8}+\r?\n)+[A-Za-z0-9+/]{4,}+={0,2}+"
+)
 _PROVIDER_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_])(?:"
-    r"(?:sk-(?:ant-)?|gsk_|ov_|sk_live_|pk_live_|rk_live_)[A-Za-z0-9_-]{16,}"
-    r"|AIza[0-9A-Za-z_-]{20,}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"
-    r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
-    r"|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"(?:sk-(?:ant-)?|gsk_|ov_)[A-Za-z0-9_-]{16,}+"
+    r"|(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}+"
+    r"|whsec_[A-Za-z0-9]{16,}+"
+    r"|glpat-[A-Za-z0-9_-]{20,}+"
+    r"|shpat_[A-Fa-f0-9]{32}"
+    r"|SG\.[A-Za-z0-9_-]{16,}+\.[A-Za-z0-9_-]{16,}+"
+    r"|(?:hf|npm)_[A-Za-z0-9]{30,}+"
+    r"|AIza[0-9A-Za-z_-]{20,}+"
+    r"|eyJ[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{8,}+\.[A-Za-z0-9_-]{4,}+"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}+|github_pat_[A-Za-z0-9_]{20,}+"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}+"
     r"|AKIA[0-9A-Z]{16}"
     r")"
 )
-#: scheme://user:PASSWORD@host - the password runs to the LAST @ of the token, so a
-#: password holding "/" or "@" is covered. ``host:8080/x?e=a@b`` is a port, not a pair.
-#: The second form is the same URL after the PII masker turned ``ss@host`` into a
-#: mask token: the password then runs through the token.
-_URL_PASSWORD = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:"
-    r"(?:(?P<v>(?!\d{1,5}(?:[/?#]|$))\S+)@(?=[^\s@]+)"
-    r"|(?P<m>\S*?DMSMASK_[a-z]+_\d{2,}))"
-)
+#: scheme://user: - the start of a URL password. The password itself is found in
+#: Python (see ``_url_password_spans``): it runs to the LAST at-sign of the token,
+#: and a lazy regex for that is quadratic on repeated prefixes.
+_URL_PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s:/@]{1,256}+:")
+_TOKEN_RUN = re.compile(r"\S{1,2000}+")
+_PORT_START = re.compile(r"\d{1,5}(?:[/?#]|$)")
 _AUTH_HEADER = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
-    r"(?:(?:basic|bearer|digest|negotiate|token)\s+(?P<v1>[A-Za-z0-9._~+/=:-]{6,})"
-    r"|(?P<v2>(?=[A-Za-z0-9._~+/=:-]*[\d+/=_-])[A-Za-z0-9._~+/=:-]{8,}))"
+    r"(?i)(?<![A-Za-z0-9])(?:proxy-)?authorization[\"']?\s{0,16}[:=]\s{0,16}[\"']?"
+    r"(?:(?:basic|bearer|digest|negotiate|token)\s{1,16}(?P<v1>[A-Za-z0-9._~+/=:-]{6,512}+)"
+    r"|(?P<v2>(?=[A-Za-z0-9._~+/=:-]{0,512}[\d+/=_-])[A-Za-z0-9._~+/=:-]{8,512}+))"
 )
 _BEARER = re.compile(
-    r"(?i)(?<![A-Za-z0-9])bearer\s+"
-    r"(?P<v>[A-Za-z0-9._~+/=-]{16,}|(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{8,})"
+    r"(?i)(?<![A-Za-z0-9])bearer\s{1,16}"
+    r"(?P<v>[A-Za-z0-9._~+/=-]{16,512}+|(?=[A-Za-z0-9._~+/=-]{0,512}\d)[A-Za-z0-9._~+/=-]{8,512}+)"
 )
-_COOKIE = re.compile(r"(?i)(?<![A-Za-z0-9])(?:set-)?cookie\s*:\s*(?P<v>[A-Za-z0-9_.-]+=[^\r\n]*)")
-_CURL_USER = re.compile(r"(?i)\bcurl\b[^\n]*?\s(?:-u|--user)(?:\s+|=)[\"']?(?P<v>[^\s\"']+)")
+_COOKIE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:set-)?cookie\s{0,16}:\s{0,16}"
+    r"(?P<v>[A-Za-z0-9_.-]{1,128}+=[^\r\n]{0,2048}+)"
+)
+_CURL_USER = re.compile(
+    r"(?i)\bcurl\b[^\n]{0,256}?\s(?:-u|--user)(?:\s{1,16}|=)[\"']?(?P<v>[^\s\"']{1,256}+)"
+)
 #: CREATE USER .. WITH PASSWORD 'x', ALTER USER .. PASSWORD 'x', IDENTIFIED BY 'x',
-#: SET PASSWORD = PASSWORD('x'): the literal after the keyword, no operator needed.
+#: SET PASSWORD [FOR user] = PASSWORD('x'): the literal after the keyword.
 _SQL_PASSWORD = re.compile(
-    r"(?i)\b(?:(?:with\s+(?:(?:un)?encrypted\s+)?)?(?:password|passwd|pwd)"
-    r"|identified\s+(?:with\s+\w+\s+)?by)\s*(?:=\s*)?(?:(?:old_)?password\s*\(\s*)?"
-    r"'(?P<v>(?:[^']|'')+)'"
+    r"(?i)\b(?:(?:with\s{1,16}(?:(?:un)?encrypted\s{1,16})?)?(?:password|passwd|pwd)"
+    r"(?:\s{1,16}for\s{1,16}[^\s=]{1,100})?"
+    r"|identified\s{1,16}(?:with\s{1,16}\w{1,32}\s{1,16})?by)"
+    r"\s{0,16}(?:=\s{0,16})?(?:(?:old_)?password\s{0,16}\(\s{0,16})?"
+    r"'(?P<v>(?:[^']|'')++)'"
 )
-_ASSIGN = re.compile(
-    rf"(?P<name>{_NAME})"
+#: .netrc: machine h login u password P (any whitespace between words).
+_NETRC = re.compile(r"(?i)\blogin\s{1,16}\S{1,128}+\s{1,16}password\s{1,16}(?P<v>\S{1,256}+)")
+#: Azure SAS signature in a query string.
+_SAS_SIG = re.compile(r"(?i)(?<![A-Za-z0-9_])sig=(?P<v>[^\s&;\"']{8,256}+)")
+#: .pgpass: host:port:database:user:PASSWORD, as a whole word.
+_PGPASS = re.compile(
+    r"(?<!\S)(?=[^\s:]{0,255}[A-Za-z*])[^\s:]{1,255}+:(?:\d{1,5}|\*):[^\s:]{1,255}+:"
+    r"[^\s:]{1,255}+:(?P<v>\S{1,256}+)(?!\S)"
+)
+#: mysql -pSECRET / -p'SECRET' (the password is attached to the flag).
+_MYSQL_P = re.compile(
+    r"(?i)\b(?:mysql|mysqldump|mysqladmin|mysqlpump|mysqlimport|mariadb|mariadb-dump)\b"
+    r"[^\n]{0,256}?\s-p(?P<v>'[^']{0,256}+'|\"[^\"]{0,256}+\"|[^\s'\"-]\S{0,255}+)"
+)
+_SSHPASS = re.compile(r"(?i)\bsshpass\b[^\n]{0,64}?\s-p\s{0,16}(?P<v>\S{1,256}+)")
+_REDIS_A = re.compile(r"(?i)\bredis-cli\b[^\n]{0,256}?\s-a\s{1,16}(?P<v>\S{1,256}+)")
+#: What follows a credential name: an operator (or LIKE, or "is"), then a value.
+_ASSIGN_TAIL = re.compile(
     r"(?:"
-    r"(?P<op>(?:\\?[\"'])?\s*(?::=|=>|==|!=|<>|[:=])\s*)"
-    r"|(?P<wop>\s+(?:like|ilike|rlike|regexp)\s+)"
-    r"|(?P<nop>\s+(?:is|was)\s+(?!(?:not|null|true|false|pending|empty|required|missing|set)\b))"
+    r"(?P<op>(?:\\?[\"'])?\s{0,16}(?::=|=>|==|!=|<>|[:=])\s{0,16})"
+    r"|(?P<wop>\s{1,16}(?:like|ilike|rlike|regexp)\s{1,16})"
+    r"|(?P<nop>\s{1,16}(?:is|was)\s{1,16}"
+    r"(?!(?:not|null|true|false|pending|empty|required|missing|set)\b))"
     r")"
-    r"(?:(?P<eq>\\[\"'])(?P<ev>(?:(?!(?P=eq)).)*)(?P=eq)"
-    r"|(?P<q>[\"'])(?P<qv>(?:\\.|(?!(?P=q)).)*)(?P=q)"
-    r"|(?P<uv>[^\s,;&)}\]\"'`]+))",
+    r"(?:(?P<eq>\\[\"'])(?P<ev>(?:(?!(?P=eq)).)*+)(?P=eq)"
+    r"|\"(?P<qd>(?:\\.|[^\\\"])*+)\""
+    r"|'(?P<qs>(?:\\.|[^\\'])*+)'"
+    r"|(?P<uv>[^\s,;&)}\]\"'`]{1,512}+))",
     re.I | re.S,
 )
-_WORD = re.compile(r"[ \t]+((?:[^\s.?!,;]|[.?!](?!\s|$))+)")
-_BLOB = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/]{24,}={0,2}(?![A-Za-z0-9+/=_-])")
+#: The rest of an unquoted value that ``_ASSIGN_TAIL`` stopped reading at 512 characters.
+#: The tail regex is bounded because it is tried at every credential word, and an
+#: unbounded run read at each of thousands of them is quadratic; the rest of the run is
+#: read here, once, for a value that is accepted.
+_VALUE_REST = re.compile(r"[^\s,;&)}\]\"'`]*+")
+_VALUE_CAP = 512
+_WORD = re.compile(r"[ \t]{1,16}+((?:[^\s.?!,;]|[.?!](?!\s|$)){1,256}+)")
+_BLOB = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/]{24,}+={0,2}+(?![A-Za-z0-9+/=_-])")
 _NOT_A_VALUE = re.compile(r"(?i)^(?:null|none|nil|true|false|undefined|\*+|\?|%s|\$\{.*\}|<.*>)$")
-_SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
-_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
+_SQL_LITERAL = re.compile(r"'(?:[^']++|'')*+'")
 _REDACTED_TOKEN = re.compile(r"\[redacted\]")
 
 #: Words that end a passphrase: a value that runs into one of these is prose.
@@ -145,6 +210,7 @@ _STOP = frozenset(
 )
 
 _PUNCT_SECRET = frozenset("!@#$%^&*_+=/~")
+_BASE64_PUNCT = frozenset("+/=")
 
 
 def _view(text: str, *, drop_block_comments: bool) -> tuple[str, list[int], list[int]]:
@@ -152,38 +218,116 @@ def _view(text: str, *, drop_block_comments: bool) -> tuple[str, list[int], list
     chars: list[str] = []
     starts: list[int] = []
     ends: list[int] = []
+
+    def put(c: str, a: int, b: int) -> None:
+        for norm in unicodedata.normalize("NFKC", c):
+            chars.append(_CONFUSABLES.get(norm, norm))
+            starts.append(a)
+            ends.append(b)
+
     i, n = 0, len(text)
+    no_close = False  # once a block-comment open has no close after it, no later one has either
     while i < n:
-        if drop_block_comments and text.startswith("/*", i):
+        ch = text[i]
+        if drop_block_comments and ch == "/" and not no_close and text.startswith("/*", i):
             j = text.find("*/", i + 2)
             if j != -1:
                 i = j + 2
                 continue
-        ch = text[i]
-        if ch == "%" and i + 2 < n and text[i + 1 : i + 3].lower() in _PERCENT:
-            chars.append(_PERCENT[text[i + 1 : i + 3].lower()])
-            starts.append(i)
-            ends.append(i + 3)
-            i += 3
+            no_close = True
+        if ch == "%" and i + 2 < n:
+            rep = _PERCENT.get(text[i + 1 : i + 3].lower())
+            if rep is not None:
+                put(rep, i, i + 3)
+                i += 3
+                continue
+        if (
+            ch == "\\"
+            and i + 5 < n
+            and text[i + 1] == "u"
+            and all(c in _HEX for c in text[i + 2 : i + 6])
+        ):
+            put(chr(int(text[i + 2 : i + 6], 16)), i, i + 6)
+            i += 6
             continue
         if ch in _INVISIBLE:
             i += 1
             continue
-        for c in unicodedata.normalize("NFKC", ch):
-            chars.append(_CONFUSABLES.get(c, c))
-            starts.append(i)
-            ends.append(i + 1)
+        put(ch, i, i + 1)
         i += 1
     return "".join(chars), starts, ends
 
 
+def _comment_spans(v: str) -> list[tuple[int, int]]:
+    """Line comments and block comments, left to right, in one linear pass.
+
+    An unterminated block-comment open is not a comment. Once one has no close after
+    it, none after it has either, so the search is not repeated (a lazy regex repeats
+    it for every open and is quadratic).
+    """
+    out: list[tuple[int, int]] = []
+    n = len(v)
+    nd = v.find("--")
+    nb = v.find("/*")
+    no_close = False
+    while nd != -1 or nb != -1:
+        if nb == -1 or (nd != -1 and nd < nb):
+            end = v.find("\n", nd)
+            end = n if end == -1 else end
+            out.append((nd, end))
+            i = end
+        else:
+            end = -1 if no_close else v.find("*/", nb + 2)
+            if end == -1:
+                no_close = True
+                i = nb + 2
+            else:
+                out.append((nb, end + 2))
+                i = end + 2
+        if nd != -1 and nd < i:
+            nd = v.find("--", i)
+        if nb != -1 and nb < i:
+            nb = v.find("/*", i)
+    return out
+
+
+def _url_password_spans(v: str) -> list[tuple[int, int]]:
+    """Ranges of ``scheme://user:PASSWORD@host`` passwords.
+
+    The password runs to the LAST at-sign of the whitespace-delimited token, so one
+    holding a slash or an at-sign is covered. ``host:8080/x?e=a@b`` is a port, not a
+    pair. If the PII masker already turned the ``ss@host`` tail into a mask token
+    there is no at-sign left, and the password then runs through that token.
+    """
+    out: list[tuple[int, int]] = []
+    for m in _URL_PREFIX.finditer(v):
+        k = m.end()
+        tok = _TOKEN_RUN.match(v, k)
+        if not tok:
+            continue
+        t = tok.group()
+        if _PORT_START.match(t):
+            continue
+        at = t.rfind("@")
+        if 0 < at < len(t) - 1:
+            if t[:at] != REDACTED:
+                out.append((k, k + at))
+            continue
+        mask = MASK_TOKEN_RE.search(t)
+        if mask and t[: mask.end()] != REDACTED:
+            out.append((k, k + mask.end()))
+    return out
+
+
 def _classes(value: str) -> int:
+    # map(str.method, ...) iterates in C; a generator expression here is the slowest
+    # line in the scrub on a long value.
     return sum(
         (
-            any(c.islower() for c in value),
-            any(c.isupper() for c in value),
-            any(c.isdigit() for c in value),
-            any(c in _PUNCT_SECRET for c in value),
+            any(map(str.islower, value)),
+            any(map(str.isupper, value)),
+            any(map(str.isdigit, value)),
+            not _PUNCT_SECRET.isdisjoint(value),
         )
     )
 
@@ -195,18 +339,18 @@ def _token_looking(value: str) -> bool:
 
 def _secret_like(value: str) -> bool:
     """Shorter than a token but plainly not prose: letters mixed with digits."""
-    has_digit = any(c.isdigit() for c in value)
-    has_alpha = any(c.isalpha() for c in value)
+    has_digit = any(map(str.isdigit, value))
+    has_alpha = any(map(str.isalpha, value))
     return (has_digit and has_alpha and len(value) >= 6) or _token_looking(value)
 
 
 def _blob_like(value: str) -> bool:
     """Base64-shaped and not a word: mixed case, and digits or base64 punctuation."""
-    digits = sum(c.isdigit() for c in value)
+    digits = sum(map(str.isdigit, value))
     return (
-        any(c.isupper() for c in value)
-        and any(c.islower() for c in value)
-        and (digits >= 2 or any(c in "+/=" for c in value))
+        any(map(str.isupper, value))
+        and any(map(str.islower, value))
+        and (digits >= 2 or not _BASE64_PUNCT.isdisjoint(value))
     )
 
 
@@ -239,8 +383,8 @@ def _words_after(v: str, end: int, first: str) -> int:
 def _literal_spans(v: str, a: int, b: int) -> list[tuple[int, int]]:
     """Prose ranges inside the SQL literal ``v[a:b]``, in ``v`` coordinates.
 
-    ``''`` inside a literal is one quote, so the contents are read with it collapsed
-    (``LIKE ''x''`` is ``LIKE 'x'``) and the ranges mapped back.
+    A doubled quote inside a literal is one quote, so the contents are read with it
+    collapsed and the ranges mapped back.
     """
     if b <= a:
         return []
@@ -275,31 +419,41 @@ def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
     if sql:
         for m in _SQL_LITERAL.finditer(v):
             out.extend(_literal_spans(v, m.start() + 1, m.end() - 1))
-        for m in _SQL_COMMENT.finditer(v):
-            a, b = m.span()
+        for a, b in _comment_spans(v):
             out.extend((a + s, a + e) for s, e in _spans(v[a:b], sql=False))
 
     for rx in (_PRIVATE_KEY_BLOCK, _KEY_BODY, _PROVIDER_TOKEN):
         out.extend(m.span() for m in rx.finditer(v))
-    for m in _URL_PASSWORD.finditer(v):
-        g = "v" if m.group("v") is not None else "m"
-        if m.group(g) != REDACTED:
-            out.append(m.span(g))
-    for m in _AUTH_HEADER.finditer(v):
-        out.append(m.span("v1" if m.group("v1") else "v2"))
-    out.extend(m.span("v") for m in _BEARER.finditer(v))
-    out.extend(m.span("v") for m in _COOKIE.finditer(v))
-    out.extend(m.span("v") for m in _CURL_USER.finditer(v))
+    out.extend(_url_password_spans(v))
     for m in _SQL_PASSWORD.finditer(v):
         if not m.group("v").startswith(REDACTED):
             out.append(m.span("v"))
 
-    for m in _ASSIGN.finditer(v):
-        span = _assignment(v, m, sql=sql)
-        if span is not None:
-            out.append(span)
+    if not sql:  # in SQL, these are read inside literals and comments only (above)
+        for m in _AUTH_HEADER.finditer(v):
+            out.append(m.span("v1" if m.group("v1") else "v2"))
+        for rx in (_BEARER, _COOKIE, _CURL_USER, _NETRC, _SAS_SIG, _PGPASS):
+            out.extend(m.span("v") for m in rx.finditer(v))
+        for rx in (_MYSQL_P, _SSHPASS, _REDIS_A):
+            out.extend(m.span("v") for m in rx.finditer(v))
 
-    if not sql:  # in SQL the literal and comment contents were read above
+    seen: set[tuple[int, int]] = set()
+    accepted_to = 0  # a credential word inside a value already taken is that secret's own text
+    for core in _CORE_RX.finditer(v):
+        if core.start() < accepted_to:
+            continue
+        name_span = _name_around(v, core)
+        if name_span is None or name_span in seen:
+            continue
+        seen.add(name_span)
+        tail = _ASSIGN_TAIL.match(v, name_span[1])
+        if tail is not None:
+            span = _assignment(v, v[name_span[0] : name_span[1]], tail, sql=sql)
+            if span is not None:
+                out.append(span)
+                accepted_to = max(accepted_to, span[1])
+
+    if not sql:
         for m in _BLOB.finditer(v):
             if _blob_like(m.group()):
                 out.append(m.span())
@@ -308,16 +462,49 @@ def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
     return [(a, b) for a, b in out if not v.startswith(REDACTED, a)]
 
 
-def _assignment(v: str, m: re.Match[str], *, sql: bool) -> tuple[int, int] | None:
-    name = m.group("name")
+def _match_end(rx: re.Pattern[str], text: str, pos: int) -> int:
+    """Where ``rx`` (a pattern that can match the empty string) ends when tried at ``pos``."""
+    m = rx.match(text, pos)
+    return m.end() if m else pos
+
+
+def _name_around(v: str, core: re.Match[str]) -> tuple[int, int] | None:
+    """The credential name that contains the core word ``core``, or None.
+
+    Up to 40 name characters to the left, starting at a word start (not preceded by an
+    alphanumeric), and up to 40 to the right.
+    """
+    c0, c1 = core.span()
+    lo = max(0, c0 - 40)
+    run = _match_end(_NAME_RUN, v[lo:c0][::-1], 0)  # name characters just left of the core
+    start = c0 - run
+    if start > 0 and v[start - 1] in _ALNUM:  # the 40-character window cut an alphanumeric run
+        sep = _NAME_SEP.search(v, start, c0)
+        if sep is None:
+            return None
+        start = sep.end()
+    return start, _match_end(_NAME_TRAIL, v, c1)
+
+
+def _assignment(v: str, name: str, m: re.Match[str], *, sql: bool) -> tuple[int, int] | None:
     family = bool(_FAMILY.search(name))
     op = m.group("op") or ""
     json_style = op.lstrip()[:1] in ('"', "'", "\\")
     explicit = json_style or op.strip(" \t\"'\\") in ("=", ":=", "=>", "==", "!=", "<>")
     prose_colon = bool(op) and not explicit
     nop = bool(m.group("nop"))
+    if _BARE_PASS.search(name) and not explicit:
+        return None  # "pass: fail ratio" is prose; DB_PASS=x is not
 
-    quoted_group = "ev" if m.group("eq") else "qv" if m.group("q") else None
+    quoted_group = (
+        "ev"
+        if m.group("eq")
+        else "qd"
+        if m.group("qd") is not None
+        else "qs"
+        if m.group("qs") is not None
+        else None
+    )
     if quoted_group:
         inner = m.group(quoted_group)
         if not inner or inner.startswith(REDACTED):
@@ -336,7 +523,17 @@ def _assignment(v: str, m: re.Match[str], *, sql: bool) -> tuple[int, int] | Non
         return None
     if m.group("wop") or sql:
         return None  # LIKE wants a quoted literal; in SQL a bare word is a column or a number
-    end = m.end("uv")
+    span = _unquoted_span(v, start, m.end("uv"), family, prose_colon, nop)
+    if span is not None and len(val) >= _VALUE_CAP:
+        # the tail regex stopped at its bound: an accepted value runs to the end of the run
+        span = (span[0], max(span[1], _match_end(_VALUE_REST, v, m.end("uv"))))
+    return span
+
+
+def _unquoted_span(
+    v: str, start: int, end: int, family: bool, prose_colon: bool, nop: bool
+) -> tuple[int, int] | None:
+    """The span of an unquoted value read from ``start`` to ``end``, or None if it is prose."""
     while end > start and v[end - 1] in ".?!" and (end == len(v) or v[end].isspace()):
         end -= 1
     first = v[start:end]
@@ -356,22 +553,24 @@ def _assignment(v: str, m: re.Match[str], *, sql: bool) -> tuple[int, int] | Non
 def scrub_counted(text: str | None, *, sql: bool = False) -> tuple[str, int]:
     """Remove secret-shaped values. Returns the clean text and how many were replaced.
 
-    ``sql=True`` is for executed SQL.
+    ``sql=True`` is for executed SQL. Input past ``MAX_SCRUB_CHARS`` is not read: it
+    is dropped and the text says so, rather than being returned unscrubbed.
     """
     original = text or ""
     if not original:
         return "", 0
+    dropped = 0
+    if len(original) > MAX_SCRUB_CHARS:
+        dropped = len(original) - MAX_SCRUB_CHARS
+        original = original[:MAX_SCRUB_CHARS]
     regions: list[tuple[int, int]] = []
     for drop in (False, True):
         view, starts, ends = _view(original, drop_block_comments=drop)
         for s, e in _spans(view, sql=sql):
             if e > s:
                 regions.append((starts[s], ends[e - 1]))
-    if not regions:
-        return original, 0
-    regions.sort()
     merged: list[list[int]] = []
-    for s, e in regions:
+    for s, e in sorted(regions):
         if merged and s <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], e)
         else:
@@ -382,7 +581,10 @@ def scrub_counted(text: str | None, *, sql: bool = False) -> tuple[str, int]:
         out.append(REDACTED)
         last = e
     out.append(original[last:])
-    return "".join(out), len(merged)
+    clean = "".join(out)
+    if dropped:
+        return f"{clean}...[scrub window: {dropped} chars dropped]", len(merged) + 1
+    return clean, len(merged)
 
 
 def scrub(text: str | None, *, sql: bool = False) -> str:
@@ -401,8 +603,32 @@ def mask_pii_counted(text: str) -> tuple[str, int]:
 
 
 def has_sql_statement(sql: str | None) -> bool:
-    """True when ``sql`` holds a statement, not nothing or a comment-only placeholder."""
-    return bool(_SQL_COMMENT.sub("", sql or "").strip())
+    """True when ``sql`` holds a statement, not nothing or a comment-only placeholder.
+
+    One linear scan that stops at the first character outside whitespace and
+    comments, over at most ``_STATEMENT_SCAN_CAP`` characters. An unterminated block
+    comment is text, so it counts as a statement. If the scanned prefix is all comment
+    and more text follows, that text is assumed to be a statement.
+    """
+    s = (sql or "")[:_STATEMENT_SCAN_CAP]
+    i, n = 0, len(s)
+    while i < n:
+        if s[i].isspace():
+            i += 1
+        elif s.startswith("--", i):
+            j = s.find("\n", i)
+            if j == -1:
+                i = n
+                break
+            i = j + 1
+        elif s.startswith("/*", i):
+            j = s.find("*/", i + 2)
+            if j == -1:
+                return True
+            i = j + 2
+        else:
+            return True
+    return len(sql or "") > _STATEMENT_SCAN_CAP
 
 
 def safe_cut(text: str, cap: int) -> str:

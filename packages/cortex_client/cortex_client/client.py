@@ -151,11 +151,20 @@ class CortexClient:
         if parsed is None:
             raise RuntimeError("verify_ledger: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {}
+        # Contract 1.2.0 ChainVerification is {ok, broken_at}: no entry count. A count
+        # is read only when Cortex sends one, and its absence stays None ("unknown"),
+        # never 0: an engine that reports nothing has not said it checked nothing.
+        broken = data.get("first_break")
+        if broken is None:
+            broken = data.get("broken_at", data.get("break_at"))
+        count = data.get("checked", data.get("entries_checked"))
+        if not isinstance(count, int) or isinstance(count, bool):
+            count = None
         return LedgerVerifyResponse.model_validate(
             {
                 "ok": bool(data.get("ok", data.get("valid", False))),
-                "first_break": data.get("first_break") or data.get("break_at"),
-                "checked": data.get("checked") or data.get("entries_checked"),
+                "first_break": None if broken is None else str(broken),
+                "checked": count,
             }
         )
 

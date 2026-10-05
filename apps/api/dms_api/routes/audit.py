@@ -10,7 +10,6 @@ from uuid import UUID
 import psycopg
 from cortex_client import CortexClient, compliance_gate
 from dms_core.control_plane.ask_audit_export import (
-    VERIFY_SCOPE,
     ExportFormat,
     ExportMeta,
     LedgerVerification,
@@ -141,6 +140,11 @@ def _verify_chain(
     about the entries this file points at; the count catches a short chain and the
     seq catches a tail that was cut after DMS appended into it. ``checked`` counts
     entries from seq 0 or 1, so ``checked < max_seq`` never fires on a healthy chain.
+
+    Those count rules apply only when Cortex reports a count. Contract 1.2.0's
+    ChainVerification is ``{ok, broken_at}`` and does not, so ``checked`` is None:
+    an intact chain then reads ``ok`` (the scope says no count was reported) and the
+    count and seq rules do not fire.
     """
     now = datetime.now(UTC)
     if cortex is None:
@@ -151,10 +155,12 @@ def _verify_chain(
         return LedgerVerification("unavailable", None, None, now)
     if not result.ok:
         return LedgerVerification("break", result.first_break, result.checked, now)
-    checked = result.checked or 0
+    if result.checked is None:  # no count reported: unknown, not zero
+        return LedgerVerification("ok", None, None, now)
+    checked = result.checked
     if checked <= 0 or checked < pointers or (max_seq is not None and checked < max_seq):
-        return LedgerVerification("incomplete", None, result.checked, now)
-    return LedgerVerification("ok", None, result.checked, now)
+        return LedgerVerification("incomplete", None, checked, now)
+    return LedgerVerification("ok", None, checked, now)
 
 
 @router.get("/export")
@@ -223,7 +229,7 @@ def export_asks(
             "Cache-Control": "no-store",
             "X-Audit-Export-Verified": "true" if verification.verified else "false",
             "X-Audit-Ledger-Verify": verification.status,
-            "X-Audit-Verify-Scope": VERIFY_SCOPE,
+            "X-Audit-Verify-Scope": verification.scope,
             "X-Audit-Actor-Basis": ACTOR_BASIS,
             "X-Audit-Store": audit.backend,
             "X-Audit-Unrecorded-Asks": str(audit.dropped),

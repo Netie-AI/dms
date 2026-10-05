@@ -24,6 +24,11 @@ VerifyStatus = Literal["ok", "break", "incomplete", "unavailable"]
 
 #: What "verified" covers, said on every row and in a response header.
 VERIFY_SCOPE = "chain_integrity_only; rows are not matched to ledger entries"
+#: The same, when Cortex did not report how many entries it checked (contract 1.2.0).
+VERIFY_SCOPE_NO_COUNT = (
+    "chain_integrity_only; entries_checked not reported by Cortex contract 1.2.0; "
+    "rows are not matched to ledger entries"
+)
 
 #: Characters a spreadsheet reads as the start of a formula (OWASP CSV injection).
 _FORMULA_LEAD = ("=", "+", "-", "@")
@@ -73,9 +78,15 @@ class LedgerVerification:
     ledger, and a verify that did not reach the entries the export points at
     (``incomplete``) are all unverified: an export must not read as checked
     because the check could not be run or stopped short of the entries it names.
-    ``incomplete`` is: nothing checked, fewer entries checked than the export has
-    pointers, or fewer than the highest ledger seq a row recorded (a chain that
-    lost its tail, where DMS appended the lost entry and so knew its seq).
+
+    ``incomplete`` applies only when Cortex REPORTS a count (``checked`` is an int):
+    nothing checked, fewer entries checked than the export has pointers, or fewer
+    than the highest ledger seq a row recorded (a chain that lost its tail, where
+    DMS appended the lost entry and so knew its seq). The contract's
+    ChainVerification is ``{ok, broken_at}`` and carries no count, so against
+    contract 1.2.0 ``checked`` is None, the count rules do not fire, and an intact
+    chain reads ``ok`` with ``ledger_entries_checked`` blank and the scope saying so
+    (``VERIFY_SCOPE_NO_COUNT``). Tail loss is not detectable by DMS in that case.
 
     Contract 1.2.0 verifies the whole chain from ``start_seq``; it takes no end
     and no entry id. So this is the chain's state, which covers the exported
@@ -93,6 +104,11 @@ class LedgerVerification:
     @property
     def verified(self) -> bool:
         return self.status == "ok"
+
+    @property
+    def scope(self) -> str:
+        """What "verified" covers: always chain integrity; and, with no count, that too."""
+        return VERIFY_SCOPE if self.checked is not None else VERIFY_SCOPE_NO_COUNT
 
 
 @dataclass(frozen=True)
@@ -145,7 +161,7 @@ def _cells(rec: AskAuditRecord, meta: ExportMeta) -> dict[str, Any]:
         "truncated": r.truncated,
         "export_verified": ver.verified,
         "ledger_verify_status": ver.status,
-        "ledger_verify_scope": VERIFY_SCOPE,
+        "ledger_verify_scope": ver.scope,
         "ledger_first_break": ver.first_break or "",
         "ledger_entries_checked": ver.checked,
         "verified_at": ver.verified_at.astimezone(UTC).isoformat(),
@@ -192,6 +208,7 @@ def to_jsonl(rows: Sequence[AskAuditRecord], meta: ExportMeta) -> str:
 __all__ = [
     "COLUMNS",
     "VERIFY_SCOPE",
+    "VERIFY_SCOPE_NO_COUNT",
     "ExportFormat",
     "ExportMeta",
     "LedgerVerification",
