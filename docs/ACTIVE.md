@@ -98,12 +98,14 @@ closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
 `live_5000_ci` always false. Regression: `tests/test_insights_host.py`.
 Live hosted walk = Platform after merge. Not COMPLETE.
 
-BEARER-01 (#289): generate=true `/v1/insights` (hosted `insights_post`)
-refuses an empty or demo-viewer key and plain http to a non-loopback host.
-Named ABSTAIN `insights_bearer_missing` /
-`insights_bearer_insecure_transport`. Ranked lanes unchanged. Wording
-corrected by KEY-01: on the ask lane (`compute_insights`) a `None` key was
-NOT refused until KEY-01, because `missing_none=False` let it through.
+BEARER-01 (#289): generate=true `/v1/insights` (hosted `insights_post` and
+ask-lane `compute_insights`) refuses a missing, empty or demo-viewer key and
+plain http to a non-loopback host. Named ABSTAIN `insights_bearer_missing` /
+`insights_bearer_insecure_transport`. Ranked lanes unchanged. Correction by
+KEY-01: the hosted path already refused a `None` key under the default
+`missing_none=True`. The ask lane did not, because `compute_query` passed
+`missing_none=False` (the frozen GEN-RESTORE tests ran keyless). KEY-01 removes
+that opt-out and the settings default, so a `None` key now refuses on both.
 Regression: `tests/test_insights_bearer_01.py`. Not COMPLETE.
 
 KEY-01 (#273): `settings.cortex_api_key` has no default and no fallback; the

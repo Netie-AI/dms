@@ -156,6 +156,11 @@ class _CortexOnly:
     def __repr__(self) -> str:
         return repr(self._rows())
 
+    @property
+    def every_request(self) -> list[dict[str, Any]]:
+        """All requests, whoever they were addressed to."""
+        return list(self._seen)
+
     def clear(self) -> None:
         self._seen.clear()
 
@@ -420,13 +425,109 @@ def test_product_ask_with_no_key_is_a_named_abstain_envelope_and_no_http(
     assert calls == [], f"unkeyed product ask leaked: {calls}"
 
 
+def test_post_chat_ask_default_lane_with_no_key_is_a_named_abstain_envelope(
+    no_key_env: pytest.MonkeyPatch,
+) -> None:
+    """Rule 10a: the envelope from POST /v1/chat/ask, the product route and the DEFAULT
+    ask_path (no harness lane), live mode, no Cortex key.
+
+    Offline: OpenVault is never probed. The ask service is built without startup() and
+    with a stub minter, the F5 gate is allowed by a stub, and httpx.Client is replaced
+    so any request any module makes is recorded rather than sent.
+    """
+    from cortex_contract.execution import Manifest
+
+    minter = ManifestMinter()
+
+    def _mint(acl: SessionAcl) -> Manifest:
+        return Manifest(
+            session_id=acl.session_id,
+            org_id=acl.org_id,
+            space_id=acl.space_id,
+            pool_id=acl.pool_id,
+            issuer_key_id="test-kid",
+            allowed_paths=list(acl.allowed_paths),
+            row_predicates=dict(acl.row_predicates),
+            issued_at="2026-09-25T00:00:00+00:00",
+            expires_at="2026-09-25T01:00:00+00:00",
+            signature="dGVzdHNpZw",
+        )
+
+    no_key_env.setattr(minter, "mint_manifest", _mint)
+    no_key_env.setattr(minter, "fetch_intermediate", lambda: None)
+    no_key_env.setattr(minter, "close", lambda: None)
+    no_key_env.setattr(minter, "invalidate", lambda *_a, **_k: None)
+    no_key_env.setattr(
+        "dms_api.app.build_ask_service", lambda _c, **_k: SimpleNamespace(close=lambda: None)
+    )
+    no_key_env.setenv("DMS_ASK_MODE", "live")
+    no_key_env.setenv("DMS_DEMO_FALLBACK", "0")
+    get_settings.cache_clear()
+    no_key_env.setattr(
+        "dms_api.routes.chat.compliance_gate",
+        lambda **k: SimpleNamespace(allowed=True, reason="test_allow", action=k.get("action")),
+    )
+
+    app = create_app()
+    cortex = CortexClient(_CORTEX, api_key=None)
+    app.state.cortex = cortex
+    app.state.ask_service = Executor(cortex=cortex, minter=minter)
+    calls = _wire(no_key_env)
+
+    res = TestClient(app).post(
+        "/v1/chat/ask", json={"question": "How many florbs did wibble sell last week?"}
+    )
+    assert res.status_code == 200, res.text
+    env = res.json()
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["values"] == []
+    assert env["rows"] == []
+    text = str(env.get("text") or env.get("answer") or "")
+    assert INSIGHTS_FAIL_BEARER_MISSING in text, text
+    assert DEMO_VIEWER_KEY not in res.text
+    # Nothing reached /v1/insights, nothing reached Cortex at all, and no request of any
+    # kind carried an auth header.
+    assert [c for c in calls.every_request if INSIGHTS_PATH in c["url"]] == []
+    assert calls == []
+    assert calls.every_request == [], f"unkeyed POST /v1/chat/ask sent {calls.every_request}"
+    for c in calls.every_request:
+        assert not {h.lower() for h in c["headers"]} & {"authorization", "x-api-key"}
+
+
 # ------------------------------ the dms_query=True path: locked, has no product caller
 
-_ALLOWED_COMPUTE_QUERY_CALLS = {
+_TARGETS = frozenset({"compute_query", "post_compute_query"})
+
+#: Every reference to compute_query that apps/ and packages/ may hold, as
+#: (file, scope, kind, name, dms_query as written). A reference is a call, a bare name
+#: (partial, callback, alias), an attribute, an import or a name string. Anything else
+#: is a way to reach the dms_query=True path and fails the lock.
+_ALLOWED_COMPUTE_QUERY_REFS = {
     # compute_insights is the ask lane. It pins dms_query=False.
-    ("packages/cortex_client/cortex_client/compute.py", "compute_insights"): "False",
+    (
+        "packages/cortex_client/cortex_client/compute.py",
+        "compute_insights",
+        "name",
+        "compute_query",
+        "False",
+    ),
     # The public method default is True. Nothing in apps/ or packages/ calls it.
-    ("packages/cortex_client/cortex_client/client.py", "compute_query"): "dms_query",
+    (
+        "packages/cortex_client/cortex_client/client.py",
+        "<module>",
+        "import",
+        "compute_query",
+        "<not a call>",
+    ),
+    (
+        "packages/cortex_client/cortex_client/client.py",
+        "CortexClient.compute_query",
+        "name",
+        "compute_query",
+        "dms_query",
+    ),
 }
 
 
@@ -440,49 +541,174 @@ def _source_files(*roots: str) -> list[Path]:
     return sorted(found)
 
 
-def _compute_query_uses() -> tuple[dict[tuple[str, str], str], list[str]]:
-    calls: dict[tuple[str, str], str] = {}
-    strings: list[str] = []
+def _compute_query_refs(source: str, rel: str) -> set[tuple[str, str, str, str, str]]:
+    """Every reference to compute_query in one module, from its source text.
+
+    Walks every node, so it sees sync and async functions, methods, class bodies and
+    module scope, and a reference that is not a call (functools.partial, a callback, a
+    stored bound method). An `import ... as alias` is resolved, so the alias is reported
+    under the real name.
+    """
+    tree = ast.parse(source, filename=rel)
+    alias_of: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                leaf = a.name.rsplit(".", 1)[-1]
+                if a.asname and leaf in _TARGETS:
+                    alias_of[a.asname] = leaf
+    exported = {
+        id(elt)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "__all__" for t in n.targets)
+        for elt in ast.walk(n.value)
+    }
+    called_with: dict[int, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            kw = {k.arg: ast.unparse(k.value) for k in node.keywords if k.arg}
+            called_with[id(node.func)] = kw.get("dms_query", "<default True>")
+
+    found: set[tuple[str, str, str, str, str]] = set()
+
+    def walk(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                for a in child.names:
+                    leaf = a.name.rsplit(".", 1)[-1]
+                    if leaf in _TARGETS:
+                        found.add((rel, scope, "import", leaf, "<not a call>"))
+            kind = name = ""
+            if isinstance(child, ast.Name) and (child.id in _TARGETS or child.id in alias_of):
+                kind, name = "name", alias_of.get(child.id, child.id)
+            elif isinstance(child, ast.Attribute) and child.attr in _TARGETS:
+                kind, name = "attr", child.attr
+            elif (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and child.value in _TARGETS
+                and id(child) not in exported
+            ):
+                kind, name = "string", child.value
+            if kind:
+                found.add((rel, scope, kind, name, called_with.get(id(child), "<not a call>")))
+            inner = scope
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = child.name if scope == "<module>" else f"{scope}.{child.name}"
+            walk(child, inner)
+
+    walk(tree, "<module>")
+    return found
+
+
+def _compute_query_refs_in_tree() -> set[tuple[str, str, str, str, str]]:
+    found: set[tuple[str, str, str, str, str]] = set()
     for path in _source_files("apps", "packages"):
         rel = path.relative_to(_ROOT).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
-        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-            for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
+        found |= _compute_query_refs(path.read_text(encoding="utf-8"), rel)
+    return found
+
+
+def _first_walker_hits(source: str) -> set[str]:
+    """The walker this one replaces, kept only as the baseline the shapes below beat.
+
+    It looked at Call nodes inside plain `def` bodies, by the called name. Of the
+    shapes in `_PROBES` it caught only the sync def.
+    """
+    hits: set[str] = set()
+    for fn in [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef)]:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Call):
                 func = node.func
-                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-                if name not in {"compute_query", "post_compute_query"}:
-                    continue
-                kw = {k.arg: k.value for k in node.keywords}
-                flag = kw.get("dms_query")
-                calls[(rel, fn.name)] = ast.unparse(flag) if flag is not None else "<default True>"
-        exported = {
-            id(elt)
-            for n in ast.walk(tree)
-            if isinstance(n, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == "__all__" for t in n.targets)
-            for elt in ast.walk(n.value)
-        }
-        strings.extend(
-            f"{rel}:{n.lineno}"
-            for n in ast.walk(tree)
-            if isinstance(n, ast.Constant)
-            and n.value in {"compute_query", "post_compute_query"}
-            and id(n) not in exported
-        )
-    return calls, strings
+                called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+                if called in _TARGETS:
+                    hits.add(fn.name)
+    return hits
+
+
+_PROBE_REL = "apps/api/dms_api/_probe_tmp.py"
+
+#: (source, did the first walker miss it, a kind the new walker must report)
+_PROBES = [
+    pytest.param(
+        'def h(cortex):\n    return cortex.compute_query("q")\n',
+        False,
+        "attr",
+        id="sync_def_attribute_call",
+    ),
+    pytest.param(
+        'async def h(cortex):\n    return cortex.compute_query("q")\n',
+        True,
+        "attr",
+        id="async_def_caller",
+    ),
+    pytest.param(
+        "from cortex_client.compute import compute_query as cq\n\n\n"
+        'def h():\n    return cq("http://x", question="q")\n',
+        True,
+        "name",
+        id="aliased_import_call",
+    ),
+    pytest.param(
+        "import functools\n"
+        "from cortex_client.compute import compute_query\n\n"
+        '_ASK = functools.partial(compute_query, "http://x", question="q")\n',
+        True,
+        "name",
+        id="module_level_functools_partial",
+    ),
+    pytest.param(
+        'from cortex_client import CortexClient\n\n_ASK = CortexClient("http://x").compute_query\n',
+        True,
+        "attr",
+        id="module_level_bound_method_alias",
+    ),
+    pytest.param(
+        'class H:\n    async def go(self, cortex):\n        return cortex.compute_query("q")\n',
+        True,
+        "attr",
+        id="async_method_in_class",
+    ),
+    pytest.param(
+        'def h(cortex):\n    return getattr(cortex, "compute_query")("q")\n',
+        True,
+        "string",
+        id="name_string_lookup",
+    ),
+]
+
+
+@pytest.mark.parametrize(("source", "first_walker_missed", "kind"), _PROBES)
+def test_the_lock_flags_every_way_to_reach_compute_query(
+    source: str, first_walker_missed: bool, kind: str
+) -> None:
+    refs = _compute_query_refs(source, _PROBE_REL)
+    assert refs, "the lock missed this shape"
+    assert refs.isdisjoint(_ALLOWED_COMPUTE_QUERY_REFS)
+    assert kind in {r[2] for r in refs}, refs
+    # The shape really was a miss for the walker this one replaces (the sync def was not).
+    assert (_first_walker_hits(source) == set()) is first_walker_missed
+
+
+def test_the_lock_does_not_flag_what_is_not_a_reference() -> None:
+    quiet = (
+        '"""Docs may say compute_query and post_compute_query."""\n'
+        "from cortex_client.compute import compute_insights\n\n"
+        '__all__ = ["compute_insights", "compute_query"]\n\n\n'
+        'async def h(cortex):\n    return cortex.compute_insights("q")\n'
+    )
+    assert _compute_query_refs(quiet, _PROBE_REL) == set()
 
 
 def test_dms_query_true_path_has_no_product_caller() -> None:
     """`compute_query` keeps its dms_query=True default for CONTRACT-FAKE-01, and on that
     path the bearer refusals do not apply. This pins that nothing in the product can
-    reach it: the ask lane pins dms_query=False, and no other call, attribute call or
-    string-named lookup of compute_query exists in apps/ or packages/. A new caller
-    must either refuse there or change this test in review."""
-    calls, strings = _compute_query_uses()
-    assert calls == _ALLOWED_COMPUTE_QUERY_CALLS
-    assert strings == [], f"compute_query reached by name string: {strings}"
+    reach it: the ask lane pins dms_query=False, and no other call, bare reference,
+    attribute, alias import or string-named lookup of compute_query exists in apps/ or
+    packages/, in sync or async code, in methods, class bodies or module scope. A new
+    caller must either refuse there or change this test in review."""
+    assert _compute_query_refs_in_tree() == _ALLOWED_COMPUTE_QUERY_REFS
     # The Executor reaches Cortex's planner only through compute_insights.
     exe_src = (_ROOT / "packages/executor/dms_executor/__init__.py").read_text(encoding="utf-8")
     assert 'getattr(cortex, "compute_insights", None)' in exe_src
