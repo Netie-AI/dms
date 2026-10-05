@@ -9,6 +9,8 @@ passes the connection schema. No schema, a schema qualify cannot use,
 or a column that is still untraced: that column stays masked.
 This module does not load a schema and does not read DEMO_TABLES.
 No FX conversion. Mismatch or unresolved currency is ABSTAIN.
+``tables_read`` (BANK-02 / dms#269) also lives here so the parser keeps one swap
+point: it names the tables an executed statement reads, for the audit export.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 from sqlglot import exp, parse_one
 from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
@@ -960,6 +963,52 @@ def served_column_sources(
     return out
 
 
+#: Parse-failure fallback for ``tables_read``: the identifier after FROM / JOIN.
+_FROM_JOIN = re.compile(r'(?i)\b(?:from|join)\s+("[^"]+"|`[^`]+`|[A-Za-z_][\w.$]*)')
+
+
+def _table_label(node: exp.Table) -> str:
+    """``catalog.db.name`` as written; a table function is ``read_csv()``.
+
+    The function name only. Its arguments (a file path) are in the executed SQL
+    column already and are not a table name.
+    """
+    if isinstance(node.this, exp.Func):
+        return f"{str(node.this.sql_name()).lower()}()"
+    return ".".join(p for p in (node.catalog, node.db, node.name) if p)
+
+
+def tables_read(sql: str | None) -> tuple[str, ...]:
+    """Tables an executed statement reads, sorted, with CTE names excluded.
+
+    Used by the audit export (BANK-02) to say which tables a question touched.
+    A statement sqlglot cannot parse falls back to the FROM / JOIN identifier
+    scan, which is looser (a string literal containing "from x" would count) but
+    never returns an empty list for SQL that plainly names a table: an audit row
+    that says "read nothing" for a query that read something is a false record.
+    A comment-only statement, such as the document-retrieval stub, reads none.
+    """
+    text = (sql or "").strip()
+    if not text:
+        return ()
+    try:
+        trees = [t for t in sqlglot.parse(text, dialect=_DIALECT) if t is not None]
+    except Exception:  # noqa: BLE001 - any parser failure takes the scan
+        scan = (m.strip('"`') for m in _FROM_JOIN.findall(text))
+        return tuple(sorted(dict.fromkeys(x for x in scan if x), key=str.casefold))
+    seen: dict[str, str] = {}
+    for tree in trees:
+        ctes = {str(c.alias_or_name).casefold() for c in tree.find_all(exp.CTE)}
+        for node in tree.find_all(exp.Table):
+            label = _table_label(node)
+            if not label:
+                continue
+            if "." not in label and label.casefold() in ctes:
+                continue
+            seen.setdefault(label.casefold(), label)
+    return tuple(sorted(seen.values(), key=str.casefold))
+
+
 __all__ = [
     "SourceColumn",
     "asked_currencies",
@@ -967,4 +1016,5 @@ __all__ = [
     "currency_mismatch_reason",
     "is_currency_column",
     "served_column_sources",
+    "tables_read",
 ]

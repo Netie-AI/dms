@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any, Literal
 
-from cortex_client import compliance_gate
-from dms_core.ask import AskServiceError, GroundingRefused
+from cortex_client import CortexClient, compliance_gate
+from dms_core.ask import AskServiceError, AskServicePort, GroundingRefused
 from dms_core.bi_export import export_envelope_bi
+from dms_core.control_plane.spaces import SpaceStorePort
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from dms_api.deps import AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
+from dms_api.ask_audit import record_ask
+from dms_api.deps import AskAuditDep, AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
 from dms_api.gatekeeping import enforce
+from dms_api.settings import Settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
@@ -217,6 +221,7 @@ def chat_ask(
     store: SpaceStoreDep,
     cortex: CortexDep,
     ask: AskServiceDep,
+    audit: AskAuditDep,
 ) -> dict[str, Any]:
     # GEN-03 (dms#194). The isolated lanes are a measurement harness, not a
     # product surface: on ask_path=generative a keyword-bound plan answered
@@ -240,12 +245,50 @@ def chat_ask(
     if body.space_id and store.get(body.space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
 
+    asked_at = datetime.now(UTC)
     decision = compliance_gate(
         action="chat.ask",
         metadata={"question": body.question, "space_id": body.space_id, "task_id": "chat.ask"},
         client=cortex,
     )
 
+    # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
+    # Asks that never reach the gate (the lane refusal, an unknown Space) are
+    # rejected requests, not asks, and are not recorded.
+    try:
+        env = _answer_ask(body, decision, settings=settings, store=store, cortex=cortex, ask=ask)
+    except Exception as exc:
+        record_ask(
+            audit,
+            settings,
+            question=body.question,
+            space_id=body.space_id,
+            asked_at=asked_at,
+            error=exc,
+        )
+        raise
+    record_ask(
+        audit,
+        settings,
+        question=body.question,
+        space_id=body.space_id,
+        asked_at=asked_at,
+        envelope=env,
+    )
+    return env
+
+
+def _answer_ask(
+    body: AskBody,
+    decision: Any,
+    *,
+    settings: Settings,
+    store: SpaceStorePort,
+    cortex: CortexClient | None,
+    ask: AskServicePort,
+) -> dict[str, Any]:
+    """The ask ladder after the compliance gate. Moved here unchanged by BANK-02
+    so ``chat_ask`` can record the outcome; the gate stays in the route."""
     want_demo = settings.dms_ask_mode == "demo"
     if want_demo:
         if not decision.allowed and decision.reason not in _SOFT_GATE:

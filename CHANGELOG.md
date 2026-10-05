@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - BANK-02: auditor export of ask, SQL, tables and outcome (Refs dms#269)
+
+- **Ticket.** [dms#269](https://github.com/Netie-AI/dms/issues/269) under EPIC-BANK-01 #267. Does not close the issue. Does not stamp COMPLETE.
+- **Gap.** No store held an ask. `ledger_ref` points at `amend.confirm` entries only, `query_run` is written by nothing, and Cortex contract 1.2.0 cannot read an entry back.
+- **Change.** `GET /v1/audit/export?from=&to=&format=csv|jsonl`: one row per ask with timestamp, actor and `actor_kind`, question, executed SQL, tables read, badge (validated, abstain, error), abstain reason, row count and `cortex_entry_id`. The `ledger/verify` result is on every row; a break or an unreachable ledger marks the export unverified. New append-only `dms.ask_audit` (alembic 0005), written by `chat_ask` after the outcome. Under DR-0004 Option A the actor is the deployment identity and `actor_kind` is `deployment`. CSV is RFC 4180 with spreadsheet formula leads prefixed. Secret-shaped text is removed from every field.
+- **Gate.** `tests/test_bank_02_audit_export.py` and `tests/control_plane/test_ask_audit_pg.py`. The planted-ask and edited-ledger-entry tests fail on the parent commit.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.
