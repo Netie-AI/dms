@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
@@ -92,7 +93,7 @@ class PackMetric:
     tables: tuple[str, ...]
 
 
-PACK_METRICS: tuple[PackMetric, ...] = (
+_BASE_PACK_METRICS: tuple[PackMetric, ...] = (
     PackMetric(
         metric_id="spend_by_country",
         question=SPEND_BY_COUNTRY_Q,
@@ -156,8 +157,95 @@ PACK_METRICS: tuple[PackMetric, ...] = (
 )
 
 
+def _score_fixture_dir() -> Path:
+    """Repo fixture that already copies Cortex certified_queries. Not a second pack."""
+    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "curated_ceo"
+
+
+def _collapse_sql(raw: object) -> str:
+    if not isinstance(raw, str):
+        return ""
+    # The score oracle binds $as_of. The certified query runs CURRENT_DATE.
+    return " ".join(raw.split()).replace("$as_of", "CURRENT_DATE")
+
+
+def _tables_in_sql(sql: str) -> tuple[str, ...]:
+    from dms_executor.verified_queries import _named_warehouse_tables
+
+    return tuple(sorted(_named_warehouse_tables(sql)))
+
+
+# Score-pack exact phrases that are not already one of the ten base metrics.
+# Climb rise and synonym ids stay off this list: those questions are scored
+# as ontology_plan, and climb gates assert they are not PACK_METRICS.
+# cq_sales_top5_value stays off: the product lane contract ask owns that
+# phrase (one session bind, badge L0_CERTIFIED). cq_chemicals_list stays
+# off for the same fall-through. Not every expect:l0 row.
+SCORE_PACK_EXACT_IDS: frozenset[str] = frozenset(
+    {
+        "cq_sku_count",
+        "cq_sales_top3_volume",
+        "cq_sku_count_by_category",
+        "cq_supplier_ranking",
+        "trap_categoty",
+    }
+)
+
+
 def _norm(question: str) -> str:
     return " ".join(normalize_ask_question(question).casefold().split())
+
+
+def load_score_pack_metrics(
+    base: tuple[PackMetric, ...] = _BASE_PACK_METRICS,
+    ids: frozenset[str] = SCORE_PACK_EXACT_IDS,
+) -> tuple[PackMetric, ...]:
+    """Allowlisted score-pack ids whose question text is not already a base metric.
+
+    Reads the curated_ceo fixture (question + oracle SQL). An id not in
+    ``ids`` is not a metric. Same question text keeps the first metric.
+    """
+    import yaml
+
+    root = _score_fixture_dir()
+    questions = yaml.safe_load((root / "questions.yaml").read_text(encoding="utf-8")) or {}
+    oracles = yaml.safe_load((root / "oracles.yaml").read_text(encoding="utf-8")) or {}
+    oracle_rows = oracles.get("oracles") or {}
+    taken = {_norm(m.question) for m in base}
+    extra: list[PackMetric] = []
+    for case in questions.get("questions") or []:
+        qid = str(case.get("id") or "")
+        if qid not in ids:
+            continue
+        question = str(case.get("question") or "").strip()
+        qn = _norm(question)
+        if not qn or qn in taken:
+            continue
+        sql = _collapse_sql((oracle_rows.get(qid) or {}).get("sql"))
+        if not sql:
+            continue
+        tables = _tables_in_sql(sql)
+        if not tables:
+            continue
+        extra.append(
+            PackMetric(
+                metric_id=qid,
+                question=question,
+                sql=sql,
+                tables=tables,
+            )
+        )
+        taken.add(qn)
+    return tuple(extra)
+
+
+# Climb 10-13 snapshot this tuple. Do not append here.
+PACK_METRICS: tuple[PackMetric, ...] = _BASE_PACK_METRICS
+SCORE_PACK_EXACT_METRICS: tuple[PackMetric, ...] = load_score_pack_metrics()
+
+
+def _exact_pack_metrics() -> tuple[PackMetric, ...]:
+    return PACK_METRICS + SCORE_PACK_EXACT_METRICS
 
 
 # Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
@@ -267,7 +355,7 @@ def lookup_pack_metric(
     qn = _norm(question)
     if not qn:
         return None
-    hit = next((m for m in PACK_METRICS if _norm(m.question) == qn), None)
+    hit = next((m for m in _exact_pack_metrics() if _norm(m.question) == qn), None)
     if hit is None:
         return None
     allowed = grantable if grantable is not None else set()

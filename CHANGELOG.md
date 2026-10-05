@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - PROVE-CURATED-DIAG-01: score-pack exact allowlist (Refs dms#355)
+
+- **Ticket.** [PROVE-CURATED-DIAG-01 #355](https://github.com/Netie-AI/dms/issues/355) under [EPIC-A1 #257](https://github.com/Netie-AI/dms/issues/257). Does not close either. Does not stamp COMPLETE. Does not close #337.
+- **Cause.** Prove: `cq_sku_count` misses at exact match. Cortex certified SQL is in the score fixture. `PACK_METRICS` on `4525b4c` is the original ten and does not include that id. `lookup_pack_metric` returns None. `_verified_queries` is not seeded. Finance grants for `inventory` are not the miss.
+- **Change.** `SCORE_PACK_EXACT_IDS` is the only extra registry: `cq_sku_count`, `cq_sales_top3_volume`, `cq_sku_count_by_category`, `cq_supplier_ranking`, `trap_categoty`. `lookup_pack_metric` searches the ten base metrics plus that allowlist. `PACK_METRICS` stays the ten. Climb rise and synonym rows are not metrics. `cq_sales_top5_value` and `cq_chemicals_list` stay on the contract-ask path. Not a verified-query seed. Not a grant write.
+- **Gate.** `tests/test_curated_pack_01.py` is red without the allowlist (`cq_sku_count` lookup is None on the ten) and green with it. Offline `--ab` on this head: exact 0/23/29/0/0, generative 0/26/11/15/0 (ok/layer/abstain/wrong/oracle_error), INVALID 0, n 52. Exact wrong is 0. That is a fixture run, not a prove PASS. Generative WRONG stays the existing pin.
+
 ## 2026-10-05 - PIN-NOMODEL-01: L2 input is the Platform scan, not the score report (Refs dms#317)
 
 - **Input.** `recorded_cortex_l2` reads `$DMS_SCORE_DIR/cortex_l2_scan.json` only. Platform's redeploy wrapper is the writer. The scorer does not read `cortex_l2` from `score_curated.json`, which `live()` overwrites. The scan names `cortex_l2`, `cortex_sha`, `scanned_at`, `service_started_at`, `service_started_now`, `cortex_unit`, and `cortex_unit_now`. `cortex_sha` must be `279cbd85`. A missing scan is `missing`. A bad sha, a missing timestamp, or any other value is `unknown`.

@@ -1089,7 +1089,11 @@ def test_live_without_engine_date_asks_nothing(
 def test_ab_offline_counts_unchanged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """52-pack --ab. Order is OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR."""
+    """52-pack --ab. Order is OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR.
+
+    Exact quint is the score-pack allowlist on top of the ten base
+    metrics (0/23/29/0/0). Generative quint is the previous pin.
+    """
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     main(["--ab"])
     report = json.loads((tmp_path / "ab_gen01.json").read_text(encoding="utf-8"))
@@ -1098,7 +1102,7 @@ def test_ab_offline_counts_unchanged(
     keys = ("ok", "layer", "abstain", "wrong", "oracle_error")
     exact_counts = [exact[key] for key in keys]
     gen_counts = [gen[key] for key in keys]
-    assert exact_counts == [0, 16, 36, 0, 0]
+    assert exact_counts == [0, 23, 29, 0, 0]
     assert gen_counts == [0, 26, 11, 15, 0]
     assert exact["n"] == 52
     assert gen["n"] == 52

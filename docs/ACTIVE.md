@@ -22,6 +22,14 @@ module. Regression: `tests/test_onto_store_01.py`. Live Alembic against
 Postgres: `tests/control_plane` when hostdb is up (CI skips that folder).
 Not COMPLETE.
 
+PROVE-CURATED-DIAG-01 (#355): exact lookup is the original ten
+`PACK_METRICS` plus `SCORE_PACK_EXACT_IDS` (`cq_sku_count`,
+`cq_sales_top3_volume`, `cq_sku_count_by_category`,
+`cq_supplier_ranking`, `trap_categoty`) in
+`packages/executor/dms_executor/demo_pack.py`. Climb rise rows are not
+on that list. Verified queries are not seeded. Regression:
+`tests/test_curated_pack_01.py`. Not COMPLETE.
+
 GRANT-READ-01 (#297): ask-path retrieve and cascade use `demo_acl`'s
 default readable set when the caller ticks nothing (`requested or
 default_readable`). Unticked uploads never enter the Insights generate
