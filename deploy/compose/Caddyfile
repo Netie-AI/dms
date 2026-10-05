@@ -11,9 +11,14 @@
 # Certificate source is chosen at install by DMS_TLS_MODE (see docker-compose.yml):
 #   internal  Caddy's internal CA. Sandbox pilot fallback only.
 #   files     tls.crt + tls.key from DMS_TLS_DIR (bank CA or internal CA).
-# An unknown mode names a snippet that does not exist and Caddy refuses to load,
-# so a typo fails closed. files mode with a missing or unreadable pair also fails
-# to load. Nothing here carries a certificate, key or password.
+# The mode is spliced into `import tls_<mode>`, so compose's ui command admits
+# exactly internal or files and exits otherwise. Do not rely on Caddy alone for
+# that: a glob such as `*` makes the import a file glob, which Caddy only warns
+# about, leaving a site with no tls directive. local_certs below is the second
+# line: with it a site that ends up with no certificate source gets one from the
+# internal CA and never from a public ACME CA. files mode with a missing or
+# unreadable pair fails to load. Nothing here carries a certificate, key or
+# password.
 #
 # Architecture §1–2: rate-limit / SSE flush land in hardening (pre-pay). Keep
 # flush_interval ready for chat SSE (U6 / §10.10).
@@ -22,8 +27,17 @@
 	# Compose does not publish it, but a plain-HTTP listener the appliance does
 	# not need is a surface; the appliance has exactly one, and it is TLS.
 	auto_https disable_redirects
+	# Never public ACME: the appliance gets its certificate from DMS_TLS_DIR or
+	# from Caddy's own CA, never by contacting a public CA with the customer's
+	# hostname.
+	local_certs
 	# The container's trust store is not the clients' trust store.
 	skip_install_trust
+	# No HTTP/3. It would open UDP on the TLS port and advertise itself with
+	# Alt-Svc; the appliance speaks TLS over TCP only.
+	servers {
+		protocols h1 h2
+	}
 }
 
 (tls_internal) {

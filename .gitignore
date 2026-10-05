@@ -53,10 +53,20 @@ logs/
 /issue*_body.md
 
 # BANK-04 (#271): TLS material is supplied at install time and never committed.
-# deploy/compose/tls/ is the default DMS_TLS_DIR mount point; only .gitkeep is tracked.
+# deploy/compose/tls/ is the default DMS_TLS_DIR mount point: everything in it is
+# ignored whatever the extension, and only .gitkeep is tracked. Elsewhere under
+# deploy/, the usual certificate, key and keystore extensions (PKCS#12 and Java
+# keystores are how banks ship them) are ignored too.
+deploy/compose/tls/*
+!deploy/compose/tls/.gitkeep
 deploy/**/*.crt
+deploy/**/*.cer
+deploy/**/*.cert
 deploy/**/*.key
 deploy/**/*.pem
+deploy/**/*.p12
+deploy/**/*.pfx
+deploy/**/*.jks
 # cortex-contract is private and on no index; whoever builds the API image drops the
 # wheel here first (CI does). Binaries never go in git (not LFS either).
 deploy/wheelhouse/*.whl

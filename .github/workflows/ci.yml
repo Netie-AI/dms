@@ -245,13 +245,21 @@ jobs:
   compose-tls-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Nothing in this job pushes or writes to the repository.
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # apps/api/Dockerfile installs cortex-contract, which is private and on no
       # index. Same sparse checkout and token as lint-type-test (CI-02 option A),
       # then the wheel goes into deploy/wheelhouse/ for the image build.
+      # persist-credentials: false keeps the token out of _cortex/.git/config for
+      # the rest of the job; the wheel build needs no git auth, and .dockerignore
+      # keeps _cortex/ and .git out of the image build context.
       - name: Checkout cortex-contract package
         uses: actions/checkout@v4
         with:
@@ -261,6 +269,7 @@ jobs:
             packages/cortex_contract
           sparse-checkout-cone-mode: true
           token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -272,6 +281,12 @@ jobs:
           python -m pip install --upgrade pip wheel build
           python -m build --wheel --outdir deploy/wheelhouse ./_cortex/packages/cortex_contract
 
+      - name: Launcher password reader matches compose (.env semantics)
+        # Start-DMSStack.ps1 reads DMS_DB_PASSWORD the way compose does; this
+        # self-check pins that. pwsh is preinstalled on ubuntu-latest.
+        run: pwsh -NoProfile -File scripts/windows/Test-GetDmsDbPassword.ps1
+
       - name: Compose TLS smoke
         # Throwaway password and certificate are generated inside the script.
+        # CI is the build proof for apps/api/Dockerfile: no REUSE_IMAGE here.
         run: bash scripts/compose_tls_smoke.sh

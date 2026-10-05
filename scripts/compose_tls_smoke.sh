@@ -7,21 +7,36 @@
 #      certificate that verifies against Caddy's internal CA, and the API bound
 #      Postgres with the supplied password (/health backend == postgres)
 #   C  plain HTTP to the same port does not serve /health, Studio or /v1/*
-#   D  the only host port the stack publishes is the appliance port (T6), and
-#      the ui container has no :80 or :443 listener inside
-#   E  files mode serves the operator-supplied certificate, and an unknown mode
-#      or an empty certificate directory fails closed (nothing answers)
+#   D  the only mapping the stack publishes is the appliance port, TCP, bound to
+#      the loopback address the smoke asked for (T6); the ui container has no
+#      :80 or :443 listener inside, and no UDP listener (no HTTP/3)
+#   E  files mode serves the operator-supplied certificate; an unknown mode
+#      (including the glob `*`), or an empty certificate directory, fails
+#      closed (nothing answers) and the glob is refused by the ui entry guard
 #
 # It exits 0 only when every assertion held. Exit 2 means a precondition is
 # missing (docker, curl, openssl, the cortex-contract wheel, a free port): the
 # smoke did not run, which is not a pass.
 #
-# Every value used here is a throwaway generated at run time (password, the
-# files-mode certificate). Nothing is read from or written to deploy/compose/.env:
-# the compose project gets an empty --env-file and its own project name, so a
-# developer's own stack, volumes and .env are never touched.
+# Hermetic by construction:
+#   * every value is a throwaway generated at run time (password, the files-mode
+#     certificate); nothing is read from or written to deploy/compose/.env: the
+#     compose project gets an empty --env-file, an explicit `-f docker-compose.yml`
+#     (a local override file cannot change what is verified) and its own project
+#     name, so a developer's stack, volumes and .env are never touched;
+#   * CORTEX_URL and OPENVAULT_URL point at an inert address (http://127.0.0.1:9),
+#     so /health never probes a Cortex or OpenVault running on the workstation;
+#   * the one published port is bound to 127.0.0.1 through DMS_BIND_ADDR, the
+#     install-time key compose already honours. The file verified is the shipped
+#     docker-compose.yml; only the bind address differs from its 0.0.0.0 default;
+#   * cleanup is `down -v --rmi local`: containers, network, volumes and the
+#     image this run built are removed (images named by `image:` are left).
 #
 #   bash scripts/compose_tls_smoke.sh
+#
+# DMS_SMOKE_REUSE_IMAGE=1 passes --no-build, so a workstation run uses an image
+# already present (compose fails if it is missing; nothing is built or pulled).
+# CI never sets it: CI is the build proof.
 #
 # Needs: docker (daemon running), curl, openssl, and
 # deploy/wheelhouse/cortex_contract-*.whl (apps/api/Dockerfile cannot fetch it:
@@ -38,6 +53,10 @@ WHEELHOUSE="${REPO}/deploy/wheelhouse"
 UI_DIST="${REPO}/apps/ui/dist"
 PORT=8080
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-dms-bank04-smoke}"
+# Inert: nothing listens on the discard port, inside the container or out.
+export CORTEX_URL="http://127.0.0.1:9"
+export OPENVAULT_URL="http://127.0.0.1:9"
+export DMS_BIND_ADDR="127.0.0.1"
 
 FAILS=0
 pass() { echo "PASS  $1"; }
@@ -75,11 +94,12 @@ if [ ! -d "${UI_DIST}" ]; then
   STUB_DIST=1
 fi
 
-dc() { (cd "${COMPOSE_DIR}" && docker compose --env-file "${EMPTY_ENV}" "$@"); }
+dc() { (cd "${COMPOSE_DIR}" && docker compose --env-file "${EMPTY_ENV}" -f docker-compose.yml "$@"); }
 
 cleanup() {
   # Interpolation needs the variable even for `down`; the value is irrelevant.
-  DMS_DB_PASSWORD="${DMS_DB_PASSWORD:-unused-by-down}" dc down -v --remove-orphans >/dev/null 2>&1
+  # --rmi local removes the image this project built, nothing else.
+  DMS_DB_PASSWORD="${DMS_DB_PASSWORD:-unused-by-down}" dc down -v --rmi local --remove-orphans >/dev/null 2>&1
   if [ "${STUB_DIST}" = 1 ]; then rm -rf "${UI_DIST}"; fi
   rm -rf "${TMP_DIR}"
 }
@@ -99,16 +119,16 @@ project_containers() {
 # ---- A: compose refuses to start without the database password -------------
 for case_name in unset empty; do
   if [ "${case_name}" = unset ]; then
-    out="$(env -u DMS_DB_PASSWORD bash -c "cd '${COMPOSE_DIR}' && docker compose --env-file '${EMPTY_ENV}' up -d" 2>&1)"
+    out="$(env -u DMS_DB_PASSWORD bash -c "cd '${COMPOSE_DIR}' && docker compose --env-file '${EMPTY_ENV}' -f docker-compose.yml up -d" 2>&1)"
   else
-    out="$(env DMS_DB_PASSWORD= bash -c "cd '${COMPOSE_DIR}' && docker compose --env-file '${EMPTY_ENV}' up -d" 2>&1)"
+    out="$(env DMS_DB_PASSWORD= bash -c "cd '${COMPOSE_DIR}' && docker compose --env-file '${EMPTY_ENV}' -f docker-compose.yml up -d" 2>&1)"
   fi
   rc=$?
   if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -q 'DMS_DB_PASSWORD' && [ -z "$(project_containers)" ]; then
     pass "A compose refuses to start with DMS_DB_PASSWORD ${case_name} (exit ${rc}, no container created)"
   else
     fail "A compose started or created containers with DMS_DB_PASSWORD ${case_name} (exit ${rc}): $(printf '%s' "${out}" | tail -3)"
-    DMS_DB_PASSWORD=unused dc down -v --remove-orphans >/dev/null 2>&1
+    DMS_DB_PASSWORD=unused dc down -v --rmi local --remove-orphans >/dev/null 2>&1
   fi
 done
 
@@ -117,8 +137,10 @@ DMS_DB_PASSWORD="$(openssl rand -hex 16)"
 export DMS_DB_PASSWORD
 if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::${DMS_DB_PASSWORD}"; fi
 
-echo "== docker compose up -d --build (project ${COMPOSE_PROJECT_NAME}) =="
-if ! dc up -d --build; then
+BUILD_FLAG="--build"
+if [ "${DMS_SMOKE_REUSE_IMAGE:-0}" = 1 ]; then BUILD_FLAG="--no-build"; fi
+echo "== docker compose up -d ${BUILD_FLAG} (project ${COMPOSE_PROJECT_NAME}) =="
+if ! dc up -d ${BUILD_FLAG}; then
   fail "stack did not come up"
   dump_logs
   echo "SMOKE FAILED (${FAILS} assertion(s))"
@@ -139,7 +161,7 @@ code=000
 for _ in $(seq 1 90); do
   [ -s "${TMP_DIR}/caddy-root.crt" ] || dc cp ui:/data/caddy/pki/authorities/local/root.crt "${ROOT_CRT}" >/dev/null 2>&1
   if [ -s "${TMP_DIR}/caddy-root.crt" ]; then
-    code="$(curl -sS -m 15 ${NOREVOKE} --resolve "${RESOLVE}" --cacert "${ROOT_CRT}" -o "${NTMP}/health.json" -w '%{http_code}' "${BASE}/health" 2>/dev/null || true)"
+    code="$(curl -sS -m 15 ${NOREVOKE} --resolve "${RESOLVE}" --cacert "${ROOT_CRT}" -D "${NTMP}/health.hdr" -o "${NTMP}/health.json" -w '%{http_code}' "${BASE}/health" 2>/dev/null || true)"
     [ "${code}" = 200 ] && break
   fi
   sleep 2
@@ -157,6 +179,12 @@ if grep -Eq '"product"[[:space:]]*:[[:space:]]*"dms"' "${TMP_DIR}/health.json" 2
   pass "B2 /health is the DMS API and it bound Postgres with the supplied password (backend postgres)"
 else
   fail "B2 /health is not the DMS API on Postgres: $(head -c 300 "${TMP_DIR}/health.json" 2>/dev/null)"
+fi
+
+if [ -s "${TMP_DIR}/health.hdr" ] && ! grep -qi '^alt-svc:' "${TMP_DIR}/health.hdr"; then
+  pass "B5 HTTPS responses advertise no Alt-Svc (HTTP/3 is off)"
+else
+  fail "B5 /health response carries an Alt-Svc header or none was captured: $(head -c 300 "${TMP_DIR}/health.hdr" 2>/dev/null | tr '\r\n' '  ')"
 fi
 
 code="$(curl -sS -m 15 ${NOREVOKE} --resolve "${RESOLVE}" --cacert "${ROOT_CRT}" -o "${NTMP}/studio.html" -w '%{http_code}' "${BASE}/" 2>/dev/null || true)"
@@ -197,25 +225,37 @@ for spec in '/v1/spaces|"spaces"' '/health|"product"' '/|dms-bank04-smoke-studio
 done
 
 # ---- D: the only published host port is the appliance port ----------------
-ports="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --format '{{.Ports}}' \
-  | tr ',' '\n' | grep -oE ':[0-9]+->' | tr -d ':>-' | sort -u | tr '\n' ' ')"
-if [ "${ports}" = "${PORT} " ]; then
-  pass "D the only published host port is ${PORT}"
+published="$(docker ps --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" --format '{{.Ports}}' \
+  | tr ',' '\n' | grep -oE '[^ ]+->[0-9]+/[a-z]+' | sort -u | tr '\n' ' ')"
+if [ "${published}" = "${DMS_BIND_ADDR}:${PORT}->${PORT}/tcp " ]; then
+  pass "D the only published mapping is ${DMS_BIND_ADDR}:${PORT}->${PORT}/tcp (no other port, no UDP, nothing on another interface)"
 else
-  fail "D published host ports are [${ports}], expected only [${PORT}]"
+  fail "D published mappings are [${published}], expected only [${DMS_BIND_ADDR}:${PORT}->${PORT}/tcp]"
 fi
 
 # D2: inside the container nothing listens on :80 or :443 (the redirect listener
-# that auto_https disable_redirects removes), and the TLS port is up. Other
-# listeners are loopback only: Caddy admin :2019 and Docker DNS.
+# that auto_https disable_redirects removes), the TLS port is up on TCP, and no UDP
+# listener sits on 80, 443 or the TLS port (HTTP/3 is off). Other listeners are
+# loopback only: Caddy admin :2019 and Docker DNS.
 ui_id="$(dc ps -q ui | head -1)"
 listeners="$(docker exec "${ui_id}" sh -c 'netstat -tln' 2>/dev/null \
   | awk 'NR > 2 { n = split($4, a, ":"); print a[n] }' | sort -u | tr '\n' ' ')"
+udp_raw="$(docker exec "${ui_id}" sh -c 'netstat -uln' 2>/dev/null)"
+udp_listeners="$(printf '%s\n' "${udp_raw}" \
+  | awk 'NR > 2 { n = split($4, a, ":"); print a[n] }' | sort -u | tr '\n' ' ')"
 case " ${listeners} " in
   *" 80 "* | *" 443 "*) fail "D2 ui listens on a plain-HTTP or default-HTTPS port inside the container: [${listeners}]" ;;
-  *" ${PORT} "*) pass "D2 ui container has no :80 or :443 listener and listens on ${PORT} (listeners [${listeners}]; the rest is the loopback admin API and Docker DNS)" ;;
+  *" ${PORT} "*) pass "D2 ui container has no :80 or :443 listener and listens on ${PORT} (tcp [${listeners}]; the rest is the loopback admin API and Docker DNS)" ;;
   *) fail "D2 could not read the ui container's listeners (got [${listeners}])" ;;
 esac
+if ! printf '%s' "${udp_raw}" | grep -qi 'proto'; then
+  fail "D3 could not read the ui container's UDP listeners (netstat -uln printed no table)"
+else
+  case " ${udp_listeners} " in
+    *" 80 "* | *" 443 "* | *" ${PORT} "*) fail "D3 ui has a UDP listener on 80, 443 or ${PORT} (HTTP/3): [${udp_listeners}]" ;;
+    *) pass "D3 ui container has no UDP listener on 80, 443 or ${PORT} (udp [${udp_listeners}])" ;;
+  esac
+fi
 
 # ---- E: files mode and fail-closed -----------------------------------------
 mkdir -p "${TMP_DIR}/tls" "${TMP_DIR}/empty"
@@ -247,15 +287,22 @@ else
 fi
 
 fails_closed() {
-  # $1 label; env for the recreate is set by the caller. Nothing may answer.
-  local c running
+  # $1 label  $2 (optional) text the container log must carry. The env for the
+  # recreate is set by the caller. Nothing may answer, and the container is down.
+  local c running uid logs
   sleep 8
   c="$(curl -sS -m 10 ${NOREVOKE} -k --resolve "${RESOLVE}" -o "${DISCARD}" -w '%{http_code}' "${BASE}/health" 2>/dev/null || true)"
-  running="$(docker inspect -f '{{.State.Running}}' "$(dc ps -a -q ui 2>/dev/null | head -1)" 2>/dev/null || echo unknown)"
-  if [ "${c}" != 200 ] && [ "${running}" != true ]; then
-    pass "E $1 fails closed (ui not running, /health code ${c})"
-  else
+  uid="$(dc ps -a -q ui 2>/dev/null | head -1)"
+  running="$(docker inspect -f '{{.State.Running}}' "${uid}" 2>/dev/null || echo unknown)"
+  logs="$(docker logs "${uid}" 2>&1 | tail -20)"
+  if [ "${c}" = 200 ] || [ "${running}" = true ]; then
     fail "E $1 did not fail closed (ui running=${running}, /health code ${c})"
+  elif [ -n "${2:-}" ] && ! printf '%s' "${logs}" | grep -q "$2"; then
+    fail "E $1 stopped, but not at the guard that should refuse it (log lacks '$2'): $(printf '%s' "${logs}" | tail -2)"
+  elif printf '%s' "${logs}" | grep -qiE 'acme|obtaining certificate'; then
+    fail "E $1 reached certificate issuance before stopping: $(printf '%s' "${logs}" | grep -iE 'acme|obtaining' | head -2)"
+  else
+    pass "E $1 fails closed (ui not running, /health code ${c})"
   fi
 }
 
@@ -263,7 +310,16 @@ DMS_TLS_MODE=files DMS_TLS_DIR="${NTMP}/empty" dc up -d --force-recreate --no-de
 fails_closed "files mode with no tls.crt/tls.key"
 
 DMS_TLS_MODE=bogus dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
-fails_closed "unknown DMS_TLS_MODE"
+fails_closed "unknown DMS_TLS_MODE (bogus)" "DMS_TLS_MODE must be exactly"
+
+# A glob makes `import tls_<mode>` a file glob: Caddy alone only warns and leaves
+# the site with no tls directive. With a non-local host that used to mean public
+# ACME. The entry guard refuses it before Caddy runs.
+DMS_TLS_MODE='*' DMS_TLS_HOST=dms.example.invalid dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
+fails_closed "DMS_TLS_MODE=* with a non-local host" "DMS_TLS_MODE must be exactly"
+
+DMS_TLS_MODE='internal|files' dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
+fails_closed "DMS_TLS_MODE=internal|files (a pattern, not a word)" "DMS_TLS_MODE must be exactly"
 
 echo
 if [ "${FAILS}" -ne 0 ]; then

@@ -56,17 +56,40 @@ function Get-DmsDbPassword([string]$Dir) {
   # BANK-04 (#271): compose ships no database password and refuses to start
   # without one. This launcher never invents one. It takes the install-time
   # value from the shell or from the gitignored deploy\compose\.env that compose
-  # itself reads, and returns $null when neither has it.
-  if ($env:DMS_DB_PASSWORD) { return $env:DMS_DB_PASSWORD }
-  $envFile = Join-Path $Dir ".env"
-  if (Test-Path $envFile) {
-    foreach ($line in (Get-Content $envFile)) {
-      if ($line -match '^\s*DMS_DB_PASSWORD\s*=\s*(.+?)\s*$') {
-        return $Matches[1].Trim('"').Trim("'")
+  # itself reads, and returns $null when neither has a usable one.
+  #
+  # Reads .env the way compose does (checked against `docker compose config`):
+  #   - the LAST DMS_DB_PASSWORD line wins; an optional `export ` prefix is fine
+  #   - 'single' quotes are literal, "double" quotes keep # and spaces, \" is "
+  #   - unquoted: an inline comment starts at the first space followed by #, and
+  #     the value is trimmed ("abc # note" is "abc"; "a#b" and "#x" are values)
+  # Unlike compose's `:?`, which accepts a one-space password, an empty or
+  # whitespace-only value is treated as absent. Test-GetDmsDbPassword.ps1 pins this.
+  $found = $env:DMS_DB_PASSWORD
+  if ([string]::IsNullOrWhiteSpace($found)) {
+    $found = $null
+    $envFile = Join-Path $Dir ".env"
+    if (Test-Path $envFile) {
+      foreach ($line in (Get-Content $envFile)) {
+        if ($line -match '^\s*(?:export\s+)?DMS_DB_PASSWORD\s*=(.*)$') {
+          $rest = $Matches[1].TrimStart()
+          if ($rest -match "^'([^']*)'") {
+            $found = $Matches[1]
+          } elseif ($rest -match '^"((?:[^"\\]|\\.)*)"') {
+            $found = ($Matches[1] -replace '\\(["\\])', '$1')
+          } else {
+            $cut = $rest.IndexOf(" #")
+            if ($cut -ge 0) { $rest = $rest.Substring(0, $cut) }
+            $found = $rest.Trim()
+          }
+        }
       }
     }
+  } else {
+    $found = $found.Trim()
   }
-  return $null
+  if ([string]::IsNullOrWhiteSpace($found)) { return $null }
+  return $found
 }
 
 function Invoke-DmsAlembicUpgrade {
@@ -169,7 +192,10 @@ $dbPassword = Get-DmsDbPassword $ComposeDir
 if ($dbPassword) {
   $env:DMS_DB_PASSWORD = $dbPassword
 } else {
-  Write-Host "DMS_DB_PASSWORD is not set (shell or deploy\compose\.env). Compose will refuse to start postgres/api; set it and rerun." -ForegroundColor Yellow
+  # A whitespace-only value in the shell would pass compose's `:?` as a real
+  # password, so clear it: compose then refuses, which is what we want.
+  if ($null -ne $env:DMS_DB_PASSWORD) { Remove-Item Env:DMS_DB_PASSWORD }
+  Write-Host "DMS_DB_PASSWORD is not set or is blank (shell or deploy\compose\.env). Compose will refuse to start postgres/api; set it and rerun." -ForegroundColor Yellow
 }
 Write-Host "Compose postgres (with host binding)..."
 Push-Location $ComposeDir

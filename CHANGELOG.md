@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - BANK-04: Verify fixes on PR #344 (Refs dms#271)
+
+- **Ticket.** Follow-up to the entry below, under [dms#271](https://github.com/Netie-AI/dms/issues/271). Does not close the issue. Does not stamp COMPLETE.
+- **Supply chain.** `apps/api/Dockerfile` no longer resolves `cortex-contract` through an index. The wheel is installed first by exact path (`--no-index --no-deps`), the build fails unless `deploy/wheelhouse/` holds exactly one, and the main install runs under a constraint frozen from it. Parent style (`--find-links` only) lets a `cortex-contract` 1.2.1 on an index win.
+- **Fail-closed was false for globs.** `DMS_TLS_MODE=*` made `import tls_*` a file glob: Caddy only warned, the site had no `tls` directive, and a non-local host went to public ACME. The ui service now refuses anything but exactly `internal` or `files` before Caddy runs, and the Caddyfile sets `local_certs` (never public ACME) and `servers { protocols h1 h2 }` (no HTTP/3, no UDP, no `Alt-Svc`).
+- **Hygiene.** `.gitignore` ignores everything in `deploy/compose/tls/` except `.gitkeep`, plus `.p12 .pfx .jks .cer .cert` under `deploy/`. Root `.dockerignore` keeps `_cortex/`, `.git`, `.env` and the TLS dir out of the build context. The CI job has `permissions: contents: read` and both checkouts set `persist-credentials: false`. The launcher reads `DMS_DB_PASSWORD` the way compose reads `.env` and treats blank as absent; `scripts/windows/Test-GetDmsDbPassword.ps1` pins it. The smoke is hermetic: inert `CORTEX_URL`/`OPENVAULT_URL`, explicit `-f docker-compose.yml`, the port bound to `127.0.0.1` through the new install-time key `DMS_BIND_ADDR`, and `down -v --rmi local`. Swap scenarios for the new keys are in `docs/DEPLOY.md`.
+- **Gate.** `tests/test_bank04_tls_appliance.py` is 12 tests: 8 fail on `70a2be7` and 12 of 12 fail on `7a8d6c1`. The launcher self-check is 23 cases: 12 fail against `70a2be7`'s launcher. The smoke is 18 assertions: 18 of 18 pass on this tree with a previously built API image reused (the Dockerfile change was not built here; CI is the build proof); 6 fail against `70a2be7`'s compose and Caddyfile, including `DMS_TLS_MODE=*` leaving the ui container running.
+
 ## 2026-10-05 - BANK-04: the appliance port serves TLS only and ships no database password (Refs dms#271)
 
 - **Ticket.** [dms#271](https://github.com/Netie-AI/dms/issues/271) under [dms#267](https://github.com/Netie-AI/dms/issues/267) (EPIC-BANK-01). Does not close the issue. Does not stamp COMPLETE. No live prove on a clean Linux install (bank bar item 5).
