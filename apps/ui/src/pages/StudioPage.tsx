@@ -244,6 +244,11 @@ export function StudioPage() {
   };
 
   const attention = receipt?.need_attention ?? receipt?.quarantined ?? 0;
+  // lg:contents joins files + SQLSRC to the desktop grid. Below lg the same
+  // node is a drawer so an open Sources column cannot push the ask surface off.
+  const sourcesDrawerClass = studioSourcesOpen
+    ? "max-lg:fixed max-lg:inset-x-0 max-lg:top-12 max-lg:bottom-0 max-lg:z-40 max-lg:overflow-y-auto max-lg:overscroll-contain max-lg:bg-[var(--color-paper)] max-lg:px-4 max-lg:pb-8 lg:contents"
+    : "max-lg:hidden lg:contents";
   const fileRows: FileRow[] = receipt?.files?.length
     ? receipt.files
     : (receipt?.reasons.map((r) => ({
@@ -350,6 +355,17 @@ export function StudioPage() {
         </div>
       </div>
 
+      <button
+        type="button"
+        data-testid="studio-sources-toggle"
+        aria-expanded={studioSourcesOpen}
+        aria-controls="studio-files"
+        onClick={() => setStudioSourcesOpen((o) => !o)}
+        className="sticky top-0 z-20 mt-4 min-h-11 w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 text-sm font-medium text-[var(--color-ink)] hover:border-[var(--color-accent)] lg:hidden"
+      >
+        {studioSourcesOpen ? "Hide sources" : "Sources"}
+      </button>
+
       <section
         data-testid="buyer-walk"
         className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4"
@@ -397,17 +413,6 @@ export function StudioPage() {
           </button>
         </div>
       </section>
-
-      <button
-        type="button"
-        data-testid="studio-sources-toggle"
-        aria-expanded={studioSourcesOpen}
-        aria-controls="studio-files"
-        onClick={() => setStudioSourcesOpen((o) => !o)}
-        className="mt-4 min-h-11 w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 text-sm font-medium text-[var(--color-ink)] hover:border-[var(--color-accent)] lg:hidden"
-      >
-        {studioSourcesOpen ? "Hide sources" : "Sources"}
-      </button>
 
       <input
         ref={fileInput}
@@ -458,42 +463,68 @@ export function StudioPage() {
       )}
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[22rem_1fr]">
-        {/* Repository ------------------------------------------------------ */}
-        <div
-          id="studio-files"
-          data-testid="studio-files"
-          className={`border border-[var(--color-line)] bg-[var(--color-surface)]/60 ${studioSourcesOpen ? "" : "max-lg:hidden"}`}
-        >
-          <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
-              {tree?.space_name ? `${tree.space_name} · files` : "Files"}
-            </span>
-            <button
-              type="button"
-              onClick={() => void loadTree()}
-              className="text-[11px] text-[var(--color-ink-muted)] hover:text-[var(--color-accent)]"
-            >
-              Refresh
-            </button>
+        <div className={sourcesDrawerClass}>
+          {studioSourcesOpen ? (
+            <div className="sticky top-0 z-10 -mx-4 mb-3 flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-paper)] px-4 py-2 lg:hidden">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
+                Sources
+              </span>
+              <button
+                type="button"
+                data-testid="studio-sources-close"
+                onClick={() => setStudioSourcesOpen(false)}
+                className="min-h-11 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 text-sm font-medium text-[var(--color-ink)]"
+              >
+                Hide sources
+              </button>
+            </div>
+          ) : null}
+          {/* Repository ------------------------------------------------------ */}
+          <div
+            id="studio-files"
+            data-testid="studio-files"
+            className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 lg:col-start-1 lg:row-start-1"
+          >
+            <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
+                {tree?.space_name ? `${tree.space_name} · files` : "Files"}
+              </span>
+              <button
+                type="button"
+                onClick={() => void loadTree()}
+                className="text-[11px] text-[var(--color-ink-muted)] hover:text-[var(--color-accent)]"
+              >
+                Refresh
+              </button>
+            </div>
+            {treeErr && <p className="px-3 py-3 text-xs text-[var(--color-danger)]">{treeErr}</p>}
+            {!tree && !treeErr && (
+              <p className="px-3 py-3 text-xs text-[var(--color-ink-muted)]">Loading…</p>
+            )}
+            {tree && tree.nodes.length === 0 && (
+              <p className="px-3 py-6 text-center text-xs text-[var(--color-ink-muted)]">
+                Nothing here yet. Press + to add a CSV or workbook.
+              </p>
+            )}
+            {tree && tree.nodes.length > 0 && (
+              <ul className="max-h-[32rem] overflow-y-auto py-2 max-lg:max-h-none">
+                {tree.nodes.map((n) => renderNode(n))}
+              </ul>
+            )}
           </div>
-          {treeErr && <p className="px-3 py-3 text-xs text-[var(--color-danger)]">{treeErr}</p>}
-          {!tree && !treeErr && (
-            <p className="px-3 py-3 text-xs text-[var(--color-ink-muted)]">Loading…</p>
-          )}
-          {tree && tree.nodes.length === 0 && (
-            <p className="px-3 py-6 text-center text-xs text-[var(--color-ink-muted)]">
-              Nothing here yet. Press + to add a CSV or workbook.
-            </p>
-          )}
-          {tree && tree.nodes.length > 0 && (
-            <ul className="max-h-[32rem] overflow-y-auto py-2">
-              {tree.nodes.map((n) => renderNode(n))}
-            </ul>
-          )}
+          <div
+            data-testid="studio-sql-source"
+            className="max-lg:mt-4 lg:col-span-2 lg:row-start-2"
+          >
+            <SqlSourcePanel spaceId={activeSpaceId} onExtracted={loadTree} />
+          </div>
         </div>
 
         {/* Preview --------------------------------------------------------- */}
-        <div className="border border-[var(--color-line)] bg-[var(--color-surface)]/60">
+        <div
+          data-testid="studio-preview"
+          className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 lg:col-start-2 lg:row-start-1"
+        >
           <div className="border-b border-[var(--color-line)] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
             {activeId ? activeId.split(":").slice(1).join(":") : "Preview"}
           </div>
@@ -525,10 +556,6 @@ export function StudioPage() {
             </p>
           )}
         </div>
-      </div>
-
-      <div className={studioSourcesOpen ? "" : "max-lg:hidden"} data-testid="studio-sql-source">
-        <SqlSourcePanel spaceId={activeSpaceId} onExtracted={loadTree} />
       </div>
 
       <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">

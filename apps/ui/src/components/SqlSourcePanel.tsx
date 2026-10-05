@@ -92,7 +92,7 @@ export function SqlSourcePanel({
   return (
     <div
       data-testid="sql-source-panel"
-      className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4"
+      className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4"
     >
       <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
         SQL Server / MySQL / PostgreSQL
