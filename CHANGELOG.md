@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - PIN-NOMODEL-01: score unstamped rules only when the record says L2 off (Refs dms#317)
+
+- **Rule.** A recorded zero on `rules` or `curated` with `served_attribution` `none` and no `served_provider` or `served_model` is scored on its rows only when the round record's `cortex_l2` is `off`. `on`, `missing`, and `unknown` are INVALID `pin_mismatch`. The pin does not read `DMS_L2_*`. Platform's redeploy scan writes the field. Cortex `279cbd85` stamps Insights at `CortexOS/insights/routes.py:90-120`. CERTIFIED "no model called" is `:29` and `:117-118`. Contract `/ask` hands off at `CortexOS/api/contract_routes.py:238`. `attempt_l2` is `answer_engine.py:1832-1835`, and `dms/l2_generation.py:181-184` is gated by `DMS_L2_*` at `l2_generation.py:103`.
+- **Lane.** `live_ask` sets `lane` from the executor route (`packages/executor/dms_executor/__init__.py:516-520`). A payload `lane` or `plan_source` is not the pin lane. `NO_MODEL_LANES` stays empty. `sheet_lane` raises only for a model lane.
+- **Gate.** No live scored round. The 52-pack counts are unchanged.
+
 ## 2026-10-05 - PIN-NOMODEL-01: Cortex lanes use the stamp check (Refs dms#317)
 
 - **Correction.** Epic comments 5940019953, 5940040724, 5947946216. Head `a2c23853` is not the rule. A recorded zero on `rules` or `curated` only means the answer is not no-model. The pin then checks `served_provider` and `served_model`. A match is scored on the rows. Missing or unmatched stamps are INVALID `pin_mismatch`. `NO_MODEL_LANES` stays empty: both handlers submit through Cortex.

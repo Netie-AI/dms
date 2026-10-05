@@ -43,10 +43,16 @@ _TOTAL = re.compile(r"\btotal\b", re.I)
 
 
 def sheet_lane() -> str:
-    """This lane's name on the shared list. Not rules, curated, or generative."""
+    """Bronze's lane name. Being on NO_MODEL_LANES is what the list is for.
+
+    A model lane cannot be this sheet path.
+    """
     name = "bronze"
-    if name in NO_MODEL_LANES or name in MODEL_LANES:
+    if name in MODEL_LANES:
         raise RuntimeError(name)
+    # On NO_MODEL_LANES is allowed. The shared object is the one the pin imports.
+    if name in NO_MODEL_LANES:
+        return name
     return name
 
 

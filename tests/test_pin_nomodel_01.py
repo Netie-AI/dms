@@ -5,14 +5,16 @@ Each live test drives ``live()`` into ``_ask``. On 7a8d6c11
 is INVALID ``pin_mismatch:missing/missing``. A served pair that matches the
 pin is scored as the pin.
 
-``rules`` and ``curated`` submit through Cortex, so a recorded zero is not
-a no-model answer. Matching stamps are scored. Missing or unmatched stamps
-are ``pin_mismatch``.
+``rules`` and ``curated`` reach Cortex. A recorded zero with attribution
+``none`` and no served ids is scored only when the round record's
+``cortex_l2`` is ``off``. The pin does not read ``DMS_L2_*``. Lane comes
+from the executor route, not a payload ``lane`` or ``plan_source``.
 """
 
 from __future__ import annotations
 
 import ast
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ from score_curated import live  # noqa: E402
 
 _PIN = harness._PIN
 _PROVIDER = harness._PROVIDER
+_ROUTE = {"rules": "verified_query", "curated": "governed_metric"}
 
 
 def _wipe(tmp_path: Path) -> None:
@@ -120,6 +123,13 @@ def _score(
     return harness._report(tmp_path), script, sent
 
 
+def _seed_l2(tmp_path: Path, value: str) -> None:
+    (tmp_path / "score_curated.json").write_text(
+        json.dumps({"cortex_l2": value}),
+        encoding="utf-8",
+    )
+
+
 def _pack_n(report: dict[str, Any]) -> int:
     n_pack = len(harness._questions())
     assert report["n"] == n_pack
@@ -135,6 +145,7 @@ def test_live_cortex_lane_matching_stamps_scores(
     """Zero DMS calls plus stamps that match the pin are scored on the rows."""
     body = _envelope(
         model_calls=0,
+        route=_ROUTE[lane],
         lane=lane,
         served_provider=_PROVIDER,
         served_model=_PIN,
@@ -164,7 +175,7 @@ def test_live_cortex_lane_missing_stamps_is_invalid(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Zero calls on a Cortex lane with no served stamps is pin_mismatch."""
-    body = _envelope(model_calls=0, lane=lane)
+    body = _envelope(model_calls=0, route=_ROUTE[lane], lane=lane)
     assert not any(str(key).startswith("served_") for key in body)
     try:
         report, _script, sent = _score(monkeypatch, tmp_path, body)
@@ -187,6 +198,7 @@ def test_live_cortex_lane_mismatched_stamps_is_invalid(
     """Zero calls on a Cortex lane whose stamps are not the pin is pin_mismatch."""
     body = _envelope(
         model_calls=0,
+        route=_ROUTE[lane],
         lane=lane,
         served_provider="together",
         served_model=_PIN,
@@ -209,7 +221,7 @@ def test_live_model_lane_zero_calls_is_invalid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A model lane with zero calls is pin_mismatch and stays in n."""
-    body = _envelope(model_calls=0, lane="generative")
+    body = _envelope(model_calls=0, route="generated", lane="generative")
     assert not any(str(key).startswith("served_") for key in body)
     try:
         report, _script, sent = _score(monkeypatch, tmp_path, body)
@@ -244,6 +256,182 @@ def test_live_missing_lane_is_lane_unknown(
         assert int(report["invalid"]) >= 1
     finally:
         _wipe(tmp_path)
+
+
+def _unstamped_none(lane: str) -> dict[str, Any]:
+    body = _envelope(
+        model_calls=0,
+        route=_ROUTE[lane],
+        served_attribution="none",
+    )
+    assert "served_provider" not in body
+    assert "served_model" not in body
+    return body
+
+
+@pytest.mark.parametrize("lane", ["rules", "curated"])
+def test_live_unstamped_none_scores_when_cortex_l2_off(
+    lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attribution none and no served ids score when the record says off."""
+    _seed_l2(tmp_path, "off")
+    monkeypatch.setenv("DMS_L2_ENABLED", "1")
+    try:
+        report, _script, sent = _score(
+            monkeypatch, tmp_path, _unstamped_none(lane), gold=True
+        )
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "OK", (
+            f"lane {lane!r} with cortex_l2 off was {row['verdict']} "
+            f"reason={row.get('reason')!r}"
+        )
+        assert int(report["correct"]) >= 1
+        assert report["cortex_l2"] == "off"
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+@pytest.mark.parametrize("lane", ["rules", "curated"])
+def test_live_unstamped_none_invalid_when_cortex_l2_missing(
+    lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cortex_l2 on the round record fail-closes to pin_mismatch."""
+    assert not (tmp_path / "score_curated.json").exists()
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, _unstamped_none(lane))
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", row
+        assert str(row["reason"]).startswith("pin_mismatch"), row
+        assert report["cortex_l2"] == "missing"
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+@pytest.mark.parametrize("lane", ["rules", "curated"])
+def test_live_unstamped_none_invalid_when_cortex_l2_on(
+    lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cortex_l2 on fail-closes a zero-call rules or curated answer."""
+    _seed_l2(tmp_path, "on")
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, _unstamped_none(lane))
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", row
+        assert str(row["reason"]).startswith("pin_mismatch"), row
+        assert report["cortex_l2"] == "on"
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_live_generative_payload_lane_stays_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generative route stays generative when the payload says rules."""
+    _seed_l2(tmp_path, "off")
+    body = _envelope(
+        model_calls=0,
+        route="generated",
+        lane="rules",
+        plan_source="rules",
+        served_attribution="none",
+    )
+    assert "served_provider" not in body
+    assert "served_model" not in body
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, body, gold=True)
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", (
+            f"generative path with payload lane rules was {row['verdict']} "
+            f"reason={row.get('reason')!r}"
+        )
+        assert row["reason"] == "pin_mismatch:generative", row
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_live_listed_lane_attribution_none_scores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """served_attribution none alone does not make a listed lane INVALID."""
+    import cortex_client.strict_pin as pin
+
+    monkeypatch.setattr(
+        pin, "NO_MODEL_LANES", frozenset({"bronze"}), raising=False
+    )
+    body = _envelope(
+        model_calls=0,
+        route="bronze_sheet",
+        served_attribution="none",
+    )
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, body, gold=True)
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "OK", (
+            f"listed lane with attribution none was {row['verdict']} "
+            f"reason={row.get('reason')!r}"
+        )
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_live_listed_lane_other_attribution_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An attribution other than none still names a model."""
+    import cortex_client.strict_pin as pin
+
+    monkeypatch.setattr(
+        pin, "NO_MODEL_LANES", frozenset({"bronze"}), raising=False
+    )
+    body = _envelope(
+        model_calls=0,
+        route="bronze_sheet",
+        served_attribution="reported",
+    )
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, body)
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", row
+        assert row["reason"] == "pin_mismatch:missing/missing", row
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_sheet_lane_allows_bronze_on_nomodel_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NO_MODEL_LANES may name bronze. sheet_lane raises only for a model lane."""
+    import dms_executor.bronze_sheet_ask as sheet
+
+    monkeypatch.setattr(sheet, "NO_MODEL_LANES", frozenset({"bronze"}))
+    assert sheet.sheet_lane() == "bronze"
+
+
+def test_sheet_lane_rejects_model_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model lane is still not the sheet path."""
+    import dms_executor.bronze_sheet_ask as sheet
+
+    monkeypatch.setattr(sheet, "MODEL_LANES", frozenset({"bronze"}))
+    with pytest.raises(RuntimeError, match="bronze"):
+        sheet.sheet_lane()
 
 
 # Handler module and function for a lane name. A name on NO_MODEL_LANES must be here.

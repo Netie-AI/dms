@@ -512,9 +512,12 @@ class Executor:
         from dms_core.pii import mask_unknown_keys
 
         out["model_calls"] = recorded_model_calls()
+        # Lane is the route this path produced. A payload lane is not kept.
         mapped = lane_for_route(out.get("route"))
         if mapped is not None:
             out["lane"] = mapped
+        else:
+            out.pop("lane", None)
         return mask_unknown_keys(out)
 
     def _live_ask(

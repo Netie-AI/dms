@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
+from dms_core.ask import MODEL_LANES, NO_MODEL_LANES, lane_for_route
 
 STRICT_HEADER = "X-OpenVault-Strict"
 SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
@@ -435,9 +436,55 @@ def _explicit_model_calls(env: Mapping[str, Any]) -> int | None:
     return n
 
 
-def _carrying_served_field(env: Mapping[str, Any]) -> bool:
-    """True when any ``served_*`` key is present. The value is not read."""
-    return any(str(key).startswith("served_") for key in env)
+# Round-record cortex_l2, bound by the scorer from the record it read.
+# Default missing fail-closes. This module does not read DMS_L2_*.
+_ROUND_CORTEX_L2: ContextVar[str] = ContextVar("round_cortex_l2", default="missing")
+
+
+def bind_round_cortex_l2(value: object) -> Token[str]:
+    """Bind the round record's cortex_l2 for the pin. Not an environment read."""
+    if value in ("off", "on", "missing", "unknown"):
+        norm = str(value)
+    else:
+        norm = "unknown"
+    return _ROUND_CORTEX_L2.set(norm)
+
+
+def reset_round_cortex_l2(token: Token[str]) -> None:
+    _ROUND_CORTEX_L2.reset(token)
+
+
+def round_cortex_l2() -> str:
+    """off, on, missing, or unknown. Missing and unknown fail closed."""
+    return _ROUND_CORTEX_L2.get()
+
+
+def _served_id_present(env: Mapping[str, Any]) -> bool:
+    return "served_provider" in env or "served_model" in env
+
+
+def _names_a_model(env: Mapping[str, Any]) -> bool:
+    """Provider, model, or an attribution other than none.
+
+    ``served_attribution`` of ``none`` does not name a model by itself.
+    """
+    if _served_id_present(env):
+        return True
+    if "served_attribution" not in env:
+        return False
+    return env.get("served_attribution") != "none"
+
+
+def _unstamped_none(env: Mapping[str, Any]) -> bool:
+    """Zero-call rules/curated shape: attribution none and no served ids."""
+    if _served_id_present(env):
+        return False
+    return env.get("served_attribution") == "none"
+
+
+def _resolved_lane(env: Mapping[str, Any]) -> str | None:
+    """Lane from the executor route. A payload ``lane`` or plan_source is not used."""
+    return lane_for_route(env.get("route"))
 
 
 def _pin_served_mismatch(env: Mapping[str, Any]) -> str | None:
@@ -457,25 +504,25 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
     exact model, no strip and no case fold. A missing served field is not
     the pin, including when ``served_attribution`` is ``none`` or absent.
 
-    A recorded zero is a no-model answer only when ``lane`` is on
-    ``NO_MODEL_LANES`` (the same object BRONZE-GRANT-01 imports) and the
-    envelope carries no ``served_*`` field. That set is empty: ``rules``
-    and ``curated`` reach Cortex, so a recorded zero there is not no-model.
-    Those answers use the same stamp check as a model call. Missing or
-    unmatched stamps are ``pin_mismatch``. Matching stamps are scored on
-    the rows. A model lane with a recorded zero is ``pin_mismatch:<lane>``.
-    No lane is ``lane_unknown``. Called only while a pin is active.
+    A recorded zero uses the lane from the executor ``route``. A payload
+    ``lane`` or ``plan_source`` is not that lane. No route is ``lane_unknown``.
+    A model lane is ``pin_mismatch:<lane>``. A listed no-model lane is scored
+    unless a served id or an attribution other than ``none`` names a model.
+    ``rules`` and ``curated`` with attribution ``none`` and no served ids are
+    scored only when the round record's ``cortex_l2`` is ``off``. ``on``,
+    ``missing``, and ``unknown`` are ``pin_mismatch``. Matching stamps still
+    score. Called only while a pin is active. Does not read ``DMS_L2_*``.
     """
     if not isinstance(env, Mapping):
         return None
     calls = _explicit_model_calls(env)
     if calls is None or calls != 0:
         return _pin_served_mismatch(env)
-    lane = env.get("lane") if "lane" in env else None
-    if not isinstance(lane, str) or lane == "":
+    lane = _resolved_lane(env)
+    if lane is None:
         return "lane_unknown"
     if lane in NO_MODEL_LANES:
-        if _carrying_served_field(env):
+        if _names_a_model(env):
             return _mismatch_name(
                 _provider_text(env.get("served_provider")),
                 _provider_text(env.get("served_model")),
@@ -483,4 +530,8 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
         return None
     if lane in MODEL_LANES:
         return f"pin_mismatch:{lane}"
+    if lane in ("rules", "curated") and _unstamped_none(env):
+        if round_cortex_l2() == "off":
+            return None
+        return _pin_served_mismatch(env)
     return _pin_served_mismatch(env)

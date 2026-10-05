@@ -2034,6 +2034,25 @@ def _planned_n() -> int:
     return len(merge_pack_questions(list(pack["questions"])))
 
 
+def recorded_cortex_l2(art: Path) -> str:
+    """``cortex_l2`` on the round record. Missing file or key is ``missing``.
+
+    ``off`` and ``on`` pass through. Anything else is ``unknown``. This does
+    not read ``DMS_L2_*``. Platform's redeploy scan writes the value.
+    """
+    path = art / "score_curated.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "missing"
+    if not isinstance(data, dict) or "cortex_l2" not in data:
+        return "missing"
+    value = data.get("cortex_l2")
+    if value == "off" or value == "on":
+        return value
+    return "unknown"
+
+
 def score_live_entry(
     url: str,
     timeout: float,
@@ -2042,16 +2061,23 @@ def score_live_entry(
     oracle_db: Path | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]], dict[str, Any]]:
     """Every live entry point. Passes the engine date. Does not call the judge."""
+    from cortex_client.strict_pin import bind_round_cortex_l2, reset_round_cortex_l2
+
     clock = resolve_live_engine_clock(url, timeout)
-    return score_pack_live(
-        url,
-        timeout,
-        ask_path,
-        oracle_db=oracle_db,
-        engine_as_of=clock.get("engine_as_of"),
-        engine_as_of_after=clock.get("engine_as_of_after"),
-        engine_timezone=clock.get("engine_timezone"),
-    )
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+    token = bind_round_cortex_l2(recorded_cortex_l2(art))
+    try:
+        return score_pack_live(
+            url,
+            timeout,
+            ask_path,
+            oracle_db=oracle_db,
+            engine_as_of=clock.get("engine_as_of"),
+            engine_as_of_after=clock.get("engine_as_of_after"),
+            engine_timezone=clock.get("engine_timezone"),
+        )
+    finally:
+        reset_round_cortex_l2(token)
 
 
 def _case_invalid_reason(
@@ -2899,6 +2925,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     print_category_report(cats)
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
+    cortex_l2 = recorded_cortex_l2(art)
     run_id = uuid.uuid4().hex
     sha = merge_commit_sha()
     rec_path = case_record_path(case_record_dir(art), run_id, sha)
@@ -2982,6 +3009,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "case_record": str(abs_record),
                 "baseline_eligible": eligible,
                 "baseline_ineligible_reasons": ineligible,
+                "cortex_l2": cortex_l2,
                 "record_path_scratch": path_block == "record_path_scratch",
                 "record_path_in_repo": path_block == "record_path_in_repo",
                 "categories": cats,
