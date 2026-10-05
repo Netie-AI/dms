@@ -1,0 +1,81 @@
+{
+ "seed": 20261006,
+ "n_rest": 31,
+ "rows": {
+  "cache:session-turns": [
+   "G5"
+  ],
+  "chat-ask:bronze-grant-abstain": [
+   "G8"
+  ],
+  "chat-ask:bronze-sheet": [
+   "G1",
+   "G5"
+  ],
+  "chat-ask:cascade-abstain": [
+   "G5"
+  ],
+  "chat-ask:demo-fallback-no-cortex": [
+   "G4",
+   "G5"
+  ],
+  "chat-ask:demo-mode": [
+   "G4",
+   "G5"
+  ],
+  "chat-ask:followup-abstain": [
+   "G5"
+  ],
+  "chat-ask:followup-average": [
+   "G5"
+  ],
+  "chat-ask:generative-insights-sql": [
+   "G7",
+   "G8"
+  ],
+  "chat-ask:generative-multi-grain": [
+   "G3",
+   "G5",
+   "G7"
+  ],
+  "chat-ask:generative-pregate-abstain": [
+   "G5",
+   "G8"
+  ],
+  "chat-ask:harness-exact-miss": [
+   "G8"
+  ],
+  "chat-ask:harness-generative-miss": [
+   "G5"
+  ],
+  "chat-ask:planted-refuse": [
+   "G8"
+  ],
+  "chat-ask:space-refusal": [
+   "G1",
+   "G5"
+  ],
+  "chat-ask:verified-query": [
+   "G7"
+  ],
+  "cli:insights-report": [
+   "G2",
+   "G3"
+  ],
+  "library:warehouse-preview": [
+   "G4"
+  ],
+  "mcp:preview": [
+   "G4"
+  ],
+  "other:answer-user-sql": [
+   "G5"
+  ],
+  "ui:check-accuracy": [
+   "G5"
+  ],
+  "ui:demo-source-fixture-preview": [
+   "G5"
+  ]
+ }
+}

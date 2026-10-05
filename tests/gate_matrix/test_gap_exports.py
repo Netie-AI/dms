@@ -20,7 +20,9 @@ reach them; they need vitest.
 
 from __future__ import annotations
 
+import copy
 import io
+import json
 import xml.etree.ElementTree as ET
 import zipfile
 from typing import Any
@@ -90,6 +92,28 @@ def _post_bi(harness: Any, envelope: dict[str, Any], target: str | None = None) 
     return harness.client.post("/v1/chat/export.bi", json=body)
 
 
+#: A figure no real answer in these tests contains. The forged envelopes below state it.
+_FORGED_FIGURE = 9999999.0
+_FORGED_TOKEN = "9999999"
+
+
+def _export_text(resp: Any) -> str:
+    """Everything an export response carries as searchable text (xlsx parts are unzipped)."""
+    if resp.content[:2] == b"PK":
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            return "\n".join(z.read(n).decode("utf-8", "replace") for n in z.namelist())
+    return resp.text
+
+
+def _with_figure(envelope: dict[str, Any], old: float, new: float) -> dict[str, Any]:
+    """A deep copy of ``envelope`` where every rendering of the figure ``old`` (rows, values,
+    text, audit_receipt) now says ``new``. Still a complete, well-formed envelope."""
+    raw = json.dumps(envelope)
+    needle = json.dumps(float(old))
+    control(needle in raw, f"the figure {needle} is not in the envelope to be restated")
+    return json.loads(raw.replace(needle, json.dumps(float(new))))
+
+
 def _demo_markers(node: Any, path: str = "response") -> list[str]:
     """Every place in a BI export response that says the data is demo.
 
@@ -121,6 +145,13 @@ def _demo_markers(node: Any, path: str = "response") -> list[str]:
 
 @gap("export:xlsx,export:bi", "G7", "new", "export-projections-no-provenance-tie")
 def test_export_routes_restate_an_answer_this_app_never_issued(harness):  # type: ignore[no-untyped-def]
+    """Exports must be tied to an answer this app issued, not to whatever the caller posts.
+
+    Both forgeries below are COMPLETE, E1-E9-valid envelopes (a deep copy of a real answer
+    with one figure changed everywhere it is written). A build that only validates the shape
+    of the posted envelope still serves them, so this test stays an xfail; only a build that
+    binds the export to an issued answer (its id and its content) can satisfy it.
+    """
     # CONTROL: a real answer from this app's own /v1/chat/ask exports 200, through
     # both routes, with its own badge and rows. So the exports work and a refusal
     # below can only be the provenance check, not a broken route or fixture.
@@ -130,7 +161,9 @@ def test_export_routes_restate_an_answer_this_app_never_issued(harness):  # type
         asked["badge"] == "L1_GOVERNED_METRIC" and not asked["abstained"] and asked["rows"],
         f"the control ask did not return a governed answer: {asked.get('text')!r}",
     )
-    issued_ids = {asked["answer_id"]}
+    issued_ids = {asked["answer_id"], asked["audit_id"]}
+    real_figure = float(asked["values"][0]["value"])
+    real_token = str(int(real_figure))
     real_xlsx = _post_xlsx(harness, asked)
     control(real_xlsx.status_code == 200, f"control xlsx export: HTTP {real_xlsx.status_code}")
     real_cover = _cover(real_xlsx.content)
@@ -149,31 +182,70 @@ def test_export_routes_restate_an_answer_this_app_never_issued(harness):  # type
         f"control BI export does not restate the ask: {real_bi_body.get('badge')}",
     )
 
-    # The gap request: an envelope no ask ever returned. It claims the top badge and
-    # an invented figure.
-    forged = {
-        "answer_id": "ans_forged_never_asked",
-        "badge": "L0_CERTIFIED",
-        "abstained": False,
-        "values": [{"id": "v1", "value": 9999999, "unit": "MYR", "label": "Revenue"}],
-        "rows": [{"region": "KL", "revenue": 9999999}],
-    }
-    control(forged["answer_id"] not in issued_ids, "the forged id must not be an issued one")
-    calls_before = len(harness.cortex.calls)
-    forged_xlsx = _post_xlsx(harness, forged)
-    forged_bi = _post_bi(harness, forged, "powerbi")
-    forged_cover = _cover(forged_xlsx.content) if forged_xlsx.status_code == 200 else {}
-    forged_table = forged_bi.json().get("table") if forged_bi.status_code == 200 else None
+    # CONTROL: the token the forgeries are detected by is in neither legitimate export, and
+    # the real figure is in both, so "forged figure absent / real figure present" below can
+    # only mean the export restated the issued answer.
+    for name, resp in (("xlsx", real_xlsx), ("bi", real_bi)):
+        text = _export_text(resp)
+        control(
+            _FORGED_TOKEN not in text and real_token in text,
+            f"the legitimate {name} export should carry {real_token} and not {_FORGED_TOKEN}",
+        )
 
-    # What a correct gate returns: both routes refuse with a 4xx (an answer the
-    # server never issued is not an answer to export). Today both are 200 and carry
-    # the invented badge and figure out of the product.
-    assert 400 <= forged_xlsx.status_code < 500 and 400 <= forged_bi.status_code < 500, (
+    # The gap requests. Two envelopes this app never returned, both complete and valid:
+    #   tampered   - the issued answer's own ids and badge, one figure changed to 9,999,999;
+    #   fabricated - a new answer_id and audit_id, claiming the top badge, same invented figure.
+    tampered = _with_figure(asked, real_figure, _FORGED_FIGURE)
+    fabricated = {
+        **copy.deepcopy(tampered),
+        "answer_id": "ans_forged_never_asked",
+        "audit_id": "led_forged_never_issued",
+        "badge": "L0_CERTIFIED",
+    }
+    for name, env in (("tampered", tampered), ("fabricated", fabricated)):
+        assert_envelope(env)  # E1-E9: a refusal below cannot be about the envelope's shape
+        control(
+            _FORGED_TOKEN in json.dumps(env) and env["values"][0]["value"] == _FORGED_FIGURE,
+            f"the {name} envelope does not state the invented figure: {env['values']!r}",
+        )
+    control(
+        {fabricated["answer_id"], fabricated["audit_id"]}.isdisjoint(issued_ids)
+        and (tampered["answer_id"], tampered["audit_id"])
+        == (asked["answer_id"], asked["audit_id"]),
+        "fabricated must carry unissued ids, tampered the issued ones",
+    )
+
+    calls_before = len(harness.cortex.calls)
+    served: list[tuple[str, str, Any]] = []
+    for name, env in (("fabricated", fabricated), ("tampered", tampered)):
+        served.append((name, "export.xlsx", _post_xlsx(harness, env)))
+        served.append((name, "export.bi", _post_bi(harness, env, "powerbi")))
+
+    def _tied(name: str, resp: Any) -> bool:
+        """Refused (4xx), or, for the issued ids only, the export restates the ISSUED figure."""
+        if 400 <= resp.status_code < 500:
+            return True
+        if name == "tampered" and resp.status_code == 200:
+            text = _export_text(resp)
+            return _FORGED_TOKEN not in text and real_token in text
+        return False
+
+    def _what(route: str, resp: Any) -> str:
+        if resp.status_code != 200:
+            return f"HTTP {resp.status_code}"
+        if route == "export.xlsx":
+            return f"HTTP 200 (Cover badge {_cover(resp.content).get('badge')!r})"
+        return f"HTTP 200 (table {resp.json().get('table')!r})"
+
+    untied = [(n, r, resp) for n, r, resp in served if not _tied(n, resp)]
+    # What a correct gate does: an answer the server never issued is refused (4xx), and an
+    # issued answer's id cannot carry a figure the server did not issue (refused, or the
+    # export restates the issued figure). Today every one of these is a 200 that carries
+    # the invented figure out of the product, and no Cortex call is made to check it.
+    assert not untied, (
         "export restated an envelope this app never issued: "
-        f"export.xlsx -> HTTP {forged_xlsx.status_code} (Cover badge "
-        f"{forged_cover.get('badge')!r}), "
-        f"export.bi -> HTTP {forged_bi.status_code} (table {forged_table!r}); "
-        f"Cortex calls made while serving the forged exports: "
+        + "; ".join(f"{n} -> {r}: {_what(r, resp)}" for n, r, resp in untied)
+        + f"; Cortex calls made while serving the forged exports: "
         f"{len(harness.cortex.calls) - calls_before}"
     )
 

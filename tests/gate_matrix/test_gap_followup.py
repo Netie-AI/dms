@@ -22,6 +22,7 @@ Gaps (ids from the Plan E trace):
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -56,6 +57,26 @@ def _ask_via(harness: Any, entry: str, question: str, **kw: Any) -> tuple[int, A
     if r.status_code == 200 and isinstance(payload, dict) and payload.get("ok") is True:
         return r.status_code, payload.get("result")
     return r.status_code, payload
+
+
+def _canon_sql(sql: Any) -> str:
+    """Whitespace/case/trailing-semicolon-insensitive SQL text, for comparing two statements."""
+    return " ".join(str(sql or "").split()).rstrip(";").strip().lower()
+
+
+def _numeric_values(env: dict[str, Any]) -> list[float]:
+    """The numeric figures a customer is shown in ``values[]``, in order."""
+    return [
+        float(v["value"])
+        for v in env.get("values") or []
+        if isinstance(v.get("value"), (int, float)) and not isinstance(v.get("value"), bool)
+    ]
+
+
+def _rm_amount(text: str) -> float | None:
+    """The amount the rendered text states, read back from "... RM 9,946.67." (None if absent)."""
+    m = re.search(r"RM\s+(-?[\d,]+(?:\.\d+)?)", text)
+    return float(m.group(1).replace(",", "")) if m else None
 
 
 def _named(env: dict[str, Any]) -> str:
@@ -139,6 +160,15 @@ def test_followup_figure_goes_through_cortex_submit_and_the_ledger(
     Today the follow-up SQL (``SELECT ROUND((a + b + c) / 3.0, 2)``) runs in DMS's own
     DuckDB, the envelope is L2_VALIDATED, and ``audit_id`` is the literal "ans_followup".
     That id names nothing in the ledger.
+
+    The follow-up is judged on what the customer receives. Its rendered text, ``rows`` and
+    ``values`` must state the figure derived from the PRIOR turn's own ``values`` (so the
+    expectation moves with the seed, nothing is hard-coded); that precondition passes today
+    and sits behind ``control`` so a wrong figure after a fix is a hard failure, never an
+    absorbed xfail. The gap is then the Cortex side of that same request: a submit whose SQL
+    is the follow-up arithmetic the envelope displays (``sql_used``), and a ledger append for
+    that SQL whose entry id is the ``audit_id`` shown. The count of calls is not asserted,
+    only that those two exist among the calls made after the parent turn.
     """
     h = harness_factory(env={"DMS_MCP": "1"})
     cx = h.cortex
@@ -162,16 +192,88 @@ def test_followup_figure_goes_through_cortex_submit_and_the_ledger(
         parent["audit_id"] == "led_gm",
         f"parent audit_id {parent['audit_id']!r} is not the ledger entry id the fake returned",
     )
+    # CONTROL: the matching used on the follow-up below recognises a real submit and a real
+    # ledger append for an answer's displayed SQL (the parent's), so "no match" later means
+    # the follow-up never reached Cortex, not that the matcher cannot see it.
+    parent_sql = _canon_sql(parent["sql_used"])
+    control(
+        parent_sql
+        and parent_sql in [_canon_sql(q) for q in cx.submitted_sql()]
+        and any(_canon_sql(p.get("sql")) == parent_sql for p in cx.ledger_payloads()),
+        f"parent sql_used {parent['sql_used']!r} was not found among the submits "
+        f"{cx.submitted_sql()!r} and ledger payloads {cx.ledger_payloads()!r}",
+    )
+    prior = _numeric_values(parent)
+    control(prior, f"parent shows no numeric figure to follow up on: {parent['values']!r}")
+    submits_before, appends_before = len(cx.sql_submits), len(cx.appends)
+    # The fake hands the same entry id to every append. Change it now, so an audit_id equal
+    # to this one can only have come from the follow-up's own ledger append, never a copy
+    # of the parent's.
+    cx.ledger_entry_id = "led_gm_followup"
 
     s, env = _ask_via(h, entry, followup_q, space_id=FINANCE, session_id="ses_fu_submit")
     require_envelope(s, env)
 
-    submitted = len(cx.sql_submits) == 2
-    ledgered = len(cx.appends) == 2 and env["audit_id"] == "led_gm"
+    if env["abstained"] is False:
+        # What the customer sees. Expected figure comes from the prior turn's own values.
+        if followup_q == FOLLOWUP_AVG:
+            expected = sum(prior) / len(prior)
+            control(
+                f"prior {len(prior)} figures" in env["text"],
+                f"follow-up text should say it averaged {len(prior)} figures: {env['text']!r}",
+            )
+        else:
+            control(len(prior) == 1, f"'add N' needs a single prior figure, got {prior!r}")
+            expected = prior[0] + float(followup_q.split()[1])
+        tol = 0.005 + 1e-9  # the lane rounds to 2 dp
+        stated = _rm_amount(env["text"])
+        control(
+            stated is not None and abs(stated - expected) <= tol,
+            f"follow-up text states {stated!r}, expected about {expected:.2f} from the prior "
+            f"figures {prior!r}: {env['text']!r}",
+        )
+        cells = [
+            c
+            for row in env["rows"]
+            for c in row.values()
+            if isinstance(c, (int, float)) and not isinstance(c, bool)
+        ]
+        control(
+            len(env["rows"]) == 1 and len(cells) == 1 and abs(cells[0] - expected) <= tol,
+            f"follow-up rows should be the one figure {expected:.2f}: {env['rows']!r}",
+        )
+        control(
+            any(abs(v - expected) <= tol for v in _numeric_values(env)),
+            f"follow-up values should carry {expected:.2f}: {env['values']!r}",
+        )
+        control(env["sql_used"], "an answered follow-up envelope carries sql_used")
+
+    # THE GAP - the follow-up reached Cortex: its displayed SQL was submitted, and a ledger
+    # append for that SQL produced the audit_id the customer holds.
+    # The lane's own "no prior numeric answer" abstain is not the gate. The parent just
+    # answered with figures, so that abstain means the lane regressed, and it must not be
+    # absorbed as an expected failure (nor satisfy the gap assertion below).
+    control(
+        not (env["abstained"] and env["answer_id"] == "ans_followup_abstain"),
+        f"the follow-up lane abstained for lack of a prior answer even though the parent "
+        f"just answered with {prior!r}: {env['text']!r}",
+    )
+    served_sql = _canon_sql(env["sql_used"])
+    new_submits = [_canon_sql(q) for q in cx.submitted_sql()[submits_before:]]
+    new_ledger = cx.ledger_payloads()[appends_before:]
+    submitted = bool(served_sql) and served_sql in new_submits
+    ledgered = (
+        bool(served_sql)
+        and any(_canon_sql(p.get("sql")) == served_sql for p in new_ledger)
+        and env["audit_id"] == "led_gm_followup"
+    )
     assert env["abstained"] is True or (submitted and ledgered), (
-        f"follow-up {followup_q!r} was served as {env['badge']} {env['text']!r} with "
-        f"audit_id={env['audit_id']!r}; Cortex saw {len(cx.sql_submits)} SQL submit(s) and "
-        f"{len(cx.appends)} ledger append(s) in total, and the parent turn made 1 of each"
+        f"follow-up {followup_q!r} was served as {env['badge']} {env['text']!r} "
+        f"(rows={env['rows']!r}) with audit_id={env['audit_id']!r}; its displayed SQL "
+        f"{env['sql_used']!r} was {'' if submitted else 'NOT '}submitted to Cortex "
+        f"(SQL submitted after the parent: {new_submits!r}) and "
+        f"{'' if ledgered else 'NOT '}ledgered with that audit_id "
+        f"(ledger payload SQL after the parent: {[p.get('sql') for p in new_ledger]!r})"
     )
 
 

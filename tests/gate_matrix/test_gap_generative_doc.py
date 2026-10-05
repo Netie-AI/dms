@@ -383,55 +383,11 @@ def test_doc_answer_with_an_uncited_bare_integer_total_is_demoted(harness) -> No
     assert demoted or withheld_figure, shipped
 
 
-@gap(
-    "chat-ask:cortex-doc-retrieval",
-    "G8",
-    "new",
-    "e9-bare-integer-uncited-in-doc-lane",
-)
-def test_doc_abstain_with_an_empty_engine_answer_names_a_reason(harness) -> None:  # type: ignore[no-untyped-def]
-    """Secondary facet of the same gap: the no-hit doc abstain says only 'Abstained.'.
-
-    When the engine abstains and sends no text, ``map_ask_response_to_envelope``
-    falls back to the bare word and records no reason beyond 'live Cortex ask'.
-    The sibling demotion in this lane (an uncited figure) names its reason.
-    """
-    from cortex_client.models import AskResponse
-
-    # CONTROL - this lane's own demotion names why it abstained.
-    harness.cortex.ask_response = _doc_answer("The total is 12,500.00")
-    status, named = harness.ask(_DOC_Q, space_id=FINANCE, session_id="ses_g8_named")
-    require_envelope(status, named)
-    control(
-        named["abstained"] is True and "could not certify a figure" in named["text"],
-        f"the figure-demotion abstain should name its reason: {named.get('text')!r}",
-    )
-
-    # THE GAP - the engine found no matching chunk and returned no answer text.
-    harness.cortex.ask_response = AskResponse(
-        answer="",
-        badge="abstain",
-        abstained=True,
-        audit_id="aud_doc_no_hit_gm",
-        route="abstain",
-    )
-    status, env = harness.ask(
-        "What does the Q3 walkthrough say about forklift batteries?",
-        space_id=FINANCE,
-        session_id="ses_g8_nohit",
-    )
-    require_envelope(status, env)
-    control(
-        env["abstained"] is True and env["badge"] == "ABSTAIN",
-        f"a no-hit doc ask must abstain: {env.get('badge')}",
-    )
-
-    text = env["text"].strip()
-    # A correct gate names why (no matching document, nothing to cite) instead of
-    # the bare sentinel.
-    assert text.rstrip(".").lower() != "abstained", (
-        f"customer reads {text!r}; assumptions={env.get('assumptions')}"
-    )
+# Not a gap here: the "no-hit doc abstain says only 'Abstained.'" facet. That text is the
+# generic fallback for ANY empty-answer abstain (map_ask_response_to_envelope, `resp.answer or
+# "Abstained."`), identical for every route and question, and the repo's own doc-RAG fake
+# (tests/test_rag_ask_boundary_envelope.py) models the engine sending the words itself. Nothing
+# shows a real engine sends an empty answer on a doc no-hit, so there is no doc-lane gate to test.
 
 
 # ----------------------------------------------------------------------------
