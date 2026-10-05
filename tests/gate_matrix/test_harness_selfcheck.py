@@ -5,7 +5,9 @@ like a pass (KB R-0007, F-0011). So this file proves, by running them:
 
   * the control request is genuinely answered through the real ask path
     (HTTP 200, L1_GOVERNED_METRIC, rows, one SQL submit, one ledger append),
-  * the recording fake is not a yes-man (the sibling request is refused),
+  * a pack question in a Space that does not grant it is a named grants-fail
+    abstain and never reaches Cortex.ask (CURATED-NO-SILENT-FALLBACK),
+  * the recording fake is not a yes-man (a question that does reach ask abstains),
   * ``@gap`` turns a failed assertion into XFAIL and everything else (broken
     fixture, RuntimeError, KeyError, failing control, a gap that closed) into a
     hard FAILURE, checked by running pytest on a temporary inner test file.
@@ -91,8 +93,12 @@ def test_control_pack_question_is_certified_through_the_fake(harness) -> None:  
     assert [name for name, _ in cx.calls] == ["submit", "submit", "ledger_append"]
 
 
-def test_sibling_request_is_refused_so_the_fake_is_not_a_yes_man(harness) -> None:  # type: ignore[no-untyped-def]
-    """Warehouse Ops does not grant suppliers: same question, no answer, no SQL."""
+def test_ops_spend_names_grants_fail(harness) -> None:  # type: ignore[no-untyped-def]
+    """Warehouse Ops does not grant suppliers.
+
+    The phrase matches. The grants step fails. CURATED-NO-SILENT-FALLBACK
+    names that and returns, so a yes-man Cortex.ask cannot certify it.
+    """
     status, env = harness.ask(
         _pack().SPEND_BY_COUNTRY_Q, space_id=WAREHOUSE_OPS, session_id="ses_sib"
     )
@@ -102,6 +108,30 @@ def test_sibling_request_is_refused_so_the_fake_is_not_a_yes_man(harness) -> Non
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
     assert not env["rows"] and not env["values"]
+    assert "exact match ok" in env["text"]
+    assert "grants fail" in env["text"]
+    assert "pack-metric miss" not in env["text"]
+    assert harness.cortex.asks == []
+    assert harness.cortex.sql_submits == []
+    assert harness.cortex.appends == []
+
+
+def test_default_fake_abstains_when_ask_is_reached(harness) -> None:  # type: ignore[no-untyped-def]
+    """The fake is not a yes-man: its default ask abstains.
+
+    ``alerts`` is not a pack phrase. The same harness's gap control already
+    shows this question reaches Cortex.ask. The default fake must refuse it.
+    """
+    status, env = harness.ask(
+        "List all open alerts by severity", space_id=FINANCE, session_id="ses_fake"
+    )
+
+    assert status == 200, env
+    assert_envelope(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert not env["rows"] and not env["values"]
+    assert "Cannot answer from this Space." in env["text"]
     assert len(harness.cortex.asks) == 1
     assert harness.cortex.sql_submits == []
     assert harness.cortex.appends == []
