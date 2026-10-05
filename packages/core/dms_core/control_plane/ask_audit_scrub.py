@@ -761,20 +761,43 @@ def scrub(text: str | None, *, sql: bool = False) -> str:
 
 #: A maximal run of characters an email address is made of, with the ``@``. One run is one
 #: candidate address; the ``@`` is in the class so a local part and its domain are one run.
-_EMAIL_RUN = re.compile(r"[A-Za-z0-9._%+\-@]++")
+#: ``(?i)`` is deliberate and must stay: ``dms_core.pii._EMAIL_FIND`` is case-insensitive, and
+#: under ``re.I`` its ``[A-Z]`` also matches U+0130, U+0131, U+017F and U+212A, so a class of
+#: ``A-Za-z`` is NOT the masker's class. A run that stops at one of those letters passes the
+#: withhold while the masker still reads it as one long run (quadratic). The class here is
+#: the masker's, and ``test_the_withhold_class_covers_everything_the_masker_can_match``
+#: derives the masker's set from its own pattern over every code point.
+_EMAIL_RUN = re.compile(r"(?i)[A-Z0-9._%+\-@]++")
+_EMAIL_CHAR = re.compile(r"(?i)[A-Z0-9._%+\-@]")
 #: The longest a valid address can be (RFC 5321). ``dms_core.pii._EMAIL_FIND`` has no bound
 #: on its match, so on a long run of address characters it tries every start position and
 #: scans to the end of the run each time: quadratic. A run longer than this cannot be an
 #: address, so it is withheld before the masker sees it, which bounds that cost to the
 #: square of 254 per run, linear overall.
 MAX_EMAIL_RUN = 254
-_EMAIL_CHARS = frozenset(string.ascii_letters + string.digits + "._%+-@")
-_EMAIL_TAIL = re.compile(r"\.[A-Za-z]{2}")
+_EMAIL_TAIL = re.compile(r"(?i)\.[A-Z]{2}")
+#: A mask token for an address, and the markers this module writes in place of text.
+_EMAIL_TOKEN = re.compile(r"DMSMASK_email_\d{2,}")
+_WITHHELD = re.compile(r"\[(?:long run|email-like run) withheld: \d+ chars\]")
+#: RFC 5322 ``atext`` punctuation the masker's local-part class does NOT contain. The masker
+#: matches only the part of an address after the last of these, so what is left of it, glued
+#: to the mask token, is the start of the local part (``o'brien@x.com`` -> ``o'<token>``).
+_ATEXT_ONLY = frozenset("!#$&'*/=?^`{|}~")
+_ATEXT_ASCII = frozenset(string.ascii_letters + string.digits + "._%+-") | _ATEXT_ONLY
+
+
+def _is_atext(c: str) -> bool:
+    """``c`` can be part of a local part: RFC 5322 atext or the masker's own class."""
+    return c in _ATEXT_ASCII or (c > "\x7f" and _EMAIL_CHAR.match(c) is not None)
 
 
 def cuts_a_run(text: str, at: int) -> bool:
     """A cut of ``text`` at index ``at`` falls inside a run of address characters."""
-    return 0 < at < len(text) and text[at - 1] in _EMAIL_CHARS and text[at] in _EMAIL_CHARS
+    return (
+        0 < at < len(text)
+        and _EMAIL_CHAR.match(text[at - 1]) is not None
+        and _EMAIL_CHAR.match(text[at]) is not None
+    )
 
 
 def _withhold_long_runs(text: str, *, open_end: bool) -> tuple[str, int]:
@@ -812,51 +835,98 @@ def _email_shaped(run: str) -> bool:
     return False
 
 
-def _withhold_email_like(text: str) -> tuple[str, int]:
-    """Withhold any run the masker left that still looks like an address.
+def _left_of_tokens(text: str, *, sql: bool) -> list[tuple[int, int]]:
+    """Spans ``[start, token_end)`` of a mask token and the local-part text glued to its LEFT.
 
-    The masker's email pattern needs a word boundary after the top-level domain, so an
-    address with a digit glued to it (``a@b.com123``) is not matched and would be stored.
-    A run that is still address-shaped after masking is withheld whole.
+    The masker's local-part class lacks ``! # $ & ' * / = ? ^ ` { | } ~``, all legal in an
+    address, so ``mary.o'brien@x.com`` is masked from ``brien`` on and ``mary.o'`` stays.
+    Every run of atext glued to the left of an address token that holds one of those is the
+    start of that local part. A scan stops at whitespace or any other character, and never
+    crosses the previous span, so the whole pass is linear. In SQL a literal's own quote is
+    not part of the address: the scan stops at the start of the literal that holds the token
+    (``email='a@b.com'`` keeps ``email=``).
     """
+    tokens = list(_EMAIL_TOKEN.finditer(text))
+    if not tokens:
+        return []
+    literals = _sql_regions(text)[0] if sql else []
+    spans: list[tuple[int, int]] = []
+    floor = 0
+    k = 0
+    for m in tokens:
+        t0 = m.start()
+        while k < len(literals) and literals[k][1] <= t0:
+            k += 1
+        lo = floor
+        if k < len(literals) and literals[k][0] <= t0 < literals[k][1]:
+            lo = max(lo, literals[k][0])
+        i = t0
+        while i > lo and _is_atext(text[i - 1]):
+            i -= 1
+        if i < t0 and any(c in _ATEXT_ONLY for c in text[i:t0]):
+            spans.append((i, m.end()))
+            floor = m.end()
+    return spans
+
+
+def _withhold_email_like(text: str, *, sql: bool = False) -> str:
+    """Withhold what the masker left of an address.
+
+    - A run that is still address-shaped (the masker's email pattern needs a word boundary
+      after the top-level domain, so ``a@b.com123`` is not matched).
+    - The local-part text glued to the left of an address token (``_left_of_tokens``).
+    Each is replaced, with its token, by ``[email-like run withheld: N chars]``.
+    """
+    spans = [
+        m.span()
+        for m in _EMAIL_RUN.finditer(text)
+        if "@" in m.group() and (len(m.group()) > MAX_EMAIL_RUN or _email_shaped(m.group()))
+    ]
+    spans += _left_of_tokens(text, sql=sql)
+    if not spans:
+        return text
     out: list[str] = []
     last = 0
-    held = 0
-    for m in _EMAIL_RUN.finditer(text):
-        run = m.group()
-        if "@" in run and (len(run) > MAX_EMAIL_RUN or _email_shaped(run)):
-            out.append(text[last : m.start()])
-            out.append(f"[email-like run withheld: {len(run)} chars]")
-            last = m.end()
-            held += 1
-    if not held:
-        return text, 0
+    for s, e in sorted(spans):
+        if e <= last:
+            continue
+        s = max(s, last)
+        out.append(text[last:s])
+        out.append(f"[email-like run withheld: {e - s} chars]")
+        last = e
     out.append(text[last:])
-    return "".join(out), held
+    return "".join(out)
 
 
-def mask_pii_counted(text: str, *, open_end: bool = False) -> tuple[str, int]:
+def _marks(text: str) -> int:
+    """Mask tokens and withheld markers in ``text``."""
+    return len(MASK_TOKEN_RE.findall(text)) + len(_WITHHELD.findall(text))
+
+
+def mask_pii_counted(text: str, *, open_end: bool = False, sql: bool = False) -> tuple[str, int]:
     """Mask personal data exactly as the customer envelope does. Returns text and a count.
 
     Fails closed like the envelope: a masker error blanks the text. Three things are
     added around the shared masker, none of which edit it:
 
-    - an address-character run longer than ``MAX_EMAIL_RUN`` is withheld first (the
-      masker's email pattern is quadratic on one; see ``MAX_EMAIL_RUN``). Fidelity limit:
-      such a run is not stored, whatever else it was;
+    - a run of address characters (the masker's own class, case folding included) longer
+      than ``MAX_EMAIL_RUN`` is withheld first (the masker's email pattern is quadratic on
+      one; see ``MAX_EMAIL_RUN``). Fidelity limit: such a run is not stored, whatever else
+      it was;
     - a run the window cut (``open_end``) is withheld, so half an address is not kept;
-    - a run still shaped like an address after masking is withheld whole.
+    - after masking, a run still shaped like an address, and the local-part text glued to
+      the left of an address token, are withheld whole.
 
-    The masker runs once, over the whole text, never over pieces: it recognises PII
-    that spans words (a spaced phone or card number, a birth cue and a date).
+    The count is the mask tokens and withheld markers this added to the text, so it equals
+    what is stored. The masker runs once, over the whole text, never over pieces: it
+    recognises PII that spans words (a spaced phone or card number, a birth cue and a date).
     """
     if not text:
         return text, 0
-    held, n_long = _withhold_long_runs(text, open_end=open_end)
+    held, _ = _withhold_long_runs(text, open_end=open_end)
     masked = str(fail_closed_mask_payload(text=held)["text"])
-    n_masked = max(0, len(MASK_TOKEN_RE.findall(masked)) - len(MASK_TOKEN_RE.findall(held)))
-    final, n_left = _withhold_email_like(masked)
-    return final, n_long + n_masked + n_left
+    final = _withhold_email_like(masked, sql=sql)
+    return final, max(0, _marks(final) - _marks(text))
 
 
 def has_sql_statement(sql: str | None) -> bool:

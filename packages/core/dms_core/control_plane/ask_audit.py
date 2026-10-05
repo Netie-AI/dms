@@ -81,7 +81,7 @@ def _clean(text: str, cap: int, *, sql: bool) -> tuple[str, int, bool]:
     """
     window = text[: cap + _CUT_MARGIN]
     clean, n_secrets = scrub_counted(window, sql=sql)
-    clean, n_pii = mask_pii_counted(clean, open_end=cuts_a_run(text, len(window)))
+    clean, n_pii = mask_pii_counted(clean, open_end=cuts_a_run(text, len(window)), sql=sql)
     cut = len(text) > len(window) or len(clean) > cap
     if cut:
         clean = f"{safe_cut(clean, cap)}...[truncated: original was {len(text)} chars]"

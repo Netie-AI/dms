@@ -443,3 +443,85 @@ def test_the_bounded_table_scan_is_linear_on_adversarial_sql() -> None:
             took = time.perf_counter() - t0
             assert took < 1.0, f"_scan_tables on {family} at {n} chars took {took:.2f}s"
             assert len(names) <= sql_currency._MAX_SCANNED_TABLES
+
+
+# --- the withhold must use the masker's character class, not an ASCII guess ---------------------
+#
+# ``dms_core.pii._EMAIL_FIND`` is case-insensitive, and under ``re.I`` its ``[A-Z]`` also matches
+# U+0130, U+0131, U+017F and U+212A. A run class of ``A-Za-z`` split a fold-letter text into runs
+# under the 254 limit that passed the withhold while the masker still read one long run.
+
+_MASKER_CLASS = re.compile(r"\[(?:\\.|[^\]\\])+\]")
+FOLD_LETTERS = "İıſK"
+
+
+def _every_code_point() -> str:
+    return "".join(chr(c) for c in range(0x110000) if not 0xD800 <= c < 0xE000)
+
+
+def test_the_withhold_class_covers_everything_the_masker_can_match() -> None:
+    """Derive the character set the masker's email pattern can match, from the pattern itself,
+    over every code point, and require the withhold's run class to contain all of it. A later
+    Python or Unicode change, or a widened masker class, cannot reopen the bypass silently."""
+    from dms_core import pii
+
+    pattern = pii._EMAIL_FIND
+    classes = _MASKER_CLASS.findall(pattern.pattern)
+    assert len(classes) >= 3, f"the masker's email pattern changed shape: {pattern.pattern!r}"
+    universe = _every_code_point()
+    derived: set[str] = set()
+    for cls in classes:
+        derived |= set(re.compile(cls, pattern.flags).findall(universe))
+    assert derived, "no character derived: the check itself is broken"
+
+    missing = sorted(c for c in derived if scrub_mod._EMAIL_CHAR.match(c) is None)
+    assert not missing, (
+        f"the masker matches {[hex(ord(c)) for c in missing]}; the withhold does not"
+    )
+    # and the run regex agrees with the single-character one on the whole derived set
+    assert set(scrub_mod._EMAIL_RUN.findall("".join(sorted(derived)))) == {"".join(sorted(derived))}
+    # the four known fold letters are in the derived set, so this test would have caught them
+    for letter in FOLD_LETTERS:
+        assert letter in derived, hex(ord(letter))
+        assert scrub_mod._EMAIL_CHAR.match(letter), hex(ord(letter))
+        assert pii._EMAIL_FIND.fullmatch(f"a{letter}@b.co"), hex(ord(letter))
+
+
+def _fold_families() -> dict[str, Callable[[int], str]]:
+    fams: dict[str, Callable[[int], str]] = {}
+    for letter in FOLD_LETTERS:
+        fams[f"a.*100 + U+{ord(letter):04X} repeated"] = lambda n, c=letter: _repeat(
+            "a." * 100 + c, n
+        )
+        fams[f"a.*60 + U+{ord(letter):04X} repeated"] = lambda n, c=letter: _repeat(
+            "a." * 60 + c, n
+        )
+    fams["all four fold letters, a.*60 between"] = lambda n: _repeat(
+        "".join("a." * 60 + c for c in FOLD_LETTERS), n
+    )
+    fams["fold letter + @ + a-"] = lambda n: ("a." * 100 + "ſ") * (n // 402) + "@" + "a-" * 50
+    fams["fold-split runs, space-separated"] = lambda n: _repeat("a." * 100 + "ſ ", n)
+    return fams
+
+
+def test_the_masker_path_is_linear_on_case_fold_letters() -> None:
+    """The withhold, then the masker, at 12,000 / 52,000 / 64,000 characters and 1 MB for the
+    single-run families (the withhold takes those whole); 4x the input stays under 8x the time."""
+    from dms_core.control_plane.ask_audit_scrub import mask_pii_counted
+
+    for family, make in _fold_families().items():
+        t: dict[int, float] = {}
+        for n in (3_000, 12_000, 52_000, 64_000):
+            t[n] = _best(mask_pii_counted, make(n))
+        assert t[64_000] < CEILING, f"{family}: 64,000 chars took {t[64_000]:.3f}s"
+        assert t[12_000] < CEILING, f"{family}: 12,000 chars took {t[12_000]:.3f}s"
+        assert t[52_000] < CEILING, f"{family}: 52,000 chars took {t[52_000]:.3f}s"
+        assert t[12_000] < GROWTH * t[3_000] + FLOOR, (
+            f"{family}: 3k {t[3_000]:.3f}s, 12k {t[12_000]:.3f}s"
+        )
+        assert t[52_000] < GROWTH * t[12_000] + FLOOR, (
+            f"{family}: 12k {t[12_000]:.3f}s, 52k {t[52_000]:.3f}s"
+        )
+        if "space-separated" not in family:
+            took = _best(mask_pii_counted, make(MEGABYTE))
+            assert took < MEGABYTE_CEILING, f"{family}: 1 MB took {took:.2f}s"

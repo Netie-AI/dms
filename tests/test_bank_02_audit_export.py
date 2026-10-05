@@ -1464,11 +1464,19 @@ def test_a_url_password_is_removed_whichever_order_the_masker_ran() -> None:
     masked, _ = mask_pii_counted(clean)
     assert "FAKEZQX9pa" not in masked
 
-    # Masker first: it turned the email-shaped tail "ss@db.internal" into a token, so
-    # there is no "@host" left. The password prefix must still go.
+    # Masker first: it turns the email-shaped tail "ss@db.internal" into a token, so there is
+    # no "@host" left, and the audit masker withholds the local-part text glued to that
+    # token ("FAKEZQX9pa/") with it. Either way the password is gone.
     premasked, _ = mask_pii_counted(raw)
-    assert "DMSMASK_email" in premasked, "the premise: the masker really did eat the tail"
-    after, removed = scrub_counted(premasked)
+    assert "withheld" in premasked or "DMSMASK_email" in premasked, "the masker ate the tail"
+    assert "FAKEZQX9pa" not in premasked
+    after, _removed = scrub_counted(premasked)
+    assert "FAKEZQX9pa" not in after
+
+    # Text the ENVELOPE already masked (a path with no trace): the token stands where the
+    # tail was, and the URL rule must still take the password in front of it.
+    envelope_masked = "see postgresql://u:FAKEZQX9pa/DMSMASK_email_01/x for details"
+    after, removed = scrub_counted(envelope_masked)
     assert "FAKEZQX9pa" not in after and removed >= 1
 
 
@@ -2168,6 +2176,8 @@ class TracedAsk:
 # --- D1: the PII masker is not linear; the audit path must not hand it a run that stalls it ---
 
 ADDRESS = "zq7marla.fake@fakecorp-zq7.example"
+#: U+0130, U+0131, U+017F, U+212A: matched by the masker's case-insensitive ``[A-Z]``.
+FOLD_LETTERS = chr(0x130) + chr(0x131) + chr(0x17F) + chr(0x212A)
 #: Every 5-character piece of the address: none of them may be stored, whatever the glue.
 ADDRESS_GRAMS = {ADDRESS[i : i + 5] for i in range(len(ADDRESS) - 4)}
 
@@ -2212,6 +2222,9 @@ def _glue_corpus() -> dict[str, str]:
         "dash254": "k-" * 127,
         "digits100": "1" * 100,
         "digits300": "1" * 300,
+        "fold100": "a." * 49 + FOLD_LETTERS[2],
+        "fold254": ("a." * 60 + FOLD_LETTERS[3]) * 2 + FOLD_LETTERS[0] + FOLD_LETTERS[1],
+        "fold300": ("a." * 70 + FOLD_LETTERS[1]) * 2 + "k-" * 10,
     }
     cases = {"alone": f"contact {ADDRESS} please", "with words": f"mail {ADDRESS}, or call"}
     for name, run in runs.items():
@@ -2288,6 +2301,17 @@ def _dos_families() -> dict[str, Any]:
     fams["words and dates"] = lambda n: _rep(
         "Order for Ann Lee on 12 March 2024 phone 012-3456789 ", n
     )
+    # the masker is case-insensitive: these four letters are in its class, so a run broken by
+    # one of them every ~200 characters is still ONE run to the masker
+    for letter in FOLD_LETTERS:
+        for dots in (100, 60):
+            fams[f"{'a.' * dots!r} + U+{ord(letter):04X} repeated"] = lambda n, d=dots, c=letter: (
+                _rep("a." * d + c, n)
+            )
+    fams["all four fold letters"] = lambda n: _rep("".join("a." * 60 + c for c in FOLD_LETTERS), n)
+    fams["fold letter, then @, then a-"] = lambda n: (
+        ("a." * 100 + FOLD_LETTERS[2]) * (n // 402) + "@" + "a-" * 50
+    )
     return fams
 
 
@@ -2356,6 +2380,10 @@ def test_an_adversarial_ask_neither_stalls_the_ask_nor_the_asks_beside_it() -> N
         ("a.", lambda n: _rep("a.", n)),
         ("a.@b.!", lambda n: _rep("a.@b.!", n)),
         ("a. then @ then a-", lambda n: "a." * (n // 4) + "@" + "a-" * (n // 4)),
+        *(
+            (f"a.*100 + U+{ord(c):04X}", lambda n, c=c: _rep("a." * 100 + c, n))
+            for c in FOLD_LETTERS
+        ),
     ):
         question, sql = make(12_000), "SELECT '" + make(52_000) + "' FROM inventory"
         app = create_app()
@@ -2385,3 +2413,140 @@ def test_an_adversarial_ask_neither_stalls_the_ask_nor_the_asks_beside_it() -> N
         assert max(waits or [0.0]) < 1.0, f"{family}: a benign ask waited {max(waits):.2f}s"
         row = _csv_rows(_export(slow_client).text)[0]
         assert row["executed_sql"] and row["question"]
+
+
+# --- M1: an address whose local part holds a character outside the masker's class ----------------
+#
+# ``o'brien@x.com`` is masked from ``brien`` on, and the shared masker leaves ``o'`` in the text
+# (the customer envelope behaves the same: parity). The audit path withholds that start, glued
+# to the left of the mask token, with the token.
+
+M1_DOMAIN = "qzdom2xyz.com"
+M1_LOCALS = {
+    "mary apostrophe": "mary.Qzlo'Tan1",
+    "o apostrophe": "o'Qzbrien7",
+    "d apostrophe": "d'Qzsouza3",
+    "bang": "Qzloc1!Mrx9",
+    "slash": "Qzslash/Mrx4",
+    "equals": "Qzeq=Mrx2",
+    "two apostrophes": "a'Qzbc'Mrx5",
+    "hash and dollar": "Qz#hash$Mrx6",
+    "question and caret": "Qz?qm^Mrx8",
+    "braces and pipe": "Qz{br}|Mrx3",
+    "tilde and backtick": "Qz~tl`Mrx1",
+    "plus tag": "Qzplus+tag7",
+    "plus tag after apostrophe": "o'Qz+tag4",
+    "dotted": "Qz.dot.ted9",
+    "255+ with specials": "Qz" + "a'" * 130 + "Mrx6",
+    "255+ plain": "Qz" * 150,
+}
+
+
+def _grams(text: str, n: int = 5) -> set[str]:
+    return {text[i : i + n] for i in range(len(text) - n + 1)}
+
+
+def _m1_placements(address: str) -> dict[str, tuple[str, str]]:
+    """``(question, executed_sql)`` for an address alone and glued, in prose and in a literal."""
+    quoted = address.replace("'", "''")
+    return {
+        "alone": (f"contact {address} please", f"SELECT 1 FROM inventory WHERE n = '{quoted}'"),
+        "start": (address, f"SELECT '{quoted}' AS m FROM inventory"),
+        "comma": (f"x {address}, y", f"SELECT 1 FROM inventory WHERE n LIKE '%{quoted}%'"),
+        "glued left": (
+            f"contact q{address} please",
+            f"SELECT 1 FROM inventory WHERE n = 'q{quoted}'",
+        ),
+        "glued right": (
+            f"contact {address}zz please",
+            f"SELECT 1 FROM inventory WHERE n = '{quoted}zz'",
+        ),
+        "single-quoted": (
+            f"say '{address}' now",
+            f"SELECT 1 FROM inventory WHERE n = '''{quoted}'''",
+        ),
+        "double-quoted": (
+            f'say "{address}" now',
+            f"SELECT 1 FROM inventory WHERE n = '\"{quoted}\"'",
+        ),
+        "angle": (f"<{address}>", f"SELECT '<{quoted}>' FROM inventory"),
+        "csv-ish": (f"a,{address},b", f"SELECT 'a,{quoted},b' FROM inventory"),
+        "in a comment": ("hi", f"SELECT 1 FROM inventory -- {address}"),
+    }
+
+
+def test_no_fragment_of_a_special_character_local_part_is_stored() -> None:
+    for label, local in M1_LOCALS.items():
+        address = f"{local}@{M1_DOMAIN}"
+        needles = _grams(local) | _grams(local.replace("'", "''")) | _grams(M1_DOMAIN)
+        for where, (question, sql) in _m1_placements(address).items():
+            rec, csv_text, jsonl_text = _record_and_export(question, sql)
+            for column, stored in (
+                ("question", rec.question),
+                ("executed_sql", rec.executed_sql),
+                ("csv", csv_text),
+                ("jsonl", jsonl_text),
+            ):
+                leaked = sorted(g for g in needles if g in stored)
+                assert not leaked, (
+                    f"{label} / {where} / {column} stores {leaked[:3]}: {stored[:200]!r}"
+                )
+            assert rec.redactions >= 1, (label, where)
+
+
+def test_a_fragment_check_that_would_catch_the_old_behaviour() -> None:
+    """The masker alone leaves the start of the local part; the check above is not vacuous."""
+    from dms_core.control_plane.ask_audit_scrub import fail_closed_mask_payload
+
+    raw = "contact mary.Qzlo'Tan1@qzdom2xyz.com please"
+    raw_masked = str(fail_closed_mask_payload(text=raw)["text"])
+    assert "mary.Qzlo" in raw_masked, "the shared masker keeps the start of the local part"
+    rec, _csv, _jsonl = _record_and_export(raw, "SELECT 1 FROM inventory")
+    assert "mary.Qzlo" not in rec.question and "withheld" in rec.question
+
+
+def test_ordinary_text_next_to_a_masked_address_is_not_withheld() -> None:
+    from dms_core.control_plane.ask_audit_scrub import mask_pii_counted
+
+    cases = {
+        "mail zqalice@fakecorp-zq7.example now": "mail DMSMASK_email_01 now",
+        "mail: zqalice@fakecorp-zq7.example now": "mail: DMSMASK_email_01 now",
+        "(zqalice@fakecorp-zq7.example)": "(DMSMASK_email_01)",
+        "to zqalice@fakecorp-zq7.example, zqbob@fakecorp-zq7.example": (
+            "to DMSMASK_email_01, DMSMASK_email_02"
+        ),
+        "Total was RM 1,234.50 for the order.": "Total was RM 1,234.50 for the order.",
+    }
+    for text, expected in cases.items():
+        out, _n = mask_pii_counted(text)
+        assert out == expected, (text, out)
+
+
+def test_an_address_in_a_sql_literal_keeps_the_column_it_is_compared_with() -> None:
+    """In SQL a literal's own quote is not part of the address: ``email='a@b.com'`` keeps
+    ``email=``. (In prose, ``email=a@b.com`` is key=value text glued to an address and goes.)"""
+    sql = "SELECT 1 FROM customers WHERE email='zqalice@fakecorp-zq7.example' AND id = 7"
+    rec, csv_text, _jsonl = _record_and_export("How many customers?", sql)
+
+    assert (
+        rec.executed_sql == "SELECT 1 FROM customers WHERE email='DMSMASK_email_01' AND id = 7"
+    ), rec.executed_sql
+    assert "zqalice" not in csv_text and rec.redactions == 1
+
+    rec, _csv, _jsonl = _record_and_export("email='zqalice@fakecorp-zq7.example'", "")
+    assert "zqalice" not in rec.question and "withheld" in rec.question
+
+
+def test_the_redaction_count_equals_the_markers_stored() -> None:
+    """L4: an address glued to a card number is one withheld run and counts as one."""
+    from dms_core.control_plane.ask_audit_scrub import mask_pii_counted
+
+    marker = re.compile(r"DMSMASK_\w+_\d+|\[(?:long run|email-like run) withheld: \d+ chars\]")
+    for text in (
+        "alice@example.com4111111111111111",
+        "x alice@example.com4111111111111111 y",
+        "mail zqalice@fakecorp-zq7.example and zqbob@fakecorp-zq7.example",
+        "mary.Qzlo'Tan1@qzdom2xyz.com " + "q" * 300,
+    ):
+        out, n = mask_pii_counted(text)
+        assert n == len(marker.findall(out)), (text, out, n)
