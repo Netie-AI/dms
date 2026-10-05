@@ -1,0 +1,46 @@
+# Three-case sample: one control, one trap the gate lets through, one sheet-lane case.
+# Families are only labels here; real attack files are one YAML per family (a.yaml ... e.yaml).
+- id: B-001
+  family: b
+  lane: gen
+  space: finance
+  ask_path: generative
+  question: "What is the total stock value by category?"
+  model_sql: >-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category
+  expect: answer
+  gold_sql: >-
+    SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+    FROM inventory GROUP BY category
+  gold_notes: "Stock value is quantity times unit cost, per category."
+  trap: "none: control"
+  control: true
+
+- id: B-002
+  family: b
+  lane: gen
+  space: finance
+  ask_path: generative
+  question: "What is the total stock value?"
+  model_sql: "SELECT SUM(quantity_kg) AS total_stock_value_myr FROM inventory"
+  expect: answer
+  gold_sql: "SELECT SUM(quantity_kg * unit_cost_myr) AS total_stock_value_myr FROM inventory"
+  gold_notes: "Value is quantity_kg * unit_cost_myr. The model summed kilograms and labelled it money."
+  trap: "wrong measure with a plausible name: SUM(quantity_kg) served as stock value"
+  control: false
+
+- id: D-001
+  family: d
+  lane: sheet
+  space: finance
+  question: "In cf98e431_p50_01_sales_messy.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category,
+           ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."cf98e431_p50_01_sales_messy_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL AND category IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC LIMIT 3
+  gold_notes: "Numeric text cells only; blank and banner rows dropped."
+  trap: "text-typed measure column"

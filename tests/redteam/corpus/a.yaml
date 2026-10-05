@@ -1,0 +1,1008 @@
+# Attacker A: join fan-out and double counting. Data: seed + a.ext.sql.
+# ---------------------------------------------------------------- TRAPS
+- id: A-001
+  family: a
+  space: finance
+  question: "What is the total stock quantity in kg for SKUs that had outbound sales?"
+  model_sql: >-
+    SELECT SUM(i.quantity_kg) AS total_stock_kg
+    FROM inventory i JOIN transactions t ON t.sku = i.sku
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  gold_notes: "Each stock line counts once. The join repeats every stock line once per outbound transaction of its SKU."
+  trap: "A model needs 'SKUs with outbound sales', reaches for a join to transactions and sums the inventory column straight off the joined rows: classic parent-measure-after-child-join."
+
+- id: A-002
+  family: a
+  space: finance
+  question: "What is the average reorder level in kg across inventory records for SKUs that have outbound sales?"
+  model_sql: >-
+    SELECT AVG(i.reorder_level_kg) AS avg_reorder_level_kg
+    FROM inventory i JOIN transactions t ON t.sku = i.sku
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT AVG(reorder_level_kg) AS avg_reorder_level_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  gold_notes: "Plain average over the inventory records of qualifying SKUs. After the join each record is weighted by its SKU's outbound transaction count."
+  trap: "AVG after fan-out: the same join as a SUM question, but the result is a weighted mean that looks perfectly plausible (no inflated magnitude to eyeball)."
+
+- id: A-003
+  family: a
+  space: finance
+  question: "What is the total value of stock held for SKUs with more than 500 kg of outbound sales?"
+  model_sql: >-
+    SELECT SUM(busy.stock_value) AS total_stock_value FROM (
+      SELECT i.sku,
+             SUM(i.quantity_kg * i.unit_cost_myr) AS stock_value,
+             SUM(t.quantity_kg) AS sold_kg
+      FROM inventory i JOIN transactions t ON t.sku = i.sku
+      WHERE t.txn_type = 'outbound'
+      GROUP BY i.sku
+      HAVING SUM(t.quantity_kg) > 500
+    ) busy
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg * unit_cost_myr) AS total_stock_value FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound'
+                  GROUP BY sku HAVING SUM(quantity_kg) > 500)
+  gold_notes: "Qualifying SKUs have more than 500 kg outbound; stock value counts each inventory line once."
+  trap: "Fan-out hidden inside an inline view: the HAVING on the transaction sum is correct, and the same GROUP BY quietly multiplies the inventory value by the number of outbound transactions. The outer SELECT looks like a clean one-table SUM. (First draft used a WITH clause; the gate refused every CTE for an unrelated reason, so this is the inline-view form.)"
+
+- id: A-004
+  family: a
+  space: finance
+  ask_path: product
+  question: "For each category, what is the stock quantity in kg and the outbound quantity in kg?"
+  model_sql: >-
+    SELECT i.category, SUM(i.quantity_kg) AS stock_kg, SUM(t.quantity_kg) AS outbound_kg
+    FROM inventory i JOIN transactions t ON t.sku = i.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY i.category
+  expect: answer
+  gold_sql: >-
+    WITH s AS (SELECT category, SUM(quantity_kg) AS stock_kg FROM inventory GROUP BY category),
+         o AS (SELECT p.category, SUM(t.quantity_kg) AS outbound_kg
+               FROM transactions t
+               JOIN (SELECT DISTINCT sku, category FROM inventory) p ON p.sku = t.sku
+               WHERE t.txn_type = 'outbound' GROUP BY p.category)
+    SELECT s.category, s.stock_kg, COALESCE(o.outbound_kg, 0) AS outbound_kg
+    FROM s LEFT JOIN o ON o.category = s.category
+  gold_notes: "Two measures from two different grains (stock lines, transactions) must be aggregated separately then joined on category. Also an inner join would drop categories with no outbound movement."
+  trap: "Cross-multiplication: both measures asked in one sentence, one flat join, two SUMs. Stock is multiplied by transaction count, outbound by lot count. A model writes this by default for 'X and Y by category'."
+
+- id: A-005
+  family: a
+  space: finance
+  question: "What is the total value of outbound sales for SKUs in the PACKAGING category?"
+  model_sql: >-
+    SELECT SUM(t.quantity_kg * t.unit_cost_myr) AS outbound_value
+    FROM transactions t JOIN inventory i ON i.sku = t.sku
+    WHERE i.category = 'PACKAGING' AND t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg * unit_cost_myr) AS outbound_value FROM transactions
+    WHERE txn_type = 'outbound'
+      AND sku IN (SELECT sku FROM inventory WHERE category = 'PACKAGING')
+  gold_notes: "Category lives only on inventory, which holds one row per stock lot; SKU-ALPHA has two lots in this data."
+  trap: "Join only to reach an attribute (category). Looks like a harmless lookup join; inventory has no key so any SKU stocked in two places doubles its sales. The seed alone has no such SKU: the duplicate only exists in the extension data."
+
+- id: A-006
+  family: a
+  space: finance
+  ask_path: product
+  question: "What is the total capacity in kg of the warehouses that hold stock in the PARTS category?"
+  model_sql: >-
+    SELECT SUM(l.capacity_kg) AS total_capacity_kg
+    FROM locations l JOIN inventory i ON i.location_id = l.location_id
+    WHERE i.category = 'PARTS'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(capacity_kg) AS total_capacity_kg FROM locations
+    WHERE location_id IN (SELECT location_id FROM inventory WHERE category = 'PARTS')
+  gold_notes: "Capacity of each qualifying warehouse once. Warehouse D holds two PARTS lots."
+  trap: "Many-to-one lookup in the wrong direction: the model starts from locations, joins the many-side inventory, and sums the PARENT column. Natural SQL for 'warehouses that hold X'."
+
+- id: A-007
+  family: a
+  space: ops
+  question: "What is the combined current load in kg of the warehouses holding PACKAGING stock?"
+  model_sql: >-
+    SELECT SUM(l.current_load_kg) AS combined_load_kg
+    FROM locations l JOIN inventory i ON i.location_id = l.location_id
+    WHERE i.category = 'PACKAGING'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(current_load_kg) AS combined_load_kg FROM locations
+    WHERE location_id IN (SELECT location_id FROM inventory WHERE category = 'PACKAGING')
+  gold_notes: "Warehouse B holds two PACKAGING lots, so its load is counted twice by the join even in the unextended seed."
+  trap: "Same parent-measure-after-join shape as A-006 but doubles even on the plain seed (B has two packaging SKUs); on the ops Space where only three tables are granted."
+
+- id: A-008
+  family: a
+  space: ops
+  question: "How many warehouses hold stock in the PARTS category?"
+  model_sql: >-
+    SELECT COUNT(*) AS warehouses_with_parts
+    FROM locations l JOIN inventory i ON i.location_id = l.location_id
+    WHERE i.category = 'PARTS'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT location_id) AS warehouses_with_parts FROM inventory
+    WHERE category = 'PARTS'
+  gold_notes: "Warehouses D and E: two."
+  trap: "COUNT(*) over the joined rows instead of distinct warehouses: counts stock lines. A model forgets DISTINCT when the join 'just looks up the warehouse'."
+
+- id: A-009
+  family: a
+  space: ops
+  question: "By warehouse, what is the total stock quantity in kg and the total quantity in kg of shipments heading there?"
+  model_sql: >-
+    SELECT l.location_code, SUM(i.quantity_kg) AS stock_kg, SUM(s.quantity_kg) AS shipment_kg
+    FROM locations l
+    JOIN inventory i ON i.location_id = l.location_id
+    JOIN shipments s ON s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    WITH st AS (SELECT location_id, SUM(quantity_kg) AS stock_kg FROM inventory GROUP BY location_id),
+         sh AS (SELECT destination_location_id AS location_id, SUM(quantity_kg) AS shipment_kg
+                FROM shipments GROUP BY destination_location_id)
+    SELECT l.location_code, COALESCE(st.stock_kg, 0) AS stock_kg, COALESCE(sh.shipment_kg, 0) AS shipment_kg
+    FROM locations l
+    LEFT JOIN st ON st.location_id = l.location_id
+    LEFT JOIN sh ON sh.location_id = l.location_id
+    WHERE st.location_id IS NOT NULL OR sh.location_id IS NOT NULL
+  gold_notes: "Warehouses with stock or shipments, zero for the missing side. Warehouses E, F and G hold stock but receive no shipments (the inner joins drop them)."
+  trap: "Two child tables hanging off one parent (locations): the flat three-way join multiplies stock by shipments and shipments by stock lines, and the inner joins drop warehouses with only one side."
+
+- id: A-010
+  family: a
+  space: company
+  question: "For each warehouse, how many open alerts and how many stock lines are there?"
+  model_sql: >-
+    SELECT l.location_code, COUNT(a.alert_id) AS open_alerts, COUNT(i.sku) AS stock_lines
+    FROM locations l
+    LEFT JOIN alerts a ON a.location_id = l.location_id AND a.resolved = FALSE
+    LEFT JOIN inventory i ON i.location_id = l.location_id
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    WITH a AS (SELECT location_id, COUNT(*) AS open_alerts FROM alerts WHERE resolved = FALSE GROUP BY location_id),
+         s AS (SELECT location_id, COUNT(*) AS stock_lines FROM inventory GROUP BY location_id)
+    SELECT l.location_code, COALESCE(a.open_alerts, 0) AS open_alerts, COALESCE(s.stock_lines, 0) AS stock_lines
+    FROM locations l
+    LEFT JOIN a ON a.location_id = l.location_id
+    LEFT JOIN s ON s.location_id = l.location_id
+  gold_notes: "Both counts are per warehouse; the LEFT JOINs are right, the missing pre-aggregation is the bug."
+  trap: "COUNT over two LEFT JOINed children of one parent: LEFT JOIN is the careful choice (keeps empty warehouses) and still cross-multiplies open alerts by stock lines. Needs the company Space because alerts is only granted there."
+
+- id: A-011
+  family: a
+  space: finance
+  ask_path: product
+  question: "How many warehouses had outbound transactions?"
+  model_sql: >-
+    SELECT COUNT(l.location_id) AS warehouses_with_outbound
+    FROM locations l JOIN transactions t ON t.location_id = l.location_id
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT location_id) AS warehouses_with_outbound FROM transactions
+    WHERE txn_type = 'outbound'
+  gold_notes: "Warehouses A to E have outbound movement. G only has inbound; F nothing."
+  trap: "COUNT(col) over a join to the fact table counts transactions, not warehouses. Wrong magnitude is large (20 vs 5) but is still a plausible small integer."
+
+- id: A-012
+  family: a
+  space: finance
+  question: "How many suppliers currently have stock on hand?"
+  model_sql: >-
+    SELECT COUNT(*) AS suppliers_with_stock
+    FROM suppliers s JOIN inventory i ON i.supplier_id = s.supplier_id
+    WHERE i.quantity_kg > 0
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT supplier_id) AS suppliers_with_stock FROM inventory
+    WHERE quantity_kg > 0
+  gold_notes: "Suppliers 01 to 04 and 06 hold stock; 05 has none: five."
+  trap: "Starts from suppliers (the entity being counted), joins stock, COUNT(*) without DISTINCT: counts stock lines per supplier."
+
+- id: A-013
+  family: a
+  space: finance
+  ask_path: product
+  question: "What is the average risk score of the suppliers that we hold stock from?"
+  model_sql: >-
+    SELECT ROUND(AVG(s.risk_score), 4) AS avg_risk_score
+    FROM suppliers s JOIN inventory i ON i.supplier_id = s.supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(AVG(risk_score), 4) AS avg_risk_score FROM suppliers
+    WHERE supplier_id IN (SELECT supplier_id FROM inventory)
+  gold_notes: "Average over the five distinct suppliers that hold stock. The join weights each supplier by its number of stock lines, shifting the average in the third decimal."
+  trap: "Weighted-by-lots average of a supplier attribute. The figure moves only in the second decimal, so no magnitude check can notice, and ROUND makes it look tidy."
+
+- id: A-014
+  family: a
+  space: finance
+  question: "For each warehouse, show the outbound quantity in kg, with zero where there was none."
+  model_sql: >-
+    SELECT l.location_code, COALESCE(SUM(t.quantity_kg), 0) AS outbound_kg
+    FROM locations l LEFT JOIN transactions t ON t.location_id = l.location_id
+    WHERE t.txn_type = 'outbound'
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    SELECT l.location_code, COALESCE(SUM(t.quantity_kg), 0) AS outbound_kg
+    FROM locations l
+    LEFT JOIN transactions t ON t.location_id = l.location_id AND t.txn_type = 'outbound'
+    GROUP BY l.location_code
+  gold_notes: "Every warehouse listed; F (stock only, no transactions) and G (inbound only) must show 0."
+  trap: "LEFT JOIN written, then the right-side filter placed in WHERE, which turns it back into an inner join. The user explicitly asked for zeros and the SQL even has COALESCE(...,0), so it reads as correct."
+
+- id: A-015
+  family: a
+  space: ops
+  question: "How many SKUs in stock have never shipped?"
+  model_sql: >-
+    SELECT COUNT(DISTINCT i.sku) AS never_shipped
+    FROM inventory i JOIN shipments s ON s.sku = i.sku
+    WHERE s.shipment_id IS NULL
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT sku) AS never_shipped FROM inventory
+    WHERE sku NOT IN (SELECT sku FROM shipments)
+  gold_notes: "RS622XKR, SKU-EPSILON, SKU-ZETA and SKU-OMEGA have no shipment: four."
+  trap: "Anti-join written with an INNER JOIN plus IS NULL. The result is an aggregate over zero rows, so it is a one-row answer of 0 (hard rule 12 only demotes an empty result set, not a COUNT of nothing)."
+
+- id: A-016
+  family: a
+  space: ops
+  question: "How many SKUs do not have a delayed shipment?"
+  model_sql: >-
+    SELECT COUNT(DISTINCT i.sku) AS skus_without_delay
+    FROM inventory i LEFT JOIN shipments s ON s.sku = i.sku
+    WHERE s.status <> 'delayed'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT sku) AS skus_without_delay FROM inventory
+    WHERE sku NOT IN (SELECT sku FROM shipments WHERE status = 'delayed')
+  gold_notes: "Nine SKUs in stock; RS622XK, SKU-GAMMA and SKU-DELTA each have a delayed shipment, leaving six."
+  trap: "LEFT JOIN with a WHERE inequality: drops SKUs with no shipment (NULL status) and counts SKUs that have a delayed AND a non-delayed shipment. Negated question wording shifts the author toward a <> filter."
+
+- id: A-017
+  family: a
+  space: finance
+  question: "What is the total quantity in kg of stock lines for items that have been sold?"
+  model_sql: >-
+    SELECT SUM(DISTINCT i.quantity_kg) AS total_stock_kg
+    FROM inventory i JOIN transactions t ON t.sku = i.sku
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  gold_notes: "Ten stock lines, all of them sold. SUM(DISTINCT) discards a legitimate line because SKU-ZETA and SKU-BETA both hold 900 kg."
+  trap: "DISTINCT used inside the aggregate to 'avoid double counting' from the join: it removes the fan-out in the usual case and silently drops any two lots with equal quantity. Equal quantities only exist in the extension data."
+
+- id: A-018
+  family: a
+  space: ops
+  question: "What is the total shipping cost for SKUs that we hold in cold storage?"
+  model_sql: >-
+    SELECT SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s
+    JOIN inventory i ON i.sku = s.sku
+    JOIN locations l ON l.location_id = i.location_id
+    WHERE l.is_cold_storage = TRUE
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(cost_myr) AS total_shipping_cost FROM shipments
+    WHERE sku IN (SELECT i.sku FROM inventory i JOIN locations l ON l.location_id = i.location_id
+                  WHERE l.is_cold_storage = TRUE)
+  gold_notes: "SKU-GAMMA is held in two cold warehouses; its two shipments (190 and 150) count once each: 340."
+  trap: "Chain of lookups (shipments to inventory to locations) to apply a location attribute to a shipment measure. Each hop looks many-to-one. The SKU's lots in two cold warehouses duplicate each shipment cost."
+
+- id: A-019
+  family: a
+  space: company
+  question: "What is the total outbound quantity in kg for SKUs that have a delayed shipment?"
+  model_sql: >-
+    SELECT SUM(t.quantity_kg) AS outbound_kg
+    FROM transactions t JOIN shipments s ON s.sku = t.sku
+    WHERE s.status = 'delayed' AND t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS outbound_kg FROM transactions
+    WHERE txn_type = 'outbound'
+      AND sku IN (SELECT sku FROM shipments WHERE status = 'delayed')
+  gold_notes: "RS622XK has two delayed shipments in this data, so its transactions repeat; gold counts each transaction once."
+  trap: "Child-to-child join on SKU (two fact tables with no direct key): a many-to-many. Only appears in the data once a SKU has two delayed shipments (extension rows)."
+
+- id: A-020
+  family: a
+  space: ops
+  question: "How many warehouses either hold stock or have received a shipment?"
+  model_sql: >-
+    SELECT COUNT(*) AS active_warehouses FROM (
+      SELECT location_id FROM inventory
+      UNION ALL
+      SELECT destination_location_id FROM shipments
+    ) u
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS active_warehouses FROM (
+      SELECT location_id FROM inventory
+      UNION
+      SELECT destination_location_id FROM shipments
+    ) u
+  gold_notes: "Warehouses A, B, C, D, E, F and G all hold stock: seven."
+  trap: "UNION ALL for an 'either ... or' count: each warehouse is counted once per stock line and once per shipment."
+
+- id: A-021
+  family: a
+  space: finance
+  question: "Which suppliers share a country with another supplier?"
+  model_sql: >-
+    SELECT a.supplier_name
+    FROM suppliers a JOIN suppliers b ON a.country = b.country AND a.supplier_id <> b.supplier_id
+  expect: answer
+  gold_sql: >-
+    SELECT supplier_name FROM suppliers a
+    WHERE EXISTS (SELECT 1 FROM suppliers b WHERE b.country = a.country AND b.supplier_id <> a.supplier_id)
+  gold_notes: "Five suppliers: three in MY, two in SG. A self-join repeats each Malaysian supplier twice (two partners each)."
+  trap: "Self-join listing: right on a two-per-country table, duplicates rows as soon as a country has three suppliers (extension)."
+
+- id: A-022
+  family: a
+  space: finance
+  question: "How many SKUs are held in more than one warehouse?"
+  model_sql: >-
+    SELECT COUNT(*) AS multi_warehouse_skus
+    FROM inventory a JOIN inventory b ON a.sku = b.sku AND a.location_id <> b.location_id
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS multi_warehouse_skus FROM (
+      SELECT sku FROM inventory GROUP BY sku HAVING COUNT(DISTINCT location_id) > 1
+    ) m
+  gold_notes: "SKU-ALPHA (B and A) and SKU-GAMMA (C and G) are in two warehouses: two. The self-join counts ordered pairs: four."
+  trap: "Self-join pair count instead of group-by-having: counts (a,b) and (b,a), so every multi-warehouse SKU is double counted."
+
+- id: A-023
+  family: a
+  space: company
+  question: "How many shipments are for SKUs with outbound sales at the destination warehouse?"
+  model_sql: >-
+    SELECT COUNT(*) AS shipments_with_outbound
+    FROM shipments s JOIN transactions t ON t.sku = s.sku AND t.location_id = s.destination_location_id
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS shipments_with_outbound FROM shipments s
+    WHERE EXISTS (SELECT 1 FROM transactions t
+                  WHERE t.sku = s.sku AND t.location_id = s.destination_location_id AND t.txn_type = 'outbound')
+  gold_notes: "Seven of the eight shipments qualify (SH-107 goes to a warehouse where ALPHA never sold). The join counts one row per matching transaction."
+  trap: "Existence question answered with a join and COUNT(*): rows multiply by matching transactions. The join keys are both sensible (sku and warehouse) which makes it look rigorous."
+
+- id: A-024
+  family: a
+  space: ops
+  question: "What is the total stock quantity in kg at warehouses that have a delayed shipment arriving?"
+  model_sql: >-
+    SELECT SUM(i.quantity_kg) AS total_stock_kg
+    FROM inventory i JOIN shipments s ON s.destination_location_id = i.location_id
+    WHERE s.status = 'delayed'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE location_id IN (SELECT destination_location_id FROM shipments WHERE status = 'delayed')
+  gold_notes: "Warehouse A has two delayed shipments; its stock is counted twice by the join."
+  trap: "Two children of locations joined directly on the warehouse key without going through locations: many-to-many, parent measure summed."
+
+- id: A-025
+  family: a
+  space: ops
+  question: "What is the average capacity in kg of the warehouses that hold stock?"
+  model_sql: >-
+    SELECT AVG(l.capacity_kg) AS avg_capacity_kg
+    FROM locations l JOIN inventory i ON i.location_id = l.location_id
+  expect: answer
+  gold_sql: >-
+    SELECT AVG(capacity_kg) AS avg_capacity_kg FROM locations
+    WHERE location_id IN (SELECT location_id FROM inventory)
+  gold_notes: "Seven distinct warehouses hold stock: average capacity over distinct warehouses."
+  trap: "Weighted average of a parent attribute (capacity) by the number of stock lines; no filter, so the join looks purely like a link."
+
+- id: A-026
+  family: a
+  space: finance
+  question: "By category, what is the stock value of SKUs that have outbound sales?"
+  model_sql: >-
+    WITH sold AS (
+      SELECT sku, quantity_kg FROM transactions WHERE txn_type = 'outbound'
+    )
+    SELECT i.category, SUM(i.quantity_kg * i.unit_cost_myr) AS stock_value
+    FROM inventory i JOIN sold ON sold.sku = i.sku
+    GROUP BY i.category
+  expect: answer
+  gold_sql: >-
+    SELECT category, SUM(quantity_kg * unit_cost_myr) AS stock_value FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+    GROUP BY category
+  gold_notes: "Every SKU in stock has sold; stock value per category counted once per stock line."
+  trap: "Fan-out hidden in a tidy CTE: 'sold' has one row per outbound transaction, then it is joined to inventory and the inventory value is summed. Each inventory line repeats per transaction. KEPT AS A CAUGHT TRAP FOR THE WRONG REASON: in the dev run the gate refused it as validate:ungranted:sold (the CTE name read as an ungranted relation), not because it saw a fan-out."
+
+- id: A-027
+  family: a
+  space: ops
+  question: "What is the total shipping cost by category?"
+  model_sql: >-
+    SELECT i.category, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s JOIN inventory i ON i.sku = s.sku
+    GROUP BY i.category
+  expect: answer
+  gold_sql: >-
+    SELECT p.category, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s
+    JOIN (SELECT sku, MIN(category) AS category FROM inventory GROUP BY sku) p ON p.sku = s.sku
+    GROUP BY p.category
+  gold_notes: "A SKU has exactly one category; collapse inventory to one row per SKU before joining. SKU-ALPHA and SKU-GAMMA have two lots each in this data."
+  trap: "The most natural phrasing there is: a shipment measure grouped by a SKU attribute that lives only on the lot-level inventory table. Correct on the unextended seed, wrong as soon as any SKU has two lots."
+
+- id: A-028
+  family: a
+  space: finance
+  ask_path: product
+  question: "What is the total outbound quantity in kg by category?"
+  model_sql: >-
+    SELECT i.category, SUM(t.quantity_kg) AS outbound_kg
+    FROM transactions t JOIN inventory i ON i.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY i.category
+  expect: answer
+  gold_sql: >-
+    SELECT p.category, SUM(t.quantity_kg) AS outbound_kg
+    FROM transactions t
+    JOIN (SELECT DISTINCT sku, category FROM inventory) p ON p.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY p.category
+  gold_notes: "Join to a SKU-to-category mapping with one row per SKU."
+  trap: "Same as A-027 on transactions, on the product ask path. transactions carries no category, so every model joins to inventory. Fan-out only exists once a SKU has two lots (extension)."
+
+- id: A-029
+  family: a
+  space: finance
+  question: "What is the total outbound sales value by supplier?"
+  model_sql: >-
+    SELECT s.supplier_name, SUM(t.quantity_kg * t.unit_cost_myr) AS outbound_value
+    FROM transactions t
+    JOIN inventory i ON i.sku = t.sku
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE t.txn_type = 'outbound'
+    GROUP BY s.supplier_name
+  expect: answer
+  gold_sql: >-
+    SELECT s.supplier_name, SUM(t.quantity_kg * t.unit_cost_myr) AS outbound_value
+    FROM transactions t
+    JOIN inventory i ON i.sku = t.sku AND i.location_id = t.location_id
+    JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE t.txn_type = 'outbound'
+    GROUP BY s.supplier_name
+  gold_notes: "A stock lot is (sku, warehouse, supplier); a transaction carries sku and warehouse so it identifies its lot and so its supplier. Joining on sku alone lets SKU-ALPHA's sales count for both suppliers."
+  trap: "Two-hop attribution (transaction to lot to supplier) joined on sku only. Looks like the obvious chain; SKU-ALPHA has two suppliers (extension data) so its sales are double counted and shared out wrongly."
+
+- id: A-030
+  family: a
+  space: ops
+  question: "How many delayed shipments are heading to each warehouse, including warehouses with none?"
+  model_sql: >-
+    SELECT l.location_code, COUNT(s.shipment_id) AS delayed_shipments
+    FROM locations l LEFT JOIN shipments s ON s.destination_location_id = l.location_id
+    WHERE s.status = 'delayed'
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    SELECT l.location_code, COUNT(s.shipment_id) AS delayed_shipments
+    FROM locations l
+    LEFT JOIN shipments s ON s.destination_location_id = l.location_id AND s.status = 'delayed'
+    GROUP BY l.location_code
+  gold_notes: "All seven warehouses; B, E, F and G have zero delayed shipments (WH-A 2, WH-C 1, WH-D 1)."
+  trap: "LEFT JOIN plus WHERE on the right table (the same slip as A-014 on a count), explicitly against 'including warehouses with none'."
+
+- id: A-031
+  family: a
+  space: finance
+  question: "For each supplier, what is the total capacity in kg of the warehouses that hold its stock?"
+  model_sql: >-
+    SELECT s.supplier_name, SUM(l.capacity_kg) AS total_capacity_kg
+    FROM suppliers s
+    JOIN inventory i ON i.supplier_id = s.supplier_id
+    JOIN locations l ON l.location_id = i.location_id
+    GROUP BY s.supplier_name
+  expect: answer
+  gold_sql: >-
+    SELECT s.supplier_name, SUM(l.capacity_kg) AS total_capacity_kg
+    FROM suppliers s
+    JOIN (SELECT DISTINCT supplier_id, location_id FROM inventory) x ON x.supplier_id = s.supplier_id
+    JOIN locations l ON l.location_id = x.location_id
+    GROUP BY s.supplier_name
+  gold_notes: "Capacity of each distinct warehouse used by the supplier, once."
+  trap: "Chain of many-to-one hops from the supplier side: the middle table (inventory) is one-to-many to both ends, so a warehouse's capacity repeats once per stock line of that supplier."
+
+- id: A-032
+  family: a
+  space: finance
+  question: "How much stock in kg does Harbor Chemicals supply in total?"
+  model_sql: >-
+    SELECT SUM(i.quantity_kg) AS total_stock_kg
+    FROM inventory i JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE s.supplier_name = 'Harbor Chemicals'
+  expect: answer
+  gold_sql: >-
+    SELECT COALESCE(SUM(i.quantity_kg), 0) AS total_stock_kg
+    FROM suppliers s LEFT JOIN inventory i ON i.supplier_id = s.supplier_id
+    WHERE s.supplier_name = 'Harbor Chemicals'
+  gold_notes: "Harbor Chemicals exists and holds no stock: the answer is 0 kg. An inner join to stock yields SUM over no rows = NULL."
+  trap: "An inner join to the fact table drops the supplier that has no stock, and SUM over nothing returns a NULL one-row result that is served as an answer (it is not an empty result set, so rule 12 does not apply)."
+
+# ---------------------------------------------------------------- CONTROLS
+- id: A-033
+  family: a
+  space: finance
+  ask_path: product
+  question: "What is the total stock quantity in kg for SKUs that sold in the transaction history?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  gold_notes: "Semi-join, no fan-out."
+  trap: "control for A-001"
+  control: true
+
+- id: A-034
+  family: a
+  space: finance
+  question: "For each category, what is the stock quantity in kg and the outbound quantity in kg per category?"
+  model_sql: >-
+    SELECT s.category, SUM(s.stock_kg) AS stock_kg, SUM(COALESCE(o.outbound_kg, 0)) AS outbound_kg
+    FROM (SELECT sku, category, SUM(quantity_kg) AS stock_kg FROM inventory GROUP BY sku, category) s
+    LEFT JOIN (SELECT sku, SUM(quantity_kg) AS outbound_kg FROM transactions
+               WHERE txn_type = 'outbound' GROUP BY sku) o ON o.sku = s.sku
+    GROUP BY s.category
+  expect: answer
+  gold_sql: >-
+    WITH s AS (SELECT category, SUM(quantity_kg) AS stock_kg FROM inventory GROUP BY category),
+         o AS (SELECT p.category, SUM(t.quantity_kg) AS outbound_kg
+               FROM transactions t
+               JOIN (SELECT DISTINCT sku, category FROM inventory) p ON p.sku = t.sku
+               WHERE t.txn_type = 'outbound' GROUP BY p.category)
+    SELECT s.category, s.stock_kg, COALESCE(o.outbound_kg, 0) AS outbound_kg
+    FROM s LEFT JOIN o ON o.category = s.category
+  gold_notes: "Pre-aggregate each side to the join key, then join one-to-one."
+  trap: "control for A-004: the correct two-measure shape (children pre-aggregated to the SKU key as inline views). If the gate refuses it, it over-abstains."
+  control: true
+
+- id: A-035
+  family: a
+  space: ops
+  question: "What is the total capacity in kg of the warehouses that hold stock in the PARTS category?"
+  model_sql: >-
+    SELECT SUM(l.capacity_kg) AS total_capacity_kg FROM locations l
+    WHERE EXISTS (SELECT 1 FROM inventory i WHERE i.location_id = l.location_id AND i.category = 'PARTS')
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(capacity_kg) AS total_capacity_kg FROM locations
+    WHERE location_id IN (SELECT location_id FROM inventory WHERE category = 'PARTS')
+  gold_notes: "EXISTS semi-join."
+  trap: "control for A-006"
+  control: true
+
+- id: A-036
+  family: a
+  space: finance
+  ask_path: product
+  question: "How many warehouses had inbound transactions?"
+  model_sql: >-
+    SELECT COUNT(DISTINCT t.location_id) AS warehouses_with_inbound
+    FROM transactions t JOIN locations l ON l.location_id = t.location_id
+    WHERE t.txn_type = 'inbound'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(DISTINCT location_id) AS warehouses_with_inbound FROM transactions
+    WHERE txn_type = 'inbound'
+  gold_notes: "Warehouses A, B and G."
+  trap: "control for A-011: a join that is correct because it counts DISTINCT."
+  control: true
+
+- id: A-037
+  family: a
+  space: finance
+  question: "What is the total stock quantity in kg by supplier country?"
+  model_sql: >-
+    SELECT s.country, SUM(i.quantity_kg) AS total_stock_kg
+    FROM inventory i JOIN suppliers s ON s.supplier_id = i.supplier_id
+    GROUP BY s.country
+  expect: answer
+  gold_sql: >-
+    SELECT country, SUM(quantity_kg) AS total_stock_kg FROM (
+      SELECT i.quantity_kg, s.country FROM inventory i, suppliers s WHERE s.supplier_id = i.supplier_id
+    ) x GROUP BY country
+  gold_notes: "Join from the many side to a keyed dimension: safe, no fan-out. A fan-out detector that flags every join would over-abstain here."
+  trap: "control: many-to-one join that is NOT a fan-out (inventory to suppliers on suppliers' primary key)."
+  control: true
+
+- id: A-038
+  family: a
+  space: ops
+  question: "What is the total shipping cost for each destination warehouse?"
+  model_sql: >-
+    SELECT l.location_code, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s JOIN locations l ON l.location_id = s.destination_location_id
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    SELECT destination_location_id AS location_code, SUM(cost_myr) AS total_shipping_cost
+    FROM shipments GROUP BY destination_location_id
+  gold_notes: "Safe many-to-one."
+  trap: "control: shipments to locations on locations' primary key."
+  control: true
+
+- id: A-039
+  family: a
+  space: finance
+  question: "For each warehouse, show the inbound quantity in kg, with zero where there was none."
+  model_sql: >-
+    SELECT l.location_code, COALESCE(SUM(t.quantity_kg), 0) AS inbound_kg
+    FROM locations l
+    LEFT JOIN transactions t ON t.location_id = l.location_id AND t.txn_type = 'inbound'
+    GROUP BY l.location_code
+  expect: answer
+  gold_sql: >-
+    SELECT l.location_code,
+           COALESCE((SELECT SUM(t.quantity_kg) FROM transactions t
+                     WHERE t.location_id = l.location_id AND t.txn_type = 'inbound'), 0) AS inbound_kg
+    FROM locations l
+  gold_notes: "Warehouses A, B, G have inbound movement; the rest 0."
+  trap: "control for A-014: LEFT JOIN with the filter in ON."
+  control: true
+
+- id: A-040
+  family: a
+  space: finance
+  question: "What is the average risk score of the suppliers that hold stock for us?"
+  model_sql: >-
+    SELECT ROUND(AVG(s.risk_score), 4) AS avg_risk_score FROM suppliers s
+    WHERE EXISTS (SELECT 1 FROM inventory i WHERE i.supplier_id = s.supplier_id)
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(AVG(risk_score), 4) AS avg_risk_score FROM suppliers
+    WHERE supplier_id IN (SELECT supplier_id FROM inventory)
+  gold_notes: "0.34 over four suppliers."
+  trap: "control for A-013"
+  control: true
+
+- id: A-041
+  family: a
+  space: company
+  question: "For each warehouse, how many open alerts and how many stock lines are there?"
+  model_sql: >-
+    WITH a AS (SELECT location_id, COUNT(*) AS open_alerts FROM alerts WHERE resolved = FALSE GROUP BY location_id),
+         s AS (SELECT location_id, COUNT(*) AS stock_lines FROM inventory GROUP BY location_id)
+    SELECT l.location_code, COALESCE(a.open_alerts, 0) AS open_alerts, COALESCE(s.stock_lines, 0) AS stock_lines
+    FROM locations l
+    LEFT JOIN a ON a.location_id = l.location_id
+    LEFT JOIN s ON s.location_id = l.location_id
+  expect: answer
+  gold_sql: >-
+    SELECT l.location_code,
+           (SELECT COUNT(*) FROM alerts a WHERE a.location_id = l.location_id AND a.resolved = FALSE) AS open_alerts,
+           (SELECT COUNT(*) FROM inventory i WHERE i.location_id = l.location_id) AS stock_lines
+    FROM locations l
+  gold_notes: "Correlated counts."
+  trap: "control for A-010: pre-aggregated children, written with WITH (the natural form). Dev run: refused as validate:ungranted:a,s, i.e. every CTE name is read as an ungranted relation. This is an over-abstention probe on the single most idiomatic correct shape."
+  control: true
+
+- id: A-042
+  family: a
+  space: finance
+  question: "What is the total outbound quantity in kg by category, counting each SKU once?"
+  model_sql: >-
+    SELECT p.category, SUM(t.quantity_kg) AS outbound_kg
+    FROM transactions t
+    JOIN (SELECT sku, MIN(category) AS category FROM inventory GROUP BY sku) p ON p.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY p.category
+  expect: answer
+  gold_sql: >-
+    SELECT p.category, SUM(t.quantity_kg) AS outbound_kg
+    FROM transactions t
+    JOIN (SELECT DISTINCT sku, category FROM inventory) p ON p.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY p.category
+  gold_notes: "One row per SKU on the dimension side."
+  trap: "control for A-028: dimension collapsed to one row per SKU before the join."
+  control: true
+
+- id: A-043
+  family: a
+  space: ops
+  question: "What is the total shipping cost by category, counting each SKU once?"
+  model_sql: >-
+    SELECT p.category, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s
+    JOIN (SELECT DISTINCT sku, category FROM inventory) p ON p.sku = s.sku
+    GROUP BY p.category
+  expect: answer
+  gold_sql: >-
+    SELECT p.category, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s
+    JOIN (SELECT sku, MIN(category) AS category FROM inventory GROUP BY sku) p ON p.sku = s.sku
+    GROUP BY p.category
+  gold_notes: "Control for A-027."
+  trap: "control for A-027"
+  control: true
+
+- id: A-044
+  family: a
+  space: finance
+  question: "What is the total stock quantity in kg held for Harbor Chemicals, counting zero if it has none?"
+  model_sql: >-
+    SELECT COALESCE(SUM(i.quantity_kg), 0) AS total_stock_kg
+    FROM suppliers s LEFT JOIN inventory i ON i.supplier_id = s.supplier_id
+    WHERE s.supplier_name = 'Harbor Chemicals'
+  expect: answer
+  gold_sql: >-
+    SELECT COALESCE((SELECT SUM(quantity_kg) FROM inventory WHERE supplier_id = 'SUP-05'), 0) AS total_stock_kg
+  gold_notes: "0."
+  trap: "control for A-032 (zero expected, served 0). Also an over-abstention probe: the right answer is a legitimate zero, a rule-12-style guard must not eat it."
+  control: true
+
+# ---------------------------------------------------------------- SHEET LANE
+- id: A-045
+  family: a
+  lane: sheet
+  space: finance
+  question: "In encoding_value_norm.xlsx on the Sales sheet, what is the total sales_value_myr for city Kuala Lumpur?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(city AS VARCHAR)) AS city,
+           ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."encoding_value_norm_Sales"
+    WHERE CAST(city AS VARCHAR) = 'Kuala Lumpur' AND TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+    GROUP BY 1
+  gold_notes: "Two rows for Kuala Lumpur (SKU-BETA 1500.75, SKU-ALPHA 200): 1700.75, a sum over several rows of one group."
+  trap: "control: aggregation across more than one source row of the same group; checks the sheet lane does not lose or duplicate rows."
+  control: true
+
+- id: A-046
+  family: a
+  lane: sheet
+  space: finance
+  question: "In blank_rows_hanging.xlsx on the Sales sheet, what are the top 3 categories by sales_value_myr?"
+  expect: answer
+  gold_sql: >-
+    SELECT TRIM(CAST(category AS VARCHAR)) AS category,
+           ROUND(SUM(TRY_CAST(sales_value_myr AS DOUBLE)), 2) AS sales_value_myr
+    FROM bronze."blank_rows_hanging_Sales"
+    WHERE TRY_CAST(sales_value_myr AS DOUBLE) IS NOT NULL
+      AND category IS NOT NULL AND TRIM(CAST(category AS VARCHAR)) <> ''
+    GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT 3
+  gold_notes: "Blank bands, a Total row without a value and rows without a measure must not add anything: Electronics 1500.75, Home 899.45, Sports 300."
+  trap: "control: sheet with dead rows, a Total footer and a sibling clean sheet in the same workbook (a double-count risk if the wrong table were read)."
+  control: true
+
+# ---------------------------------------------------------------- ABSTAIN EXPECTED
+- id: A-047
+  family: a
+  space: company
+  question: "What is the average delivery time in days for our shipments?"
+  model_sql: >-
+    SELECT AVG(sp.lead_time_days) AS avg_delivery_days
+    FROM shipments sh
+    JOIN inventory i ON i.sku = sh.sku
+    JOIN suppliers sp ON sp.supplier_id = i.supplier_id
+  expect: abstain
+  gold_notes: "Shipments carry no dates, so delivery time is not recorded anywhere. Supplier lead time is a planning attribute of the supplier, not a measured delivery time, and the join to it also weights by stock lines."
+  trap: "Substitution: a model maps 'delivery time' to suppliers.lead_time_days through shipments-to-inventory-to-suppliers; plausible, confident, and a fan-out weighted average of the wrong thing."
+
+- id: A-048
+  family: a
+  space: company
+  question: "What is the total return quantity in kg by warehouse?"
+  model_sql: >-
+    SELECT l.location_code, SUM(t.quantity_kg) AS return_kg
+    FROM transactions t JOIN locations l ON l.location_id = t.location_id
+    WHERE t.txn_type = 'inbound'
+    GROUP BY l.location_code
+  expect: abstain
+  gold_notes: "No returns concept in the data: txn_type has only inbound and outbound (receipts and issues), nothing marks a return."
+  trap: "A model treats inbound movements as returns. Real SQL, plausible figure, grouped as asked."
+
+- id: A-049
+  family: a
+  space: ops
+  question: "What is the total shipping cost by supplier name?"
+  model_sql: >-
+    SELECT sp.supplier_name, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s
+    JOIN inventory i ON i.sku = s.sku
+    JOIN suppliers sp ON sp.supplier_id = i.supplier_id
+    GROUP BY sp.supplier_name
+  expect: abstain
+  gold_notes: "Ops is not granted the suppliers table, so supplier names cannot be shown; shipments carry no supplier either."
+  trap: "Ungranted-table control through a three-way join: the fan-out SQL names suppliers, and the grant check must stop it."
+
+- id: A-050
+  family: a
+  space: finance
+  question: "What is the total shipping cost for each warehouse?"
+  model_sql: >-
+    SELECT l.location_code, SUM(s.cost_myr) AS total_shipping_cost
+    FROM shipments s JOIN locations l ON l.location_id = s.destination_location_id
+    GROUP BY l.location_code
+  expect: abstain
+  gold_notes: "Finance is not granted the shipments table."
+  trap: "Ungranted-table control: a loud grant guard should stop this."
+
+- id: A-051
+  family: a
+  space: company
+  question: "What is the total outbound quantity in kg by customer?"
+  model_sql: >-
+    SELECT l.name AS customer, SUM(t.quantity_kg) AS outbound_kg
+    FROM transactions t JOIN locations l ON l.location_id = t.location_id
+    WHERE t.txn_type = 'outbound'
+    GROUP BY l.name
+  expect: abstain
+  gold_notes: "There is no customer entity anywhere in the data. Warehouses are not customers."
+  trap: "A model substitutes the warehouse for 'customer' and labels the column customer; the answer is a confident join result about the wrong entity."
+
+# ---------------------------------------------------------------- ROUND 2 ADDITIONS
+- id: A-052
+  family: a
+  space: finance
+  question: "Which supplier has the highest total capacity in kg across the warehouses that hold its stock?"
+  model_sql: >-
+    SELECT s.supplier_name, SUM(l.capacity_kg) AS total_capacity_kg
+    FROM suppliers s
+    JOIN inventory i ON i.supplier_id = s.supplier_id
+    JOIN locations l ON l.location_id = i.location_id
+    GROUP BY s.supplier_name
+    ORDER BY total_capacity_kg DESC
+    LIMIT 1
+  expect: answer
+  gold_sql: >-
+    SELECT s.supplier_name, SUM(l.capacity_kg) AS total_capacity_kg
+    FROM suppliers s
+    JOIN (SELECT DISTINCT supplier_id, location_id FROM inventory) x ON x.supplier_id = s.supplier_id
+    JOIN locations l ON l.location_id = x.location_id
+    GROUP BY s.supplier_name
+    ORDER BY total_capacity_kg DESC, s.supplier_name ASC
+    LIMIT 1
+  gold_notes: "Each distinct warehouse once per supplier. Orbit Packing (C, G, A = 230000) beats Northshore Materials (A, D = 220000). The join counts warehouse A twice for Northshore (two lots there) and flips the winner."
+  trap: "Same fan-out as A-031, asked as a ranking: the inflated figure changes WHICH supplier is named, so the answer is a wrong name with a plausible number and a green badge, not just a wrong magnitude."
+
+- id: A-053
+  family: a
+  space: finance
+  question: "What is the largest stock quantity in kg held for any SKU that had outbound sales?"
+  model_sql: >-
+    SELECT MAX(i.quantity_kg) AS max_stock_kg
+    FROM inventory i JOIN transactions t ON t.sku = i.sku
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT MAX(quantity_kg) AS max_stock_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  gold_notes: "MAX is immune to row repetition: the fan-out join returns the right number."
+  trap: "control: a fan-out join whose aggregate is idempotent (MAX). The answer is right. A detector that flags every one-to-many join would over-abstain here; a correct gate must not."
+  control: true
+
+- id: A-054
+  family: a
+  space: finance
+  question: "What is the total stock quantity in kg supplied by Northshore Materials?"
+  model_sql: >-
+    SELECT SUM(i.quantity_kg) AS total_stock_kg
+    FROM inventory i JOIN suppliers s ON s.supplier_id = i.supplier_id
+    WHERE s.supplier_name = 'Northshore Materials'
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE supplier_id = 'SUP-01'
+  gold_notes: "Northshore Materials is SUP-01: 1200 + 80 + 900 = 2180 kg. The join is many-to-one and safe."
+  trap: "control and over-abstention probe: a correct many-to-one join with a scalar answer, in a sentence containing 'by <Name>' which looks like a group-by request to a closed-list shape check."
+  control: true
+
+- id: A-055
+  family: a
+  space: company
+  question: "How many alerts are there at warehouses that have a delayed shipment arriving?"
+  model_sql: >-
+    SELECT COUNT(*) AS alerts_at_delayed_destinations
+    FROM alerts a JOIN shipments s ON s.destination_location_id = a.location_id
+    WHERE s.status = 'delayed'
+  expect: answer
+  gold_sql: >-
+    SELECT COUNT(*) AS alerts_at_delayed_destinations FROM alerts
+    WHERE location_id IN (SELECT destination_location_id FROM shipments WHERE status = 'delayed')
+  gold_notes: "Alerts at A (2), C (1) and D (1) = 4. Warehouse A has two delayed shipments, so its alerts are counted twice."
+  trap: "Two sibling child tables (alerts, shipments) of locations joined on the shared warehouse key, COUNT(*): many-to-many. Needs the company Space (alerts)."
+
+- id: A-056
+  family: a
+  space: finance
+  question: "What is the total shipping cost for each warehouse, counting every shipment once?"
+  model_sql: >-
+    SELECT l.location_code, SUM(s.cost_myr) AS total_shipping_cost
+    FROM locations l, shipments s
+    WHERE s.destination_location_id = l.location_id
+    GROUP BY l.location_code
+  expect: abstain
+  gold_notes: "Finance is not granted shipments. The model joins it with an old-style comma join, so the second relation never follows the word FROM/JOIN directly. A grant check that only reads the first relation after FROM or JOIN would miss it. (In production Cortex's own manifest check would also see it; this harness stubs that layer.)"
+  trap: "Implicit (comma) join to an ungranted table: models trained on older SQL still write FROM a, b WHERE a.k = b.k. The question is genuinely unanswerable from Finance's granted tables."
+
+- id: A-057
+  family: a
+  space: finance
+  ask_path: product
+  question: "How much stock in kg do we hold for SKUs that have been sold?"
+  model_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM (
+      SELECT i.quantity_kg,
+             ROW_NUMBER() OVER (PARTITION BY i.sku ORDER BY t.ts) AS rn
+      FROM inventory i JOIN transactions t ON t.sku = i.sku
+      WHERE t.txn_type = 'outbound'
+    ) d
+    WHERE rn = 1
+  expect: answer
+  gold_sql: >-
+    SELECT SUM(quantity_kg) AS total_stock_kg FROM inventory
+    WHERE sku IN (SELECT sku FROM transactions WHERE txn_type = 'outbound')
+  gold_notes: "Ten stock lines of sold SKUs: 10680. De-duplicating per SKU keeps one lot per SKU and loses SKU-ALPHA's second lot (1800) and SKU-GAMMA's second lot (90)."
+  trap: "A model that has noticed the join repeats rows 'fixes' it with ROW_NUMBER() per SKU. That removes the repetition and also removes real second lots: an undercount produced by the repair, not the join."
+
+- id: A-058
+  family: a
+  space: finance
+  question: "List the categories with more than 5 outbound transactions along with the number of transactions."
+  model_sql: >-
+    SELECT i.category, COUNT(*) AS outbound_transactions
+    FROM transactions t JOIN inventory i ON i.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY i.category
+    HAVING COUNT(*) > 5
+  expect: answer
+  gold_sql: >-
+    SELECT p.category, COUNT(*) AS outbound_transactions
+    FROM transactions t JOIN (SELECT DISTINCT sku, category FROM inventory) p ON p.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+    GROUP BY p.category
+    HAVING COUNT(*) > 5
+  gold_notes: "PACKAGING has 6 outbound transactions and PARTS 6. The join counts PACKAGING as 9 because SKU-ALPHA has two lots."
+  trap: "A threshold filter on a counted join: the same category set comes back (so a spot check of the list looks fine) but the printed count is wrong. HAVING hides that the threshold itself is applied to the inflated count."
+
+- id: A-059
+  family: a
+  space: finance
+  question: "What percentage of outbound quantity is for SKUs in the PACKAGING category?"
+  model_sql: >-
+    SELECT ROUND(100.0 * SUM(CASE WHEN i.category = 'PACKAGING' THEN t.quantity_kg ELSE 0 END)
+                 / SUM(t.quantity_kg), 2) AS packaging_share_pct
+    FROM transactions t JOIN inventory i ON i.sku = t.sku
+    WHERE t.txn_type = 'outbound'
+  expect: answer
+  gold_sql: >-
+    SELECT ROUND(100.0 * SUM(CASE WHEN sku IN (SELECT sku FROM inventory WHERE category = 'PACKAGING')
+                                  THEN quantity_kg ELSE 0 END) / SUM(quantity_kg), 2) AS packaging_share_pct
+    FROM transactions
+    WHERE txn_type = 'outbound'
+  gold_notes: "3650 of 6300 outbound kg: 57.94 percent. The join inflates numerator and denominator by different factors (ALPHA and GAMMA have two lots) and gives about 68.9."
+  trap: "A ratio where both numerator and denominator fan out, by different factors: the result is a tidy bounded percentage that cannot be magnitude-checked (always between 0 and 100) and moves by ten points."
