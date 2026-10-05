@@ -43,6 +43,23 @@ ELEVEN = (
 ASK = "top sales across SEA"
 
 
+def _filter_members(actual: tuple[str, ...], expected: frozenset[str]) -> None:
+    """Membership of the filter, not the order DuckDB happened to scan.
+
+    ``certify_pack`` reads ``SELECT DISTINCT ... LIMIT`` with no ORDER BY
+    (``binder._distinct_values``). DuckDB merges that aggregate across
+    threads, so the tuple is a race. Measured on duckdb 1.5.6: threads=8
+    returned ``('SG', 'TH', 'MY')`` on 72 of 80 calls against the iso2
+    fixture, and ``('MY', 'SG', 'TH')`` on the other 8. A product ORDER BY
+    stays post-baseline (#349). This helper fails only when a code is
+    missing, duplicated, or invented.
+    """
+    assert set(actual) == set(expected), (
+        f"filter members {sorted(expected)} but the scan returned {actual}"
+    )
+    assert len(actual) == len(set(actual)) == len(expected), actual
+
+
 @pytest.fixture()
 def iso2_lake(tmp_path: Path) -> Path:
     """Three SEA countries as ISO alpha-2, plus two countries outside the region."""
@@ -88,14 +105,17 @@ def test_certifies_against_iso2_encoding_and_filters_in_that_encoding(
     iso2_lake: Path,
 ) -> None:
     res = bind_geo(ASK, warehouse=iso2_lake, tables=["sales"])
-    assert res.status == "CERTIFIED"
-    assert set(res.matched) == {"Malaysia", "Singapore", "Thailand"}
+    assert res.status == "CERTIFIED", (res.status, res.reasons)
+    assert set(res.matched) == {"Malaysia", "Singapore", "Thailand"}, dict(res.matched)
     binding = res.binding_text() or ""
     # Hard rule 12: the filter carries what the column holds. 'Malaysia' against
     # a column of ISO codes parses, executes and matches nothing.
-    assert "'MY'" in binding
-    assert "'Malaysia'" not in binding
-    assert res.values == ("MY", "SG", "TH")
+    assert "'MY'" in binding, binding
+    assert "'SG'" in binding, binding
+    assert "'TH'" in binding, binding
+    assert "'Malaysia'" not in binding, binding
+    # Order is the unordered DISTINCT scan. See _filter_members.
+    _filter_members(res.values, frozenset({"MY", "SG", "TH"}))
 
 
 def test_mixed_encodings_in_one_column_bind_to_canonical_members(
@@ -133,12 +153,13 @@ def test_partial_coverage_is_disclosed_not_rounded_up(iso2_lake: Path) -> None:
 
 def test_non_member_countries_are_excluded_and_reported(iso2_lake: Path) -> None:
     res = bind_geo(ASK, warehouse=iso2_lake, tables=["sales"])
-    assert "Japan" not in res.values
-    assert "Australia" not in res.values
+    assert "Japan" not in res.values, res.values
+    assert "Australia" not in res.values, res.values
     # Reported rather than dropped, so a steward can see the encoding in use and
-    # widen the pack deliberately if the region was wrong.
-    assert "Japan" in res.unmatched_sample
-    assert "Australia" in res.unmatched_sample
+    # widen the pack deliberately if the region was wrong. Sample order follows
+    # the same unordered DISTINCT scan as res.values, so this is membership.
+    assert "Japan" in res.unmatched_sample, res.unmatched_sample
+    assert "Australia" in res.unmatched_sample, res.unmatched_sample
 
 
 def test_abstains_when_the_grant_carries_no_country_column(iso2_lake: Path) -> None:
@@ -157,7 +178,7 @@ def test_abstains_on_a_european_book_rather_than_matching_zero_rows(
     assert res.values == ()
     assert res.binding_text() is None
     assert "membership was proposed, never landed" in res.reasons[0]
-    assert "France" in res.unmatched_sample
+    assert "France" in res.unmatched_sample, res.unmatched_sample
 
 
 def test_abstains_when_the_ask_names_no_region(iso2_lake: Path) -> None:
