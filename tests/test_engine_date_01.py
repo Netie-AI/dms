@@ -301,7 +301,7 @@ def test_live_oracle_and_scorer_still_bind_as_of(
 def test_ab_offline_counts_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """52-pack quints, INVALID 0. Exact moved with the pack registry; generative did not."""
+    """52-pack quints, INVALID 0. Exact is the allowlist registry; generative did not move."""
     from score_curated import ab_offline
 
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
@@ -320,7 +320,7 @@ def test_ab_offline_counts_unchanged(
             int(row["oracle_error"]),
         )
 
-    assert quint(exact) == (0, 43, 9, 0, 0)
+    assert quint(exact) == (0, 23, 29, 0, 0)
     assert quint(gen) == (0, 26, 11, 15, 0)
     assert exact["invalid"] == 0
     assert gen["invalid"] == 0
