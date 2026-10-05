@@ -85,9 +85,62 @@ test.describe("STUDIO-MOBILE-01 phone-width", () => {
     await expect(toggle).toBeVisible();
     const box = await toggle.boundingBox();
     expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expect((box?.y ?? 999) + (box?.height ?? 0)).toBeLessThanOrEqual(812);
     await toggle.click();
     await expect(page.getByTestId("studio-files")).toBeVisible();
     await expect(page.getByTestId("sql-source-panel")).toBeVisible();
+    const preview = page.getByTestId("studio-preview");
+    const previewBox = await preview.boundingBox();
+    expect(previewBox?.width ?? 0).toBeGreaterThan(200);
+    await page.getByTestId("studio-sources-close").click();
+    await expect(page.getByTestId("studio-files")).toBeHidden();
+    await expect(page.getByTestId("sql-source-panel")).toBeHidden();
+  });
+});
+
+test.describe("STUDIO-MOBILE-01 phone-width 640", () => {
+  test.use({ viewport: { width: 640, height: 800 } });
+
+  test("sources start closed and do not cover the ask surface", async ({ page }) => {
+    await page.goto("/studio");
+    await expect(page.getByRole("heading", { name: "Studio", level: 1 })).toBeVisible();
+    await expect(page.getByTestId("studio-files")).toBeHidden();
+    await expect(page.getByTestId("sql-source-panel")).toBeHidden();
+
+    const toggle = page.getByTestId("studio-sources-toggle");
+    await expect(toggle).toBeVisible();
+    const box = await toggle.boundingBox();
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expect((box?.y ?? 999) + (box?.height ?? 0)).toBeLessThanOrEqual(800);
+
+    const ask = page.getByRole("button", {
+      name: "What is our total spend by supplier country?",
+    });
+    await expect(ask).toBeVisible();
+    const askBox = await ask.boundingBox();
+    expect(askBox?.width ?? 0).toBeGreaterThan(200);
+    const askHit = await page.evaluate(
+      ({ x, y }) => document.elementFromPoint(x, y)?.closest("button")?.textContent?.trim() ?? "",
+      { x: askBox!.x + 12, y: askBox!.y + askBox!.height / 2 },
+    );
+    expect(askHit).toContain("total spend");
+
+    await toggle.click();
+    await expect(page.getByTestId("studio-files")).toBeVisible();
+    await expect(page.getByTestId("sql-source-panel")).toBeVisible();
+    const previewBox = await page.getByTestId("studio-preview").boundingBox();
+    expect(previewBox?.width ?? 0).toBeGreaterThan(200);
+    const close = page.getByTestId("studio-sources-close");
+    const closeBox = await close.boundingBox();
+    expect(closeBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await close.click();
+    await expect(page.getByTestId("studio-files")).toBeHidden();
+    const askBoxAfter = await ask.boundingBox();
+    const askHitAfter = await page.evaluate(
+      ({ x, y }) => document.elementFromPoint(x, y)?.closest("button")?.textContent?.trim() ?? "",
+      { x: askBoxAfter!.x + 12, y: askBoxAfter!.y + askBoxAfter!.height / 2 },
+    );
+    expect(askHitAfter).toContain("total spend");
   });
 });
 
@@ -234,7 +287,18 @@ test.describe("STUDIO-MOBILE-01 desktop lg", () => {
     await page.goto("/studio");
     await expect(page.getByRole("heading", { name: "Studio", level: 1 })).toBeVisible();
     await expect(page.getByTestId("studio-sources-toggle")).toBeHidden();
+    await expect(page.getByTestId("studio-sources-close")).toBeHidden();
     await expect(page.getByTestId("studio-files")).toBeVisible();
     await expect(page.getByTestId("sql-source-panel")).toBeVisible();
+    const filesBox = await page.getByTestId("studio-files").boundingBox();
+    const previewBox = await page.getByTestId("studio-preview").boundingBox();
+    const sqlBox = await page.getByTestId("sql-source-panel").boundingBox();
+    expect(filesBox).toBeTruthy();
+    expect(previewBox).toBeTruthy();
+    expect(sqlBox).toBeTruthy();
+    expect(filesBox!.x + filesBox!.width).toBeLessThanOrEqual(previewBox!.x + 4);
+    expect(Math.abs(filesBox!.y - previewBox!.y)).toBeLessThan(12);
+    expect(sqlBox!.y).toBeGreaterThan(previewBox!.y);
+    expect(sqlBox!.width).toBeGreaterThan(filesBox!.width);
   });
 });

@@ -82,7 +82,10 @@ describe("STUDIO-MOBILE-01 layout wiring", () => {
     const page = readFileSync(join(here, "../pages/StudioPage.tsx"), "utf8");
     expect(page).toMatch(/lg:grid-cols-\[22rem_1fr\]/);
     expect(page).toMatch(/max-lg:hidden/);
+    expect(page).toMatch(/max-lg:fixed/);
+    expect(page).toMatch(/lg:contents/);
     expect(page).toMatch(/studio-sources-toggle/);
+    expect(page).toMatch(/studio-sources-close/);
     expect(page).toMatch(/<SqlSourcePanel /);
   });
 });
