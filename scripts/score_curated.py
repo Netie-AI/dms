@@ -16,6 +16,7 @@ traps that must abstain. It does not start EPIC-019 (no new VQ repo).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -2034,6 +2035,75 @@ def _planned_n() -> int:
     return len(merge_pack_questions(list(pack["questions"])))
 
 
+# Platform's redeploy wrapper is the only writer of this file. The scorer
+# reads it and never writes it. score_curated.json is the report live()
+# overwrites, and cortex_l2 is not read from there.
+CORTEX_L2_SCAN_NAME = "cortex_l2_scan.json"
+# Choice A. The wrapper writes service_started_now into the scan in the same
+# step as live(). DMS does not query a service manager: live() runs here, and
+# a local systemctl would name this host, not Cortex.
+# Not choice B. Cortex 279cbd85 GET /health (CortexOS/api/app.py:143-145)
+# returns only status and pack. resolve_live_engine_clock reads that call for
+# the engine date. It does not name a service start or a Cortex unit.
+CORTEX_L2_START_SOURCE = "cortex_l2_scan.json:service_started_now"
+_CORTEX_SCAN_SHA = "279cbd85"
+# Value bound at round start, sha256 of the scan bytes, and the start source
+# the report names. Not taken from the report live() is about to write.
+_USED_CORTEX_L2: tuple[str, str | None, str | None] = ("missing", None, None)
+
+
+def _scan_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def recorded_cortex_l2(art: Path) -> tuple[str, str | None, str | None]:
+    """``cortex_l2`` from the Platform scan, plus sha256 and the start source.
+
+    Input is ``$DMS_SCORE_DIR/cortex_l2_scan.json``. The wrapper runs the scan
+    and ``live()`` back to back. ``service_started_at`` is the start time it
+    wrote at scan time. ``service_started_now`` is the start time it wrote for
+    this run. Those two are the comparison. ``cortex_unit_now`` must equal
+    ``cortex_unit``. ``cortex_sha`` must be ``279cbd85``.
+
+    A missing scan file is ``missing``. A bad sha, a missing timestamp, an
+    unreadable start time, a start time that differs, or a unit that does not
+    match is ``unknown``. Does not read ``score_curated.json`` or ``DMS_L2_*``.
+    Does not call a service manager.
+    """
+    path = art / CORTEX_L2_SCAN_NAME
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "missing", None, None
+    digest = hashlib.sha256(raw).hexdigest()
+    source = CORTEX_L2_START_SOURCE
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "unknown", digest, source
+    if not isinstance(data, dict):
+        return "unknown", digest, source
+    if data.get("cortex_sha") != _CORTEX_SCAN_SHA:
+        return "unknown", digest, source
+    if _scan_text(data.get("scanned_at")) is None:
+        return "unknown", digest, source
+    started = _scan_text(data.get("service_started_at"))
+    now = _scan_text(data.get("service_started_now"))
+    if started is None or now is None or started != now:
+        return "unknown", digest, source
+    unit = _scan_text(data.get("cortex_unit"))
+    unit_now = _scan_text(data.get("cortex_unit_now"))
+    if unit is None or unit_now is None or unit != unit_now:
+        return "unknown", digest, source
+    value = data.get("cortex_l2")
+    if value == "off" or value == "on":
+        return value, digest, source
+    return "unknown", digest, source
+
+
 def score_live_entry(
     url: str,
     timeout: float,
@@ -2042,16 +2112,26 @@ def score_live_entry(
     oracle_db: Path | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]], dict[str, Any]]:
     """Every live entry point. Passes the engine date. Does not call the judge."""
+    global _USED_CORTEX_L2
+    from cortex_client.strict_pin import bind_round_cortex_l2, reset_round_cortex_l2
+
     clock = resolve_live_engine_clock(url, timeout)
-    return score_pack_live(
-        url,
-        timeout,
-        ask_path,
-        oracle_db=oracle_db,
-        engine_as_of=clock.get("engine_as_of"),
-        engine_as_of_after=clock.get("engine_as_of_after"),
-        engine_timezone=clock.get("engine_timezone"),
-    )
+    art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+    value, digest, source = recorded_cortex_l2(art)
+    _USED_CORTEX_L2 = (value, digest, source)
+    token = bind_round_cortex_l2(value)
+    try:
+        return score_pack_live(
+            url,
+            timeout,
+            ask_path,
+            oracle_db=oracle_db,
+            engine_as_of=clock.get("engine_as_of"),
+            engine_as_of_after=clock.get("engine_as_of_after"),
+            engine_timezone=clock.get("engine_timezone"),
+        )
+    finally:
+        reset_round_cortex_l2(token)
 
 
 def _case_invalid_reason(
@@ -2899,6 +2979,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
     print_category_report(cats)
     art = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
     art.mkdir(parents=True, exist_ok=True)
+    # The value bound at round start. Not a second read of score_curated.json.
+    cortex_l2, cortex_l2_scan_sha256, cortex_service_start_source = _USED_CORTEX_L2
     run_id = uuid.uuid4().hex
     sha = merge_commit_sha()
     rec_path = case_record_path(case_record_dir(art), run_id, sha)
@@ -2982,6 +3064,9 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "case_record": str(abs_record),
                 "baseline_eligible": eligible,
                 "baseline_ineligible_reasons": ineligible,
+                "cortex_l2": cortex_l2,
+                "cortex_l2_scan_sha256": cortex_l2_scan_sha256,
+                "cortex_service_start_source": cortex_service_start_source,
                 "record_path_scratch": path_block == "record_path_scratch",
                 "record_path_in_repo": path_block == "record_path_in_repo",
                 "categories": cats,

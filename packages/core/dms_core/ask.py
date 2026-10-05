@@ -65,3 +65,28 @@ class GroundingRefused(Exception):
     @property
     def message(self) -> str:
         return str(self)
+
+
+# One lane list. BRONZE-GRANT-01 (#333, bronze_sheet_ask) and the pin both
+# import this object. No second copy.
+# A name is listed only when that handler cannot reach cortex_client and
+# cannot reach L2. rules and curated both submit through CortexClient, and
+# contract /ask can call a model via attempt_l2, so they are not listed.
+# Their recorded zero is scored from rows only when the Platform scan
+# cortex_l2_scan.json says cortex_l2 is off. See the pin.
+NO_MODEL_LANES: frozenset[str] = frozenset()
+MODEL_LANES = frozenset({"generative"})
+_ROUTE_LANE = {
+    "verified_query": "rules",
+    "governed_metric": "curated",
+    "generated": "generative",
+    "bronze_sheet": "bronze",
+    "followup": "followup",
+}
+
+
+def lane_for_route(route: object) -> str | None:
+    """Lane name for an ask route. None when this route is not on the list."""
+    if not isinstance(route, str) or route == "":
+        return None
+    return _ROUTE_LANE.get(route)

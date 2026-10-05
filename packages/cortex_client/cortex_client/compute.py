@@ -19,6 +19,7 @@ the body.
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
@@ -29,6 +30,27 @@ from cortex_client.insights import (
     INSIGHTS_PATH,
     generate_bearer_refuse,
 )
+
+# Explicit generate-POST count for the answer in this context. Not usage
+# and not a clock. ponytail: one token per context; a thread that does not
+# copy_context shares it. Upgrade: stamp the int on the generate payload.
+_answer_model_calls: ContextVar[int] = ContextVar("dms_answer_model_calls", default=0)
+
+
+def begin_answer_model_calls() -> None:
+    """Start one answer at zero."""
+    _answer_model_calls.set(0)
+
+
+def note_model_call() -> None:
+    """One generate POST is about to leave this client."""
+    _answer_model_calls.set(_answer_model_calls.get() + 1)
+
+
+def recorded_model_calls() -> int:
+    """The counter for the current answer. Zero until ``note_model_call``."""
+    return _answer_model_calls.get()
+
 
 COMPUTE_PATH = "/dms/query"
 ONTOLOGY_MODE = "ontology_plan"
@@ -728,6 +750,7 @@ def _insights_generate_post(
     if body.get("pin_refusal"):
         return refusal_payload(str(body["pin_refusal"]))
     hdr = stamp_generate_headers(headers)
+    note_model_call()
     try:
         res = http.post(
             f"{root}{INSIGHTS_PATH}",

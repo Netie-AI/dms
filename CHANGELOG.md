@@ -2,6 +2,36 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - PIN-NOMODEL-01: L2 input is the Platform scan, not the score report (Refs dms#317)
+
+- **Input.** `recorded_cortex_l2` reads `$DMS_SCORE_DIR/cortex_l2_scan.json` only. Platform's redeploy wrapper is the writer. The scorer does not read `cortex_l2` from `score_curated.json`, which `live()` overwrites. The scan names `cortex_l2`, `cortex_sha`, `scanned_at`, `service_started_at`, `service_started_now`, `cortex_unit`, and `cortex_unit_now`. `cortex_sha` must be `279cbd85`. A missing scan is `missing`. A bad sha, a missing timestamp, or any other value is `unknown`.
+- **Service start.** Choice A. The wrapper writes the scan and then runs `live()` in one step. `service_started_now` is the start time it wrote for this run. `live()` compares that to `service_started_at`, and `cortex_unit_now` must equal `cortex_unit`. DMS does not call a service manager. Not choice B: Cortex `279cbd85` `GET /health` (`CortexOS/api/app.py:143-145`) returns only `status` and `pack`. `resolve_live_engine_clock` uses that call for the engine date. An unreadable start time, a start time that differs, or a unit that does not match is `unknown`, and unstamped `rules`/`curated` stay INVALID.
+- **Report.** The score report records the `cortex_l2` used, `cortex_l2_scan_sha256` of the scan bytes, and `cortex_service_start_source` (`cortex_l2_scan.json:service_started_now`). The scorer does not write the scan file.
+- **Gate.** No live scored round. 52-pack counts unchanged.
+
+## 2026-10-05 - PIN-NOMODEL-01: score unstamped rules only when the record says L2 off (Refs dms#317)
+
+- **Rule.** A recorded zero on `rules` or `curated` with `served_attribution` `none` and no `served_provider` or `served_model` is scored on its rows only when the round record's `cortex_l2` is `off`. `on`, `missing`, and `unknown` are INVALID `pin_mismatch`. The pin does not read `DMS_L2_*`. Platform's redeploy scan writes the field. Cortex `279cbd85` stamps Insights at `CortexOS/insights/routes.py:90-120`. CERTIFIED "no model called" is `:29` and `:117-118`. Contract `/ask` hands off at `CortexOS/api/contract_routes.py:238`. `attempt_l2` is `answer_engine.py:1832-1835`, and `dms/l2_generation.py:181-184` is gated by `DMS_L2_*` at `l2_generation.py:103`.
+- **Lane.** `live_ask` sets `lane` from the executor route (`packages/executor/dms_executor/__init__.py:516-520`). A payload `lane` or `plan_source` is not the pin lane. `NO_MODEL_LANES` stays empty. `sheet_lane` raises only for a model lane.
+- **Gate.** No live scored round. The 52-pack counts are unchanged.
+
+## 2026-10-05 - PIN-NOMODEL-01: Cortex lanes use the stamp check (Refs dms#317)
+
+- **Correction.** Epic comments 5940019953, 5940040724, 5947946216. Head `a2c23853` is not the rule. A recorded zero on `rules` or `curated` only means the answer is not no-model. The pin then checks `served_provider` and `served_model`. A match is scored on the rows. Missing or unmatched stamps are INVALID `pin_mismatch`. `NO_MODEL_LANES` stays empty: both handlers submit through Cortex.
+- **Gate.** The matching-stamps case passes on `7a8d6c11`. No live scored round. `score_curated.py` is untouched.
+
+## 2026-10-01 - PIN-NOMODEL-01: a Cortex lane is not no-model (Refs dms#317)
+
+- **Amendment.** Epic comment 5939668193. `model_calls` counts only model posts from DMS's own client. `rules` and `curated` come off `NO_MODEL_LANES`: `maybe_verified_ask` and `maybe_pack_ask` submit and append through Cortex. The shared list is empty. A zero on `CORTEX_LANES` is INVALID `pin_mismatch:<lane>`, kept in n.
+- **Gate.** `tests/test_pin_nomodel_01.py` covers that case through `live()` and fails on `7a8d6c11` on its own assert. A structural test fails if a listed lane's handler imports or calls `cortex_client`. No live scored round. `score_curated.py` is untouched. 52-pack counts stay.
+
+## 2026-10-01 - PIN-NOMODEL-01: pin only when the answer called a model (Refs dms#317)
+
+- **Ticket.** Follow-up under [dms#317](https://github.com/Netie-AI/dms/issues/317). Does not close the issue. Does not stamp COMPLETE.
+- **Rule.** The strict pin applies only when the answer's `model_calls` counter is missing or not zero. A recorded zero on lane `rules` or `curated` (one list, `dms_core.ask.NO_MODEL_LANES`, imported by `bronze_sheet_ask` and `strict_pin`) is scored on its rows and is not attributed to the pin. Zero calls with any `served_*` field, or lane `generative`, is INVALID `pin_mismatch`. No lane is INVALID `lane_unknown`. Both stay in n.
+- **Counter.** The client increments at the generate POST (`note_model_call` in `packages/cortex_client/cortex_client/compute.py`). `Executor.live_ask` writes that int onto the answer. Not usage and not a clock.
+- **Gate.** `tests/test_pin_nomodel_01.py` fails on `7a8d6c11` on its own assert. No live scored round. `score_curated.py` is untouched.
+
 ## 2026-10-01 - PIN-STRIP-01: preflight matches served ids exactly (Refs dms#317)
 
 - **Ticket.** Follow-up under [dms#317](https://github.com/Netie-AI/dms/issues/317). Does not close the issue. Does not stamp COMPLETE.

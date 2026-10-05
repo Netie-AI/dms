@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
 
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -39,6 +40,20 @@ _FOR_FILTER = re.compile(
     re.I,
 )
 _TOTAL = re.compile(r"\btotal\b", re.I)
+
+
+def sheet_lane() -> str:
+    """Bronze's lane name. Being on NO_MODEL_LANES is what the list is for.
+
+    A model lane cannot be this sheet path.
+    """
+    name = "bronze"
+    if name in MODEL_LANES:
+        raise RuntimeError(name)
+    # On NO_MODEL_LANES is allowed. The shared object is the one the pin imports.
+    if name in NO_MODEL_LANES:
+        return name
+    return name
 
 
 def bronze_lane_table(question: str) -> str | None:
@@ -98,6 +113,7 @@ def bronze_grant_abstain(
         route="abstain",
         question=question,
     )
+    env["lane"] = sheet_lane()
     assert_envelope_valid(env)
     return env
 
