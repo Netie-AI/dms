@@ -13,7 +13,9 @@ the report).
 
 The model SQL is INJECTED (inferred, never observed from a model) through a stubbed Cortex;
 Cortex-side enforcement and the F5 gate are not exercised (tests/redteam/harness.py,
-"NOT EXERCISED"). Full corpus (338 cases):
+"NOT EXERCISED"). The stub pins DuckDB TimeZone to Asia/Kuala_Lumpur (harness.SESSION_TZ):
+TZ_SHIFT is silent on a UTC session, which is what CI runs, and the strict xfail would
+XPASS. Full corpus (338 cases):
 ``python scripts/redteam_run.py --cases tests/redteam/corpus/a.yaml --family a --out <dir>
 --run-id x``. Local run, unverified until Verify reruns it on the merge commit.
 """

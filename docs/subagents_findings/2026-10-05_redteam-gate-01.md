@@ -125,6 +125,7 @@ Read: #311 closes fan-out (28 of 29 become abstains) at an over-abstention cost,
 - Per-case evidence (question, injected SQL, served badge/route/rows, blind-derived SQL and rows, issue, judge grades) for all 231 suspected cases: `docs/subagents_findings/2026-10-05_redteam-gate-01.cases.jsonl`.
 - Corpus: `tests/redteam/corpus/{a..e}.yaml` + `.ext.sql` (338 cases; synthetic seed plus extension rows, no personal data). Harness: `scripts/redteam_run.py`, `tests/redteam/`.
 - Proposed tests: `tests/redteam/test_redteam_findings.py`: 37 strict xfails (one per verified cause class, disputed readings excluded) and 8 controls. Result on main 7a8d6c1 + harness: **8 passed, 37 xfailed, 46 s**. On #311's head the same module gives 15 XPASS(strict) and 22 xfail, and all 8 controls fail (selected as the controls #311 refuses, so that 8 of 8 is by construction; the unbiased figure is the full-sweep control count above).
+- Session zone: `TZ_SHIFT` (`C-007`) is silent when DuckDB's session zone is UTC, because `CAST(ts AT TIME ZONE 'UTC' AS DATE)` then equals the naive wall date and the served total matches gold. CI runners are UTC, so the strict xfail XPASS'd (run 37227965001). The harness pins the stub session to `Asia/Kuala_Lumpur` (the measurement host). Gate code is unchanged. Gold for C-007 casts the naive timestamp and does not use the session zone.
 - Run: `python scripts/redteam_run.py --cases tests/redteam/corpus/a.yaml --family a --out <dir> --run-id x` (no network, no keys, no model).
 
 ## 9. Limits and disclosures

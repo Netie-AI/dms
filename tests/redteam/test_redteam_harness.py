@@ -364,6 +364,34 @@ def test_cortex_stub_has_no_base_url_so_f5_is_soft_skipped(h) -> None:
     assert not hasattr(h.cortex, "api_key")
 
 
+def test_stub_submit_pins_kuala_lumpur_so_utc_cast_shifts(db) -> None:
+    """C-007 is silent on UTC: AT TIME ZONE 'UTC' then matches the wall date."""
+    from cortex_contract.execution import PoolSpec, SubmitRequest
+    from dms_executor.manifest import SessionAcl
+
+    cx = harness.RedteamCortex(db.cortex, wire="raw")
+    cx.begin_case(mk("C-007", "q", "SELECT 1", gold="SELECT 1"))
+    acl = SessionAcl("s", "t", None, {"transactions": "TRUE"}, [], "default")
+    sql = (
+        "SELECT CAST(TIMESTAMP '2026-09-30 23:59:59' AT TIME ZONE 'UTC' AS DATE) AS shifted, "
+        "CAST(TIMESTAMP '2026-09-30 23:59:59' AS DATE) AS wall, "
+        "CAST(TIMESTAMP '2026-09-29 20:00:00' AT TIME ZONE 'UTC' AS DATE) AS pulled"
+    )
+    req = SubmitRequest(
+        pool=PoolSpec(id="default"),
+        plan={"kind": "sql"},
+        body={"sql": sql},
+        manifest=harness._stub_minter().mint_manifest(acl),
+    )
+    res = cx.submit(req)
+    assert res.ok is True, res.error
+    row = res.output["rows"][0]
+    assert cx.trace.cortex_clock["timezone"] == harness.SESSION_TZ
+    assert row["shifted"].isoformat() == "2026-10-01"
+    assert row["wall"].isoformat() == "2026-09-30"
+    assert row["pulled"].isoformat() == "2026-09-30"
+
+
 def test_stub_submit_cannot_read_local_files(db) -> None:
     from cortex_contract.execution import PoolSpec, SubmitRequest
     from dms_executor.manifest import SessionAcl

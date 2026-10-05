@@ -34,6 +34,13 @@ from typing import Any
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 STUB = "redteam-stub"
+# TZ_SHIFT (C-007) is silent on UTC: CAST(ts AT TIME ZONE 'UTC' AS DATE) then
+# equals the naive wall date, the served total matches gold, and the strict
+# xfail XPASSes. The finding was measured on Asia/Kuala_Lumpur. Pin that zone
+# on every stub submit so a UTC CI runner still reproduces the wrong answer.
+# ponytail: one zone for every stub submit. Upgrade: a per-case zone if a
+# later family needs a different session.
+SESSION_TZ = "Asia/Kuala_Lumpur"
 _PATH_DIRS = (
     REPO / "apps" / "api",
     REPO / "packages" / "core",
@@ -242,6 +249,7 @@ class RedteamCortex:
             str(self.cortex_db), read_only=True, config={"enable_external_access": False}
         )
         try:
+            con.execute("SET TimeZone = ?", [SESSION_TZ])
             clk = con.execute(
                 "SELECT CAST(CURRENT_DATE AS VARCHAR), current_setting('TimeZone')"
             ).fetchone()
