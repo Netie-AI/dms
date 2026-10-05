@@ -72,8 +72,8 @@ class GroundingRefused(Exception):
 # A name is listed only when that handler cannot reach cortex_client and
 # cannot reach L2. rules and curated both submit through CortexClient, and
 # contract /ask can call a model via attempt_l2, so they are not listed.
-# Their recorded zero is scored from rows only when the round record says
-# cortex_l2 is off. See the pin.
+# Their recorded zero is scored from rows only when the Platform scan
+# cortex_l2_scan.json says cortex_l2 is off. See the pin.
 NO_MODEL_LANES: frozenset[str] = frozenset()
 MODEL_LANES = frozenset({"generative"})
 _ROUTE_LANE = {

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - PIN-NOMODEL-01: L2 input is the Platform scan, not the score report (Refs dms#317)
+
+- **Input.** `recorded_cortex_l2` reads `$DMS_SCORE_DIR/cortex_l2_scan.json` only. Platform's redeploy wrapper is the writer. The scorer does not read `cortex_l2` from `score_curated.json`, which `live()` overwrites. The scan names `cortex_l2`, `cortex_sha`, `scanned_at`, `service_started_at`, `service_started_now`, `cortex_unit`, and `cortex_unit_now`. `cortex_sha` must be `279cbd85`. A missing scan is `missing`. A bad sha, a missing timestamp, or any other value is `unknown`.
+- **Service start.** Choice A. The wrapper writes the scan and then runs `live()` in one step. `service_started_now` is the start time it wrote for this run. `live()` compares that to `service_started_at`, and `cortex_unit_now` must equal `cortex_unit`. DMS does not call a service manager. Not choice B: Cortex `279cbd85` `GET /health` (`CortexOS/api/app.py:143-145`) returns only `status` and `pack`. `resolve_live_engine_clock` uses that call for the engine date. An unreadable start time, a start time that differs, or a unit that does not match is `unknown`, and unstamped `rules`/`curated` stay INVALID.
+- **Report.** The score report records the `cortex_l2` used, `cortex_l2_scan_sha256` of the scan bytes, and `cortex_service_start_source` (`cortex_l2_scan.json:service_started_now`). The scorer does not write the scan file.
+- **Gate.** No live scored round. 52-pack counts unchanged.
+
 ## 2026-10-05 - PIN-NOMODEL-01: score unstamped rules only when the record says L2 off (Refs dms#317)
 
 - **Rule.** A recorded zero on `rules` or `curated` with `served_attribution` `none` and no `served_provider` or `served_model` is scored on its rows only when the round record's `cortex_l2` is `off`. `on`, `missing`, and `unknown` are INVALID `pin_mismatch`. The pin does not read `DMS_L2_*`. Platform's redeploy scan writes the field. Cortex `279cbd85` stamps Insights at `CortexOS/insights/routes.py:90-120`. CERTIFIED "no model called" is `:29` and `:117-118`. Contract `/ask` hands off at `CortexOS/api/contract_routes.py:238`. `attempt_l2` is `answer_engine.py:1832-1835`, and `dms/l2_generation.py:181-184` is gated by `DMS_L2_*` at `l2_generation.py:103`.

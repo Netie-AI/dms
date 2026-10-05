@@ -6,14 +6,18 @@ is INVALID ``pin_mismatch:missing/missing``. A served pair that matches the
 pin is scored as the pin.
 
 ``rules`` and ``curated`` reach Cortex. A recorded zero with attribution
-``none`` and no served ids is scored only when the round record's
-``cortex_l2`` is ``off``. The pin does not read ``DMS_L2_*``. Lane comes
-from the executor route, not a payload ``lane`` or ``plan_source``.
+``none`` and no served ids is scored only when ``cortex_l2_scan.json`` says
+``cortex_l2`` is ``off`` for Cortex sha ``279cbd85``, and the wrapper's
+``service_started_now`` still matches ``service_started_at`` on the same
+Cortex unit. The pin does not read ``DMS_L2_*``, does not read a service
+manager, and does not read ``cortex_l2`` from ``score_curated.json``.
+Lane comes from the executor route, not a payload ``lane`` or ``plan_source``.
 """
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -31,9 +35,18 @@ from score_curated import live  # noqa: E402
 _PIN = harness._PIN
 _PROVIDER = harness._PROVIDER
 _ROUTE = {"rules": "verified_query", "curated": "governed_metric"}
+_SCAN = "cortex_l2_scan.json"
+_SCAN_SHA = "279cbd85"
+_STARTED_AT = "2026-10-05T09:00:00Z"
+_UNIT = "cortex.service"
+_START_SOURCE = "cortex_l2_scan.json:service_started_now"
 
 
 def _wipe(tmp_path: Path) -> None:
+    for name in (_SCAN, "score_curated.json"):
+        path = tmp_path / name
+        if path.is_file():
+            path.unlink()
     for path in tmp_path.glob("score_*"):
         if path.is_file():
             path.unlink()
@@ -123,11 +136,35 @@ def _score(
     return harness._report(tmp_path), script, sent
 
 
-def _seed_l2(tmp_path: Path, value: str) -> None:
-    (tmp_path / "score_curated.json").write_text(
-        json.dumps({"cortex_l2": value}),
-        encoding="utf-8",
-    )
+def _seed_l2(
+    tmp_path: Path,
+    value: str,
+    *,
+    cortex_sha: str = _SCAN_SHA,
+    now: str | None = None,
+    unit_now: str | None = None,
+    omit_now: bool = False,
+) -> str:
+    """Write the Platform scan. Returns the sha256 of those bytes.
+
+    Does not write ``score_curated.json`` and does not write a service-manager
+    file. ``now`` is ``service_started_now`` for this run. ``unit_now`` is the
+    unit that read names. Both match the scan unless the test plants a drift.
+    """
+    started = _STARTED_AT
+    body: dict[str, Any] = {
+        "cortex_l2": value,
+        "cortex_sha": cortex_sha,
+        "scanned_at": "2026-10-05T10:00:00Z",
+        "service_started_at": started,
+        "cortex_unit": _UNIT,
+        "cortex_unit_now": _UNIT if unit_now is None else unit_now,
+    }
+    if not omit_now:
+        body["service_started_now"] = started if now is None else now
+    raw = (json.dumps(body, sort_keys=True) + "\n").encode("utf-8")
+    (tmp_path / _SCAN).write_bytes(raw)
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _pack_n(report: dict[str, Any]) -> int:
@@ -273,8 +310,9 @@ def _unstamped_none(lane: str) -> dict[str, Any]:
 def test_live_unstamped_none_scores_when_cortex_l2_off(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Attribution none and no served ids score when the record says off."""
-    _seed_l2(tmp_path, "off")
+    """Attribution none and no served ids score when the scan says off."""
+    digest = _seed_l2(tmp_path, "off")
+    scan_before = (tmp_path / _SCAN).read_bytes()
     monkeypatch.setenv("DMS_L2_ENABLED", "1")
     try:
         report, _script, sent = _score(
@@ -289,6 +327,9 @@ def test_live_unstamped_none_scores_when_cortex_l2_off(
         )
         assert int(report["correct"]) >= 1
         assert report["cortex_l2"] == "off"
+        assert report["cortex_l2_scan_sha256"] == digest
+        assert report["cortex_service_start_source"] == _START_SOURCE
+        assert (tmp_path / _SCAN).read_bytes() == scan_before
         assert report["n"] == n_pack
     finally:
         _wipe(tmp_path)
@@ -298,8 +339,8 @@ def test_live_unstamped_none_scores_when_cortex_l2_off(
 def test_live_unstamped_none_invalid_when_cortex_l2_missing(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No cortex_l2 on the round record fail-closes to pin_mismatch."""
-    assert not (tmp_path / "score_curated.json").exists()
+    """No scan file fail-closes to pin_mismatch."""
+    assert not (tmp_path / _SCAN).exists()
     try:
         report, _script, sent = _score(monkeypatch, tmp_path, _unstamped_none(lane))
         n_pack = _pack_n(report)
@@ -308,6 +349,8 @@ def test_live_unstamped_none_invalid_when_cortex_l2_missing(
         assert row["verdict"] == "INVALID", row
         assert str(row["reason"]).startswith("pin_mismatch"), row
         assert report["cortex_l2"] == "missing"
+        assert report["cortex_l2_scan_sha256"] is None
+        assert report["cortex_service_start_source"] is None
         assert report["n"] == n_pack
     finally:
         _wipe(tmp_path)
@@ -318,7 +361,7 @@ def test_live_unstamped_none_invalid_when_cortex_l2_on(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """cortex_l2 on fail-closes a zero-call rules or curated answer."""
-    _seed_l2(tmp_path, "on")
+    digest = _seed_l2(tmp_path, "on")
     try:
         report, _script, sent = _score(monkeypatch, tmp_path, _unstamped_none(lane))
         n_pack = _pack_n(report)
@@ -327,6 +370,121 @@ def test_live_unstamped_none_invalid_when_cortex_l2_on(
         assert row["verdict"] == "INVALID", row
         assert str(row["reason"]).startswith("pin_mismatch"), row
         assert report["cortex_l2"] == "on"
+        assert report["cortex_l2_scan_sha256"] == digest
+        assert report["cortex_service_start_source"] == _START_SOURCE
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_live_stale_score_off_without_scan_stays_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old score report that says off is not a scan. No scan stays INVALID."""
+    (tmp_path / "score_curated.json").write_text(
+        json.dumps({"cortex_l2": "off"}) + "\n",
+        encoding="utf-8",
+    )
+    assert not (tmp_path / _SCAN).exists()
+    try:
+        report, _script, sent = _score(
+            monkeypatch, tmp_path, _unstamped_none("rules")
+        )
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", (
+            f"stale score_curated.json off with no scan was {row['verdict']} "
+            f"reason={row.get('reason')!r}"
+        )
+        assert str(row["reason"]).startswith("pin_mismatch"), row
+        assert report["cortex_l2"] == "missing"
+        assert report["cortex_l2_scan_sha256"] is None
+        assert report["cortex_service_start_source"] is None
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_live_service_start_changed_since_scan_stays_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scan off with sha 279cbd85 is unknown once service_started_now moved."""
+    digest = _seed_l2(tmp_path, "off", now="2026-10-05T11:00:00Z")
+    try:
+        report, _script, sent = _score(
+            monkeypatch, tmp_path, _unstamped_none("rules")
+        )
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", (
+            f"service start newer than the scan was {row['verdict']} "
+            f"reason={row.get('reason')!r}"
+        )
+        assert str(row["reason"]).startswith("pin_mismatch"), row
+        assert report["cortex_l2"] == "unknown"
+        assert report["cortex_l2_scan_sha256"] == digest
+        assert report["cortex_service_start_source"] == _START_SOURCE
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("label", "kwargs"),
+    [
+        ("unreadable service_started_now", {"omit_now": True}),
+        ("cortex_unit_now other.service", {"unit_now": "other.service"}),
+    ],
+)
+def test_live_start_source_not_the_scan_unit_stays_invalid(
+    label: str,
+    kwargs: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unread start time, or a different Cortex unit, stays unknown."""
+    digest = _seed_l2(tmp_path, "off", **kwargs)
+    try:
+        report, _script, sent = _score(
+            monkeypatch, tmp_path, _unstamped_none("rules")
+        )
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", (
+            f"{label} was {row['verdict']} reason={row.get('reason')!r}"
+        )
+        assert str(row["reason"]).startswith("pin_mismatch"), row
+        assert report["cortex_l2"] == "unknown"
+        assert report["cortex_l2_scan_sha256"] == digest
+        assert report["cortex_service_start_source"] == _START_SOURCE
+        assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+def test_live_scan_sha_not_279cbd85_stays_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scan that says off for any other cortex_sha is unknown."""
+    digest = _seed_l2(tmp_path, "off", cortex_sha="deadbeef")
+    try:
+        report, _script, sent = _score(
+            monkeypatch, tmp_path, _unstamped_none("rules")
+        )
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", (
+            f"scan sha other than 279cbd85 was {row['verdict']} "
+            f"reason={row.get('reason')!r}"
+        )
+        assert str(row["reason"]).startswith("pin_mismatch"), row
+        assert report["cortex_l2"] == "unknown"
+        assert report["cortex_l2_scan_sha256"] == digest
+        assert report["cortex_service_start_source"] == _START_SOURCE
         assert report["n"] == n_pack
     finally:
         _wipe(tmp_path)
