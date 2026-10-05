@@ -14,7 +14,10 @@ from FROM/JOIN in each scored question's correct oracle SQL (`expect: refuse`
 skipped). SQL that names no table is the same ineligible reason.
 `DMS_SERVING_PRECHECK` supplies the block; otherwise the explicit Cortex
 warehouse is copied (not attached) or a private fixture is snapshotted.
-Regression: `tests/test_serving_precheck_01.py`. Not COMPLETE.
+Regression: `tests/test_serving_precheck_01.py`. Until BADGE-GUARD-01,
+`live()` and `grid_score_hook` print `badges_unverified: cortex_l2_off`
+next to n and do not print a badge or crag figure.
+`tests/test_badge_unverified_01.py`. Not COMPLETE.
 
 STUDIO-RESULT-01 (#365): Studio ask result is
 `apps/ui/src/components/studio/ResultView.tsx` plus `StampsPanel.tsx`.

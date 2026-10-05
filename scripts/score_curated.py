@@ -2638,9 +2638,7 @@ def score_pack_live(
             tallies["INVALID"] += 1
             badge = env.get("badge")
             route = env.get("route")
-            print(
-                f"{qid}\tINVALID\t{badge}\troute={route}\treason={invalid_reason}"
-            )
+            print(f"{qid}\tINVALID\troute={route}\treason={invalid_reason}")
             cases_out.append(
                 {
                     "id": qid,
@@ -2689,9 +2687,11 @@ def score_pack_live(
             extra += f"\treason={result.reason}"
         if oracle_db is not None:
             extra += f"\t{LEGACY_JUDGE_LABEL}={result.scorer_ok_rows_not_compared}"
+        # Badge and crag stay on the case record. They are not a printed figure
+        # until BADGE-GUARD-01 is stamped.
         print(
-            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}\t"
-            f"plan_source={plan_source}\tcrag={crag}"
+            f"{qid}\t{verdict}\troute={route}\tpath={path}\t"
+            f"plan_source={plan_source}"
             f"\trows={n}\texpect={case['expect']}{extra}"
         )
         cases_out.append(
@@ -2966,6 +2966,10 @@ SERVING_MTIME = "serving_mtime"
 SERVING_SNAPSHOT_HASH = "serving_snapshot_hash"
 SERVING_ROW_COUNTS = "serving_row_counts"
 SERVING_HASH_ALG = "sha256"
+# Until BADGE-GUARD-01 is stamped. A plan-source L2 badge is not a check.
+BADGES_UNVERIFIED_KEY = "badges_unverified"
+BADGES_UNVERIFIED_VALUE = "cortex_l2_off"
+BADGES_UNVERIFIED_LINE = f"{BADGES_UNVERIFIED_KEY}: {BADGES_UNVERIFIED_VALUE}"
 
 
 def serving_mtime_iso(epoch: float) -> str:
@@ -3236,7 +3240,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}  "
         f"INVALID {invalid_n}  RATE_LIMIT {rate_limit}  "
         f"round_health {int(clock.get('round_health') or 0)}  "
-        f"n {n}  n_planned {int(clock.get('n_planned') or _planned_n())}  "
+        f"n {n}  {BADGES_UNVERIFIED_LINE}  "
+        f"n_planned {int(clock.get('n_planned') or _planned_n())}  "
         f"n_without_invalid {n - invalid_n}"
     )
     print(f"{OVERMASK_STAR_KEY} {overmask}")
@@ -3315,6 +3320,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 OVERMASK_STAR_KEY: overmask,
                 "total": n,
                 "n": n,
+                BADGES_UNVERIFIED_KEY: BADGES_UNVERIFIED_VALUE,
                 "n_planned": int(clock.get("n_planned") or _planned_n()),
                 "n_without_invalid": n - invalid_n,
                 "round_health": int(clock.get("round_health") or 0),
@@ -4485,10 +4491,12 @@ def grid_score_hook(
     """dms#299 row. Same live clock as live/climb/prove. Not the grid runner."""
     why = require_oracle_db(oracle_db)
     if why:
+        print(f"n 0  {BADGES_UNVERIFIED_LINE}")
         return {
             "kind": "dms.grid_score_hook",
             "issue": 299,
             "n": 0,
+            BADGES_UNVERIFIED_KEY: BADGES_UNVERIFIED_VALUE,
             "n_planned": _planned_n(),
             "n_without_invalid": 0,
             "round_health": 0,
@@ -4502,10 +4510,12 @@ def grid_score_hook(
     tallies, cases, clock = score_live_entry(url, timeout, oracle_db=oracle_db)
     n = sum(tallies.values())
     invalid_n = int(tallies.get("INVALID") or 0)
+    print(f"n {n}  {BADGES_UNVERIFIED_LINE}")
     return {
         "kind": "dms.grid_score_hook",
         "issue": 299,
         "n": n,
+        BADGES_UNVERIFIED_KEY: BADGES_UNVERIFIED_VALUE,
         "n_planned": int(clock.get("n_planned") or _planned_n()),
         "n_without_invalid": n - invalid_n,
         "round_health": int(clock.get("round_health") or 0),
