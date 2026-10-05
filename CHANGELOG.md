@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - PROVE-SUBMIT-01: name the Cortex SQL fail owner (Refs dms#359)
+
+- **Live.** Finance `cq_sku_count` on prove returns DMS HTTP 200 with assumptions `exact match ok`, `Cortex SQL fail`, `no generative fallback`. `audit_id` is `ans_curated_step`. `sql_used` is null. Same stamp for stock-value and capacity utilisation. Ledger not reached. Nothing PASS.
+- **Call-site.** `maybe_pack_ask` drops the exception from `_submit_verified_sql` (bind, then `POST /v1/contract/submit`). The envelope has no engine status or body.
+- **Owner.** Cortex pin `279cbd85` submit/bind. No DMS patch. Cortex loopback was not readable from this VM.
+
 ## 2026-10-05 - CURATED-NO-SILENT-FALLBACK-01: name the failed curated step (Refs dms#356)
 
 - **Step 1.** A curated l0 ask that is still absent from the exact pack (base metrics plus the #355 score-pack allowlist) abstains with `exact-match miss: pack-metric miss`, not a generic GEN-01 sentence. `cq_sku_count` stays on that allowlist. A confident generative answer is left as-is. `None` from generative still reaches the contract ask.
