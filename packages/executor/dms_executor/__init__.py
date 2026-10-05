@@ -50,6 +50,8 @@ from dms_executor.demo_ask import (
 )
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_pack import (
+    curated_pack_metric_miss,
+    is_curated_l0_without_pack_metric,
     is_uncertified_paraphrase,
     maybe_pack_ask,
     maybe_uncertified_refuse_ask,
@@ -622,6 +624,8 @@ class Executor:
                 self._store_turn(session_id, space_id, verified_env)
                 return verified_env
 
+            # Phrase match + a failed later step is a named refusal (not None).
+            # None means the phrase missed, so generative / contract ask may run.
             pack_env = maybe_pack_ask(
                 question,
                 space_id=space_id,
@@ -651,12 +655,19 @@ class Executor:
             return refuse_env
 
         if ladder == "exact":
-            env = path_miss_envelope(
-                question,
-                "exact-match miss: not a certified VQ/pack hit",
-                space_id=space_id,
-                session_id=session_id,
-            )
+            # Curated l0 phrase missing from PACK_METRICS is step 1, not a
+            # later-lane abstain. Other exact misses stay a plain path miss.
+            if is_curated_l0_without_pack_metric(question):
+                env = curated_pack_metric_miss(
+                    question, space_id=space_id, session_id=session_id
+                )
+            else:
+                env = path_miss_envelope(
+                    question,
+                    "exact-match miss: not a certified VQ/pack hit",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
             self._store_turn(session_id, space_id, env)
             return env
 
@@ -696,6 +707,7 @@ class Executor:
                 grounded_tables=requested,
             )
 
+        asked = question
         question = with_grounded_scope(question, tables)
         if allow_bronze:
             # dms#284: readable bronze tables are the active listing intersected
@@ -769,6 +781,13 @@ class Executor:
                 bind_on_miss=False,
             )
             if gen_env is not None:
+                # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
+                # hides that exact-match / pack-metric miss. A confident
+                # generative answer is left as-is. None still reaches Cortex ask.
+                if gen_env.get("abstained") and is_curated_l0_without_pack_metric(asked):
+                    gen_env = curated_pack_metric_miss(
+                        asked, space_id=space_id, session_id=session_id
+                    )
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env

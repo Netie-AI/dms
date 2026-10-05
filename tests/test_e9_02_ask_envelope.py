@@ -112,7 +112,9 @@ def test_chat_ask_post_ungrounded_demotes_wide_fill_ranking(
     body = client.post(
         "/v1/chat/ask",
         json={
-            "question": "show top 3 categoty sales",
+            # Not the allowlisted exact phrase. That phrase is a pack match
+            # and a dead submit is a named refusal, so it never reaches E9.
+            "question": "show top 3 categoty sales on the wide sheet",
             "session_id": "ses_e902",
         },
     ).json()

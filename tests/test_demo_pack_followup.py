@@ -299,7 +299,9 @@ def test_ops_does_not_answer_spend_by_country(
     assert_envelope_valid(env)
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
-    assert len(cortex.asks) == 1
+    assert "exact match ok" in env["text"]
+    assert "grants fail" in env["text"]
+    assert cortex.asks == []
 
 
 def test_stock_by_category_answers_in_both_spaces(
@@ -406,13 +408,17 @@ def test_followup_without_prior_abstains() -> None:
 def test_cortex_fallback_spend_does_not_f32_demote(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pack submit miss + cq_spend_by_country rows + bronze grant soup must stay certified."""
+    """Non-pack ask: Cortex lake SQL plus bronze grant soup stays certified.
+
+    A pack-matched question whose Cortex SQL failed is a named refusal and
+    does not reach this Cortex.ask path.
+    """
     cortex = _LakeSpendAskCortex()
     client = _live_client(warehouse, minter, monkeypatch, cortex)
     r = client.post(
         "/v1/chat/ask",
         json={
-            "question": SPEND_BY_COUNTRY_Q,
+            "question": "Show total spend by supplier country from the lake",
             "space_id": FINANCE,
             "session_id": "ses_cq_fallback",
         },
@@ -431,7 +437,7 @@ def test_cortex_fallback_spend_does_not_f32_demote(
 def test_quoted_warehouse_schema_spend_does_not_f32_demote(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pack miss + quoted warehouse.inventory join + bronze grant soup stays certified."""
+    """Non-pack ask: quoted warehouse.inventory join plus bronze grant soup stays certified."""
     cortex = _LakeSpendAskCortex(
         sql_used=(
             'SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) '
@@ -462,7 +468,7 @@ def test_quoted_warehouse_schema_spend_does_not_f32_demote(
     r = client.post(
         "/v1/chat/ask",
         json={
-            "question": SPEND_BY_COUNTRY_Q,
+            "question": "Show total spend by supplier country from the lake",
             "space_id": FINANCE,
             "session_id": "ses_cq_quoted_wh",
         },
@@ -696,5 +702,7 @@ def test_finance_does_not_answer_ops_shipment_cost(
     assert_envelope_valid(env)
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
-    assert len(cortex.asks) == 1
+    assert "exact match ok" in env["text"]
+    assert "grants fail" in env["text"]
+    assert cortex.asks == []
     assert SHIPMENT_COST_SQL not in str(cortex.submits)

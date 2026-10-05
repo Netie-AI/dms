@@ -41,8 +41,10 @@ from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
 _L0_L1 = frozenset({"L0_CERTIFIED", "L1_GOVERNED_METRIC"})
+# The exact trap phrase is on the score-pack allowlist. A failed pack step
+# names the refusal and does not reach Cortex.ask. These two are synonyms,
+# not that allowlist row, so the contract ask still owns them.
 _VQ01_PHRASES = (
-    "show top 3 categoty sales",
     "show top 3 category sales",
     "top 3 category sales",
 )
@@ -261,10 +263,13 @@ def test_chat_ask_post_categoty_certified_oracle_ranks(
     _cleanup_live_env(monkeypatch)
 
 
-def test_dms_does_not_upgrade_l2_categoty_to_l0(
+def test_exact_categoty_pack_miss_does_not_fall_through_to_query_skill(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fall-through to query_skill must not become L0/L1 on the customer envelope."""
+    """Allowlisted exact phrase plus a dead submit is a named pack refusal.
+
+    query_skill must not run and must not be upgraded to L0/L1.
+    """
     cortex = _StubCortex(
         _certified_response(
             _ORACLE_RANKS,
@@ -281,8 +286,12 @@ def test_dms_does_not_upgrade_l2_categoty_to_l0(
     ).json()
 
     assert_envelope_valid(body)
+    assert body["badge"] == "ABSTAIN"
+    assert body["abstained"] is True
+    assert "exact match ok" in body["text"]
+    assert "Cortex SQL fail" in body["text"]
     assert body["badge"] not in _L0_L1
-    assert body["badge"] == "L2_VALIDATED"
+    assert cortex.asks == []
     _cleanup_live_env(monkeypatch)
 
 

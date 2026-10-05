@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -337,25 +338,39 @@ def _grant_covers(table: str, allowed: set[str]) -> bool:
     return f"warehouse_{table}" in allowed
 
 
-def lookup_pack_metric(
+def match_pack_phrase(
     question: str,
     *,
-    grantable: set[str] | None = None,
     tables: list[str] | None = None,
 ) -> PackMetric | None:
-    """Return the pack metric for this exact ask, or None.
+    """Exact pack phrase, before grants / Cortex SQL / ledger.
 
-    Grounded-file asks skip. A Space that does not grant every table the SQL
-    names skips (Warehouse Ops vs suppliers). Cortex ``warehouse_<table>``
-    aliases count as the same grant. Column presence is Cortex's job on
-    submit -- do not probe the thin DMS local file.
+    Grounded-file asks are not pack matches. Grant coverage is a later step.
     """
     if tables:
         return None
     qn = _norm(question)
     if not qn:
         return None
-    hit = next((m for m in _exact_pack_metrics() if _norm(m.question) == qn), None)
+    return next((m for m in _exact_pack_metrics() if _norm(m.question) == qn), None)
+
+
+def lookup_pack_metric(
+    question: str,
+    *,
+    grantable: set[str] | None = None,
+    tables: list[str] | None = None,
+) -> PackMetric | None:
+    """Return the pack metric when the phrase matches and grants cover it.
+
+    The phrase set is the ten base metrics plus the score-pack allowlist.
+    A Space that does not grant every table the SQL names is not a hit here
+    (Warehouse Ops vs suppliers). ``maybe_pack_ask`` names that as ``grants
+    fail`` instead of treating it as no match. Cortex ``warehouse_<table>``
+    aliases count as the same grant. Column presence is Cortex's job on
+    submit -- do not probe the thin DMS local file.
+    """
+    hit = match_pack_phrase(question, tables=tables)
     if hit is None:
         return None
     allowed = grantable if grantable is not None else set()
@@ -366,6 +381,128 @@ def lookup_pack_metric(
     except SecurityEvent:
         return None
     return hit
+
+
+def _curated_pack_path() -> Path:
+    return (
+        Path(__file__).resolve().parents[3]
+        / "tests"
+        / "fixtures"
+        / "curated_ceo"
+        / "questions.yaml"
+    )
+
+
+@lru_cache(maxsize=1)
+def curated_l0_question_norms() -> frozenset[str]:
+    """Normalised curated_ceo questions whose expect is l0.
+
+    The file is the score pack. A missing file means this process cannot
+    tell a curated l0 ask from any other question.
+    """
+    path = _curated_pack_path()
+    if not path.is_file():
+        return frozenset()
+    try:
+        import yaml
+    except ImportError:
+        return frozenset()
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    norms: set[str] = set()
+    for row in data.get("questions") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("expect") or "").lower() != "l0":
+            continue
+        n = _norm(str(row.get("question") or ""))
+        if n:
+            norms.add(n)
+    return frozenset(norms)
+
+
+def is_curated_l0_without_pack_metric(question: str) -> bool:
+    """True when a curated l0 ask is absent from the exact pack (step 1 miss)."""
+    if match_pack_phrase(question) is not None:
+        return False
+    n = _norm(question)
+    return bool(n) and n in curated_l0_question_norms()
+
+
+def curated_pack_metric_miss(
+    question: str,
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Named ABSTAIN for step 1: exact-match / pack-metric miss.
+
+    The exact pack (base metrics plus the score-pack allowlist) has no phrase
+    for this curated l0 question. ``cq_sku_count`` is on that allowlist, so
+    this miss is a still-unregistered phrase. The rendered text must not be
+    a generic generative abstain.
+    """
+    text = (
+        "exact-match miss: pack-metric miss. "
+        "The exact pack has no metric for this curated question, "
+        "so the pack lookup did not match. "
+        "This is not a generic generative abstain."
+    )
+    env = build_answer_envelope(
+        answer_id="ans_curated_step",
+        text=text,
+        badge="ABSTAIN",
+        abstained=True,
+        values=[],
+        rows=[],
+        sql_used=None,
+        assumptions=["exact-match miss", "pack-metric miss"],
+        as_of=_as_of(),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="abstain",
+        question=question,
+    )
+    assert_envelope_valid(env)
+    return env
+
+
+def _curated_step_refusal(
+    question: str,
+    failed_step: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Named ABSTAIN. The phrase matched; this later step did not.
+
+    The rendered text names ``exact match ok`` and the failed step
+    (``grants fail`` / ``Cortex SQL fail`` / ``ledger fail``). Later lanes
+    must not run: a generative abstain would hide the miss.
+    """
+    text = (
+        "The curated pack matched this question (exact match ok) "
+        f"but a later step failed: {failed_step}. "
+        "I am not answering from a generative fallback."
+    )
+    env = build_answer_envelope(
+        answer_id="ans_curated_step",
+        text=text,
+        badge="ABSTAIN",
+        abstained=True,
+        values=[],
+        rows=[],
+        sql_used=None,
+        assumptions=["exact match ok", failed_step, "no generative fallback"],
+        as_of=_as_of(),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="abstain",
+        question=question,
+    )
+    assert_envelope_valid(env)
+    return env
 
 
 def envelope_from_pack_submit(
@@ -423,38 +560,58 @@ def maybe_pack_ask(
 ) -> dict[str, Any] | None:
     """L1 envelope when the demo pack matches and Cortex executed the SQL.
 
-    Missing submit/ledger does not fall back to local DuckDB (F83). Submit
-    failures miss rather than 503 — leftover class is honest 200 ABSTAIN.
+    Missing submit/ledger does not fall back to local DuckDB (F83). A phrase
+    match whose grants, Cortex SQL, or ledger step fails is a named ABSTAIN.
+    None means the phrase did not match, so a later lane may run.
     """
+    phrase = match_pack_phrase(question, tables=tables)
+    if phrase is None:
+        return None
+    try:
+        reject_hostile_chat_sql(phrase.sql)
+    except SecurityEvent:
+        return None
     hit = lookup_pack_metric(
         question,
         grantable=grantable,
         tables=tables,
     )
     if hit is None:
-        return None
+        return _curated_step_refusal(
+            question, "grants fail", space_id=space_id, session_id=session_id
+        )
     if submit is None or ledger_append is None:
-        return None
+        return _curated_step_refusal(
+            question, "Cortex SQL fail", space_id=space_id, session_id=session_id
+        )
     try:
         result = submit(hit.sql)
     except Exception:  # noqa: BLE001
-        return None
+        return _curated_step_refusal(
+            question, "Cortex SQL fail", space_id=space_id, session_id=session_id
+        )
     ok = getattr(result, "ok", None)
-    if ok is False:
-        return None
-    if getattr(result, "output", None) is None:
-        return None
+    if ok is False or getattr(result, "output", None) is None:
+        return _curated_step_refusal(
+            question, "Cortex SQL fail", space_id=space_id, session_id=session_id
+        )
     run_id = str(getattr(result, "run_id", None) or "")
     try:
         led = ledger_append({"sql": hit.sql, "run_id": run_id})
     except Exception:  # noqa: BLE001
-        return None
+        return _curated_step_refusal(
+            question, "ledger fail", space_id=space_id, session_id=session_id
+        )
     entry_id = getattr(led, "entry_id", None) if led is not None else None
     if not (isinstance(entry_id, str) and entry_id.strip()):
-        return None
+        return _curated_step_refusal(
+            question, "ledger fail", space_id=space_id, session_id=session_id
+        )
     led_hash = getattr(led, "hash", None)
     if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
-        return None
+        return _curated_step_refusal(
+            question, "ledger fail", space_id=space_id, session_id=session_id
+        )
     return envelope_from_pack_submit(
         metric=hit,
         result=result,
