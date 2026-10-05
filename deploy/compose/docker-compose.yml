@@ -1,17 +1,36 @@
 # Integration pin point: Cortex engine image tag + DMS API/UI.
 # Engine upgrade = change cortex image tag. Contract major stays 1.
-# Caddy is the only public port on the appliance (T6).
+# Caddy is the only public port on the appliance (T6), and it serves TLS only
+# (BANK-04, #271): there is no plain-HTTP listener, see ./Caddyfile.
+#
+# Install-time configuration. Put these in deploy/compose/.env (gitignored) or
+# the shell. Nothing below ships a default for a secret.
+#
+#   DMS_DB_PASSWORD  REQUIRED. No default: `docker compose up` refuses to start
+#                    without it. Letters, digits and . _ ~ - only (it is spliced
+#                    into DATABASE_URL). `openssl rand -hex 24` is fine. It is
+#                    applied when the dms_pg volume is first created; changing
+#                    it later does not change the password inside an existing
+#                    volume (ALTER USER, or recreate the volume).
+#   DMS_TLS_MODE     internal (default) | files
+#                    internal: Caddy's own CA signs the certificate. Sandbox
+#                              pilot only - clients must trust Caddy's root.
+#                    files:    a bank CA / internal CA certificate you supply.
+#   DMS_TLS_DIR      files mode only: host directory holding tls.crt (leaf plus
+#                    chain, PEM) and tls.key (PEM). Mounted read-only. Never
+#                    committed; deploy/compose/tls/ ignores *.crt *.key *.pem.
+#   DMS_TLS_HOST     the DNS name clients type. Default localhost.
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: dms
-      POSTGRES_PASSWORD: dms
+      POSTGRES_PASSWORD: "${DMS_DB_PASSWORD:?DMS_DB_PASSWORD is required - set it in deploy/compose/.env, no default is shipped}"
       POSTGRES_DB: dms
     # Architecture §1: Caddy is the only public port — do not publish 5432 on the host.
     # Local psql: docker compose exec postgres psql -U dms -d dms
-    # Need host bind for GUI clients? temporarily: ports: ["5432:5432"]
+    # Need host bind for GUI clients? docker-compose.hostdb.yml (loopback only).
     expose:
       - "5432"
     volumes:
@@ -28,7 +47,7 @@ services:
       context: ../..
       dockerfile: apps/api/Dockerfile
     environment:
-      DATABASE_URL: postgresql://dms:dms@postgres:5432/dms
+      DATABASE_URL: "postgresql://dms:${DMS_DB_PASSWORD:?DMS_DB_PASSWORD is required - set it in deploy/compose/.env, no default is shipped}@postgres:5432/dms"
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
@@ -45,29 +64,40 @@ services:
 
   ui:
     image: caddy:2-alpine
+    environment:
+      DMS_TLS_MODE: ${DMS_TLS_MODE:-internal}
+      DMS_TLS_HOST: ${DMS_TLS_HOST:-localhost}
     volumes:
       - ../../apps/ui/dist:/srv:ro
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${DMS_TLS_DIR:-./tls}:/etc/caddy/tls:ro
+      # Keeps the internal-CA root stable across container re-creates, so a
+      # sandbox client trusts it once. Holds no appliance data.
+      - caddy_data:/data
+    # The one published port. TLS only; plain HTTP to it is answered with a 400
+    # that carries no data (see Caddyfile).
     ports:
       - "8080:8080"
     depends_on:
       - api
 
-  # Optional: expose API directly for Vite proxy during local UI dev
+  # Optional: expose API directly for Vite proxy during local UI dev.
+  # Loopback only: the profile is for the developer's own machine, and a bare
+  # "8090:8080" would hand the unauthenticated API to the LAN.
   api_dev:
     profiles: ["dev"]
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
     environment:
-      DATABASE_URL: postgresql://dms:dms@postgres:5432/dms
+      DATABASE_URL: "postgresql://dms:${DMS_DB_PASSWORD:?DMS_DB_PASSWORD is required - set it in deploy/compose/.env, no default is shipped}@postgres:5432/dms"
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
       DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000
     ports:
-      - "8090:8080"
+      - "127.0.0.1:8090:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,3 +106,4 @@ services:
 
 volumes:
   dms_pg:
+  caddy_data:

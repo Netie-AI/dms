@@ -6,8 +6,13 @@ COPY packages ./packages
 COPY apps/api ./apps/api
 COPY contract ./contract
 COPY alembic ./alembic
+# cortex-contract is private (Netie-AI/Cortex) and on no package index, so the
+# build cannot fetch it. Whoever builds this image drops the wheel in
+# deploy/wheelhouse/ first (CI does; the directory is otherwise empty and no
+# wheel is ever committed). Not a new dependency: the pin is unchanged.
+COPY deploy/wheelhouse /wheelhouse
 
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --find-links /wheelhouse \
     -e ./packages/core \
     -e ./packages/cortex_client \
     -e ./packages/executor \

@@ -91,7 +91,7 @@ Prefer `DMS_DEMO_FALLBACK=0`. A silent demo-number 200 is a lying affordance.
 Cite, do not duplicate:
 
 - Founder GO on EPIC-008: https://github.com/Netie-AI/dms/issues/8 (2026-09-13) -- IAP/CF to loopback `:8090`; no public `:8090`; no `0.0.0.0/0`.
-- In-repo analogue only: `deploy/compose/Caddyfile` + compose `api` `expose: ["8080"]` (API is not the public bind when Caddy is used). Prove replaces a public bind with IAP/CF in front of that loopback. **Do not** treat compose `api_dev` `ports: ["8090:8080"]` as the prove recipe -- that profile is local Vite, not host-harden.
+- In-repo analogue only: `deploy/compose/Caddyfile` + compose `api` `expose: ["8080"]` (API is not the public bind when Caddy is used). Prove replaces a public bind with IAP/CF in front of that loopback. **Do not** treat compose `api_dev` `ports: ["127.0.0.1:8090:8080"]` as the prove recipe -- that profile is local Vite, not host-harden.
 - Recipe location: **outside this repo.** Platform/DevOps own the tunnel process, `TUNNEL_TOKEN`, and hostname. There is no `Netie-AI/netie-platform` / `platform` / `infra` git repo in the org listing as of 2026-09-13. Do not start `cloudflared` from dms.
 
 Do **not** paste host commands here that bind `:8090` on `0.0.0.0` or add a `0.0.0.0/0` firewall rule.

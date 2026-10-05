@@ -1,11 +1,43 @@
 # T6 — Caddy is the only publicly bound appliance port.
-# Architecture §1–2: TLS / rate-limit / SSE flush land in hardening (pre-pay),
-# not in the day-1 skeleton. Keep flush_interval ready for chat SSE (U6 / §10.10).
-:8080 {
+# BANK-04 (#271): that port serves TLS or nothing.
+#
+# There is no http:// site and no plain-HTTP listener. A client that speaks plain
+# HTTP to this port reaches the TLS listener, which answers 400 with a one-line
+# text body ("Client sent an HTTP request to an HTTPS server.") and serves no
+# data. It is refused, not redirected, because a redirect needs a second
+# published port and T6 allows one. Studio and /v1/* live in the one https://
+# site below, so no route can answer without TLS.
+#
+# Certificate source is chosen at install by DMS_TLS_MODE (see docker-compose.yml):
+#   internal  Caddy's internal CA. Sandbox pilot fallback only.
+#   files     tls.crt + tls.key from DMS_TLS_DIR (bank CA or internal CA).
+# An unknown mode names a snippet that does not exist and Caddy refuses to load,
+# so a typo fails closed. files mode with a missing or unreadable pair also fails
+# to load. Nothing here carries a certificate, key or password.
+#
+# Architecture §1–2: rate-limit / SSE flush land in hardening (pre-pay). Keep
+# flush_interval ready for chat SSE (U6 / §10.10).
+{
+	# Without this Caddy opens :80 inside the container to redirect to https.
+	# Compose does not publish it, but a plain-HTTP listener the appliance does
+	# not need is a surface; the appliance has exactly one, and it is TLS.
+	auto_https disable_redirects
+	# The container's trust store is not the clients' trust store.
+	skip_install_trust
+}
+
+(tls_internal) {
+	tls internal
+}
+
+(tls_files) {
+	tls /etc/caddy/tls/tls.crt /etc/caddy/tls/tls.key
+}
+
+https://{$DMS_TLS_HOST:localhost}:8080 {
+	import tls_{$DMS_TLS_MODE:internal}
+
 	encode gzip
-	root * /srv
-	try_files {path} /index.html
-	file_server
 
 	handle_path /api/* {
 		reverse_proxy api:8080 {
@@ -21,5 +53,15 @@
 		reverse_proxy api:8080 {
 			flush_interval -1
 		}
+	}
+
+	# Studio, last and in its own handle. try_files is a rewrite and Caddy runs
+	# rewrites before every handle, so at site level it sent /health, /v1/* and
+	# /api/* to /index.html and the API was never reached (found in BANK-04: the
+	# plain :8080 site had the same ordering).
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
 	}
 }

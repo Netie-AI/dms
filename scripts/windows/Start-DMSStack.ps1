@@ -52,11 +52,33 @@ function Wait-TcpPort([string]$TargetHost, [int]$Port, [int]$Seconds = 45) {
   return $false
 }
 
+function Get-DmsDbPassword([string]$Dir) {
+  # BANK-04 (#271): compose ships no database password and refuses to start
+  # without one. This launcher never invents one. It takes the install-time
+  # value from the shell or from the gitignored deploy\compose\.env that compose
+  # itself reads, and returns $null when neither has it.
+  if ($env:DMS_DB_PASSWORD) { return $env:DMS_DB_PASSWORD }
+  $envFile = Join-Path $Dir ".env"
+  if (Test-Path $envFile) {
+    foreach ($line in (Get-Content $envFile)) {
+      if ($line -match '^\s*DMS_DB_PASSWORD\s*=\s*(.+?)\s*$') {
+        return $Matches[1].Trim('"').Trim("'")
+      }
+    }
+  }
+  return $null
+}
+
 function Invoke-DmsAlembicUpgrade {
   # Host-run tests talk to compose postgres. Lifespan migrates only if the API
   # process starts; pytest against 127.0.0.1:5432 does not. already-at-head is 0.
   if (-not $env:DATABASE_URL) {
-    $env:DATABASE_URL = "postgresql://dms:dms@127.0.0.1:5432/dms"
+    $pw = Get-DmsDbPassword $ComposeDir
+    if (-not $pw) {
+      Write-Host "No DATABASE_URL and no DMS_DB_PASSWORD; skipped alembic upgrade head" -ForegroundColor Yellow
+      return
+    }
+    $env:DATABASE_URL = "postgresql://dms:$pw@127.0.0.1:5432/dms"
   }
   if (-not (Wait-TcpPort "127.0.0.1" 5432 45)) {
     Write-Host "Postgres not reachable on 127.0.0.1:5432; skipped alembic upgrade head" -ForegroundColor Yellow
@@ -140,6 +162,15 @@ if ($env:CORTEX_WAREHOUSE_DB) {
 # host, so it must name the hostdb overlay too - without it the container is
 # healthy and unreachable, the API silently falls back to the in-process Space
 # store, and Spaces stop persisting across a restart.
+#
+# Compose now needs DMS_DB_PASSWORD (BANK-04, #271). Without it `compose up`
+# exits before creating anything and the 2>$null below would hide why, so say it.
+$dbPassword = Get-DmsDbPassword $ComposeDir
+if ($dbPassword) {
+  $env:DMS_DB_PASSWORD = $dbPassword
+} else {
+  Write-Host "DMS_DB_PASSWORD is not set (shell or deploy\compose\.env). Compose will refuse to start postgres/api; set it and rerun." -ForegroundColor Yellow
+}
 Write-Host "Compose postgres (with host binding)..."
 Push-Location $ComposeDir
 try {

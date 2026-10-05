@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - BANK-04: the appliance port serves TLS only and ships no database password (Refs dms#271)
+
+- **Ticket.** [dms#271](https://github.com/Netie-AI/dms/issues/271) under [dms#267](https://github.com/Netie-AI/dms/issues/267) (EPIC-BANK-01). Does not close the issue. Does not stamp COMPLETE. No live prove on a clean Linux install (bank bar item 5).
+- **Change.** `deploy/compose/Caddyfile` is one `https://` site on `:8080`. The certificate comes from `DMS_TLS_MODE`: `internal` (Caddy's CA, the sandbox default) or `files` (`tls.crt` + `tls.key` from `DMS_TLS_DIR`, bank or internal CA). An unknown mode, or `files` with no pair, makes Caddy refuse to load. Plain HTTP to `:8080` gets a 400 and no data; no plain-HTTP listener exists and port 80 is not opened. `POSTGRES_PASSWORD` and both `DATABASE_URL`s are `${DMS_DB_PASSWORD:?...}`: compose exits before creating anything without it, and no password is committed. `api_dev` is now `127.0.0.1:8090`. `.gitignore` covers `deploy/**/*.crt|key|pem`.
+- **Found.** The old Caddyfile ran `try_files` at site level, which Caddy runs before every `handle`, so `/health`, `/v1/*` and `/api/*` were rewritten to `/index.html` and never reached the API. The SPA fallback is now its own last `handle`. `apps/api/Dockerfile` cannot build on any clean machine: `cortex-contract` is private and on no index. It now installs from `deploy/wheelhouse/` (empty but for `.gitkeep`; CI fills it).
+- **Gate.** `tests/test_bank04_tls_appliance.py` (8 tests, Docker-free) fails 8 of 8 on `7a8d6c1`. CI job `compose-tls-smoke` runs `scripts/compose_tls_smoke.sh` against live containers (14 assertions). Run once locally on Docker Desktop: 14 of 14 pass on this branch. The same script against `7a8d6c1`'s compose and Caddyfile (plus only the Dockerfile wheelhouse line, so the image builds) fails 12 of 14. The CI job itself has not run yet.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.
