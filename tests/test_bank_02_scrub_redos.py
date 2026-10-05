@@ -136,11 +136,23 @@ def _scan(pattern: re.Pattern[str]) -> Callable[[str], object]:
 
 
 def test_every_pattern_in_the_module_is_covered() -> None:
-    assert len(PATTERNS) >= 20, sorted(PATTERNS)
-    # the ones that bit: the quoted-value assignment, the URL, curl, cookie and comment readers
-    assert {"_ASSIGN_TAIL", "_CORE_RX", "_CURL_USER", "_KEY_BODY", "_BLOB", "_SQL_LITERAL"} <= set(
-        PATTERNS
-    )
+    assert len(PATTERNS) >= 30, sorted(PATTERNS)
+    # the ones that bit: the quoted-value assignment, the URL, curl, cookie and comment readers,
+    # the SQL literal and comment opener, the address runs that guard the masker, the CLI flags
+    required = {
+        "_ASSIGN_TAIL",
+        "_CORE_RX",
+        "_CURL_USER",
+        "_KEY_BODY",
+        "_BLOB",
+        "_SQL_OPEN",
+        "_EMAIL_RUN",
+        "_CLI_FLAG",
+        "_SMTP_AUTH",
+        "_DOCKER_LOGIN",
+        "_NEXT_CHUNK",
+    }
+    assert required <= set(PATTERNS), required - set(PATTERNS)
 
 
 @pytest.mark.parametrize("name", sorted(PATTERNS))
@@ -396,3 +408,38 @@ def test_scrub_counted_is_linear_on_every_family(sql: bool) -> None:
         assert big < GROWTH * small + FLOOR, (
             f"{family}: {window // 4} chars {small:.4f}s, {window} chars {big:.4f}s (sql={sql})"
         )
+
+
+# --- the table-name scan that stands in for a parse of long SQL --------------------------------
+
+
+def test_the_bounded_table_scan_is_linear_on_adversarial_sql() -> None:
+    """``tables_read`` scans instead of parsing past 20,000 characters, so the scan sees the
+    longest input in the audit path: the executed SQL, uncapped. 1 MB, every family."""
+    from dms_executor import sql_currency
+
+    scan_pattern = sql_currency._TABLE_SCAN
+    families = {
+        "from repeated": lambda n: _repeat("from ", n),
+        "from a. repeated": lambda n: _repeat("FROM a.", n),
+        "from + open quote": lambda n: _repeat('from "', n),
+        "from + open backtick": lambda n: _repeat("join `", n),
+        "table update into": lambda n: _repeat("table update into only ", n),
+        "long identifier": lambda n: "from " + "a" * n,
+        "long dotted identifier": lambda n: "from " + "a." * (n // 2),
+        "many spaces": lambda n: "from" + " " * n + "t",
+        "many tables": lambda n: _repeat("FROM t1 JOIN t2 ", n),
+        "random mix": lambda n: "".join(random.Random(31).choices(MIX_ALPHABET + "fromjint ", k=n)),
+    }
+    for family, make in families.items():
+        for n in (12_000, 52_000, 400_000, MEGABYTE):
+            text = make(n)
+            t0 = time.perf_counter()
+            sum(1 for _ in scan_pattern.finditer(text))
+            took = time.perf_counter() - t0
+            assert took < 1.0, f"_TABLE_SCAN on {family} at {n} chars took {took:.2f}s"
+            t0 = time.perf_counter()
+            names = sql_currency._scan_tables(text)
+            took = time.perf_counter() - t0
+            assert took < 1.0, f"_scan_tables on {family} at {n} chars took {took:.2f}s"
+            assert len(names) <= sql_currency._MAX_SCANNED_TABLES

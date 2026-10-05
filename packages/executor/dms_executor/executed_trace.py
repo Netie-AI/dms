@@ -23,7 +23,9 @@ caller also clears it before a request starts (``chat_ask``), so a trace left by
 path that never took it cannot be read by the next request on that thread. It is
 not part of the returned envelope, so nothing here reaches the customer or the
 scorers that copy envelopes. Paths that run SQL locally (bronze sheets, the demo)
-record nothing; the recorder then falls back to the envelope's own SQL.
+record nothing themselves; the one envelope constructor notes their statement before it
+masks ``sql_used`` (``record_unmasked``), so the audit scrub sees the statement as it ran.
+A path that never reaches the constructor falls back to the envelope's own SQL.
 """
 
 from __future__ import annotations
@@ -46,6 +48,20 @@ def record(sql: str | None, row_count: int) -> None:
     items = getattr(_LOCAL, "statements", None)
     if items is not None and sql is not None and str(sql).strip():
         items.append((str(sql), max(0, int(row_count))))
+
+
+def record_unmasked(sql: str | None, row_count: int) -> None:
+    """Note a statement a local path ran (bronze sheets, the demo), if nothing else was noted.
+
+    Called by the one envelope constructor BEFORE it masks ``sql_used``. A statement the
+    engine ran was already recorded by ``record``, so this does nothing then. Without it
+    a local path's only record was the envelope's own SQL, already masked, and masking
+    splits a secret that has digits in it, so the audit scrub could no longer match it.
+    A no-op outside a traced ask.
+    """
+    items = getattr(_LOCAL, "statements", None)
+    if items is not None and not items:
+        record(sql, row_count)
 
 
 def record_ledger(entry_id: str | None, seq: int | None) -> None:

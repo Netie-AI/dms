@@ -160,9 +160,15 @@ class CortexClient:
         count = data.get("checked", data.get("entries_checked"))
         if not isinstance(count, int) or isinstance(count, bool):
             count = None
+        # ``ok`` must be a real boolean. A 422 body, an error object or {"ok": "yes"} is
+        # not a verification result: it must not read as a break (it is not one) or as a
+        # pass. The caller reports "unavailable" for a raise.
+        ok = data.get("ok", data.get("valid"))
+        if not isinstance(ok, bool):
+            raise RuntimeError("verify_ledger: not a ChainVerification result")
         return LedgerVerifyResponse.model_validate(
             {
-                "ok": bool(data.get("ok", data.get("valid", False))),
+                "ok": ok,
                 "first_break": None if broken is None else str(broken),
                 "checked": count,
             }

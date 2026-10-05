@@ -38,6 +38,7 @@ window sizes and at 1 MB, and checks that time grows linearly.
 from __future__ import annotations
 
 import re
+import string
 import unicodedata
 
 from dms_core.pii import MASK_TOKEN_RE, fail_closed_mask_payload
@@ -157,7 +158,7 @@ _SQL_PASSWORD = re.compile(
     r"(?:\s{1,16}for\s{1,16}[^\s=]{1,100})?"
     r"|identified\s{1,16}(?:with\s{1,16}\w{1,32}\s{1,16})?by)"
     r"\s{0,16}(?:=\s{0,16})?(?:(?:old_)?password\s{0,16}\(\s{0,16})?"
-    r"'(?P<v>(?:[^']|'')++)'"
+    r"(?:'(?P<v>(?:[^']|'')++)'|'(?P<v2>[^\s;]{1,256}+))"
 )
 #: .netrc: machine h login u password P (any whitespace between words).
 _NETRC = re.compile(r"(?i)\blogin\s{1,16}\S{1,128}+\s{1,16}password\s{1,16}(?P<v>\S{1,256}+)")
@@ -175,6 +176,42 @@ _MYSQL_P = re.compile(
 )
 _SSHPASS = re.compile(r"(?i)\bsshpass\b[^\n]{0,64}?\s-p\s{0,16}(?P<v>\S{1,256}+)")
 _REDIS_A = re.compile(r"(?i)\bredis-cli\b[^\n]{0,256}?\s-a\s{1,16}(?P<v>\S{1,256}+)")
+#: A bare or quoted argument (quotes kept, so they are redacted with it). Bounded.
+_ARG = r"(?:'[^']{1,256}+'|\"[^\"]{1,256}+\"|[^\s'\"-][^\s'\"]{0,255}+)"
+#: ``--password X`` / ``--password=X`` and the other flags that take a secret as the next
+#: word (vercel ``--token``, netlify ``--auth``, gpg ``--passphrase``). Read in Python:
+#: the weak names (token, auth, ...) need a credential-looking value.
+_CLI_FLAG = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])--(?P<n>password|passwd|passphrase|token|auth|auth-token"
+    r"|access-token|api-key|apikey|secret|client-secret)(?:[ \t]{1,16}+|=)(?P<v>" + _ARG + r")"
+)
+_CLI_STRONG = frozenset({"password", "passwd", "passphrase"})
+#: ssh-keygen -N PASSPHRASE / -P OLD_PASSPHRASE. An empty ``-N ""`` is no passphrase.
+_SSH_KEYGEN = re.compile(
+    r"(?i)\bssh-keygen\b[^\n]{0,256}?\s-[NP](?:[ \t]{1,16}+|=)?(?P<v>" + _ARG + r")"
+)
+#: openssl -pass pass:X, -passin pass:X, -passout pass:X (env: and file: are references).
+_OPENSSL_PASS = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])-(?:pass|passin|passout|passwd|password)[ \t]{1,16}+pass:"
+    r"(?P<v>'[^']{1,256}+'|\"[^\"]{1,256}+\"|[^\s'\"]{1,256}+)"
+)
+#: docker login -p X (``--password`` is a ``_CLI_FLAG``).
+_DOCKER_LOGIN = re.compile(
+    r"(?i)\b(?:docker|podman|buildah|skopeo|crane|oras|helm)\s{1,16}(?:registry\s{1,16})?login\b"
+    r"[^\n]{0,256}?\s-p(?:[ \t]{1,16}+|=)(?P<v>" + _ARG + r")"
+)
+#: An HTTP Digest ``response="..."``: a hash of the password and a server nonce.
+_DIGEST_RESPONSE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])response\s{0,4}=\s{0,4}[\"']?(?P<v>[A-Za-z0-9+/=_.~-]{8,256}+)"
+)
+_HEX32 = re.compile(r"(?i)[0-9a-f]{32,}+\Z")
+#: SMTP ``AUTH PLAIN <base64>`` / ``AUTH LOGIN <base64>`` (the credentials, encoded).
+_SMTP_AUTH = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])auth[ \t]{1,8}(?:plain|login|cram-md5|xoauth2)"
+    r"(?:[ \t]{1,8}+|[ \t]{0,8}+\r?\n[ \t]{0,8}+)(?P<v>[A-Za-z0-9+/]{8,512}+={0,2}+)"
+)
+#: The next whitespace-separated chunk of a PEM-style body.
+_NEXT_CHUNK = re.compile(r"[ \t]{1,2}+(?P<w>[A-Za-z0-9+/]{4,256}+={0,2}+)(?![A-Za-z0-9+/=_-])")
 #: What follows a credential name: an operator (or LIKE, or "is"), then a value.
 _ASSIGN_TAIL = re.compile(
     r"(?:"
@@ -198,7 +235,6 @@ _VALUE_CAP = 512
 _WORD = re.compile(r"[ \t]{1,16}+((?:[^\s.?!,;]|[.?!](?!\s|$)){1,256}+)")
 _BLOB = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/]{24,}+={0,2}+(?![A-Za-z0-9+/=_-])")
 _NOT_A_VALUE = re.compile(r"(?i)^(?:null|none|nil|true|false|undefined|\*+|\?|%s|\$\{.*\}|<.*>)$")
-_SQL_LITERAL = re.compile(r"'(?:[^']++|'')*+'")
 _REDACTED_TOKEN = re.compile(r"\[redacted\]")
 
 #: Words that end a passphrase: a value that runs into one of these is prose.
@@ -215,6 +251,16 @@ _BASE64_PUNCT = frozenset("+/=")
 
 def _view(text: str, *, drop_block_comments: bool) -> tuple[str, list[int], list[int]]:
     """Normalised text for matching, plus the original [start, end) of each character."""
+    if (
+        text.isascii()
+        and "%" not in text
+        and "\\" not in text
+        and not (drop_block_comments and "/*" in text)
+    ):
+        # Nothing to normalise, decode or drop: the view is the text (the common case, and
+        # the one that costs microseconds instead of a Python loop over every character).
+        n = len(text)
+        return text, list(range(n)), list(range(1, n + 1))
     chars: list[str] = []
     starts: list[int] = []
     ends: list[int] = []
@@ -256,39 +302,6 @@ def _view(text: str, *, drop_block_comments: bool) -> tuple[str, list[int], list
         put(ch, i, i + 1)
         i += 1
     return "".join(chars), starts, ends
-
-
-def _comment_spans(v: str) -> list[tuple[int, int]]:
-    """Line comments and block comments, left to right, in one linear pass.
-
-    An unterminated block-comment open is not a comment. Once one has no close after
-    it, none after it has either, so the search is not repeated (a lazy regex repeats
-    it for every open and is quadratic).
-    """
-    out: list[tuple[int, int]] = []
-    n = len(v)
-    nd = v.find("--")
-    nb = v.find("/*")
-    no_close = False
-    while nd != -1 or nb != -1:
-        if nb == -1 or (nd != -1 and nd < nb):
-            end = v.find("\n", nd)
-            end = n if end == -1 else end
-            out.append((nd, end))
-            i = end
-        else:
-            end = -1 if no_close else v.find("*/", nb + 2)
-            if end == -1:
-                no_close = True
-                i = nb + 2
-            else:
-                out.append((nb, end + 2))
-                i = end + 2
-        if nd != -1 and nd < i:
-            nd = v.find("--", i)
-        if nb != -1 and nb < i:
-            nb = v.find("/*", i)
-    return out
 
 
 def _url_password_spans(v: str) -> list[tuple[int, int]]:
@@ -389,6 +402,8 @@ def _literal_spans(v: str, a: int, b: int) -> list[tuple[int, int]]:
     if b <= a:
         return []
     inner = v[a:b]
+    if "''" not in inner:
+        return [(a + s, a + e) for s, e in _spans(inner, sql=False)]
     chars: list[str] = []
     origin: list[int] = []
     i = 0
@@ -408,6 +423,157 @@ def _literal_spans(v: str, a: int, b: int) -> list[tuple[int, int]]:
     return out
 
 
+#: Where a SQL quoted literal, a quoted identifier or a comment can begin.
+_SQL_OPEN = re.compile(r"'|\"|`|--|/\*")
+
+
+def _close_quote(v: str, k: int, q: str) -> int:
+    """Index of the quote that closes a ``q``-quoted run whose content starts at ``k``.
+
+    A doubled quote is one quote inside the run. ``len(v)`` when the run is still open
+    at the end of the text.
+    """
+    while True:
+        j = v.find(q, k)
+        if j == -1:
+            return len(v)
+        if v.startswith(q + q, j):
+            k = j + 2
+            continue
+        return j
+
+
+def _sql_regions(v: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """``(literals, comments)`` of SQL text, left to right, in one linear pass.
+
+    A literal is the span between its quotes. A comment opener inside a literal or a
+    quoted identifier is text, not a comment: ``SELECT '--' AS sep, token = t2.token``
+    has one literal and no comment, so the column comparison is not read as prose. A
+    literal still open at the end of the text (the window cut it) is read to the end:
+    what is in it is data, so it is scanned as prose and not taken for code. An
+    unterminated block-comment open is not a comment, and once one has no close after
+    it none after it has either, so the search is not repeated (a lazy regex repeats
+    it for every open and is quadratic).
+    """
+    lits: list[tuple[int, int]] = []
+    comments: list[tuple[int, int]] = []
+    n = len(v)
+    i = 0
+    no_close = False
+    while True:
+        m = _SQL_OPEN.search(v, i)
+        if m is None:
+            break
+        tok, s = m.group(), m.start()
+        if tok == "'":
+            e = _close_quote(v, s + 1, "'")
+            lits.append((s + 1, e))
+            i = e + 1
+        elif tok in ('"', "`"):
+            i = _close_quote(v, s + 1, tok) + 1
+        elif tok == "--":
+            e = v.find("\n", s)
+            e = n if e == -1 else e
+            comments.append((s, e))
+            i = e
+        else:  # a block-comment open
+            e = -1 if no_close else v.find("*/", s + 2)
+            if e == -1:
+                no_close = True
+                i = s + 2
+            else:
+                comments.append((s, e + 2))
+                i = e + 2
+    return lits, comments
+
+
+def _placeholder(value: str) -> bool:
+    """A reference to a secret held elsewhere (``$TOKEN``, ``<token>``), not the secret."""
+    return value.startswith("$") or bool(_NOT_A_VALUE.match(value))
+
+
+def _unquote(value: str) -> str:
+    return value[1:-1] if len(value) >= 2 and value[0] in "'\"" and value[-1] == value[0] else value
+
+
+def _cli_spans(v: str) -> list[tuple[int, int]]:
+    """Secrets given on a command line: ``--token X``, ``ssh-keygen -N X``, ``openssl -pass
+    pass:X``, ``docker login -p X``, a Digest ``response=``, SMTP ``AUTH PLAIN <b64>``."""
+    out: list[tuple[int, int]] = []
+    for m in _CLI_FLAG.finditer(v):
+        inner = _unquote(m.group("v"))
+        if not inner or inner.startswith(REDACTED) or _placeholder(inner):
+            continue
+        if m.group("n").lower() in _CLI_STRONG or _secret_like(inner):
+            out.append(m.span("v"))
+    for rx in (_SSH_KEYGEN, _OPENSSL_PASS, _DOCKER_LOGIN):
+        for m in rx.finditer(v):
+            inner = _unquote(m.group("v"))
+            if inner and not inner.startswith(REDACTED) and not _placeholder(inner):
+                out.append(m.span("v"))
+    for m in _DIGEST_RESPONSE.finditer(v):
+        val = m.group("v")
+        context = v[max(0, m.start() - 600) : m.start()].lower()
+        if _HEX32.match(val) or "digest" in context:
+            out.append(m.span("v"))
+    for m in _SMTP_AUTH.finditer(v):
+        val = m.group("v")
+        if _token_looking(val) and (
+            len(val) >= 16 or not _BASE64_PUNCT.isdisjoint(val) or any(map(str.isdigit, val))
+        ):
+            out.append(m.span("v"))
+    return out
+
+
+def _blob_spans(v: str) -> list[tuple[int, int]]:
+    """Base64-shaped blobs, and a key body that was split on spaces.
+
+    A PEM body pasted with spaces for its line breaks is a run of chunks, and the last
+    one is short or has no digit, so on its own it is not blob-shaped. A chunk next to a
+    blob-shaped one is part of the same body; after a full-width (40+) chunk the short
+    ones that follow are too.
+    """
+    out: list[tuple[int, int]] = []
+    group: list[re.Match[str]] = []
+
+    def flush() -> None:
+        if not group or not any(_blob_like(m.group()) for m in group):
+            group.clear()
+            return
+        out.extend(m.span() for m in group)
+        end = group[-1].end()
+        if group[-1].end() - group[-1].start() >= 40:
+            while True:
+                nxt = _NEXT_CHUNK.match(v, end)
+                if nxt is None or not _chunk_like(nxt.group("w")):
+                    break
+                out.append(nxt.span("w"))
+                end = nxt.end("w")
+                if len(nxt.group("w")) < 40:
+                    break
+        group.clear()
+
+    prev_end = -1
+    for m in _BLOB.finditer(v):
+        if group:
+            gap = v[prev_end : m.start()]
+            if not (0 < len(gap) <= 2 and not gap.strip(" \t")):
+                flush()
+        group.append(m)
+        prev_end = m.end()
+    flush()
+    return out
+
+
+def _chunk_like(word: str) -> bool:
+    """A later chunk of a key body: digits or base64 punctuation, or mixed case."""
+    return (
+        any(map(str.isdigit, word))
+        or not _BASE64_PUNCT.isdisjoint(word)
+        or (len(word) >= 8 and any(map(str.isupper, word)) and any(map(str.islower, word)))
+    )
+
+
 def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
     """View ranges to redact.
 
@@ -417,17 +583,19 @@ def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
     """
     out: list[tuple[int, int]] = []
     if sql:
-        for m in _SQL_LITERAL.finditer(v):
-            out.extend(_literal_spans(v, m.start() + 1, m.end() - 1))
-        for a, b in _comment_spans(v):
+        literals, comments = _sql_regions(v)
+        for a, b in literals:
+            out.extend(_literal_spans(v, a, b))
+        for a, b in comments:
             out.extend((a + s, a + e) for s, e in _spans(v[a:b], sql=False))
 
     for rx in (_PRIVATE_KEY_BLOCK, _KEY_BODY, _PROVIDER_TOKEN):
         out.extend(m.span() for m in rx.finditer(v))
     out.extend(_url_password_spans(v))
     for m in _SQL_PASSWORD.finditer(v):
-        if not m.group("v").startswith(REDACTED):
-            out.append(m.span("v"))
+        group = "v" if m.group("v") is not None else "v2"
+        if not m.group(group).startswith(REDACTED):
+            out.append(m.span(group))
 
     if not sql:  # in SQL, these are read inside literals and comments only (above)
         for m in _AUTH_HEADER.finditer(v):
@@ -436,6 +604,7 @@ def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
             out.extend(m.span("v") for m in rx.finditer(v))
         for rx in (_MYSQL_P, _SSHPASS, _REDIS_A):
             out.extend(m.span("v") for m in rx.finditer(v))
+        out.extend(_cli_spans(v))
 
     seen: set[tuple[int, int]] = set()
     accepted_to = 0  # a credential word inside a value already taken is that secret's own text
@@ -454,9 +623,7 @@ def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
                 accepted_to = max(accepted_to, span[1])
 
     if not sql:
-        for m in _BLOB.finditer(v):
-            if _blob_like(m.group()):
-                out.append(m.span())
+        out.extend(_blob_spans(v))
     # A value that is already "[redacted]" is not a second secret: a second pass over
     # clean text changes nothing.
     return [(a, b) for a, b in out if not v.startswith(REDACTED, a)]
@@ -564,7 +731,8 @@ def scrub_counted(text: str | None, *, sql: bool = False) -> tuple[str, int]:
         dropped = len(original) - MAX_SCRUB_CHARS
         original = original[:MAX_SCRUB_CHARS]
     regions: list[tuple[int, int]] = []
-    for drop in (False, True):
+    # the second view (block comments dropped) differs only when there is one
+    for drop in (False, True) if "/*" in original else (False,):
         view, starts, ends = _view(original, drop_block_comments=drop)
         for s, e in _spans(view, sql=sql):
             if e > s:
@@ -591,15 +759,104 @@ def scrub(text: str | None, *, sql: bool = False) -> str:
     return scrub_counted(text, sql=sql)[0]
 
 
-def mask_pii_counted(text: str) -> tuple[str, int]:
+#: A maximal run of characters an email address is made of, with the ``@``. One run is one
+#: candidate address; the ``@`` is in the class so a local part and its domain are one run.
+_EMAIL_RUN = re.compile(r"[A-Za-z0-9._%+\-@]++")
+#: The longest a valid address can be (RFC 5321). ``dms_core.pii._EMAIL_FIND`` has no bound
+#: on its match, so on a long run of address characters it tries every start position and
+#: scans to the end of the run each time: quadratic. A run longer than this cannot be an
+#: address, so it is withheld before the masker sees it, which bounds that cost to the
+#: square of 254 per run, linear overall.
+MAX_EMAIL_RUN = 254
+_EMAIL_CHARS = frozenset(string.ascii_letters + string.digits + "._%+-@")
+_EMAIL_TAIL = re.compile(r"\.[A-Za-z]{2}")
+
+
+def cuts_a_run(text: str, at: int) -> bool:
+    """A cut of ``text`` at index ``at`` falls inside a run of address characters."""
+    return 0 < at < len(text) and text[at - 1] in _EMAIL_CHARS and text[at] in _EMAIL_CHARS
+
+
+def _withhold_long_runs(text: str, *, open_end: bool) -> tuple[str, int]:
+    """Replace every address-character run longer than ``MAX_EMAIL_RUN`` with a marker.
+
+    ``open_end`` says the text was cut in the middle of a run (the window ended there),
+    so the run that touches the end may be half an address and is withheld whatever its
+    length. A real address glued to a long run is withheld with it, whole: failing
+    closed is the point, a partial address must never be stored.
+    """
+    out: list[str] = []
+    last = 0
+    held = 0
+    for m in _EMAIL_RUN.finditer(text):
+        s, e = m.span()
+        if e - s > MAX_EMAIL_RUN or (open_end and e == len(text)):
+            out.append(text[last:s])
+            out.append(f"[long run withheld: {e - s} chars]")
+            last = e
+            held += 1
+    if not held:
+        return text, 0
+    out.append(text[last:])
+    return "".join(out), held
+
+
+def _email_shaped(run: str) -> bool:
+    """``local@domain.tld`` somewhere in ``run``, the shape the masker is there to remove."""
+    at = run.find("@")
+    while at != -1:
+        nxt = run.find("@", at + 1)
+        if at > 0 and _EMAIL_TAIL.search(run, at + 1, len(run) if nxt == -1 else nxt):
+            return True
+        at = nxt
+    return False
+
+
+def _withhold_email_like(text: str) -> tuple[str, int]:
+    """Withhold any run the masker left that still looks like an address.
+
+    The masker's email pattern needs a word boundary after the top-level domain, so an
+    address with a digit glued to it (``a@b.com123``) is not matched and would be stored.
+    A run that is still address-shaped after masking is withheld whole.
+    """
+    out: list[str] = []
+    last = 0
+    held = 0
+    for m in _EMAIL_RUN.finditer(text):
+        run = m.group()
+        if "@" in run and (len(run) > MAX_EMAIL_RUN or _email_shaped(run)):
+            out.append(text[last : m.start()])
+            out.append(f"[email-like run withheld: {len(run)} chars]")
+            last = m.end()
+            held += 1
+    if not held:
+        return text, 0
+    out.append(text[last:])
+    return "".join(out), held
+
+
+def mask_pii_counted(text: str, *, open_end: bool = False) -> tuple[str, int]:
     """Mask personal data exactly as the customer envelope does. Returns text and a count.
 
-    Fails closed like the envelope: a masker error blanks the text.
+    Fails closed like the envelope: a masker error blanks the text. Three things are
+    added around the shared masker, none of which edit it:
+
+    - an address-character run longer than ``MAX_EMAIL_RUN`` is withheld first (the
+      masker's email pattern is quadratic on one; see ``MAX_EMAIL_RUN``). Fidelity limit:
+      such a run is not stored, whatever else it was;
+    - a run the window cut (``open_end``) is withheld, so half an address is not kept;
+    - a run still shaped like an address after masking is withheld whole.
+
+    The masker runs once, over the whole text, never over pieces: it recognises PII
+    that spans words (a spaced phone or card number, a birth cue and a date).
     """
     if not text:
         return text, 0
-    masked = str(fail_closed_mask_payload(text=text)["text"])
-    return masked, max(0, len(MASK_TOKEN_RE.findall(masked)) - len(MASK_TOKEN_RE.findall(text)))
+    held, n_long = _withhold_long_runs(text, open_end=open_end)
+    masked = str(fail_closed_mask_payload(text=held)["text"])
+    n_masked = max(0, len(MASK_TOKEN_RE.findall(masked)) - len(MASK_TOKEN_RE.findall(held)))
+    final, n_left = _withhold_email_like(masked)
+    return final, n_long + n_masked + n_left
 
 
 def has_sql_statement(sql: str | None) -> bool:

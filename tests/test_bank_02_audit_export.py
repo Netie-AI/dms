@@ -859,13 +859,14 @@ def test_a_placeholder_is_never_exported_as_sql(minter: ManifestMinter) -> None:
 def test_every_statement_that_ran_is_recorded_in_order() -> None:
     from dms_api.ask_audit import _evidence
 
-    sql, tables, rows = _evidence(
+    sql, tables, rows, rough = _evidence(
         None, [("SELECT 1 FROM a", 1), ("SELECT 2 FROM b JOIN a ON 1=1;", 3)]
     )
 
     assert sql == "SELECT 1 FROM a;\nSELECT 2 FROM b JOIN a ON 1=1"
     assert tables == ("a", "b")
     assert rows == 3
+    assert rough is False, "short statements are parsed, not scanned"
 
 
 # --- H2: "verified" says only what it can ----------------------------------------
@@ -1043,6 +1044,52 @@ _SECRET_SHAPES += [
     (".pgpass line", "db.internal:5432:sales:app:FAKEZQX9pgpass", "FAKEZQX9pgpass"),
     ("mysql -p attached", "mysql -u root -pFAKEZQX9mysql -h db", "FAKEZQX9mysql"),
     ("mysql -p quoted", "mysql -u root -p'FAKEZQX9mysq' -h db", "FAKEZQX9mysq"),
+]
+
+
+#: Shapes found by the fourth independent verify (CLI flags that take a secret as the next
+#: word, a Digest response, SMTP AUTH, a PEM body split on spaces, a stray trailing quote).
+_SMTP_PLAIN = base64.b64encode(b"\x00bob\x00FAKEZQX9smtp").decode()
+_PEM_A = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5YWJjZGVmZ2hpamts"
+_PEM_B = "MZ9QWERTYUIOPASDFGHJKLZXCVBNM0123456789MZ9QWERTYUIOPASDFGHJKLZXCV"
+_PEM_C = "NMoSfm76oqFv=="
+_PEM_NO_DIGITS = "AbCdEfGhIjKlMnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWxYz"
+_SECRET_SHAPES += [
+    ("vercel --token", "vercel deploy --prod --token FAKEZQX9vercel", "FAKEZQX9vercel"),
+    ("netlify --auth", "netlify deploy --auth FAKEZQX9netlify --prod", "FAKEZQX9netlify"),
+    ("ssh-keygen -N", "ssh-keygen -t ed25519 -N FAKEZQX9sshkg -f key", "FAKEZQX9sshkg"),
+    ("ssh-keygen -N quoted", "ssh-keygen -N 'FAKEZQX9sshq' -f key", "FAKEZQX9sshq"),
+    (
+        "openssl -pass pass:",
+        "openssl enc -aes-256-cbc -pass pass:FAKEZQX9ossl -in a",
+        "FAKEZQX9ossl",
+    ),
+    ("gpg --passphrase", "gpg --batch --passphrase FAKEZQX9gpg --decrypt f.gpg", "FAKEZQX9gpg"),
+    (
+        "docker login -p",
+        "docker login -u bob -p FAKEZQX9dock registry.example.com",
+        "FAKEZQX9dock",
+    ),
+    (
+        "docker login --password",
+        "docker login --username bob --password FAKEZQX9dockl reg.example.com",
+        "FAKEZQX9dockl",
+    ),
+    (
+        "Digest response",
+        'Authorization: Digest username="bob", realm="r", nonce="n", uri="/", '
+        'response="f4a3c0de0badf00d0123456789abcdef"',
+        "f4a3c0de0badf00d0123456789abcdef",
+    ),
+    ("SMTP AUTH PLAIN", "AUTH PLAIN " + _SMTP_PLAIN, _SMTP_PLAIN),
+    ("PEM body split by spaces, 2nd chunk", f"{_PEM_A} {_PEM_B} {_PEM_C}", _PEM_B),
+    ("PEM body split by spaces, last chunk", f"{_PEM_A} {_PEM_B} {_PEM_C}", _PEM_C),
+    ("PEM body, 2nd chunk without digits", f"{_PEM_A} {_PEM_NO_DIGITS}", _PEM_NO_DIGITS),
+    (
+        "IDENTIFIED BY with a stray trailing quote",
+        "CREATE USER bob IDENTIFIED BY 'FAKEZQX9stray'';",
+        "FAKEZQX9stray",
+    ),
 ]
 
 
@@ -1241,14 +1288,14 @@ def test_a_huge_question_is_recorded_cut_and_marked() -> None:
 
     client, app = _stub_stack(_envelope())
     for _ in range(5):
-        assert _ask(client, "x" * 2_000_000).status_code == 200, "the ask itself still accepts it"
+        assert _ask(client, "x " * 1_000_000).status_code == 200, "the ask itself still accepts it"
 
     stored = app.state.ask_audit_store.list_between(since=None, until=None, limit=100)
 
     assert len(stored) == 5
     assert sum(len(r.question) for r in stored) < 5 * (QUESTION_CAP + 100)
     for r in stored:
-        assert r.question.startswith("x" * 100)
+        assert r.question.startswith("x x x x")
         assert "[truncated: original was 2000000 chars]" in r.question
         assert r.truncated is True
     assert {r["truncated"] for r in _csv_rows(_export(client).text)} == {"true"}
@@ -1273,7 +1320,7 @@ def test_the_memory_store_is_bounded_and_counts_what_it_evicts() -> None:
     for _ in range(10):
         store.record(
             record_from_error(
-                question="q" * 1000,
+                question="q " * 500,
                 reason="seed",
                 actor=DEPLOYMENT_ACTOR,
                 actor_kind="deployment",
@@ -1541,9 +1588,12 @@ def test_a_secret_straddling_the_question_cut_is_removed_whole() -> None:
 
     cases = [
         # a URL password that starts before the cut and ends after it
-        "a" * (QUESTION_CAP - 20) + " postgresql://u:FAKEZQX9" + "c" * 60 + "@db.internal/x tail",
+        ("a " * QUESTION_CAP)[: QUESTION_CAP - 20]
+        + " postgresql://u:FAKEZQX9"
+        + "c" * 60
+        + "@db.internal/x tail",
         # a key=value whose value runs across the cut
-        "a" * (QUESTION_CAP - 14) + " password=FAKEZQX9" + "d" * 40 + " end",
+        ("a " * QUESTION_CAP)[: QUESTION_CAP - 14] + " password=FAKEZQX9" + "d" * 40 + " end",
     ]
     client, _app = _stub_stack(_envelope())
     for q in cases:
@@ -1562,10 +1612,10 @@ def test_a_secret_straddling_the_question_cut_is_removed_whole() -> None:
 def test_a_secret_straddling_the_sql_cut_is_removed_whole() -> None:
     from dms_core.control_plane.ask_audit import SQL_CAP
 
-    lead = "SELECT 1 FROM inventory WHERE note = '" + "z" * (SQL_CAP - 78)
+    lead = "SELECT 1 FROM inventory WHERE note = '" + ("z " * SQL_CAP)[: SQL_CAP - 78]
     # the password starts before the cut and ends after it; text follows, so the
     # scrubbed statement is still longer than the cap and is cut
-    sql = lead + " postgresql://u:FAKEZQX9" + "c" * 80 + "@db.internal/x " + "y" * 600 + "'"
+    sql = lead + " postgresql://u:FAKEZQX9" + "c" * 80 + "@db.internal/x " + "y " * 300 + "'"
     client, _app = _stub_stack(_envelope(sql_used=sql))
     _ask(client, "How many units?")
 
@@ -1829,3 +1879,509 @@ def test_a_credential_word_inside_a_value_already_taken_is_that_secrets_text() -
     # a credential word inside a value that is taken is part of that value
     clean, _ = scrub_counted("password=FAKEZQX9outer password=FAKEZQX9inner")
     assert "FAKEZQX9" not in clean
+
+
+# === Verify round 4 ===========================================================================
+
+
+def test_a_comment_opener_inside_a_sql_literal_is_not_a_comment() -> None:
+    """D4: ``--`` or ``/*`` in a literal or a quoted identifier is text, not a comment."""
+    from dms_core.control_plane.ask_audit import scrub_counted
+
+    repros = (
+        "SELECT '--' AS sep, token = t2.token FROM t JOIN t2 ON 1 = 1",
+        "SELECT 1 FROM t WHERE note LIKE '%--%' AND api_key = k2.api_key",
+        "SELECT '/*' AS a, token = t2.token, '*/' AS b FROM t",
+        'SELECT "--" AS sep, secret = s2.secret FROM t',
+    )
+    for sql in repros:
+        assert scrub_counted(sql, sql=True) == (sql, 0), f"an identifier was rewritten: {sql}"
+    # what is in a real comment, and in a real literal, is still read as prose
+    clean, removed = scrub_counted("SELECT 1 -- password=FAKEZQX9cmt", sql=True)
+    assert "FAKEZQX9" not in clean and removed == 1
+    clean, removed = scrub_counted("SELECT '--' AS a, 'password=FAKEZQX9lit' AS b", sql=True)
+    assert "FAKEZQX9" not in clean and "AS a" in clean and removed == 1
+
+    for sql in repros[:2]:  # and through the whole record path, unchanged in the export
+        client, _app = _stub_stack(_envelope(sql_used=sql))
+        _ask(client, "How many units?")
+        row = _csv_rows(_export(client).text)[0]
+        assert row["executed_sql"] == sql and row["redactions"] == "0", row["executed_sql"]
+
+
+def test_a_sql_literal_longer_than_the_window_is_read_as_data() -> None:
+    """D5: a literal still open at the end of the window is a literal, not code."""
+    from dms_core.control_plane.ask_audit import SQL_CAP, _clean
+
+    for hidden in (
+        " password=FAKEZQX9open ",
+        " Bearer FAKEZQX9bearer0123456789abcdef ",
+        " AKIA" + "FAKEZQX9OPEN0123 ",
+    ):
+        sql = "SELECT '" + "x" * 10_000 + hidden + "y" * 1_000_000 + "' FROM t"
+        clean, removed, cut = _clean(sql, SQL_CAP, sql=True)
+        assert "FAKEZQX9" not in clean, f"a secret inside an open literal was stored: {hidden!r}"
+        assert removed >= 1 and cut is True
+
+    # and through the record path and the export, with words so the text is not one run
+    sql = "SELECT '" + "x " * 5_000 + " password=FAKEZQX9open " + "y " * 40_000 + "' FROM t"
+    client, _app = _stub_stack(_envelope(sql_used=sql))
+    _ask(client, "How many units?")
+    row = _csv_rows(_export(client).text)[0]
+    assert "FAKEZQX9" not in row["executed_sql"] and row["truncated"] == "true"
+
+
+class LocalPathAsk:
+    """A path that ran its SQL itself (bronze sheets, the demo): the engine recorded nothing."""
+
+    def __init__(self, sql: str) -> None:
+        self.sql = sql
+
+    def live_ask(self, question: str, **_: Any) -> dict[str, Any]:
+        from dms_executor import executed_trace
+
+        executed_trace.begin()
+        return _envelope(sql_used=self.sql)
+
+    def take_executed(self) -> Any:
+        from dms_executor import executed_trace
+
+        return executed_trace.take()
+
+
+def test_a_local_path_is_scrubbed_before_the_envelope_masks_its_sql() -> None:
+    """D6a: the envelope's masker splits a secret that has digits in it; the audit row must
+    be built from the statement as it ran, scrubbed first and masked second."""
+    sql = "SELECT 1 FROM inventory -- slack xoxb" + "-FAKEZQX9twl-012-3456789-ZQX9tail"
+    app = create_app()
+    app.state.cortex = LedgerCortex()
+    app.state.ask_service = LocalPathAsk(sql)
+    client = TestClient(app)
+
+    asked = _ask(client, "How many units?")
+
+    assert asked.status_code == 200
+    # the customer envelope is exactly what it was without a trace
+    assert asked.json()["sql_used"] == _envelope(sql_used=sql)["sql_used"]
+    row = _csv_rows(_export(client).text)[0]
+    assert "FAKEZQX9" not in row["executed_sql"], row["executed_sql"]
+    assert "ZQX9tail" not in row["executed_sql"], "a fragment of the secret survived"
+    assert "xoxb" not in row["executed_sql"] and "DMSMASK" not in row["executed_sql"]
+    assert row["executed_sql"].startswith("SELECT 1 FROM inventory")
+    assert row["tables_read"] == "inventory"
+
+
+def _contract_cortex_status(status: int, body: dict[str, Any]) -> Any:
+    import httpx
+    from cortex_client import CortexClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/contract/ledger/verify":
+            return httpx.Response(status, json=body)
+        return httpx.Response(404, json={"detail": "not found"})
+
+    client = CortexClient("http://cortex.test")
+    client._client.set_httpx_client(
+        httpx.Client(base_url="http://cortex.test", transport=httpx.MockTransport(handler))
+    )
+    return client
+
+
+def _export_with_verify(monkeypatch: pytest.MonkeyPatch, status: int, body: dict[str, Any]) -> Any:
+    from dms_core.control_plane.ask_audit import record_from_envelope
+
+    _allow_gates(monkeypatch)
+    app = create_app()
+    app.state.cortex = _contract_cortex_status(status, body)
+    app.state.ask_service = StubAsk(_envelope())
+    client = TestClient(app)
+    app.state.ask_audit_store.record(
+        record_from_envelope(
+            _envelope(audit_id="led_1", answer_id="ans_1"),
+            question="ask",
+            actor=DEPLOYMENT_ACTOR,
+            actor_kind="deployment",
+            space_id=FINANCE,
+            executed_sql="SELECT 1 FROM inventory",
+            tables_read=("inventory",),
+            row_count=1,
+        )
+    )
+    return _export(client)
+
+
+def test_a_422_from_ledger_verify_reads_unavailable_and_not_a_break(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D6b: a validation error is not a verification result. It is not a break either."""
+    detail = {"detail": [{"loc": ["body"], "msg": "field required", "type": "value_error"}]}
+    r = _export_with_verify(monkeypatch, 422, detail)
+
+    row = _csv_rows(r.text)[0]
+    assert row["ledger_verify_status"] == "unavailable", row["ledger_verify_status"]
+    assert row["export_verified"] == "false" and row["ledger_first_break"] == ""
+    assert r.headers["x-audit-ledger-verify"] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"ok": "yes"},
+        {"ok": "true"},
+        {"ok": 1},
+        {"ok": None},
+        {},
+        {"valid": "yes"},
+        {"broken_at": 2},
+    ],
+    ids=["yes", "string-true", "int", "null", "empty", "valid-string", "no-ok"],
+)
+def test_ok_must_be_a_real_boolean_to_read_as_a_verification(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    """D6c: ``{"ok": "yes"}`` must not read as verified, nor an absent ``ok`` as a break."""
+    r = _export_with_verify(monkeypatch, 200, body)
+
+    row = _csv_rows(r.text)[0]
+    assert row["ledger_verify_status"] == "unavailable", (body, row["ledger_verify_status"])
+    assert row["export_verified"] == "false"
+
+
+def test_a_real_boolean_ok_still_verifies(monkeypatch: pytest.MonkeyPatch) -> None:
+    ok = _csv_rows(_export_with_verify(monkeypatch, 200, {"ok": True, "broken_at": None}).text)[0]
+    broken = _csv_rows(_export_with_verify(monkeypatch, 200, {"ok": False, "broken_at": 4}).text)[0]
+
+    assert (ok["ledger_verify_status"], ok["export_verified"]) == ("ok", "true")
+    assert (broken["ledger_verify_status"], broken["ledger_first_break"]) == ("break", "4")
+
+
+# --- D2: tables_read never parses unbounded SQL --------------------------------------------
+
+
+def _many_ctes(n: int) -> str:
+    parts = [f"c{i} AS (SELECT {i} AS x FROM t{i % 7})" for i in range(n)]
+    return "WITH " + ", ".join(parts) + " SELECT * FROM c0"
+
+
+def _cte_chain(n: int) -> str:
+    parts = ["c0 AS (SELECT 1 AS x FROM base)"]
+    parts += [f"c{i} AS (SELECT x FROM c{i - 1})" for i in range(1, n)]
+    return "WITH " + ", ".join(parts) + f" SELECT * FROM c{n - 1}"
+
+
+def _unions(n: int) -> str:
+    return " UNION ALL ".join(f"SELECT {i} AS x FROM t{i % 9}" for i in range(n))
+
+
+def _sized(make: Any, chars: int) -> str:
+    n = 1
+    while len(make(n)) < chars:
+        n = int(n * 1.3) + 1
+    return make(n)
+
+
+@pytest.mark.parametrize(
+    ("make", "chars"),
+    [
+        (_many_ctes, 400_000),
+        (_cte_chain, 400_000),
+        (_unions, 400_000),
+        (_unions, 25_000),
+        (_cte_chain, 100_000),
+    ],
+    ids=["400k-ctes", "400k-cte-chain", "400k-unions", "25k-unions", "100k-cte-chain"],
+)
+def test_tables_read_does_not_parse_unbounded_sql(make: Any, chars: int) -> None:
+    from dms_api.wiring import sql_tables_read_checked
+
+    sql = _sized(make, chars)
+    t0 = time.perf_counter()
+    names, approximate = sql_tables_read_checked(sql)
+    took = time.perf_counter() - t0
+
+    assert took < 0.5, f"{len(sql)} chars of SQL took {took:.2f}s"
+    assert approximate is True
+    assert names, "the scan still names the tables it can see"
+    assert any(n in names for n in ("base", "t3")), names[:10]
+
+
+def test_tables_read_is_exact_below_the_cap_and_approximate_above_it() -> None:
+    from dms_api.wiring import sql_tables_read_checked
+    from dms_executor.sql_currency import TABLES_PARSE_CAP
+
+    below = "WITH sales AS (SELECT * FROM sales) SELECT * FROM sales JOIN main.t ON 1 = 1"
+    assert sql_tables_read_checked(below) == (("main.t", "sales"), False)
+    short = _sized(_many_ctes, TABLES_PARSE_CAP // 2)
+    assert sql_tables_read_checked(short) == (tuple(f"t{i}" for i in range(7)), False), (
+        "parsed: the CTE names are scoped out and only the base tables are read"
+    )
+    long_cte = _sized(_cte_chain, TABLES_PARSE_CAP + 2_000)
+    names, approximate = sql_tables_read_checked(long_cte)
+    assert approximate is True and "base" in names
+    assert sql_tables_read_checked("") == ((), False)
+    assert sql_tables_read_checked("-- document retrieval (no SQL)") == ((), False)
+    # a parse failure is approximate too, and still names the table
+    assert sql_tables_read_checked("SELEC broken FROM inventory WHERE (")[1] is True
+    assert "inventory" in sql_tables_read_checked("SELEC broken FROM inventory WHERE (")[0]
+
+
+def test_an_approximate_tables_read_is_marked_on_the_row_and_in_the_export() -> None:
+    long_sql = _sized(_many_ctes, 60_000)
+    client, _app = _stub_stack(_envelope())
+    # a second ask whose executed SQL is long, recorded through the engine trace
+    app = create_app()
+    app.state.cortex = LedgerCortex()
+    app.state.ask_service = TracedAsk(long_sql)
+    long_client = TestClient(app)
+    _ask(client, "How many units?")
+    _ask(long_client, "How many units?")
+
+    short_row = _csv_rows(_export(client).text)[0]
+    long_row = _csv_rows(_export(long_client).text)[0]
+    jsonl = [json.loads(x) for x in _export(long_client, format="jsonl").text.splitlines()]
+
+    assert short_row["tables_read_approximate"] == "false"
+    assert long_row["tables_read_approximate"] == "true"
+    assert jsonl[0]["tables_read_approximate"] is True
+    assert "tables_read_approximate" in COLUMNS
+
+
+class TracedAsk:
+    """The engine ran ``sql`` (recorded in the trace) and returned an ordinary envelope."""
+
+    def __init__(self, sql: str, rows: int = 1) -> None:
+        self.sql, self.rows = sql, rows
+
+    def live_ask(self, question: str, **_: Any) -> dict[str, Any]:
+        from dms_executor import executed_trace
+
+        executed_trace.begin()
+        executed_trace.record(self.sql, self.rows)
+        return _envelope()
+
+    def take_executed(self) -> Any:
+        from dms_executor import executed_trace
+
+        return executed_trace.take()
+
+
+# --- D1: the PII masker is not linear; the audit path must not hand it a run that stalls it ---
+
+ADDRESS = "zq7marla.fake@fakecorp-zq7.example"
+#: Every 5-character piece of the address: none of them may be stored, whatever the glue.
+ADDRESS_GRAMS = {ADDRESS[i : i + 5] for i in range(len(ADDRESS) - 4)}
+
+
+def _no_address_in(text: str, where: str) -> None:
+    for gram in ADDRESS_GRAMS:
+        assert gram not in text, f"{where} stores part of the address ({gram!r}): {text[:160]!r}"
+
+
+def _record_and_export(question: str, sql: str) -> tuple[Any, str, str]:
+    """The write path and both export formats for one ask, with no ledger behind them."""
+    from dms_core.control_plane.ask_audit import record_from_envelope
+    from dms_core.control_plane.ask_audit_export import (
+        ExportMeta,
+        LedgerVerification,
+        to_csv,
+        to_jsonl,
+    )
+
+    rec = record_from_envelope(
+        _envelope(),
+        question=question,
+        actor=DEPLOYMENT_ACTOR,
+        actor_kind="deployment",
+        space_id=FINANCE,
+        executed_sql=sql,
+        tables_read=("inventory",),
+        row_count=1,
+    )
+    meta = ExportMeta(LedgerVerification("ok", None, None, datetime.now(UTC)), "memory", 0)
+    return rec, to_csv([rec], meta), to_jsonl([rec], meta)
+
+
+def _glue_corpus() -> dict[str, str]:
+    runs = {
+        "q100": "q" * 100,
+        "q254": "q" * 254,
+        "q300": "q" * 300,
+        "dots100": "a." * 50,
+        "dots254": "a." * 127,
+        "dots300": "a." * 150,
+        "dash254": "k-" * 127,
+        "digits100": "1" * 100,
+        "digits300": "1" * 300,
+    }
+    cases = {"alone": f"contact {ADDRESS} please", "with words": f"mail {ADDRESS}, or call"}
+    for name, run in runs.items():
+        cases[f"left {name}"] = f"contact {run}{ADDRESS} please"
+        cases[f"right {name}"] = f"contact {ADDRESS}{run} please"
+        cases[f"both {name}"] = f"contact {run}{ADDRESS}{run} please"
+    return cases
+
+
+def test_no_part_of_an_address_is_stored_however_it_is_glued() -> None:
+    """The withholding is fail-closed: masked or withheld, never partial."""
+    for name, text in _glue_corpus().items():
+        sql = "SELECT 1 FROM inventory WHERE note = '" + text.replace("'", "''") + "'"
+        rec, csv_text, jsonl_text = _record_and_export(text, sql)
+        for where, stored in (
+            ("question", rec.question),
+            ("executed_sql", rec.executed_sql),
+            ("csv export", csv_text),
+            ("jsonl export", jsonl_text),
+        ):
+            _no_address_in(stored, f"{name}: {where}")
+        assert rec.redactions >= 2, (name, rec.redactions)
+
+
+def test_an_address_alone_is_masked_and_a_long_run_is_withheld_not_stored() -> None:
+    rec, _csv, _jsonl = _record_and_export(f"mail {ADDRESS} now", "SELECT 1 FROM inventory")
+    assert "DMSMASK_email_" in rec.question and rec.redactions == 1
+
+    # the fidelity limit: a run of 255 or more address characters is withheld, not stored
+    run = "ab12" * 64
+    rec, _csv, _jsonl = _record_and_export(f"key {run} end", "SELECT 1 FROM inventory")
+    assert run not in rec.question
+    assert f"[long run withheld: {len(run)} chars]" in rec.question and rec.redactions == 1
+    # 254 is a possible address length, so it is passed to the masker as it always was
+    rec, _csv, _jsonl = _record_and_export(
+        "key " + "ab12" * 63 + "xy end", "SELECT 1 FROM inventory"
+    )
+    assert "withheld" not in rec.question
+
+
+@pytest.mark.parametrize("sql", [False, True], ids=["question", "sql"])
+def test_an_address_the_window_cuts_is_not_stored_in_part(sql: bool) -> None:
+    from dms_core.control_plane.ask_audit import _CUT_MARGIN, QUESTION_CAP, SQL_CAP
+
+    window = (SQL_CAP if sql else QUESTION_CAP) + _CUT_MARGIN
+    for j in range(1, len(ADDRESS) + 1):  # the window ends j characters into the address
+        if sql:
+            head, mid = "SELECT 'password=", "' AS a, '"
+            lead = head + "p" * (window - len(head) - len(mid) - j) + mid
+            text = lead + ADDRESS + "' FROM inventory"
+        else:
+            text = "password=" + "p" * (window - 9 - j - 1) + " " + ADDRESS + " and more words"
+        assert text.index(ADDRESS) + j == window
+        rec, csv_text, jsonl_text = _record_and_export(
+            "How many units?" if sql else text, text if sql else "SELECT 1 FROM inventory"
+        )
+        stored = rec.executed_sql if sql else rec.question
+        _no_address_in(stored, f"window edge j={j}")
+        _no_address_in(csv_text, f"window edge j={j} csv")
+        _no_address_in(jsonl_text, f"window edge j={j} jsonl")
+
+
+def _rep(unit: str, n: int) -> str:
+    return (unit * (n // len(unit) + 1))[:n]
+
+
+def _dos_families() -> dict[str, Any]:
+    units = ["a.", "a.@b.!", "1990-01-01 ", "Ab-Cd ", "a.a..@b.b..!", "a-", "a%", "1+"]
+    fams: dict[str, Any] = {f"{u!r} repeated": (lambda n, u=u: _rep(u, n)) for u in units}
+    fams["'a.' * n + '@'"] = lambda n: "a." * (n // 2) + "@"
+    fams["'a.' * n + '@' + 'a-' * n"] = lambda n: "a." * (n // 4) + "@" + "a-" * (n // 4)
+    fams["254-char runs, space-separated"] = lambda n: _rep("a." * 127 + " ", n)
+    fams["254-char address-shaped runs"] = lambda n: _rep("a." * 120 + "a@b.cc ", n)
+    fams["words and dates"] = lambda n: _rep(
+        "Order for Ann Lee on 12 March 2024 phone 012-3456789 ", n
+    )
+    return fams
+
+
+def _timed(fn: Any, *args: Any, **kwargs: Any) -> float:
+    t0 = time.perf_counter()
+    fn(*args, **kwargs)
+    return time.perf_counter() - t0
+
+
+def test_the_audit_record_path_is_linear_on_the_masker_repros() -> None:
+    """The write path (scrub, withhold, mask, cut) and both exports, at the production windows
+    and at the 64,000 the scrub itself reads, for every family that stalls ``_EMAIL_FIND``."""
+    from dms_core.control_plane.ask_audit import _CUT_MARGIN, QUESTION_CAP, SQL_CAP, _clean
+    from dms_core.control_plane.ask_audit_scrub import MAX_SCRUB_CHARS, mask_pii_counted
+
+    for family, make in _dos_families().items():
+        for cap, is_sql in ((QUESTION_CAP, False), (SQL_CAP, True)):
+            window = cap + _CUT_MARGIN
+            small = _timed(_clean, make(window // 4), cap, sql=is_sql)
+            big = _timed(_clean, make(window), cap, sql=is_sql)
+            assert big < 0.5, f"{family}: _clean({window}, sql={is_sql}) took {big:.2f}s"
+            assert big < 8 * small + 0.05, (
+                f"{family}: {window // 4}: {small:.3f}s, {window}: {big:.3f}s"
+            )
+        took = _timed(mask_pii_counted, make(MAX_SCRUB_CHARS))
+        assert took < 0.5, f"{family}: mask_pii_counted({MAX_SCRUB_CHARS}) took {took:.2f}s"
+        # the whole row, written and exported in both formats
+        question, sql = make(QUESTION_CAP + _CUT_MARGIN), make(SQL_CAP + _CUT_MARGIN)
+        took = _timed(_record_and_export, question, "SELECT '" + sql + "'")
+        assert took < 1.0, f"{family}: one row written and exported took {took:.2f}s"
+
+
+def test_exporting_many_rows_of_the_worst_input_stays_cheap() -> None:
+    from dms_core.control_plane.ask_audit import record_from_error
+    from dms_core.control_plane.ask_audit_export import (
+        ExportMeta,
+        LedgerVerification,
+        to_csv,
+        to_jsonl,
+    )
+
+    row = record_from_error(
+        question=_rep("a.", 12_000),
+        reason="seed",
+        actor=DEPLOYMENT_ACTOR,
+        actor_kind="deployment",
+        space_id=None,
+        executed_sql="SELECT '" + _rep("a.@b.!", 52_000) + "'",
+    )
+    rows = [row] * 10
+    meta = ExportMeta(LedgerVerification("ok", None, None, datetime.now(UTC)), "memory", 0)
+
+    # ten maximum-size rows: about 50 ms a row, the linear secrets scrub and nothing else
+    assert _timed(to_csv, rows, meta) < 2.0
+    assert _timed(to_jsonl, rows, meta) < 2.0
+
+
+def test_an_adversarial_ask_neither_stalls_the_ask_nor_the_asks_beside_it() -> None:
+    """End to end through POST /v1/chat/ask: the question and the executed SQL are the worst
+    input, and a benign ask on another thread must not wait behind it."""
+    benign_client, _a = _stub_stack(_envelope())
+    # warm both stacks so the first request's imports are not counted
+    assert _ask(benign_client, "How many units?").status_code == 200
+
+    for family, make in (
+        ("a.", lambda n: _rep("a.", n)),
+        ("a.@b.!", lambda n: _rep("a.@b.!", n)),
+        ("a. then @ then a-", lambda n: "a." * (n // 4) + "@" + "a-" * (n // 4)),
+    ):
+        question, sql = make(12_000), "SELECT '" + make(52_000) + "' FROM inventory"
+        app = create_app()
+        app.state.cortex = LedgerCortex()
+        app.state.ask_service = TracedAsk(sql)
+        slow_client = TestClient(app)
+        done: dict[str, float] = {}
+
+        def run_slow(
+            client: TestClient = slow_client, q: str = question, done: dict[str, float] = done
+        ) -> None:
+            t0 = time.perf_counter()
+            assert _ask(client, q).status_code == 200
+            done["slow"] = time.perf_counter() - t0
+
+        worker = threading.Thread(target=run_slow)
+        worker.start()
+        waits = []
+        while worker.is_alive():
+            t0 = time.perf_counter()
+            assert _ask(benign_client, "How many units?").status_code == 200
+            waits.append(time.perf_counter() - t0)
+        worker.join()
+
+        # about 0.1 to 0.25 s and 0.07 to 0.22 s here; the parent took 29 s and stalled everything
+        assert done["slow"] < 2.0, f"{family}: the adversarial ask took {done['slow']:.2f}s"
+        assert max(waits or [0.0]) < 1.0, f"{family}: a benign ask waited {max(waits):.2f}s"
+        row = _csv_rows(_export(slow_client).text)[0]
+        assert row["executed_sql"] and row["question"]

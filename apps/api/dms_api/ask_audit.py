@@ -31,7 +31,7 @@ from dms_core.control_plane.ask_audit import (
 from fastapi import HTTPException
 
 from dms_api.settings import Settings
-from dms_api.wiring import sql_tables_read
+from dms_api.wiring import sql_tables_read_checked
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +65,14 @@ def take_executed(ask: object) -> ExecutedTrace:
 
 def _evidence(
     envelope: dict[str, Any] | None, statements: Sequence[tuple[str, int]]
-) -> tuple[str, tuple[str, ...], int]:
-    """``(executed_sql, tables_read, row_count)`` for the row.
+) -> tuple[str, tuple[str, ...], int, bool]:
+    """``(executed_sql, tables_read, row_count, tables_approximate)`` for the row.
 
     Statements the engine ran win. Several are kept in order, and the row count
     is the last one's. Only when none ran through Cortex is the envelope's own
     ``sql_used`` read, and a comment-only placeholder there is no SQL at all.
+    ``tables_approximate`` is True when any statement was too long to parse (or would
+    not parse) and its tables came from a bounded name scan.
     """
     stmts = [(sql, n) for sql, n in statements if has_sql_statement(sql)]
     if stmts:
@@ -80,15 +82,24 @@ def _evidence(
             else ";\n".join(s.strip().rstrip(";").rstrip() for s, _ in stmts)
         )
         tables: dict[str, str] = {}
+        approximate = False
         for sql, _ in stmts:
-            for t in sql_tables_read(sql):
+            names, rough = sql_tables_read_checked(sql)
+            approximate = approximate or rough
+            for t in names:
                 tables.setdefault(t.casefold(), t)
-        return sql_text, tuple(sorted(tables.values(), key=str.casefold)), stmts[-1][1]
+        return (
+            sql_text,
+            tuple(sorted(tables.values(), key=str.casefold)),
+            stmts[-1][1],
+            approximate,
+        )
     rows = [r for r in ((envelope or {}).get("rows") or []) if isinstance(r, dict)]
     shown_sql = (envelope or {}).get("sql_used")
     if has_sql_statement(shown_sql):
-        return str(shown_sql), sql_tables_read(shown_sql), len(rows)
-    return "", (), len(rows)
+        names, rough = sql_tables_read_checked(shown_sql)
+        return str(shown_sql), names, len(rows), rough
+    return "", (), len(rows), False
 
 
 def record_ask(
@@ -112,7 +123,7 @@ def record_ask(
     """
     trace = executed or ExecutedTrace()
     try:
-        executed_sql, tables_read, row_count = _evidence(envelope, trace.statements)
+        executed_sql, tables_read, row_count, approximate = _evidence(envelope, trace.statements)
         if envelope is not None:
             rec = record_from_envelope(
                 envelope,
@@ -125,6 +136,7 @@ def record_ask(
                 row_count=row_count,
                 ledger=trace.ledger,
                 asked_at=asked_at,
+                tables_read_approximate=approximate,
             )
         else:
             rec = record_from_error(
@@ -137,6 +149,7 @@ def record_ask(
                 tables_read=tables_read,
                 row_count=row_count,
                 asked_at=asked_at,
+                tables_read_approximate=approximate,
             )
         store.record(rec)
     except Exception as exc:  # noqa: BLE001 - the audit write must not break the ask

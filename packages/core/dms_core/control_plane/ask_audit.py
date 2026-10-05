@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 import psycopg
 
 from dms_core.control_plane.ask_audit_scrub import (
+    cuts_a_run,
     has_sql_statement,
     mask_pii_counted,
     safe_cut,
@@ -72,10 +73,15 @@ _REASON_CAP = 500
 
 def _clean(text: str, cap: int, *, sql: bool) -> tuple[str, int, bool]:
     """Scrub, mask, then cut. Returns the text, how many values were replaced, and
-    whether it was cut. The cut is last, so it can never split a secret."""
+    whether it was cut. The cut is last, so it can never split a secret.
+
+    The masker runs here, once, over the whole window, and never again: the export
+    re-runs only the linear scrub. A window that ends inside a run of address
+    characters is told so (``open_end``), so half an address is not stored.
+    """
     window = text[: cap + _CUT_MARGIN]
     clean, n_secrets = scrub_counted(window, sql=sql)
-    clean, n_pii = mask_pii_counted(clean)
+    clean, n_pii = mask_pii_counted(clean, open_end=cuts_a_run(text, len(window)))
     cut = len(text) > len(window) or len(clean) > cap
     if cut:
         clean = f"{safe_cut(clean, cap)}...[truncated: original was {len(text)} chars]"
@@ -108,26 +114,30 @@ class AskAuditRecord:
     #: The Cortex ledger seq of ``cortex_entry_id``, when DMS appended that entry and
     #: the append response said. None for a Cortex receipt, which DMS did not append.
     ledger_seq: int | None = None
+    #: ``tables_read`` came from a bounded name scan, not a parse (the statement was too
+    #: long to parse, or would not parse): it can name a CTE, or a table inside a literal.
+    tables_read_approximate: bool = False
 
     def scrubbed(self) -> AskAuditRecord:
-        """Scrub and mask again (export time). Adds what this pass removed to ``redactions``."""
+        """Scrub secrets again (write and export). Adds what this pass removed to ``redactions``.
+
+        Secrets only, and linear. The PII masker is not run here: the question and the SQL
+        were masked once, at write, and the masker is not linear on every input.
+        """
         extra = 0
 
-        def text(value: str, *, sql: bool = False, pii: bool = False) -> str:
+        def text(value: str, *, sql: bool = False) -> str:
             nonlocal extra
             clean, n = scrub_counted(value, sql=sql)
             extra += n
-            if pii:
-                clean, m = mask_pii_counted(clean)
-                extra += m
             return clean
 
         return replace(
             self,
             actor=text(self.actor),
             space_id=text(self.space_id),
-            question=text(self.question, pii=True),
-            executed_sql=text(self.executed_sql, sql=True, pii=True),
+            question=text(self.question),
+            executed_sql=text(self.executed_sql, sql=True),
             tables_read=tuple(text(t) for t in self.tables_read),
             abstain_reason=text(self.abstain_reason),
             cortex_entry_id=text(self.cortex_entry_id),
@@ -191,6 +201,7 @@ def _build(
     actor_kind: str,
     space_id: str | None,
     tables_read: tuple[str, ...],
+    tables_read_approximate: bool,
     badge: str,
     badge_level: str,
     abstain_reason: str,
@@ -222,6 +233,7 @@ def _build(
         redactions=n_q + n_s,
         truncated=q_cut or s_cut,
         ledger_seq=ledger_seq,
+        tables_read_approximate=tables_read_approximate,
     )
     return rec.scrubbed()
 
@@ -238,6 +250,7 @@ def record_from_envelope(
     row_count: int,
     ledger: Sequence[tuple[str, int | None]] = (),
     asked_at: datetime | None = None,
+    tables_read_approximate: bool = False,
 ) -> AskAuditRecord:
     """Build the row for an ask that produced an envelope, abstains included.
 
@@ -257,6 +270,7 @@ def record_from_envelope(
         actor_kind=actor_kind,
         space_id=space_id,
         tables_read=tables_read,
+        tables_read_approximate=tables_read_approximate,
         badge="abstain" if abstained else "validated",
         badge_level=str(env.get("badge") or ""),
         abstain_reason=_abstain_reason(env) if abstained else "",
@@ -279,6 +293,7 @@ def record_from_error(
     tables_read: tuple[str, ...] = (),
     row_count: int = 0,
     asked_at: datetime | None = None,
+    tables_read_approximate: bool = False,
 ) -> AskAuditRecord:
     """Build the row for an ask that ended in an error rather than an envelope."""
     return _build(
@@ -288,6 +303,7 @@ def record_from_error(
         actor_kind=actor_kind,
         space_id=space_id,
         tables_read=tables_read,
+        tables_read_approximate=tables_read_approximate,
         badge="error",
         badge_level="",
         abstain_reason=_one_line(reason),
@@ -397,6 +413,7 @@ _COLUMNS = (
     "redactions",
     "truncated",
     "ledger_seq",
+    "tables_read_approximate",
 )
 
 
@@ -459,6 +476,7 @@ class PostgresAskAuditStore:
                         rec.redactions,
                         rec.truncated,
                         rec.ledger_seq,
+                        rec.tables_read_approximate,
                     ),
                 )
                 conn.commit()
@@ -476,7 +494,7 @@ class PostgresAskAuditStore:
                 SELECT ask_id::text, asked_at, actor, actor_kind, space_id, question,
                        executed_sql, tables_read, badge, badge_level, abstain_reason,
                        row_count, cortex_entry_id, ask_mode, redactions, truncated,
-                       ledger_seq
+                       ledger_seq, tables_read_approximate
                   FROM dms.ask_audit
                  WHERE tenant_id = %s
                    AND (%s::timestamptz IS NULL OR asked_at >= %s::timestamptz)
@@ -506,6 +524,7 @@ class PostgresAskAuditStore:
                 redactions=int(r[14]),
                 truncated=bool(r[15]),
                 ledger_seq=None if r[16] is None else int(r[16]),
+                tables_read_approximate=bool(r[17]),
             )
             for r in rows
         ]

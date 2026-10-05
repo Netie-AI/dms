@@ -109,6 +109,7 @@ from dms_executor.reveal import (
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
 from dms_executor.sql_currency import tables_read as tables_read_by_sql
+from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -1171,4 +1172,5 @@ __all__ = [
     "serving_warehouse_path",
     "sync_bronze_to_serving",
     "tables_read_by_sql",
+    "tables_read_checked_by_sql",
 ]

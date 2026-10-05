@@ -77,6 +77,7 @@ def test_redaction_count_and_truncation_flag_round_trip(
         truncated=True,
         question="cut...[truncated: original was 12345 chars]",
         ledger_seq=42,
+        tables_read_approximate=True,
     )
     unseq = _rec(asked_at=datetime(2026, 10, 5, 11, 0, tzinfo=UTC), ledger_seq=None)
     store.record(rec)
@@ -87,6 +88,7 @@ def test_redaction_count_and_truncation_flag_round_trip(
     assert got == rec and got_unseq == unseq
     assert got.redactions == 3 and got.truncated is True
     assert got.ledger_seq == 42 and got_unseq.ledger_seq is None
+    assert got.tables_read_approximate is True and got_unseq.tables_read_approximate is False
 
 
 def test_recording_the_same_ask_twice_keeps_one_row(migrated_db: str, two_tenants: dict) -> None:
