@@ -127,15 +127,20 @@ def _parse_bound(raw: str | None, *, name: str, upper: bool) -> datetime | None:
     raise _bad_range(f"{name} must be YYYY-MM-DD or an ISO 8601 date and time")
 
 
-def _verify_chain(cortex: CortexClient | None, pointers: int) -> LedgerVerification:
+def _verify_chain(
+    cortex: CortexClient | None, pointers: int, max_seq: int | None = None
+) -> LedgerVerification:
     """Run ``ledger/verify`` and keep only what the export may say about it.
 
     Anything short of a clean, sufficient verify is unverified. That includes a
     ledger that could not be reached (the failure text is dropped: a transport
-    error can quote a URL) and an ``ok`` that checked no entries, or fewer than
-    the ``pointers`` ledger entries the exported rows name: a chain that lost its
-    tail still verifies, and an empty ledger verifies trivially, so ``ok`` alone
-    says nothing about the entries this file points at.
+    error can quote a URL) and an ``ok`` that checked no entries, fewer than the
+    ``pointers`` ledger entries the exported rows name, or fewer than ``max_seq``,
+    the highest ledger seq a row recorded. A chain that lost its tail still
+    verifies and an empty ledger verifies trivially, so ``ok`` alone says nothing
+    about the entries this file points at; the count catches a short chain and the
+    seq catches a tail that was cut after DMS appended into it. ``checked`` counts
+    entries from seq 0 or 1, so ``checked < max_seq`` never fires on a healthy chain.
     """
     now = datetime.now(UTC)
     if cortex is None:
@@ -147,7 +152,7 @@ def _verify_chain(cortex: CortexClient | None, pointers: int) -> LedgerVerificat
     if not result.ok:
         return LedgerVerification("break", result.first_break, result.checked, now)
     checked = result.checked or 0
-    if checked <= 0 or checked < pointers:
+    if checked <= 0 or checked < pointers or (max_seq is not None and checked < max_seq):
         return LedgerVerification("incomplete", None, result.checked, now)
     return LedgerVerification("ok", None, result.checked, now)
 
@@ -203,7 +208,8 @@ def export_asks(
         )
 
     pointers = len({r.cortex_entry_id for r in rows if r.cortex_entry_id})
-    verification = _verify_chain(cortex, pointers)
+    seqs = [r.ledger_seq for r in rows if r.ledger_seq is not None]
+    verification = _verify_chain(cortex, pointers, max(seqs) if seqs else None)
     meta = ExportMeta(verification, store_backend=audit.backend, unrecorded_asks=audit.dropped)
     if fmt == "csv":
         body, media = to_csv(rows, meta), "text/csv; charset=utf-8"

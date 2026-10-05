@@ -12,7 +12,13 @@ superuser can still rewrite it, and compose runs the API as the superuser
 ``POSTGRES_USER=dms`` today (a BANK-04 item, not changed here). This is a
 *record*, not a second ledger. It holds no hash chain (CLAUDE.md hard rule 3);
 the one chain stays in Cortex, and the row carries a pointer, ``cortex_entry_id``,
-to the entry where the ask had one.
+to the entry where the ask had one, and the entry's ``ledger_seq`` where DMS
+appended it.
+
+What is written is scrubbed of secret-shaped values and passed through the same
+PII masker the customer envelope uses (``ask_audit_scrub``): the audit export
+shows masked literals by design. A later policy change can store raw values under
+tighter access.
 
 Swap scenario (hard rule 6): this is part of the **catalog** port, beside
 ``SpaceStorePort``. Postgres when ``DATABASE_URL`` binds, an in-process list when
@@ -25,12 +31,10 @@ here reads identity from a request.
 
 from __future__ import annotations
 
-import re
 import threading
 import time
-import unicodedata
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
@@ -38,6 +42,13 @@ from uuid import UUID, uuid4
 
 import psycopg
 
+from dms_core.control_plane.ask_audit_scrub import (
+    has_sql_statement,
+    mask_pii_counted,
+    safe_cut,
+    scrub,
+    scrub_counted,
+)
 from dms_core.control_plane.session import set_tenant_context
 
 ActorKind = Literal["person", "deployment"]
@@ -52,258 +63,23 @@ DEPLOYMENT_ACTOR_KIND: ActorKind = "deployment"
 #: is marked in the text and in ``truncated`` so it is never silent.
 QUESTION_CAP = 10_000
 SQL_CAP = 50_000
+#: Scrubbing reads this far past the cap before the cut, so a secret that starts
+#: before the cut and ends after it is redacted whole and never half-kept.
+_CUT_MARGIN = 2_000
 
 _REASON_CAP = 500
-_REDACTED = "[redacted]"
-
-# --- secret removal ----------------------------------------------------------
-#
-# Applied when a row is built (secrets are never persisted) and again when it is
-# exported. Matching runs on a normalised view of the text (NFKC, lookalike
-# letters folded, zero-width characters and /* */ comments dropped) so that
-# ``pass/**/word=``, a Cyrillic ``a`` or a fullwidth ``=`` do not hide a pair;
-# the replacement is made on the ORIGINAL text, so what is kept is not altered.
-#
-# Two failure modes bound the patterns. A leak is a secret left in the record.
-# An over-redaction is ordinary text or SQL rewritten for good, which corrupts
-# the audit record at write time, so patterns need a left word boundary, values
-# that look like tokens, and they never rewrite an SQL identifier or number.
-
-_INVISIBLE = frozenset("\u200b\u200c\u200d\u200e\u200f\u2060\u00ad\ufeff")
-#: Letters from other scripts that read as Latin ones, for the words below.
-_CONFUSABLES = {
-    **dict.fromkeys("\u0430\u03b1", "a"),
-    **dict.fromkeys("\u0435\u0454", "e"),
-    **dict.fromkeys("\u043e\u03bf", "o"),
-    **dict.fromkeys("\u0440\u03c1", "p"),
-    **dict.fromkeys("\u0441\u03f2", "c"),
-    "\u0445": "x",
-    "\u0443": "y",
-    "\u043a": "k",
-    "\u043c": "m",
-    "\u0442": "t",
-    **dict.fromkeys("\u0456\u0131", "i"),
-    "\u0455": "s",
-    "\u0458": "j",
-    "\u0501": "d",
-    "\u051d": "w",
-    "\u04bb": "h",
-    "\u0261": "g",
-    "\u043d": "h",
-    "\u03bd": "v",
-}
-
-_NAME_CORE = (
-    r"(?:pass(?:word|wd|phrase)|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|"
-    r"private[_-]?key|credentials?)"
-)
-_PASSWORD_FAMILY = re.compile(r"(?i)pass(?:word|wd|phrase)|pwd")
-_NAME = rf"(?<![A-Za-z0-9])[A-Za-z0-9_.-]{{0,40}}?{_NAME_CORE}[A-Za-z0-9_]*"
-
-_PRIVATE_KEY_BLOCK = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S
-)
-_KEY_BODY = re.compile(r"(?<!\S)(?:[A-Za-z0-9+/]{40,}={0,2}[ \t]*\r?\n)+[A-Za-z0-9+/]{4,}={0,2}")
-_PROVIDER_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9_])(?:"
-    r"(?:sk-(?:ant-)?|gsk_|ov_|sk_live_|pk_live_|rk_live_)[A-Za-z0-9_-]{16,}"
-    r"|AIza[0-9A-Za-z_-]{20,}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"
-    r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
-    r"|xox[abprs]-[A-Za-z0-9-]{10,}"
-    r"|AKIA[0-9A-Z]{16}"
-    r")"
-)
-#: scheme://user:PASSWORD@host - the password runs to the LAST @ of the token, so a
-#: password holding "/" or "@" is covered. ``host:8080/x?e=a@b`` is a port, not a pair.
-_URL_PASSWORD = re.compile(
-    r"(?i)\b[a-z][a-z0-9+.-]*://[^\s:/@]+:(?P<v>(?!\d{1,5}(?:[/?#]|$))\S+)@(?=[^\s@]+)"
-)
-_AUTH_HEADER = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
-    r"(?:(?:basic|bearer|digest|negotiate|token)\s+(?P<v1>[A-Za-z0-9._~+/=:-]{6,})"
-    r"|(?P<v2>(?=[A-Za-z0-9._~+/=:-]*[\d+/=_-])[A-Za-z0-9._~+/=:-]{8,}))"
-)
-_BEARER = re.compile(
-    r"(?i)(?<![A-Za-z0-9])bearer\s+"
-    r"(?P<v>[A-Za-z0-9._~+/=-]{16,}|(?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{8,})"
-)
-_ASSIGN = re.compile(
-    rf"(?P<name>{_NAME})"
-    r"(?:"
-    r"(?P<op>[\"']?\s*(?::=|=>|==|!=|<>|[:=])\s*)"
-    r"|(?P<wop>\s+(?:like|ilike|rlike|regexp)\s+)"
-    r"|(?P<nop>\s+(?:is|was)\s+(?!(?:not|null|true|false|pending|empty|required|missing|set)\b))"
-    r")"
-    r"(?:(?P<q>[\"'])(?P<qv>(?:\\.|(?!(?P=q)).)*)(?P=q)|(?P<uv>[^\s,;&)}\]\"'`]+))",
-    re.I | re.S,
-)
-_MULTIWORD = re.compile(r"[ \t]+((?:[^\s.?!,;]|[.?!](?!\s|$))+)")
-_BLOB = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/]{24,}={0,2}(?![A-Za-z0-9+/=_-])")
-_NOT_A_VALUE = re.compile(r"(?i)^(?:null|none|nil|true|false|undefined|\*+|\?|%s|\$\{.*\}|<.*>)$")
-_SQL_LITERAL = re.compile(r"'(?:[^']|'')*'")
-_SQL_COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.S)
 
 
-def _view(text: str, *, drop_block_comments: bool) -> tuple[str, list[int], list[int]]:
-    """Normalised text for matching, plus the original [start, end) of each character."""
-    chars: list[str] = []
-    starts: list[int] = []
-    ends: list[int] = []
-    i, n = 0, len(text)
-    while i < n:
-        if drop_block_comments and text.startswith("/*", i):
-            j = text.find("*/", i + 2)
-            if j != -1:
-                i = j + 2
-                continue
-        ch = text[i]
-        if ch in _INVISIBLE:
-            i += 1
-            continue
-        for c in unicodedata.normalize("NFKC", ch):
-            chars.append(_CONFUSABLES.get(c, c))
-            starts.append(i)
-            ends.append(i + 1)
-        i += 1
-    return "".join(chars), starts, ends
-
-
-def _looks_like_secret(value: str) -> bool:
-    """A value worth redacting when only a word like "is" introduced it."""
-    has_digit = any(c.isdigit() for c in value)
-    has_alpha = any(c.isalpha() for c in value)
-    has_symbol = any(c in "-_/+=!@#$%^&*.~" for c in value)
-    return (has_digit and has_alpha and len(value) >= 6) or (has_symbol and len(value) >= 8)
-
-
-def _blob_like(value: str) -> bool:
-    """Base64-shaped and not a word: mixed case, and digits or base64 punctuation."""
-    digits = sum(c.isdigit() for c in value)
-    return (
-        any(c.isupper() for c in value)
-        and any(c.islower() for c in value)
-        and (digits >= 2 or any(c in "+/=" for c in value))
-    )
-
-
-def _spans(v: str, *, sql: bool) -> list[tuple[int, int]]:
-    """View ranges to redact. ``sql`` keeps identifiers, numbers and bare column
-    references intact: only quoted literals, tokens and comments are touched."""
-    out: list[tuple[int, int]] = []
-    comments = [m.span() for m in _SQL_COMMENT.finditer(v)] if sql else []
-    literals = [m.span() for m in _SQL_LITERAL.finditer(v)] if sql else []
-
-    def inside(spans: list[tuple[int, int]], pos: int) -> bool:
-        return any(a <= pos < b for a, b in spans)
-
-    for m in _PRIVATE_KEY_BLOCK.finditer(v):
-        out.append(m.span())
-    for m in _KEY_BODY.finditer(v):
-        out.append(m.span())
-    for m in _PROVIDER_TOKEN.finditer(v):
-        out.append(m.span())
-    for m in _URL_PASSWORD.finditer(v):
-        if m.group("v") != _REDACTED:
-            out.append(m.span("v"))
-    for m in _AUTH_HEADER.finditer(v):
-        out.append(m.span("v1" if m.group("v1") else "v2"))
-    for m in _BEARER.finditer(v):
-        out.append(m.span("v"))
-    for m in _ASSIGN.finditer(v):
-        name = m.group("name")
-        family = bool(_PASSWORD_FAMILY.search(name))
-        if m.group("q"):
-            inner = m.group("qv")
-            if not inner or inner.startswith(_REDACTED):
-                continue
-            # A bare word after "is" is prose; a literal compared in SQL needs to
-            # look like a secret unless the column is a password.
-            if m.group("nop") and not _looks_like_secret(inner):
-                continue
-            if sql and not family and not _looks_like_secret(inner):
-                continue
-            out.append(m.span("qv"))
-            continue
-        val = m.group("uv")
-        start = m.start("uv")
-        if not val or v.startswith(_REDACTED, start) or _NOT_A_VALUE.match(val):
-            continue
-        if m.group("wop"):
-            continue  # LIKE wants a quoted literal; a bare word is a column
-        if sql and not inside(comments, start):
-            continue  # token = t2.token, secret = 0: comparisons, not secrets
-        if m.group("nop") and not _looks_like_secret(val.rstrip(".?!")):
-            continue
-        end = m.end("uv")
-        while end > start and v[end - 1] in ".?!" and (end == len(v) or v[end].isspace()):
-            end -= 1
-        # A passphrase is words: take up to seven more after a first word that is
-        # plain letters. A value with digits or symbols (DB_PASSWORD=x9, a token) is one.
-        if family and not m.group("nop") and val.rstrip(".?!").isalpha():
-            words = 0
-            while words < 7:
-                nxt = _MULTIWORD.match(v, end)
-                if not nxt or "=" in nxt.group(1) or ":" in nxt.group(1):
-                    break
-                end, words = nxt.end(), words + 1
-        if end > start:
-            out.append((start, end))
-    for m in _BLOB.finditer(v):
-        if not _blob_like(m.group()):
-            continue
-        if sql and not (inside(literals, m.start()) or inside(comments, m.start())):
-            continue
-        out.append(m.span())
-    return out
-
-
-def scrub_counted(text: str | None, *, sql: bool = False) -> tuple[str, int]:
-    """Remove secret-shaped values. Returns the clean text and how many were replaced.
-
-    Pattern based and best effort: it cannot recognise an arbitrary string as a
-    secret, only the shapes above. ``sql=True`` is for executed SQL.
-    """
-    original = text or ""
-    if not original:
-        return "", 0
-    regions: list[tuple[int, int]] = []
-    for drop in (False, True):
-        view, starts, ends = _view(original, drop_block_comments=drop)
-        for s, e in _spans(view, sql=sql):
-            if e > s:
-                regions.append((starts[s], ends[e - 1]))
-    if not regions:
-        return original, 0
-    regions.sort()
-    merged: list[list[int]] = []
-    for s, e in regions:
-        if merged and s <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e])
-    out, last = [], 0
-    for s, e in merged:
-        out.append(original[last:s])
-        out.append(_REDACTED)
-        last = e
-    out.append(original[last:])
-    return "".join(out), len(merged)
-
-
-def scrub(text: str | None, *, sql: bool = False) -> str:
-    return scrub_counted(text, sql=sql)[0]
-
-
-def has_sql_statement(sql: str | None) -> bool:
-    """True when ``sql`` holds a statement, not nothing or a comment-only placeholder."""
-    return bool(_SQL_COMMENT.sub("", sql or "").strip())
-
-
-def _truncate(text: str, cap: int) -> tuple[str, bool]:
-    if len(text) <= cap:
-        return text, False
-    return f"{text[:cap]}...[truncated {len(text) - cap} chars]", True
+def _clean(text: str, cap: int, *, sql: bool) -> tuple[str, int, bool]:
+    """Scrub, mask, then cut. Returns the text, how many values were replaced, and
+    whether it was cut. The cut is last, so it can never split a secret."""
+    window = text[: cap + _CUT_MARGIN]
+    clean, n_secrets = scrub_counted(window, sql=sql)
+    clean, n_pii = mask_pii_counted(clean)
+    cut = len(text) > len(window) or len(clean) > cap
+    if cut:
+        clean = f"{safe_cut(clean, cap)}...[truncated: original was {len(text)} chars]"
+    return clean, n_secrets + n_pii, cut
 
 
 @dataclass(frozen=True)
@@ -324,30 +100,34 @@ class AskAuditRecord:
     row_count: int
     cortex_entry_id: str
     ask_mode: str
-    #: How many values were replaced by ``[redacted]`` in this row, so an auditor
-    #: can see that the text was altered. 0 means nothing was removed.
+    #: How many values were replaced by ``[redacted]`` or a PII mask token in this
+    #: row, so an auditor can see that the text was altered. 0 means none.
     redactions: int = 0
     #: The question or SQL was cut at the recorded-length cap (the cut is marked in the text).
     truncated: bool = False
+    #: The Cortex ledger seq of ``cortex_entry_id``, when DMS appended that entry and
+    #: the append response said. None for a Cortex receipt, which DMS did not append.
+    ledger_seq: int | None = None
 
     def scrubbed(self) -> AskAuditRecord:
-        """Scrub again (export time). Adds to ``redactions`` what this pass removed."""
+        """Scrub and mask again (export time). Adds what this pass removed to ``redactions``."""
         extra = 0
 
-        def text(value: str) -> str:
+        def text(value: str, *, sql: bool = False, pii: bool = False) -> str:
             nonlocal extra
-            clean, n = scrub_counted(value)
+            clean, n = scrub_counted(value, sql=sql)
             extra += n
+            if pii:
+                clean, m = mask_pii_counted(clean)
+                extra += m
             return clean
 
-        executed, n_sql = scrub_counted(self.executed_sql, sql=True)
-        extra += n_sql
         return replace(
             self,
             actor=text(self.actor),
             space_id=text(self.space_id),
-            question=text(self.question),
-            executed_sql=executed,
+            question=text(self.question, pii=True),
+            executed_sql=text(self.executed_sql, sql=True, pii=True),
             tables_read=tuple(text(t) for t in self.tables_read),
             abstain_reason=text(self.abstain_reason),
             cortex_entry_id=text(self.cortex_entry_id),
@@ -359,7 +139,7 @@ def _one_line(text: str, cap: int = _REASON_CAP) -> str:
     return " ".join(str(text).split())[:cap]
 
 
-def _ledger_pointer(env: dict[str, Any]) -> str:
+def ledger_pointer(env: dict[str, Any]) -> str:
     """The Cortex ledger entry an ask points at, or ``""``.
 
     ``build_answer_envelope`` fills ``audit_id`` with ``answer_id`` when a path
@@ -416,14 +196,14 @@ def _build(
     abstain_reason: str,
     row_count: int,
     cortex_entry_id: str,
+    ledger_seq: int | None,
     ask_mode: str,
     asked_at: datetime | None,
 ) -> AskAuditRecord:
-    # Cut first, scrub second: the scrub only ever sees a bounded text.
-    q, q_cut = _truncate(question, QUESTION_CAP)
-    s, s_cut = _truncate(executed_sql if has_sql_statement(executed_sql) else "", SQL_CAP)
-    q, n_q = scrub_counted(q)
-    s, n_s = scrub_counted(s, sql=True)
+    q, n_q, q_cut = _clean(question, QUESTION_CAP, sql=False)
+    s, n_s, s_cut = _clean(
+        executed_sql if has_sql_statement(executed_sql) else "", SQL_CAP, sql=True
+    )
     rec = AskAuditRecord(
         ask_id=str(uuid4()),
         asked_at=asked_at or datetime.now(UTC),
@@ -441,6 +221,7 @@ def _build(
         ask_mode=ask_mode,
         redactions=n_q + n_s,
         truncated=q_cut or s_cut,
+        ledger_seq=ledger_seq,
     )
     return rec.scrubbed()
 
@@ -455,15 +236,20 @@ def record_from_envelope(
     executed_sql: str,
     tables_read: tuple[str, ...],
     row_count: int,
+    ledger: Sequence[tuple[str, int | None]] = (),
     asked_at: datetime | None = None,
 ) -> AskAuditRecord:
     """Build the row for an ask that produced an envelope, abstains included.
 
     ``executed_sql``, ``tables_read`` and ``row_count`` are what ran, supplied by
     the caller from the engine side. The envelope is not their source: it drops
-    the SQL and rows of an abstain and substitutes placeholders.
+    the SQL and rows of an abstain and substitutes placeholders. ``ledger`` is the
+    ``(entry_id, seq)`` of each entry DMS appended for this ask; the row takes the
+    seq of the entry it points at.
     """
     abstained = bool(env.get("abstained")) or str(env.get("badge") or "").upper() == "ABSTAIN"
+    pointer = ledger_pointer(env)
+    seq = next((s for eid, s in ledger if pointer and eid == pointer and s is not None), None)
     return _build(
         question=question,
         executed_sql=executed_sql,
@@ -475,7 +261,8 @@ def record_from_envelope(
         badge_level=str(env.get("badge") or ""),
         abstain_reason=_abstain_reason(env) if abstained else "",
         row_count=row_count,
-        cortex_entry_id=_ledger_pointer(env),
+        cortex_entry_id=pointer,
+        ledger_seq=seq,
         ask_mode=_ask_mode(env),
         asked_at=asked_at,
     )
@@ -506,6 +293,7 @@ def record_from_error(
         abstain_reason=_one_line(reason),
         row_count=row_count,
         cortex_entry_id="",
+        ledger_seq=None,
         ask_mode="live",
         asked_at=asked_at,
     )
@@ -592,9 +380,23 @@ STATEMENT_TIMEOUT_MS = 3000
 COOLDOWN_S = 10.0
 
 _COLUMNS = (
-    "ask_id, asked_at, actor, actor_kind, space_id, question, executed_sql, "
-    "tables_read, badge, badge_level, abstain_reason, row_count, cortex_entry_id, "
-    "ask_mode, redactions, truncated"
+    "ask_id",
+    "asked_at",
+    "actor",
+    "actor_kind",
+    "space_id",
+    "question",
+    "executed_sql",
+    "tables_read",
+    "badge",
+    "badge_level",
+    "abstain_reason",
+    "row_count",
+    "cortex_entry_id",
+    "ask_mode",
+    "redactions",
+    "truncated",
+    "ledger_seq",
 )
 
 
@@ -630,15 +432,14 @@ class PostgresAskAuditStore:
     def record(self, rec: AskAuditRecord) -> None:
         if self._clock() < self._down_until:
             raise AuditStoreUnavailable("audit database in cool-down")
+        columns = ", ".join(("tenant_id", *_COLUMNS))
+        marks = ", ".join(["%s"] * (len(_COLUMNS) + 1))
         try:
             with self._connect() as conn:
                 set_tenant_context(conn, self._tenant_id, role="steward")
                 conn.execute(
-                    f"""
-                    INSERT INTO dms.ask_audit (tenant_id, {_COLUMNS})
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (ask_id) DO NOTHING
-                    """,
+                    f"INSERT INTO dms.ask_audit ({columns}) VALUES ({marks}) "
+                    "ON CONFLICT (ask_id) DO NOTHING",
                     (
                         UUID(self._tenant_id),
                         UUID(rec.ask_id),
@@ -657,6 +458,7 @@ class PostgresAskAuditStore:
                         rec.ask_mode,
                         rec.redactions,
                         rec.truncated,
+                        rec.ledger_seq,
                     ),
                 )
                 conn.commit()
@@ -673,7 +475,8 @@ class PostgresAskAuditStore:
                 """
                 SELECT ask_id::text, asked_at, actor, actor_kind, space_id, question,
                        executed_sql, tables_read, badge, badge_level, abstain_reason,
-                       row_count, cortex_entry_id, ask_mode, redactions, truncated
+                       row_count, cortex_entry_id, ask_mode, redactions, truncated,
+                       ledger_seq
                   FROM dms.ask_audit
                  WHERE tenant_id = %s
                    AND (%s::timestamptz IS NULL OR asked_at >= %s::timestamptz)
@@ -702,6 +505,7 @@ class PostgresAskAuditStore:
                 ask_mode=r[13],
                 redactions=int(r[14]),
                 truncated=bool(r[15]),
+                ledger_seq=None if r[16] is None else int(r[16]),
             )
             for r in rows
         ]
@@ -720,6 +524,7 @@ __all__ = [
     "InMemoryAskAuditStore",
     "PostgresAskAuditStore",
     "has_sql_statement",
+    "ledger_pointer",
     "record_from_envelope",
     "record_from_error",
     "scrub",

@@ -223,6 +223,9 @@ def chat_ask(
     ask: AskServiceDep,
     audit: AskAuditDep,
 ) -> dict[str, Any]:
+    # BANK-02: start from a clean trace. A path that never took its executed-SQL
+    # trace (it is per thread) must not leave it for this request to record.
+    take_executed(ask)
     # GEN-03 (dms#194). The isolated lanes are a measurement harness, not a
     # product surface: on ask_path=generative a keyword-bound plan answered
     # under L2_VALIDATED with wrong numbers. A caller naming one is refused, not

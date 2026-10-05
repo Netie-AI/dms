@@ -22,6 +22,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 import socket
 import threading
 import time
@@ -110,6 +111,15 @@ class LedgerCortex:
         self._bound[req.manifest.session_id] = set(req.manifest.row_predicates)
         return QueryResult(ok=True, status="bound", run_id="run-1")
 
+    def ledger_append(self, req: Any) -> Any:
+        """Append like Cortex: the response carries the entry's seq (contract LedgerEntry)."""
+        from cortex_client.models import LedgerAppendResponse
+
+        entry_id = self._append({"event": req.event_type, "payload": req.payload})
+        return LedgerAppendResponse(
+            entry_id=entry_id, hash=self.chain[-1]["hash"], seq=len(self.chain)
+        )
+
     def ask(self, req: Any) -> AskResponse:
         if self.mode == "abstain_after_sql":
             entry = self._append({"event": "ask.executed", "sql": "SELECT SUM(amount)"})
@@ -122,6 +132,19 @@ class LedgerCortex:
                     "sql_used": "SELECT SUM(amount) FROM transactions",
                     "rows": [{"total": 42.0}],
                     "audit_id": entry,
+                }
+            )
+        if self.mode == "pii_sql":
+            entry = self._append({"event": "ask.executed"})
+            return AskResponse.model_validate(
+                {
+                    "answer": "Done.",
+                    "abstained": False,
+                    "badge": "certified",
+                    "sql_used": "SELECT name FROM customers WHERE email = 'alice.tan@example.com'",
+                    "rows": [{"orders": 2}],
+                    "audit_id": entry,
+                    "route": "sql",
                 }
             )
         if self.mode == "no_sql":
@@ -968,18 +991,62 @@ _SECRET_SHAPES = [
     ("token is", "my token is FAKEtokenis9876", "FAKEtokenis9876"),
 ]
 
+#: Shapes found by the second independent verify. Each is also tried inside a SQL literal
+#: and a SQL comment (see ``_placements``).
+_SECRET_SHAPES += [
+    ("two words, the first", "password = FAKEZQX9one twoFAKEZQX9", "FAKEZQX9one"),
+    ("two words, the second", "password = FAKEZQX9one twoFAKEZQX9", "twoFAKEZQX9"),
+    ("curl -u", "curl -u svc:FAKEZQX9curl https://api.example.com/x", "FAKEZQX9curl"),
+    (
+        "percent-encoded pair",
+        "https://x.example/login?password%3DFAKEZQX9pct%26user%3Dbob",
+        "FAKEZQX9pct",
+    ),
+    ("json nested", '{"a":{"b":{"password":"FAKEZQX9nest"}}}', "FAKEZQX9nest"),
+    ("json escaped inside a string", '{\\"password\\":\\"FAKEZQX9esc\\"}', "FAKEZQX9esc"),
+    ("json number", '{"password": 87654321}', "87654321"),
+    ("CREATE USER WITH PASSWORD", "CREATE USER bob WITH PASSWORD 'FAKEZQX9cu'", "FAKEZQX9cu"),
+    ("IDENTIFIED BY", "ALTER USER bob IDENTIFIED BY 'FAKEZQX9idb'", "FAKEZQX9idb"),
+    ("Cookie header", "Cookie: session=FAKEZQX9sess; theme=dark", "FAKEZQX9sess"),
+    ("SET PASSWORD = PASSWORD()", "SET PASSWORD = PASSWORD('FAKEZQX9sp')", "FAKEZQX9sp"),
+]
+
+
+def _placements() -> list[tuple[str, str, bool, str]]:
+    """Every shape as a question, inside a SQL string literal, and inside SQL comments."""
+    out: list[tuple[str, str, bool, str]] = []
+    for shape, text, secret in _SECRET_SHAPES:
+        quoted = text.replace("'", "''")
+        out.append((f"{shape} | question", text, False, secret))
+        out.append(
+            (
+                f"{shape} | sql literal",
+                f"SELECT * FROM inventory WHERE note = '{quoted}'",
+                True,
+                secret,
+            )
+        )
+        if "/*" not in text:  # a comment cannot hold another comment
+            out.append((f"{shape} | sql block comment", f"SELECT 1 /* {text} */", True, secret))
+            if "\n" not in text:
+                out.append((f"{shape} | sql line comment", f"SELECT 1 -- {text}", True, secret))
+    return out
+
+
+_PLACEMENTS = _placements()
+
 
 @pytest.mark.parametrize(
-    ("shape", "text", "secret"), _SECRET_SHAPES, ids=[x[0] for x in _SECRET_SHAPES]
+    ("where", "text", "sql", "secret"), _PLACEMENTS, ids=[x[0] for x in _PLACEMENTS]
 )
-def test_no_secret_shape_survives_the_scrub(shape: str, text: str, secret: str) -> None:
+def test_no_secret_shape_survives_the_scrub(where: str, text: str, sql: bool, secret: str) -> None:
     from dms_core.control_plane.ask_audit import scrub_counted
 
-    clean, removed = scrub_counted(text)
+    clean, removed = scrub_counted(text, sql=sql)
 
-    assert secret not in clean, f"{shape}: {clean!r}"
+    assert secret not in clean, f"{where}: {clean!r}"
     assert removed >= 1
-    assert scrub_counted(clean) == (clean, 0), "a second pass changes nothing"
+    assert scrub_counted(clean, sql=sql) == (clean, 0), "a second pass changes nothing"
 
 
 def test_every_secret_shape_is_absent_from_the_export_and_counted() -> None:
@@ -995,7 +1062,9 @@ def test_every_secret_shape_is_absent_from_the_export_and_counted() -> None:
         assert secret not in csv_text and secret not in jsonl_text, secret
     assert "FAKEsqlkey123456" not in csv_text and "FAKEsqlcomment99" not in csv_text
     row = _csv_rows(csv_text)[0]
-    assert int(row["redactions"]) >= len(_SECRET_SHAPES), "the file says text was altered"
+    assert int(row["redactions"]) >= len({t for _s, t, _x in _SECRET_SHAPES}), (
+        "the file says text was altered"
+    )
     assert "total spend" in row["question"]
 
 
@@ -1146,7 +1215,7 @@ def test_a_huge_question_is_recorded_cut_and_marked() -> None:
     assert sum(len(r.question) for r in stored) < 5 * (QUESTION_CAP + 100)
     for r in stored:
         assert r.question.startswith("x" * 100)
-        assert f"[truncated {2_000_000 - QUESTION_CAP} chars]" in r.question
+        assert "[truncated: original was 2000000 chars]" in r.question
         assert r.truncated is True
     assert {r["truncated"] for r in _csv_rows(_export(client).text)} == {"true"}
 
@@ -1161,7 +1230,7 @@ def test_a_huge_sql_text_is_recorded_cut_and_marked() -> None:
     row = _csv_rows(_export(client).text)[0]
 
     assert len(row["executed_sql"]) < SQL_CAP + 100
-    assert "[truncated " in row["executed_sql"] and row["truncated"] == "true"
+    assert "[truncated: original was " in row["executed_sql"] and row["truncated"] == "true"
     assert row["tables_read"] == "inventory", "tables come from the whole statement, not the cut"
 
 
@@ -1256,3 +1325,304 @@ def test_a_disguised_formula_is_neutralised_in_the_export() -> None:
     questions = {r["question"] for r in _csv_rows(_export(client).text)}
 
     assert questions == {"'" + q for q in _DISGUISED[:3]}
+
+
+# === Verify round 2: N2 N3 N4 N5 N6 N7, M1 and M2 remainders ========================
+#
+# Each test below fails on 7c86f5d. New symbols are imported inside the tests.
+
+
+# --- N2: a secret inside a SQL string literal ---------------------------------------
+
+
+def test_a_secret_inside_a_sql_string_literal_is_removed() -> None:
+    sql = "SELECT * FROM inventory WHERE note = 'PaSsWoRd=FAKEZQX9pw7'"
+    client, _app = _stub_stack(_envelope(sql_used=sql))
+    _ask(client, "How many units?")
+
+    row = _csv_rows(_export(client).text)[0]
+
+    assert "FAKEZQX9pw7" not in row["executed_sql"]
+    assert row["executed_sql"].startswith("SELECT * FROM inventory WHERE note = '")
+    assert int(row["redactions"]) >= 1
+    assert row["tables_read"] == "inventory"
+
+
+# --- N3: no personal data in the audit export that the envelope masks -----------------
+
+
+def test_the_export_holds_no_personal_data_the_envelope_masks(minter: ManifestMinter) -> None:
+    client, _app, cortex = _real_stack(minter)
+    cortex.mode = "pii_sql"
+
+    answer = _ask(
+        client, "Does alice.tan@example.com have any open orders?", session_id="ses_pii"
+    ).json()
+    # The customer envelope masks the address in the SQL it shows.
+    assert "alice.tan@example.com" not in json.dumps(answer)
+    assert "DMSMASK_email" in answer["sql_used"]
+
+    row = _csv_rows(_export(client).text)[0]
+
+    for field_name in ("question", "executed_sql"):
+        assert "alice.tan@example.com" not in row[field_name], field_name
+        assert "DMSMASK_email" in row[field_name], field_name
+    # Table and column names are intact.
+    assert row["tables_read"] == "customers"
+    assert "FROM customers WHERE email = " in row["executed_sql"]
+    assert int(row["redactions"]) >= 2
+
+
+def test_a_url_password_is_removed_whichever_order_the_masker_ran() -> None:
+    from dms_core.control_plane.ask_audit_scrub import mask_pii_counted, scrub_counted
+
+    raw = "see postgresql://u:FAKEZQX9pa/ss@db.internal/x for details"
+
+    # Secrets first, then the masker: the order the recorder uses.
+    clean, _ = scrub_counted(raw)
+    masked, _ = mask_pii_counted(clean)
+    assert "FAKEZQX9pa" not in masked
+
+    # Masker first: it turned the email-shaped tail "ss@db.internal" into a token, so
+    # there is no "@host" left. The password prefix must still go.
+    premasked, _ = mask_pii_counted(raw)
+    assert "DMSMASK_email" in premasked, "the premise: the masker really did eat the tail"
+    after, removed = scrub_counted(premasked)
+    assert "FAKEZQX9pa" not in after and removed >= 1
+
+
+def test_the_recorder_masks_before_it_stores_and_scrubs_first(minter: ManifestMinter) -> None:
+    client, _app = _stub_stack(
+        _envelope(
+            sql_used="SELECT 1 FROM inventory WHERE dsn = 'postgresql://u:FAKEZQX9pa/ss@db.internal/x'"
+        )
+    )
+    _ask(client, "How many units? postgresql://u:FAKEZQX9pa/ss@db.internal/x")
+
+    row = _csv_rows(_export(client).text)[0]
+
+    assert "FAKEZQX9pa" not in row["question"] + row["executed_sql"]
+
+
+# --- N4: the ledger seq a row points at must be inside the verified chain --------------
+
+
+class AppendingAsk:
+    """Appends its own ledger entry the way the certified paths do, and traces it."""
+
+    def __init__(self, cortex: LedgerCortex) -> None:
+        self.cortex = cortex
+
+    def live_ask(self, question: str, **_: Any) -> dict[str, Any]:
+        from cortex_client.models import LedgerAppendRequest
+        from dms_executor import executed_trace
+
+        executed_trace.begin()
+        entry = self.cortex.ledger_append(
+            LedgerAppendRequest(event_type="ask.verified_query", payload={"q": question}, actor="x")
+        )
+        executed_trace.record("SELECT 1 FROM inventory", 1)
+        executed_trace.record_ledger(entry.entry_id, entry.seq)
+        return _envelope(audit_id=entry.entry_id, answer_id=f"ans_{entry.entry_id}")
+
+    def take_executed(self) -> Any:
+        from dms_executor import executed_trace
+
+        return executed_trace.take()
+
+
+def test_a_ledger_that_lost_an_entry_it_points_at_does_not_verify(
+    minter: ManifestMinter,
+) -> None:
+    from cortex_client.models import LedgerAppendRequest
+
+    cortex = LedgerCortex()
+    for n in range(2):  # two amend.confirm entries that no ask points at
+        cortex.ledger_append(
+            LedgerAppendRequest(event_type="amend.confirm", payload={"n": n}, actor="steward")
+        )
+    app = create_app()
+    app.state.cortex = cortex
+    app.state.ask_service = AppendingAsk(cortex)
+    client = TestClient(app)
+    for n in range(3):
+        assert _ask(client, f"ask {n}").status_code == 200
+
+    healthy = _csv_rows(_export(client).text)
+    assert [r["ledger_seq"] for r in healthy] == ["3", "4", "5"]
+    assert {r["export_verified"] for r in healthy} == {"true"}
+
+    cortex.chain.pop()  # the last ask's entry is gone: 4 entries remain, 3 asks point
+    assert cortex.verify_ledger().ok and cortex.verify_ledger().checked == 4
+
+    r = _export(client)
+
+    rows = _csv_rows(r.text)
+    assert len(rows) == 3
+    for row in rows:
+        assert row["export_verified"] == "false"
+        assert row["ledger_verify_status"] == "incomplete"
+    assert r.headers["x-audit-export-verified"] == "false"
+
+
+def test_the_executor_records_the_ledger_seq_it_appended(minter: ManifestMinter) -> None:
+    from dms_executor import executed_trace
+
+    cortex = LedgerCortex()
+    exe = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+    executed_trace.begin()
+
+    appended = exe._ledger_verified_query(
+        asset_sql="SELECT 1", run_id="run-1", space_id=None, session_id=None
+    )
+
+    assert appended.seq == 1
+    assert exe.take_executed().ledger == (("led_1", 1),)
+
+
+# --- N5: a CTE named t does not hide main.t -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("sql", "tables"),
+    [
+        ("WITH t AS (SELECT 1 AS a) SELECT * FROM t JOIN main.t ON 1=1", ("main.t",)),
+        ("WITH t AS (SELECT 1 AS a) SELECT * FROM t x JOIN main.t y ON 1=1", ("main.t",)),
+        ("WITH t AS (SELECT * FROM main.t) SELECT * FROM t", ("main.t",)),
+        ("WITH t AS (SELECT 1 AS a) SELECT * FROM t", ()),
+    ],
+)
+def test_a_cte_name_does_not_hide_a_qualified_table(sql: str, tables: tuple[str, ...]) -> None:
+    assert tables_read_by_sql(sql) == tables
+
+
+# --- N6: scrub, then cut ------------------------------------------------------------
+
+
+_MARKER_AT_END = re.compile(r"\.\.\.\[truncated: original was \d+ chars\]$")
+
+
+def test_a_secret_straddling_the_question_cut_is_removed_whole() -> None:
+    from dms_core.control_plane.ask_audit import QUESTION_CAP
+
+    cases = [
+        # a URL password that starts before the cut and ends after it
+        "a" * (QUESTION_CAP - 20) + " postgresql://u:FAKEZQX9" + "c" * 60 + "@db.internal/x tail",
+        # a key=value whose value runs across the cut
+        "a" * (QUESTION_CAP - 14) + " password=FAKEZQX9" + "d" * 40 + " end",
+    ]
+    client, _app = _stub_stack(_envelope())
+    for q in cases:
+        assert _ask(client, q).status_code == 200
+
+    rows = _csv_rows(_export(client).text)
+
+    assert len(rows) == 2
+    for row in rows:
+        assert "FAKEZQX9" not in row["question"], row["question"][-120:]
+        assert "[redacted]" in row["question"]
+        assert _MARKER_AT_END.search(row["question"]), row["question"][-80:]
+        assert row["truncated"] == "true"
+
+
+def test_a_secret_straddling_the_sql_cut_is_removed_whole() -> None:
+    from dms_core.control_plane.ask_audit import SQL_CAP
+
+    lead = "SELECT 1 FROM inventory WHERE note = '" + "z" * (SQL_CAP - 78)
+    # the password starts before the cut and ends after it; text follows, so the
+    # scrubbed statement is still longer than the cap and is cut
+    sql = lead + " postgresql://u:FAKEZQX9" + "c" * 80 + "@db.internal/x " + "y" * 600 + "'"
+    client, _app = _stub_stack(_envelope(sql_used=sql))
+    _ask(client, "How many units?")
+
+    row = _csv_rows(_export(client).text)[0]
+
+    assert "FAKEZQX9" not in row["executed_sql"], row["executed_sql"][-120:]
+    assert "[redacted]" in row["executed_sql"]
+    assert _MARKER_AT_END.search(row["executed_sql"])
+    assert row["truncated"] == "true"
+    assert row["tables_read"] == "inventory"
+
+
+# --- N7: a stale trace is never the next request's evidence ------------------------------
+
+
+class TracedStubAsk(StubAsk):
+    def take_executed(self) -> Any:
+        from dms_executor import executed_trace
+
+        return executed_trace.take()
+
+
+def test_a_trace_left_behind_is_not_exported_by_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dms_api.routes.chat as chat_routes
+    from dms_executor import executed_trace
+
+    def refuse(*, action: str, **_kw: Any) -> ComplianceDecision:
+        return ComplianceDecision(allowed=False, reason="gate_refused", action=action)
+
+    monkeypatch.setattr(chat_routes, "compliance_gate", refuse)
+    app = create_app()
+    app.state.cortex = LedgerCortex()
+    app.state.ask_service = TracedStubAsk(_envelope())
+
+    @app.get("/_leave_a_trace")
+    def leave_a_trace() -> dict[str, bool]:
+        # A path that begins a trace and never takes it, on the worker thread that
+        # the next request will reuse.
+        executed_trace.begin()
+        executed_trace.record("SELECT secret FROM another_customers_table", 9)
+        executed_trace.record_ledger("led_stale", 99)
+        return {"ok": True}
+
+    client = TestClient(app)
+    for n in range(6):
+        assert client.get("/_leave_a_trace").status_code == 200
+        assert _ask(client, f"refused ask {n}").status_code == 403
+
+    rows = _csv_rows(_export(client).text)
+
+    assert len(rows) == 6
+    for row in rows:
+        assert row["badge"] == "error"
+        assert row["executed_sql"] == "" and row["tables_read"] == "" and row["row_count"] == "0"
+        assert "another_customers_table" not in row["executed_sql"]
+
+
+# --- M1 and M2 remainders as one table ---------------------------------------------------
+
+#: Ordinary text and SQL that must come through unchanged, with redactions=0.
+_PROSE_UNCHANGED = [
+    "What are our risk-weighted assets",
+    "Show bearer securities by issuer",
+    "The authorization is pending for the Q3 filing",
+    "Password: reset required for 12 users this week",
+    "Credentials: expired for 3 vendors",
+    "Token: 5 per customer per day limit",
+    "Our token is ERC20X1 based",
+    "How many users reset their password this week?",
+    "What was revenue by region for FY2025?",
+]
+
+
+@pytest.mark.parametrize("text", _PROSE_UNCHANGED)
+def test_ordinary_prose_comes_through_unchanged(text: str) -> None:
+    from dms_core.control_plane.ask_audit import scrub_counted
+
+    assert scrub_counted(text) == (text, 0)
+    # and inside a SQL literal, where it is read the same way
+    sql = f"SELECT * FROM notes WHERE body = '{text.replace(chr(39), chr(39) * 2)}'"
+    assert scrub_counted(sql, sql=True) == (sql, 0)
+
+
+def test_ordinary_prose_is_exported_unchanged_with_no_redactions() -> None:
+    client, _app = _stub_stack(_envelope())
+    for text in _PROSE_UNCHANGED:
+        assert _ask(client, text).status_code == 200
+
+    rows = _csv_rows(_export(client).text)
+
+    assert [r["question"] for r in rows] == _PROSE_UNCHANGED
+    assert {r["redactions"] for r in rows} == {"0"}

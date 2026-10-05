@@ -135,10 +135,13 @@ class CortexClient:
         if parsed is None:
             raise RuntimeError("ledger_append: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {}
+        raw_seq = data.get("seq")
+        seq = raw_seq if isinstance(raw_seq, int) and not isinstance(raw_seq, bool) else None
         return LedgerAppendResponse.model_validate(
             {
                 "entry_id": data.get("id") or data.get("entry_id") or "",
                 "hash": data.get("hash") or data.get("entry_hash") or "",
+                "seq": seq,
             }
         )
 

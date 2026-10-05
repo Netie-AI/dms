@@ -13,7 +13,7 @@ from uuid import uuid4
 from cortex_client import CortexClient
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest
 from cortex_contract.execution import PoolSpec, SubmitRequest
-from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
 from dms_executor import executed_trace
@@ -468,7 +468,7 @@ class Executor:
         """Append a verified-ask receipt to the Cortex ledger. No local chain."""
         if self._cortex is None:
             raise RuntimeError("CortexClient required for verified ledger")
-        return self._cortex.ledger_append(
+        appended = self._cortex.ledger_append(
             LedgerAppendRequest(
                 event_type=event_type,
                 payload={
@@ -480,6 +480,11 @@ class Executor:
                 actor=DEMO_USER_ID,
             )
         )
+        # BANK-02: where in the chain this ask's entry sits, for the audit export.
+        executed_trace.record_ledger(
+            getattr(appended, "entry_id", None), getattr(appended, "seq", None)
+        )
+        return appended
 
     def live_ask(
         self,
@@ -849,8 +854,9 @@ class Executor:
         self._store_turn(session_id, space_id, env)
         return env
 
-    def take_executed(self) -> list[tuple[str, int]]:
-        """Statements the last ``live_ask`` on this thread ran, with row counts.
+    def take_executed(self) -> ExecutedTrace:
+        """What the last ``live_ask`` on this thread ran: statements with row counts,
+        and the ledger entries DMS appended with their seq.
 
         Read once, immediately after ``live_ask``; it clears. Empty when the ask
         ran no statement through Cortex (a local bronze or demo path).

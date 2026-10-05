@@ -50,7 +50,8 @@ def upgrade() -> None:
           cortex_entry_id TEXT NOT NULL DEFAULT '',
           ask_mode TEXT NOT NULL DEFAULT 'live',
           redactions INTEGER NOT NULL DEFAULT 0 CHECK (redactions >= 0),
-          truncated BOOLEAN NOT NULL DEFAULT false
+          truncated BOOLEAN NOT NULL DEFAULT false,
+          ledger_seq BIGINT CHECK (ledger_seq IS NULL OR ledger_seq >= 0)
         );
 
         CREATE INDEX ask_audit_by_time ON dms.ask_audit (tenant_id, asked_at);

@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
+from dms_core.ask import ExecutedTrace
 from dms_core.control_plane.ask_audit import (
     DEPLOYMENT_ACTOR_KIND,
     AskAuditStorePort,
@@ -44,20 +45,26 @@ def _error_reason(exc: BaseException) -> str:
     return f"error:{type(exc).__name__}"
 
 
-def take_executed(ask: object) -> list[tuple[str, int]]:
-    """What the ask service ran for the ask just finished on this thread, if it can say."""
+def take_executed(ask: object) -> ExecutedTrace:
+    """What the ask service ran for the ask just finished on this thread, if it can say.
+
+    Also how a request starts clean: calling it first drops whatever a path that
+    never took its trace left on this thread, so a stale trace is not the next
+    request's evidence.
+    """
     taker = getattr(ask, "take_executed", None)
     if not callable(taker):
-        return []
+        return ExecutedTrace()
     try:
-        return list(taker())
+        got = taker()
     except Exception:  # noqa: BLE001 - the trace is evidence, never a reason to fail an ask
         logger.warning("executed-statement trace unreadable")
-        return []
+        return ExecutedTrace()
+    return got if isinstance(got, ExecutedTrace) else ExecutedTrace()
 
 
 def _evidence(
-    envelope: dict[str, Any] | None, executed: Sequence[tuple[str, int]]
+    envelope: dict[str, Any] | None, statements: Sequence[tuple[str, int]]
 ) -> tuple[str, tuple[str, ...], int]:
     """``(executed_sql, tables_read, row_count)`` for the row.
 
@@ -65,7 +72,7 @@ def _evidence(
     is the last one's. Only when none ran through Cortex is the envelope's own
     ``sql_used`` read, and a comment-only placeholder there is no SQL at all.
     """
-    stmts = [(sql, n) for sql, n in executed if has_sql_statement(sql)]
+    stmts = [(sql, n) for sql, n in statements if has_sql_statement(sql)]
     if stmts:
         sql_text = (
             stmts[0][0]
@@ -78,9 +85,9 @@ def _evidence(
                 tables.setdefault(t.casefold(), t)
         return sql_text, tuple(sorted(tables.values(), key=str.casefold)), stmts[-1][1]
     rows = [r for r in ((envelope or {}).get("rows") or []) if isinstance(r, dict)]
-    sql = (envelope or {}).get("sql_used")
-    if has_sql_statement(sql):
-        return str(sql), sql_tables_read(sql), len(rows)
+    shown_sql = (envelope or {}).get("sql_used")
+    if has_sql_statement(shown_sql):
+        return str(shown_sql), sql_tables_read(shown_sql), len(rows)
     return "", (), len(rows)
 
 
@@ -93,7 +100,7 @@ def record_ask(
     asked_at: datetime,
     envelope: dict[str, Any] | None = None,
     error: BaseException | None = None,
-    executed: Sequence[tuple[str, int]] = (),
+    executed: ExecutedTrace | None = None,
 ) -> None:
     """Append the ask's row. Never raises, and never loses a failure silently.
 
@@ -103,8 +110,9 @@ def record_ask(
     audit trail with holes against an answer service that stops when its audit
     store is down); this takes the available side and says so.
     """
+    trace = executed or ExecutedTrace()
     try:
-        executed_sql, tables_read, row_count = _evidence(envelope, executed)
+        executed_sql, tables_read, row_count = _evidence(envelope, trace.statements)
         if envelope is not None:
             rec = record_from_envelope(
                 envelope,
@@ -115,6 +123,7 @@ def record_ask(
                 executed_sql=executed_sql,
                 tables_read=tables_read,
                 row_count=row_count,
+                ledger=trace.ledger,
                 asked_at=asked_at,
             )
         else:

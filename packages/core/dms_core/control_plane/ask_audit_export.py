@@ -50,6 +50,7 @@ COLUMNS: tuple[str, ...] = (
     "abstain_reason",
     "row_count",
     "cortex_entry_id",
+    "ledger_seq",
     "ask_mode",
     "redactions",
     "truncated",
@@ -69,16 +70,19 @@ class LedgerVerification:
     """What ``ledger/verify`` said when the export was produced.
 
     ``verified`` is true only for ``status == "ok"``. A break, an unreachable
-    ledger, and a verify that covered fewer entries than the export points at
-    (``incomplete``, including a verify that checked none) are all unverified: an
-    export must not read as checked because the check could not be run or did not
-    reach the entries it names.
+    ledger, and a verify that did not reach the entries the export points at
+    (``incomplete``) are all unverified: an export must not read as checked
+    because the check could not be run or stopped short of the entries it names.
+    ``incomplete`` is: nothing checked, fewer entries checked than the export has
+    pointers, or fewer than the highest ledger seq a row recorded (a chain that
+    lost its tail, where DMS appended the lost entry and so knew its seq).
 
     Contract 1.2.0 verifies the whole chain from ``start_seq``; it takes no end
     and no entry id. So this is the chain's state, which covers the exported
     range and everything around it. It proves the chain is intact, not that a
-    row here matches a ledger payload; the contract has no entry read-back. That
-    is ``VERIFY_SCOPE``, on every row.
+    row here matches a ledger payload; the contract has no entry read-back. A
+    lost tail entry that DMS did not append (a Cortex receipt, no seq) is only
+    caught by the pointer count. That is ``VERIFY_SCOPE``, on every row.
     """
 
     status: VerifyStatus
@@ -135,6 +139,7 @@ def _cells(rec: AskAuditRecord, meta: ExportMeta) -> dict[str, Any]:
         "abstain_reason": r.abstain_reason,
         "row_count": r.row_count,
         "cortex_entry_id": r.cortex_entry_id,
+        "ledger_seq": r.ledger_seq,
         "ask_mode": r.ask_mode,
         "redactions": r.redactions,
         "truncated": r.truncated,

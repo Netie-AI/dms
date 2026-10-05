@@ -72,13 +72,21 @@ def test_redaction_count_and_truncation_flag_round_trip(
     migrated_db: str, two_tenants: dict
 ) -> None:
     store = PostgresAskAuditStore(migrated_db, tenant_id=two_tenants["alpha"])
-    rec = _rec(redactions=3, truncated=True, question="cut...[truncated 5 chars]")
+    rec = _rec(
+        redactions=3,
+        truncated=True,
+        question="cut...[truncated: original was 12345 chars]",
+        ledger_seq=42,
+    )
+    unseq = _rec(asked_at=datetime(2026, 10, 5, 11, 0, tzinfo=UTC), ledger_seq=None)
     store.record(rec)
+    store.record(unseq)
 
-    (got,) = store.list_between(since=None, until=None, limit=10)
+    got, got_unseq = store.list_between(since=None, until=None, limit=10)
 
-    assert got == rec
+    assert got == rec and got_unseq == unseq
     assert got.redactions == 3 and got.truncated is True
+    assert got.ledger_seq == 42 and got_unseq.ledger_seq is None
 
 
 def test_recording_the_same_ask_twice_keeps_one_row(migrated_db: str, two_tenants: dict) -> None:

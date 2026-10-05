@@ -1004,7 +1004,10 @@ def tables_read(sql: str | None) -> tuple[str, ...]:
         for tree in trees:
             for scope in traverse_scope(tree):
                 for node in scope.tables:
-                    if isinstance(scope.sources.get(node.alias_or_name), Scope):
+                    # Only an unqualified name can be a CTE: ``main.t`` is the base
+                    # table even when a CTE called ``t`` is in scope.
+                    unqualified = not node.db and not node.catalog
+                    if unqualified and isinstance(scope.sources.get(node.alias_or_name), Scope):
                         continue  # a CTE or derived table of an enclosing query
                     label = _table_label(node)
                     if label:

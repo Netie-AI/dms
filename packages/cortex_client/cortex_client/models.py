@@ -97,6 +97,8 @@ class LedgerAppendRequest(BaseModel):
 class LedgerAppendResponse(BaseModel):
     entry_id: str
     hash: str
+    #: The entry's position in the chain (contract LedgerEntry.seq), when the engine says.
+    seq: int | None = None
 
 
 class LedgerVerifyResponse(BaseModel):
