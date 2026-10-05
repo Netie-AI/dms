@@ -6,24 +6,24 @@ Plan E, a read-only audit of `netie/dms` at `7a8d6c1` (origin/main on 2026-10-05
 
 - **No entry point passes all 8 gates.** This describes the code, not an accuracy figure.
 - **The gate definitions are strict and mine.** Part of the partial/no count comes from the definition (for example G6 asks for a serving-time check of served fields, which exists only in the offline scorer). Class `bypass` in the gap table is the provable set: a request on default or documented config that a test shows.
-- **A tracer's yes counts only if a blind reviewer agreed.** Cells where they differ are shown `Y?` and treated as not passing.
+- **A tracer's yes counts only if a blind reviewer agreed.** A disagreement went to a third blind reviewer and the majority of three decides; `Y?` is a three-way split, treated as not passing.
 - **Everything is from reading code at one commit, plus the tests.** No live lane, no real model, no Cortex enforcement was exercised. Test fakes stand in for Cortex.
 
 ## Outcome counts
 
 - Entry points n = 49 (two blind enumerators found 43 and 39, a critic merged them and added 3). All 49 traced.
-- Cells n = 392 = 49 x 8: yes confirmed 34, yes disputed by review 11, yes unreviewed 0, partial 131, no 103, n/a 113.
+- Cells n = 392 = 49 x 8: yes 38 (of which 4 survived only on a 2-of-3 tie-break), unresolved split 0, partial 138, no 103, n/a 113. 7 tracer yes cells were lowered by the review and are counted under their new verdict.
 
-| Gate | yes (confirmed) | Y? (disputed) | partial | no | n/a |
+| Gate | yes | Y? (split) | partial | no | n/a |
 |---|---|---|---|---|---|
-| G1 grant / Space check | 1 | 2 | 29 | 5 | 12 |
+| G1 grant / Space check | 2 | 0 | 30 | 5 | 12 |
 | G2 ontology verification | 1 | 0 | 2 | 25 | 21 |
 | G3 join rule + fan-out guard | 3 | 0 | 0 | 12 | 34 |
-| G4 typed ingest | 5 | 1 | 8 | 14 | 21 |
-| G5 PII mask (envelope + record) | 18 | 3 | 25 | 3 | 0 |
+| G4 typed ingest | 6 | 0 | 8 | 14 | 21 |
+| G5 PII mask (envelope + record) | 19 | 0 | 27 | 3 | 0 |
 | G6 strict pin + served fields | 0 | 0 | 21 | 13 | 15 |
 | G7 Cortex submit (manifest + ledger) | 4 | 0 | 7 | 28 | 10 |
-| G8 named abstain on failure | 2 | 5 | 39 | 3 | 0 |
+| G8 named abstain on failure | 3 | 0 | 43 | 3 | 0 |
 
 ## Independent review of the yes cells
 
@@ -31,35 +31,36 @@ Plan E, a read-only audit of `netie/dms` at `7a8d6c1` (origin/main on 2026-10-05
 - Yes cells re-judged: n = 45 of 45. Reviewer agreed 34, overturned 11. Agreement 34/45.
 - Unlabeled non-yes cells: n = 42, reviewer reached the same verdict on 39.
 - Overturned (tracer said yes): cache:session-turns G5 (reviewer: partial); chat-ask:bronze-grant-abstain G1 (reviewer: partial); chat-ask:bronze-grant-abstain G8 (reviewer: partial); chat-ask:generative-insights-sql G8 (reviewer: partial); chat-ask:harness-exact-miss G8 (reviewer: partial); chat-ask:planted-refuse G8 (reviewer: partial); chat-ask:space-refusal G1 (reviewer: partial); insights:get-ontology-ranking G8 (reviewer: partial); mcp:preview G4 (reviewer: partial); ui:check-accuracy G5 (reviewer: partial); ui:source-panel-contribution G5 (reviewer: partial).
-- Reviewers agreed with 34 of 45 tracer yes cells (75%) but with 39 of 42 non-yes cells (92%). A tracer yes is therefore weaker evidence than a tracer partial or no: false passes were the common mistake. These are two model reviews of the same code, not a measured error rate; the 11 overturned cells have not had a third opinion.
+- Reviewers agreed with 34 of 45 tracer yes cells (75%) but with 39 of 42 non-yes cells (92%). A tracer yes is therefore weaker evidence than a tracer partial or no: false passes were the common mistake. These are model reviews of the same code, not a measured error rate.
+- Tie-break: the 11 overturned cells went to a third blind reviewer (seed 20261007 chose one unlabeled decoy gate per row). 4 kept yes, 7 lowered (2 of 3). The majority of three decides; see the matrix for each cell.
 
 ## Matrix
 
-`yes` = tracer and blind reviewer agree. `Y?` = tracer said yes, reviewer disagreed (not counted as passing). `part` = partial. `**NO**` = gate absent on that path. `n/a` = gate cannot apply (reason cited in the section below). Each row links to its cited cells.
+`yes` = tracer and blind reviewer agree; `(2/3)` = kept or lowered by a 2-of-3 tie-break. `Y?` = three different verdicts (not counted as passing). `part` = partial. `**NO**` = gate absent on that path. `n/a` = gate cannot apply (reason cited in the section below). Each row links to its cited cells.
 
 | Entry point | G1 | G2 | G3 | G4 | G5 | G6 | G7 | G8 |
 |---|---|---|---|---|---|---|---|---|
 | [`chat-ask:followup-average`](#ep-chat-ask-followup-average) | part | **NO** | n/a | n/a | yes | part | **NO** | part |
 | [`chat-ask:followup-add`](#ep-chat-ask-followup-add) | part | **NO** | n/a | n/a | yes | part | **NO** | part |
 | [`chat-ask:followup-abstain`](#ep-chat-ask-followup-abstain) | part | n/a | n/a | n/a | yes | part | n/a | part |
-| [`cache:session-turns`](#ep-cache-session-turns) | part | **NO** | n/a | n/a | Y? | part | **NO** | part |
+| [`cache:session-turns`](#ep-cache-session-turns) | part | **NO** | n/a | n/a | yes(2/3) | part | **NO** | part |
 | [`chat-ask:verified-query`](#ep-chat-ask-verified-query) | part | **NO** | **NO** | part | part | part | yes | part |
 | [`chat-ask:governed-pack`](#ep-chat-ask-governed-pack) | part | **NO** | **NO** | part | yes | part | yes | part |
-| [`chat-ask:planted-refuse`](#ep-chat-ask-planted-refuse) | n/a | n/a | n/a | n/a | yes | part | n/a | Y? |
-| [`chat-ask:harness-exact-miss`](#ep-chat-ask-harness-exact-miss) | n/a | n/a | n/a | n/a | yes | part | n/a | Y? |
+| [`chat-ask:planted-refuse`](#ep-chat-ask-planted-refuse) | n/a | n/a | n/a | n/a | yes | part | n/a | part(2/3) |
+| [`chat-ask:harness-exact-miss`](#ep-chat-ask-harness-exact-miss) | n/a | n/a | n/a | n/a | yes | part | n/a | part(2/3) |
 | [`chat-ask:cascade-abstain`](#ep-chat-ask-cascade-abstain) | part | n/a | n/a | **NO** | yes | part | n/a | part |
 | [`chat-ask:cascade-attach`](#ep-chat-ask-cascade-attach) | part | **NO** | **NO** | **NO** | part | part | part | part |
 | [`chat-ask:bronze-sheet`](#ep-chat-ask-bronze-sheet) | yes | **NO** | n/a | **NO** | yes | part | **NO** | part |
-| [`chat-ask:bronze-grant-abstain`](#ep-chat-ask-bronze-grant-abstain) | Y? | n/a | n/a | n/a | yes | part | n/a | Y? |
+| [`chat-ask:bronze-grant-abstain`](#ep-chat-ask-bronze-grant-abstain) | part(2/3) | n/a | n/a | n/a | yes | part | n/a | yes(2/3) |
 | [`chat-ask:generative-pregate-abstain`](#ep-chat-ask-generative-pregate-abstain) | n/a | n/a | n/a | n/a | yes | part | n/a | yes |
 | [`chat-ask:generative-multi-grain`](#ep-chat-ask-generative-multi-grain) | part | part | yes | part | yes | part | yes | part |
-| [`chat-ask:generative-insights-sql`](#ep-chat-ask-generative-insights-sql) | part | **NO** | **NO** | part | part | part | yes | Y? |
+| [`chat-ask:generative-insights-sql`](#ep-chat-ask-generative-insights-sql) | part | **NO** | **NO** | part | part | part | yes | part(2/3) |
 | [`chat-ask:generative-ontology-plan`](#ep-chat-ask-generative-ontology-plan) | part | part | yes | part | part | part | part | part |
 | [`chat-ask:generative-named-abstain`](#ep-chat-ask-generative-named-abstain) | part | n/a | n/a | n/a | part | part | n/a | part |
 | [`chat-ask:harness-generative-miss`](#ep-chat-ask-harness-generative-miss) | part | n/a | n/a | n/a | yes | part | n/a | part |
 | [`chat-ask:cortex-contract-ask`](#ep-chat-ask-cortex-contract-ask) | part | **NO** | **NO** | part | part | **NO** | part | part |
 | [`chat-ask:cortex-doc-retrieval`](#ep-chat-ask-cortex-doc-retrieval) | part | n/a | n/a | n/a | part | **NO** | **NO** | part |
-| [`chat-ask:space-refusal`](#ep-chat-ask-space-refusal) | Y? | n/a | n/a | n/a | yes | **NO** | n/a | yes |
+| [`chat-ask:space-refusal`](#ep-chat-ask-space-refusal) | yes(2/3) | n/a | n/a | n/a | yes | **NO** | n/a | yes |
 | [`chat-ask:demo-mode`](#ep-chat-ask-demo-mode) | **NO** | **NO** | n/a | yes | yes | **NO** | **NO** | part |
 | [`chat-ask:demo-fallback-no-cortex`](#ep-chat-ask-demo-fallback-no-cortex) | **NO** | **NO** | n/a | yes | yes | **NO** | **NO** | part |
 | [`chat-ask:demo-fallback-ask-error`](#ep-chat-ask-demo-fallback-ask-error) | part | **NO** | n/a | yes | yes | **NO** | **NO** | **NO** |
@@ -69,19 +70,19 @@ Plan E, a read-only audit of `netie/dms` at `7a8d6c1` (origin/main on 2026-10-05
 | [`export:bi`](#ep-export-bi) | n/a | n/a | n/a | n/a | part | **NO** | **NO** | part |
 | [`export:csv-client`](#ep-export-csv-client) | part | n/a | n/a | n/a | part | n/a | part | **NO** |
 | [`ui:share-answer`](#ep-ui-share-answer) | n/a | n/a | n/a | n/a | part | **NO** | part | part |
-| [`ui:check-accuracy`](#ep-ui-check-accuracy) | n/a | **NO** | n/a | n/a | Y? | n/a | **NO** | part |
+| [`ui:check-accuracy`](#ep-ui-check-accuracy) | n/a | **NO** | n/a | n/a | part(2/3) | n/a | **NO** | part |
 | [`ui:exclusion-auto-confirm`](#ep-ui-exclusion-auto-confirm) | part | **NO** | **NO** | part | part | part | part | part |
-| [`ui:source-panel-contribution`](#ep-ui-source-panel-contribution) | n/a | **NO** | n/a | n/a | Y? | n/a | **NO** | part |
+| [`ui:source-panel-contribution`](#ep-ui-source-panel-contribution) | n/a | **NO** | n/a | n/a | part(2/3) | n/a | **NO** | part |
 | [`ui:demo-source-fixture-preview`](#ep-ui-demo-source-fixture-preview) | n/a | **NO** | n/a | n/a | yes | n/a | **NO** | part |
 | [`library:warehouse-preview`](#ep-library-warehouse-preview) | part | n/a | n/a | yes | part | n/a | **NO** | part |
 | [`library:bronze-preview`](#ep-library-bronze-preview) | part | n/a | n/a | **NO** | part | n/a | **NO** | part |
 | [`library:chunks-search`](#ep-library-chunks-search) | part | n/a | n/a | **NO** | part | n/a | **NO** | part |
 | [`studio:chunks-list`](#ep-studio-chunks-list) | part | n/a | n/a | **NO** | part | n/a | **NO** | part |
 | [`mcp:ask`](#ep-mcp-ask) | part | **NO** | **NO** | **NO** | part | part | part | part |
-| [`mcp:preview`](#ep-mcp-preview) | part | n/a | n/a | Y? | part | n/a | **NO** | part |
+| [`mcp:preview`](#ep-mcp-preview) | part | n/a | n/a | yes(2/3) | part | n/a | **NO** | part |
 | [`insights:post-ask`](#ep-insights-post-ask) | **NO** | **NO** | **NO** | **NO** | part | **NO** | **NO** | part |
 | [`insights:post-generate`](#ep-insights-post-generate) | **NO** | **NO** | **NO** | **NO** | part | part | **NO** | part |
-| [`insights:get-ontology-ranking`](#ep-insights-get-ontology-ranking) | n/a | n/a | n/a | n/a | part | **NO** | n/a | Y? |
+| [`insights:get-ontology-ranking`](#ep-insights-get-ontology-ranking) | n/a | n/a | n/a | n/a | part | **NO** | n/a | part(2/3) |
 | [`studio:xlsx-orch-crosscheck`](#ep-studio-xlsx-orch-crosscheck) | part | **NO** | n/a | **NO** | part | n/a | **NO** | part |
 | [`studio:xlsx-orch-extract`](#ep-studio-xlsx-orch-extract) | part | **NO** | n/a | **NO** | **NO** | n/a | **NO** | part |
 | [`studio:xlsx-orch-golden`](#ep-studio-xlsx-orch-golden) | part | **NO** | n/a | **NO** | part | n/a | **NO** | part |
@@ -423,7 +424,7 @@ In-process prior-turn values cache (feeds follow-up figures). Producer: packages
 | G2 ontology verification | **NO** (medium) | `packages/executor/dms_executor/session_followup.py:58-64 - snapshot_turn keeps only float values and sql_used, dropping label, route, badge, sources ...`<br>`packages/executor/dms_executor/__init__.py:589-813 - every answering lane stores into it, whatever its provenance` | `followup-unit-relabelled-rm` |
 | G3 join rule + fan-out guard | n/a (high) | `packages/executor/dms_executor/session_followup.py:189-190 - the only reader of a cache entry uses prior['values'] and nothing else`<br>`packages/executor/dms_executor/session_followup.py:64 - sql_used is stored but never read back or executed` |  |
 | G4 typed ingest | n/a (medium) | `packages/executor/dms_executor/__init__.py:237-247 - the store/read path touches no table`<br>`packages/executor/dms_executor/session_followup.py:189-190 - only isinstance int/float filtering, no casting` |  |
-| G5 PII mask (envelope + record) | Y? (medium) | `packages/executor/dms_executor/envelope.py:1626-1637 - every stored envelope was built by build_answer_envelope, which masks text, rows, values, sour...`<br>`packages/executor/dms_executor/verified_queries.py:296 - VQ lane builds through it` |  |
+| G5 PII mask (envelope + record) | yes(2/3) (medium) | `packages/executor/dms_executor/envelope.py:1626-1637 - every stored envelope was built by build_answer_envelope, which masks text, rows, values, sour...`<br>`packages/executor/dms_executor/verified_queries.py:296 - VQ lane builds through it` |  |
 | G6 strict pin + served fields | part (low) | `packages/executor/dms_executor/__init__.py:237-247 + session_followup.py:58-64 - the cache makes no model call and keeps no served_* field, so any fi...`<br>`packages/executor/dms_executor/__init__.py:504-506 + generative_ask.py:228-229,258-277 - the envelope the cache feeds is stamped served_attribution '...` | `served-pin-checked-only-in-offline-scorer` |
 | G7 Cortex submit (manifest + ledger) | **NO** (medium) | `packages/executor/dms_executor/session_followup.py:64 - the snapshot keeps no manifest, receipt, audit id or ledger reference, only values and sql_us...`<br>`packages/executor/dms_executor/session_followup.py:138 - figures leave the cache only through a local DuckDB execute` | `followup-no-submit` |
 | G8 named abstain on failure | part (medium) | `packages/executor/dms_executor/__init__.py:244-246 - an abstained turn pops the key, so the next follow-up abstains by name`<br>`packages/executor/dms_executor/__init__.py:232-235 - close() or a restart empties it, so the next follow-up abstains by name` | `followup-stale-prior-after-failed-turn` |
@@ -492,7 +493,7 @@ Planted uncertified-paraphrase refuse trap (VQ-04). Producer: packages/executor/
 | G5 PII mask (envelope + record) | yes (high) | `packages/executor/dms_executor/envelope.py:1626-1640 - build_answer_envelope runs fail_closed_mask_payload over text/rows/values/sources/chart/sql_us...`<br>`packages/executor/dms_executor/envelope.py:1739 - mask_unknown_keys over the remaining keys (assumptions, suggestions, grounded_tables)` |  |
 | G6 strict pin + served fields | part (medium) | `packages/executor/dms_executor/__init__.py:504-510 - live_ask stamps served_attribution from the Insights payload seen; none was made, so payload is ...`<br>`packages/executor/dms_executor/generative_ask.py:216-246 - served_attribution(None) returns 'none'` | `served-pin-checked-only-in-offline-scorer` |
 | G7 Cortex submit (manifest + ledger) | n/a (high) | `packages/executor/dms_executor/demo_pack.py:213-231 - ABSTAIN with no figure and no rows` |  |
-| G8 named abstain on failure | Y? (medium) | `packages/executor/dms_executor/demo_pack.py:213-237 - ABSTAIN with refusal text, assumptions 'uncertified paraphrase...', route 'abstain', assert_env...`<br>`apps/api/dms_api/routes/chat.py:336-352 - any exception on this path (grant read, VQ registry, envelope assert) becomes 503 live_ask_failed or 504 li...` |  |
+| G8 named abstain on failure | part(2/3) (medium) | `packages/executor/dms_executor/demo_pack.py:213-237 - ABSTAIN with refusal text, assumptions 'uncertified paraphrase...', route 'abstain', assert_env...`<br>`apps/api/dms_api/routes/chat.py:336-352 - any exception on this path (grant read, VQ registry, envelope assert) becomes 503 live_ask_failed or 504 li...` |  |
 
 Also on this path: packages/executor/dms_executor/__init__.py:593-596,614-617 - set(self.grantable_tables(...)) is evaluated unguarded before the planted refuse. A grant-read exception turns a trap question into 503 live_ask_failed instead of the refusal (chat.py:336-352). Tracked by #307 / draft PR #331 (unread gran...
 
@@ -514,7 +515,7 @@ GEN-03 isolated 'exact' ladder miss. Producer: packages/executor/dms_executor/ge
 | G5 PII mask (envelope + record) | yes (high) | `packages/executor/dms_executor/envelope.py:1626-1640 and :1739 - sole constructor masks text/rows/values/sources/chart/sql_used and scans the other k...`<br>`packages/executor/dms_executor/__init__.py:508-510 - live_ask re-masks` |  |
 | G6 strict pin + served fields | part (medium) | `packages/executor/dms_executor/__init__.py:504-510 - served_attribution stamped from payload None`<br>`packages/executor/dms_executor/generative_ask.py:216-246 - returns 'none' when no payload` | `served-pin-checked-only-in-offline-scorer` |
 | G7 Cortex submit (manifest + ledger) | n/a (high) | `packages/executor/dms_executor/generative_ask.py:679-695 - ABSTAIN, no figure/rows` |  |
-| G8 named abstain on failure | Y? (medium) | `packages/executor/dms_executor/__init__.py:642-649 - miss yields ABSTAIN with reason 'exact-match miss: not a certified VQ/pack hit'`<br>`packages/executor/dms_executor/generative_ask.py:679-695 - assumptions[0]='GEN-01: <reason>', assert_envelope_valid` |  |
+| G8 named abstain on failure | part(2/3) (medium) | `packages/executor/dms_executor/__init__.py:642-649 - miss yields ABSTAIN with reason 'exact-match miss: not a certified VQ/pack hit'`<br>`packages/executor/dms_executor/generative_ask.py:679-695 - assumptions[0]='GEN-01: <reason>', assert_envelope_valid` |  |
 
 Also on this path: packages/executor/dms_executor/gen_path_refuse.py:49-75 - a reason that is not in GAP_REASONS renders as 'I cannot certify an ontology-grounded query for that question', which misdescribes an exact-match miss. The real reason appears only in assumptions[0] and audit_receipt.unsure.why.
 
@@ -593,14 +594,14 @@ Bronze-sheet lane grant/space abstain. Producer: packages/executor/dms_executor/
 
 | Gate | Status | Citations | Gap |
 |---|---|---|---|
-| G1 grant / Space check | Y? (high) | `packages/executor/dms_executor/__init__.py:660-662 - grantable_tables(space_id) before the lane; an exception leaves granted=[] (fail closed)`<br>`packages/executor/dms_executor/__init__.py:696-702 - no space_id gives ABSTAIN no_space; no table is opened` |  |
+| G1 grant / Space check | part(2/3) (high) | `packages/executor/dms_executor/__init__.py:660-662 - grantable_tables(space_id) before the lane; an exception leaves granted=[] (fail closed)`<br>`packages/executor/dms_executor/__init__.py:696-702 - no space_id gives ABSTAIN no_space; no table is opened` |  |
 | G2 ontology verification | n/a (high) | `packages/executor/dms_executor/bronze_sheet_ask.py:86-98 - abstain envelope built with rows=[], values=[], sql_used=None and fixed text 'ABSTAIN <rea...` |  |
 | G3 join rule + fan-out guard | n/a (high) | `packages/executor/dms_executor/bronze_sheet_ask.py:93 - sql_used=None; the abstain is returned at :101-102 before any SQL, and __init__.py:696-727 re...` |  |
 | G4 typed ingest | n/a (medium) | `packages/executor/dms_executor/bronze_sheet_ask.py:86-98 - the answer holds no table content`<br>`packages/executor/dms_executor/bronze.py:526-545 and :570-572 - the grant check reads only catalog, registry and row counts, which are never placed o...` |  |
 | G5 PII mask (envelope + record) | yes (high) | `packages/executor/dms_executor/bronze_sheet_ask.py:86-101 - the abstain envelope is built through build_answer_envelope`<br>`packages/executor/dms_executor/envelope.py:1626-1636 and :1739 - mask_payload and mask_unknown_keys are applied inside build_answer_envelope` |  |
 | G6 strict pin + served fields | part (medium) | `packages/executor/dms_executor/bronze_sheet_ask.py:78-102 - no model call on this branch, so (a) does not apply`<br>`packages/executor/dms_executor/__init__.py:504-510 - served_attribution stamped on the result; payload is None because the lane returns before the ge...` | `served-pin-checked-only-in-offline-scorer` |
 | G7 Cortex submit (manifest + ledger) | n/a (high) | `packages/executor/dms_executor/bronze_sheet_ask.py:89-94 - badge ABSTAIN, rows=[], values=[], sql_used=None: a pure refusal with no figure or row` |  |
-| G8 named abstain on failure | Y? (high) | `packages/executor/dms_executor/__init__.py:696-702 and :717-723 - both failure branches return a named ABSTAIN (no_space, ungranted_table:<t>)`<br>`packages/executor/dms_executor/__init__.py:724-727 - the abstain is returned immediately: no fall-through to the generative lane, the Cortex ask or d...` |  |
+| G8 named abstain on failure | yes(2/3) (high) | `packages/executor/dms_executor/__init__.py:696-702 and :717-723 - both failure branches return a named ABSTAIN (no_space, ungranted_table:<t>)`<br>`packages/executor/dms_executor/__init__.py:724-727 - the abstain is returned immediately: no fall-through to the generative lane, the Cortex ask or d...` |  |
 
 Also on this path: packages/executor/dms_executor/bronze_sheet_ask.py:87 - every refusal carries the same answer_id and audit_id 'ans_bronze_grant' (envelope.py:1712), which resolves to no ledger entry, so refusals cannot be told apart or audited.
 
@@ -666,7 +667,7 @@ GEN-01 Cortex Insights-generated SQL, validated then Cortex submit (L2). Produce
 | G5 PII mask (envelope + record) | part (medium) | `packages/executor/dms_executor/envelope.py:1626-1639,1739 and packages/executor/dms_executor/__init__.py:508-510 - envelope text, rows, values, chart...`<br>`packages/executor/dms_executor/generative_ask.py:845 and packages/executor/dms_executor/__init__.py:467-477 - the ledger payload gets the raw model S...` | `ledger-append-carries-unmasked-sql` |
 | G6 strict pin + served fields | part (medium) | `packages/cortex_client/cortex_client/compute.py:838-840,728-730 and packages/cortex_client/cortex_client/strict_pin.py:118-127 - body stamped with pi...`<br>`packages/cortex_client/cortex_client/compute.py:940-949 - the ranked retry leg copies insights_body, so it is pinned too` | `served-pin-checked-only-in-offline-scorer` |
 | G7 Cortex submit (manifest + ledger) | yes (medium) | `packages/executor/dms_executor/generative_ask.py:1283-1297,818-829 - validated SQL is submitted through the submit callable; failure or no output abs...`<br>`packages/executor/dms_executor/__init__.py:748-750,441-453,816-837 - _submit_verified_sql -> submit_sql builds SubmitRequest with a minted Manifest a...` |  |
-| G8 named abstain on failure | Y? (medium) | `packages/executor/dms_executor/generative_ask.py:1228-1234,1253-1270 - empty SQL, as_of, hostile SQL and invalid SQL with no ranking are named abstai...`<br>`packages/executor/dms_executor/generative_ask.py:1271-1281 - an invalid SELECT with a ranking climbs to the typed plan and records the reject reason ...` |  |
+| G8 named abstain on failure | part(2/3) (medium) | `packages/executor/dms_executor/generative_ask.py:1228-1234,1253-1270 - empty SQL, as_of, hostile SQL and invalid SQL with no ranking are named abstai...`<br>`packages/executor/dms_executor/generative_ask.py:1271-1281 - an invalid SELECT with a ranking climbs to the typed plan and records the reject reason ...` |  |
 
 Also on this path: packages/executor/dms_executor/generative_ask.py:818-824 - every submit exception becomes 'submit_failed'; a cold-engine statement_timeout (retryable 504 in chat.py:87) and a path_not_allowed policy refusal (403) are indistinguishable in the ABSTAIN
 
@@ -791,7 +792,7 @@ Space-boundary refusal rendered as an ABSTAIN envelope. Producer: apps/api/dms_a
 
 | Gate | Status | Citations | Gap |
 |---|---|---|---|
-| G1 grant / Space check | Y? (medium) | `packages/executor/dms_executor/__init__.py:776-778 (and :450-452 for the VQ bind) - demo_acl then bind_session run before the call that raises`<br>`packages/executor/dms_executor/__init__.py:318-328,360 - Space grants resolved through intersect_space_grants/resolve_session_acl; the manifest row_p...` |  |
+| G1 grant / Space check | yes(2/3) (medium) | `packages/executor/dms_executor/__init__.py:776-778 (and :450-452 for the VQ bind) - demo_acl then bind_session run before the call that raises`<br>`packages/executor/dms_executor/__init__.py:318-328,360 - Space grants resolved through intersect_space_grants/resolve_session_acl; the manifest row_p...` |  |
 | G2 ontology verification | n/a (high) | `apps/api/dms_api/routes/chat.py:170-182 - ABSTAIN envelope built from constants, no values, rows or SQL`<br>`packages/executor/dms_executor/envelope.py:1681-1686,1884-1888 - abstained forces values, rows, sources and token empty (E2)` |  |
 | G3 join rule + fan-out guard | n/a (high) | `apps/api/dms_api/routes/chat.py:170-182 - no sql_used passed`<br>`packages/executor/dms_executor/envelope.py:1694-1699,1707 - abstained envelope carries sql_used None; no SQL can be served` |  |
 | G4 typed ingest | n/a (medium) | `apps/api/dms_api/routes/chat.py:166-182 - the answer is built from constants plus the Space name and a table name parsed from the error`<br>`packages/executor/dms_executor/bronze.py:259-269 - the only read in envelope build is the ingest registry for source watermarks (metadata, sources is...` |  |
@@ -1009,7 +1010,7 @@ Client-computed row-sum 'Check accuracy' figure. Producer: apps/ui/src/lib/answe
 | G2 ontology verification | **NO** (medium) | `apps/ui/src/lib/answerDelivery.ts:83-89 - the summed column is chosen by regex on column names (chart.y, else /value\|amount\|revenue\|total\|myr\|us...`<br>`apps/ui/src/lib/answerDelivery.ts:95-102 and :117 - a SUM over all rows and over values[] is computed in JS` | `ui-derives-figures-and-labels-client-side` |
 | G3 join rule + fan-out guard | n/a (high) | `apps/ui/src/lib/answerDelivery.ts:68-158 - the function takes an envelope and returns {status,message}; no SQL is read, built or served`<br>`apps/ui/src/components/AnswerMessage.tsx:372-375 - the handler only stores the message string` |  |
 | G4 typed ingest | n/a (medium) | `apps/ui/src/lib/answerDelivery.ts:44-62 - numericKeys/toNum accept numeric-looking strings and coerce them with Number(v)`<br>`apps/ui/src/components/AnswerMessage.tsx:372-375 - the call site; no table is read` |  |
-| G5 PII mask (envelope + record) | Y? (medium) | `packages/executor/dms_executor/envelope.py:1626-1636 - build_answer_envelope masks text/rows/values/sources/chart/sql_used with fail_closed_mask_payl...`<br>`packages/executor/dms_executor/envelope.py:1739 and packages/executor/dms_executor/__init__.py:508-510 - mask_unknown_keys runs on every build and ag...` |  |
+| G5 PII mask (envelope + record) | part(2/3) (medium) | `packages/executor/dms_executor/envelope.py:1626-1636 - build_answer_envelope masks text/rows/values/sources/chart/sql_used with fail_closed_mask_payl...`<br>`packages/executor/dms_executor/envelope.py:1739 and packages/executor/dms_executor/__init__.py:508-510 - mask_unknown_keys runs on every build and ag...` |  |
 | G6 strict pin + served fields | n/a (high) | `apps/ui/src/lib/answerDelivery.ts:68-158 - returns {status,message,rowSum,stated,column}, not an envelope; no fetch and no model call`<br>`apps/ui/src/components/AnswerMessage.tsx:372-375 - the whole click path` |  |
 | G7 Cortex submit (manifest + ledger) | **NO** (high) | `apps/ui/src/lib/answerDelivery.ts:95-102 - rowSum accumulated in browser JS`<br>`apps/ui/src/lib/answerDelivery.ts:117 - valueSum computed in browser JS` | `ui-derives-figures-and-labels-client-side` |
 | G8 named abstain on failure | part (medium) | `apps/ui/src/lib/answerDelivery.ts:77,80,92,99 - skip branches (no rows, abstained, no numeric column, non-numeric column) return a plain-English reas...`<br>`apps/ui/src/lib/answerDelivery.ts:83-89,121-139,142-157 - verdict logic over a heuristically chosen column` | `ui-derives-figures-and-labels-client-side` |
@@ -1053,7 +1054,7 @@ Sources panel client-derived contribution figures (MYR-formatted weights, % shar
 | G2 ontology verification | **NO** (medium) | `apps/ui/src/components/SourcePanel.tsx:43-47 - totalRows and totalContribution are client sums`<br>`apps/ui/src/components/SourcePanel.tsx:122-125,153 - % share and MYR rendering of the weight` | `ui-derives-figures-and-labels-client-side` |
 | G3 join rule + fan-out guard | n/a (high) | `apps/ui/src/lib/sourcePanel.ts:3,11-16 - sql_used is only regex-scanned for the first FROM name; no SQL is built or served`<br>`apps/ui/src/components/SourcePanel.tsx:43-153 - the panel renders metadata only` |  |
 | G4 typed ingest | n/a (high) | `apps/ui/src/lib/sourcePanel.ts:19-33 - cards come from envelope fields`<br>`apps/ui/src/components/SourcePanel.tsx:43-153 - no table is read` |  |
-| G5 PII mask (envelope + record) | Y? (medium) | `packages/executor/dms_executor/envelope.py:1626-1636 - sources are masked in build_answer_envelope; packages/core/dms_core/pii.py:852-877 walks and s...`<br>`packages/executor/dms_executor/envelope.py:1725,1739 - grounded_tables scanned by mask_unknown_keys` |  |
+| G5 PII mask (envelope + record) | part(2/3) (medium) | `packages/executor/dms_executor/envelope.py:1626-1636 - sources are masked in build_answer_envelope; packages/core/dms_core/pii.py:852-877 walks and s...`<br>`packages/executor/dms_executor/envelope.py:1725,1739 - grounded_tables scanned by mask_unknown_keys` |  |
 | G6 strict pin + served fields | n/a (high) | `apps/ui/src/components/SourcePanel.tsx:17-225 - renders; the only fetch is postReveal on click`<br>`apps/ui/src/lib/sourcePanel.ts:19-45 - pure functions` |  |
 | G7 Cortex submit (manifest + ledger) | **NO** (high) | `apps/ui/src/components/SourcePanel.tsx:43-47 - totalRows, totalContribution summed in JS`<br>`apps/ui/src/components/SourcePanel.tsx:122-125,153 - percentage share and MYR figure computed and rendered in JS` | `ui-derives-figures-and-labels-client-side` |
 | G8 named abstain on failure | part (high) | `apps/ui/src/lib/sourcePanel.ts:35-45 - sourcesHeadline ignores env.badge; line 44 reads 'Certified answer, no file card from Cortex. Open SQL.' for a...`<br>`apps/ui/src/lib/sourcePanel.ts:19-33 - cards are synthesized from grounded_tables/sql even for an ABSTAIN envelope` | `ui-derives-figures-and-labels-client-side` |
@@ -1204,7 +1205,7 @@ MCP-01 preview tool (wraps warehouse preview). Producer: apps/api/dms_api/routes
 | G1 grant / Space check | part (high) | `apps/api/dms_api/routes/mcp.py:142-145 - space_id comes straight from the caller's arguments and is passed to preview_wh_table.`<br>`apps/api/dms_api/routes/library.py:272-274 - same warehouse_tables(space_id) membership check, 403 warehouse_not_in_space.` | `read-routes-own-space-check-not-shared-grant` |
 | G2 ontology verification | n/a (medium) | `packages/executor/dms_executor/warehouse_browse.py:129-130 - COUNT(*) and SELECT * only.`<br>`apps/api/dms_api/routes/mcp.py:143-147 - wrapper adds no computation.` |  |
 | G3 join rule + fan-out guard | n/a (high) | `packages/executor/dms_executor/warehouse_browse.py:19,122,130 - allowlisted DEMO_TABLES name into a fixed one-table template.`<br>`apps/api/dms_api/routes/mcp.py:137 - the '/' and '..' check is only lexical; the single-table guarantee comes from the executor allowlist.` |  |
-| G4 typed ingest | Y? (medium) | `packages/executor/dms_executor/warehouse_browse.py:19,122 - only the six DEMO_TABLES.`<br>`packages/executor/dms_executor/demo_warehouse.py:304-430 - each created with declared column types; no cast at read (warehouse_browse.py:130).` |  |
+| G4 typed ingest | yes(2/3) (medium) | `packages/executor/dms_executor/warehouse_browse.py:19,122 - only the six DEMO_TABLES.`<br>`packages/executor/dms_executor/demo_warehouse.py:304-430 - each created with declared column types; no cast at read (warehouse_browse.py:130).` |  |
 | G5 PII mask (envelope + record) | part (high) | `apps/api/dms_api/routes/mcp.py:143-147 - the unmasked preview is returned inside {ok, name, result}.`<br>`apps/api/dms_api/routes/library.py:276-280 - no mask on the underlying route.` | `preview-and-drill-rows-unmasked` |
 | G6 strict pin + served fields | n/a (high) | `apps/api/dms_api/routes/mcp.py:143-147 - returns {ok, name, result}, not an answer envelope.`<br>`packages/executor/dms_executor/warehouse_browse.py:1-17 - no model provider.` |  |
 | G7 Cortex submit (manifest + ledger) | **NO** (high) | `apps/api/dms_api/routes/mcp.py:143-145 -> library.py:276 -> warehouse_browse.py:127-137 - local DuckDB SELECT.`<br>`apps/api/dms_api/routes/mcp.py:121-126 - only an F5 compliance_gate; no submit or ledger append.` | `browse-and-chunk-routes-not-answer-paths` |
@@ -1272,7 +1273,7 @@ Hosted Cortex Insights ontology ranking pass-through for a question. Producer: p
 | G5 PII mask (envelope + record) | part (low) | `apps/api/dms_api/routes/insights.py:147 - Cortex payload returned through honest_envelope; no masker call`<br>`packages/cortex_client/cortex_client/insights.py:124-131 - honest_envelope only forces live_5000_ci=false` | `insights-routes-return-payload-unmasked` |
 | G6 strict pin + served fields | **NO** (low) | `apps/api/dms_api/routes/insights.py:147 - returns an Insights envelope via honest_envelope`<br>`packages/cortex_client/cortex_client/client.py:234-241 - GET with q only: no model, no strict stamp` | `insights-routes-bypass-dms-gates` |
 | G7 Cortex submit (manifest + ledger) | n/a (medium) | `apps/api/dms_api/routes/insights.py:147 - the route returns Cortex's ranking and no query result`<br>`tests/test_gen_path_climb.py:377-383 - ontology payload is metric ids only` |  |
-| G8 named abstain on failure | Y? (medium) | `apps/api/dms_api/routes/insights.py:139-141 - empty q returns HTTP 400`<br>`apps/api/dms_api/routes/insights.py:88-94,142-144 - Cortex missing returns REFUSE, values [], code cortex_unavailable (503)` |  |
+| G8 named abstain on failure | part(2/3) (medium) | `apps/api/dms_api/routes/insights.py:139-141 - empty q returns HTTP 400`<br>`apps/api/dms_api/routes/insights.py:88-94,142-144 - Cortex missing returns REFUSE, values [], code cortex_unavailable (503)` |  |
 
 Also on this path: apps/api/dms_api/routes/insights.py:137-150 - the route returns Cortex's body verbatim and does not strip 'values' (the ask lane does: cortex_client/compute.py:592-599). The notes call this PLAUSIBLE only. Confirmed at this commit that DMS code does not prevent it; the G7/G1/G3 N_A verdicts depend ...
 

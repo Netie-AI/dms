@@ -1,0 +1,322 @@
+{
+ "reviews": [
+  {
+   "id": "cache:session-turns",
+   "cells": [
+    {
+     "gate": "G5",
+     "verdict": "yes",
+     "evidence": [
+      "packages/executor/dms_executor/envelope.py:1626-1739 build_answer_envelope runs fail_closed_mask_payload on text/rows/values/sources/chart/sql_used, then mask_unknown_keys",
+      "packages/executor/dms_executor/__init__.py:508-510 live_ask applies mask_unknown_keys to the returned envelope; chat.py:270 and mcp.py:~118 return that result",
+      "packages/executor/dms_executor/session_followup.py:58-64 snapshot_turn keeps only float values and sql_used taken from the already-built (masked) envelope",
+      "packages/executor/dms_executor/__init__.py:237-247 _store_turn is the only write; in-memory dict at :193, never persisted or logged"
+     ],
+     "reasoning": "Envelope: every follow-up envelope (_abstain, _pack_compute, reserved_as_of_abstain) is made by build_answer_envelope, which masks text, rows, values, chart and sql_used, and live_ask re-scans remaining keys. Record: every lane that reaches _store_turn (verified, pack, refuse, bronze, generative, Cortex map_ask_response) builds its envelope through build_answer_envelope, so the snapshot (numeric values plus sql_used) is taken after masking; masked cells become tokens and are dropped by numeric_values. The cache is a process dict, no disk, no logging, no ledger/audit write on the follow-up lane. Residual (not masking): numerics stay numbers by masker policy, and the key has no user identity.",
+     "could_not_prove_yes": ""
+    },
+    {
+     "gate": "G2",
+     "verdict": "no",
+     "evidence": [
+      "packages/executor/dms_executor/session_followup.py:172-260 maybe_followup has no ontology, load_verified_ontology or Ontology.verify call; it inlines cached floats into constant SQL",
+      "packages/executor/dms_executor/session_followup.py:199,233,220,254 hardcodes average_myr / adjusted_myr aliases and RM in text for any prior values; badge L2_VALIDATED at :102",
+      "packages/executor/dms_executor/__init__.py:726 and :813 _store_turn stores bronze-lane and Cortex contract-ask figures; no Ontology.verify runs on those lanes",
+      "packages/executor/dms_executor/session_followup.py:58-64 snapshot keeps only values and sql_used; no lane, badge or verified flag"
+     ],
+     "reasoning": "The follow-up serves a computed figure (AVG over, or sum with N of, cached prior figures). No join is involved, but the aggregate and its unit (RM) are measure semantics invented outside any ontology; nothing on this path calls Ontology.verify or load_verified_ontology (only the generative lane does, generative_ask.py:1106). The cache is lane-agnostic: it is fed by the bronze lane (__init__.py:726) and the Cortex contract-ask lane (:813), whose figures were never verified against a DMS ontology, and the follow-up re-badges the result L2_VALIDATED. So N_A does not apply (it is a computed measure, not a plain single-table read) and YES cannot hold.",
+     "could_not_prove_yes": "No ontology verification at follow-up serving time, and the cache records no provenance, so unverified-lane figures (bronze, Cortex contract ask) can be averaged or added and served as L2_VALIDATED with a hardcoded RM unit."
+    }
+   ]
+  },
+  {
+   "id": "chat-ask:bronze-grant-abstain",
+   "cells": [
+    {
+     "gate": "G2",
+     "verdict": "n_a",
+     "evidence": [
+      "packages/executor/dms_executor/bronze_sheet_ask.py:78-105 builds the envelope with rows=[], values=[], sql_used=None, badge ABSTAIN; no ontology or measure is touched",
+      "packages/executor/dms_executor/envelope.py:1681 if abstained: zeroes values, rows, sources, chart, so no figure can survive on the abstain envelope",
+      "packages/executor/dms_executor/__init__.py:696-723 only calls table_is_granted from ontology.py:398, a name predicate, not Ontology.verify"
+     ],
+     "reasoning": "The branch under review returns a named refusal and serves no computed figure: no SQL runs, no SUM/AVG/COUNT, no join. build_answer_envelope force-clears values and rows for any abstained envelope, and the post-processing in live_ask (attach_cascade, stamp_engine_clock, with_served_attribution, mask_unknown_keys) adds no figures. Ontology.verify and load_verified_ontology are never consulted on this path, but nothing they govern is served, so the gate does not apply. If the cascade flag is on, attach_cascade adds coverage notes and landed-value samples, which are not measures.",
+     "could_not_prove_yes": "Not applicable. The adjacent granted-target branch (maybe_bronze_sheet_ask) runs local DuckDB SUM over TRY_CAST columns with no ontology. That is a different entry and was not judged here."
+    },
+    {
+     "gate": "G1",
+     "verdict": "partial",
+     "evidence": [
+      "packages/executor/dms_executor/__init__.py:689-723 no space_id gives ABSTAIN no_space; else active bronze for the Space intersected with granted must pass table_is_granted or ABSTAIN ungranted_table",
+      "packages/executor/dms_executor/__init__.py:297-328 grantable_tables calls intersect_space_grants; acl.py:82-110 gives empty grants for a non-member Space",
+      "apps/api/dms_api/routes/chat.py:241 unknown space_id gives 404 before live_ask; __init__.py:660-675 cascade reads readable tables BEFORE the bronze check",
+      "packages/executor/dms_executor/cca/cascade.py:91-95 DMS_CCA_CASCADE defaults 0; demo_grants.py:183-190 no-Space grants every Space's uploads"
+     ],
+     "reasoning": "The refusal logic itself is sound and uses shared grant code. An unknown Space gets 404, no Space gets no_space, and an ungranted or other-Space table gets ungranted_table. Registry failures and grant failures resolve to empty sets, so they fail closed. With the shipped default (cascade off), nothing reads tenant cell data before that check; the verified, pack and follow-up lanes miss without reading tenant tables. The gap is conditional. When DMS_CCA_CASCADE=1 the cascade runs before the bronze branch. With no space_id, grantable_tables(None) includes every upload from every Space, so requested grounded tables are read by scan_landed_columns first. attach_cascade then puts landed-value samples and coverage notes onto the no_space abstain envelope. So the no-Space fail-closed rule is not enforced before a data read in that configuration.",
+     "could_not_prove_yes": "Could not establish that no tenant cell data is read before the Space and grant decision in every deployable configuration. With DMS_CCA_CASCADE=1 and no space_id, a grounded upload from another Space is scanned before the no_space abstain, and its values can ride out on the abstain envelope. Default-off only."
+    },
+    {
+     "gate": "G8",
+     "verdict": "yes",
+     "evidence": [
+      "packages/executor/dms_executor/__init__.py:696-723 both refusals yield an envelope with badge ABSTAIN and reason no_space or ungranted_table with the target; bronze_sheet_ask.py:78-105",
+      "packages/executor/dms_executor/__init__.py:659-662 and demo_grants.py:99-120 grant or registry read errors are swallowed to empty sets, which still end in the named ungranted_table abstain",
+      "apps/api/dms_api/routes/chat.py:241-247,336-356 404 space_not_found, 403 gate reason, 503 live_ask_failed or 504 live_ask_timeout, demo fallback stamped with a banner and note",
+      "apps/api/dms_api/settings.py:43 dms_demo_fallback defaults False"
+     ],
+     "reasoning": "Every failure branch on the abstain path ends in a named outcome. The two lane refusals are ABSTAIN envelopes whose text and assumptions carry the reason code. Space-not-found is HTTP 404, a gate refusal is 403 with the reason, and any exception in live_ask is a 503 or 504 with a code. The only route to demo numbers is the opt-in DMS_DEMO_FALLBACK flag, and that stamps demo_fallback_banner plus a note. No branch returns a confident badge. Weaknesses that do not break the letter of the gate. A swallowed registry or grant read error is reported as ungranted_table, a misattributed reason. A soft gate (gate_unavailable) proceeds without comment, though the grant check still runs. The adjacent granted-but-lane-miss fall-through to other lanes belongs to a different entry.",
+     "could_not_prove_yes": ""
+    }
+   ]
+  },
+  {
+   "id": "chat-ask:generative-insights-sql",
+   "cells": [
+    {
+     "gate": "G3",
+     "verdict": "no",
+     "evidence": [
+      "packages/executor/dms_executor/generative_ask.py:637-663 validate_compiled_sql runs hostile regex, grant check on cited relations, EXPLAIN only; no join rule, no fanout",
+      "packages/executor/dms_executor/generative_ask.py:1235-1252 only violations_cited_by_sql, and only when declared is not None (caller ontology that failed verify)",
+      "packages/executor/dms_executor/generative_ask.py:1283-1297 validated model SQL goes straight to _submit_validated with no Ontology.compile",
+      "packages/executor/dms_executor/ontology.py:1060-1067 fanout_refused lives only in the compile path resolution, which this branch never calls",
+      "packages/executor/dms_executor/ontology.py:275-282 coverage_from_sql_path says query_sql is not slot-compiled and grain coverage is unknown",
+      "tests/test_a2_02_declared_ontology_refuses_sql.py:136-158 JOIN orders/customers SQL is served with no ontology and with a clean ontology, no join or fanout check"
+     ],
+     "reasoning": "The kind=sql branch takes Cortex Insights-written SELECT text verbatim. Its only pre-submit checks are reject_hostile_chat_sql (regex, SELECT head), the relation-grant check and an EXPLAIN. Multi-table SQL is therefore served with no Ontology._resolve_path call and no fanout_refused check. violations_cited_by_sql checks orphan-FK verify evidence, not cardinality, and only runs when a caller-declared ontology failed verify; with the default ontology it is skipped. The multi-grain pre-step only fires when the question names 2 or more grains, and it replaces the SQL rather than checking it. Typed-plan compile (which has the guard) is reached only on the climb, a different path. A one-to-many join can be served under L2_VALIDATED.",
+     "could_not_prove_yes": "No join-rule resolution or parent-uniqueness check runs on the Insights-written SQL anywhere between the route and the bytes returned. Cortex submit enforces manifest paths and statement type, not fan-out, and I found no DMS-side equivalent."
+    },
+    {
+     "gate": "G8",
+     "verdict": "partial",
+     "evidence": [
+      "packages/executor/dms_executor/generative_ask.py:1222-1297 sql branch: empty sql, reserved as_of, validate fail, declared-ontology violation each return ABSTAIN with a reason code in assumptions",
+      "packages/executor/dms_executor/generative_ask.py:818-862 submit exception, ok False or no output, ledger exception, missing entry id or hash each return a named ABSTAIN",
+      "packages/executor/dms_executor/envelope.py:1450-1460 hard rule 12 demotes only an empty row set (bare empty result), not a single aggregate row",
+      "packages/executor/dms_executor/envelope.py:1123 and 1668-1671 row_count values are skipped by invented_totals, so a one-row 0 or NULL aggregate passes",
+      "packages/cortex_client/cortex_client/qualifiers.py:335-341 named-filter check is a text match in the SQL, it never checks the value against stored encodings",
+      "apps/api/dms_api/routes/chat.py:213-330 404 space_not_found, 403, 503 cortex_unavailable, banner-stamped demo fallback, 504/503 live_ask_timeout/live_ask_failed are named",
+      "packages/executor/dms_executor/__init__.py:156-164 and 776-814 an Insights transport miss returns None and falls through to Cortex ask with no miss named"
+     ],
+     "reasoning": "Most branches are named. Every validate, submit, ledger and coverage failure returns an ABSTAIN envelope whose assumptions carry GEN-01 plus the reason code, and chat.py maps escapes to named HTTP codes or a banner-flagged demo fallback. Two gaps remain. (1) Zero-match filter: model-written SQL such as COUNT(*) or SUM over a filter whose value does not match the stored encoding executes and returns one row (0 or NULL). Rule 12 only demotes an empty row set, so this ships L2_VALIDATED; the qualifier check is textual and the SQL branch has no value-normalization check. (2) An Insights transport miss or exception is swallowed and the product ladder silently answers from Cortex ask, with no named reason on the envelope. This second gap is a planner miss, not the sql trigger, so it weighs less.",
+     "could_not_prove_yes": "Could not establish that a zero-match filter yielding a single aggregate row (COUNT=0 or SUM=NULL) abstains on this path; the code shows it keeps a confident badge. I also could not confirm how Cortex serialises a NULL aggregate row. Also could not prove the product-ladder fall-through after an Insights miss is named on the envelope."
+    }
+   ]
+  },
+  {
+   "id": "chat-ask:harness-exact-miss",
+   "cells": [
+    {
+     "gate": "G6",
+     "verdict": "partial",
+     "evidence": [
+      "packages/executor/dms_executor/__init__.py:642-650 exact ladder returns path_miss_envelope before the allow_gen compute seam and before cortex.ask, so no generate or model call is reachable",
+      "packages/executor/dms_executor/__init__.py:593-640 VQ, pack and planted-refuse steps only use local lookup plus Cortex submit and ledger append, no model call",
+      "packages/executor/dms_executor/__init__.py:495-510 live_ask stamps served_attribution from an empty seen list, so payload is None; generative_ask.py:216-224 maps that to none",
+      "tests/test_served_attr_01.py:475-487 the only none-over-HTTP test is a product-lane pre-gate abstain; no exact-lane served_attribution assertion exists",
+      "tests/test_gen03_contain_ask_path.py:347-363 exact lane test asserts abstain and Cortex untouched, never served_attribution",
+      "scripts/score_curated.py:2526 pin check envelope_mismatch (strict_pin.py:423-438) treats absent served fields as a mismatch on every lane"
+     ],
+     "reasoning": "Part (a) is not applicable: the exact ladder makes no model call (it exits at the exact branch before the Insights seam and the Cortex contract ask; VQ and pack steps only call submit and ledger). Part (b): the envelope does carry served_attribution none, stamped by the live_ask wrapper after the producer, and none is the truthful value for a lane with no model call. What I could not establish is a check for this lane. No test asserts served_attribution on an exact-lane envelope; the none test covers a different lane through the same shared wrapper; assert_envelope_valid never inspects served fields and the stamp is applied after the producer assertion; and the scorer pin check would flag a truthful none envelope as a pin mismatch rather than verify it. So the attribution is carried and truthful, but no lane-specific check exists.",
+     "could_not_prove_yes": "No test, runtime assertion or harness check verifies served_attribution on the ask_path=exact envelope; only the shared wrapper is covered through the product lane."
+    },
+    {
+     "gate": "G8",
+     "verdict": "partial",
+     "evidence": [
+      "apps/api/dms_api/routes/chat.py:227-238 and 241 refusals are named HTTP codes: 400 ask_path_not_allowed and 404 space_not_found",
+      "apps/api/dms_api/routes/chat.py:257-258 gate refusal is 403 with the reason, but the soft gate set at chat.py:23 lets gate_unavailable and gate_task_unknown fall through to the answer",
+      "apps/api/dms_api/routes/chat.py:277-355 GroundingRefused, AskServiceError and generic exceptions map to named codes; demo fallback only when enabled, stamped with banner",
+      "packages/executor/dms_executor/__init__.py:642-650 exact miss abstains with a free-text reason that is not a coded constant",
+      "packages/executor/dms_executor/gen_path_refuse.py:55-68 head token of that reason is not in GAP_REASONS, so customer text is the generic sentence; reason is only in assumptions",
+      "packages/executor/dms_executor/demo_pack.py:351-363 and verified_queries.py:349-360 failed submit or ledger returns None and falls into the same exact-match miss abstain"
+     ],
+     "reasoning": "The miss itself yields a non-confident ABSTAIN envelope (badge ABSTAIN, no rows or values), and the HTTP-level failures are named codes. But the reason is not a coded value: reason text is free-form, the rendered text is the generic sentence, and the reason appears only in assumptions. More importantly, a certified question whose Cortex submit raises (pack path swallows the exception), returns not-ok or no output, or whose ledger entry is missing or invalid (VQ and pack paths) is converted into the same abstain saying not a certified VQ/pack hit. That is a different failure reported under a wrong name, the misattribution class the route comments warn about. gate_unavailable also falls through to a possible confident hit.",
+     "could_not_prove_yes": "Execution or ledger failure on a certified hit is reported as a not-certified miss, with no distinct named reason code; the exact-miss reason is free text in assumptions and not a coded reason."
+    }
+   ]
+  },
+  {
+   "id": "chat-ask:planted-refuse",
+   "cells": [
+    {
+     "gate": "G8",
+     "verdict": "partial",
+     "evidence": [
+      "packages/executor/dms_executor/demo_pack.py:200-240 trap returns ABSTAIN, answer_id ans_uncertified_paraphrase, reason in assumptions, assert_envelope_valid",
+      "apps/api/dms_api/routes/chat.py:241-352 named 404, 403, 503, 504 codes and banner-stamped fallback; GroundingRefused 403",
+      "packages/cortex_client/cortex_client/gate.py:85 r.json() is outside the try at :66 that only catches httpx.HTTPError",
+      "apps/api/dms_api/routes/chat.py:243 compliance_gate called before any try block",
+      "apps/api/dms_api/app.py:135 the only exception handler is RequestValidationError, no catch-all",
+      "packages/executor/dms_executor/__init__.py:635-640 refuse returns on all ladders after VQ and pack miss"
+     ],
+     "reasoning": "The trap itself is a named ABSTAIN (stable answer_id, reason in assumptions and prose, envelope asserted valid) and returns even when Cortex is down. Most surrounding branches are named: harness 400, space 404, gate refusal 403, missing Cortex 503 or banner-stamped fallback, GroundingRefused 403, AskServiceError codes, other exceptions 503 or 504 live_ask_failed or live_ask_timeout (demo fallback is off by default). Not provable as YES: compliance_gate runs before any try in chat_ask and its r.json() sits outside the HTTPError handler, so a 200 with a non-JSON or non-object body raises uncaught and, with no catch-all handler, the caller gets an unnamed 500. The mcp.call gate has the same gap. The demo-mode branch and the demo_ask calls inside fallback handlers are also unguarded.",
+     "could_not_prove_yes": "Could not establish that every wrapper exception is named: gate.py:85 can raise JSONDecodeError or AttributeError on a malformed 200 gate reply before the ask runs, and no app-level handler converts it to a named code."
+    },
+    {
+     "gate": "G1",
+     "verdict": "n_a",
+     "evidence": [
+      "packages/executor/dms_executor/demo_pack.py:200-240 producer builds ABSTAIN from static text; rows, values, sql_used empty; no DB, grant or network call",
+      "packages/executor/dms_executor/__init__.py:635-640 trap returns before grantable_tables at :660 and with_grounded_scope at :688",
+      "packages/executor/dms_executor/session_followup.py:25-26 follow-up regexes match only average of them and add N, never a trap phrase",
+      "apps/api/dms_api/routes/chat.py:241 only an unknown space 404s; space_id None passes through; mcp.py:132 delegates to the same chat_ask",
+      "packages/executor/dms_executor/__init__.py:306-317 grantable_tables no-Space branch returns the demo set, so it does not fail closed"
+     ],
+     "reasoning": "The trap lane returns a canned string chosen by exact phrase match. It resolves no Space, applies no grant and reads no tenant row: rows, values and sql_used are empty. grantable_tables runs earlier only as an argument to the VQ and pack rungs on product and exact ladders (not at all on generative) and the refusal does not depend on it. Follow-up regexes and the static pack cannot match the three phrases. Reads before the refusal are metadata only (grant store, Space-keyed VQ registry, ingest watermark registry whose result is discarded because there are no sources). So N_A, not YES: no grant check protects this answer. Caveat: a steward-registered VQ for the exact phrase pre-empts the trap and then reads data under grantable_tables, whose no-Space branch fails open to the demo set; that belongs to the VQ lane cell.",
+     "could_not_prove_yes": "Not a yes: the refusal resolves no Space and checks no grant. N_A rests on the producer reading no tenant rows. Not established: whether a registered VQ for a trap phrase, which runs first, is acceptable (its grant handling is another lane)."
+    }
+   ]
+  },
+  {
+   "id": "chat-ask:space-refusal",
+   "cells": [
+    {
+     "gate": "G2",
+     "verdict": "n_a",
+     "evidence": [
+      "apps/api/dms_api/routes/chat.py:317-325 - branch returns _space_refusal_envelope: text only, ABSTAIN, no values, rows or sql_used",
+      "apps/api/dms_api/wiring.py:118-122 - build_validated_envelope wraps build_answer_envelope then assert_envelope_valid",
+      "packages/executor/dms_executor/envelope.py:1681-1687 - abstained envelope forces values, rows, sources, chart empty; line 1284 _ensure_values returns []"
+     ],
+     "reasoning": "The bytes the user receives on this path are the refusal envelope built at chat.py:153-181. It is ABSTAIN with no values, no rows, no sql_used and no chart, and the builder clears values, rows and sources whenever abstained is true. Any figure computed earlier in live_ask (VQ, pack, generative, cascade) is discarded because the AskServiceError unwinds the stack; no env from live_ask is returned on this branch, and live_ask post-processing is skipped. The only data-derived content is a table name lifted from the engine error text, which is not a measure or join. No join or measure semantics are served, so ontology verification does not apply.",
+     "could_not_prove_yes": ""
+    },
+    {
+     "gate": "G1",
+     "verdict": "yes",
+     "evidence": [
+      "apps/api/dms_api/routes/chat.py:240-241 - unknown space_id returns 404 space_not_found before compliance_gate (line 243) and before live_ask (line 270)",
+      "packages/executor/dms_executor/__init__.py:297-322 - grantable_tables for a Space calls intersect_space_grants (acl.py:82-110); non-member gives empty grants",
+      "packages/executor/dms_executor/__init__.py:598,618,660 - VQ, pack, cascade, bronze and generative lanes take grants from grantable_tables before reading",
+      "packages/executor/dms_executor/__init__.py:776-778 - demo_acl narrows manifest row_predicates to grantable; GroundingRefused at 364; bind_session raises path_not_allowed",
+      "apps/api/dms_api/routes/chat.py:296-325 - grounded_tables set gives 403 outside_grounded_scope; space_id set gives named ABSTAIN envelope"
+     ],
+     "reasoning": "On this path space_id must be set and grounded_tables empty. The Space is resolved first (404 if unknown). Every pre-Cortex lane then works from a set derived from grantable_tables via the shared intersect_space_grants: readable is grantable intersect demo tables, VQ and pack get the grantable set, bronze uses table_is_granted, and a failure at line 660 yields an empty set. The manifest is minted from the same demo_acl, so the engine refusal that raises path_not_allowed is the grant logic taking effect, and the branch renders it as a named ABSTAIN. Caveats: enforcement of the manifest is Cortex-side and not in this repo; the no-Space arm of the shared handler uses the whole demo set (personal context) but is a different branch since this entry requires space_id.",
+     "could_not_prove_yes": ""
+    }
+   ]
+  },
+  {
+   "id": "insights:get-ontology-ranking",
+   "cells": [
+    {
+     "gate": "G6",
+     "verdict": "no",
+     "evidence": [
+      "apps/api/dms_api/routes/insights.py:137-150 route returns the Cortex payload via honest_envelope; no served_attribution or served_* stamp",
+      "packages/executor/dms_executor/generative_ask.py:216-276 served_attribution is stamped only on ask envelopes (executor/__init__.py:489-506), not on this route",
+      "packages/cortex_client/cortex_client/insights.py:185-189 interpret runs on every JSON body but only the 503 pin_unavailable kind is acted on",
+      "packages/cortex_client/cortex_client/compute.py:685-700 and scripts/score_climb.md:87 describe this GET as a YAML ranking with no FreeRoute"
+     ],
+     "reasoning": "(a) DMS makes no model call on this path: the route calls CortexClient.insights_ontology, a plain GET with params q (client.py:234-241), no generate, no model, no strict header. DMS docs say the ranking is YAML with no FreeRoute, so (a) is not applicable. Because the verdict then rests on (b), and the route does return a JSON envelope (status, values, ontology), N_A is not available. (b) fails: the route stamps no served_attribution and no served_* fields, and nothing checks them. interpret() in _request returns a mismatch shot for any 200 without served fields and the code ignores it; envelope_mismatch is not called anywhere in apps or packages. No test asserts served_* on this route. The lane is probably model-free, so no unpinned serve is likely, but the envelope neither says none nor is checked.",
+     "could_not_prove_yes": "No served_attribution or served_* on the response and no runtime check of it. Also could not establish from this repo that Cortex makes no model call for GET /v1/insights/ontology; only DMS comments and docs say it is YAML ranking."
+    },
+    {
+     "gate": "G8",
+     "verdict": "partial",
+     "evidence": [
+      "apps/api/dms_api/routes/insights.py:138-150 empty q gives HTTP 400 (line 141); no client gives _closed code cortex_unavailable 503; InsightsError goes to _from_error",
+      "packages/cortex_client/cortex_client/insights.py:176-181, 203-208 transport error gives cortex_unavailable; non-JSON or non-dict body gives insights_unavailable, both via _closed (routes/insights.py:57-74)",
+      "routes/insights.py:77-79 JSON error body from Cortex is forwarded verbatim with Cortex's status; InsightsError.code (insights.py:201) is dropped",
+      "packages/cortex_client/cortex_client/insights.py:190-191 any 200 JSON dict is returned as is, with no check for empty, unsure, abstain or values"
+     ],
+     "reasoning": "Named branches: empty q is HTTP 400; missing client is REFUSE with code cortex_unavailable; transport failure is cortex_unavailable 503; non-JSON or non-dict reply is insights_unavailable 502 or 503; a 503 pin_unavailable becomes a named ABSTAIN (insights.py:187-189). No branch falls back to demo numbers. Not proven named: (1) a Cortex 4xx or 5xx with a JSON body is relayed verbatim under Cortex's own status (a Cortex 500 becomes a DMS 500); DMS adds no reason code, because _from_error uses the payload branch and discards the insights_refused or insights_http_error code. (2) Any 200 JSON dict, including an empty ranking, an unsure or abstain flag, or a REFUSE inside a 200, is passed through with no DMS check, and values are not stripped here although compute.py:592-599 strips them on the ask lane. (3) _request catches only httpx.HTTPError (line 176), so another exception type such as httpx.InvalidURL from a bad base URL would be an unhandled 500.",
+     "could_not_prove_yes": "Could not show that every Cortex error or empty or zero-candidate 200 reply carries a named reason code, since DMS forwards the body without inspecting it. Could not show that non-HTTPError exceptions in _request are handled. Cortex response shapes are not in this repo."
+    }
+   ]
+  },
+  {
+   "id": "mcp:preview",
+   "cells": [
+    {
+     "gate": "G6",
+     "verdict": "n_a",
+     "evidence": [
+      "apps/api/dms_api/routes/mcp.py:135-146 preview branch returns an ok/name/result wrapper around the preview dict; no model call, no envelope",
+      "apps/api/dms_api/routes/library.py:244-280 preview_wh_table returns table/columns/rows/row_count/limit/offset/note/scope only",
+      "packages/executor/dms_executor/warehouse_browse.py:114-145 plain DuckDB SELECT with COUNT and LIMIT/OFFSET",
+      "apps/api/dms_api/app.py:126-159 only CORS and identity-header middleware; no envelope or served_ wrapper"
+     ],
+     "reasoning": "The MCP preview tool is a thin wrap of the warehouse preview route. The only outbound call is the compliance_gate call-through to Cortex F5, which is not a model call. No pinned model is sent, so part (a) does not apply. The returned object is a table-preview dict inside an ok/name/result wrapper. It has no badge, abstained, sources, audit_id or served_* fields, and grep over mcp.py, library.py and warehouse_browse.py finds no envelope building or served attribution. Nothing in the app middleware adds one. It makes no model call and returns no answer envelope, so G6 is N_A by definition.",
+     "could_not_prove_yes": ""
+    },
+    {
+     "gate": "G4",
+     "verdict": "yes",
+     "evidence": [
+      "packages/executor/dms_executor/warehouse_browse.py:19,122 _ALLOWED = DEMO_TABLES; any other table raises ValueError before a read",
+      "packages/executor/dms_executor/demo_warehouse.py:183-190 DEMO_TABLES lists six tables; :264-290 ensure_demo_warehouse reseeds them on first use",
+      "packages/executor/dms_executor/demo_warehouse.py:292-440 _seed CREATE TABLE with DOUBLE, INTEGER, DATE, BOOLEAN, TIMESTAMP declared",
+      "packages/executor/dms_executor/warehouse_browse.py:125-133 SELECT COUNT and SELECT star with LIMIT/OFFSET; no CAST or re-inference"
+     ],
+     "reasoning": "The only tables this path can read are the six DEMO_TABLES, enforced twice: by the Space allowlist in preview_wh_table and by _ALLOWED in preview_warehouse_table. ensure_demo_warehouse drops and recreates them from DDL with declared persisted types (DOUBLE quantities and costs, INTEGER lead time, DATE audit and expiry, BOOLEAN flags, TIMESTAMP ts), so no all-VARCHAR bronze copy is reachable. The path does no question-time casting; it returns DuckDB native typed values straight from SELECT star. Caveat: these tables are a seeded fixture with declared DDL, not output of the infer_contract or classify_grid pipeline. The YES rests on the declared-types clause of the gate definition.",
+     "could_not_prove_yes": ""
+    }
+   ]
+  },
+  {
+   "id": "ui:check-accuracy",
+   "cells": [
+    {
+     "gate": "G2",
+     "verdict": "no",
+     "evidence": [
+      "apps/ui/src/lib/answerDelivery.ts:83-101 picks a column by name regex and sums it in the browser, no ontology input",
+      "packages/executor/dms_executor/ontology.py:183-190 additive flag is descriptive only; nothing consults it",
+      "packages/executor/dms_executor/ontology.py:2010,2029 non-additive measures (utilisation_pct, supplier_rank_score) exist",
+      "apps/ui/src/components/AnswerMessage.tsx:370-378 click calls checkAnswerTotals(envelope) only; no server call"
+     ],
+     "reasoning": "Clicking Check accuracy computes and displays a new figure (row sum, and a values[] sum) in the browser. The measure is a SUM over a column chosen by a name regex, so it is a measure with no ontology behind it: no load_verified_ontology, no Ontology.verify, no stored verified SQL, and the envelope type carries no additivity or ontology info the client could use. The ontology itself marks some measures non-additive (rates, scores), so summing them is meaningless and the check can print a red Mismatch or a false Match on an answer that is correct. Not N_A: the path does display a computed figure, and SUM over a column is a measure.",
+     "could_not_prove_yes": "No ontology verification of the summed measure exists anywhere on this client-side path."
+    },
+    {
+     "gate": "G5",
+     "verdict": "partial",
+     "evidence": [
+      "apps/ui/src/lib/answerDelivery.ts:68-150 builds the message string in the browser, no masker call",
+      "apps/ui/src/components/AnswerMessage.tsx:138,374,452-460 result is React useState, rendered only",
+      "packages/executor/dms_executor/envelope.py:1626,1739 inputs masked upstream by fail_closed_mask_payload and mask_unknown_keys",
+      "packages/core/dms_core/pii.py:890 masker leaves numeric aggregates as numbers; row keys are not masked",
+      "apps/api/dms_api/routes/chat.py:213 only server route; envelopes built via build_answer_envelope"
+     ],
+     "reasoning": "(b) record holds: the click makes no network call, writes no storage and logs nothing; the result lives only in component state, so no raw cell values are persisted by this path. (a) envelope is not proven: the Check accuracy message is composed in the browser after egress and never passes mask_payload, mask_envelope or any masker. It inherits masking only through its inputs: rows and values were masked by build_answer_envelope, and mask-token cells are non-numeric so numericKeys and toNum exclude them. The derived sum is a numeric aggregate the masker deliberately leaves as a number, and the message echoes an unmasked row key as the column name. That is inheritance, not a masker applied to this text, so exactly one of the two parts is established.",
+     "could_not_prove_yes": "The derived message text is never itself passed through a PII masker, and the masking of the input rows rests on other entry points, not on this path."
+    }
+   ]
+  },
+  {
+   "id": "ui:source-panel-contribution",
+   "cells": [
+    {
+     "gate": "G3",
+     "verdict": "n_a",
+     "evidence": [
+      "apps/ui/src/components/SourcePanel.tsx:43-47,122-125,153 sums row_count and contribution and formats them; renders no SQL and runs none",
+      "apps/ui/src/components/SourcePanel.tsx:55 only network call is postReveal (filesystem reveal), not a query",
+      "apps/ui/src/lib/sourcePanel.ts:3-23 regex reads FROM table names out of sql_used for card labels only",
+      "apps/ui/src/context/AppContext.tsx:337-347 envelope arrives only from postAsk; UI never builds or executes SQL"
+     ],
+     "reasoning": "This entry is a browser-side renderer of contributing_sources. It serves no SQL: the component has no execute or fetch-SQL call, and the figures it derives are client arithmetic over weights and row counts already on the envelope (sums, percent share, MYR formatting). Nothing in the path can serve multi-table SQL, so the join-rule and fan-out guard have nothing to guard here. The ask lanes that produce the envelope SQL are separate entry points and are not judged in this cell. Side note, not a G3 matter: the synthesized fallback cards take only the first FROM table, so a joined answer can display as 1 table.",
+     "could_not_prove_yes": "Not applicable; no SQL is served by this path. The upstream ask lanes that produce sql_used were not judged here."
+    },
+    {
+     "gate": "G5",
+     "verdict": "partial",
+     "evidence": [
+      "packages/executor/dms_executor/envelope.py:1626-1639 fail_closed_mask_payload masks sources, rows, values, chart, sql_used inside build_answer_envelope",
+      "packages/core/dms_core/pii.py:928 mask_payload walks every source dict string; pii.py:206 marks contributing_sources as handled so no later rescan",
+      "packages/executor/dms_executor/cca/cascade.py:474-479 attach_cascade appends outcome.sources() cards after masking; snippet is coverage_note (cascade.py:170)",
+      "packages/executor/dms_executor/cca/binder.py:177-205 coverage_note lists raw matched, absent and unmatched column values",
+      "packages/executor/dms_executor/__init__.py:725,761,801 attach_cascade on all lanes; :508-510 final mask_unknown_keys skips handled keys",
+      "packages/executor/dms_executor/cca/cascade.py:88-93 and STATUS.md:46 flag DMS_CCA_CASCADE ships OFF",
+      "packages/executor/dms_executor/session_followup.py:58-64 turn cache keeps numeric values and masked sql only; apps/ui/src/context/AppContext.tsx:191 only theme in localStorage"
+     ],
+     "reasoning": "(a) Envelope: the panel text (container, member, origin_uri, snippet, extracted_at) is masked on every normal path because all lanes build through build_answer_envelope, and the demo route at chat.py:253 also builds through it. The client-derived weights, shares and row totals are numeric aggregates, not personal data. Gap: when DMS_CCA_CASCADE=1 and the cascade engages with a drillthrough token, attach_cascade adds kind encoding cards after the masker. Their snippet holds raw column values, and neither build_answer_envelope nor the final live_ask scan revisits contributing_sources. Flag is OFF by default, but this is a reachable unmasked branch. (b) Record: the panel persists nothing (React state only); the session cache and ledger payloads hold no source cards; no logging of sources found. So (a) fails open in one case, (b) holds: PARTIAL.",
+     "could_not_prove_yes": "Could not establish that the cascade encoding cards (DMS_CCA_CASCADE=1) are masked before they reach the Sources panel; they are appended post-mask and the later rescan skips contributing_sources."
+    }
+   ]
+  }
+ ],
+ "failed": []
+}

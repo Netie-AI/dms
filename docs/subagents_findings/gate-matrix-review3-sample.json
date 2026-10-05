@@ -1,0 +1,49 @@
+{
+ "seed": 20261007,
+ "disputed": [
+  [
+   "cache:session-turns",
+   "G5"
+  ],
+  [
+   "chat-ask:planted-refuse",
+   "G8"
+  ],
+  [
+   "chat-ask:harness-exact-miss",
+   "G8"
+  ],
+  [
+   "chat-ask:bronze-grant-abstain",
+   "G1"
+  ],
+  [
+   "chat-ask:bronze-grant-abstain",
+   "G8"
+  ],
+  [
+   "chat-ask:generative-insights-sql",
+   "G8"
+  ],
+  [
+   "chat-ask:space-refusal",
+   "G1"
+  ],
+  [
+   "ui:check-accuracy",
+   "G5"
+  ],
+  [
+   "ui:source-panel-contribution",
+   "G5"
+  ],
+  [
+   "mcp:preview",
+   "G4"
+  ],
+  [
+   "insights:get-ontology-ranking",
+   "G8"
+  ]
+ ]
+}

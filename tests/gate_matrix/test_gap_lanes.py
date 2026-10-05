@@ -100,10 +100,16 @@ def _column_type_and_rows(harness: Any, table: str) -> tuple[str, list[str]]:
     con = duckdb.connect(str(harness.warehouse), read_only=True)
     try:
         kind = str(
-            next(r[1] for r in con.execute(f'DESCRIBE bronze."{ident}"').fetchall()
-                 if r[0] == "sales_value_myr")
+            next(
+                r[1]
+                for r in con.execute(f'DESCRIBE bronze."{ident}"').fetchall()
+                if r[0] == "sales_value_myr"
+            )
         )
-        cells = [str(r[0]) for r in con.execute(f'SELECT sales_value_myr FROM bronze."{ident}"').fetchall()]
+        cells = [
+            str(r[0])
+            for r in con.execute(f'SELECT sales_value_myr FROM bronze."{ident}"').fetchall()
+        ]
     finally:
         con.close()
     return kind, cells
@@ -152,7 +158,7 @@ def test_bronze_sheet_sum_does_not_silently_drop_an_unparseable_cell(harness) ->
     # CONTROL 1: the same sheet with every cell numeric is answered exactly, with
     # no dropped-row notice. This is the lane working, and it calibrates the
     # notice detector so it cannot match a clean answer.
-    clean_table = _ingest_sales(harness, "clean_sales.xlsx", _CLEAN_ROWS)
+    _ingest_sales(harness, "clean_sales.xlsx", _CLEAN_ROWS)
     s, clean = harness.ask(
         _TOP3.format(filename="clean_sales.xlsx"), space_id=FINANCE, session_id="ses_clean"
     )
@@ -172,15 +178,20 @@ def test_bronze_sheet_sum_does_not_silently_drop_an_unparseable_cell(harness) ->
     # CONTROL 2: the dirty copy really landed with the text cell, in a VARCHAR column.
     dirty_table = _ingest_sales(harness, "granted.xlsx", _DIRTY_ROWS)
     kind, cells = _column_type_and_rows(harness, dirty_table)
-    control(kind == "VARCHAR" and "RM 1200" in cells and len(cells) == len(_DIRTY_ROWS),
-            f"fixture premise: sales_value_myr is {kind}, cells {cells}")
+    control(
+        kind == "VARCHAR" and "RM 1200" in cells and len(cells) == len(_DIRTY_ROWS),
+        f"fixture premise: sales_value_myr is {kind}, cells {cells}",
+    )
 
     # The gap request. Same lane, same question shape, one unparseable cell.
     s, env = harness.ask(
         _TOP3.format(filename="granted.xlsx"), space_id=FINANCE, session_id="ses_dirty"
     )
     require_envelope(s, env)
-    control(env["route"] == "bronze_sheet" and env["rows"], f"bronze lane did not answer: {env['text']!r}")
+    control(
+        env["route"] == "bronze_sheet" and env["rows"],
+        f"bronze lane did not answer: {env['text']!r}",
+    )
 
     shown = _by_category(env).get("Electronics")
     # A correct gate does one of three things: abstains, includes the parsed
@@ -216,12 +227,16 @@ def test_bronze_sheet_l0_is_certified_through_a_cortex_submit_and_ledger_entry(h
     # submit, one ledger append, and an audit_id that is the ledger entry's id.
     s, pack = harness.ask(SPEND_BY_COUNTRY_Q, space_id=FINANCE, session_id="ses_pack")
     require_envelope(s, pack)
-    control(pack["badge"] == "L1_GOVERNED_METRIC" and pack["abstained"] is False and pack["rows"],
-            pack["text"])
+    control(
+        pack["badge"] == "L1_GOVERNED_METRIC" and pack["abstained"] is False and pack["rows"],
+        pack["text"],
+    )
     control(cx.submitted_sql() == [SPEND_BY_COUNTRY_SQL], f"pack submits: {cx.submitted_sql()}")
     control(cx.ledger_events() == ["ask.governed_metric"], f"pack ledger: {cx.ledger_events()}")
-    control(pack["audit_id"] == cx.ledger_entry_id,
-            f"pack audit_id {pack['audit_id']!r} != ledger entry {cx.ledger_entry_id!r}")
+    control(
+        pack["audit_id"] == cx.ledger_entry_id,
+        f"pack audit_id {pack['audit_id']!r} != ledger entry {cx.ledger_entry_id!r}",
+    )
     submits_before, appends_before = len(cx.sql_submits), len(cx.appends)
 
     # The gap request: a granted workbook sheet, all cells numeric, clean ingest.
@@ -230,7 +245,10 @@ def test_bronze_sheet_l0_is_certified_through_a_cortex_submit_and_ledger_entry(h
         _TOP3.format(filename="granted.xlsx"), space_id=FINANCE, session_id="ses_bronze"
     )
     require_envelope(s, env)
-    control(env["route"] == "bronze_sheet" and env["rows"], f"bronze lane did not answer: {env['text']!r}")
+    control(
+        env["route"] == "bronze_sheet" and env["rows"],
+        f"bronze lane did not answer: {env['text']!r}",
+    )
     control(_by_category(env) == _ORACLE_TOP3, f"bronze rows {_by_category(env)}")
 
     submitted = len(cx.sql_submits) - submits_before
@@ -287,14 +305,18 @@ def _revenue_by_warehouse(rows: list[dict[str, Any]]) -> dict[str, Any]:
     "new",
     "stored-sql-no-fanout-guard",
 )
-def test_steward_registered_fanout_join_is_not_served_as_a_certified_figure(harness, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_steward_registered_fanout_join_is_not_served_as_a_certified_figure(
+    harness, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
     from dms_executor.demo_warehouse import execute_sql
 
     _allow_studio_gate(monkeypatch)
     oracle = _revenue_by_warehouse(execute_sql(_ORACLE_SQL, path=harness.warehouse))
     fanned = _revenue_by_warehouse(execute_sql(_FANOUT_SQL, path=harness.warehouse))
     control(
-        len(oracle) == 5 and fanned["WH-A"] == 2 * oracle["WH-A"] and fanned["WH-C"] == oracle["WH-C"],
+        len(oracle) == 5
+        and fanned["WH-A"] == 2 * oracle["WH-A"]
+        and fanned["WH-C"] == oracle["WH-C"],
         f"fixture premise: the seed join should double WH-A only where inventory has two rows: "
         f"oracle={oracle} fanned={fanned}",
     )
@@ -302,33 +324,51 @@ def test_steward_registered_fanout_join_is_not_served_as_a_certified_figure(harn
     # CONTROL: a single-table VQ is accepted and served at L0 with the exact figures.
     reg = harness.client.post(
         _VQ_ROUTE,
-        json={"space_id": FINANCE, "question": "Revenue per warehouse from transactions only",
-              "sql": _ORACLE_SQL},
+        json={
+            "space_id": FINANCE,
+            "question": "Revenue per warehouse from transactions only",
+            "sql": _ORACLE_SQL,
+        },
     )
     control(reg.status_code == 200, f"single-table VQ registration: {reg.status_code} {reg.text}")
     s, ctl = harness.ask(
         "Revenue per warehouse from transactions only", space_id=FINANCE, session_id="ses_vq_ctl"
     )
     require_envelope(s, ctl)
-    control(ctl["route"] == "verified_query" and ctl["badge"] == "L0_CERTIFIED" and not ctl["abstained"],
-            f"single-table VQ not served: {ctl['badge']} {ctl['text']!r}")
-    control(_revenue_by_warehouse(ctl["rows"]) == oracle, f"control rows {ctl['rows']} != oracle {oracle}")
+    control(
+        ctl["route"] == "verified_query"
+        and ctl["badge"] == "L0_CERTIFIED"
+        and not ctl["abstained"],
+        f"single-table VQ not served: {ctl['badge']} {ctl['text']!r}",
+    )
+    control(
+        _revenue_by_warehouse(ctl["rows"]) == oracle,
+        f"control rows {ctl['rows']} != oracle {oracle}",
+    )
     control(f"location_id=WH-A, revenue_myr={oracle['WH-A']}" in ctl["text"], ctl["text"])
-    control(len(harness.cortex.sql_submits) == 1 and harness.cortex.ledger_events() == ["ask.verified_query"],
-            f"control submits={harness.cortex.submitted_sql()} ledger={harness.cortex.ledger_events()}")
+    control(
+        len(harness.cortex.sql_submits) == 1
+        and harness.cortex.ledger_events() == ["ask.verified_query"],
+        f"control submits={harness.cortex.submitted_sql()} ledger={harness.cortex.ledger_events()}",
+    )
 
     # The gap request: a steward registers a join that repeats parent rows.
     reg = harness.client.post(
         _VQ_ROUTE,
         json={"space_id": FINANCE, "question": "Revenue by warehouse", "sql": _FANOUT_SQL},
     )
-    control(reg.status_code < 500, f"registration errored rather than answering: {reg.status_code} {reg.text}")
+    control(
+        reg.status_code < 500,
+        f"registration errored rather than answering: {reg.status_code} {reg.text}",
+    )
     if reg.status_code in (400, 422):
         # A correct gate may refuse the asset when it is registered.
         assert reg.json().get("detail"), f"registration refused without a reason: {reg.text}"
         return
-    control(reg.status_code == 200 and reg.json().get("sql") == _FANOUT_SQL,
-            f"fan-out VQ registration: {reg.status_code} {reg.text}")
+    control(
+        reg.status_code == 200 and reg.json().get("sql") == _FANOUT_SQL,
+        f"fan-out VQ registration: {reg.status_code} {reg.text}",
+    )
 
     s, env = harness.ask("Revenue by warehouse", space_id=FINANCE, session_id="ses_vq_gap")
     require_envelope(s, env)
@@ -369,7 +409,9 @@ def _engine_answer(*, text: str, sql: str, rows: list[dict[str, Any]]) -> Any:
     "new",
     "rule12-aggregate-zero-row-green",
 )
-def test_zero_match_filter_that_returns_one_null_aggregate_row_is_not_a_confident_answer(harness) -> None:  # type: ignore[no-untyped-def]
+def test_zero_match_filter_that_returns_one_null_aggregate_row_is_not_a_confident_answer(
+    harness,
+) -> None:  # type: ignore[no-untyped-def]
     from dms_executor.demo_warehouse import execute_sql
 
     cx = harness.cortex
@@ -378,16 +420,26 @@ def test_zero_match_filter_that_returns_one_null_aggregate_row_is_not_a_confiden
     # returns on the seed. The seed stores 'SKU-BETA', so 'BETA' matches nothing
     # and the aggregate is one NULL row.
     control(execute_sql(_BETA_SQL, path=harness.warehouse) == [{"total": None}], "BETA premise")
-    control(execute_sql(_SKU_BETA_SQL, path=harness.warehouse) == [{"total": 900.0}], "SKU-BETA premise")
+    control(
+        execute_sql(_SKU_BETA_SQL, path=harness.warehouse) == [{"total": 900.0}], "SKU-BETA premise"
+    )
 
     # CONTROL 1: the exact value returns a real total at L2, with the figure shown.
     cx.ask_response = _engine_answer(
-        text="Total quantity of SKU-BETA in stock: 900.0 kg.", sql=_SKU_BETA_SQL, rows=[{"total": 900.0}]
+        text="Total quantity of SKU-BETA in stock: 900.0 kg.",
+        sql=_SKU_BETA_SQL,
+        rows=[{"total": 900.0}],
     )
     s, real = harness.ask(_SKU_BETA_Q, space_id=WAREHOUSE_OPS, session_id="ses_r12_real")
     require_envelope(s, real)
-    control(real["badge"] == "L2_VALIDATED" and real["abstained"] is False, f"{real['badge']} {real['text']!r}")
-    control(real["rows"] == [{"total": 900.0}] and "900.0" in real["text"], f"{real['rows']} {real['text']!r}")
+    control(
+        real["badge"] == "L2_VALIDATED" and real["abstained"] is False,
+        f"{real['badge']} {real['text']!r}",
+    )
+    control(
+        real["rows"] == [{"total": 900.0}] and "900.0" in real["text"],
+        f"{real['rows']} {real['text']!r}",
+    )
 
     # CONTROL 2: the same wrong-encoding filter with an EMPTY result already abstains,
     # naming the cause. This is the hard-rule-12 net doing its job.
@@ -396,8 +448,10 @@ def test_zero_match_filter_that_returns_one_null_aggregate_row_is_not_a_confiden
     )
     s, empty = harness.ask(_BETA_Q, space_id=WAREHOUSE_OPS, session_id="ses_r12_empty")
     require_envelope(s, empty)
-    control(empty["abstained"] is True and empty["badge"] == "ABSTAIN" and not empty["rows"],
-            f"{empty['badge']} {empty['text']!r}")
+    control(
+        empty["abstained"] is True and empty["badge"] == "ABSTAIN" and not empty["rows"],
+        f"{empty['badge']} {empty['text']!r}",
+    )
     control("No matching rows" in empty["text"], empty["text"])
 
     # The gap request: identical ask and SQL, but the aggregate returns one NULL row.

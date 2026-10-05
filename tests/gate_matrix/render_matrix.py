@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+# Generator for a markdown report: its prose strings become single markdown lines, so they are kept whole.
 """Render docs/subagents_findings/2026-10-05_gate-matrix-plan-e.md from the audit's JSON data.
 
 Not a test (no test_ prefix). Run from the repo root:
@@ -37,7 +39,13 @@ NAMES = {
     "G7": "Cortex submit (manifest + ledger)",
     "G8": "named abstain on failure",
 }
-TOK = {"yes": "yes", "disputed": "Y?", "yes_unreviewed": "yes(1x)", "partial": "part", "no": "**NO**", "n_a": "n/a"}
+TOK = {
+    "yes": "yes",
+    "split": "Y?",
+    "partial": "part",
+    "no": "**NO**",
+    "n_a": "n/a",
+}
 
 PRD_QUESTIONS = [
     "A-0007 closed the Space-less read on the Library routes, but the ask path still resolves a request with no `space_id` to every demo "
@@ -84,25 +92,48 @@ def main(out: str) -> None:
     tests = load("gate-matrix-tests.json")
     sample1 = load("gate-matrix-review-sample.json")
     reviewed: dict[tuple[str, str], str] = {}
+    third: dict[tuple[str, str], str] = {}
     review_files = sorted(glob.glob(str(D / "gate-matrix-review*.json")))
     for f in review_files:
-        if f.endswith("review-sample.json"):
-            continue
+        # Passes 1 and 2 re-trace every tracer yes; pass 3 (review3) is a tie-break on the
+        # cells where pass 1/2 disagreed with the tracer. Sample files carry no "reviews".
+        target = third if Path(f).name == "gate-matrix-review3.json" else reviewed
         for rv in json.loads(Path(f).read_text(encoding="utf-8")).get("reviews", []):
             for c in rv["cells"]:
-                reviewed[(rv["id"], c["gate"])] = c["verdict"]
+                target[(rv["id"], c["gate"])] = c["verdict"]
 
     nodes_file = D / "gate-matrix-nodes.txt"
-    live_nodes = set(nodes_file.read_text(encoding="utf-8").split()) if nodes_file.exists() else None
+    live_nodes = (
+        set(nodes_file.read_text(encoding="utf-8").split()) if nodes_file.exists() else None
+    )
 
-    def status(rid: str, g: str) -> str:
+    def final(rid: str, g: str) -> tuple[str, str]:
+        """(verdict, marker). A tracer yes stands if the blind reviewer agreed; if not, a third
+        blind reviewer breaks the tie and the majority of three decides. Three different
+        verdicts stay `split`. Non-yes tracer cells keep their verdict (decoys are only compared)."""
         v = rows[rid]["cells"][g]["verdict"]
         if v != "yes":
-            return v
+            return v, ""
         r = reviewed.get((rid, g))
         if r is None:
-            return "yes_unreviewed"
-        return "yes" if r == "yes" else "disputed"
+            return "yes", "(1x)"
+        if r == "yes":
+            return "yes", ""
+        t = third.get((rid, g))
+        if t is None:
+            return "split", ""
+        if t == "yes":
+            return "yes", "(2/3)"
+        if t == r:
+            return r, "(2/3)"
+        return "split", ""
+
+    def status(rid: str, g: str) -> str:
+        return final(rid, g)[0]
+
+    def token(rid: str, g: str) -> str:
+        v, m = final(rid, g)
+        return TOK[v] + m
 
     cell_gap: dict[str, str] = {}
     for gp in gaps["gaps"]:
@@ -121,31 +152,53 @@ def main(out: str) -> None:
 
     w("# Gate matrix - does every answer path pass every gate?")
     w("")
-    w("Plan E, a read-only audit of `netie/dms` at `7a8d6c1` (origin/main on 2026-10-05, BRONZE-GRANT-01 #333 and "
-      "BRONZE-WAREHOUSE-01 #335 merged). **Generated** by `tests/gate_matrix/render_matrix.py` from the JSON beside it; "
-      "do not hand-edit. Feedback for the PRD, not a fix and not a ticket: no product code was changed.")
+    w(
+        "Plan E, a read-only audit of `netie/dms` at `7a8d6c1` (origin/main on 2026-10-05, BRONZE-GRANT-01 #333 and "
+        "BRONZE-WAREHOUSE-01 #335 merged). **Generated** by `tests/gate_matrix/render_matrix.py` from the JSON beside it; "
+        "do not hand-edit. Feedback for the PRD, not a fix and not a ticket: no product code was changed."
+    )
     w("")
     w("## Read this first")
     w("")
     w("- **No entry point passes all 8 gates.** This describes the code, not an accuracy figure.")
-    w("- **The gate definitions are strict and mine.** Part of the partial/no count comes from the definition "
-      "(for example G6 asks for a serving-time check of served fields, which exists only in the offline scorer). "
-      "Class `bypass` in the gap table is the provable set: a request on default or documented config that a test shows.")
-    w("- **A tracer's yes counts only if a blind reviewer agreed.** Cells where they differ are shown `Y?` and treated as not passing.")
-    w("- **Everything is from reading code at one commit, plus the tests.** No live lane, no real model, no Cortex "
-      "enforcement was exercised. Test fakes stand in for Cortex.")
+    w(
+        "- **The gate definitions are strict and mine.** Part of the partial/no count comes from the definition "
+        "(for example G6 asks for a serving-time check of served fields, which exists only in the offline scorer). "
+        "Class `bypass` in the gap table is the provable set: a request on default or documented config that a test shows."
+    )
+    w(
+        "- **A tracer's yes counts only if a blind reviewer agreed.** A disagreement went to a third blind reviewer and the majority of three decides; `Y?` is a three-way split, treated as not passing."
+    )
+    w(
+        "- **Everything is from reading code at one commit, plus the tests.** No live lane, no real model, no Cortex "
+        "enforcement was exercised. Test fakes stand in for Cortex."
+    )
     w("")
     w("## Outcome counts")
     w("")
-    w(f"- Entry points n = {len(order)} (two blind enumerators found 43 and 39, a critic merged them and added 3). All {len(rows)} traced.")
-    w(f"- Cells n = {n_cells} = {len(order)} x 8: yes confirmed {st['yes']}, yes disputed by review {st['disputed']}, "
-      f"yes unreviewed {st['yes_unreviewed']}, partial {st['partial']}, no {st['no']}, n/a {st['n_a']}.")
+    w(
+        f"- Entry points n = {len(order)} (two blind enumerators found 43 and 39, a critic merged them and added 3). All {len(rows)} traced."
+    )
+    kept = sum(1 for r in order for g in GATES if final(r, g) == ("yes", "(2/3)"))
+    lowered = sum(
+        1
+        for r in order
+        for g in GATES
+        if rows[r]["cells"][g]["verdict"] == "yes" and final(r, g)[0] not in ("yes", "split")
+    )
+    w(
+        f"- Cells n = {n_cells} = {len(order)} x 8: yes {st['yes']} (of which {kept} survived only on a 2-of-3 "
+        f"tie-break), unresolved split {st['split']}, partial {st['partial']}, no {st['no']}, n/a {st['n_a']}. "
+        f"{lowered} tracer yes cells were lowered by the review and are counted under their new verdict."
+    )
     w("")
-    w("| Gate | yes (confirmed) | Y? (disputed) | partial | no | n/a |")
+    w("| Gate | yes | Y? (split) | partial | no | n/a |")
     w("|---|---|---|---|---|---|")
     for g in GATES:
         c = Counter(status(r, g) for r in order)
-        w(f"| {g} {NAMES[g]} | {c['yes'] + c['yes_unreviewed']} | {c['disputed']} | {c['partial']} | {c['no']} | {c['n_a']} |")
+        w(
+            f"| {g} {NAMES[g]} | {c['yes']} | {c['split']} | {c['partial']} | {c['no']} | {c['n_a']} |"
+        )
     w("")
 
     # review summary
@@ -164,41 +217,70 @@ def main(out: str) -> None:
             d_ok += rv == orig
     w("## Independent review of the yes cells")
     w("")
-    w(f"- Every tracer yes was re-traced blind (the reviewer saw no earlier verdict or evidence, and each reviewer also "
-      f"judged unlabeled non-yes cells from the same row). Pass 1 was a seeded 30% sample (seed {sample1['seed']}, "
-      f"{len(s1)} of {sample1['n_yes']} yes cells). Pass 2 covered the remaining yes cells.")
-    w(f"- Yes cells re-judged: n = {y_n} of {sample1['n_yes']}. Reviewer agreed {y_ok}, overturned {y_n - y_ok}. "
-      f"Agreement {y_ok}/{y_n}.")
+    w(
+        f"- Every tracer yes was re-traced blind (the reviewer saw no earlier verdict or evidence, and each reviewer also "
+        f"judged unlabeled non-yes cells from the same row). Pass 1 was a seeded 30% sample (seed {sample1['seed']}, "
+        f"{len(s1)} of {sample1['n_yes']} yes cells). Pass 2 covered the remaining yes cells."
+    )
+    w(
+        f"- Yes cells re-judged: n = {y_n} of {sample1['n_yes']}. Reviewer agreed {y_ok}, overturned {y_n - y_ok}. "
+        f"Agreement {y_ok}/{y_n}."
+    )
     w(f"- Unlabeled non-yes cells: n = {d_n}, reviewer reached the same verdict on {d_ok}.")
     w("- Overturned (tracer said yes): " + "; ".join(sorted(over)) + ".")
-    w(f"- Reviewers agreed with {y_ok} of {y_n} tracer yes cells ({100 * y_ok // y_n}%) but with {d_ok} of {d_n} "
-      f"non-yes cells ({100 * d_ok // d_n}%). A tracer yes is therefore weaker evidence than a tracer partial or no: "
-      "false passes were the common mistake. These are two model reviews of the same code, not a measured error rate; "
-      "the 11 overturned cells have not had a third opinion.")
+    w(
+        f"- Reviewers agreed with {y_ok} of {y_n} tracer yes cells ({100 * y_ok // y_n}%) but with {d_ok} of {d_n} "
+        f"non-yes cells ({100 * d_ok // d_n}%). A tracer yes is therefore weaker evidence than a tracer partial or no: "
+        "false passes were the common mistake. These are model reviews of the same code, not a measured error rate."
+    )
+    disputed = [
+        (rid, g)
+        for (rid, g), rv in reviewed.items()
+        if rows[rid]["cells"][g]["verdict"] == "yes" and rv != "yes"
+    ]
+    outcomes = Counter(
+        "pending"
+        if (k not in third)
+        else (
+            "kept yes"
+            if third[k] == "yes"
+            else ("lowered (2 of 3)" if third[k] == reviewed[k] else "three-way split")
+        )
+        for k in disputed
+    )
+    w(
+        f"- Tie-break: the {len(disputed)} overturned cells went to a third blind reviewer (seed 20261007 chose one unlabeled decoy gate per row). "
+        + ", ".join(f"{v} {k}" for k, v in sorted(outcomes.items()))
+        + ". The majority of three decides; see the matrix for each cell."
+    )
     w("")
 
     w("## Matrix")
     w("")
-    w("`yes` = tracer and blind reviewer agree. `Y?` = tracer said yes, reviewer disagreed (not counted as passing). "
-      "`part` = partial. `**NO**` = gate absent on that path. `n/a` = gate cannot apply (reason cited in the section below). "
-      "Each row links to its cited cells.")
+    w(
+        "`yes` = tracer and blind reviewer agree; `(2/3)` = kept or lowered by a 2-of-3 tie-break. `Y?` = three different verdicts (not counted as passing). "
+        "`part` = partial. `**NO**` = gate absent on that path. `n/a` = gate cannot apply (reason cited in the section below). "
+        "Each row links to its cited cells."
+    )
     w("")
     w("| Entry point | " + " | ".join(GATES) + " |")
     w("|---|" + "---|" * 8)
     for rid in order:
-        w(f"| [`{rid}`](#{anchor(rid)}) | " + " | ".join(TOK[status(rid, g)] for g in GATES) + " |")
+        w(f"| [`{rid}`](#{anchor(rid)}) | " + " | ".join(token(rid, g) for g in GATES) + " |")
     w("")
 
     w("## Gaps and their tests")
     w("")
     cls = Counter(gp["class"] for gp in gaps["gaps"])
-    w(f"The {gaps['coverage']['no_cells'] + gaps['coverage']['partial_cells']} no/partial cells reduce to "
-      f"{len(gaps['gaps'])} root-cause gaps ({', '.join(f'{k} {v}' for k, v in cls.items())}), 0 unassigned. "
-      "`bypass` = a request can show it; `systemic` = the gate exists only in the offline scorer or the definition is "
-      "stricter than the design; `dormant` = needs a non-default flag or is dead code. Tests are in "
-      "`tests/gate_matrix/` as strict xfails: the gap assertion failing is an expected failure, a fixed gap becomes a loud "
-      "XPASS, anything else is a hard failure. Run `python -m pytest tests/gate_matrix -p no:cacheprovider --runxfail` "
-      "to see the real failures.")
+    w(
+        f"The {gaps['coverage']['no_cells'] + gaps['coverage']['partial_cells']} no/partial cells reduce to "
+        f"{len(gaps['gaps'])} root-cause gaps ({', '.join(f'{k} {v}' for k, v in cls.items())}), 0 unassigned. "
+        "`bypass` = a request can show it; `systemic` = the gate exists only in the offline scorer or the definition is "
+        "stricter than the design; `dormant` = needs a non-default flag or is dead code. Tests are in "
+        "`tests/gate_matrix/` as strict xfails: the gap assertion failing is an expected failure, a fixed gap becomes a loud "
+        "XPASS, anything else is a hard failure. Run `python -m pytest tests/gate_matrix -p no:cacheprovider --runxfail` "
+        "to see the real failures."
+    )
     w("")
     w("| Gap | Class | Tracked by | Cells | Test result | Severity hint |")
     w("|---|---|---|---|---|---|")
@@ -213,8 +295,14 @@ def main(out: str) -> None:
             if str(gp.get("testable_in_process")).lower() == "false":
                 res = "unproven, no in-process test: " + esc(gp.get("testable_note"), 70)
             else:
-                res = "no test written (class " + gp["class"] + ", no runtime trigger a request can show)"
-        w(f"| `{gp['gap_id']}` | {gp['class']} | {esc(gp['tracked_by'], 60)} | {len(gp['cells'])} | {res} | {esc(gp.get('severity_hint'), 90)} |")
+                res = (
+                    "no test written (class "
+                    + gp["class"]
+                    + ", no runtime trigger a request can show)"
+                )
+        w(
+            f"| `{gp['gap_id']}` | {gp['class']} | {esc(gp['tracked_by'], 60)} | {len(gp['cells'])} | {res} | {esc(gp.get('severity_hint'), 90)} |"
+        )
     w("")
     w("### Bypass gaps in detail")
     w("")
@@ -234,8 +322,10 @@ def main(out: str) -> None:
 
     w("## Entry points, cell by cell")
     w("")
-    w("Each line: gate, status, the first two citations (`path:line`), and the gap it belongs to. Full evidence, "
-      "reasoning and bypass scenarios for every cell are in `gate-matrix-trace.json`.")
+    w(
+        "Each line: gate, status, the first two citations (`path:line`), and the gap it belongs to. Full evidence, "
+        "reasoning and bypass scenarios for every cell are in `gate-matrix-trace.json`."
+    )
     w("")
     for rid in order:
         e = eps[rid]
@@ -243,7 +333,9 @@ def main(out: str) -> None:
         w(f'<a id="{anchor(rid)}"></a>')
         w(f"### `{rid}`")
         w("")
-        w(f"{esc(e['name'])}. Producer: {esc(e['producer'], 200)}. Reachable: {esc(r['reachable'], 220)}")
+        w(
+            f"{esc(e['name'])}. Producer: {esc(e['producer'], 200)}. Reachable: {esc(r['reachable'], 220)}"
+        )
         w("")
         w("| Gate | Status | Citations | Gap |")
         w("|---|---|---|---|")
@@ -251,7 +343,9 @@ def main(out: str) -> None:
             c = r["cells"][g]
             cites = "<br>".join(f"`{esc(x, 150)}`" for x in c["evidence"][:2])
             gp = cell_gap.get(f"{rid} {g}", "")
-            w(f"| {g} {NAMES[g]} | {TOK[status(rid, g)]} ({c['confidence']}) | {cites} | {('`' + gp + '`') if gp else ''} |")
+            w(
+                f"| {g} {NAMES[g]} | {token(rid, g)} ({c['confidence']}) | {cites} | {('`' + gp + '`') if gp else ''} |"
+            )
         for f in r.get("other_findings", [])[:3]:
             w("")
             w(f"Also on this path: {esc(f, 300)}")
@@ -264,15 +358,21 @@ def main(out: str) -> None:
     w("")
     w("### Related open work, not touched here")
     w("")
-    w("- #338 (draft, another session) is a different audit, Plan C: 338 adversarial SQL cases through the gate with strict-xfail "
-      "tests in `tests/redteam/`. Its findings and this matrix overlap on L2 SQL (fan-out, zero-row); no file overlaps.")
-    w("- #331 GRANT-READ-02 would close part of `ungranted-tick-dropped-not-refused`; #336 SERVING-PRECHECK-01 and #337 "
-      "PIN-NOMODEL-01 touch the scorer side of G6. None is on main, so none turns a cell into yes here.")
+    w(
+        "- #338 (draft, another session) is a different audit, Plan C: 338 adversarial SQL cases through the gate with strict-xfail "
+        "tests in `tests/redteam/`. Its findings and this matrix overlap on L2 SQL (fan-out, zero-row); no file overlaps."
+    )
+    w(
+        "- #331 GRANT-READ-02 would close part of `ungranted-tick-dropped-not-refused`; #336 SERVING-PRECHECK-01 and #337 "
+        "PIN-NOMODEL-01 touch the scorer side of G6. None is on main, so none turns a cell into yes here."
+    )
     w("")
     w("## Tracer contradictions to re-check")
     w("")
     for i, c in enumerate(gaps["contradictions"], 1):
-        w(f"{i}. {esc(c['disagreement'], 500)} (cells: {esc(', '.join(c['cells']), 200)}; shared code: {esc(c['shared_code'], 160)})")
+        w(
+            f"{i}. {esc(c['disagreement'], 500)} (cells: {esc(', '.join(c['cells']), 200)}; shared code: {esc(c['shared_code'], 160)})"
+        )
     w("")
     w("## Off-matrix findings from the tracers")
     w("")
@@ -280,7 +380,9 @@ def main(out: str) -> None:
         w(f"- {esc(n, 600)}")
     w("")
     Path(out).write_text("\n".join(L) + "\n", encoding="utf-8", newline="\n")
-    print(f"wrote {out}: {len(rows)} rows, {n_cells} cells, {dict(st)}; review yes {y_ok}/{y_n}; decoys {d_ok}/{d_n}")
+    print(
+        f"wrote {out}: {len(rows)} rows, {n_cells} cells, {dict(st)}; review yes {y_ok}/{y_n}; decoys {d_ok}/{d_n}"
+    )
 
 
 if __name__ == "__main__":

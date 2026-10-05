@@ -27,10 +27,9 @@ sys.path.insert(0, str(HERE))
 
 from _harness import (  # noqa: E402
     FINANCE,
+    HOSTILE_CELLS,
     WAREHOUSE_OPS,
     ControlFailed,
-    HOSTILE_CELLS,
-    RecordingCortex,
     assert_envelope,
     control,
     csv_bytes,
@@ -268,7 +267,7 @@ def test_gap_applies_marker_and_strict_assertion_only_xfail() -> None:
     assert "GM-SELF" in marks["xfail"].kwargs["reason"]
 
 
-_INNER = '''
+_INNER = """
 import sys
 sys.path.insert(0, {harness_dir!r})
 from _harness import control, gap
@@ -298,10 +297,10 @@ def test_failing_control_is_a_failure():
 @gap("R-0", "G", "new", "INNER-5")
 def test_a_gap_that_closed_is_loud():
     assert True
-'''
+"""
 
 #: The same mechanics on the real harness: the shape every gap test takes.
-_INNER_REAL = '''
+_INNER_REAL = """
 from _harness import FINANCE, WAREHOUSE_OPS, assert_envelope, control, gap, require_envelope
 from dms_executor.demo_pack import SPEND_BY_COUNTRY_Q
 
@@ -333,7 +332,7 @@ def test_broken_control_is_a_failure(harness_factory):
     h = harness_factory(submit_ok=False)
     _control_pack_answers(h)
     assert h.cortex.sql_submits == []
-'''
+"""
 
 
 def _outcomes(report: Path) -> dict[str, tuple[str, str]]:
@@ -361,8 +360,19 @@ def _run_inner(
     (inner / "test_inner.py").write_text(source.format(harness_dir=str(HERE)), encoding="utf-8")
     report = tmp_path / "inner.xml"
     env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
-    cmd = [sys.executable, "-m", "pytest", str(inner), "-q", "-p", "no:cacheprovider",
-           "-o", "junit_family=xunit2", f"--junitxml={report}", "-rxXf"]
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        str(inner),
+        "-q",
+        "-p",
+        "no:cacheprovider",
+        "-o",
+        "junit_family=xunit2",
+        f"--junitxml={report}",
+        "-rxXf",
+    ]
     if real_harness:
         # The repo's pythonpath config, the real conftest fixtures and harness.
         for name in ("conftest.py", "_harness.py"):

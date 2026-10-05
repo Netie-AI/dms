@@ -202,7 +202,8 @@ def test_crosscheck_text_flags_and_costs_do_not_answer_ok_without_a_named_reason
     shown = {k: v for k, v in body.items() if k != "strengthened_pack"}
     assert refused or oracle_names_reason or top_level_reason_names_it, (
         "crosscheck answered ok:true / reason 'live' with source_oracle null for a workbook "
-        f"where every row was dropped by coercion, and named no reason: {json.dumps(shown, default=str)}"
+        f"where every row was dropped by coercion, and named no reason: "
+        f"{json.dumps(shown, default=str)}"
     )
 
 
@@ -257,9 +258,7 @@ def test_golden_zero_average_is_not_replaced_by_the_nearest_cell(harness, tmp_pa
     # 300.27 chart cell is sitting in the sheet. The labeled figure wins when it is truthy.
     status, body = golden(wrong)
     control(status == 200 and body.get("ok") is False, f"{status} {body}")
-    control(
-        body.get("reason") == "golden_miss" and "avg_cost" in str(body.get("error")), f"{body}"
-    )
+    control(body.get("reason") == "golden_miss" and "avg_cost" in str(body.get("error")), f"{body}")
     control(body.get("avg_cost") == 12.34, f"{body}")
 
     # GAP REQUEST: identical workbook, labeled average 0.
@@ -373,7 +372,9 @@ def test_one_space_cannot_read_or_copy_another_spaces_stored_workbook(
     if FINANCE_ONLY_LABEL in json.dumps(go_body, default=str).lower():
         leaks.append("golden returned FINANCE's Analysis labels to a WAREHOUSE_OPS request")
     if go_body.get("reason") in ("frtr_golden", "golden_miss"):
-        leaks.append(f"golden graded FINANCE's workbook for WAREHOUSE_OPS ({go_body.get('reason')})")
+        leaks.append(
+            f"golden graded FINANCE's workbook for WAREHOUSE_OPS ({go_body.get('reason')})"
+        )
     assert not leaks, (
         f"cross-Space read: extract -> HTTP {ex_status} ok={ex_body.get('ok')!r}; "
         f"golden -> HTTP {go_status} reason={go_body.get('reason')!r}; " + "; ".join(leaks)
@@ -436,7 +437,9 @@ def test_workbook_labels_and_headers_are_masked_in_the_response(harness, tmp_pat
     # CONTROL 1: the repo masker recognises this IC, so "not masked" is the route's omission,
     # not an undetectable pattern.
     masked = mask_payload(text=f"IC {IC}")
-    control(IC not in masked["text"] and "DMSMASK_" in masked["text"], f"masker: {masked['text']!r}")
+    control(
+        IC not in masked["text"] and "DMSMASK_" in masked["text"], f"masker: {masked['text']!r}"
+    )
 
     # CONTROL 2: the figures themselves come back correct and numeric on every route.
     ex_status, ex_body = _post(client, EXTRACT, extract_body)

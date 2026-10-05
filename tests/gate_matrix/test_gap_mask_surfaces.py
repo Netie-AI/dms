@@ -98,7 +98,9 @@ def _ask_masks_these_rows(
         grounded_tables=grounded_tables,
     )
     require_envelope(status, env)
-    control(env["abstained"] is False and env["rows"], f"ask did not return rows: {env.get('text')}")
+    control(
+        env["abstained"] is False and env["rows"], f"ask did not return rows: {env.get('text')}"
+    )
     control(not _leaked(env), f"the ASK path leaked raw values: {_leaked(env)}")
     cells = [str(v) for r in env["rows"] for v in r.values()]
     control(any("DMSMASK_" in c for c in cells), f"ask rows carry no mask token: {env['rows']}")
@@ -188,7 +190,9 @@ def test_library_and_mcp_previews_return_personal_values_raw(harness_factory) ->
         "/v1/mcp/call",
         json={"name": "preview", "arguments": {"table": "suppliers", "space_id": FINANCE}},
     )
-    control(bronze.status_code == 200, f"bronze preview HTTP {bronze.status_code}: {bronze.text[:200]}")
+    control(
+        bronze.status_code == 200, f"bronze preview HTTP {bronze.status_code}: {bronze.text[:200]}"
+    )
     control(warehouse.status_code == 200, f"warehouse preview HTTP {warehouse.status_code}")
     control(mcp.status_code == 200, f"mcp preview HTTP {mcp.status_code}: {mcp.text[:200]}")
     bronze_body, warehouse_body, mcp_body = bronze.json(), warehouse.json(), mcp.json()
@@ -305,7 +309,8 @@ def test_insights_routes_return_cortex_payload_unmasked(harness) -> None:  # typ
     r = harness.client.post("/v1/insights", json={"intent": "how many skus", "space_id": FINANCE})
     control(r.status_code == 200, f"insights HTTP {r.status_code}: {r.text[:200]}")
     control(
-        r.json().get("values") == [{"sku_count": 12}] and r.json().get("answer") == "There are 12 skus.",
+        r.json().get("values") == [{"sku_count": 12}]
+        and r.json().get("answer") == "There are 12 skus.",
         f"clean payload was altered: {r.json()}",
     )
 
@@ -329,8 +334,14 @@ def test_insights_routes_return_cortex_payload_unmasked(harness) -> None:  # typ
         json={"intent": "list customer emails", "generate": True, "space_id": FINANCE},
     )
     get_ontology = harness.client.get("/v1/insights/ontology", params={"q": "list customer emails"})
-    for name, resp in (("post-ask", post_ask), ("post-generate", post_generate), ("ontology", get_ontology)):
-        control(resp.status_code == 200, f"insights {name} HTTP {resp.status_code}: {resp.text[:200]}")
+    for name, resp in (
+        ("post-ask", post_ask),
+        ("post-generate", post_generate),
+        ("ontology", get_ontology),
+    ):
+        control(
+            resp.status_code == 200, f"insights {name} HTTP {resp.status_code}: {resp.text[:200]}"
+        )
         control(isinstance(resp.json(), dict), f"insights {name} body: {resp.text[:200]}")
 
     # THE GAP: a correct gate masks the payload before it leaves DMS.
@@ -369,7 +380,11 @@ def _drill_client(harness: Harness, mode: dict[str, str], seen: list[httpx.Reque
             return httpx.Response(
                 200,
                 json=_contract_drill_body(
-                    [{"sku": "A", "amount": 1}, {"sku": "B", "amount": 2}, {"sku": "C", "amount": 3}],
+                    [
+                        {"sku": "A", "amount": 1},
+                        {"sku": "B", "amount": 2},
+                        {"sku": "C", "amount": 3},
+                    ],
                     approximate=True,
                     total_count=84201,
                 ),
@@ -397,7 +412,9 @@ def test_drillthrough_cortex_422_is_an_empty_success_not_a_named_failure(harness
 
     # CONTROL a: a 200 returns the rows.
     ok = harness.client.post("/v1/chat/drillthrough", json={"token": "dt_ms_422"})
-    control(ok.status_code == 200 and ok.json()["rows"] == [{"sku": "A", "amount": 1}], ok.text[:200])
+    control(
+        ok.status_code == 200 and ok.json()["rows"] == [{"sku": "A", "amount": 1}], ok.text[:200]
+    )
 
     # CONTROL b: a transport failure is a named failure today.
     mode["m"] = "transport_error"

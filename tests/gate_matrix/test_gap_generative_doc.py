@@ -109,8 +109,7 @@ def _add_orphan_supplier_lot(harness: Any) -> None:
     con = connect_file(harness.warehouse)
     try:
         con.execute(
-            "INSERT INTO inventory VALUES "
-            "('SKU-ORPH', 'WH-A', 100, 10, 1.0, 'SUP-99', 'RAW', NULL)"
+            "INSERT INTO inventory VALUES ('SKU-ORPH', 'WH-A', 100, 10, 1.0, 'SUP-99', 'RAW', NULL)"
         )
         con.execute(
             "INSERT INTO transactions VALUES "
@@ -142,9 +141,7 @@ def test_insights_sql_over_a_lake_whose_ontology_failed_verify_abstains(harness)
     # CONTROL 1 - clean seed: the same SQL ask is answered L2_VALIDATED with real
     # rows. Proves the armed lane and the fixture work, so the gap below is not a
     # broken ask.
-    status, clean = harness.ask(
-        _REVENUE_BY_SUPPLIER_Q, space_id=FINANCE, session_id="ses_g2_clean"
-    )
+    status, clean = harness.ask(_REVENUE_BY_SUPPLIER_Q, space_id=FINANCE, session_id="ses_g2_clean")
     require_envelope(status, clean)
     control(
         clean["badge"] == "L2_VALIDATED" and clean["abstained"] is False and clean["rows"],
@@ -197,9 +194,7 @@ def test_insights_sql_over_a_lake_whose_ontology_failed_verify_abstains(harness)
     # THE GAP - Insights-authored SQL, same question, same orphan lake.
     insights.payload = {"query_sql": _REVENUE_BY_SUPPLIER_SQL}
     sql_submits_before = len(harness.cortex.sql_submits)
-    status, env = harness.ask(
-        _REVENUE_BY_SUPPLIER_Q, space_id=FINANCE, session_id="ses_g2_gap"
-    )
+    status, env = harness.ask(_REVENUE_BY_SUPPLIER_Q, space_id=FINANCE, session_id="ses_g2_gap")
     require_envelope(status, env)  # HTTP 200 + E1-E9, so this is the answer path
 
     shipped_total = sum(float(r.get("revenue") or 0) for r in env["rows"])

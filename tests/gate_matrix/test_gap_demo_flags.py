@@ -91,9 +91,7 @@ def _all_time_revenue_text(h: Any) -> str:
 
 def _bound_tables(h: Any) -> dict[str, set[str]]:
     """Per Space, the tables named by the manifest the live path bound to Cortex."""
-    return {
-        b.manifest.space_id: set(b.manifest.row_predicates) for b in h.cortex.bind_submits
-    }
+    return {b.manifest.space_id: set(b.manifest.row_predicates) for b in h.cortex.bind_submits}
 
 
 def _refused_without_figures(body: Any) -> bool:
@@ -221,9 +219,7 @@ def test_demo_lane_answers_a_year_with_no_data_with_the_all_time_total(harness, 
     s, env = h.ask(REVENUE_Q, space_id=FINANCE, session_id=f"ctl_total_{lane}")
     require_envelope(s, env)
     control(
-        env["ask_mode"] == "demo"
-        and env["badge"] == "L2_VALIDATED"
-        and all_time in env["text"],
+        env["ask_mode"] == "demo" and env["badge"] == "L2_VALIDATED" and all_time in env["text"],
         f"demo lane did not return the all-time total: {_seen(s, env)}",
     )
 

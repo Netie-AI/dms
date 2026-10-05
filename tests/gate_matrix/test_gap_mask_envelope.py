@@ -73,9 +73,7 @@ def _allow_studio_gate(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         studio,
         "compliance_gate",
-        lambda *, action, **_: ComplianceDecision(
-            allowed=True, reason="test_allow", action=action
-        ),
+        lambda *, action, **_: ComplianceDecision(allowed=True, reason="test_allow", action=action),
     )
 
 
@@ -136,7 +134,7 @@ def _receipt_envelope(literal: str) -> dict[str, Any]:
     "audit-receipt-and-late-added-cards-skip-mask",
 )
 def test_ask_abstain_receipt_why_is_masked_like_assumptions(harness_factory: Any) -> None:
-    """The ABSTAIN reason is masked in assumptions[0] and printed raw in audit_receipt.unsure.why."""
+    """The ABSTAIN reason is masked in assumptions[0], raw in audit_receipt.unsure.why."""
     resp = AskResponse(
         answer="I could not match that filter to anything in this Space.",
         badge="abstain",
@@ -177,7 +175,7 @@ def test_ask_abstain_receipt_why_is_masked_like_assumptions(harness_factory: Any
     "audit-receipt-and-late-added-cards-skip-mask",
 )
 def test_cascade_encoding_source_cards_are_masked_like_the_trace(harness_factory: Any) -> None:
-    """CCA encoding cards are attached after the build: masked in the trace, raw in contributing_sources."""
+    """CCA encoding cards are attached after the build: masked in trace, raw in sources."""
     resp = AskResponse(
         answer="Lease revenue is 350.0 MYR.",
         badge="certified",
@@ -249,7 +247,7 @@ def test_cascade_encoding_source_cards_are_masked_like_the_trace(harness_factory
     "audit-receipt-and-late-added-cards-skip-mask",
 )
 def test_xlsx_export_masks_the_audit_receipt_like_sql_used(harness: Any) -> None:
-    """In the downloaded workbook the Cover sql_used row is tokenised and the audit_receipt row is raw."""
+    """In the downloaded workbook the Cover sql_used row is tokenised, the receipt row raw."""
     _control_pack(harness)
 
     r = harness.client.post(
@@ -281,7 +279,7 @@ def test_xlsx_export_masks_the_audit_receipt_like_sql_used(harness: Any) -> None
     "audit-receipt-and-late-added-cards-skip-mask",
 )
 def test_bi_export_masks_the_audit_receipt_like_sql_used(harness: Any) -> None:
-    """The BI stub's Cover table (no rows, no values) tokenises sql_used and ships the receipt raw."""
+    """The BI stub Cover table (no rows, no values) tokenises sql_used, ships receipt raw."""
     _control_pack(harness)
 
     envelope = _receipt_envelope(NRIC_RECEIPT)
@@ -405,7 +403,7 @@ def test_mcp_ask_ledger_payload_masks_sql_like_the_envelope(
 def test_generative_insights_sql_ledger_payload_masks_sql_like_the_envelope(
     harness: Any,
 ) -> None:
-    """A model-written SELECT that lifted a literal from the question: same split, generative lane."""
+    """A model-written SELECT that lifted a literal from the question: same split."""
     sql = f"SELECT sku, quantity_kg FROM inventory WHERE sku <> '{NRIC_LEDGER}'"
     _control_pack(harness)
     # The Insights planner is a Cortex call and the harness fake has none, so a stand-in
@@ -489,9 +487,7 @@ def test_engine_error_detail_is_masked_like_an_answer(harness_factory: Any) -> N
     )
     detail = r.json().get("detail") if r.status_code != 200 else None
     control(
-        r.status_code == 502
-        and isinstance(detail, dict)
-        and detail.get("code") == "submit_failed",
+        r.status_code == 502 and isinstance(detail, dict) and detail.get("code") == "submit_failed",
         f"the engine failure did not arrive as an AskServiceError 502: HTTP {r.status_code} "
         f"{r.text[:300]}",
     )

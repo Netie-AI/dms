@@ -15,7 +15,7 @@ and the ``@gap`` marker is deleted so the test becomes a regression test.
 
 Gaps (ids from the Plan E trace):
   followup-no-submit                      G7  FOLLOWUP-CONTRACT-01
-  followup-no-grant-recheck               G1  FOLLOWUP-CONTRACT-01 (two tests: no Space, revoked grant)
+  followup-no-grant-recheck               G1  FOLLOWUP-CONTRACT-01 (two tests)
   followup-unit-relabelled-rm             G2  new
   followup-stale-prior-after-failed-turn  G8  new
 """
@@ -38,7 +38,10 @@ FOLLOWUP_AVG = "average of them"
 
 
 def _pack() -> Any:
-    """The demo pack questions. Imported lazily so ``dms_api`` import stays under conftest's guard."""
+    """The demo pack questions.
+
+    Imported lazily so ``dms_api`` import stays under conftest's guard.
+    """
     from dms_executor import demo_pack
 
     return demo_pack
@@ -174,13 +177,13 @@ def test_followup_figure_goes_through_cortex_submit_and_the_ledger(
     cx = h.cortex
     parent_question = getattr(_pack(), parent_q)
 
-    s, parent = _ask_via(
-        h, entry, parent_question, space_id=FINANCE, session_id="ses_fu_submit"
-    )
+    s, parent = _ask_via(h, entry, parent_question, space_id=FINANCE, session_id="ses_fu_submit")
     require_envelope(s, parent)
     # CONTROL: the parent turn is a gated answer, and the fake records when the code calls it.
     control(
-        parent["badge"] == "L1_GOVERNED_METRIC" and parent["abstained"] is False and parent["values"],
+        parent["badge"] == "L1_GOVERNED_METRIC"
+        and parent["abstained"] is False
+        and parent["values"],
         f"parent is not a governed figure: {parent.get('badge')} {parent.get('text')!r}",
     )
     control(
@@ -282,8 +285,7 @@ def test_followup_figure_goes_through_cortex_submit_and_the_ledger(
 # ---------------------------------------------------------------------------
 
 _GRANT_ROWS = (
-    "chat-ask:followup-average,chat-ask:followup-add,chat-ask:followup-abstain,"
-    "cache:session-turns"
+    "chat-ask:followup-average,chat-ask:followup-add,chat-ask:followup-abstain,cache:session-turns"
 )
 
 
@@ -309,21 +311,27 @@ def test_followup_without_a_space_abstains_no_space(harness: Any) -> None:
         f"control follow-up in FINANCE should compute: {ctl['badge']} {ctl['text']!r}",
     )
 
-    # CONTROL 2: the bronze lane in the same ladder already abstains no_space for this request shape.
+    # CONTROL 2: the bronze lane in the same ladder already abstains no_space for
+    # this request shape.
     _ident, bronze_q = _seed_bronze_sheet(harness, "gm_followup_nospace.xlsx", FINANCE)
     s, bronze = harness.ask(bronze_q, session_id="ses_fu_bronze")
     require_envelope(s, bronze)
     control(
         bronze["abstained"] is True and "no_space" in _named(bronze),
-        f"bronze lane without a Space should abstain no_space: {bronze['badge']} {bronze['text']!r}",
+        f"bronze lane without a Space should abstain no_space: "
+        f"{bronze['badge']} {bronze['text']!r}",
     )
 
-    # The pack lane answers a no-Space ask under the company default; the follow-up on it is the gap.
+    # The pack lane answers a no-Space ask under the company default; the follow-up
+    # on it is the gap.
     s, parent = harness.ask(pack.TOTAL_SPEND_Q, session_id="ses_fu_nospace")
     require_envelope(s, parent)
     control(
-        parent["badge"] == "L1_GOVERNED_METRIC" and parent["abstained"] is False and parent["values"],
-        f"no-Space parent should be answered by the pack lane: {parent['badge']} {parent['text']!r}",
+        parent["badge"] == "L1_GOVERNED_METRIC"
+        and parent["abstained"] is False
+        and parent["values"],
+        f"no-Space parent should be answered by the pack lane: "
+        f"{parent['badge']} {parent['text']!r}",
     )
     s, env = harness.ask("add 2000", session_id="ses_fu_nospace")
     require_envelope(s, env)
@@ -347,18 +355,23 @@ def test_followup_after_the_grant_is_revoked_abstains_ungranted_table(harness: A
     s, parent = harness.ask(bronze_q, space_id=FINANCE, session_id="ses_fu_revoke")
     require_envelope(s, parent)
     control(
-        parent["abstained"] is False and parent["badge"] == "L0_CERTIFIED" and len(parent["values"]) == 3,
-        f"bronze sheet should answer in FINANCE while granted: {parent['badge']} {parent['text']!r}",
+        parent["abstained"] is False
+        and parent["badge"] == "L0_CERTIFIED"
+        and len(parent["values"]) == 3,
+        f"bronze sheet should answer in FINANCE while granted: "
+        f"{parent['badge']} {parent['text']!r}",
     )
 
     _rehome_bronze_sheet(harness, ident, WAREHOUSE_OPS)
 
-    # CONTROL: the gated bronze lane honours the revocation (other session, so the cache is untouched).
+    # CONTROL: the gated bronze lane honours the revocation (other session, so the
+    # cache is untouched).
     s, ctl = harness.ask(bronze_q, space_id=FINANCE, session_id="ses_fu_revoke_ctl")
     require_envelope(s, ctl)
     control(
         ctl["abstained"] is True and "ungranted_table" in _named(ctl),
-        f"bronze lane after revocation should abstain ungranted_table: {ctl['badge']} {ctl['text']!r}",
+        f"bronze lane after revocation should abstain ungranted_table: "
+        f"{ctl['badge']} {ctl['text']!r}",
     )
 
     s, env = harness.ask(FOLLOWUP_AVG, space_id=FINANCE, session_id="ses_fu_revoke")
@@ -402,7 +415,8 @@ def test_followup_does_not_label_a_non_ringgit_figure_as_ringgit(
     s, stock = harness.ask(pack.STOCK_BY_CATEGORY_Q, space_id=WAREHOUSE_OPS, session_id="ses_fu_rm")
     require_envelope(s, stock)
     control(
-        stock["abstained"] is False and all(v["label"] == "stock_value_myr" for v in stock["values"]),
+        stock["abstained"] is False
+        and all(v["label"] == "stock_value_myr" for v in stock["values"]),
         f"stock-value parent should be ringgit figures: {stock['text']!r}",
     )
     s, ctl = harness.ask(FOLLOWUP_AVG, space_id=WAREHOUSE_OPS, session_id="ses_fu_rm")
@@ -474,7 +488,9 @@ def test_followup_after_a_failed_turn_does_not_reuse_the_older_figures(
     pack = _pack()
 
     # CONTROL: a turn the lane itself abstains on clears the cache, so the follow-up abstains.
-    s, parent = harness.ask(pack.STOCK_BY_CATEGORY_Q, space_id=WAREHOUSE_OPS, session_id="ses_fu_ctl")
+    s, parent = harness.ask(
+        pack.STOCK_BY_CATEGORY_Q, space_id=WAREHOUSE_OPS, session_id="ses_fu_ctl"
+    )
     require_envelope(s, parent)
     control(parent["abstained"] is False and len(parent["values"]) == 4, parent["text"])
     s, trap = harness.ask(pack.HOW_FULL_TRAP_Q, space_id=WAREHOUSE_OPS, session_id="ses_fu_ctl")
@@ -488,7 +504,9 @@ def test_followup_after_a_failed_turn_does_not_reuse_the_older_figures(
     )
 
     # The gap sequence: answer, failure by exception, follow-up.
-    s, parent = harness.ask(pack.STOCK_BY_CATEGORY_Q, space_id=WAREHOUSE_OPS, session_id="ses_fu_stale")
+    s, parent = harness.ask(
+        pack.STOCK_BY_CATEGORY_Q, space_id=WAREHOUSE_OPS, session_id="ses_fu_stale"
+    )
     require_envelope(s, parent)
     control(parent["abstained"] is False and len(parent["values"]) == 4, parent["text"])
 

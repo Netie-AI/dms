@@ -140,7 +140,9 @@ def test_ask_without_a_space_does_not_widen_to_a_table_no_space_grants(
     s, env = h.ask(CAPACITY_UTILISATION_Q, session_id="ses_ctl_nospace_pack")
     require_envelope(s, env)
     control(
-        s == 200 and env["abstained"] is False and env["badge"] == "L1_GOVERNED_METRIC"
+        s == 200
+        and env["abstained"] is False
+        and env["badge"] == "L1_GOVERNED_METRIC"
         and len(env["rows"]) > 0,
         f"no-space company-scoped metric must still answer: {env['badge']} {env['text']!r}",
     )
@@ -292,7 +294,8 @@ def test_bronze_ask_does_not_read_another_spaces_table_through_the_warehouse_ali
     s, env = harness.ask(BRONZE_Q, space_id=WAREHOUSE_OPS)
     require_envelope(s, env)
     control(
-        env["abstained"] is False and env["badge"] == "L0_CERTIFIED"
+        env["abstained"] is False
+        and env["badge"] == "L0_CERTIFIED"
         and any(r.get("category") == OPS_SECRET for r in env["rows"]),
         f"WAREHOUSE_OPS must be answered from its own foo_Sales: {env!r}",
     )
