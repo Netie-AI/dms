@@ -22,6 +22,13 @@ module. Regression: `tests/test_onto_store_01.py`. Live Alembic against
 Postgres: `tests/control_plane` when hostdb is up (CI skips that folder).
 Not COMPLETE.
 
+PROVE-CURATED-DIAG-01 (#355): `PACK_METRICS` is the original ten plus
+every `expect: l0` question in `tests/fixtures/curated_ceo` that is not
+already there (`load_score_pack_metrics` in
+`packages/executor/dms_executor/demo_pack.py`). Refuse and abstain rows
+are not metrics. Verified queries are not seeded. Regression:
+`tests/test_curated_pack_01.py`. Not COMPLETE.
+
 GRANT-READ-01 (#297): ask-path retrieve and cascade use `demo_acl`'s
 default readable set when the caller ticks nothing (`requested or
 default_readable`). Unticked uploads never enter the Insights generate
