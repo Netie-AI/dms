@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from dms_api.ask_audit import record_ask
+from dms_api.ask_audit import record_ask, take_executed
 from dms_api.deps import AskAuditDep, AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
 from dms_api.gatekeeping import enforce
 from dms_api.settings import Settings
@@ -265,6 +265,7 @@ def chat_ask(
             space_id=body.space_id,
             asked_at=asked_at,
             error=exc,
+            executed=take_executed(ask),
         )
         raise
     record_ask(
@@ -274,6 +275,7 @@ def chat_ask(
         space_id=body.space_id,
         asked_at=asked_at,
         envelope=env,
+        executed=take_executed(ask),
     )
     return env
 

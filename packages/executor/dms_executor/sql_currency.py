@@ -25,7 +25,7 @@ import sqlglot
 from sqlglot import exp, parse_one
 from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
-from sqlglot.optimizer.scope import Scope, build_scope
+from sqlglot.optimizer.scope import Scope, build_scope, traverse_scope
 
 from dms_executor.demo_warehouse import connect_file
 
@@ -979,33 +979,39 @@ def _table_label(node: exp.Table) -> str:
 
 
 def tables_read(sql: str | None) -> tuple[str, ...]:
-    """Tables an executed statement reads, sorted, with CTE names excluded.
+    """Tables an executed statement reads, sorted, with CTE references excluded.
 
     Used by the audit export (BANK-02) to say which tables a question touched.
-    A statement sqlglot cannot parse falls back to the FROM / JOIN identifier
-    scan, which is looser (a string literal containing "from x" would count) but
-    never returns an empty list for SQL that plainly names a table: an audit row
-    that says "read nothing" for a query that read something is a false record.
-    A comment-only statement, such as the document-retrieval stub, reads none.
+    A name is a CTE reference only where sqlglot's scope resolves it to a CTE
+    (or derived table) of an enclosing query. That is scope, not spelling:
+    ``WITH sales AS (SELECT * FROM sales) SELECT * FROM sales`` reads the base
+    table ``sales`` inside the CTE's own body and the CTE outside it, so
+    ``sales`` is reported. Excluding by name dropped it, and an audit row that
+    says "read nothing" for a query that read something is a false record.
+
+    A statement sqlglot cannot parse or scope falls back to the FROM / JOIN
+    identifier scan, which is looser (a string literal containing "from x" would
+    count, and a CTE name would) but never returns an empty list for SQL that
+    plainly names a table. A comment-only statement, such as the
+    document-retrieval stub, reads none.
     """
     text = (sql or "").strip()
     if not text:
         return ()
     try:
         trees = [t for t in sqlglot.parse(text, dialect=_DIALECT) if t is not None]
-    except Exception:  # noqa: BLE001 - any parser failure takes the scan
+        seen: dict[str, str] = {}
+        for tree in trees:
+            for scope in traverse_scope(tree):
+                for node in scope.tables:
+                    if isinstance(scope.sources.get(node.alias_or_name), Scope):
+                        continue  # a CTE or derived table of an enclosing query
+                    label = _table_label(node)
+                    if label:
+                        seen.setdefault(label.casefold(), label)
+    except Exception:  # noqa: BLE001 - any parser or scope failure takes the scan
         scan = (m.strip('"`') for m in _FROM_JOIN.findall(text))
         return tuple(sorted(dict.fromkeys(x for x in scan if x), key=str.casefold))
-    seen: dict[str, str] = {}
-    for tree in trees:
-        ctes = {str(c.alias_or_name).casefold() for c in tree.find_all(exp.CTE)}
-        for node in tree.find_all(exp.Table):
-            label = _table_label(node)
-            if not label:
-                continue
-            if "." not in label and label.casefold() in ctes:
-                continue
-            seen.setdefault(label.casefold(), label)
     return tuple(sorted(seen.values(), key=str.casefold))
 
 

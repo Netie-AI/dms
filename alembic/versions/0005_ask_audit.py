@@ -6,8 +6,16 @@ app roles get SELECT and INSERT and no UPDATE or DELETE, so a row cannot be
 edited or removed through the application. This is a record, not a ledger: no
 hash chain here (the one chain is in Cortex), only a ``cortex_entry_id`` pointer.
 
-If another migration also descends from ``0004_ontology_store`` (PR #316 adds
-0005_onto_snapshot), the later of the two to merge re-points ``down_revision``.
+The append-only guarantee holds for the app roles (dms_viewer, dms_steward,
+dms_admin) only. The table owner and a superuser can still UPDATE, DELETE or
+TRUNCATE it, and compose currently runs the API as POSTGRES_USER=dms, which is a
+superuser. That is a BANK-04 item; nothing here changes compose.
+
+Merge order: PR #316 also descends from ``0004_ontology_store`` and adds
+0005_onto_snapshot and 0006_onto_measure_confirm, so with both there are two heads.
+Whichever merges second must chain after the other's LAST revision and renumber;
+CI skips the control-plane tests (DMS_SKIP_CONTROL_PLANE_TESTS=1), so it will not
+catch two heads.
 """
 
 from __future__ import annotations
@@ -40,7 +48,9 @@ def upgrade() -> None:
           abstain_reason TEXT NOT NULL DEFAULT '',
           row_count INTEGER NOT NULL DEFAULT 0 CHECK (row_count >= 0),
           cortex_entry_id TEXT NOT NULL DEFAULT '',
-          ask_mode TEXT NOT NULL DEFAULT 'live'
+          ask_mode TEXT NOT NULL DEFAULT 'live',
+          redactions INTEGER NOT NULL DEFAULT 0 CHECK (redactions >= 0),
+          truncated BOOLEAN NOT NULL DEFAULT false
         );
 
         CREATE INDEX ask_audit_by_time ON dms.ask_audit (tenant_id, asked_at);

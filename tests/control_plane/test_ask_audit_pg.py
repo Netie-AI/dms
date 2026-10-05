@@ -68,6 +68,19 @@ def test_a_row_round_trips_through_postgres(migrated_db: str, two_tenants: dict)
     assert window == [second]
 
 
+def test_redaction_count_and_truncation_flag_round_trip(
+    migrated_db: str, two_tenants: dict
+) -> None:
+    store = PostgresAskAuditStore(migrated_db, tenant_id=two_tenants["alpha"])
+    rec = _rec(redactions=3, truncated=True, question="cut...[truncated 5 chars]")
+    store.record(rec)
+
+    (got,) = store.list_between(since=None, until=None, limit=10)
+
+    assert got == rec
+    assert got.redactions == 3 and got.truncated is True
+
+
 def test_recording_the_same_ask_twice_keeps_one_row(migrated_db: str, two_tenants: dict) -> None:
     store = PostgresAskAuditStore(migrated_db, tenant_id=two_tenants["alpha"])
     rec = _rec()

@@ -16,6 +16,7 @@ from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ask import AskServiceError, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
+from dms_executor import executed_trace
 from dms_executor.acl import (
     SessionContext,
     SourceGrant,
@@ -498,6 +499,10 @@ class Executor:
         from cortex_client.compute import begin_answer_model_calls, recorded_model_calls
 
         begin_answer_model_calls()
+        # BANK-02: what actually runs for this ask is recorded as it runs, apart
+        # from the envelope (see executed_trace). The caller reads it with
+        # take_executed() right after this returns or raises.
+        executed_trace.begin()
         seen: list[dict[str, Any] | None] = []
         env = self._live_ask(
             question,
@@ -844,6 +849,14 @@ class Executor:
         self._store_turn(session_id, space_id, env)
         return env
 
+    def take_executed(self) -> list[tuple[str, int]]:
+        """Statements the last ``live_ask`` on this thread ran, with row counts.
+
+        Read once, immediately after ``live_ask``; it clears. Empty when the ask
+        ran no statement through Cortex (a local bronze or demo path).
+        """
+        return executed_trace.take()
+
     def submit_sql(
         self,
         sql: str,
@@ -865,7 +878,7 @@ class Executor:
             manifest=manifest,
         )
         try:
-            return self._cortex.submit(req)
+            result = self._cortex.submit(req)
         except Exception as exc:  # noqa: BLE001 — classify then re-raise
             err = classify_submit_error(exc)
             if should_rement(err.code) and not reminted:
@@ -879,6 +892,11 @@ class Executor:
             }:
                 logger.error("security_event submit code=%s", err.code)
             raise SubmitError(err.code, err.detail) from exc
+        else:
+            from dms_executor.verified_queries import rows_from_submit_result
+
+            executed_trace.record(sql, len(rows_from_submit_result(result)))
+            return result
 
 
 #: Engine routes that mean "no answer was produced". Authoritative over any
@@ -932,6 +950,9 @@ def map_ask_response_to_envelope(
     competing_scopes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
+    # BANK-02: the engine's own SQL and rows, taken before anything below drops
+    # them for an abstain or swaps in a placeholder. This is what ran.
+    executed_trace.record(resp.sql_used, len(resp.rows or []))
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,

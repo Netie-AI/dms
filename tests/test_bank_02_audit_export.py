@@ -17,10 +17,14 @@ flipped on a mock.
 
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import io
 import json
+import socket
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,11 +64,16 @@ def _warehouse(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(autouse=True)
 def _hermetic_env(monkeypatch: pytest.MonkeyPatch, _warehouse: Path):
-    """Live ask, no fallback, no database, and no OpenVault contact at all."""
+    """Live ask, no fallback, no database.
+
+    Each ``create_app()`` these tests make starts an Executor that probes OpenVault at
+    the settings URL (default http://127.0.0.1:5000); that probe is reported offline
+    here. This runs AFTER ``dms_api`` is imported, and importing it runs a
+    module-level ``create_app()`` that probes before any fixture exists, so this does
+    not make the module vault-free. That root cause predates BANK-02.
+    """
     monkeypatch.setenv("DMS_ASK_MODE", "live")
     monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
-    # create_app() starts an Executor, which probes OpenVault at the settings URL
-    # (default http://127.0.0.1:5000). Report it offline: no test here talks to a vault.
     monkeypatch.setattr("dms_executor.probe_openvault", lambda **_kw: (None, ""))
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(_warehouse))
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -87,6 +96,9 @@ class LedgerCortex:
     chain: list[dict[str, Any]] = field(default_factory=list)
     _bound: dict[str, set[str]] = field(default_factory=dict)
     verify_raises: bool = False
+    #: "normal"; "abstain_after_sql" (the engine runs SQL, then abstains); "no_sql"
+    #: (an answer that reports no SQL at all).
+    mode: str = "normal"
 
     def _append(self, body: dict[str, Any]) -> str:
         prev = self.chain[-1]["hash"] if self.chain else ""
@@ -99,6 +111,31 @@ class LedgerCortex:
         return QueryResult(ok=True, status="bound", run_id="run-1")
 
     def ask(self, req: Any) -> AskResponse:
+        if self.mode == "abstain_after_sql":
+            entry = self._append({"event": "ask.executed", "sql": "SELECT SUM(amount)"})
+            return AskResponse.model_validate(
+                {
+                    "answer": "I could not stand behind that figure.",
+                    "abstained": True,
+                    "badge": "abstain",
+                    "route": "abstain",
+                    "sql_used": "SELECT SUM(amount) FROM transactions",
+                    "rows": [{"total": 42.0}],
+                    "audit_id": entry,
+                }
+            )
+        if self.mode == "no_sql":
+            entry = self._append({"event": "ask.answered"})
+            return AskResponse.model_validate(
+                {
+                    "answer": "Done.",
+                    "abstained": False,
+                    "badge": "certified",
+                    "rows": [],
+                    "route": "sql",
+                    "audit_id": entry,
+                }
+            )
         needed = _NEEDS[req.question]
         readable = self._bound.get(req.session_id, set())
         if needed not in readable:
@@ -593,7 +630,7 @@ def test_jsonl_keeps_unicode_line_separators_inside_the_line() -> None:
     client, app = _stub_stack(_envelope())
     app.state.ask_audit_store.record(
         record_from_error(
-            question="a b",
+            question="a\u2028b",
             reason="seed",
             actor=DEPLOYMENT_ACTOR,
             actor_kind="deployment",
@@ -604,7 +641,7 @@ def test_jsonl_keeps_unicode_line_separators_inside_the_line() -> None:
     r = _export(client, format="jsonl")
 
     assert len(r.text.splitlines()) == 1, "U+2028 must not split a record"
-    assert json.loads(r.text)["question"] == "a b"
+    assert json.loads(r.text)["question"] == "a\u2028b"
 
 
 # --- range, size, completeness --------------------------------------------------
@@ -727,6 +764,19 @@ def test_the_export_says_which_store_served_it() -> None:
         ('SELECT * FROM main.sales s JOIN "Other Table" o ON 1=1', ("main.sales", "Other Table")),
         ("SELECT * FROM t1 UNION ALL SELECT * FROM T1", ("t1",)),
         ("SELECT '=cmd' AS q FROM transactions; SELECT * FROM alerts", ("alerts", "transactions")),
+        # A CTE name is excluded only OUTSIDE that CTE's own body (sqlglot scope).
+        ("WITH sales AS (SELECT * FROM sales WHERE x = 1) SELECT SUM(a) FROM sales", ("sales",)),
+        ("WITH a AS (SELECT * FROM t1), b AS (SELECT * FROM a) SELECT * FROM b", ("t1",)),
+        (
+            "WITH sales AS (SELECT 1) SELECT * FROM sales s JOIN sales_detail d ON 1=1",
+            ("sales_detail",),
+        ),
+        (
+            "WITH RECURSIVE t AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM t WHERE n < 5) "
+            "SELECT * FROM t",
+            (),
+        ),
+        ("SELECT * FROM (SELECT * FROM orders) o JOIN customers c ON 1=1", ("customers", "orders")),
         ("-- document retrieval (no SQL)", ()),
         ("SELECT 1", ()),
         ("", ()),
@@ -737,3 +787,472 @@ def test_tables_read_names_what_the_statement_reads(
     sql: str | None, tables: tuple[str, ...]
 ) -> None:
     assert tables_read_by_sql(sql) == tables
+
+
+# === Independent-verify fixes (H1, H2, M1, M2, M3, M5, M6, L1, L2) ================
+#
+# Each test below fails on 93bc9eb (the head these fixes were made against). New
+# symbols are imported inside the tests so a missing one fails that test, not the
+# whole module.
+
+
+# --- H1: what ran, not what the customer was shown -------------------------------
+
+
+def test_sql_that_ran_before_an_abstain_is_exported_as_what_ran(minter: ManifestMinter) -> None:
+    client, _app, cortex = _real_stack(minter)
+    cortex.mode = "abstain_after_sql"
+
+    answer = _ask(client, WHERE_IS_SKU, session_id="ses_h1").json()
+    # The customer is shown no SQL and no rows. That divergence is the thing under test.
+    assert answer["abstained"] is True
+    assert answer["sql_used"] is None and answer["rows"] == []
+
+    row = _csv_rows(_export(client).text)[0]
+
+    assert row["badge"] == "abstain"
+    assert row["executed_sql"] == "SELECT SUM(amount) FROM transactions"
+    assert row["tables_read"] == "transactions"
+    assert row["row_count"] == "1"
+
+
+def test_a_placeholder_is_never_exported_as_sql(minter: ManifestMinter) -> None:
+    # (a) an envelope that carries only the document-retrieval stub
+    client, _app = _stub_stack(_envelope(sql_used="-- document retrieval (no SQL)", rows=[]))
+    shown = _ask(client, "Summarise the supplier contract").json()
+    assert shown["sql_used"] == "-- document retrieval (no SQL)"
+    row = _csv_rows(_export(client).text)[0]
+    assert row["executed_sql"] == "" and row["tables_read"] == ""
+
+    # (b) the live path's own stub, for an answer whose engine reported no SQL
+    client, _app, cortex = _real_stack(minter)
+    cortex.mode = "no_sql"
+    _ask(client, WHERE_IS_SKU, session_id="ses_nosql")
+    row = _csv_rows(_export(client).text)[0]
+    assert row["executed_sql"] == "", row["executed_sql"]
+    assert row["tables_read"] == ""
+
+
+def test_every_statement_that_ran_is_recorded_in_order() -> None:
+    from dms_api.ask_audit import _evidence
+
+    sql, tables, rows = _evidence(
+        None, [("SELECT 1 FROM a", 1), ("SELECT 2 FROM b JOIN a ON 1=1;", 3)]
+    )
+
+    assert sql == "SELECT 1 FROM a;\nSELECT 2 FROM b JOIN a ON 1=1"
+    assert tables == ("a", "b")
+    assert rows == 3
+
+
+# --- H2: "verified" says only what it can ----------------------------------------
+
+
+def test_the_verify_scope_is_stated_on_every_row_and_in_a_header(minter: ManifestMinter) -> None:
+    from dms_core.control_plane.ask_audit_export import VERIFY_SCOPE
+
+    client, _app, _cortex = _real_stack(minter)
+    _ask(client, WHERE_IS_SKU, session_id="ses_scope")
+
+    r = _export(client)
+
+    assert VERIFY_SCOPE == "chain_integrity_only; rows are not matched to ledger entries"
+    assert _csv_rows(r.text)[0]["ledger_verify_scope"] == VERIFY_SCOPE
+    assert r.headers["x-audit-verify-scope"] == VERIFY_SCOPE
+
+
+def test_an_empty_ledger_does_not_verify_an_export() -> None:
+    # verify_ledger() on an empty chain answers ok with checked=0.
+    cortex = LedgerCortex()
+    assert cortex.verify_ledger().ok and cortex.verify_ledger().checked == 0
+    client, _app = _stub_stack(_envelope(), cortex=cortex)  # its row points at led_stub
+    _ask(client, "How many units?")
+
+    pointing = _export(client)
+
+    row = _csv_rows(pointing.text)[0]
+    assert row["export_verified"] == "false"
+    assert row["ledger_verify_status"] == "incomplete"
+    assert pointing.headers["x-audit-export-verified"] == "false"
+
+    # And a file with no pointer at all is still not "verified" by a chain that checked nothing.
+    unpointed = _envelope(
+        answer_id="ans_x", badge="ABSTAIN", abstained=True, sql_used=None, rows=[], audit_id=None
+    )
+    client, _app = _stub_stack(unpointed, cortex=LedgerCortex())
+    _ask(client, "an unanswerable question")
+    row = _csv_rows(_export(client).text)[0]
+    assert row["cortex_entry_id"] == ""
+    assert row["export_verified"] == "false" and row["ledger_verify_status"] == "incomplete"
+
+
+def test_a_ledger_that_lost_its_tail_does_not_verify_an_export(minter: ManifestMinter) -> None:
+    client, _app, cortex = _real_stack(minter)
+    _ask(client, WHERE_IS_SKU, session_id="ses_t1")
+    _ask(client, WHERE_IS_SKU, session_id="ses_t2")
+    assert _csv_rows(_export(client).text)[0]["export_verified"] == "true"
+
+    cortex.chain.pop()  # the last entry vanishes; what remains still hashes cleanly
+    assert cortex.verify_ledger().ok and cortex.verify_ledger().checked == 1
+
+    r = _export(client)
+
+    rows = _csv_rows(r.text)
+    assert len(rows) == 2
+    assert {x["cortex_entry_id"] for x in rows} == {"led_1", "led_2"}
+    for row in rows:
+        assert row["export_verified"] == "false"
+        assert row["ledger_verify_status"] == "incomplete"
+    assert r.headers["x-audit-export-verified"] == "false"
+
+
+# --- M1: the secret shapes that used to leak -------------------------------------
+
+_B64 = base64.b64encode(b"fakeuser:FakeSecretValue0123456789xyz").decode()
+_BLOB = "Zm9vYmFyQmF6MDEyMzQ1Njc4OWFiY0RFRmdoSUprbG1u"
+_KEY_BODY = "\n".join(
+    [
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj",
+        "MzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDuictGeurT8jNbvJZHtCSuYEvu",
+        "NMoSfm76oqFvAp8Gy0iz5sxjZfm",
+    ]
+)
+
+#: (shape, text containing a fake secret, the secret that must not survive)
+_SECRET_SHAPES = [
+    (
+        "url password with slash",
+        "postgres://svc:FAKEpw/with/slash99@db.internal:5432/x",
+        "FAKEpw/with/slash99",
+    ),
+    ("url password with at", "mysql://svc:FAKE@pw77xyz@db.internal/x", "FAKE@pw77xyz"),
+    ("url encoded password", "postgres://svc:FAKE%40pw%2Fenc55@db/x", "FAKE%40pw%2Fenc55"),
+    ("authorization basic", f"Authorization: Basic {_B64}", _B64),
+    ("json api_key", '{"api_key":"FAKEapikey123456"}', "FAKEapikey123456"),
+    ("json password", '{"password": "FAKEjsonpw 99"}', "FAKEjsonpw 99"),
+    ("DB_PASSWORD", "DB_PASSWORD=FAKEdbpw12345", "FAKEdbpw12345"),
+    (
+        "OPENAI_API_KEY without sk-",
+        "OPENAI_API_KEY=FAKEnoprefix1234567890",
+        "FAKEnoprefix1234567890",
+    ),
+    (
+        "aws_secret_access_key",
+        "aws_secret_access_key=FAKEawssecret0123456789",
+        "FAKEawssecret0123456789",
+    ),
+    ("PGPASSWORD", "PGPASSWORD=FAKEpgpw99 psql -h db", "FAKEpgpw99"),
+    ("name split by a comment", "pass/**/word=FAKEsplit1234", "FAKEsplit1234"),
+    ("comment around the operator", "password /* c */ =FAKEcomment1234", "FAKEcomment1234"),
+    ("cyrillic lookalike letters", "\u0440\u0430ssword=FAKEcyr1234", "FAKEcyr1234"),
+    ("fullwidth equals", "password\uff1dFAKEfullwidth1234", "FAKEfullwidth1234"),
+    (
+        "unquoted multi-word value",
+        "password: correct horse battery staple. What is revenue?",
+        "battery",
+    ),
+    ("bare base64 blob", f"here it is {_BLOB} thanks", _BLOB),
+    ("password LIKE", "SELECT 1 FROM u WHERE password LIKE 'FAKElikepw99%'", "FAKElikepw99"),
+    ("headerless private key body", f"key:\n{_KEY_BODY}\nend", "AoIBAQC7VJTUt9Us8cKj"),
+    # Shapes the first version already caught: kept so they cannot regress.
+    ("mixed-case password", "PaSsWoRd=FAKEcase1234", "FAKEcase1234"),
+    ("sk-ant key", "use sk-ant-api03-FAKE0123456789abcdefgh now", "FAKE0123456789abcdefgh"),
+    ("X-API-Key header", "X-API-Key: FAKEhdr1234567", "FAKEhdr1234567"),
+    ("ODBC Pwd", "Server=db;Uid=app;Pwd=FAKEodbc1234;Database=x", "FAKEodbc1234"),
+    (
+        "JDBC password",
+        "jdbc:postgresql://db/x?user=app&password=FAKEjdbc1234&ssl=true",
+        "FAKEjdbc1234",
+    ),
+    ("bearer token", "Bearer FAKEbearerTOKEN0123456789", "FAKEbearerTOKEN0123456789"),
+    ("token is", "my token is FAKEtokenis9876", "FAKEtokenis9876"),
+]
+
+
+@pytest.mark.parametrize(
+    ("shape", "text", "secret"), _SECRET_SHAPES, ids=[x[0] for x in _SECRET_SHAPES]
+)
+def test_no_secret_shape_survives_the_scrub(shape: str, text: str, secret: str) -> None:
+    from dms_core.control_plane.ask_audit import scrub_counted
+
+    clean, removed = scrub_counted(text)
+
+    assert secret not in clean, f"{shape}: {clean!r}"
+    assert removed >= 1
+    assert scrub_counted(clean) == (clean, 0), "a second pass changes nothing"
+
+
+def test_every_secret_shape_is_absent_from_the_export_and_counted() -> None:
+    question = "\n".join(text for _s, text, _x in _SECRET_SHAPES) + "\nWhat is total spend?"
+    sql = "SELECT 1 FROM inventory WHERE api_key = 'FAKEsqlkey123456' -- password=FAKEsqlcomment99"
+    client, _app = _stub_stack(_envelope(sql_used=sql))
+
+    assert _ask(client, question).status_code == 200
+
+    csv_text = _export(client).text
+    jsonl_text = _export(client, format="jsonl").text
+    for _shape, _text, secret in _SECRET_SHAPES:
+        assert secret not in csv_text and secret not in jsonl_text, secret
+    assert "FAKEsqlkey123456" not in csv_text and "FAKEsqlcomment99" not in csv_text
+    row = _csv_rows(csv_text)[0]
+    assert int(row["redactions"]) >= len(_SECRET_SHAPES), "the file says text was altered"
+    assert "total spend" in row["question"]
+
+
+# --- M2: ordinary text and SQL must come through untouched -----------------------
+
+
+def test_ordinary_text_sql_and_table_names_are_not_rewritten() -> None:
+    asks = [
+        "What are our risk-weighted assets",
+        "Show bearer securities by issuer",
+        "The authorization is pending for the Q3 filing",
+    ]
+    sql = (
+        'SELECT a.id FROM "risk-weighted_assets" a JOIN b ON a.id = b.id '
+        "WHERE token = t2.token AND secret = 0"
+    )
+    client, _app = _stub_stack(_envelope(sql_used=sql))
+    for q in asks:
+        assert _ask(client, q).status_code == 200
+
+    rows = _csv_rows(_export(client).text)
+
+    assert [r["question"] for r in rows] == asks
+    for r in rows:
+        assert r["executed_sql"] == sql
+        assert r["tables_read"] == "b;risk-weighted_assets"
+        assert r["redactions"] == "0"
+
+
+def test_scrub_leaves_a_comparison_and_a_null_test_alone() -> None:
+    from dms_core.control_plane.ask_audit import scrub
+
+    for text in (
+        "SELECT id FROM users WHERE token IS NULL OR password IS NOT NULL",
+        "bearer securities",
+        "authorization is pending",
+        "risk-weighted_assets",
+    ):
+        assert scrub(text) == text
+    assert (
+        scrub("WHERE token = t2.token AND secret = 0", sql=True)
+        == "WHERE token = t2.token AND secret = 0"
+    )
+
+
+# --- M3: a hung audit database must not hang the ask ------------------------------
+
+
+def test_a_hung_audit_database_does_not_hang_the_ask(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_core.control_plane.ask_audit as aa
+
+    monkeypatch.setattr(aa, "CONNECT_TIMEOUT_S", 2, raising=False)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)  # accepts at the kernel and never answers a byte
+    port = listener.getsockname()[1]
+    try:
+        client, app = _stub_stack(_envelope())
+        store = aa.PostgresAskAuditStore(
+            f"postgresql://dms@127.0.0.1:{port}/dms",
+            tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        )
+        app.state.ask_audit_store = store
+        out: dict[str, Any] = {}
+
+        def run() -> None:
+            t0 = time.monotonic()
+            out["first"] = _ask(client, "How many units?").status_code
+            out["first_s"] = time.monotonic() - t0
+            t1 = time.monotonic()
+            out["second"] = _ask(client, "How many units again?").status_code
+            out["second_s"] = time.monotonic() - t1
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(timeout=20)
+
+        assert not worker.is_alive(), "the ask hung on an audit database that never answers"
+        assert out["first"] == 200 and out["second"] == 200
+        assert out["first_s"] < 10
+        assert out["second_s"] < 2, "after one timeout the store backs off instead of waiting again"
+        assert store.dropped == 2, "a timed-out write is an unrecorded ask, counted"
+    finally:
+        listener.close()
+
+
+def test_an_audit_store_that_cannot_answer_is_a_503_not_a_partial_file() -> None:
+    class _Broken(InMemoryAskAuditStore):
+        def list_between(self, **_kw: Any):  # type: ignore[override]
+            raise RuntimeError("postgres at db.internal:5432 is down")
+
+    client, app = _stub_stack(_envelope())
+    app.state.ask_audit_store = _Broken()
+
+    r = _export(client)
+
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "audit_store_unavailable"
+    assert "db.internal" not in r.text
+
+
+# --- M5: the file says how complete it is ----------------------------------------
+
+
+class _FlakyStore(InMemoryAskAuditStore):
+    """Loses the first write, then works."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed = False
+
+    def record(self, rec: Any) -> None:
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("audit database blipped")
+        super().record(rec)
+
+
+def test_a_saved_file_carries_the_store_and_the_unrecorded_count() -> None:
+    client, app = _stub_stack(_envelope())
+    app.state.ask_audit_store = _FlakyStore()
+    _ask(client, "the ask whose row was lost")
+    _ask(client, "the ask that was recorded")
+
+    csv_row = _csv_rows(_export(client).text)
+    jsonl_row = [json.loads(x) for x in _export(client, format="jsonl").text.splitlines()]
+
+    assert [r["question"] for r in csv_row] == ["the ask that was recorded"]
+    assert csv_row[0]["store_backend"] == "memory"
+    assert csv_row[0]["unrecorded_asks_since_start"] == "1"
+    assert jsonl_row[0]["store_backend"] == "memory"
+    assert jsonl_row[0]["unrecorded_asks_since_start"] == 1
+
+
+# --- M6: the record is bounded, the ask is not -----------------------------------
+
+
+def test_a_huge_question_is_recorded_cut_and_marked() -> None:
+    from dms_core.control_plane.ask_audit import QUESTION_CAP
+
+    client, app = _stub_stack(_envelope())
+    for _ in range(5):
+        assert _ask(client, "x" * 2_000_000).status_code == 200, "the ask itself still accepts it"
+
+    stored = app.state.ask_audit_store.list_between(since=None, until=None, limit=100)
+
+    assert len(stored) == 5
+    assert sum(len(r.question) for r in stored) < 5 * (QUESTION_CAP + 100)
+    for r in stored:
+        assert r.question.startswith("x" * 100)
+        assert f"[truncated {2_000_000 - QUESTION_CAP} chars]" in r.question
+        assert r.truncated is True
+    assert {r["truncated"] for r in _csv_rows(_export(client).text)} == {"true"}
+
+
+def test_a_huge_sql_text_is_recorded_cut_and_marked() -> None:
+    from dms_core.control_plane.ask_audit import SQL_CAP
+
+    sql = "SELECT 1 FROM inventory -- " + "y" * 200_000
+    client, _app = _stub_stack(_envelope(sql_used=sql))
+    _ask(client, "How many units?")
+
+    row = _csv_rows(_export(client).text)[0]
+
+    assert len(row["executed_sql"]) < SQL_CAP + 100
+    assert "[truncated " in row["executed_sql"] and row["truncated"] == "true"
+    assert row["tables_read"] == "inventory", "tables come from the whole statement, not the cut"
+
+
+def test_the_memory_store_is_bounded_and_counts_what_it_evicts() -> None:
+    store = InMemoryAskAuditStore(max_bytes=5_000)
+    for _ in range(10):
+        store.record(
+            record_from_error(
+                question="q" * 1000,
+                reason="seed",
+                actor=DEPLOYMENT_ACTOR,
+                actor_kind="deployment",
+                space_id=None,
+            )
+        )
+
+    kept = store.list_between(since=None, until=None, limit=100)
+
+    assert 0 < len(kept) < 10
+    assert store.dropped == 10 - len(kept), "an evicted row is an unrecorded ask, counted"
+
+
+# --- L1: range parsing is strict and never a 500 ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"to": "9999-12-31"},
+        {"from": "0001-01-01T00:00:00+14:00"},
+        {"from": "9999-12-31T23:59:59-14:00"},
+        {"to": "20261005"},
+        {"from": "2026-10-05T25:00:00"},
+        {"from": "2026-13-01"},
+        {"from": "yesterday"},
+    ],
+)
+def test_a_range_that_is_not_a_real_date_is_422_never_500(params: dict[str, str]) -> None:
+    client, _app = _stub_stack(_envelope())
+
+    r = _export(client, **params)
+
+    assert r.status_code == 422, (params, r.status_code)
+    assert r.json()["detail"]["code"] == "invalid_range"
+
+
+def test_the_two_spellings_of_a_day_agree() -> None:
+    client, app = _stub_stack(_envelope())
+    _seed(app, "2026-10-05T09:00:00", "on the fifth")
+    _seed(app, "2026-10-06T09:00:00", "on the sixth")
+
+    by_date = _csv_rows(_export(client, **{"from": "2026-10-05", "to": "2026-10-05"}).text)
+    by_time = _csv_rows(
+        _export(client, **{"from": "2026-10-05T00:00:00Z", "to": "2026-10-06T00:00:00Z"}).text
+    )
+
+    assert [r["question"] for r in by_date] == ["on the fifth"]
+    assert [r["question"] for r in by_time] == [r["question"] for r in by_date]
+
+
+# --- L2: the CSV formula guard sees through whitespace and lookalikes -------------
+
+_DISGUISED = [
+    " =1+1",
+    "\xa0=1+1",
+    "\uff1d1+1",
+    "\u200b=1+1",
+    "\u3000@SUM(A1)",
+    " \t-2+3",
+    "\ufeff+1",
+]
+
+
+@pytest.mark.parametrize("lead", _DISGUISED)
+def test_a_disguised_formula_lead_is_neutralised(lead: str) -> None:
+    assert neutralise_formula(lead) == "'" + lead
+
+
+def test_a_disguised_formula_is_neutralised_in_the_export() -> None:
+    client, app = _stub_stack(_envelope())
+    for q in _DISGUISED[:3]:
+        app.state.ask_audit_store.record(
+            record_from_error(
+                question=q,
+                reason="seed",
+                actor=DEPLOYMENT_ACTOR,
+                actor_kind="deployment",
+                space_id=None,
+            )
+        )
+
+    questions = {r["question"] for r in _csv_rows(_export(client).text)}
+
+    assert questions == {"'" + q for q in _DISGUISED[:3]}

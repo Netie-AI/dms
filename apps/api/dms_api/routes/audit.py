@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import re
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
 import psycopg
 from cortex_client import CortexClient, compliance_gate
 from dms_core.control_plane.ask_audit_export import (
+    VERIFY_SCOPE,
     ExportFormat,
+    ExportMeta,
     LedgerVerification,
     to_csv,
     to_jsonl,
@@ -90,6 +93,17 @@ MAX_EXPORT_ROWS = 50_000
 #: DR-0004 Option A, said in the response so the file cannot be read as naming a person.
 ACTOR_BASIS = "deployment identity (DR-0004 option A); not a person"
 
+#: ``from`` and ``to`` are ``YYYY-MM-DD`` or an ISO 8601 date and time. Nothing else:
+#: ``20261005`` is refused rather than read as something other than the day asked for.
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DATE_TIME = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?$"
+)
+
+
+def _bad_range(message: str) -> HTTPException:
+    return HTTPException(status_code=422, detail={"code": "invalid_range", "message": message})
+
 
 def _parse_bound(raw: str | None, *, name: str, upper: bool) -> datetime | None:
     """``[from, to)`` in UTC. A bare date means that whole day: ``to`` is its end."""
@@ -97,24 +111,31 @@ def _parse_bound(raw: str | None, *, name: str, upper: bool) -> datetime | None:
         return None
     text = raw.strip()
     try:
-        value = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_range", "message": f"{name} is not an ISO 8601 date or time"},
-        ) from exc
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    if upper and len(text) == 10:
-        value += timedelta(days=1)
-    return value.astimezone(UTC)
+        if _DATE_ONLY.match(text):
+            day = date.fromisoformat(text)
+            value = datetime(day.year, day.month, day.day, tzinfo=UTC)
+            if upper:
+                value += timedelta(days=1)
+            return value
+        if _DATE_TIME.match(text):
+            value = datetime.fromisoformat(text)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
+        raise _bad_range(f"{name} is out of range or not a real date") from exc
+    raise _bad_range(f"{name} must be YYYY-MM-DD or an ISO 8601 date and time")
 
 
-def _verify_chain(cortex: CortexClient | None) -> LedgerVerification:
+def _verify_chain(cortex: CortexClient | None, pointers: int) -> LedgerVerification:
     """Run ``ledger/verify`` and keep only what the export may say about it.
 
-    Anything short of ``ok`` is unverified, including a ledger that could not be
-    reached. The failure text is dropped: a transport error can quote a URL.
+    Anything short of a clean, sufficient verify is unverified. That includes a
+    ledger that could not be reached (the failure text is dropped: a transport
+    error can quote a URL) and an ``ok`` that checked no entries, or fewer than
+    the ``pointers`` ledger entries the exported rows name: a chain that lost its
+    tail still verifies, and an empty ledger verifies trivially, so ``ok`` alone
+    says nothing about the entries this file points at.
     """
     now = datetime.now(UTC)
     if cortex is None:
@@ -123,9 +144,12 @@ def _verify_chain(cortex: CortexClient | None) -> LedgerVerification:
         result = cortex.verify_ledger()
     except Exception:  # noqa: BLE001 - an unreachable ledger is "unverified", not a 500
         return LedgerVerification("unavailable", None, None, now)
-    if result.ok:
-        return LedgerVerification("ok", None, result.checked, now)
-    return LedgerVerification("break", result.first_break, result.checked, now)
+    if not result.ok:
+        return LedgerVerification("break", result.first_break, result.checked, now)
+    checked = result.checked or 0
+    if checked <= 0 or checked < pointers:
+        return LedgerVerification("incomplete", None, result.checked, now)
+    return LedgerVerification("ok", None, result.checked, now)
 
 
 @router.get("/export")
@@ -140,9 +164,11 @@ def export_asks(
     """BANK-02 (dms#269): one row per ask - who, what, which SQL and tables, what came back.
 
     ``from`` is inclusive and ``to`` exclusive; a bare date means the whole day.
-    The ledger-verification result rides on every row, and ``export_verified`` is
-    false on a break or when the ledger cannot be reached. The actor column is the
-    deployment identity, and ``actor_kind`` says so (DR-0004 Option A).
+    The ledger-verification result, its scope, the store and the unrecorded-ask
+    count ride on every row. ``export_verified`` is false on a break, when the
+    ledger cannot be reached, and when verify covered fewer entries than the rows
+    point at. The actor column is the deployment identity, and ``actor_kind`` says
+    so (DR-0004 Option A).
     """
     # Gated before any row is read; a read that has happened cannot be un-read.
     # mutation=False: this is a read, so an unreachable gate does not refuse it,
@@ -158,12 +184,15 @@ def export_asks(
     since = _parse_bound(from_, name="from", upper=False)
     until = _parse_bound(to, name="to", upper=True)
     if since is not None and until is not None and since >= until:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "invalid_range", "message": "from must be before to"},
-        )
+        raise _bad_range("from must be before to")
 
-    rows = audit.list_between(since=since, until=until, limit=MAX_EXPORT_ROWS + 1)
+    try:
+        rows = audit.list_between(since=since, until=until, limit=MAX_EXPORT_ROWS + 1)
+    except Exception as exc:  # noqa: BLE001 - a store that cannot answer is 503, not a half file
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "audit_store_unavailable", "message": type(exc).__name__},
+        ) from exc
     if len(rows) > MAX_EXPORT_ROWS:
         raise HTTPException(
             status_code=413,
@@ -173,11 +202,13 @@ def export_asks(
             },
         )
 
-    verification = _verify_chain(cortex)
+    pointers = len({r.cortex_entry_id for r in rows if r.cortex_entry_id})
+    verification = _verify_chain(cortex, pointers)
+    meta = ExportMeta(verification, store_backend=audit.backend, unrecorded_asks=audit.dropped)
     if fmt == "csv":
-        body, media = to_csv(rows, verification), "text/csv; charset=utf-8"
+        body, media = to_csv(rows, meta), "text/csv; charset=utf-8"
     else:
-        body, media = to_jsonl(rows, verification), "application/x-ndjson; charset=utf-8"
+        body, media = to_jsonl(rows, meta), "application/x-ndjson; charset=utf-8"
     return Response(
         content=body.encode("utf-8"),
         media_type=media,
@@ -186,6 +217,7 @@ def export_asks(
             "Cache-Control": "no-store",
             "X-Audit-Export-Verified": "true" if verification.verified else "false",
             "X-Audit-Ledger-Verify": verification.status,
+            "X-Audit-Verify-Scope": VERIFY_SCOPE,
             "X-Audit-Actor-Basis": ACTOR_BASIS,
             "X-Audit-Store": audit.backend,
             "X-Audit-Unrecorded-Asks": str(audit.dropped),
