@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
+
+- **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.
+- **Docs.** `docs/DEMO_RUNBOOK.md` prove URL is `https://studio.netie.ai/studio`. API on prove stays `127.0.0.1:8090`. No `0.0.0.0/0`. DR-0004 Option A unchanged. SQL panel name matches `SqlSourcePanel` (SQL Server / MySQL / PostgreSQL).
+- **Probe.** GET-only 2026-10-05: `/`, `/studio`, `/api/health` all 200. Health: postgres, persistent, `ask_mode=live`, `demo_fallback=false`. No upload, no ask. Not DEMO-HOST-02 PASS. Not EPIC-008 COMPLETE. #163 stays OPEN.
+- **UI.** Re-checked `StudioPage`, `SqlSourcePanel`, `apps/ui/src/lib/api.ts`. Browser calls same-origin `/api`. No string claims the product is laptop-only. Studio lede now names PostgreSQL so it matches the SQL panel the walk points at. No bind change.
+- **Not this ticket:** public `:8090`, standing the tunnel, lake / `LIVE_KEY_ID` / OV e2-micro, `scripts/score_curated.py`, `generative_ask.py`, `/ask`, `packages/cortex_client/**`, `contract/openapi*`. Merge only after #337.
+
 ## 2026-10-05 - PROVE-SUBMIT-01: Formal owner is vault / OV mint 401 (Refs dms#359 #360)
 
 - **Live.** Finance `cq_sku_count` on prove returns DMS HTTP 200 with assumptions `exact match ok`, `Cortex SQL fail`, `no generative fallback`. That `Cortex SQL fail` string is the observed label. It is misleading: `POST /v1/contract/submit` was never called. `audit_id` is `ans_curated_step`. `sql_used` is null. Same observed label for stock-value and capacity utilisation. Ledger not reached. Nothing PASS. Live still BLOCKED. #359 stays OPEN.
@@ -362,7 +370,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Gate.** `tests/test_oracle_fix_02.py::test_cq_audit_overdue_bound_as_of_two_dates` (seed-derived rows at two as-of dates). Two tightenings in `tests/test_oracle_fix_01.py`: (a) remove `cq_audit_overdue` from `_OWN_ORACLE_ERROR`; (b) zero-row check covers every oracle whose `expect` is an answer. Refuse/abstain stay exempt by `expect`. `trap_high_risk_pending` out of scope. No skip/xfail.
 - **Not this ticket:** other oracles; live prove; COMPLETE; merge; Phase 1 re-label.
 
-
 ## 2026-09-25 - ONTO-STORE-01: durable versioned ontology store (#279)
 
 - **Ticket.** [ONTO-STORE-01 #279](https://github.com/Netie-AI/dms/issues/279) under CONNECT-ASK-01 #277 / EPIC-020 #178. Does not close tickets. Not COMPLETE. No live figures.
@@ -385,7 +392,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Change.** Ask path only: with no `tables`, cascade and retrieve use `requested or default_readable` (the same set `demo_acl` mints: grantable intersect DEMO_TABLES). With `tables`, intersection with `granted` only. If `grantable_tables` cannot be read, the ask uses an empty context and never falls back to the whole space. `DemoSessionStore.list_space_source_ids` reads the Executor warehouse, not the process default. `demo_acl`, the manifest, bearer/transport, qualifier guard, scorer, invariants, import-linter, contract pin, WRONG pins, `.github/`, `settings.py`, and `cortex_read.py` untouched.
 - **Gate.** `tests/test_grant_read_01.py`. Fake httpx transport. Fails on parent `38f8924a` (R-0007). No skip/xfail. No existing-test edit.
 - **Not this ticket:** live prove; COMPLETE; merge.
-
 
 ## 2026-09-25 - A2-06: caller ontology stays unread; missing verify cache abstains (#262)
 
@@ -488,6 +494,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Gate.** `tests/test_hostile_schema_a2.py` plants four defects one at a time (orphan FK, FK on the wrong column, duplicate business key behind a surrogate, `revenue_usd` holding MYR) into a clean 3-table warehouse, asks 4 questions on the typed-plan and generated-SQL paths through `maybe_generative_ask` with a real duckdb submit, and grades envelope rows against oracle values, not row counts.
 - **Measured.** n=40 envelopes, **14 confidently WRONG** on main @ `3c3b621`. Pinned in `MEASURED` so a fix or a regression both fail until the pin is edited. Owners: #258 (SQL path ignores failed verify), #259 (wrong-column FK), #260 (duplicate business key), #261 (currency never checked; 9 of 14).
 - **Proves it can fail.** Flipping one pin to OK fails with the envelope's rows and text. A clean-schema control must answer with oracle values, so abstaining cannot pass for free.
+
 ## 2026-09-23 - GEN-PATH-CLIMB-13: unused parent-SQL leftover past ontology_plan=39 (#231)
 
 - **Ticket.** Serves [GEN-PATH-CLIMB-13 #231](https://github.com/Netie-AI/dms/issues/231) under EPIC-INSIGHTS-UX #178. Does not close tickets. Does not stamp epic COMPLETE. Does not invent 99.95% / estate CLEAR. Does not reopen #178. #228 RISE_PASS @ `dff2a6ea` (ontology_plan=39 bind_plan=0 WRONG=0 answered=39/49 on uncapped harness) stands as the measured floor.
@@ -733,7 +740,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Not.** ML route/train/apply (parked). LangChain/LangGraph. Pack SQL copy (supplier 0.65/0.35 formula stays miss). Planted refuses stay ABSTAIN.
 - **Measured (offline `--ab`, this seat):** gen 15/26 answered WRONG=0 (frozen prove live gen remains 1/26 = 3.85 pct). Exact 10/26 WRONG=0.
 
-
 ## 2026-09-13 - GEN-02 YAML retrieve pack + typed lake filters (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close tickets. Not COMPLETE. Not 99.95%.
@@ -742,14 +748,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Measured (offline `--ab`, this seat, not Studio):** gen 14/26 answered WRONG=0 (was 9; frozen prove live gen remains 1/26 = 3.85 pct). Exact 10/26 WRONG=0.
 - **Must not:** invent live Studio 14/26, pack-expansion-as-strategy, vendor paste, ticket close.
 
-
 ## 2026-09-13 - GEN-02 Distill ladder in harness (ideas only, #180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) / PR #185. Does not close #180 or #178. Not COMPLETE. Not 99.95%.
 - **Mapping.** Certified-first then free gen; `demo_ontology` retrieve spine + slot-name YAML `tests/fixtures/curated_ceo/ontology_spine.yaml` (no SQL, not a vendor pack); `hybrid_fuse` + CRAG grades; Cortex `POST /dms/query` + `bind_plan` (no text2sql SDK). No paste from DB-GPT / mybot / n8n / OpenWillow / guaca / rakazo.
 - **Try.** Isolated gen retrieve+bind miss is ABSTAIN after the attempt, not silent None. Product path still Cortex-asks on compute miss. Frozen prove A/B @ `a9578348`: exact 38.46 pct / gen 3.85 pct, WRONG=0. Offline `--ab` is a separate measurement.
 - **Must not:** invent live Studio coverage, green planted refuses, pack expansion as the climb, GitHub CI `--climb`, ticket close.
-
 
 ## 2026-09-13 - GEN-02 retrieve bind on Cortex compute miss (#180)
 
@@ -758,14 +762,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Ontology.** `demo_ontology` reads columns on disk (thin reseed vs Cortex lake): no `storage_bin` / shipment `supplier_id` claims the lake does not have. Honest measures `sku_count`, `outbound_kg`, `utilisation_pct`. Bind misses list/which asks and untyped filters (WH-A, cold, expired, CCTV, above-90). Ops spend still grant-abstains.
 - **Must not:** invent live Studio coverage, green planted refuses, GitHub CI `--climb`, ticket close, keys in chat.
 
-
 ## 2026-09-13 - SCORE-BIRD-01: bronze batches, leftover trap skip (#184)
 
 - **Ticket.** Serves [SCORE-BIRD-01 #184](https://github.com/Netie-AI/dms/issues/184). Does not close tickets. Not COMPLETE.
 - **Grow.** Pack snapshot is not a ceiling. `--live` lists Studio bronze and prints `target=75 measured=N leftover=75-N`. First GO batch stays `gender`.
 - **Skip.** Leftover traps whose `needs_table` has landed SKIP (no invented oracle). `trap_75_tables` and demo-pack bleed stay refuse.
 - **Not this ticket:** EPIC-020b / #108 COMPLETE, Mini-Dev coverage from a partial batch, ticket close.
-
 
 ## 2026-09-13 - SCORE-BIRD-01: measured live harness on BIRD Space (#184)
 
@@ -774,7 +776,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Honesty.** Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87` source_count=1 data_source `12b6f170` bounded `gender` max_rows=50. Full 75-table Mini-Dev extract is Platform leftover. Runbook: `scripts/score_bird.md`.
 - **Not this ticket:** EPIC-020b / #108 COMPLETE, 99.95%, DB-GPT clone, GEN-02 curated climb, live counts from a cloud seat, ticket close.
 
-
 ## 2026-09-13 - GEN-02 live A/B + CRAG validate-or-abstain harness (#180)
 
 - **SoT widen.** Isolated live A/B: `POST /v1/chat/ask` `ask_path=exact|generative|product` (certified-first then free gen). Platform: `python scripts/score_curated.py --climb --ab --url https://studio.netie.ai/api`.
@@ -782,13 +783,11 @@ Append-only. Never edited, only added to. Newest first.
 - **Baseline.** A/B @ `a9578348` exact answered 10/26, gen 1/26, WRONG=0. Offline `--ab` uses demo ontology retrieve (not pack expand). Frozen product-path @ `91c5cc99` unchanged.
 - **Must not:** 99.95%/COMPLETE, greening planted refuses, GitHub CI live ask, ticket close, keys in chat.
 
-
 ## 2026-09-13 - GEN-02 measured live coverage climb harness (#180)
 
 - **Ticket.** Serves [GEN-02 #180](https://github.com/Netie-AI/dms/issues/180) under EPIC-GEN-01 #178 after GEN-01 @ `a9578348`. Does not close tickets. Not COMPLETE. Not 99.95%.
 - **Harness.** `python scripts/score_curated.py --climb --url https://studio.netie.ai/api` (or `DMS_API_BASE`). Reports real OK/LAYER/ABSTAIN/WRONG vs frozen baseline @ `91c5cc99` (OK7 LAYER10 ABSTAIN9 WRONG0). `answered_by_path` splits `route=generated` vs exact-match pack. WRONG=0 is FAIL if broken. Unreachable host or IAP 401/403 is BLOCKED, not a fake score. `--climb` has no laptop default.
 - **Not this ticket:** pack expansion, greening planted refuses, GitHub CI live ask, EPIC-019 COMPLETE, reopen #108, ticket close, keys in chat.
-
 
 ## 2026-09-13 - GEN-01 semantic retrieve + A/B vs exact-match (#179)
 
@@ -797,14 +796,12 @@ Append-only. Never edited, only added to. Newest first.
 - **A/B.** `python scripts/score_curated.py --ab` scores exact-match pack vs retrieve+bind generative on the same curated_ceo pack. FAIL if either path WRONG>0.
 - **Not this ticket:** pack expansion, EPIC-019 COMPLETE, GEN-02 live harness, reopen #108.
 
-
 ## 2026-09-13 - GEN-01 ontology-grounded generative ask (#179)
 
 - **Ticket.** Serves [GEN-01 #179](https://github.com/Netie-AI/dms/issues/179) under EPIC-GEN-01 #178. Does not close #179 or #178. Not COMPLETE.
 - **Path.** After VQ/pack/VQ-04 refuse and bronze, a non-exact-match ask may take GEN-01: Cortex `POST /dms/query` (compute) returns a typed ontology plan; `Ontology.compile` emits SQL; hostile/grant/EXPLAIN validate; Cortex submit + ledger. Badge `L2_VALIDATED` or `ABSTAIN`. Missing compute misses into contract ask.
 - **Fail-closed.** Unsure compute, vague "just give me" / "worry about", VQ-04 planted paraphrases, compile refuse, ungranted relations, EXPLAIN fail: no execute. OpenVault keys stay in Cortex; empty api_key is not invented.
 - **Not this ticket:** EPIC-019 COMPLETE, certified pack expansion, greening planted refuses, GEN-02 live harness, reopen #108, ticket close.
-
 
 ## 2026-09-13 - SQLSRC-PG-01: kind=postgresql on Studio SQLSRC (#172)
 
@@ -813,14 +810,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Laws.** Extract-only into bronze under the Space. Password is request-only. Receipt/verify unchanged. sqlserver|mysql behavior unchanged. `kind=postgres` stays 422.
 - **Not this ticket:** Platform attach of `bird_minidev` into BIRD Space `f0da7dd3-58b3-4d15-84a8-a18f2853ed87`, SCORE-BIRD-01 PASS, reopen EPIC-020 #108 COMPLETE, EPIC-008 COMPLETE, keys in chat.
 
-
 ## 2026-09-13 - VQ-04 harden planted refuse traps after #175 (WRONG2)
 
 - **Ticket.** Serves [VQ-04 #176](https://github.com/Netie-AI/dms/issues/176) under EPIC-019 #38. Does not close #176 or #38. Not COMPLETE.
 - **Cause.** Live `score_curated` after PR #175 @ `497d1901` was OK7 LAYER10 ABSTAIN7 WRONG2. The 7 L0-gap LAYER lifts stay. Cortex L1 greened planted refuse: `trap_how_full_synonym` via vocabulary `how full` -> capacity utilisation; `trap_delayed_count` via `route_to_metric` delayed+per+warehouse -> `count_by_destination`. Neither is a `certified_queries.yaml` synonym (delayed golden is TARGET).
 - **Fix.** Exact-phrase refuse on those two asks (same `_norm` as pack, not an intent regex). Intercept before `cortex.ask`. Map also fail-closes if Cortex still returns L1 (E9: no engine figures on ABSTAIN). VQ-03 exact certified phrases still pack-hit.
 - **Not this ticket:** EPIC-019 / VQ-03 COMPLETE, greening traps for coverage, weakening gates, reopening EPIC-008, ticket close.
-
 
 ## 2026-09-13 - STUDIO-MOBILE-01: composer ink + TopBar phone labels (#171)
 
@@ -842,14 +837,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Platform recycle.** If prove Cortex lake lacks those columns, submit misses and the qid stays ABSTAIN. Recycle Cortex with the dms pack lake. Do not invent PASS.
 - **Not this ticket:** EPIC-008 COMPLETE, EPIC-019 COMPLETE, public `:8090`, lake / `LIVE_KEY_ID`, greening planted traps, ticket close.
 
-
 ## 2026-09-13 - STUDIO-MOBILE-01: Sources drawer below lg (#171)
 
 - **Ticket.** Serves [STUDIO-MOBILE-01 #171](https://github.com/Netie-AI/dms/issues/171). Parent is EPIC-008 residual polish, not a reopen of COMPLETE. Does not close #171 or #8.
 - **Chat.** Real covering path was `SourcePanel` as a `shrink-0 w-[22rem]` flex sibling, default open. Below `lg` it is now a drawer, closed by default, with an explicit Sources control. After ask it does not auto-open on phone-width. Desktop `lg` dock unchanged.
 - **Studio.** Files + SQLSRC stay on `lg:grid-cols-[22rem_1fr]`. Below `lg` they start collapsed behind a Sources control so preview / certified ask is reachable.
 - **Not this ticket:** EPIC-008 COMPLETE, public `:8090`, OpenVault user key UI, LeftNav rewrite, ticket close.
-
 
 ## 2026-09-13 - curated_ceo pack 14 -> 26 (SCORE-PACK-01 #168)
 
@@ -873,8 +866,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Fix.** Per-file attach lock. `connect_file` / `connect_readonly` hold one live RW handle until `close()`. Seeded fast path does not probe via a second connect. Library `/tree` lists serialize instead of 500.
 - **Not this ticket.** P-DMS-34 (ingest overlapping ask), lake / `LIVE_KEY_ID`, public `:8090`, ticket close.
 
-
-
 ## 2026-09-13 - DEMO-HOST-02: measured host-online smoke (#164)
 
 - **Cause.** Host-online COMPLETE needs a walked path through the Platform tunnel, not a `verify_demo_live.py` re-run and not a cloud seat pretending it can see prove `127.0.0.1:8090`.
@@ -882,13 +873,11 @@ Append-only. Never edited, only added to. Newest first.
 - **Honesty.** Temp CF hostname **ROTATE RISK** until founder GO durable `TUNNEL_TOKEN`. DMS `:8090` stays loopback. Cursor cloud is not the VPC certifying seat. Ask/upload BLOCKED prints `error.type` -- never invent PASS. Does not claim EPIC-008 COMPLETE.
 - **Not this ticket:** public `:8090`, lake / `LIVE_KEY_ID`, standing the tunnel, weakening `verify_demo_live` 31/31.
 
-
 ## 2026-09-13 - DEMO-HOST-01: pin temp CF Studio hostname (#163)
 
 - **Studio URL.** Platform quick tunnel (Platform/DevOps own it): `https://occurred-guest-guaranteed-practitioners.trycloudflare.com`. May rotate until a durable `TUNNEL_TOKEN`.
 - **Smoke.** `GET /` and `/api/health` 200; health `database.backend=postgres`, `persistent=true`. DMS `:8090` stays loopback-only -- no public open.
 - **Not this ticket:** EPIC-008 COMPLETE, DEMO-HOST-02 measured walk, standing the tunnel from dms.
-
 
 ## 2026-09-13 - DEMO-HOST-01: prove IAP/CF walk in the runbook (#163)
 
@@ -896,7 +885,6 @@ Append-only. Never edited, only added to. Newest first.
 - **Docs.** Section **2.1 Prove host-online (IAP/CF)**: ownership table, tunnel start cites Platform (EPIC-008 #8 GO; recipe is not in this repo), `{STUDIO_URL}/studio`, 2-min walk (SQLSRC-09 form or file upload -> ask -> envelope). DR-0004 Option A restated. `:8090` stays `127.0.0.1`; no `0.0.0.0/0`.
 - **UI.** Re-derived `StudioPage` / `SqlSourcePanel` / `apps/ui/src/lib/api.ts`: same-origin `/api` (Vite `VITE_API_TARGET` -> host `127.0.0.1:8090`). No Studio copy claimed localhost-only; no bind-address change.
 - **Not this ticket:** stand the tunnel, public `:8090`, lake / `LIVE_KEY_ID` / OV e2-micro, EPIC-008 COMPLETE, DEMO-HOST-02 smoke, reopen ENV-E4 / CSV-01 / INGEST-SYNC.
-
 
 ## 2026-09-10 - F32 skip demo-lake SQL; pack leftover asks (EPIC-020)
 
@@ -1271,6 +1259,7 @@ Append-only. Never edited, only added to. Newest first.
   Operate mode: Studio/Ontology/Amend/Audit/Runs + role switcher.
 - **Excel last mile.** `.tmp/viz_envelope.xlsx` BarClustered `Top3` from
   Sales oracle Electronics=1545366.4 / Home=1199018.49 / Misc=380948.33.
+
 ## 2026-08-28 - Playwright chrome/chat e2e
 
 - **#102.** Chrome, Chat, Spaces/Studio/Amend smoke against a local demo
@@ -1404,7 +1393,6 @@ Append-only. Never edited, only added to. Newest first.
   only). EPIC-019 filed #38; children #39/#40.
 - **Playground.** `playground/` sample data + 13 mutable questions +
   `scripts/playground_ask.py`. L4/L5 are aspiration labels only (P-DMS-33).
-
 
 ## 2026-08-02 - demo-eve P0 sweep
 

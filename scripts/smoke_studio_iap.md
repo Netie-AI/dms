@@ -1,5 +1,7 @@
 # DEMO-HOST-02 -- measured Studio host-online smoke
 
+**Walk origin (2026-10-05):** `https://studio.netie.ai`. The hostname in the record below is the 2026-09-13 temp quick tunnel. Do not walk it. Do not open `:8090`. See `docs/DEMO_RUNBOOK.md` section 2.1.
+
 **Ticket:** #164 under EPIC-008 (#8). **Does not close** #164 or #8.
 **Depends on:** Platform IAP/CF tunnel UP + DEMO-HOST-01 runbook (section 2.1).
 **Does not replace:** `scripts/verify_demo_live.py` (prove/laptop loopback certify, already 31/31). Do not weaken it. Do not invent a re-run green from this path.

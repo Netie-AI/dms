@@ -325,8 +325,8 @@ export function StudioPage() {
             Studio
           </h1>
           <p className="mt-3 max-w-xl text-[var(--color-ink-muted)]">
-            Your files, and what the warehouse made of them. Point at SQL Server or MySQL
-            without a config file: rows land in bronze, truncated pulls are named, and a
+            Your files, and what the warehouse made of them. Point at SQL Server, MySQL, or
+            PostgreSQL without a config file: rows land in bronze, truncated pulls are named, and a
             declared join that the data violates is refused on the receipt. Tick files to
             ground your next question in just those.
           </p>
