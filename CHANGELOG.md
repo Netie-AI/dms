@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - CURATED-NO-SILENT-FALLBACK-01: name the failed curated step (Refs dms#356)
+
+- **Step 1.** A curated l0 ask that is still absent from the exact pack (base metrics plus the #355 score-pack allowlist) abstains with `exact-match miss: pack-metric miss`, not a generic GEN-01 sentence. `cq_sku_count` stays on that allowlist. A confident generative answer is left as-is. `None` from generative still reaches the contract ask.
+- **Later steps.** Phrase match plus grants / Cortex SQL / ledger failure is a named ABSTAIN (`grants fail`, `Cortex SQL fail`, `ledger fail`) and does not continue.
+- **Scorer.** Offline `score_curated` reads `Executor.grantable_tables` on the A/B warehouse. It does not read the `DEMO_SPACE_GRANTS` dict.
+- **Gate.** Does not close #356 or #257. Not COMPLETE. No live scored round.
+
 ## 2026-10-05 - PROVE-CURATED-DIAG-01: score-pack exact allowlist (Refs dms#355)
 
 - **Ticket.** [PROVE-CURATED-DIAG-01 #355](https://github.com/Netie-AI/dms/issues/355) under [EPIC-A1 #257](https://github.com/Netie-AI/dms/issues/257). Does not close either. Does not stamp COMPLETE. Does not close #337.

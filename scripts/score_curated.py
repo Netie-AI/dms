@@ -3175,14 +3175,21 @@ def run_ab_curated(
     """Offline A/B: exact-match pack vs retrieve+bind generative on the same pack.
 
     Fake submit/ledger so CI has no keys. Does not expand certified packs.
+    Space grants come from ``Executor.grantable_tables`` (the serve lookup
+    on this warehouse), not the ``DEMO_SPACE_GRANTS`` dict.
     compare_rows=False keeps the badge/min_rows judge (existing tests).
     CLI --ab sets compare_rows so l0 answers are checked against oracle SQL.
     """
     import tempfile
     from types import SimpleNamespace
 
-    from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
-    from dms_executor.demo_pack import maybe_pack_ask, maybe_uncertified_refuse_ask
+    from dms_executor import Executor
+    from dms_executor.demo_pack import (
+        curated_pack_metric_miss,
+        match_pack_phrase,
+        maybe_pack_ask,
+        maybe_uncertified_refuse_ask,
+    )
     from dms_executor.generative_ask import maybe_generative_ask
     from dms_executor.semantic_retrieve import bind_plan
 
@@ -3219,107 +3226,120 @@ def run_ab_curated(
     exact_t = _tally()
     gen_t = _tally()
     cases_out: list[dict[str, Any]] = []
-    for case in pack["questions"]:
-        q = str(case["question"])
-        space = resolve_space(case, pack["spaces"])
-        entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space))
-        grants = set(entry[1]) if entry else set()
-        exact_env = maybe_uncertified_refuse_ask(q, space_id=space) or maybe_pack_ask(
-            q,
-            space_id=space,
-            grantable=grants,
-            submit=submit,
-            ledger_append=ledger,
-        )
-        exact_env = exact_env if exact_env is not None else _ab_miss()
-        gen_env = maybe_generative_ask(
-            q,
-            space_id=space,
-            warehouse=tmp,
-            grantable=grants,
-            compute=lambda ctx, _q=q: bind_plan(_q, ctx),
-            submit=submit,
-            ledger_append=ledger,
-            ontology=onto,
-        )
-        gen_env = gen_env if gen_env is not None else _ab_miss()
-        exact_r = judge_detailed(
-            case, exact_env, oracle_db=compare_db, oracles=oracles, as_of=as_of
-        )
-        gen_r = judge_detailed(
-            case, gen_env, oracle_db=compare_db, oracles=oracles, as_of=as_of
-        )
-        ev = exact_r.verdict
-        gv = gen_r.verdict
-        exact_t[ev] += 1
-        gen_t[gv] += 1
-        cases_out.append(
-            {
-                "id": case["id"],
-                "expect": case.get("expect"),
-                "exact": ev,
-                "generative": gv,
-                "exact_badge": exact_env.get("badge"),
-                "generative_badge": gen_env.get("badge"),
-                "plan_source": classify_plan_source(gen_env),
-                "crag": classify_crag(gen_env),
-                "exact_reason": exact_r.reason,
-                "generative_reason": gen_r.reason,
-                LEGACY_JUDGE_LABEL: {
-                    "exact": exact_r.scorer_ok_rows_not_compared,
-                    "generative": gen_r.scorer_ok_rows_not_compared,
-                },
-            }
-        )
-    n = len(pack["questions"])
-    exact_r = _path_report("exact_match", exact_t, n)
-    gen_r = _path_report("generative_semantic", gen_t, n)
-    crag_counts: dict[str, int] = {}
-    for row in cases_out:
-        key = str(row.get("crag") or "skipped")
-        crag_counts[key] = crag_counts.get(key, 0) + 1
-    base = BASELINE_AB_A9578348
-    oracle_error = int(exact_r["oracle_error"]) + int(gen_r["oracle_error"])
-    after, tz_after = _ab_engine_clock(tmp)
-    timezone = oracle_tz or tz_after
-    report = {
-        "kind": "dms.ab_gen01",
-        "pack": "curated_ceo",
-        "claim": "measured",
-        "exact_match": exact_r,
-        "generative": gen_r,
-        "crag": crag_counts,
-        "baseline_ab": {
-            "commit": base["commit"],
-            "exact_answered": base["exact_answered"],
-            "generative_answered": base["generative_answered"],
-            "exact_coverage_answered_pct": base["exact_coverage_answered_pct"],
-            "generative_coverage_answered_pct": base["generative_coverage_answered_pct"],
-            "n": base["n"],
-            "wrong": base["wrong"],
-        },
-        "distill": distill_block(),
-        "generative_vs_baseline": answered_vs_baseline(
-            gen_r["answered"], int(base["generative_answered"])
-        ),
-        "wrong": exact_r["wrong"] + gen_r["wrong"],
-        "oracle_error": oracle_error,
-        "passed": (
-            exact_r["wrong"] == 0
-            and gen_r["wrong"] == 0
-            and oracle_error == 0
-            and int(exact_r.get("invalid") or 0) == 0
-            and int(gen_r.get("invalid") or 0) == 0
-        ),
-        "compare_rows": compare_rows,
-        "oracle_db": str(compare_db) if compare_db is not None else None,
-        "schema_version": schema_ver,
-        "oracle_as_of": as_of,
-        "oracle_timezone": timezone,
-        "cases": cases_out,
-    }
-    stamp_round_clock(report, before, after, timezone)
-    return report
+    exe = Executor(warehouse_path=tmp)
+    try:
+        for case in pack["questions"]:
+            q = str(case["question"])
+            space = resolve_space(case, pack["spaces"])
+            grants = set(exe.grantable_tables(space_id=space))
+            exact_env = maybe_uncertified_refuse_ask(q, space_id=space) or maybe_pack_ask(
+                q,
+                space_id=space,
+                grantable=grants,
+                submit=submit,
+                ledger_append=ledger,
+            )
+            if exact_env is None:
+                # Step 1: curated l0 phrase is not in PACK_METRICS (cq_sku_count).
+                # Do not record a generic path-miss abstain for that.
+                if (
+                    str(case.get("expect") or "").lower() == "l0"
+                    and match_pack_phrase(q) is None
+                ):
+                    exact_env = curated_pack_metric_miss(q, space_id=space)
+                else:
+                    exact_env = _ab_miss()
+            gen_env = maybe_generative_ask(
+                q,
+                space_id=space,
+                warehouse=tmp,
+                grantable=grants,
+                compute=lambda ctx, _q=q: bind_plan(_q, ctx),
+                submit=submit,
+                ledger_append=ledger,
+                ontology=onto,
+            )
+            gen_env = gen_env if gen_env is not None else _ab_miss()
+            exact_r = judge_detailed(
+                case, exact_env, oracle_db=compare_db, oracles=oracles, as_of=as_of
+            )
+            gen_r = judge_detailed(
+                case, gen_env, oracle_db=compare_db, oracles=oracles, as_of=as_of
+            )
+            ev = exact_r.verdict
+            gv = gen_r.verdict
+            exact_t[ev] += 1
+            gen_t[gv] += 1
+            cases_out.append(
+                {
+                    "id": case["id"],
+                    "expect": case.get("expect"),
+                    "exact": ev,
+                    "generative": gv,
+                    "exact_badge": exact_env.get("badge"),
+                    "exact_text": str(exact_env.get("text") or ""),
+                    "generative_badge": gen_env.get("badge"),
+                    "plan_source": classify_plan_source(gen_env),
+                    "crag": classify_crag(gen_env),
+                    "exact_reason": exact_r.reason,
+                    "generative_reason": gen_r.reason,
+                    LEGACY_JUDGE_LABEL: {
+                        "exact": exact_r.scorer_ok_rows_not_compared,
+                        "generative": gen_r.scorer_ok_rows_not_compared,
+                    },
+                }
+            )
+        n = len(pack["questions"])
+        exact_rep = _path_report("exact_match", exact_t, n)
+        gen_rep = _path_report("generative_semantic", gen_t, n)
+        crag_counts: dict[str, int] = {}
+        for row in cases_out:
+            key = str(row.get("crag") or "skipped")
+            crag_counts[key] = crag_counts.get(key, 0) + 1
+        base = BASELINE_AB_A9578348
+        oracle_error = int(exact_rep["oracle_error"]) + int(gen_rep["oracle_error"])
+        after, tz_after = _ab_engine_clock(tmp)
+        timezone = oracle_tz or tz_after
+        report = {
+            "kind": "dms.ab_gen01",
+            "pack": "curated_ceo",
+            "claim": "measured",
+            "exact_match": exact_rep,
+            "generative": gen_rep,
+            "crag": crag_counts,
+            "baseline_ab": {
+                "commit": base["commit"],
+                "exact_answered": base["exact_answered"],
+                "generative_answered": base["generative_answered"],
+                "exact_coverage_answered_pct": base["exact_coverage_answered_pct"],
+                "generative_coverage_answered_pct": base["generative_coverage_answered_pct"],
+                "n": base["n"],
+                "wrong": base["wrong"],
+            },
+            "distill": distill_block(),
+            "generative_vs_baseline": answered_vs_baseline(
+                gen_rep["answered"], int(base["generative_answered"])
+            ),
+            "wrong": exact_rep["wrong"] + gen_rep["wrong"],
+            "oracle_error": oracle_error,
+            "passed": (
+                exact_rep["wrong"] == 0
+                and gen_rep["wrong"] == 0
+                and oracle_error == 0
+                and int(exact_rep.get("invalid") or 0) == 0
+                and int(gen_rep.get("invalid") or 0) == 0
+            ),
+            "compare_rows": compare_rows,
+            "oracle_db": str(compare_db) if compare_db is not None else None,
+            "schema_version": schema_ver,
+            "oracle_as_of": as_of,
+            "oracle_timezone": timezone,
+            "cases": cases_out,
+        }
+        stamp_round_clock(report, before, after, timezone)
+        return report
+    finally:
+        exe.close()
 
 
 def ab_offline(oracle_db: Path | None = None) -> int:
