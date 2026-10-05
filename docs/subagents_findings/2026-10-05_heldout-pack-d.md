@@ -31,6 +31,10 @@ Main idea: a frozen pack of questions DMS's authors never saw, on a synthetic da
 
 Authors and cross-checkers were told not to read the dms repo. The harness gave every agent the dms `CLAUDE.md` and a git-status listing at start (rules text and file names; no code, fixtures or questions). Access to the answer-key files by the cross-checkers can be verified from a transcript for 1 of 4; the other 3 transcripts are empty and file access times did not update on this machine, so for them it rests on instruction and on their own reports describing real exploration.
 
+## Custody exposure
+
+Older GitHub edits of PR #339's body, from about 2026-10-05 03:20 MYT through about 2026-10-06 00:45 MYT, showed the pack tag, pack commit, question ids, and pack shape. The body was then rewritten to the manifest root hash plus the caveat that the pack is external and not in this repo. Those older body versions are still in GitHub's edit history. This note does not repeat them.
+
 ## Hook (`scripts/score_heldout.py`)
 
 - **Judge.** Imports `score_curated.judge_envelope_detailed` and `oracle_row_match` (#292/#299/#300 rules). Nothing copied. Refusal questions are judged by badge: a confident answer is WRONG.
