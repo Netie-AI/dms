@@ -1,10 +1,10 @@
 # PROVE-SUBMIT-01
 
-Keywords: PROVE-SUBMIT-01, Cortex SQL fail, cq_sku_count, maybe_pack_ask, contract submit, 279cbd85, ans_curated_step, dms-359
+Keywords: PROVE-SUBMIT-01, vault, OpenVault mint, openvault_unauthenticated, 401, Cortex SQL fail, cq_sku_count, dms-359, dms-360, Cortex#301, OV#126
 
 ## Main idea
 
-Live Finance pack asks stamp `Cortex SQL fail` because `maybe_pack_ask` drops the exception from `_submit_verified_sql`. That call is bind plus `POST /v1/contract/submit` on Cortex pin `279cbd85`. The engine status and body are not in the envelope. Owner of the failed step is that Cortex pin. No DMS patch. Nothing PASS.
+Lead Formal owner is vault / OpenVault mint, not Cortex pin SQL or submit. Live prove (Cortex Build) never called `POST /v1/contract/submit`. OV mint `POST :18080/keys/services` returned HTTP 401 `openvault_unauthenticated`. Owner stamp is vault (Cortex #301 HttpGuard admin clash / OV #126). The earlier DMS inference that pin `279cbd85` submit/bind failed is incorrect: the mapper dropped a non-submit path. Do not paper over with DMS SQL. #359 stays OPEN. Live still BLOCKED. Nothing PASS. No tip deploy. No lake reseed. No product code.
 
 ## Live envelope (prove IAP, curl)
 
@@ -14,47 +14,33 @@ Space `cccccccc-cccc-cccc-cccc-cccccccccccc`. Question `How many SKUs do we have
 
 - DMS HTTP 200. Cloudflare `cf-ray: a45e89510ea57c81-EWR`. No Cortex `run_id` on the response.
 - `assumptions`: `["exact match ok", "Cortex SQL fail", "no generative fallback"]`
+- The string `Cortex SQL fail` is the observed label only. It is misleading. `POST /v1/contract/submit` was never called.
 - `answer_id` / `audit_id`: `ans_curated_step`
 - `badge` ABSTAIN, `route` abstain, `sql_used` null, `rows` empty
 - Wall time about 1.3s. Not a timeout. Ledger step not reached.
 
-Same stamp, same shape, under 1.5s:
+Same observed label, same shape, under 1.5s:
 
 - `What is total stock value by category?` (inventory)
 - `Show warehouse capacity utilisation` (locations)
 
-`Top 5 selling SKUs by revenue` is `exact-match miss` / `pack-metric miss` (that id is not on the allowlist). A non-pack ask returned `GEN-01: validate:explain:BinderException`, which is local EXPLAIN on the thin DMS file, not this curated submit.
+`Top 5 selling SKUs by revenue` is `exact-match miss` / `pack-metric miss` (that id is not on the allowlist). A non-pack ask returned `GEN-01: validate:explain:BinderException`, which is local EXPLAIN on the thin DMS file, not this path.
 
-Health on the same origin: `ask_mode=live`, `demo_fallback=false`, Cortex dependency `ok` with `url=http://127.0.0.1:8010/health` and `status_code=200`. Python urllib POST got Cloudflare 1010 (`cf-ray: a45e892a7ffb2672`). curl reached the DMS API. Cortex loopback is not reachable from this VM, so the inner submit status was not read off the wire.
+Health on the same origin: `ask_mode=live`, `demo_fallback=false`, Cortex dependency `ok` with `url=http://127.0.0.1:8010/health` and `status_code=200`. Python urllib POST got Cloudflare 1010 (`cf-ray: a45e892a7ffb2672`). curl reached the DMS API.
 
-## Call-site that writes the assumption
+## Owner (Lead Formal)
 
-`packages/executor/dms_executor/demo_pack.py` `maybe_pack_ask`.
+Vault / OpenVault mint.
 
-Live `_live_ask` always passes `submit` and `ledger_append`, so the `submit is None` branch is not this prove path.
+- Live prove on Cortex Build: `POST /v1/contract/submit` was never called.
+- OV mint `POST :18080/keys/services` returned HTTP 401 `openvault_unauthenticated`.
+- Owner stamp = vault. Cortex #301 HttpGuard admin clash. OV #126.
+- After OV auth lands, re-capture on Cortex #301. Keep abstain honesty.
 
-The live branch is the bare `except` around `submit(hit.sql)` (the following `ok is False or output is None` check is the other writer of the same string). `submit` is `Executor._submit_verified_sql`: `bind_session` when the session is new, then `submit_sql` -> `CortexClient.submit` -> `POST /v1/contract/submit`.
+## Prior claim (incorrect)
 
-`_submit_verified_sql` raises. `maybe_pack_ask` discards the exception. The envelope therefore cannot contain HTTP status, `detail.code`, `detail.message`, or `run_id`.
+Merged #360 recorded the owner as Cortex pin `279cbd85` submit/bind. That reading inferred `maybe_pack_ask` dropped an exception from bind plus `POST /v1/contract/submit`. The inference is incorrect. The mapper dropped a non-submit path. Do not paper over with DMS SQL. This amend does not change product code.
 
-SQL for `cq_sku_count` (certified text, not invented here):
+## Gate
 
-`SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory`
-
-## What pin 279cbd85 does with a failed submit
-
-`CortexOS/api/contract_routes.py` `contract_submit`:
-
-- `submit_request` returns `QueryResult(ok=False, status=<code>, error=...)` for `ManifestError` and `PoolSaturated`.
-- The route does not return that body. It raises `HTTPException` with `detail` `{code, message, run_id}` and a status from `_http_for_submit_status` (400, 403, 409, or 429).
-- `SqlGateAbstain` (EXPLAIN reject inside `execute_sql`) is not a `ManifestError`. `submit_request` does not catch it. `create_app` has no exception handler, so that path is an unhandled HTTP 500. The DuckDB text stays in the engine log, not in the default 500 body.
-
-DMS `CortexClient` uses `raise_on_unexpected_status=True`, so a non-200/422 becomes `UnexpectedStatus(status_code, content)`. `submit_sql` / `bind_session` classify that and re-raise. The curated except then drops it.
-
-A successful pin response is HTTP 200 with `ok=true` and `output` set (`bound` includes `session_id`; sql includes `columns` and `rows`). The live abstain means that 200 did not come back.
-
-## Owner
-
-Cortex pin `279cbd85` submit/bind. DMS is the mapper. The URL on the health probe is the loopback contract port. The payload is the contract submit (pool, plan.kind `session_bind` then `sql`, body.sql, signed manifest). This PR does not change that call.
-
-Not a DMS rewrite of the certified SQL. Not a lake reseed. Not a tip deploy.
+#359 stays OPEN. Live still BLOCKED. Nothing PASS. No tip-deploy claim. No lake reseed. No product code. This note records the Lead Formal. It does not issue a Formal stamp.

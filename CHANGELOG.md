@@ -2,11 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
-## 2026-10-05 - PROVE-SUBMIT-01: name the Cortex SQL fail owner (Refs dms#359)
+## 2026-10-05 - PROVE-SUBMIT-01: Formal owner is vault / OV mint 401 (Refs dms#359 #360)
 
-- **Live.** Finance `cq_sku_count` on prove returns DMS HTTP 200 with assumptions `exact match ok`, `Cortex SQL fail`, `no generative fallback`. `audit_id` is `ans_curated_step`. `sql_used` is null. Same stamp for stock-value and capacity utilisation. Ledger not reached. Nothing PASS.
-- **Call-site.** `maybe_pack_ask` drops the exception from `_submit_verified_sql` (bind, then `POST /v1/contract/submit`). The envelope has no engine status or body.
-- **Owner.** Cortex pin `279cbd85` submit/bind. No DMS patch. Cortex loopback was not readable from this VM.
+- **Live.** Finance `cq_sku_count` on prove returns DMS HTTP 200 with assumptions `exact match ok`, `Cortex SQL fail`, `no generative fallback`. That `Cortex SQL fail` string is the observed label. It is misleading: `POST /v1/contract/submit` was never called. `audit_id` is `ans_curated_step`. `sql_used` is null. Same observed label for stock-value and capacity utilisation. Ledger not reached. Nothing PASS. Live still BLOCKED. #359 stays OPEN.
+- **Prior claim.** Merged #360 named the owner as Cortex pin `279cbd85` submit/bind. That claim is incorrect. The mapper dropped a non-submit path. Do not paper over with DMS SQL.
+- **Owner.** Lead Formal: vault / OpenVault mint. Live prove (Cortex Build): OV mint `POST :18080/keys/services` returned HTTP 401 `openvault_unauthenticated`. Owner stamp = vault (Cortex #301 HttpGuard admin clash / OV #126). After OV auth lands, re-capture on Cortex #301. Keep abstain honesty. No DMS patch. No lake reseed. No tip deploy.
 
 ## 2026-10-05 - CURATED-NO-SILENT-FALLBACK-01: name the failed curated step (Refs dms#356)
 
