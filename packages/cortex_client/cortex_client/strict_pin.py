@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from dms_core.ask import CORTEX_LANES, MODEL_LANES, NO_MODEL_LANES
+from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
 
 STRICT_HEADER = "X-OpenVault-Strict"
 SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
@@ -457,11 +457,13 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
     exact model, no strip and no case fold. A missing served field is not
     the pin, including when ``served_attribution`` is ``none`` or absent.
 
-    A recorded zero is scored on its rows only when ``lane`` is on
-    ``NO_MODEL_LANES`` (the same object BRONZE-GRANT-01 imports). That set
-    is empty: ``rules`` and ``curated`` reach Cortex submit, so they are
-    ``CORTEX_LANES`` and a recorded zero is ``pin_mismatch:<lane>``. Zero
-    calls with any ``served_*`` field, or a model lane, is ``pin_mismatch``.
+    A recorded zero is a no-model answer only when ``lane`` is on
+    ``NO_MODEL_LANES`` (the same object BRONZE-GRANT-01 imports) and the
+    envelope carries no ``served_*`` field. That set is empty: ``rules``
+    and ``curated`` reach Cortex, so a recorded zero there is not no-model.
+    Those answers use the same stamp check as a model call. Missing or
+    unmatched stamps are ``pin_mismatch``. Matching stamps are scored on
+    the rows. A model lane with a recorded zero is ``pin_mismatch:<lane>``.
     No lane is ``lane_unknown``. Called only while a pin is active.
     """
     if not isinstance(env, Mapping):
@@ -469,16 +471,16 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
     calls = _explicit_model_calls(env)
     if calls is None or calls != 0:
         return _pin_served_mismatch(env)
-    if _carrying_served_field(env):
-        return _mismatch_name(
-            _provider_text(env.get("served_provider")),
-            _provider_text(env.get("served_model")),
-        )
     lane = env.get("lane") if "lane" in env else None
     if not isinstance(lane, str) or lane == "":
         return "lane_unknown"
     if lane in NO_MODEL_LANES:
+        if _carrying_served_field(env):
+            return _mismatch_name(
+                _provider_text(env.get("served_provider")),
+                _provider_text(env.get("served_model")),
+            )
         return None
-    if lane in MODEL_LANES or lane in CORTEX_LANES:
+    if lane in MODEL_LANES:
         return f"pin_mismatch:{lane}"
-    return None
+    return _pin_served_mismatch(env)

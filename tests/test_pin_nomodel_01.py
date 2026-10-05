@@ -5,8 +5,9 @@ Each live test drives ``live()`` into ``_ask``. On 7a8d6c11
 is INVALID ``pin_mismatch:missing/missing``. A served pair that matches the
 pin is scored as the pin.
 
-``rules`` and ``curated`` submit through Cortex, so they are not no-model.
-A recorded zero on either lane is INVALID ``pin_mismatch:<lane>``.
+``rules`` and ``curated`` submit through Cortex, so a recorded zero is not
+a no-model answer. Matching stamps are scored. Missing or unmatched stamps
+are ``pin_mismatch``.
 """
 
 from __future__ import annotations
@@ -128,38 +129,13 @@ def _pack_n(report: dict[str, Any]) -> int:
 
 
 @pytest.mark.parametrize("lane", ["rules", "curated"])
-def test_live_cortex_lane_zero_calls_is_invalid(
+def test_live_cortex_lane_matching_stamps_scores(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Cortex-routed lane with zero calls is INVALID, not a row score.
-
-    ``rules`` is verified_query (``maybe_verified_ask``). ``curated`` is
-    governed_metric (``maybe_pack_ask``). Both submit through Cortex. On
-    7a8d6c11 the reason is ``pin_mismatch:missing/missing``.
-    """
-    body = _envelope(model_calls=0, lane=lane)
-    assert not any(str(key).startswith("served_") for key in body)
-    try:
-        report, _script, sent = _score(monkeypatch, tmp_path, body)
-        n_pack = _pack_n(report)
-        assert len(sent) == n_pack
-        assert report["cases"][1]["verdict"] == "WRONG"
-        row = report["cases"][0]
-        assert row["verdict"] == "INVALID", row
-        assert row["reason"] == f"pin_mismatch:{lane}", row
-        assert report["n"] == n_pack
-        assert int(report["invalid"]) >= 1
-    finally:
-        _wipe(tmp_path)
-
-
-def test_live_zero_calls_with_served_pin_is_invalid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Zero calls plus a served pair, even the pin itself, is pin_mismatch."""
+    """Zero DMS calls plus stamps that match the pin are scored on the rows."""
     body = _envelope(
         model_calls=0,
-        lane="rules",
+        lane=lane,
         served_provider=_PROVIDER,
         served_model=_PIN,
     )
@@ -169,13 +145,62 @@ def test_live_zero_calls_with_served_pin_is_invalid(
         assert len(sent) == n_pack
         assert len(script.calls) == n_pack + 1
         row = report["cases"][0]
-        assert row["verdict"] == "INVALID", (
-            f"zero calls carrying served ids was {row['verdict']} "
-            f"reason={row.get('reason')!r}"
+        assert row["verdict"] == "OK", (
+            f"lane {lane!r} with zero calls and matching stamps was "
+            f"{row['verdict']} reason={row.get('reason')!r}"
         )
-        assert str(row["reason"]).startswith("pin_mismatch")
-        assert int(report["invalid"]) >= 1
+        assert not str(row.get("reason") or "").startswith("pin_")
+        assert int(report["correct"]) >= 1
+        assert row["rows"] == 1
+        rec = harness._record_line(report, str(row["id"]))
+        assert rec["outcome"] == "OK"
         assert report["n"] == n_pack
+    finally:
+        _wipe(tmp_path)
+
+
+@pytest.mark.parametrize("lane", ["rules", "curated"])
+def test_live_cortex_lane_missing_stamps_is_invalid(
+    lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero calls on a Cortex lane with no served stamps is pin_mismatch."""
+    body = _envelope(model_calls=0, lane=lane)
+    assert not any(str(key).startswith("served_") for key in body)
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, body)
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        assert report["cases"][1]["verdict"] == "WRONG"
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", row
+        assert row["reason"] == "pin_mismatch:missing/missing", row
+        assert report["n"] == n_pack
+        assert int(report["invalid"]) >= 1
+    finally:
+        _wipe(tmp_path)
+
+
+@pytest.mark.parametrize("lane", ["rules", "curated"])
+def test_live_cortex_lane_mismatched_stamps_is_invalid(
+    lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero calls on a Cortex lane whose stamps are not the pin is pin_mismatch."""
+    body = _envelope(
+        model_calls=0,
+        lane=lane,
+        served_provider="together",
+        served_model=_PIN,
+    )
+    try:
+        report, _script, sent = _score(monkeypatch, tmp_path, body)
+        n_pack = _pack_n(report)
+        assert len(sent) == n_pack
+        assert report["cases"][1]["verdict"] == "WRONG"
+        row = report["cases"][0]
+        assert row["verdict"] == "INVALID", row
+        assert row["reason"] == f"pin_mismatch:together/{_PIN}", row
+        assert report["n"] == n_pack
+        assert int(report["invalid"]) >= 1
     finally:
         _wipe(tmp_path)
 

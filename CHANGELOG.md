@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - PIN-NOMODEL-01: Cortex lanes use the stamp check (Refs dms#317)
+
+- **Correction.** Epic comments 5940019953, 5940040724, 5947946216. Head `a2c23853` is not the rule. A recorded zero on `rules` or `curated` only means the answer is not no-model. The pin then checks `served_provider` and `served_model`. A match is scored on the rows. Missing or unmatched stamps are INVALID `pin_mismatch`. `NO_MODEL_LANES` stays empty: both handlers submit through Cortex.
+- **Gate.** The matching-stamps case passes on `7a8d6c11`. No live scored round. `score_curated.py` is untouched.
+
 ## 2026-10-01 - PIN-NOMODEL-01: a Cortex lane is not no-model (Refs dms#317)
 
 - **Amendment.** Epic comment 5939668193. `model_calls` counts only model posts from DMS's own client. `rules` and `curated` come off `NO_MODEL_LANES`: `maybe_verified_ask` and `maybe_pack_ask` submit and append through Cortex. The shared list is empty. A zero on `CORTEX_LANES` is INVALID `pin_mismatch:<lane>`, kept in n.

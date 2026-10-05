@@ -69,13 +69,12 @@ class GroundingRefused(Exception):
 
 # One lane list. BRONZE-GRANT-01 (#333, bronze_sheet_ask) and the pin both
 # import this object. No second copy.
-# No-model means the handler cannot reach Cortex. rules (verified_query,
-# maybe_verified_ask) and curated (governed_metric, maybe_pack_ask) submit
-# and append through CortexClient, so a recorded zero is not "no model".
-# They live on CORTEX_LANES. NO_MODEL_LANES stays empty until a handler
-# cannot reach cortex_client.
+# A lane is listed only when its handler cannot reach cortex_client.
+# rules (verified_query, maybe_verified_ask) and curated (governed_metric,
+# maybe_pack_ask) both submit and append through CortexClient, so they are
+# not listed. A recorded zero on those lanes is not a no-model answer: the
+# pin then checks the served stamps Cortex returned.
 NO_MODEL_LANES: frozenset[str] = frozenset()
-CORTEX_LANES = frozenset({"rules", "curated"})
 MODEL_LANES = frozenset({"generative"})
 _ROUTE_LANE = {
     "verified_query": "rules",
