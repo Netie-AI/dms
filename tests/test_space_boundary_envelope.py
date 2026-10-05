@@ -162,13 +162,12 @@ def test_the_two_spaces_are_not_handed_the_same_session(minter: ManifestMinter) 
 def test_the_engine_refusal_reaches_the_customer_as_an_envelope(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """dms#2 acceptance, at the layer the customer receives it (R-0001).
+    """Spend-by-country in Warehouse Ops is a pack match whose grants fail.
 
-    When Cortex refuses the SQL because the manifest does not name the table,
-    the customer must get ``abstained: true`` with a reason - not the raw
-    "path_not_allowed / Unexpected status code: 403", which reads as a crash
-    where an answer goes. This is the half of the demo that must look
-    deliberate, so it is asserted over HTTP rather than on the exception.
+    The phrase is in PACK_METRICS and the SQL needs suppliers, which this
+    Space does not grant. The customer envelope names that step (exact match
+    ok / grants fail) and does not fall through to a generative abstain.
+    Asserted over HTTP (R-0001).
     """
     from dms_api import settings as settings_mod
     from dms_api.app import create_app
@@ -206,9 +205,12 @@ def test_the_engine_refusal_reaches_the_customer_as_an_envelope(
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
     assert not env["rows"]
-    # Names the table and says what to do next (R-0005).
-    assert "suppliers" in env["text"]
-    assert "Warehouse Ops" in env["text"]
+    # Named curated step (exact match ok / grants fail). No silent generative abstain.
+    assert "exact match ok" in env["text"]
+    assert "grants fail" in env["text"]
+    assert "generative fallback" in env["text"]
+    assert "ontology-grounded" not in env["text"]
+    assert cortex.asks == [], "a grants fail must not reach Cortex.ask"
     assert env["demo_fallback_used"] is False, "a refusal must never be papered over"
 
     settings_mod.get_settings.cache_clear()
