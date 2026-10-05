@@ -1,4 +1,7 @@
-"""Batch ingest with triage — honest receipts; UNSTRUCTURED never becomes a table."""
+"""Batch ingest with triage — honest receipts; UNSTRUCTURED never becomes a table.
+
+Each data row's land decision is appended to ``bronze._land_row_log``.
+"""
 
 from __future__ import annotations
 
@@ -13,8 +16,9 @@ from typing import Any
 from dms_core.triage import FileTriageResult, SheetClass, TriageReceipt
 
 from dms_executor.bronze import bronze_table_for_sheet, ingest_csv_bytes
-from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse, warehouse_path
 from dms_executor.document_chunks import index_unstructured_upload
+from dms_executor.lake_schema import ensure_lake_schemas
 from dms_executor.triage import classify_bytes, parse_csv_grid
 from dms_executor.warehouse_identity import maybe_sync_bronze_to_serving
 
@@ -64,34 +68,70 @@ def _looks_like_header(cells: list[str]) -> bool:
     return named >= 2
 
 
-def _grid_to_csv_bytes(grid: list[list[Any]], header_row: int) -> bytes:
-    import csv
-    import io
+# id, status, reason, cells (set only for an accepted data row).
+_Fate = tuple[int, str, str, list[str] | None]
 
-    buf = io.StringIO()
-    w = csv.writer(buf)
+#: Leading underscore keeps this out of list_bronze_tables / the file picker.
+# ponytail: one append-only table on the ingest file. Ceiling: it grows with
+# every batch for the life of that file. Upgrade: drop by ingest_id if a
+# warehouse is kept across months of uploads.
+_LAND_ROW_LOG = "bronze._land_row_log"
+
+
+def _source_label(filename: str, sheet: str | None) -> str:
+    if sheet:
+        return f"{filename}#{sheet}"
+    return filename
+
+
+def _trim_before_land(classification: SheetClass, header_row: int | None) -> bool:
+    """The CSV branch already trims when this is true. The log uses the same rule."""
+    return classification == SheetClass.MULTI_TABLE or bool(header_row and header_row > 0)
+
+
+def _grid_fates(grid: list[list[Any]], header_row: int) -> list[_Fate]:
+    """Row fates for the trim path. Accepted cells are the CSV body, in order.
+
+    Stop rules match the land trim: blank rows, trailing notes, totals, a
+    repeated header, and a second table are not written. The header row itself
+    is the schema line, not a data row.
+    """
     if header_row >= len(grid):
-        return b""
+        if not grid:
+            return [(1, "failed", "no_extractable_grid", None)]
+        return [(i + 1, "failed", "no_extractable_grid", None) for i in range(len(grid))]
     rows = [_row_cells(r) for r in grid]
-    header = rows[header_row]
-    header_key = tuple(c.lower() for c in header)
-    w.writerow(header)
+    header_key = tuple(c.lower() for c in rows[header_row])
+    fates: list[_Fate] = [
+        (i + 1, "dropped", "above_header", None) for i in range(header_row)
+    ]
     i = header_row + 1
     while i < len(rows):
         cells = rows[i]
         if _blank_row(cells):
+            fates.append((i + 1, "dropped", "blank_row", None))
             i += 1
             continue
         nonempty = [c for c in cells if c]
         if len(nonempty) == 1 and len(nonempty[0]) > 40:
+            fates.extend(
+                (k + 1, "dropped", "trailing_note", None) for k in range(i, len(rows))
+            )
             break
         if nonempty and nonempty[0].lower() in {"total", "grand total", "sum"}:
+            fates.extend(
+                (k + 1, "dropped", "total_row", None) for k in range(i, len(rows))
+            )
             break
         row_key = tuple(c.lower() for c in cells)
         if row_key == header_key:
+            fates.append((i + 1, "dropped", "duplicate_header", None))
             i += 1
             continue
         if _looks_like_header(cells) and row_key != header_key:
+            fates.extend(
+                (k + 1, "dropped", "second_table", None) for k in range(i, len(rows))
+            )
             break
         if len(nonempty) == 1:
             j = i + 1
@@ -100,9 +140,112 @@ def _grid_to_csv_bytes(grid: list[list[Any]], header_row: int) -> bytes:
             if j < len(rows) and _looks_like_header(rows[j]):
                 nxt = tuple(c.lower() for c in rows[j])
                 if nxt != header_key:
+                    fates.extend(
+                        (k + 1, "dropped", "section_break", None)
+                        for k in range(i, len(rows))
+                    )
                     break
-        w.writerow(cells)
+        fates.append((i + 1, "accepted", "landed", cells))
         i += 1
+    return fates
+
+
+def _whole_file_fates(grid: list[list[Any]]) -> list[_Fate]:
+    """Data rows when the original bytes are landed. Row 1 is the header."""
+    return [(i + 1, "accepted", "landed", None) for i in range(1, len(grid))]
+
+
+def _refused_fates(
+    grid: list[list[Any]] | None, *, status: str, reason: str
+) -> list[_Fate]:
+    why = reason or "unspecified"
+    if not grid:
+        return [(1, status, why, None)]
+    return [(i + 1, status, why, None) for i in range(len(grid))]
+
+
+def _fail_accepted(fates: list[_Fate], reason: str) -> list[_Fate]:
+    """Rows the trim kept, but the write did not land, are failed."""
+    if not fates:
+        return _refused_fates(None, status="failed", reason=reason)
+    why = reason or "ingest_failed"
+    out: list[_Fate] = []
+    for row_id, status, prev, _cells in fates:
+        if status == "accepted":
+            out.append((row_id, "failed", why, None))
+        else:
+            out.append((row_id, status, prev, None))
+    return out
+
+
+def _load_grid(filename: str, data: bytes, sheet: str | None) -> list[list[Any]] | None:
+    lower = filename.lower()
+    try:
+        if lower.endswith((".xlsx", ".xlsm")):
+            from dms_executor.triage import parse_xlsx_grids
+
+            for name, grid in parse_xlsx_grids(data):
+                if sheet is None or name == sheet:
+                    return grid
+            return None
+        if lower.endswith(".xls"):
+            return None
+        return parse_csv_grid(data)
+    except Exception:  # noqa: BLE001 - unreadable bytes still get one log row
+        return None
+
+
+def _remember(
+    log: list[tuple[int, str, str, str]], source: str, fates: list[_Fate]
+) -> None:
+    for row_id, status, reason, _cells in fates:
+        log.append((row_id, source, status, reason))
+
+
+def _write_land_row_log(
+    path: Path, ingest_id: str, rows: list[tuple[int, str, str, str]]
+) -> None:
+    con = connect_file(path)
+    try:
+        ensure_lake_schemas(con)
+        con.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_LAND_ROW_LOG} (
+              ingest_id VARCHAR,
+              id INTEGER,
+              source VARCHAR,
+              status VARCHAR,
+              reason VARCHAR
+            )
+            """
+        )
+        if not rows:
+            return
+        con.executemany(
+            f"INSERT INTO {_LAND_ROW_LOG} (ingest_id, id, source, status, reason) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (ingest_id, row_id, source, status, reason)
+                for row_id, source, status, reason in rows
+            ],
+        )
+    finally:
+        con.close()
+
+
+def _grid_to_csv_bytes(grid: list[list[Any]], header_row: int) -> bytes:
+    import csv
+    import io
+
+    if header_row >= len(grid):
+        return b""
+    rows = [_row_cells(r) for r in grid]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(rows[header_row])
+    for _row_id, status, _reason, cells in _grid_fates(grid, header_row):
+        if status == "accepted" and cells is not None:
+            w.writerow(cells)
     return buf.getvalue().encode("utf-8")
 
 
@@ -127,6 +270,7 @@ def ingest_batch(
     per_class: dict[str, int] = {}
     ingested_count = 0
     need_attention = 0
+    log_rows: list[tuple[int, str, str, str]] = []
     conninfo = database_url if database_url is not None else os.environ.get("DATABASE_URL")
     tid = tenant_id or os.environ.get(
         "DMS_TENANT_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -136,6 +280,7 @@ def ingest_batch(
         triages = classify_bytes(filename=filename, data=data)
         for tr in triages:
             per_class[tr.classification.value] = per_class.get(tr.classification.value, 0) + 1
+            source = _source_label(filename, tr.sheet)
             if tr.classification == SheetClass.UNSTRUCTURED:
                 key = hashlib.sha256(data).hexdigest()
                 blob_key = _blob_put(key, data, root=blob_root)
@@ -164,12 +309,30 @@ def ingest_batch(
                     elif not conninfo:
                         tr.reason = f"{tr.reason}+awaiting_database_url"
                     need_attention += 1
+                _remember(
+                    log_rows,
+                    source,
+                    _refused_fates(
+                        _load_grid(filename, data, tr.sheet),
+                        status="dropped",
+                        reason=tr.reason,
+                    ),
+                )
                 results.append(tr)
                 continue
 
             if tr.classification == SheetClass.HEADERLESS:
                 tr.ingested = False
                 need_attention += 1
+                _remember(
+                    log_rows,
+                    source,
+                    _refused_fates(
+                        _load_grid(filename, data, tr.sheet),
+                        status="failed",
+                        reason=tr.reason,
+                    ),
+                )
                 results.append(tr)
                 continue
 
@@ -177,6 +340,7 @@ def ingest_batch(
             # MULTI_TABLE still needs attention (split remaining regions), but the
             # first header band is what a uniquely scoped sheet ask can certify.
             # Dirty still lands (honest receipt names the fix) so steward can repair later
+            fates: list[_Fate] = []
             try:
                 if filename.lower().endswith((".xlsx", ".xlsm")):
                     from dms_executor.triage import parse_xlsx_grids
@@ -191,8 +355,16 @@ def ingest_batch(
                         tr.ingested = False
                         tr.reason = tr.reason + "+no_extractable_grid"
                         need_attention += 1
+                        _remember(
+                            log_rows,
+                            source,
+                            _refused_fates(
+                                sheet_grid, status="failed", reason=tr.reason
+                            ),
+                        )
                         results.append(tr)
                         continue
+                    fates = _grid_fates(sheet_grid, tr.header_row)
                     csv_bytes = _grid_to_csv_bytes(sheet_grid, tr.header_row)
                     stem = f"{Path(filename).stem}_{tr.sheet or 'sheet'}"
                     receipt = ingest_csv_bytes(
@@ -207,11 +379,11 @@ def ingest_batch(
                 else:
                     # CSV: title row, or MULTI_TABLE first band (stop at blank).
                     # Whole-file ingest would union stacked tables — the merge trap.
-                    if tr.classification == SheetClass.MULTI_TABLE or (
-                        tr.header_row and tr.header_row > 0
-                    ):
+                    if _trim_before_land(tr.classification, tr.header_row):
                         grid = parse_csv_grid(data)
-                        csv_bytes = _grid_to_csv_bytes(grid, tr.header_row or 0)
+                        header_row = tr.header_row or 0
+                        fates = _grid_fates(grid, header_row)
+                        csv_bytes = _grid_to_csv_bytes(grid, header_row)
                         receipt = ingest_csv_bytes(
                             filename=filename,
                             data=csv_bytes,
@@ -219,6 +391,7 @@ def ingest_batch(
                             space_id=space_id,
                         )
                     else:
+                        fates = _whole_file_fates(parse_csv_grid(data))
                         receipt = ingest_csv_bytes(
                             filename=filename,
                             data=data,
@@ -229,6 +402,7 @@ def ingest_batch(
                     tr.ingested = False
                     tr.reason = receipt.reasons[0]["reason"] if receipt.reasons else "ingest_failed"
                     need_attention += 1
+                    fates = _fail_accepted(fates, tr.reason)
                 else:
                     tr.ingested = True
                     tr.table = receipt.table
@@ -242,7 +416,13 @@ def ingest_batch(
                 tr.ingested = False
                 tr.reason = f"ingest_error:{exc}"[:180]
                 need_attention += 1
+                fates = _fail_accepted(fates, tr.reason)
+            _remember(log_rows, source, fates)
             results.append(tr)
+
+    # Row fates are known before serving sync. Write them first so a sync
+    # failure cannot skip the audit of what landed.
+    _write_land_row_log(db_path, ingest_id, log_rows)
 
     # The sync outcome rides out on the receipt, not only in a log line. A
     # customer reads the receipt; nobody reads the warning (R-0011).
