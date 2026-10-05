@@ -25,7 +25,9 @@ compose file with ``POSTGRES_PASSWORD: dms``).
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -525,14 +527,151 @@ def test_api_image_installs_cortex_contract_only_from_the_wheelhouse():
     # 2. the wheel itself: local path, no index, no dependency resolution
     wheel_path = "/wheelhouse/cortex_contract-*.whl"
     wheel = step_index("pip install", "--no-index", "--no-deps", wheel_path)
-    # 3. a constraint frozen from what is installed, and the main install under it
-    pin = step_index("pip freeze", "cortex", ">")
+    # 3. a constraint written from the installed package's metadata, and the main
+    # install under it. Not `pip freeze`: a wheel installed from a path is frozen
+    # as `name @ file:///...`, never `name==version` (see the behavioural test below).
+    assert "pip freeze" not in joined, "pip freeze prints a direct-URL line for a path install"
+    pin = step_index("echo", "cortex-contract==", ">")
     main = step_index("pip install", "-c ", "./packages/cortex_client")
     pin_file = re.search(r">\s*(\S+)", steps[pin])
     assert pin_file and f"-c {pin_file.group(1)}" in steps[main], (
-        "the main install must run under the constraint frozen from the installed wheel"
+        "the main install must run under the constraint written from the installed wheel"
     )
     assert guard < wheel < pin < main, "wheel first, then the pin, then the main install"
+
+
+OLD_PIN_FRAGMENT = r"""set -eu; n="$(find /wheelhouse -maxdepth 1 -name 'cortex_contract-*.whl' | wc -l | tr -d ' ')"; if [ "${n}" -ne 1 ]; then echo "deploy/wheelhouse must hold exactly one cortex_contract wheel, found ${n}" >&2; exit 1; fi; pip install --no-cache-dir --no-index --no-deps /wheelhouse/cortex_contract-*.whl; pip freeze --all | grep -iE '^cortex[_-]contract==' > /tmp/cortex-contract.pin;"""  # noqa: E501
+
+# A stub pip with the two behaviours the pin step depends on, taken from real pip:
+#  * a package installed from a wheel PATH is frozen as a direct-URL line, with no `==`
+#    (this is what failed the CI build on d3d61de);
+#  * `pip show` prints the metadata Version (CRLF here, as pip does on Windows, so the
+#    fragment's `tr -d '\r'` is exercised).
+PIP_SHIM = r"""#!/bin/sh
+state="${SHIM_STATE:?}"
+cmd="$1"; shift
+case "${cmd}" in
+  install)
+    printf 'pip install %s\n' "$*" >> "${SHIM_LOG:?}"
+    if [ -z "${SHIM_NOOP:-}" ]; then
+      for a in "$@"; do
+        case "${a}" in *.whl) printf '%s\n' "${a}" > "${state}" ;; esac
+      done
+    fi
+    ;;
+  show)
+    if [ ! -s "${state}" ]; then echo "WARNING: Package(s) not found: $1" >&2; exit 1; fi
+    base="$(cat "${state}")"; base="${base##*/}"; ver="${base#cortex_contract-}"; ver="${ver%%-*}"
+    printf 'Name: cortex-contract\r\nVersion: %s\r\nSummary: stub\r\n' "${ver}"
+    ;;
+  freeze)
+    if [ -s "${state}" ]; then
+      printf 'cortex-contract @ file://%s#sha256=00\n' "$(cat "${state}")"
+    fi
+    ;;
+  *) echo "stub pip: unsupported command ${cmd}" >&2; exit 2 ;;
+esac
+"""
+
+
+def find_sh() -> str:
+    found = shutil.which("sh")
+    if found:
+        return found
+    for candidate in (r"C:\Program Files\Git\usr\bin\sh.exe", r"C:\Program Files\Git\bin\sh.exe"):
+        if Path(candidate).is_file():
+            return candidate
+    raise AssertionError("no POSIX sh on PATH (Git for Windows ships one); the pin step cannot run")
+
+
+def run_pin_fragment(tmp_path: Path, fragment: str, wheels: list[str], *, noop: bool = False):
+    """Run ``fragment`` under ``sh -eu`` with the stub pip first on PATH.
+
+    The fragment's two absolute paths are rewritten to scratch locations (nothing
+    else in it is touched). Returns (CompletedProcess, pin file text or None, pip log).
+    """
+    work = tmp_path / ("w" + str(len(list(tmp_path.iterdir()))))
+    wheelhouse = work / "wheelhouse"
+    wheelhouse.mkdir(parents=True)
+    for name in wheels:
+        (wheelhouse / name).write_bytes(b"")
+    bindir = work / "bin"
+    bindir.mkdir()
+    shim = bindir / "pip"
+    shim.write_bytes(PIP_SHIM.replace("\r\n", "\n").encode())
+    shim.chmod(0o755)
+    pin = work / "cortex-contract.pin"
+    text = re.sub(r"(?<!deploy)/wheelhouse", wheelhouse.as_posix(), fragment)
+    text = text.replace("/tmp/cortex-contract.pin", pin.as_posix())
+    sh = find_sh()
+    # Git for Windows' sh started from outside Git Bash has no /usr/bin on PATH, so
+    # `find` would be Windows' find.exe and wc/tr/sed would be missing: put the
+    # directory of the sh (and Git's usr/bin) right after the stub. Harmless elsewhere.
+    tool_dirs = [Path(sh).parent, Path(sh).parent.parent / "usr" / "bin"]
+    path = os.pathsep.join([str(bindir), *(str(d) for d in tool_dirs if d.is_dir())])
+    env = {
+        **os.environ,
+        "PATH": f"{path}{os.pathsep}{os.environ.get('PATH', '')}",
+        "SHIM_STATE": (work / "state").as_posix(),
+        "SHIM_LOG": (work / "log").as_posix(),
+    }
+    if noop:
+        env["SHIM_NOOP"] = "1"
+    proc = subprocess.run(
+        [sh, "-eu", "-c", text], env=env, capture_output=True, text=True, check=False
+    )
+    log = (work / "log").read_text() if (work / "log").exists() else ""
+    return proc, (pin.read_text() if pin.exists() else None), log
+
+
+def test_api_image_pin_step_writes_cortex_contract_equals_version_from_metadata(tmp_path):
+    """The build died on d3d61de at ``pip freeze --all | grep '^cortex[_-]contract=='``:
+    a wheel installed from a path is frozen as ``cortex-contract @ file:///...``, grep
+    matched nothing, and ``sh -e`` stopped the build. The wheel-and-pin RUN is extracted
+    from the Dockerfile and run under ``sh -eu`` against a stub pip.
+    """
+    wheel = "cortex_contract-1.2.0-py3-none-any.whl"
+
+    # Control: the d3d61de fragment, run through the same stub, fails the way CI did,
+    # with the install having succeeded first and an empty pin file. If this stops
+    # failing, the stub no longer reproduces the failure and proves nothing.
+    old, old_pin, old_log = run_pin_fragment(tmp_path, OLD_PIN_FRAGMENT, [wheel])
+    assert old.returncode != 0 and not (old_pin or "").strip(), (
+        f"stub pip does not reproduce the CI failure: rc={old.returncode} pin={old_pin!r}"
+    )
+    assert "--no-index --no-deps" in old_log
+
+    # The fragment in the Dockerfile today.
+    instructions = dockerfile_instructions(DOCKERFILE.read_text(encoding="utf-8"))
+    pin_runs = [
+        arg
+        for ins, arg in instructions
+        if ins == "RUN" and "/wheelhouse/cortex_contract-*.whl" in arg
+    ]
+    assert len(pin_runs) == 1, f"expected one wheel-and-pin RUN, found {len(pin_runs)}"
+    fragment = pin_runs[0]
+
+    proc, pin_text, log = run_pin_fragment(tmp_path, fragment, [wheel])
+    assert proc.returncode == 0, f"the pin step failed under sh -eu: {proc.stderr[-400:]}"
+    assert pin_text == "cortex-contract==1.2.0\n", f"pin file is {pin_text!r}"
+    assert "--no-index" in log and "--no-deps" in log and wheel in log, log
+
+    # The version is read from the installed package, not from the file name or a constant.
+    newer = "cortex_contract-1.2.7-py3-none-any.whl"
+    proc, pin_text, _ = run_pin_fragment(tmp_path, fragment, [newer])
+    assert proc.returncode == 0 and pin_text == "cortex-contract==1.2.7\n"
+
+    # Every failure is loud and named, and leaves no usable pin behind.
+    proc, pin_text, _ = run_pin_fragment(tmp_path, fragment, [])
+    assert proc.returncode != 0 and "exactly one cortex_contract wheel" in proc.stderr
+    assert not (pin_text or "").strip()
+    second = "cortex_contract-1.2.1-py3-none-any.whl"
+    proc, pin_text, _ = run_pin_fragment(tmp_path, fragment, [wheel, second])
+    assert proc.returncode != 0 and "exactly one cortex_contract wheel" in proc.stderr
+    assert not (pin_text or "").strip()
+    proc, pin_text, _ = run_pin_fragment(tmp_path, fragment, [wheel], noop=True)
+    assert proc.returncode != 0 and "cannot pin it" in proc.stderr
+    assert not (pin_text or "").strip()
 
 
 def test_docker_build_context_leaves_secrets_out_and_keeps_what_the_api_image_copies():

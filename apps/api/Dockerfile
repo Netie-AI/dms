@@ -19,6 +19,14 @@ COPY deploy/wheelhouse /wheelhouse
 # land in the appliance. Once the pinned wheel is installed, the main install
 # finds the requirement satisfied, and the constraint file freezes it to that
 # exact version so no index candidate can replace it.
+#
+# This RUN is the whole wheel-and-pin step and nothing else; a Docker-free test
+# (tests/test_bank04_tls_appliance.py) extracts it and runs it under `sh -eu`
+# against a stub pip. The version comes from `pip show`, i.e. the package
+# metadata. `pip freeze` is NOT used: a package installed from a wheel path is
+# frozen as `cortex-contract @ file:///...`, never `cortex-contract==1.2.0`, so
+# grepping freeze for `==` matched nothing and aborted the build. tr drops the
+# CR that pip prints when this runs on Windows (the test); it is a no-op here.
 RUN set -eu; \
     n="$(find /wheelhouse -maxdepth 1 -name 'cortex_contract-*.whl' | wc -l | tr -d ' ')"; \
     if [ "${n}" -ne 1 ]; then \
@@ -26,7 +34,18 @@ RUN set -eu; \
         exit 1; \
     fi; \
     pip install --no-cache-dir --no-index --no-deps /wheelhouse/cortex_contract-*.whl; \
-    pip freeze --all | grep -iE '^cortex[_-]contract==' > /tmp/cortex-contract.pin; \
+    v="$(pip show cortex-contract | sed -n 's/^Version: //p' | tr -d '\r')"; \
+    if [ -z "${v}" ]; then \
+        echo "cortex-contract is not installed after the wheelhouse install; cannot pin it" >&2; \
+        exit 1; \
+    fi; \
+    echo "cortex-contract==${v}" > /tmp/cortex-contract.pin; \
+    if [ ! -s /tmp/cortex-contract.pin ]; then \
+        echo "the cortex-contract constraint file is empty" >&2; \
+        exit 1; \
+    fi
+
+RUN set -eu; \
     pip install --no-cache-dir -c /tmp/cortex-contract.pin \
         -e ./packages/core \
         -e ./packages/cortex_client \
