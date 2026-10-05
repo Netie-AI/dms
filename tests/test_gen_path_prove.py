@@ -37,6 +37,10 @@ from score_curated import (  # noqa: E402
     self_check,
 )
 
+# KEY-01 (dms#273): the published demo viewer key is gone from this suite. The 401
+# client test carries a seeded fake token instead. Not a credential.
+_FAKE = "seeded-test-token-gen-path-prove"
+
 
 def _ontology() -> Ontology:
     o = Ontology()
@@ -405,7 +409,7 @@ def test_compute_client_401_is_insights_reached_not_transport_miss() -> None:
         out = compute_query(
             "http://127.0.0.1:8010",
             question="how many skus?",
-            api_key="dms-demo-viewer-key",
+            api_key=_FAKE,
         )
     assert out is not None
     assert insights_was_reached(out)

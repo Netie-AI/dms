@@ -27,6 +27,8 @@ from typing import Any
 import httpx
 from dms_core.ask import MODEL_LANES, NO_MODEL_LANES, lane_for_route
 
+from cortex_client.insights import is_published_demo_key
+
 STRICT_HEADER = "X-OpenVault-Strict"
 SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
 SERVED_PROVIDER_HEADER = "X-OpenVault-Served-Provider"
@@ -51,7 +53,6 @@ _BARE_SUBSTITUTE = "gpt-oss-120b"
 _CHAT_PATH = "/v1/chat/completions"
 # One completion. At least 512, per the Groq-pinned budget. No second call.
 _MAX_TOKENS = 512
-_DEMO_VIEWER_KEY = "dms-demo-viewer-key"
 
 
 @dataclass(frozen=True)
@@ -351,7 +352,7 @@ def _forward_bearer() -> str | None:
     """Relay a configured ov_ key. Never a demo viewer key and never a provider key."""
     for name in ("OPENVAULT_API_KEY", "CORTEX_API_KEY"):
         raw = os.environ.get(name, "").strip()
-        if not raw or raw == _DEMO_VIEWER_KEY:
+        if not raw or is_published_demo_key(raw):
             continue
         return raw
     return None

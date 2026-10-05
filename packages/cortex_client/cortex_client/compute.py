@@ -1012,12 +1012,13 @@ def compute_query(
     never claimed here.
     """
     # ponytail: Ask-lane only (dms_query=False / compute_insights). Leftover
-    # compute_query still posts generate so frozen GEN-PATH-PROVE 401 +
-    # GEN-RESTORE client tests stay green. Product live_ask uses
-    # compute_insights; hosted generate uses insights_post. Empty/demo/insecure
-    # still refuse there. missing_none=False: api_key=None is the unconfigured
-    # Python default those frozen tests use.
-    refuse = generate_bearer_refuse(api_key, base_url, missing_none=False)
+    # compute_query (dms_query=True) still posts generate so frozen GEN-PATH-PROVE
+    # 401 client tests stay green; it has no product caller and
+    # tests/test_key_01_fail_closed.py locks that. Product live_ask uses
+    # compute_insights; hosted generate uses insights_post. Missing (None),
+    # empty, demo and insecure-transport all refuse on the ask lane with zero
+    # outbound calls. KEY-01 (dms#273) removed the missing_none=False exception.
+    refuse = generate_bearer_refuse(api_key, base_url)
     if refuse and not dms_query:
         return insights_fail_payload(refuse)
     headers = _auth_headers(api_key)

@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-05 - KEY-01: no default Cortex key, fail closed (Refs dms#273)
+
+- **Ticket.** [KEY-01 #273](https://github.com/Netie-AI/dms/issues/273). The PR does not close the issue. Not COMPLETE. Does not clear the pilot security bar: Platform must show live that a DMS API with no key refuses.
+- **Gap.** `settings.cortex_api_key` defaulted to Cortex's published demo viewer key, and `cortex_read` fell back to it, so a DMS API with no key configured still reached Cortex. A seeded `None` key also slipped past the ask lane, because `compute_query` called `generate_bearer_refuse(..., missing_none=False)`.
+- **Change.** No default and no fallback. `cortex_api_key` is `None` unless explicit config supplies it, and a blank value is `None`. A missing key makes no keyed Cortex call: `cortex_get` returns `cortex_key_missing` (ontology and trust routes), `/v1/insights` routes answer 503 REFUSE `cortex_key_missing` before the F5 gate, and the ask lane (`compute_insights`, `compute_query(dms_query=False)`) abstains `insights_bearer_missing` with zero HTTP. `missing_none=False` is removed. A start with `DMS_ASK_MODE=live` and no key logs one named warning and does not block startup, so offline demo mode still runs without a key.
+- **Deploy.** `deploy/compose/docker-compose.yml` passes `CORTEX_API_KEY` through to `api` and `api_dev` with an empty default, and `.env.example` documents it with no value. Before this the appliance had no way to set the key and ran on the demo default.
+- **Refusal list kept.** The demo-key refusal stays. The key text is out of `apps/` and `packages/`: the recogniser holds a sha256 digest (`is_published_demo_key`), pinned to the real value in `tests/test_key_01_fail_closed.py`. The empty-key and insecure-transport refusals and the transport check are untouched.
+- **`dms_query=True`.** Not refused. `compute_query(dms_query=True)` still skips the bearer refusals. A test locks that nothing in `apps/` or `packages/` calls it, by call, attribute call or name string.
+- **Correction (BEARER-01, 2026-09-25).** That entry and `docs/ACTIVE.md` said generate refused a "missing" key. On the ask lane a `None` key was not refused until this change. `docs/ACTIVE.md` is corrected. The older entry stays as written.
+- **Existing tests edited (tighten only).** `tests/test_insights_bearer_01.py::test_guard_names_and_transport_units`: the `None` assertion is now a named refusal, and `missing_none=False` raises `TypeError`. The demo-key literal moves from an import to a local constant in the same file. `tests/test_gen_restore_01.py` (three `compute_insights` tests and the `CortexClient` eight-second timeout test), `tests/test_gen_path_prove.py` (the 401 client test) and `tests/test_pii_01.py::test_insights_ontology_body_has_no_seeded_values` carry a seeded fake token in place of no key or the demo key. No test was deleted, skipped or xfailed.
+- **Gate.** `tests/test_key_01_fail_closed.py`: 16 of its 17 tests fail on `7a8d6c1`, 15 on their own asserts and one on the missing recogniser import. The 17th, the `dms_query=True` lock, passes there by construction, since no caller exists, and fails when a caller is added.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.

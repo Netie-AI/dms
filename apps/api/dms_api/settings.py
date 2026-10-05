@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AskMode = Literal["demo", "live"]
@@ -30,10 +31,15 @@ class Settings(BaseSettings):
     #: bounded: a hung engine must still fail rather than hold a worker forever.
     #: Raise it for a slower provider, do not remove it.
     cortex_timeout_seconds: float = 120.0
-    # Viewer key for Cortex's read-only ontology/eval surfaces (off-contract, see
-    # cortex_read.py). Matches Cortex's built-in demo key so local bring-up works;
-    # set CORTEX_API_KEY wherever DMS_API_KEYS is set.
-    cortex_api_key: str = "dms-demo-viewer-key"
+    # Key for Cortex's keyed, off-contract surfaces (ontology/eval reads, Insights,
+    # the ask lane's generate call). KEY-01 (dms#273): NO default and no fallback.
+    # It comes only from explicit config (CORTEX_API_KEY, supplied from OpenVault
+    # by the operator). Unset, empty or blank all normalise to None, and every keyed
+    # Cortex call then refuses with a named error (cortex_key_missing on the reads
+    # and the Insights routes, insights_bearer_missing on the ask lane) instead of
+    # going out under a published demo key. Offline demo mode (dms_demo_fallback)
+    # never calls Cortex, so it needs no key.
+    cortex_api_key: str | None = None
     openvault_url: str = "http://127.0.0.1:5000"
     database_url: str | None = None
     # Product default = live (Cortex bind→ask). demo = offline fallback only.
@@ -55,6 +61,15 @@ class Settings(BaseSettings):
     cortex_contract_major: int = 1
     cortex_contract_version: str = "1.2.0"
     cortex_engine_image: str = "ghcr.io/netie/cortex:2.5.0-core"
+
+    @field_validator("cortex_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_missing(cls, value: object) -> object:
+        """``CORTEX_API_KEY=`` (empty or whitespace) is a missing key, not a key."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 @lru_cache

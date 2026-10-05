@@ -57,6 +57,9 @@ _SETUP_PRESENT = {
 }
 _SETUP_NULL = {key: None for key in SETUP_FIELD_KEYS}
 _GUESSES = ("unknown", "openai", "local", "", 0, "0")
+# KEY-01 (dms#273): the ask lane refuses a missing key with zero calls, so the tests
+# that need an outbound generate call carry a seeded fake token. Not a credential.
+_FAKE = "seeded-test-token-gen-restore01"
 
 
 def _ontology() -> Ontology:
@@ -254,7 +257,9 @@ def test_compute_insights_calls_insights_never_dms_query() -> None:
         ontology={"phase": "ontology", "ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key=_FAKE
+        )
     urls = [str(p["url"]) for p in posts]
     assert any(u.endswith(INSIGHTS_PATH) for u in urls), urls
     assert all(COMPUTE_PATH not in u for u in urls), urls
@@ -268,7 +273,8 @@ def test_compute_insights_calls_insights_never_dms_query() -> None:
     assert ":5000" not in str(gen)
     assert "sk-" not in str(gen)
     headers = posts[0]["headers"] or {}
-    assert "Authorization" not in headers
+    assert headers["Authorization"] == f"Bearer {_FAKE}"
+    assert _FAKE not in str(gen)
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_EMPTY
 
@@ -369,7 +375,9 @@ def test_http_401_is_unauthorized_never_dms_query() -> None:
         generate_status=401,
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key=_FAKE
+        )
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_UNAUTHORIZED
     assert all(COMPUTE_PATH not in str(p["url"]) for p in posts)
@@ -380,7 +388,9 @@ def test_http_timeout_is_insights_timeout_never_dms_query() -> None:
     timeouts: list[Any] = []
     fake = _FakeHttp(posts=posts, timeouts=timeouts, timeout=True)
     with patch("cortex_client.compute.httpx.Client", fake):
-        out = compute_insights("http://127.0.0.1:8010", question="how many skus?")
+        out = compute_insights(
+            "http://127.0.0.1:8010", question="how many skus?", api_key=_FAKE
+        )
     assert out is not None
     assert out.get("insights_fail") == INSIGHTS_FAIL_TIMEOUT
     assert timeouts == [INSIGHTS_ASK_TIMEOUT_SECONDS]
@@ -725,7 +735,7 @@ def test_cortex_client_compute_insights_uses_eight_second_timeout() -> None:
         ontology={"ontology": {"metrics": []}},
     )
     with patch("cortex_client.compute.httpx.Client", fake):
-        client = CortexClient("http://127.0.0.1:8010", timeout=120.0)
+        client = CortexClient("http://127.0.0.1:8010", timeout=120.0, api_key=_FAKE)
         client.compute_insights("how many skus?")
     assert timeouts == [INSIGHTS_ASK_TIMEOUT_SECONDS]
     assert all(COMPUTE_PATH not in str(p["url"]) for p in posts)
