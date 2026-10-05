@@ -54,6 +54,20 @@ Authors and cross-checkers were told not to read the dms repo. The harness gave 
 
 No new port, dependency, abstraction or config key. One script, one test file, and a constant (`PACK_D_ROOT_SHA256`) that is a pin, not a setting. Swap scenario for the root pin: a second pack is scored only with `--expect-root`, and every line then says it is not pack D.
 
+## Routing (PRD Agent intake, 2026-10-05, read-only)
+
+Proposed ledger rows F109 to F115 (the last ledger row is F108). They are NOT yet appended: the ledger lives in the Netie repo, which has other people's uncommitted edits. Summary:
+- Findings 1 and 7 go to EPIC-A1 #257 as new instrument tickets (scale first, then order; both are in `oracle_row_match.py`, one writer).
+- Findings 2 and 8 are a BOUNDARY product over-mask in the dms#318 lineage and need a decision record before any slice.
+- Finding 3 goes to Netie-KB.
+- Findings 4 and 5 go to EPIC-A3 #265: accept Pack D as its first set only with a caveat line on every number, plus a second differently-sourced set before any sales number.
+- The live round is an A3 acceptance run.
+
 ## Ceiling
 
-The hook has never been run live. A scored round needs the pack database attached as a Space (how DMS ingests a DuckDB file as a Space is not shown here), the A1 baseline gates, and the BIRD-style grants preflight analogue. Cross-check never used a different model family; that needs a key path through OpenVault and is Platform's call. Not COMPLETE.
+The hook has never been run live. A scored round needs three things, per the intake:
+- **Attach.** DMS has no DuckDB-file source (`db_connector.py` SourceKind is sqlserver, mysql, postgresql). Restore the pack into Postgres and extract it through the existing SqlSource path (as BIRD was), or use CSV ingest. A new DuckDB-file source type is refused (hard rule 6, no swap scenario).
+- **Parity.** Inferred, not run: this hook fingerprints the frozen DuckDB (`--oracle-db`), but DMS would answer from its extracted copy. A round needs a parity check of the Space's extracted tables against `db/fingerprint.json` (row counts and per-table hashes after type normalisation), or an extract defect would read as a DMS WRONG.
+- **Gates.** The A1 baseline gates and a grants preflight like dms#304's (the Space grants exactly the pack's 16 tables).
+
+Cross-check never used a different model family; that needs a key path through OpenVault and is Platform's call. Not COMPLETE.
