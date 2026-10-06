@@ -11,7 +11,20 @@ Main idea: a frozen pack of questions DMS's authors never saw, on a synthetic da
 - **Questions.** 304 written by 4 blind authors (76 each). After cross-check: **263 answerable** (88 easy, 96 medium, 79 hard) and **40 to refuse** (8 each of missing_data, ambiguous_entity, ambiguous_metric, out_of_range, relative_time). 105 of the 264 first-round answers are one-row; 27 of the 263 kept are top-N judged in order.
 - **Cross-check.** 4 blind analysts saw only the question text. Round-1 agreement **303 of 304** (easy 88/88, medium 96/96, hard 79/80, refuse 40/40). The one non-agreement, HO-0102, was dropped (see finding 1). Round 2 had n=0, so there is no round-2 rate.
 - **Personal-data scan, counts only.** Own patterns: 0 email, 0 date-of-birth, 0 phone, 0 national-id hits and 0 flagged column names over 2,642,540 cells (the scanner was first run on planted data and caught the planted email, date-of-birth and column-name cases; phone and national-id patterns were not planted). `dms_core.pii.classify_column` flags 3 columns (finding 2).
-- **Hook tests.** `tests/test_score_heldout.py`: 19 passed on a synthetic pack in `tmp_path`. Every gate was broken in turn and a test went red each time. On the real pack the hook's `--self-check` passes with the pinned root, passes on the independent rebuild, and refuses a wrong database.
+- **Hook tests.** `tests/test_score_heldout.py`: 27 passed on a synthetic pack in `tmp_path`. Every gate was broken in turn and a test went red each time. On the real pack the hook's `--self-check` passes with the pinned root, passes on the independent rebuild, and refuses a wrong database.
+
+- **Instrument self-test (`--synthetic`, measured on the real pack, n=303).** The pack's own frozen gold is replayed through DMS's envelope constructor as a perfect answerer, then deliberately damaged. No DMS is asked and no model is called; this is not a score. Results:
+
+  | responder | OK | ABSTAIN | WRONG | INVALID |
+  |---|---|---|---|---|
+  | perfect | 261 | 40 | 0 | 2 (masked by DMS's masker) |
+  | all abstain | 0 | 303 | 0 | 0 |
+  | one row doubled | 0 | 40 | 261 | 2 (masked) |
+  | first number off by one unit of its own scale | 0 | 40 | 261 | 2 (masked) |
+  | confident answer to the 40 refusals | 261 | 0 | 40 | 2 (masked) |
+  | green badge on an abstention | 0 | 40 | 0 | 263 |
+
+  Before the scale guard (finding 7) the off-by-one responder showed 8 of 261 answers judged OK, a hidden WRONG; the self-test is what found it.
 
 ## Findings for the PRD (feedback, not tickets)
 
@@ -21,6 +34,8 @@ Main idea: a frozen pack of questions DMS's authors never saw, on a synthetic da
 4. **Agreement is not correctness.** Author and cross-checker are the same model family reading the same data dictionary, so a shared misreading passes. The 99.7 percent measures how reproducible the reading is.
 5. **Selection effect.** Only agreed questions are kept, and authors were told to name output fields and state each definition. The pack measures answering unambiguous questions on an unseen schema. It understates the wrong-answer rate on loosely worded real questions.
 6. **Refusals.** The 8 `ambiguous_metric` questions are judgement-dependent (a defensible analyst could pick a reading). The hook reports refusals per reason, never pooled.
+7. **Scorer: `numeric_scale_from_sql` misreads `ROUND` with a comma in its argument.** It uses `ROUND\s*\([^,]+,\s*(\d+)\s*\)`, so `ROUND(AVG(COALESCE(x, 0)), 2)` is read as scale 0 and a `ROUND` with no such inner tail as no scale. Measured on the 263 pack golds: 18 are misread (7 as scale 0, 4 as scale 1, 7 as none; true scale 2 in all 18). Effect, measured with the off-by-one responder: the imported judge called 8 cent-level errors OK (errors under about 0.5 pass at scale 0, under 0.05 at scale 1); the no-scale cases fall back to exact comparison and are over-strict. My own cross-check compare shared the same regex, so all 18 golds were re-compared at the true scale: all 18 still agree, and the pack stands. The hook guards itself (`scale_guard`: re-compare at the parsed scale after the imported judge rules; an OK that differs becomes WRONG, a WRONG that only exists because of exact comparison becomes INVALID `scale_mismatch`). The scorer itself is unchanged; the fix belongs to its owner and, per Gating, should only tighten. Likely also affects `tests/fixtures/curated_ceo/oracles.yaml` golds with a comma inside `ROUND` (not measured).
+8. **DMS's envelope masker masks correct answer values.** Measured on the perfect replay: 2 of 263 gold answers cannot be OK. HO-0186's `cumulative_spend_myr` (plain money, a running total such as 23467734.85) becomes `DMSMASK_phone_*` because the column's values look like phone numbers, and HO-0287's list of dates in `missing_rate_date` becomes `DMSMASK_dob_*`. The scorer correctly reports INVALID `masked_compare`. This is the answer-value side of finding 2, in the same code area as dms#284 and dms#318.
 
 ## Blindness, stated honestly
 
@@ -31,6 +46,8 @@ Authors and cross-checkers were told not to read the dms repo. The harness gave 
 - **Judge.** Imports `score_curated.judge_envelope_detailed` and `oracle_row_match` (#292/#299/#300 rules). Nothing copied. Refusal questions are judged by badge: a confident answer is WRONG.
 - **Fail-closed preflight, before any network call.** Pack outside this repo; every manifest sha256 and the pinned root match; the pack's scan says PASS; every gold SQL reproduces its frozen rows on `--oracle-db`; every table of `--oracle-db` matches `db/fingerprint.json` (catches an edit no gold query reads). Any failure is CONFIG, never a score.
 - **Badge contract (rule 10a).** Every served envelope goes through `assert_envelope_valid`. The row judge runs first so a WRONG is never hidden. Any other verdict on a violating envelope becomes INVALID `envelope:<E-code>`, so a green badge on an abstention cannot pass as ABSTAIN. Summaries print the served-badge tally and the violation codes.
+- **Scale guard.** After the imported judge rules, answers are re-compared at the gold's parsed `ROUND` scale when it differs from the judge's reading (tighten-only toward WRONG; exactness-only WRONGs relabelled INVALID). Every summary prints how many gold queries it applies to and how many verdicts it changed.
+- **`--synthetic`.** The instrument self-test described above. It exits non-zero if the instrument fails to tell a perfect answerer from the damaged ones, so a blind judge cannot be used to score DMS.
 - **Output.** Every summary prints n, all outcome counts, answered, the rule-of-three line and a 95 percent upper bound. No target. Says it is not a baseline. Binds refuse `0.0.0.0` and public hosts.
 
 ## Swap (hard rule 6)

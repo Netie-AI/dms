@@ -53,7 +53,14 @@ for _path in (SCRIPTS, *(ROOT / "packages" / name for name in _PACKAGES)):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from oracle_row_match import rows_mismatch_reason, run_oracle_select  # noqa: E402
+from oracle_row_match import (  # noqa: E402
+    envelope_rows,
+    has_order_by_limit,
+    numeric_scale_from_sql,
+    rows_equal,
+    rows_mismatch_reason,
+    run_oracle_select,
+)
 from score_bound import bound_line  # noqa: E402
 from score_curated import (  # noqa: E402
     ask_error_envelope,
@@ -155,7 +162,60 @@ def load_cases(pack_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             raise PackError(f"{case.get('id')}: expect must be l0 or refuse")
         if case["expect"] == "l0" and (not case.get("gold_sql") or case["id"] not in gold):
             raise PackError(f"{case.get('id')}: answerable case without gold SQL or gold rows")
+        if case["expect"] == "l0":
+            case["_gold_rows"] = frozen_rows(gold[case["id"]])
+            case["_pack_scale"] = true_round_scale(str(case["gold_sql"]))
     return cases, gold
+
+
+def true_round_scale(sql: str) -> int | None:
+    """Largest literal n over every ROUND(x, n) in the parsed SQL; None when there is none.
+
+    oracle_row_match.numeric_scale_from_sql reads ROUND with a regex that stops at the first
+    comma inside the argument, so ROUND(AVG(COALESCE(x, 0)), 2) is read as scale 0. The pack
+    declares its scale by parse, and scale_guard holds the judge to it.
+    """
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        tree = sqlglot.parse_one(sql, read="duckdb")
+        found = []
+        for node in tree.find_all(exp.Round):
+            dec = node.args.get("decimals")
+            if isinstance(dec, exp.Literal) and not dec.is_string:
+                found.append(int(dec.this))
+        return max(found) if found else None
+    except Exception:  # noqa: BLE001 - unparsable: fall back to the judge's own reading
+        return numeric_scale_from_sql(sql)
+
+
+def scale_guard(
+    case: dict[str, Any], env: dict[str, Any], verdict: str, reason: str
+) -> tuple[str, str, str | None]:
+    """Re-compare at the pack's parsed ROUND scale when it differs from the judge's.
+
+    Returns (verdict, reason, change) where change is None, "tightened" or "relabelled".
+    A hidden error becomes WRONG (the judge compared at a coarser scale than the gold
+    declares). A WRONG that only exists because the judge fell back to exact comparison
+    becomes INVALID: an instrument disagreement, kept in n, never a verdict.
+    """
+    gold_rows = case.get("_gold_rows")
+    if case["expect"] != "l0" or gold_rows is None or verdict not in {"OK", "LAYER", "WRONG"}:
+        return verdict, reason, None
+    sql = str(case["gold_sql"])
+    judge_scale = numeric_scale_from_sql(sql)
+    pack_scale = case.get("_pack_scale")
+    if judge_scale == pack_scale:
+        return verdict, reason, None
+    same = rows_equal(
+        gold_rows, envelope_rows(env), ordered=has_order_by_limit(sql), scale=pack_scale
+    )
+    if verdict in {"OK", "LAYER"} and not same:
+        return "WRONG", f"rows_mismatch:scale(judge={judge_scale},pack={pack_scale})", "tightened"
+    if verdict == "WRONG" and reason.startswith("rows_mismatch") and same:
+        return "INVALID", f"scale_mismatch:judge={judge_scale},pack={pack_scale}", "relabelled"
+    return verdict, reason, None
 
 
 def frozen_rows(entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -300,6 +360,7 @@ class Scored:
     groups: dict[str, Counter[str]] = field(default_factory=dict)
     badges: Counter[str] = field(default_factory=Counter)
     envelope: Counter[str] = field(default_factory=Counter)
+    scale: Counter[str] = field(default_factory=Counter)
     cases: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -339,6 +400,10 @@ def summary_lines(scored: Scored, n: int) -> list[str]:
         f"95 pct upper bound on WRONG/answered {upper_s}",
         f"badges served: {badges} (LAYER = rows match under a confident non-L0 badge)",
         f"envelope violations (assert_envelope_valid): {env}",
+        f"scale guard: the judge's ROUND scale differs from the pack's on "
+        f"{scored.scale['queries_affected']} gold queries; "
+        f"tightened to WRONG={scored.scale['tightened']}, "
+        f"relabelled INVALID={scored.scale['relabelled']}",
     ]
     for name in sorted(scored.groups):
         t = scored.groups[name]
@@ -378,7 +443,7 @@ def live_url(env: dict[str, str], url_arg: str | None) -> str:
     return raw.rstrip("/")
 
 
-def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
+def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path, echo: bool = True) -> Scored:
     """Ask, judge rows, then hold the served envelope to the badge contract.
 
     The row judge runs first, so a WRONG is never hidden. A served envelope that
@@ -387,6 +452,13 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
     refusal (403/409) is not a DMS envelope and is not validated.
     """
     out = Scored()
+    out.scale["queries_affected"] = sum(
+        1
+        for c in cases
+        if c["expect"] == "l0"
+        and c.get("_gold_rows") is not None
+        and numeric_scale_from_sql(str(c["gold_sql"])) != c.get("_pack_scale")
+    )
     for case in cases:
         qid = str(case["id"])
         # Refusals are reported per reason: ambiguous_metric is judgement-dependent and
@@ -403,7 +475,8 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
             name = type(exc).__name__
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if name in TRANSPORT_BLOCK or status == 404:
-                print(f"{qid}\tBLOCKED\t{name}")
+                if echo:
+                    print(f"{qid}\tBLOCKED\t{name}")
                 out.status = "blocked"
                 return out
             env = ask_error_envelope(exc)
@@ -412,13 +485,18 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
                 out.tallies[verdict] += 1
                 out.groups.setdefault(group, Counter())[verdict] += 1
                 out.cases.append({"id": qid, "group": group, "verdict": verdict, "reason": reason})
-                print(f"{qid}\t{group}\t{verdict}\t-\t{reason}")
+                if echo:
+                    print(f"{qid}\t{group}\t{verdict}\t-\t{reason}")
                 continue
             served = False
         scored = {"id": qid, "question": case["question"], "expect": case["expect"]}
         oracle_sql = str(case.get("gold_sql") or "") if case["expect"] == "l0" else None
         res = judge_envelope_detailed(scored, env, oracle_db=oracle_db, oracle_sql=oracle_sql)
         verdict, reason = res.verdict, res.reason
+        if served:
+            verdict, reason, change = scale_guard(case, env, verdict, reason)
+            if change:
+                out.scale[change] += 1
         violation = envelope_violation(env) if served else None
         if violation:
             out.envelope[_ecode(violation)] += 1
@@ -438,8 +516,148 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
                 "envelope_violation": violation,
             }
         )
-        print(f"{qid}\t{group}\t{verdict}\t{badge}\t{reason}")
+        if echo:
+            print(f"{qid}\t{group}\t{verdict}\t{badge}\t{reason}")
     return out
+
+
+def _nudge(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Move the first numeric cell by one unit of its own scale, else tag a text cell."""
+    out = [dict(r) for r in rows]
+    for row in out:
+        for key, value in row.items():
+            try:
+                num = Decimal(str(value))
+            except Exception:  # noqa: BLE001 - not a number, keep looking
+                continue
+            if isinstance(value, bool) or not num.is_finite():
+                continue
+            places = (
+                max(0, -num.as_tuple().exponent) if isinstance(num.as_tuple().exponent, int) else 0
+            )
+            row[key] = str(num + Decimal(1).scaleb(-places))
+            return out
+    first = out[0]
+    key = next(iter(first))
+    first[key] = f"{first[key]}x"
+    return out
+
+
+# responder -> (verdict on answerable questions, verdict on refusal questions)
+SYNTHETIC_EXPECT: dict[str, tuple[str, str]] = {
+    "perfect": ("OK", "ABSTAIN"),
+    "all_abstain": ("ABSTAIN", "ABSTAIN"),
+    "doubled_row": ("WRONG", "ABSTAIN"),
+    "nudged_value": ("WRONG", "ABSTAIN"),
+    "confident_on_refusals": ("OK", "WRONG"),
+    "green_abstention": ("INVALID", "ABSTAIN"),
+}
+
+
+def synthetic_envelopes(
+    cases: list[dict[str, Any]], gold: dict[str, Any]
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Per responder, question text -> served envelope, built by DMS's own constructor.
+
+    No DMS is asked and no model is called: the pack's own frozen gold is replayed as a
+    perfect answerer and then deliberately damaged, to show the instrument can tell.
+    """
+    from dms_executor.envelope import build_answer_envelope
+
+    as_of = "2026-01-01T00:00:00Z"
+
+    def answer(case: dict[str, Any], rows: list[dict[str, Any]], badge: str = "L0_CERTIFIED"):
+        return build_answer_envelope(
+            answer_id=f"ans_{case['id']}",
+            text="The rows are listed below.",
+            badge=badge,
+            values=[{"label": "rows", "value": "listed"}],
+            sql_used=str(case.get("gold_sql") or "SELECT 1"),
+            rows=rows,
+            as_of=as_of,
+            audit_id=f"aud_{case['id']}",
+        )
+
+    def abstain(case: dict[str, Any]):
+        return build_answer_envelope(
+            answer_id=f"abs_{case['id']}",
+            text="I cannot answer that from this Space.",
+            badge="ABSTAIN",
+            rows=[],
+            as_of=as_of,
+        )
+
+    out: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in SYNTHETIC_EXPECT}
+    for case in cases:
+        q = str(case["question"])
+        if case["expect"] == "l0":
+            rows = frozen_rows(gold[case["id"]])
+            out["perfect"][q] = answer(case, rows)
+            out["all_abstain"][q] = abstain(case)
+            out["doubled_row"][q] = answer(case, rows + [dict(rows[0])])
+            out["nudged_value"][q] = answer(case, _nudge(rows))
+            out["confident_on_refusals"][q] = answer(case, rows)
+            out["green_abstention"][q] = {**abstain(case), "badge": "L0_CERTIFIED"}
+        else:
+            made_up = [{"answer": "42"}]
+            out["perfect"][q] = abstain(case)
+            out["all_abstain"][q] = abstain(case)
+            out["doubled_row"][q] = abstain(case)
+            out["nudged_value"][q] = abstain(case)
+            out["confident_on_refusals"][q] = answer(case, made_up, badge="L2_VALIDATED")
+            out["green_abstention"][q] = abstain(case)
+    return out
+
+
+def synthetic_selftest(args: argparse.Namespace) -> int:
+    """Instrument self-test: can this pack and judge tell a perfect answerer from damaged ones?"""
+    try:
+        manifest, cases = preflight(args)
+        gold = json.loads((Path(args.pack) / "pack" / "gold_results.json").read_text("utf-8"))
+    except PackError as exc:
+        print(f"CONFIG: {exc}")
+        print("VERDICT: CONFIG. Not a score.")
+        return EXIT_CONFIG
+    print(label(manifest))
+    n_ans = sum(c["expect"] == "l0" for c in cases)
+    n_ref = len(cases) - n_ans
+    print(
+        f"synthetic responders over n={len(cases)} (answerable={n_ans}, refuse={n_ref}); "
+        "DMS is not asked"
+    )
+    envs = synthetic_envelopes(cases, gold)
+    failures = 0
+    print(
+        f"{'responder':<22}{'OK':>5}{'LAYER':>7}{'ABSTAIN':>9}{'WRONG':>7}"
+        f"{'INVALID':>9}{'ORA_ERR':>9}  expected"
+    )
+    for name, (want_ans, want_ref) in SYNTHETIC_EXPECT.items():
+        got = score(cases, ask=envs[name].__getitem__, oracle_db=Path(args.oracle_db), echo=False)
+        t = got.tallies
+        off = [
+            c
+            for c, case in zip(got.cases, cases, strict=True)
+            if c["verdict"] != (want_ans if case["expect"] == "l0" else want_ref)
+        ]
+        # DMS's own masker turns some gold cells into DMSMASK_ tokens; the instrument
+        # reports that as INVALID masked_compare, which is its design, not its failure.
+        masked = [c["id"] for c in off if str(c.get("reason", "")).startswith("masked_compare")]
+        deviants = [c["id"] for c in off if c["id"] not in masked]
+        failures += bool(deviants)
+        print(
+            f"{name:<22}{t['OK']:>5}{t['LAYER']:>7}{t['ABSTAIN']:>9}{t['WRONG']:>7}"
+            f"{t['INVALID']:>9}{t['ORACLE_ERROR']:>9}  "
+            f"answerable->{want_ans}, refuse->{want_ref}: "
+            f"{'as expected' if not deviants else f'{len(deviants)} DEVIATE {deviants[:5]}'}"
+            f"{f' (+{len(masked)} masked by DMS masker)' if masked else ''}"
+        )
+    if failures:
+        print("VERDICT: INSTRUMENT FAILED its own self-test. Do not score DMS with it.")
+        return EXIT_FAIL
+    print(
+        "VERDICT: instrument discriminates as designed. Synthetic responders only: not a DMS score."
+    )
+    return EXIT_PASS
 
 
 def _artifact(report: dict[str, Any]) -> Path:
@@ -516,6 +734,11 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--self-check", action="store_true")
     p.add_argument("--live", action="store_true")
+    p.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="Instrument self-test with synthetic responders. Asks no DMS, calls no model.",
+    )
     p.add_argument("--pack", type=Path, default=None)
     p.add_argument("--oracle-db", type=Path, default=None)
     p.add_argument("--expect-root", default=None, help="Score a pack other than D. Labelled.")
@@ -525,9 +748,13 @@ def main(argv: list[str]) -> int:
     args = p.parse_args(argv)
     if args.self_check:
         return self_check(args)
+    if args.synthetic:
+        return synthetic_selftest(args)
     if args.live:
         return live(args)
-    print("usage: score_heldout.py --self-check | --live  (--pack DIR --oracle-db DB)")
+    print(
+        "usage: score_heldout.py --self-check | --synthetic | --live  (--pack DIR --oracle-db DB)"
+    )
     return EXIT_CONFIG
 
 

@@ -28,8 +28,10 @@ from score_heldout import (  # noqa: E402
     db_fingerprint,
     main,
     manifest_root,
+    scale_guard,
     score,
     summary_lines,
+    true_round_scale,
     verify_pack,
     wrong_upper_pct,
 )
@@ -311,6 +313,120 @@ def test_summary_prints_n_counts_bound_badges_and_envelope() -> None:
     assert "bound about 6.00 pct" in lines[1]
     assert "badges served: ABSTAIN=5 L0_CERTIFIED=40 L2_VALIDATED=10" in lines[2]
     assert lines[3].endswith("envelope violations (assert_envelope_valid): none")
+
+
+def test_synthetic_selftest_discriminates_on_a_sealed_pack(tmp_path: Path, capsys) -> None:
+    pack, db, root = _make_pack(tmp_path)
+    argv = ["--synthetic", "--pack", str(pack), "--oracle-db", str(db), "--expect-root", root]
+    assert main(argv) == EXIT_PASS
+    out = capsys.readouterr().out
+    for name in (
+        "perfect",
+        "all_abstain",
+        "doubled_row",
+        "nudged_value",
+        "confident_on_refusals",
+        "green_abstention",
+    ):
+        assert name in out
+    assert "instrument discriminates as designed" in out
+    assert "DMS is not asked" in out
+
+
+def test_synthetic_selftest_fails_when_the_judge_goes_blind(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """R-0007: a judge that calls everything OK must make the self-test fail."""
+    import score_heldout as sh
+    from score_curated import JudgeResult
+
+    def blind(case, env, **_kw):
+        return JudgeResult("OK", "", "OK")
+
+    monkeypatch.setattr(sh, "judge_envelope_detailed", blind)
+    pack, db, root = _make_pack(tmp_path)
+    argv = ["--synthetic", "--pack", str(pack), "--oracle-db", str(db), "--expect-root", root]
+    assert main(argv) == sh.EXIT_FAIL
+    out = capsys.readouterr().out
+    assert "INSTRUMENT FAILED" in out
+    assert "DEVIATE" in out
+
+
+def test_nudge_moves_one_unit_of_the_cells_own_scale() -> None:
+    from score_heldout import _nudge
+
+    assert _nudge([{"c": "North", "v": "15.10"}]) == [{"c": "North", "v": "15.11"}]
+    assert _nudge([{"n": "7"}]) == [{"n": "8"}]
+    assert _nudge([{"m": "2025-03"}]) == [{"m": "2025-03x"}]  # a month is not a number
+    rows = [{"v": "1.5"}]
+    _nudge(rows)
+    assert rows == [{"v": "1.5"}]  # the input is never mutated
+
+
+def test_true_round_scale_reads_commas_inside_the_argument() -> None:
+    assert true_round_scale("SELECT ROUND(AVG(COALESCE(a, 0)), 2) FROM t") == 2
+    assert true_round_scale("SELECT ROUND(SUM(COALESCE(a, 0) * b), 4), ROUND(c, 2) FROM t") == 4
+    assert true_round_scale("SELECT COUNT(*) FROM t") is None
+
+
+def _guard_case(sql: str, gold_rows: list[dict], pack_scale: int | None) -> dict:
+    return {"expect": "l0", "gold_sql": sql, "_gold_rows": gold_rows, "_pack_scale": pack_scale}
+
+
+def test_scale_guard_tightens_a_cent_error_the_judge_cannot_see(monkeypatch) -> None:
+    import score_heldout as sh
+
+    monkeypatch.setattr(sh, "numeric_scale_from_sql", lambda _sql: 0)  # the upstream misread
+    case = _guard_case("SELECT ROUND(AVG(a), 2) AS v FROM t", [{"v": "1.57"}], 2)
+    off_by_a_cent = {"rows": [{"v": "1.58"}]}
+    assert scale_guard(case, off_by_a_cent, "OK", "") == (
+        "WRONG",
+        "rows_mismatch:scale(judge=0,pack=2)",
+        "tightened",
+    )
+    assert scale_guard(case, {"rows": [{"v": "1.57"}]}, "OK", "") == ("OK", "", None)
+
+
+def test_scale_guard_relabels_a_wrong_that_is_only_exactness(monkeypatch) -> None:
+    import score_heldout as sh
+
+    monkeypatch.setattr(sh, "numeric_scale_from_sql", lambda _sql: None)  # judge fell back to exact
+    case = _guard_case("SELECT ROUND(a, 2) AS v FROM t", [{"v": "1.57"}], 2)
+    assert scale_guard(case, {"rows": [{"v": "1.5700001"}]}, "WRONG", "rows_mismatch:values") == (
+        "INVALID",
+        "scale_mismatch:judge=None,pack=2",
+        "relabelled",
+    )
+    # a genuinely different value stays WRONG, and a count mismatch is never relabelled
+    assert (
+        scale_guard(case, {"rows": [{"v": "1.60"}]}, "WRONG", "rows_mismatch:values")[0] == "WRONG"
+    )
+    assert scale_guard(case, {"rows": []}, "WRONG", "rows_mismatch:count=0/1")[0] == "WRONG"
+
+
+def test_scale_guard_is_a_no_op_when_the_scales_agree() -> None:
+    case = _guard_case("SELECT ROUND(AVG(a), 2) AS v FROM t", [{"v": "1.57"}], 2)
+    assert scale_guard(case, {"rows": [{"v": "9.99"}]}, "WRONG", "rows_mismatch:values")[2] is None
+    assert scale_guard(case, {"rows": [{"v": "1.57"}]}, "ABSTAIN", "")[2] is None
+
+
+def test_a_cent_error_under_a_nested_comma_round_is_wrong_end_to_end(tmp_path: Path) -> None:
+    """The real regex reads ROUND(AVG(COALESCE(x, 0)), 2) as scale 0 and would call 7.46 OK."""
+    pack, db, _root = _make_pack(tmp_path)
+    sql = "SELECT ROUND(AVG(COALESCE(amount, 0)), 2) AS a FROM sales"
+    case = {
+        "id": "HO-9001",
+        "question": "Average sale amount?",
+        "expect": "l0",
+        "difficulty": "easy",
+        "gold_sql": sql,
+        "_gold_rows": [{"a": "7.45"}],
+        "_pack_scale": 2,
+    }
+    exact = _answer("L0_CERTIFIED", [{"a": "7.45"}])
+    off = _answer("L0_CERTIFIED", [{"a": "7.46"}])
+    assert score([case], ask=lambda _q: exact, oracle_db=db).tallies == Counter({"OK": 1})
+    assert score([case], ask=lambda _q: off, oracle_db=db).tallies == Counter({"WRONG": 1})
 
 
 def test_pack_d_root_is_pinned_not_a_placeholder() -> None:
