@@ -74,6 +74,7 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -107,6 +108,11 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.studio_selection import (
+    SelectionAskRequest,
+    build_studio_selection,
+    read_selection_schema,
+)
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -329,6 +335,21 @@ class Executor:
         )
         return sorted(resolve_session_acl(ctx).row_predicates)
 
+    def studio_selection(
+        self, selection: list[dict[str, Any]], space_id: str | None
+    ) -> dict[str, Any]:
+        """STUDIO-SELECT-01: the ``studio_selection`` Cortex ask field. Schema only.
+
+        Only granted tables are looked up, so ungranted and missing refuse alike.
+        """
+        granted = set(self.grantable_tables(space_id=space_id))
+        lake = ensure_demo_warehouse(self._warehouse)
+        named = [str(i.get("table") or "") for i in selection]
+        schema = read_selection_schema(lake, [t for t in named if t in granted])
+        return build_studio_selection(
+            selection, schema=schema, ontology=load_verified_ontology(lake) if schema else None
+        )
+
     def demo_acl(
         self,
         *,
@@ -487,6 +508,7 @@ class Executor:
         session_id: str | None = None,
         tables: list[str] | None = None,
         ask_path: str | None = None,
+        selection: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
 
@@ -504,6 +526,7 @@ class Executor:
             session_id=session_id,
             tables=tables,
             ask_path=ask_path,
+            studio_pick=selection,
             seen=seen,
         )
         stamp_engine_clock(env)
@@ -530,6 +553,7 @@ class Executor:
         session_id: str | None = None,
         tables: list[str] | None = None,
         ask_path: str | None = None,
+        studio_pick: list[dict[str, Any]] | None = None,
         seen: list[dict[str, Any] | None],
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
@@ -551,6 +575,11 @@ class Executor:
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
+        # STUDIO-SELECT-01: refuse a bad pick before any lane runs, then the
+        # picked tables are the grounding scope for every lane below.
+        studio = None if studio_pick is None else self.studio_selection(studio_pick, space_id)
+        if studio is not None:
+            tables = [t["table"] for t in studio["tables"]]
         question = normalize_ask_question(question)
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
@@ -806,26 +835,24 @@ class Executor:
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
-        try:
-            resp = self._cortex.ask(
-                AskRequest(
-                    question=question,
-                    session_id=acl.session_id,
-                    space_id=space_id,
-                )
+        ask_req = (
+            AskRequest(question=question, session_id=acl.session_id, space_id=space_id)
+            if studio is None
+            else SelectionAskRequest(
+                question=question,
+                session_id=acl.session_id,
+                space_id=space_id,
+                studio_selection=studio,
             )
+        )
+        try:
+            resp = self._cortex.ask(ask_req)
         except Exception as exc:  # noqa: BLE001
             err = classify_submit_error(exc)
             if err.code in {"session_unbound", "session_expired"}:
                 self._bound_sessions.discard(acl.session_id)
                 self.bind_session(acl)
-                resp = self._cortex.ask(
-                    AskRequest(
-                        question=question,
-                        session_id=acl.session_id,
-                        space_id=space_id,
-                    )
-                )
+                resp = self._cortex.ask(ask_req)
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         env = attach_cascade(

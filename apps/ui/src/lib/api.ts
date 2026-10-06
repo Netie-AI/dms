@@ -149,7 +149,12 @@ export type AskPayload = {
   /** Tables the user grounded the question in. Narrows the session manifest,
    *  so the scope is enforced by the engine, not suggested to the model. */
   grounded_tables?: string[] | null;
+  /** STUDIO-SELECT-01: tables + columns ticked in Studio. The API packs their
+   *  schema and ontology joins into the Cortex ask. Exclusive with grounded_tables. */
+  selection?: StudioSelectionItem[] | null;
 };
+
+export type StudioSelectionItem = { table: string; columns: string[] };
 
 export async function postAsk(
   payload: AskPayload,
@@ -165,6 +170,7 @@ export async function postAsk(
       grounded_tables: payload.grounded_tables?.length
         ? payload.grounded_tables
         : undefined,
+      selection: payload.selection ?? undefined,
     }),
     signal,
   });

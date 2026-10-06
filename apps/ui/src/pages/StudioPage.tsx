@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { ResultView, type StudioAskEnvelope } from "@/components/studio/ResultView";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
+import { DataSelector } from "@/components/studio/DataSelector";
 import { useApp } from "@/context/AppContext";
 import {
   describeApiError,
@@ -569,7 +570,16 @@ export function StudioPage() {
         </div>
       </div>
 
+      <DataSelector
+        key={activeSpaceId ?? "personal"}
+        spaceId={activeSpaceId}
+        leaves={leaves}
+        onAnswer={(env) =>
+          navigate(location.pathname, { replace: true, state: { studioEnvelope: env } })
+        }
+      />
       <ResultView envelope={studioEnvelope} />
+
 
       <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
         <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
