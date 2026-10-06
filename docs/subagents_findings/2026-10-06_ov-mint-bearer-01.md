@@ -14,6 +14,7 @@ Keywords: OV-MINT-BEARER-01, ManifestMinter, fetch_intermediate, POST /keys/inte
 
 ## DMS design
 
+- service_id: OV compares it case-sensitively (`dms` != `DMS`). The only source is `OV_SERVICE_ID = "dms"` in `manifest.py`. The constructor arg and the env path are removed. A register echo that is not exactly `dms` is `ov_mint_failed` and is not persisted.
 - Token: env `DMS_OV_SERVICE_TOKEN` wins. Else file `DMS_OV_SERVICE_TOKEN_FILE`. Read once in `ManifestMinter.__init__` and kept in memory. Never logged, echoed, or stamped.
 - First mint runs only when env and file are both empty and a file path is set. The file is opened 0600 before the register call, so a path DMS cannot write never costs the only copy of the token. OV 401 on register means already registered: `ov_service_token_missing`, and the file stays empty.
 - 401 / 403 (not sealed) on intermediate: re-read env / file once, then one more Bearer fetch. Still refused: `ov_service_token_unauthorized`. No register, no rotate.
