@@ -61,7 +61,7 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
-from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -817,6 +817,8 @@ def _submit_validated(
         )
     try:
         result = submit(sql)
+    except OpenVaultTokenError:
+        raise
     except Exception:  # noqa: BLE001
         return _abstain(
             question, "submit_failed",

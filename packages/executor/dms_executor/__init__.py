@@ -81,6 +81,7 @@ from dms_executor.generative_ask import (
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
+    OpenVaultTokenError,
     SessionAcl,
     SubmitError,
     classify_submit_error,
@@ -498,14 +499,36 @@ class Executor:
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
-        env = self._live_ask(
-            question,
-            space_id=space_id,
-            session_id=session_id,
-            tables=tables,
-            ask_path=ask_path,
-            seen=seen,
-        )
+        try:
+            env = self._live_ask(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+                ask_path=ask_path,
+                seen=seen,
+            )
+        except OpenVaultTokenError as exc:
+            # Every lane needs the signing key; no lane may relabel its absence.
+            env = build_answer_envelope(
+                answer_id="ans_ov_mint",
+                text=(
+                    "I can't answer this: DMS could not get its OpenVault "
+                    f"signing key ({exc.code}). No fallback answer was used."
+                ),
+                badge="ABSTAIN",
+                abstained=True,
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[exc.code, "no generative fallback", "no demo fallback"],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+                question=question,
+            )
+            assert_envelope_valid(env)
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)

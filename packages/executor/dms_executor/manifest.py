@@ -12,6 +12,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 from cortex_contract.execution import Manifest, canonical_manifest_bytes
@@ -37,6 +38,58 @@ class ManifestMintError(Exception):
 
 class SecurityEvent(ManifestMintError):
     """ACL / signature refusal — never re-mint."""
+
+
+#: Current ``dms`` service Bearer for OpenVault. Wins over the file.
+SERVICE_TOKEN_ENV = "DMS_OV_SERVICE_TOKEN"
+#: Path of the secret file holding that Bearer. A first mint writes it 0600.
+SERVICE_TOKEN_FILE_ENV = "DMS_OV_SERVICE_TOKEN_FILE"
+
+OV_TOKEN_MISSING = "ov_service_token_missing"
+OV_TOKEN_UNAUTHORIZED = "ov_service_token_unauthorized"
+OV_MINT_FAILED = "ov_mint_failed"
+
+#: Seconds DMS asks OV for, and the key lifetime when OV omits ``not_after``.
+INTERMEDIATE_TTL_ENV = "DMS_OV_INTERMEDIATE_TTL_S"
+DEFAULT_INTERMEDIATE_TTL_S = 900
+#: Refetch this long before ``not_after`` so no manifest is signed by a dying key.
+KEY_EXPIRY_SKEW = timedelta(seconds=30)
+#: One pooled keep-alive client per minter, shared by every OV call.
+OV_TIMEOUT = httpx.Timeout(10.0, connect=3.0)
+OV_LIMITS = httpx.Limits(max_connections=4, max_keepalive_connections=2, keepalive_expiry=60.0)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _intermediate_ttl_s() -> int:
+    raw = os.environ.get(INTERMEDIATE_TTL_ENV, "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else DEFAULT_INTERMEDIATE_TTL_S
+
+
+def _unauthorized(resp: httpx.Response) -> bool:
+    """OV b4d68021: 401 = no Bearer, 403 = wrong/stale Bearer. A sealed vault is not this."""
+    return resp.status_code == 401 or (resp.status_code == 403 and "sealed" not in resp.text)
+
+
+class OpenVaultTokenError(ManifestMintError):
+    """No intermediate key from OpenVault. Never carries the service token."""
+
+
+def _token_file() -> Path | None:
+    raw = os.environ.get(SERVICE_TOKEN_FILE_ENV, "").strip()
+    return Path(raw) if raw else None
+
+
+def _load_service_token() -> str:
+    token = os.environ.get(SERVICE_TOKEN_ENV, "").strip()
+    if token:
+        return token
+    path = _token_file()
+    if path is not None and path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
 
 
 @dataclass
@@ -83,8 +136,9 @@ class ManifestMinter:
             openvault_url or os.environ.get("OPENVAULT_URL", "http://127.0.0.1:5000")
         ).rstrip("/")
         self.service_id = service_id
-        self._http = http or httpx.Client(timeout=15.0)
+        self._http = http or httpx.Client(timeout=OV_TIMEOUT, limits=OV_LIMITS)
         self._owns_http = http is None
+        self._token = _load_service_token()
         self._key: IntermediateKey | None = None
         self._cache: dict[str, _CacheEntry] = {}
 
@@ -99,32 +153,37 @@ class ManifestMinter:
         else:
             self._cache.pop(session_id, None)
 
-    def fetch_intermediate(self, *, ttl_s: int = 900) -> IntermediateKey:
-        """POST /keys/services then /keys/intermediate. Private key stays in RAM."""
-        reveal = self._http.post(
-            f"{self.openvault_url}/keys/services",
-            json={"service_id": self.service_id},
-            headers={"X-OpenVault-Reveal": "intentional"},
-        )
-        reveal.raise_for_status()
-        token = reveal.json()["token"]
-        inter = self._http.post(
-            f"{self.openvault_url}/keys/intermediate",
-            json={
-                "service_id": self.service_id,
-                "subject": "dms-manifest-signer",
-                "ttl_s": ttl_s,
-            },
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        inter.raise_for_status()
+    def fetch_intermediate(self, *, ttl_s: int | None = None) -> IntermediateKey:
+        """POST /keys/intermediate with the cached ``dms`` Bearer. Key stays in RAM.
+
+        An unauthorized answer re-reads env / file once (a rotation may have
+        landed there) and re-fetches with that Bearer. It never re-registers:
+        OV refuses a reveal-only rotation (OV#128).
+        """
+        ttl = ttl_s or _intermediate_ttl_s()
+        if not self._token:
+            self._token = _load_service_token() or self._first_mint()
+        inter = self._post_intermediate(self._token, ttl)
+        if _unauthorized(inter):
+            self._token = _load_service_token() or self._token
+            inter = self._post_intermediate(self._token, ttl)
+        if _unauthorized(inter):
+            raise OpenVaultTokenError(
+                OV_TOKEN_UNAUTHORIZED, f"intermediate: HTTP {inter.status_code} after one re-read"
+            )
+        if inter.status_code == 403:
+            raise OpenVaultTokenError(OV_MINT_FAILED, "intermediate: vault sealed (HTTP 403)")
+        if inter.status_code >= 400:
+            raise OpenVaultTokenError(OV_MINT_FAILED, f"intermediate: HTTP {inter.status_code}")
         body = inter.json()
         seed_b64 = body["private_key"]
         pad = "=" * (-len(seed_b64) % 4)
         seed = base64.urlsafe_b64decode(seed_b64 + pad)
         key = Ed25519PrivateKey.from_private_bytes(seed)
-        not_after_raw = body["not_after"]
-        if isinstance(not_after_raw, (int, float)):
+        not_after_raw = body.get("not_after")
+        if not_after_raw is None:
+            not_after = _now() + timedelta(seconds=ttl)
+        elif isinstance(not_after_raw, (int, float)):
             not_after = datetime.fromtimestamp(not_after_raw, tz=UTC)
         else:
             not_after = datetime.fromisoformat(str(not_after_raw).replace("Z", "+00:00"))
@@ -136,6 +195,64 @@ class ManifestMinter:
         )
         self._notify_cortex_jwks_refresh()
         return self._key
+
+    def _post_intermediate(self, token: str, ttl_s: int) -> httpx.Response:
+        try:
+            return self._http.post(
+                f"{self.openvault_url}/keys/intermediate",
+                json={
+                    "service_id": self.service_id,
+                    "subject": "dms-manifest-signer",
+                    "ttl_s": ttl_s,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            raise OpenVaultTokenError(
+                OV_MINT_FAILED, f"intermediate: {type(exc).__name__}"
+            ) from exc
+
+    def _first_mint(self) -> str:
+        """POST /keys/services once, when no token exists, and persist the result."""
+        path = _token_file()
+        if path is None:
+            raise OpenVaultTokenError(
+                OV_TOKEN_MISSING, f"set {SERVICE_TOKEN_ENV} or {SERVICE_TOKEN_FILE_ENV}"
+            )
+        # Open the file before OV issues the token: an unwritable path must not
+        # cost the only copy of a token that cannot be re-fetched.
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.chmod(path, 0o600)
+        except OSError as exc:
+            raise OpenVaultTokenError(
+                OV_TOKEN_MISSING, f"token file not writable: {type(exc).__name__}"
+            ) from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            try:
+                reg = self._http.post(
+                    f"{self.openvault_url}/keys/services",
+                    json={"service_id": self.service_id},
+                    headers={"X-OpenVault-Reveal": "intentional"},
+                )
+            except httpx.HTTPError as exc:
+                raise OpenVaultTokenError(
+                    OV_MINT_FAILED, f"register: {type(exc).__name__}"
+                ) from exc
+            if reg.status_code == 401:
+                # Already registered on OV. Rotation needs the current Bearer
+                # or admin, and DMS holds neither.
+                raise OpenVaultTokenError(
+                    OV_TOKEN_MISSING, "first mint refused: service already registered (HTTP 401)"
+                )
+            if reg.status_code >= 400:
+                raise OpenVaultTokenError(OV_MINT_FAILED, f"register: HTTP {reg.status_code}")
+            token = str(reg.json().get("token") or "").strip()
+            if not token:
+                raise OpenVaultTokenError(OV_MINT_FAILED, "register: no token in response")
+            fh.write(token)
+        return token
 
     def _notify_cortex_jwks_refresh(self) -> None:
         """Ask Cortex to cold-refresh JWKS so the new intermediate verifies."""
@@ -157,8 +274,7 @@ class ManifestMinter:
             logger.warning("Cortex JWKS refresh failed: %s", exc)
 
     def _ensure_key(self) -> IntermediateKey:
-        now = datetime.now(UTC)
-        if self._key is None or self._key.not_after <= now + timedelta(seconds=30):
+        if self._key is None or self._key.not_after <= _now() + KEY_EXPIRY_SKEW:
             return self.fetch_intermediate()
         return self._key
 
