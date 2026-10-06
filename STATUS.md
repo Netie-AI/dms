@@ -42,7 +42,12 @@ GitHub issues are the source of truth. This table holds links only.
 | F73 accuracy remainder - EPIC-019 | [#38](https://github.com/Netie-AI/dms/issues/38) |
 | F73 delivery (gated) - EPIC-016 | [#29](https://github.com/Netie-AI/dms/issues/29) |
 | SCALE-WAREHOUSE-01 - do not reseat | [#237](https://github.com/Netie-AI/dms/issues/237) |
-| **NEEDS-YOU: issue not yet filed** (drafts in [#374](https://github.com/Netie-AI/dms/pull/374)) | F41 EPIC-021a; F68 monetization; `app.netie.ai/cortex` 404; F73 surface cream/graphite; `verify_freeform_demo --self-check` not in CI; live BI connector after EXPORT-02 |
+| F41 EPIC-021a - founder decision | [#380](https://github.com/Netie-AI/dms/issues/380) |
+| F68 monetization - founder decision | [#381](https://github.com/Netie-AI/dms/issues/381) |
+| `app.netie.ai/cortex` 404 | [#382](https://github.com/Netie-AI/dms/issues/382) |
+| F73 surface cream/graphite (queued) | [#383](https://github.com/Netie-AI/dms/issues/383) |
+| `verify_freeform_demo --self-check` not in CI | [#384](https://github.com/Netie-AI/dms/issues/384) |
+| Live Power BI / Superset connector after EXPORT-02 | [#385](https://github.com/Netie-AI/dms/issues/385) |
 
 ## Agent models
 PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.
