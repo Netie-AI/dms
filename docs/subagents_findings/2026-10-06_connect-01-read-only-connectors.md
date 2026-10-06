@@ -54,7 +54,13 @@ The engine sessions are a second layer, so SQL that gets past the guard still me
 | Snowflake | CONTRACT-LEVEL MOCK of `snowflake.connector`. No live account is claimed |
 | OpenVault | `httpx.MockTransport`. The real OV is not reached. Live OV `/keys/services` returned 401 on prove (#359 / OV#126) |
 
-Mutation check, run locally: disabling the comment check, the statement count, the SELECT INTO check, the scrub, the SQLite authorizer or the flag default each turns at least one test red.
+## Soft cancel (found by CI on this PR)
+
+MySQL's `MAX_EXECUTION_TIME` stops `BENCHMARK()` at the deadline and returns `0` with no error. A timed-out SELECT therefore came back looking like an answer. `_select` now raises `SelectTimeout` when execute plus fetch ran past `timeout_s`, whatever the engine returned. Real scans on all three engines do cancel at 1s.
+
+The first SQL Server timeout probe was also wrong. A bare cross-join `COUNT` is answered in 0.1s through aggregate pushdown, so that probe proved nothing. The live test now uses a 6-way join with a predicate that spans every table.
+
+Mutation check, run locally: disabling the comment check, the statement count, the SELECT INTO check, the scrub, the SQLite authorizer, the flag default or the deadline backstop each turns at least one test red.
 
 ## Open (route to prd-agent)
 
