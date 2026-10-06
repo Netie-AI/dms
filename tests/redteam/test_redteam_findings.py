@@ -215,6 +215,9 @@ WRONG: dict[str, tuple[str, str]] = {
     ),
 }
 
+# Fixed by the sheet-lane closed grammar (Refs #372): plain regressions, no xfail marker.
+FIXED: frozenset[str] = frozenset({"B-049", "B-051", "E-067", "E-069"})
+
 CONTROLS: tuple[str, ...] = ("B-026", "C-033", "D-037", "E-002", "E-017", "E-065", "E-066", "E-081")
 
 _BY_FAMILY: dict[str, list[str]] = {
@@ -269,7 +272,7 @@ def _wrong_params() -> list[Any]:
         pytest.param(
             cid,
             id=f"{cid}-{issue}",
-            marks=pytest.mark.xfail(strict=True, reason=f"{issue}: {diff}"),
+            marks=() if cid in FIXED else pytest.mark.xfail(strict=True, reason=f"{issue}: {diff}"),
         )
         for cid, (issue, diff) in WRONG.items()
     ]
