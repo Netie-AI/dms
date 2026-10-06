@@ -63,3 +63,4 @@ Cursor and Claude Code start here. This file is an index only; the law is `CLAUD
 | [docs/archive/](docs/archive/) | retired doc text, incl. the [pre-index AGENTS.md](docs/archive/2026-10-06_AGENTS_pre-index.md) |
 
 Protected: `tests/invariants/**`, `.importlinter` — need `INVARIANT-CHANGE:` trailer (CLAUDE.md, Protected paths).
+Merge tiers (`tier:fast` / `tier:full`): see [CLAUDE.md](CLAUDE.md#merge-tiers).
