@@ -175,7 +175,7 @@ class DemoPackUnavailable(AskServiceError):
     def __init__(self, missing: Path) -> None:
         super().__init__(
             "demo_pack_unavailable",
-            f"curated demo pack not found at {missing}; this install has no demo pack",
+            f"curated demo pack not found at {missing}; this deployment has no demo pack",
         )
 
 
