@@ -791,7 +791,10 @@ def untyped_numeric_columns(tables: set[str], *, path: Path | None = None) -> di
     db = path or warehouse_path()
     if not Path(db).is_file():
         return {}
-    con = connect_readonly(db)
+    # Do not call ensure_demo_warehouse: that reseeds the file the ask just
+    # validated, and a demo multi-grain compile then submits against the demo
+    # shipments table instead of the caller's.
+    con = duckdb.connect(str(db), read_only=True)
     try:
         present = con.execute(
             """

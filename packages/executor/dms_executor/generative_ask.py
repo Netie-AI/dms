@@ -78,6 +78,7 @@ from dms_executor.ontology import (
     demo_ontology,
     detect_supply_chain_grains,
     missing_join_for_ungranted,
+    table_is_granted,
     try_compile_multi_grain,
 )
 from dms_executor.semantic_retrieve import (
@@ -645,6 +646,23 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
+def _cte_aliases(sql: str) -> set[str]:
+    """CTE names are not tables. A grant check must not refuse ``JOIN t``."""
+    try:
+        roots = sqlglot.parse(sql, read="duckdb")
+    except Exception:  # noqa: BLE001
+        return set()
+    out: set[str] = set()
+    for root in roots:
+        if root is None:
+            continue
+        for cte in root.find_all(exp.CTE):
+            name = str(cte.alias or "").lower()
+            if name:
+                out.add(name)
+    return out
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -659,7 +677,12 @@ def validate_compiled_sql(
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
     named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    ctes = _cte_aliases(sql)
+    # Grants are ``bronze.<t>`` for a SQL-source Space and bare names for the
+    # demo spine. ``table_is_granted`` matches either, plus a warehouse_ alias.
+    missing = {
+        t for t in named if t.lower() not in ctes and not table_is_granted(t, grantable)
+    }
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
@@ -1363,7 +1386,9 @@ def maybe_generative_ask(
                 )
             )
         join_why: str | None = None
-        if space_onto is not None and not why:
+        # The join rule is the named refusal. An EXPLAIN or grant miss must
+        # not hide it behind a generic validate reason.
+        if space_onto is not None:
             try:
                 cols = relation_columns(space_onto, lake, sorted(allowed))
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join

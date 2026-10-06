@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
@@ -887,6 +888,13 @@ def orphan_money_figures(
     return [n for n in _money_like(text or "") if not any(_close(n, h) for h in have)]
 
 
+def _cell_float(val: Any) -> float | None:
+    """A numeric cell. SQL DECIMAL arrives as Decimal, not float."""
+    if isinstance(val, bool) or not isinstance(val, (int, float, Decimal)):
+        return None
+    return float(val)
+
+
 def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
     """Numeric facts a listing may honestly render from the result set.
 
@@ -899,8 +907,9 @@ def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
     for row in rows[:50]:
         nums: list[float] = []
         for val in row.values():
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                nums.append(float(val))
+            num = _cell_float(val)
+            if num is not None:
+                nums.append(num)
         out.extend(nums)
         for i, a in enumerate(nums):
             for b in nums[i + 1 :]:
@@ -1099,11 +1108,11 @@ def _full_numeric_column_sums(rows: list[dict[str, Any]]) -> list[float]:
         col: list[float] = []
         ok = True
         for row in rows:
-            val = row.get(key)
-            if isinstance(val, bool) or not isinstance(val, (int, float)):
+            num = _cell_float(row.get(key))
+            if num is None:
                 ok = False
                 break
-            col.append(float(val))
+            col.append(num)
         if ok and col:
             out.append(sum(col))
     return out
@@ -1294,9 +1303,9 @@ def _ensure_values(
     idx = len(out)
     for row in rows[:50]:
         for key, val in row.items():
-            if not isinstance(val, (int, float)) or isinstance(val, bool):
+            fv = _cell_float(val)
+            if fv is None:
                 continue
-            fv = float(val)
             if any(abs(fv - s) < 1e-9 for s in seen):
                 continue
             out.append({"id": f"v{idx}", "value": fv, "label": str(key)})
@@ -1327,7 +1336,7 @@ def chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         (
             k
             for k in keys
-            if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
+            if _cell_float(rows[0].get(k)) is not None
         ),
         None,
     )

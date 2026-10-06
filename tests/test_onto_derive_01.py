@@ -125,6 +125,7 @@ class _RecordingCortex:
     insights: list[dict[str, Any]] = field(default_factory=list)
     executed: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
+    asks: list[Any] = field(default_factory=list)
 
     def compute_insights(self, question: str, **kw: Any) -> dict[str, Any]:
         parsed = _parse_ontology(kw.get("ontology"))

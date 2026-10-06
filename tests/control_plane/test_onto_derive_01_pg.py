@@ -32,11 +32,11 @@ from test_onto_derive_01 import (  # noqa: E402
     VERIFIED_Q,
     VERIFIED_SQL,
     WRONG_JOIN_SQL,
-    _RecordingCortex,
     _assert_abstain,
     _gate_allows,
     _multiset,
     _oracle,
+    _RecordingCortex,
     _Space,
     make_minter,
 )

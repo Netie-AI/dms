@@ -34,10 +34,10 @@ from dms_executor.space_ontology import set_ontology_store
 from fastapi.testclient import TestClient
 from test_db_connector import _FakeConnection, _install
 from test_onto_derive_01 import (
-    _RecordingCortex,
-    _Space,
     _gate_allows,
     _multiset,
+    _RecordingCortex,
+    _Space,
     make_minter,
 )
 
