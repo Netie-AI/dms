@@ -62,9 +62,10 @@ from score_curated import (  # noqa: E402
 )
 
 PACK_NAME = "heldout-pack-d"
-# Root of the frozen pack's MANIFEST.json. A different pack can be scored only with
-# --expect-root, and every line it prints then says it is not pack D.
-PACK_D_ROOT_SHA256 = "PENDING_FREEZE"
+# Root of the frozen pack's MANIFEST.json (tag pack-d-v1, commit 9c1c2e7 in the pack
+# repo). A different pack can be scored only with --expect-root, and every line it
+# prints then says it is not pack D.
+PACK_D_ROOT_SHA256 = "e63b422e26336c6cae5f824d1af69f68ee5236544160a0685d0f982fad2ceee7"
 VERDICTS = ("OK", "LAYER", "ABSTAIN", "WRONG", "ORACLE_ERROR", "INVALID", "RATE_LIMIT")
 EXIT_PASS = 0
 EXIT_FAIL = 1
@@ -388,7 +389,13 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
     out = Scored()
     for case in cases:
         qid = str(case["id"])
-        group = "refuse" if case["expect"] == "refuse" else str(case.get("difficulty") or "unrated")
+        # Refusals are reported per reason: ambiguous_metric is judgement-dependent and
+        # must not be pooled with missing_data or out_of_range.
+        group = (
+            f"refuse:{case.get('refuse_reason') or 'unspecified'}"
+            if case["expect"] == "refuse"
+            else str(case.get("difficulty") or "unrated")
+        )
         served = True
         try:
             env = ask(str(case["question"]))

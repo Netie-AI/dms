@@ -1,0 +1,42 @@
+# HELDOUT-PACK-D a blind held-out pack and its scoring hook (dms#257 proposal)
+
+Keywords: HELDOUT-PACK-D, held-out, blind pack, EPIC-A1, dms-257, score_heldout, manifest, fingerprint, row judge, assert_envelope_valid, has_order_by_limit, ORDER BY LIMIT, classify_column, false positive, cross-check agreement
+
+Main idea: a frozen pack of questions DMS's authors never saw, on a synthetic database nobody here built DMS for, plus a draft hook that scores it with the existing row judge. The pack lives outside this repo (git repo `E:\HeldOut-PackD`, tag `pack-d-v1`, commit `9c1c2e7`, manifest root `e63b422e26336c6cae5f824d1af69f68ee5236544160a0685d0f982fad2ceee7`). **No scored round was run.** There is no WRONG count, so there is no rule-of-three bound to print. Not COMPLETE. Not a baseline. EPIC-A1 and dms#257 stay open.
+
+## What exists (measured)
+
+- **Database.** 16 tables, 221,370 rows, 2,642,540 cells, 39 MB. Deterministic: a second build under a different hash seed gave identical per-table row hashes on all 16 tables (my own fingerprint code, not the builder's dump script).
+- **Planted mess.** Soft-deleted suppliers/POs/invoices, 14 groups of suppliers sharing an exact name (plus case/space variants), non-MYR money with no MYR row in `fx_rates`, partial first and last months, a warehouse closing mid-window, nullable FKs, and status drift. Counts are in `db/generator_notes.md` in the pack.
+- **Questions.** 304 written by 4 blind authors (76 each). After cross-check: **263 answerable** (88 easy, 96 medium, 79 hard) and **40 to refuse** (8 each of missing_data, ambiguous_entity, ambiguous_metric, out_of_range, relative_time). 105 of the 264 first-round answers are one-row; 27 of the 263 kept are top-N judged in order.
+- **Cross-check.** 4 blind analysts saw only the question text. Round-1 agreement **303 of 304** (easy 88/88, medium 96/96, hard 79/80, refuse 40/40). The one non-agreement, HO-0102, was dropped (see finding 1). Round 2 had n=0, so there is no round-2 rate.
+- **Personal-data scan, counts only.** Own patterns: 0 email, 0 date-of-birth, 0 phone, 0 national-id hits and 0 flagged column names over 2,642,540 cells (the scanner was first run on planted data and caught the planted email, date-of-birth and column-name cases; phone and national-id patterns were not planted). `dms_core.pii.classify_column` flags 3 columns (finding 2).
+- **Hook tests.** `tests/test_score_heldout.py`: 19 passed on a synthetic pack in `tmp_path`. Every gate was broken in turn and a test went red each time. On the real pack the hook's `--self-check` passes with the pinned root, passes on the independent rebuild, and refuses a wrong database.
+
+## Findings for the PRD (feedback, not tickets)
+
+1. **Scorer: `has_order_by_limit` reads the whole SQL.** `scripts/oracle_row_match.py` marks a gold as ordered when `ORDER BY` and `LIMIT` both appear anywhere. HO-0102's gold has them only inside a correlated subquery (latest FX rate). Measured: its result is identical across 1/2/4/8 threads and only the row order varies. Inferred, not run against DMS: a correct DMS answer in another row order would be judged WRONG (`rows_mismatch:values`). Dropped from the pack rather than rewritten. A fix belongs to the scorer's owner, with a test on a subquery `ORDER BY ... LIMIT` and an unordered outer query.
+2. **DMS PII classifier flags 3 columns of a database with no personal data.** Measured: `supplier_items.valid_from` and `valid_to` are typed DATE, 2023-06-01 to 2025-10-30; `goods_receipts.delivery_note_no` is 7,630 non-null values, all shaped 2 letters + 7 digits. Inferred from reading `dms_core/pii.py`: the first two fire because `_whole_date_is_dob` treats any whole-value date column whose name is not in `_TYPED_DATE_COL` as a birth date; the third matches `_PASSPORT_FIND` (`[A-Z]{1,2}\d{7,9}`). Effect when scored: answers carrying those columns are masked and counted INVALID `masked_compare`, not OK or WRONG. Related to the over-mask work (dms#284).
+3. **Frozen packs need `* -text`.** The first freeze verified in its own folder but failed on a fresh clone for 9 files, because git normalised the CRLF files that Windows agents wrote. The pack now carries `.gitattributes` `* -text` and verifies on fresh clones under `core.autocrlf` true, input and false. Any future frozen pack needs the same.
+4. **Agreement is not correctness.** Author and cross-checker are the same model family reading the same data dictionary, so a shared misreading passes. The 99.7 percent measures how reproducible the reading is.
+5. **Selection effect.** Only agreed questions are kept, and authors were told to name output fields and state each definition. The pack measures answering unambiguous questions on an unseen schema. It understates the wrong-answer rate on loosely worded real questions.
+6. **Refusals.** The 8 `ambiguous_metric` questions are judgement-dependent (a defensible analyst could pick a reading). The hook reports refusals per reason, never pooled.
+
+## Blindness, stated honestly
+
+Authors and cross-checkers were told not to read the dms repo. The harness gave every agent the dms `CLAUDE.md` and a git-status listing at start (rules text and file names; no code, fixtures or questions). Access to the answer-key files by the cross-checkers can be verified from a transcript for 1 of 4; the other 3 transcripts are empty and file access times did not update on this machine, so for them it rests on instruction, on 89 percent of SQL texts differing (29 of 264 identical), and on their own reports describing real exploration.
+
+## Hook (`scripts/score_heldout.py`)
+
+- **Judge.** Imports `score_curated.judge_envelope_detailed` and `oracle_row_match` (#292/#299/#300 rules). Nothing copied. Refusal questions are judged by badge: a confident answer is WRONG.
+- **Fail-closed preflight, before any network call.** Pack outside this repo; every manifest sha256 and the pinned root match; the pack's scan says PASS; every gold SQL reproduces its frozen rows on `--oracle-db`; every table of `--oracle-db` matches `db/fingerprint.json` (catches an edit no gold query reads). Any failure is CONFIG, never a score.
+- **Badge contract (rule 10a).** Every served envelope goes through `assert_envelope_valid`. The row judge runs first so a WRONG is never hidden. Any other verdict on a violating envelope becomes INVALID `envelope:<E-code>`, so a green badge on an abstention cannot pass as ABSTAIN. Summaries print the served-badge tally and the violation codes.
+- **Output.** Every summary prints n, all outcome counts, answered, the rule-of-three line and a 95 percent upper bound. No target. Says it is not a baseline. Binds refuse `0.0.0.0` and public hosts.
+
+## Swap (hard rule 6)
+
+No new port, dependency, abstraction or config key. One script, one test file, and a constant (`PACK_D_ROOT_SHA256`) that is a pin, not a setting. Swap scenario for the root pin: a second pack is scored only with `--expect-root`, and every line then says it is not pack D.
+
+## Ceiling
+
+The hook has never been run live. A scored round needs the pack database attached as a Space (how DMS ingests a DuckDB file as a Space is not shown here), the A1 baseline gates, and the BIRD-style grants preflight analogue. Cross-check never used a different model family; that needs a key path through OpenVault and is Platform's call. Not COMPLETE.

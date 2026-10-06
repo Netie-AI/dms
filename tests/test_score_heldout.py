@@ -239,7 +239,8 @@ def test_score_judges_rows_not_badges(tmp_path: Path) -> None:
     assert got.tallies == Counter({"LAYER": 1, "WRONG": 2})
     verdicts = {r["id"]: r["verdict"] for r in got.cases}
     assert verdicts == {"HO-0001": "LAYER", "HO-0002": "WRONG", "HO-0003": "WRONG"}
-    assert got.groups["refuse"]["WRONG"] == 1
+    assert got.groups["refuse:missing_data"]["WRONG"] == 1
+    assert "refuse" not in got.groups  # never pooled across reasons
     assert got.badges == Counter({"L0_CERTIFIED": 2, "L2_VALIDATED": 1})
     assert not got.envelope
 
@@ -295,6 +296,13 @@ def test_summary_prints_n_counts_bound_badges_and_envelope() -> None:
     assert "bound about 6.00 pct" in lines[1]
     assert "badges served: ABSTAIN=5 L0_CERTIFIED=40 L2_VALIDATED=10" in lines[2]
     assert lines[3].endswith("envelope violations (assert_envelope_valid): none")
+
+
+def test_pack_d_root_is_pinned_not_a_placeholder() -> None:
+    from score_heldout import PACK_D_ROOT_SHA256
+
+    assert len(PACK_D_ROOT_SHA256) == 64
+    int(PACK_D_ROOT_SHA256, 16)  # raises on anything but hex
 
 
 def test_wrong_upper_bound() -> None:
