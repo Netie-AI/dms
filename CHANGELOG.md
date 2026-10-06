@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-06 - OV-MINT-BEARER-01: mint fetches with the dms Bearer, no reveal-only re-register (Refs dms#362 #359, OV#128)
+
+- **Cause.** `ManifestMinter.fetch_intermediate` ran `POST /keys/services` (reveal-only) on every fetch. OV `b4d68021` (OV#130) returns 401 for that by design, so DMS never got its key. The pack lane then said `Cortex SQL fail`.
+- **Mint.** Normal path is one `POST /keys/intermediate` with `Authorization: Bearer`. The token comes from env `DMS_OV_SERVICE_TOKEN`, else file `DMS_OV_SERVICE_TOKEN_FILE`. It is read once at startup and kept in memory. `POST /keys/services` runs only on a first mint, when there is no token anywhere. The token is written to that file 0600 and never logged. On 401/403 DMS re-reads the token once and does one more Bearer fetch, then stops. No register, no rotate, no admin header.
+- **Cache.** One pooled `httpx.Client` (connect 3s, read 10s, keep-alive). The key is cached until `not_after` minus 30s. If OV omits `not_after`, DMS uses `DMS_OV_INTERMEDIATE_TTL_S` (default 900).
+- **Ask.** `ov_service_token_missing` / `ov_service_token_unauthorized` / `ov_mint_failed` are one named ABSTAIN from `live_ask`, with no demo fallback. The pack and generative lanes no longer relabel them.
+- **Gate.** `tests/test_ov_mint_bearer_01.py` mocks OV. 11 of its first 12 cases fail on `5bbcd743`. Cortex contract 1.3/1.4 measured as additive on ask only, so no bump. Not live. #362 OPEN. Nothing PASS.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.
