@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import sqlite3
 import sys
+import time
 import traceback
 import types
 import uuid
@@ -185,6 +186,16 @@ _SLOW = {
 def test_timeout_cancels(fixtures: dict[str, Path], kind: str) -> None:
     with pytest.raises(c.SelectTimeout):
         _open(fixtures, kind, timeout_s=0.5).run_select(_SLOW.get(kind, _SLOW["duckdb"]))
+
+
+def test_a_result_that_ran_past_the_deadline_is_refused(fixtures: dict[str, Path]) -> None:
+    """Soft cancel: the engine returns a row, but only after the timeout (MySQL BENCHMARK).
+    A Python UDF blocks SQLite's progress handler, so only the wall-clock backstop fires."""
+    k = _open(fixtures, "sqlite", timeout_s=0.3)
+    with k._session() as (raw, secret):
+        raw.create_function("slow", 0, lambda: time.sleep(0.6) or 0)
+        with pytest.raises(c.SelectTimeout):
+            k._select(raw, secret, "SELECT slow()", 5)
 
 
 # --- guard ----------------------------------------------------------------------------

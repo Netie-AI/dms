@@ -112,8 +112,6 @@ SOURCES: dict[str, dict[str, Any]] = {
     "sqlserver": {
         "seed": _seed_sqlserver, "user": "sa", "database": "connect01", "port": 1433,
         "schema": "dbo",
-        "slow": "SELECT COUNT_BIG(*) FROM sys.all_objects a CROSS JOIN sys.all_objects b "
-        "CROSS JOIN sys.all_objects c",
         "options": {"trust_server_certificate": "true"},
     },
 }
@@ -185,12 +183,28 @@ def test_live_row_cap(kind: str) -> None:
     assert [r[0] for r in res.rows] == list(range(1, 8)) and res.truncated is True
 
 
+#: 50**6 row combinations with a predicate that spans every table, so no engine can
+#: push the COUNT below the join (SQL Server answers a bare cross-join count in 0.1s).
+_SCAN = (
+    "SELECT COUNT(*) FROM orders a, orders b, orders c, orders d, orders e, orders f "
+    "WHERE a.qty + b.qty + c.qty + d.qty + e.qty + f.qty = -1"
+)
+
+
 @pytest.mark.parametrize("kind", KINDS)
-def test_live_timeout(kind: str) -> None:
+def test_live_timeout_cancels_on_the_engine(kind: str) -> None:
+    """Uncancelled this scan runs for minutes; returning inside 10s proves the cancel."""
     started = time.monotonic()
     with pytest.raises(c.SelectTimeout):
+        _connector(kind, timeout_s=1).run_select(_SCAN)
+    assert time.monotonic() - started < 10
+
+
+@pytest.mark.parametrize("kind", ["postgresql", "mysql"])
+def test_live_soft_cancel_is_still_a_timeout(kind: str) -> None:
+    """MySQL stops BENCHMARK() at MAX_EXECUTION_TIME and returns 0 with no error."""
+    with pytest.raises(c.SelectTimeout):
         _connector(kind, timeout_s=1).run_select(SOURCES[kind]["slow"])
-    assert time.monotonic() - started < 30
 
 
 @pytest.mark.parametrize("kind", KINDS)

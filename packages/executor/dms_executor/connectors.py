@@ -459,10 +459,15 @@ class ReadOnlyConnector:
             return [tuple(r) for r in cur.fetchall()]
 
     def _select(self, con: Any, secret: str | None, sql: str, cap: int) -> SelectResult:
+        started = time.monotonic()
         with self._cursor(con, secret) as cur:
             cur.execute(sql)
             columns = [str(d[0]) for d in (cur.description or [])]
             fetched = [tuple(r) for r in cur.fetchmany(cap + 1)]
+        # Some engines cancel softly: MySQL's MAX_EXECUTION_TIME stops BENCHMARK() and
+        # returns 0 with no error. A result that ran into the deadline is not an answer.
+        if time.monotonic() - started >= self.timeout_s:
+            raise SelectTimeout(f"{self.ref.describe()}: ran past {self.timeout_s:g}s")
         return SelectResult(columns, fetched[:cap], len(fetched) > cap, cap)
 
     @contextmanager
