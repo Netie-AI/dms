@@ -31,6 +31,11 @@ def _seed(path: Path) -> str:
               ('Misc', 100.00)
             """
         )
+        wide = bronze_table_for_sheet("cf98e431_p50_01_sales_messy.xlsx", "Wide_Fill")
+        con.execute(
+            f'CREATE TABLE bronze."{wide.split(".", 1)[-1]}" '
+            "(category VARCHAR, sales_value_myr DOUBLE)"
+        )
     finally:
         con.close()
     return ident

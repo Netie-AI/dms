@@ -6,6 +6,11 @@ SKUs", "top 1 SKU per category" and "... for sku SKU-3" on a top-N ask, because 
 ``top N`` + a category noun + a measure and ignored every other word. Each of those is a wrong
 number under the strongest badge, so the lane now abstains by name instead.
 
+Second-model review (Refs #372): a cue-word denylist on the prefix still served L0 for every
+clause it forgot ("only Electronics", "this year", "annually", "before returns", "paling rendah").
+The lane now serves only a question that parses whole into its grammar; any other span abstains
+and is quoted back.
+
 Asserted on the customer envelope (hard rule 10a): badge, abstained, rows, text.
 """
 
@@ -46,37 +51,138 @@ def db(tmp_path: Path) -> Path:
               ('Misc', 'SKU-5', 'Kuala Lumpur', 100.0)
             """
         )
+        wide = bronze_table_for_sheet(WB, "Wide_Fill").split(".", 1)[-1]
+        con.execute(f'CREATE TABLE bronze."{wide}" (category VARCHAR, sales_value_myr DOUBLE)')
     finally:
         con.close()
     return path
 
 
-def _ask(db: Path, tail: str) -> dict:
-    question = f"In {WB} on the Sales sheet, {tail}"
+def _ask_raw(db: Path, question: str) -> dict:
     env = maybe_bronze_sheet_ask(question, warehouse=db, space_id=SPACE)
     assert env is not None
     return env
 
 
-# Each of these carries a clause the lane would have silently dropped.
-UNHONORED = {
-    "exclusion": "what are the top 3 categories by sales_value_myr, excluding Electronics?",
-    "exclusion-prefix": "excluding Electronics, what are the top 3 categories by sales_value_myr?",
-    "exclusion-gloss": "what are the top 3 categories by sales_value_myr (excluding Electronics)?",
-    "direction": "show the top 3 categories with the lowest sales_value_myr",
-    "average": "what are the top 3 categories by average sales_value_myr?",
-    "percentage": (
-        "what are the top 3 categories by sales_value_myr, as a percentage of the total?"
+def _ask(db: Path, tail: str) -> dict:
+    return _ask_raw(db, f"In {WB} on the Sales sheet, {tail}")
+
+
+def _reason(env: dict) -> str:
+    return next(a for a in env["assumptions"] if "bronze_sheet_unhonored:" in a)
+
+
+# tail -> the span the abstain must quote back. Each carries a clause the lane would drop.
+UNHONORED: dict[str, tuple[str, str]] = {
+    # Plan C red team
+    "exclusion": (
+        "what are the top 3 categories by sales_value_myr, excluding Electronics?",
+        "excluding Electronics",
     ),
-    "count-measure": "what are the top 2 categories by number of SKUs?",
-    "grain": "what is the top 1 SKU per category by sales_value_myr?",
-    "extra-filter": "what are the top 3 categories by sales_value_myr for sku SKU-3?",
-    "time": "what are the top 3 categories by sales_value_myr in 2025?",
-    "total-excluding": "what is total sales_value_myr, excluding returns, for sku SKU-1?",
+    "exclusion-prefix": (
+        "excluding Electronics, what are the top 3 categories by sales_value_myr?",
+        "excluding Electronics",
+    ),
+    "exclusion-gloss": (
+        "what are the top 3 categories by sales_value_myr (excluding Electronics)?",
+        "(excluding Electronics)",
+    ),
+    "direction": (
+        "show the top 3 categories with the lowest sales_value_myr",
+        "top 3 categories with the lowest sales_value_myr",
+    ),
+    "average": (
+        "what are the top 3 categories by average sales_value_myr?",
+        "top 3 categories by average sales_value_myr",
+    ),
+    "percentage": (
+        "what are the top 3 categories by sales_value_myr, as a percentage of the total?",
+        "as a percentage of the total",
+    ),
+    "count-measure": (
+        "what are the top 2 categories by number of SKUs?",
+        "top 2 categories by number of SKUs",
+    ),
+    "grain": (
+        "what is the top 1 SKU per category by sales_value_myr?",
+        "top 1 SKU per category by sales_value_myr",
+    ),
+    "extra-filter": (
+        "what are the top 3 categories by sales_value_myr for sku SKU-3?",
+        "for sku SKU-3",
+    ),
+    "time": ("what are the top 3 categories by sales_value_myr in 2025?", "in 2025"),
+    "total-excluding": (
+        "what is total sales_value_myr, excluding returns, for sku SKU-1?",
+        "total sales_value_myr, excluding returns, for sku SKU-1",
+    ),
+    # Grok 4.7 review of 1f79ab2a: served L0 under the cue list
+    "only-prefix": (
+        "only Electronics, what are the top 3 categories by sales_value_myr?",
+        "only Electronics",
+    ),
+    "only-paren": (
+        "(only Electronics) what are the top 3 categories by sales_value_myr?",
+        "(only Electronics)",
+    ),
+    "this-year": ("this year, what are the top 3 categories by sales_value_myr?", "this year"),
+    "annually": ("annually, what are the top 3 categories by sales_value_myr?", "annually"),
+    "just-home": ("just Home, what are the top 3 categories by sales_value_myr?", "just Home"),
+    "before-returns": (
+        "before returns, what is total sales_value_myr for sku SKU-1?",
+        "before returns",
+    ),
+    "net-of-tax": ("net of tax, what is total sales_value_myr for sku SKU-1?", "net of tax"),
+    "malay-lowest": (
+        "paling rendah, apakah 3 kategori teratas mengikut sales_value_myr?",
+        "paling rendah",
+    ),
+    "total-tail": (
+        "what is total sales_value_myr for sku SKU-1 excluding returns?",
+        "excluding returns",
+    ),
+    # adversarial shapes of our own
+    "malay-tail-exclusion": (
+        "top 3 categories by sales_value_myr kecuali Electronics?",
+        "kecuali Electronics",
+    ),
+    "chinese-prefix": (
+        "不包括 Electronics, what are the top 3 categories by sales_value_myr?",
+        "不包括 Electronics",
+    ),
+    "quarter-window": (
+        "for Q3 2025, what is total sales_value_myr for city Kuala Lumpur?",
+        "for Q3 2025",
+    ),
+    "ytd-tail": ("what are the top 3 categories by sales_value_myr year to date?", "year to date"),
+    "superlative-in-shape": (
+        "what are the top 3 smallest categories by sales_value_myr?",
+        "top 3 smallest categories by sales_value_myr",
+    ),
+    "ascending-tail": ("top 3 categories by sales_value_myr, ascending", "ascending"),
+    "apart-from-prefix": (
+        "apart from Home, show the top 3 categories by sales_value_myr",
+        "apart from Home",
+    ),
+    "polite-negation": (
+        "please don't include Electronics, show the top 3 categories by sales_value_myr",
+        "please don't include Electronics",
+    ),
+    "units-prefix": (
+        "in thousands of MYR, what are the top 3 categories by sales_value_myr?",
+        "in thousands of MYR",
+    ),
+    "units-tail": ("what is total sales_value_myr for sku SKU-1 in USD?", "in USD"),
+    "city-tail": (
+        "what is total sales_value_myr for city Kuala Lumpur excluding returns?",
+        "excluding returns",
+    ),
+    "grain-tail": ("top 3 categories by sales_value_myr per city", "per city"),
+    "no-measure": ("what are the top 3 categories?", "top 3 categories"),
 }
 
 
-@pytest.mark.parametrize("tail", list(UNHONORED.values()), ids=list(UNHONORED))
+@pytest.mark.parametrize("tail", [t for t, _ in UNHONORED.values()], ids=list(UNHONORED))
 def test_ignored_clause_abstains_by_name_not_a_plain_sum(db: Path, tail: str) -> None:
     env = _ask(db, tail)
     assert env["abstained"] is True, env["text"]
@@ -90,15 +196,49 @@ def test_ignored_clause_abstains_by_name_not_a_plain_sum(db: Path, tail: str) ->
     assert_envelope_valid(env)
 
 
-def test_the_abstain_names_the_kind_of_clause(db: Path) -> None:
-    kinds = {
-        name: next(a for a in _ask(db, tail)["assumptions"] if "bronze_sheet_unhonored:" in a)
-        for name, tail in UNHONORED.items()
-    }
-    assert kinds["exclusion"].endswith(":exclusion")
-    assert kinds["direction"].endswith(":direction")
-    assert kinds["average"].endswith(":shape") or kinds["average"].endswith(":aggregation")
-    assert kinds["time"].endswith(":shape") or kinds["time"].endswith(":time")
+@pytest.mark.parametrize("case", list(UNHONORED.values()), ids=list(UNHONORED))
+def test_the_abstain_quotes_the_unparsed_span(db: Path, case: tuple[str, str]) -> None:
+    tail, span = case
+    env = _ask(db, tail)
+    assert f"bronze_sheet_unparsed:{span}" in env["assumptions"], env["assumptions"]
+    assert span in env["text"], env["text"]
+
+
+def test_the_abstain_names_the_grammar_slot(db: Path) -> None:
+    slot = {name: _reason(_ask(db, tail)) for name, (tail, _) in UNHONORED.items()}
+    assert slot["exclusion"] == "bronze_sheet_unhonored:suffix"
+    assert slot["only-prefix"] == "bronze_sheet_unhonored:prefix"
+    assert slot["grain"] == "bronze_sheet_unhonored:shape"
+
+
+SCOPE_BROKEN = {
+    "clause-before-workbook": (
+        f"Only Electronics: in {WB} on the Sales sheet, what are the top 3 categories "
+        "by sales_value_myr?"
+    ),
+    "clause-between-workbook-and-sheet": (
+        f"In {WB} excluding Electronics on the Sales sheet, what are the top 3 categories "
+        "by sales_value_myr?"
+    ),
+    "ignore-the-scoped-sheet": (
+        f"In {WB}, on the Sales sheet only (ignore Sales), what are the top 3 categories "
+        "by sales_value_myr?"
+    ),
+    # not a sheet of this workbook, so it is an exclusion the lane would drop
+    "ignore-a-category": (
+        f"Using {WB}, on the Sales sheet only (ignore Electronics), what are the top 3 "
+        "categories by sales_value_myr?"
+    ),
+}
+
+
+@pytest.mark.parametrize("question", list(SCOPE_BROKEN.values()), ids=list(SCOPE_BROKEN))
+def test_unparsed_scope_abstains_by_name(db: Path, question: str) -> None:
+    env = _ask_raw(db, question)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert not env["rows"]
+    assert _reason(env) == "bronze_sheet_unhonored:scope"
+    assert_envelope_valid(env)
 
 
 # The lane's own contract: these phrasings must keep answering with an L0 figure.
@@ -109,10 +249,13 @@ SUPPORTED = {
     "product-family-synonym": (
         "top 3 product families by MYR sales (cat / product line synonym for category)?"
     ),
-    "sheet-only-ignore-other-sheet": (
-        "on the Sales sheet only (ignore Wide_Fill), what are the top 3 categories "
-        "by sales_value_myr?"
-    ),
+    # harmless filler: politeness and request verbs that do not change the answer
+    "please-lead": "please, what are the top 3 categories by sales_value_myr?",
+    "show-me-please": "show me the top 3 categories by sales_value_myr, please.",
+    "could-you-thanks": "could you please list the top 3 categories by sales_value_myr? thanks",
+    "whats-the": "what's the top 3 categories by sales_value_myr?",
+    "give-me": "give me the top 3 categories by sales_value_myr!",
+    "tell-me": "tell me the top 3 categories by sales_value_myr",
 }
 
 
@@ -123,23 +266,60 @@ def test_supported_top_n_shapes_still_answer(db: Path, tail: str) -> None:
     assert env["badge"] == "L0_CERTIFIED"
     assert [r["category"] for r in env["rows"]][:3] == ["Electronics", "Home", "Sports"]
     assert env["rows"][0]["sales_value_myr"] == 2000.0
+    assert "sales_value_myr=2000.0" in env["text"]
     assert_envelope_valid(env)
 
 
-def test_supported_total_shape_still_answers(db: Path) -> None:
-    env = _ask(db, "what is total sales_value_myr for city Kuala Lumpur?")
-    assert env["abstained"] is False
-    assert env["badge"] == "L0_CERTIFIED"
-    assert env["rows"][0]["sales_value_myr"] == 2500.0
-    assert_envelope_valid(env)
-
-
-def test_malay_phrasing_still_answers(db: Path) -> None:
-    env = maybe_bronze_sheet_ask(
-        f"Dalam fail {WB} helaian Sales, apakah 3 kategori teratas mengikut sales_value_myr?",
-        warehouse=db,
+def test_sheet_only_ignore_other_sheet_still_answers(db: Path) -> None:
+    env = _ask_raw(
+        db,
+        f"Using {WB}, on the Sales sheet only (ignore Wide_Fill), what are the top 3 "
+        "categories by sales_value_myr?",
     )
-    assert env is not None and env["abstained"] is False
+    assert env["abstained"] is False, env["text"]
+    assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
+    assert_envelope_valid(env)
+
+
+TOTAL_SUPPORTED = {
+    "plain": "In {wb} on the Sales sheet, what is total sales_value_myr for city Kuala Lumpur?",
+    "the-total": "In {wb} sheet Sales, what is the total sales_value_myr for city Kuala Lumpur?",
+    "polite-tail": (
+        "In {wb} sheet Sales, what is total sales_value_myr for city Kuala Lumpur, please?"
+    ),
+    "greeting": "Hi, in {wb} sheet Sales, can you show me total sales_value_myr for city "
+    "Kuala Lumpur?",
+}
+
+
+@pytest.mark.parametrize("question", list(TOTAL_SUPPORTED.values()), ids=list(TOTAL_SUPPORTED))
+def test_supported_total_shape_still_answers(db: Path, question: str) -> None:
+    env = _ask_raw(db, question.format(wb=WB))
+    assert env["abstained"] is False, env["text"]
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"] == [{"city": "Kuala Lumpur", "sales_value_myr": 2500.0}]
+    assert "sales_value_myr=2500.0" in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_quoted_sku_total_still_answers(db: Path) -> None:
+    env = _ask(db, "what is total sales_value_myr for sku 'SKU-1'?")
+    assert env["abstained"] is False, env["text"]
+    assert env["rows"] == [{"sku": "SKU-1", "sales_value_myr": 1500.0}]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        f"Dalam fail {WB} helaian Sales, apakah 3 kategori teratas mengikut sales_value_myr?",
+        f"Dalam fail {WB} helaian Sales, sila tunjukkan 3 kategori teratas mengikut "
+        "sales_value_myr",
+    ],
+    ids=["apakah", "sila-tunjukkan"],
+)
+def test_malay_phrasing_still_answers(db: Path, question: str) -> None:
+    env = maybe_bronze_sheet_ask(question, warehouse=db)
+    assert env is not None and env["abstained"] is False, env and env["text"]
     assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
 
 
