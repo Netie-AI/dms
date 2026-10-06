@@ -1,0 +1,16 @@
+# BANK-04 (#271): keep secrets and the private checkout out of the docker build
+# context. The only image built from the repo root is apps/api/Dockerfile, which
+# COPYs pyproject.toml, README.md, alembic.ini, packages/, apps/api/, contract/,
+# alembic/ and deploy/wheelhouse/. None of those is listed here; a test keeps it
+# that way.
+#
+# CI checks the private Cortex repo out to _cortex/ with a token; the wheel is
+# built from it into deploy/wheelhouse/ and nothing else of it is needed.
+_cortex/
+# The repository's own history and git config (checkout credentials live there).
+.git
+# Install-time secrets and certificate material.
+.env
+**/.env
+deploy/compose/.env
+deploy/compose/tls/
