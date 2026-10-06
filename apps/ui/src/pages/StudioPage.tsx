@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
+import { ResultView, type StudioAskEnvelope } from "@/components/studio/ResultView";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { DataSelector } from "@/components/studio/DataSelector";
 import { useApp } from "@/context/AppContext";
@@ -54,6 +55,14 @@ const BUYER_WALK_REFUSE = "Just give me last month's number";
 const BUYER_WALK_REFUSE_WHY =
   "No certified as-of month on this lake. A green last-month figure would invent a period. Honest ABSTAIN is the product.";
 
+/** Envelope handed back by the ask path. Selection payload is not built here. */
+function studioEnvelopeFromState(state: unknown): StudioAskEnvelope | null {
+  if (!state || typeof state !== "object") return null;
+  const raw = (state as { studioEnvelope?: unknown }).studioEnvelope;
+  if (!raw || typeof raw !== "object") return null;
+  return raw as StudioAskEnvelope;
+}
+
 /** Flatten the tree to the leaves that can actually be previewed and asked about. */
 function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
   for (const n of nodes) {
@@ -66,6 +75,8 @@ function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
 export function StudioPage() {
   const { setActivity, activeSpaceId } = useApp();
   const navigate = useNavigate();
+  const location = useLocation();
+  const studioEnvelope = studioEnvelopeFromState(location.state);
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
@@ -559,7 +570,16 @@ export function StudioPage() {
         </div>
       </div>
 
-      <DataSelector key={activeSpaceId ?? "personal"} spaceId={activeSpaceId} leaves={leaves} />
+      <DataSelector
+        key={activeSpaceId ?? "personal"}
+        spaceId={activeSpaceId}
+        leaves={leaves}
+        onAnswer={(env) =>
+          navigate(location.pathname, { replace: true, state: { studioEnvelope: env } })
+        }
+      />
+      <ResultView envelope={studioEnvelope} />
+
 
       <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
         <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
