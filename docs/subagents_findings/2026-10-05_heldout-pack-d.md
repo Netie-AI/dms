@@ -11,7 +11,7 @@ Main idea: a frozen pack of questions DMS's authors never saw, on a synthetic da
 - **Questions.** Written by blind authors. After cross-check, some are answerable and some are to refuse. Refuse reasons stay separate. One-row answers and ordered top-N answers both exist.
 - **Cross-check.** Blind analysts saw only the question text. Round 1 had a single non-agreement; that question was dropped (finding 1). Round 2 had n=0, so there is no round-2 rate.
 - **Personal-data scan, counts only.** Own patterns: no email, date-of-birth, phone, or national-id hits, and no flagged column names. The scanner was first run on planted data and caught the planted email, date-of-birth and column-name cases; phone and national-id patterns were not planted. `dms_core.pii.classify_column` still flags columns (finding 2).
-- **Hook tests.** `tests/test_score_heldout.py`: 27 passed on a synthetic pack in `tmp_path`. Every gate was broken in turn and a test went red each time. On the real pack the hook's `--self-check` passes with the pinned root, passes on the independent rebuild, and refuses a wrong database.
+- **Hook tests.** `tests/test_score_heldout.py`: 28 passed on a synthetic pack in `tmp_path`. Every gate was broken in turn and a test went red each time. On the real pack the hook's `--self-check` passes with the pinned root, passes on the independent rebuild, and refuses a wrong database.
 
 - **Instrument self-test (`--synthetic`, measured on the real pack).** The pack's frozen gold is replayed through DMS's envelope constructor as a perfect answerer, then deliberately damaged. No DMS is asked and no model is called; this is not a score and not a baseline. The perfect replay is not all OK: the masker turns some correct values into INVALID `masked_compare`. Damaged responders (all abstain, a doubled row, a first number off by one unit of its own scale, a confident answer on a refusal, a green badge on an abstention) come apart from the perfect replay. Before the scale guard (finding 7) the off-by-one responder had cent-level errors judged OK; the self-test is what found that. No accuracy figure.
 
@@ -34,6 +34,8 @@ Authors and cross-checkers were told not to read the dms repo. The harness gave 
 ## Custody exposure
 
 Older GitHub edits of PR #339's body, from about 2026-10-05 03:20 MYT through about 2026-10-06 00:45 MYT, showed the pack tag, pack commit, question ids, and pack shape. The body was then rewritten to the manifest root hash plus the caveat that the pack is external and not in this repo. Those older body versions are still in GitHub's edit history. This note does not repeat them.
+
+The hook's own output is now held to the same rule. Stdout, CONFIG messages and the report carry counts, verdicts, badges, reason classes and the root prefix only: no pack path, question id, question text, gold SQL, table or column name, and no pack shape outside a scored round's n. The per-case report is written outside the dms tree and refuses a `DMS_SCORE_DIR` inside it. Every pinned pack D summary prints the custody line with this window. Commit messages on this branch that named the pack tag, pack commit or a pack-derived count were reworded on rebase.
 
 ## Hook (`scripts/score_heldout.py`)
 

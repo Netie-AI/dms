@@ -36,6 +36,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
@@ -73,6 +74,11 @@ PACK_NAME = "heldout-pack-d"
 # repo. A different pack can be scored only with --expect-root, and every line it
 # prints then says it is not pack D.
 PACK_D_ROOT_SHA256 = "e63b422e26336c6cae5f824d1af69f68ee5236544160a0685d0f982fad2ceee7"
+# Printed next to every pack D figure (dms#339 epic lock). Window only, never the values.
+PACK_D_CUSTODY = (
+    "custody: older PR #339 body edits exposed pack D metadata (no question text, no gold "
+    "SQL), about 2026-10-05 03:20 to 2026-10-06 00:45 MYT"
+)
 VERDICTS = ("OK", "LAYER", "ABSTAIN", "WRONG", "ORACLE_ERROR", "INVALID", "RATE_LIMIT")
 EXIT_PASS = 0
 EXIT_FAIL = 1
@@ -83,7 +89,11 @@ PUBLIC_BINDS = frozenset({"0.0.0.0", "*", "::", "[::]"})
 
 
 class PackError(Exception):
-    """Preflight refusal. Always CONFIG, never a score."""
+    """Preflight refusal. Always CONFIG, never a score.
+
+    Messages carry counts and hook-defined file names only: no pack path, question id,
+    question text, gold SQL or table name, so CI logs and stamps cannot leak the pack.
+    """
 
 
 def sha256_file(path: Path) -> str:
@@ -112,10 +122,10 @@ def verify_pack(pack_dir: Path, expect_root: str | None = None) -> dict[str, Any
     """Manifest + scan checks. Returns the manifest. Raises PackError."""
     pack_dir = pack_dir.resolve()
     if _inside(pack_dir, ROOT.resolve()):
-        raise PackError(f"pack is inside the dms tree ({pack_dir}); it must live outside it")
+        raise PackError("pack is inside the dms tree; it must live outside it")
     mpath = pack_dir / "MANIFEST.json"
     if not mpath.is_file():
-        raise PackError(f"no MANIFEST.json in {pack_dir}")
+        raise PackError("no MANIFEST.json in --pack")
     manifest = json.loads(mpath.read_text(encoding="utf-8"))
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
@@ -128,7 +138,7 @@ def verify_pack(pack_dir: Path, expect_root: str | None = None) -> dict[str, Any
         elif sha256_file(path) != meta.get("sha256"):
             bad.append(f"sha256:{rel}")
     if bad:
-        raise PackError(f"manifest mismatch on {len(bad)} file(s): {', '.join(bad[:5])}")
+        raise PackError(f"manifest mismatch on {len(bad)} file(s)")
     root = manifest_root(files)
     if root != manifest.get("root_sha256"):
         raise PackError("manifest root_sha256 does not match its file list")
@@ -157,11 +167,11 @@ def load_cases(pack_dir: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     cases = list(doc.get("questions") or [])
     if not cases:
         raise PackError("pack has no questions")
-    for case in cases:
+    for i, case in enumerate(cases, 1):
         if case.get("expect") not in {"l0", "refuse"}:
-            raise PackError(f"{case.get('id')}: expect must be l0 or refuse")
+            raise PackError(f"case #{i}: expect must be l0 or refuse")
         if case["expect"] == "l0" and (not case.get("gold_sql") or case["id"] not in gold):
-            raise PackError(f"{case.get('id')}: answerable case without gold SQL or gold rows")
+            raise PackError(f"case #{i}: answerable case without gold SQL or gold rows")
         if case["expect"] == "l0":
             case["_gold_rows"] = frozen_rows(gold[case["id"]])
             case["_pack_scale"] = true_round_scale(str(case["gold_sql"]))
@@ -223,25 +233,27 @@ def frozen_rows(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(zip(cols, row, strict=True)) for row in entry.get("rows") or []]
 
 
-def check_oracle(cases: list[dict[str, Any]], gold: dict[str, Any], oracle_db: Path) -> list[str]:
-    """Each gold SQL on the oracle must reproduce the frozen rows. Returns drift ids."""
-    drift: list[str] = []
+def check_oracle(
+    cases: list[dict[str, Any]], gold: dict[str, Any], oracle_db: Path
+) -> Counter[str]:
+    """Each gold SQL on the oracle must reproduce the frozen rows. Counts drift by kind."""
+    drift: Counter[str] = Counter()
     for case in cases:
         if case["expect"] != "l0":
             continue
         sql = str(case["gold_sql"])
         rows, err = run_oracle_select(oracle_db, sql)
         if err is not None:
-            drift.append(f"{case['id']}:oracle_error")
+            drift["oracle_error"] += 1
             continue
         # The frozen rows play "got"; the judge's own rounding and order rules apply.
         if rows_mismatch_reason(frozen_rows(gold[case["id"]]), rows or [], sql=sql):
-            drift.append(f"{case['id']}:rows")
+            drift["rows"] += 1
     return drift
 
 
 def _json_cell(value: Any) -> Any:
-    """Cell rendering for the fingerprint. Must match the pack's tools/packlib.to_json_cell."""
+    """Cell rendering for the fingerprint. Must match the pack's own freeze recipe."""
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, Decimal):
@@ -256,7 +268,7 @@ def _json_cell(value: Any) -> Any:
 def db_fingerprint(db: Path) -> dict[str, dict[str, Any]]:
     """Per base table: row count, column count, sha256 of rows sorted by every column.
 
-    Same recipe as the pack's tools/freeze.py, so the database the scorer treats as
+    Same recipe as the pack's freeze step, so the database the scorer treats as
     truth must be the database the pack was frozen against, not just agree on the
     gold queries.
     """
@@ -287,34 +299,39 @@ def db_fingerprint(db: Path) -> dict[str, dict[str, Any]]:
         con.close()
 
 
-def check_fingerprint(pack_dir: Path, oracle_db: Path) -> list[str]:
-    """Tables whose rows differ from the frozen fingerprint ('missing:'/'extra:' too)."""
+def check_fingerprint(pack_dir: Path, oracle_db: Path) -> Counter[str]:
+    """Count of tables missing from, extra to, or changed against the frozen fingerprint."""
     frozen = json.loads((pack_dir / "db" / "fingerprint.json").read_text(encoding="utf-8"))
     want = frozen.get("tables")
     if not isinstance(want, dict) or not want:
         raise PackError("db/fingerprint.json lists no tables")
     got = db_fingerprint(oracle_db)
-    diff = [f"missing:{t}" for t in sorted(set(want) - set(got))]
-    diff += [f"extra:{t}" for t in sorted(set(got) - set(want))]
-    diff += [t for t in sorted(set(want) & set(got)) if want[t] != got[t]]
-    return diff
+    return Counter(
+        missing=len(set(want) - set(got)),
+        extra=len(set(got) - set(want)),
+        changed=sum(want[t] != got[t] for t in set(want) & set(got)),
+    )
+
+
+def _kinds(counts: Counter[str]) -> str:
+    return " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
 
 
 def preflight(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if args.pack is None:
         raise PackError("--pack DIR is required (the frozen pack repo, outside dms)")
     if args.oracle_db is None or not Path(args.oracle_db).is_file():
-        raise PackError("--oracle-db must be the DuckDB built by the pack's db/build_db.py")
+        raise PackError("--oracle-db must be the pack's own DuckDB")
     pack_dir = Path(args.pack).resolve()
     manifest = verify_pack(pack_dir, args.expect_root)
     cases, gold = load_cases(pack_dir)
     drift = check_oracle(cases, gold, Path(args.oracle_db))
-    if drift:
-        raise PackError(f"oracle drift on {len(drift)} case(s): {', '.join(drift[:5])}")
+    if drift.total():
+        raise PackError(f"oracle drift on {drift.total()} case(s) ({_kinds(drift)})")
     changed = check_fingerprint(pack_dir, Path(args.oracle_db))
-    if changed:
+    if changed.total():
         raise PackError(
-            f"oracle fingerprint differs on {len(changed)} table(s): {', '.join(changed[:5])}"
+            f"oracle fingerprint differs on {changed.total()} table(s) ({_kinds(changed)})"
         )
     return manifest, cases
 
@@ -443,13 +460,16 @@ def live_url(env: dict[str, str], url_arg: str | None) -> str:
     return raw.rstrip("/")
 
 
-def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path, echo: bool = True) -> Scored:
+def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path) -> Scored:
     """Ask, judge rows, then hold the served envelope to the badge contract.
 
     The row judge runs first, so a WRONG is never hidden. A served envelope that
     fails assert_envelope_valid turns any other verdict into INVALID, so a green
     badge on an abstention cannot pass as ABSTAIN. A harness-synthesized grant
     refusal (403/409) is not a DMS envelope and is not validated.
+
+    Prints nothing per case: ids, questions and reason detail stay in memory and only
+    reach disk through redacted_cases().
     """
     out = Scored()
     out.scale["queries_affected"] = sum(
@@ -475,8 +495,7 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path, echo: bool 
             name = type(exc).__name__
             status = getattr(getattr(exc, "response", None), "status_code", None)
             if name in TRANSPORT_BLOCK or status == 404:
-                if echo:
-                    print(f"{qid}\tBLOCKED\t{name}")
+                print(f"BLOCKED\t{name}")
                 out.status = "blocked"
                 return out
             env = ask_error_envelope(exc)
@@ -485,8 +504,6 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path, echo: bool 
                 out.tallies[verdict] += 1
                 out.groups.setdefault(group, Counter())[verdict] += 1
                 out.cases.append({"id": qid, "group": group, "verdict": verdict, "reason": reason})
-                if echo:
-                    print(f"{qid}\t{group}\t{verdict}\t-\t{reason}")
                 continue
             served = False
         scored = {"id": qid, "question": case["question"], "expect": case["expect"]}
@@ -516,9 +533,28 @@ def score(cases: list[dict[str, Any]], *, ask: Any, oracle_db: Path, echo: bool 
                 "envelope_violation": violation,
             }
         )
-        if echo:
-            print(f"{qid}\t{group}\t{verdict}\t{badge}\t{reason}")
     return out
+
+
+def reason_code(reason: str) -> str:
+    """Reason class only. Masked column names, oracle error text and envelope prose
+    can quote the pack's schema or answers, so they never leave the process."""
+    head, _, rest = reason.partition(":")
+    return f"envelope:{_ecode(rest)}" if head == "envelope" else head
+
+
+def redacted_cases(scored: Scored) -> list[dict[str, Any]]:
+    """Per-case rows safe to write: pack order ordinal, group, verdict, badge, reason class."""
+    return [
+        {
+            "case": i,
+            "group": c["group"],
+            "verdict": c["verdict"],
+            "badge": c.get("badge"),
+            "reason": reason_code(str(c.get("reason") or "")),
+        }
+        for i, c in enumerate(scored.cases, 1)
+    ]
 
 
 def _nudge(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -619,21 +655,12 @@ def synthetic_selftest(args: argparse.Namespace) -> int:
         print("VERDICT: CONFIG. Not a score.")
         return EXIT_CONFIG
     print(label(manifest))
-    n_ans = sum(c["expect"] == "l0" for c in cases)
-    n_ref = len(cases) - n_ans
-    print(
-        f"synthetic responders over n={len(cases)} (answerable={n_ans}, refuse={n_ref}); "
-        "DMS is not asked"
-    )
+    # Tallies per responder would print the pack's shape; deviation counts are enough.
+    print("synthetic responders over every pack case; DMS is not asked")
     envs = synthetic_envelopes(cases, gold)
     failures = 0
-    print(
-        f"{'responder':<22}{'OK':>5}{'LAYER':>7}{'ABSTAIN':>9}{'WRONG':>7}"
-        f"{'INVALID':>9}{'ORA_ERR':>9}  expected"
-    )
     for name, (want_ans, want_ref) in SYNTHETIC_EXPECT.items():
-        got = score(cases, ask=envs[name].__getitem__, oracle_db=Path(args.oracle_db), echo=False)
-        t = got.tallies
+        got = score(cases, ask=envs[name].__getitem__, oracle_db=Path(args.oracle_db))
         off = [
             c
             for c, case in zip(got.cases, cases, strict=True)
@@ -645,10 +672,8 @@ def synthetic_selftest(args: argparse.Namespace) -> int:
         deviants = [c["id"] for c in off if c["id"] not in masked]
         failures += bool(deviants)
         print(
-            f"{name:<22}{t['OK']:>5}{t['LAYER']:>7}{t['ABSTAIN']:>9}{t['WRONG']:>7}"
-            f"{t['INVALID']:>9}{t['ORACLE_ERROR']:>9}  "
-            f"answerable->{want_ans}, refuse->{want_ref}: "
-            f"{'as expected' if not deviants else f'{len(deviants)} DEVIATE {deviants[:5]}'}"
+            f"{name:<22}answerable->{want_ans}, refuse->{want_ref}: "
+            f"{'as expected' if not deviants else f'{len(deviants)} DEVIATE'}"
             f"{f' (+{len(masked)} masked by DMS masker)' if masked else ''}"
         )
     if failures:
@@ -660,8 +685,16 @@ def synthetic_selftest(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
-def _artifact(report: dict[str, Any]) -> Path:
-    out = Path(os.environ.get("DMS_SCORE_DIR") or (ROOT / ".tmp"))
+def artifact_dir(env: dict[str, str]) -> Path:
+    """Where the per-case report goes: never inside the dms tree, so it cannot be committed."""
+    raw = env.get("DMS_SCORE_DIR")
+    out = Path(raw) if raw else Path(tempfile.gettempdir()) / "dms_score_heldout"
+    if _inside(out.resolve(), ROOT.resolve()):
+        raise PackError("DMS_SCORE_DIR is inside the dms tree; the report must live outside it")
+    return out
+
+
+def _artifact(out: Path, report: dict[str, Any]) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     path = out / "score_heldout.json"
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -670,18 +703,12 @@ def _artifact(report: dict[str, Any]) -> Path:
 
 def self_check(args: argparse.Namespace) -> int:
     try:
-        manifest, cases = preflight(args)
+        manifest, _cases = preflight(args)
     except PackError as exc:
         print(f"CONFIG: {exc}")
         print("VERDICT: CONFIG. Not a score.")
         return EXIT_CONFIG
-    kinds = Counter(c["expect"] for c in cases)
-    diffs = Counter(str(c.get("difficulty")) for c in cases if c["expect"] == "l0")
     print(label(manifest))
-    print(
-        f"cases={len(cases)} answerable={kinds['l0']} refuse={kinds['refuse']} "
-        + " ".join(f"{k}={v}" for k, v in sorted(diffs.items()))
-    )
     print("manifest OK; scan PASS; oracle reproduces every frozen gold result")
     print("VERDICT: PACK OK. Not a score: no question was asked.")
     return EXIT_PASS
@@ -692,6 +719,7 @@ def live(args: argparse.Namespace) -> int:
         url = live_url(dict(os.environ), args.url)
         if not args.space:
             raise PackError("--space is required: the Space the pack DB is attached to")
+        out_dir = artifact_dir(dict(os.environ))
         manifest, cases = preflight(args)
     except PackError as exc:
         print(f"CONFIG: {exc}")
@@ -715,16 +743,19 @@ def live(args: argparse.Namespace) -> int:
         "envelope_violations": dict(scored.envelope),
         "baseline": False,
         "target": None,
-        "cases": scored.cases,
+        "custody": PACK_D_CUSTODY if manifest.get("_pinned") else None,
+        "cases": redacted_cases(scored),
     }
     if scored.status == "blocked":
         report["blocked"] = True
-        _artifact(report)
+        _artifact(out_dir, report)
         print("VERDICT: BLOCKED. No OK/ABSTAIN/WRONG invented for unasked cases.")
         return EXIT_BLOCKED
     for line in summary_lines(scored, len(cases)):
         print(line)
-    _artifact(report)
+    if manifest.get("_pinned"):
+        print(PACK_D_CUSTODY)
+    _artifact(out_dir, report)
     print("Held-out pack measure. No target. Not a baseline until EPIC-A1 says so.")
     failed = scored.tallies["WRONG"] or scored.tallies["ORACLE_ERROR"] or scored.envelope
     return EXIT_FAIL if failed else EXIT_PASS
