@@ -6,6 +6,9 @@ COPY packages ./packages
 COPY apps/api ./apps/api
 COPY contract ./contract
 COPY alembic ./alembic
+# dms_executor.demo_pack reads this score pack at import (#355); without it the
+# API exits on boot. Questions and oracle SQL only, no data or secrets.
+COPY tests/fixtures/curated_ceo ./tests/fixtures/curated_ceo
 # cortex-contract is private (Netie-AI/Cortex) and on no package index, so the
 # build cannot fetch it. Whoever builds this image drops the wheel in
 # deploy/wheelhouse/ first (CI does; the directory is otherwise empty and no
