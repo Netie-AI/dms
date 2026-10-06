@@ -219,3 +219,18 @@ jobs:
       - name: SCORE-BIRD self-check (stack-free, not live ask)
         # SCORE-BIRD-01 #184. Pack honesty + judge plants. Does not POST /v1/chat/ask.
         run: python scripts/score_bird.py --self-check
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/ui/package-lock.json
+
+      - name: Studio result view tests
+        # STUDIO-RESULT-01 (#365). Vitest was not a CI step. This runs the
+        # result-view file only. It does not score answers or call /ask.
+        working-directory: apps/ui
+        run: |
+          npm ci
+          npx vitest run src/components/studio/ResultView.test.ts

@@ -3,6 +3,14 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+STUDIO-RESULT-01 (#365): Studio ask result is
+`apps/ui/src/components/studio/ResultView.tsx` plus `StampsPanel.tsx`.
+`StudioPage` only mounts it from router state `studioEnvelope`. SQL, paged
+rows, bar/line or "no chartable shape", insight, stamps. Missing stamp
+reads `not stamped`. Named abstain hides rows. Chart is existing
+`SimpleChart` (no new package). Regression:
+`apps/ui/src/components/studio/ResultView.test.ts`. Not COMPLETE.
+
 SERVED-ATTR-01 (#305): every `Executor.live_ask` envelope carries
 `served_attribution` (`reported` / `missing` / `none`). Setup fields and
 per-leg `served_provider` / `served_model` are copied from the Insights
