@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
+import { ChatTurn } from "@/components/studio/ChatTurn";
 import { useApp } from "@/context/AppContext";
 import {
   describeApiError,
@@ -413,6 +414,8 @@ export function StudioPage() {
           </button>
         </div>
       </section>
+
+      <ChatTurn spaceId={activeSpaceId} />
 
       <input
         ref={fileInput}

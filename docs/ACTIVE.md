@@ -3,6 +3,14 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+CHAT-01 (#369): Studio ask turn before SQL.
+`packages/core/dms_core/studio_chat_turn.py` copies real fields.
+`POST /v1/studio/chat/plan` calls Cortex `GET /v1/insights/ontology`
+(no generate, no ask). `POST /v1/studio/chat/confirm` authorizes the
+question; SQL is still `POST /v1/chat/ask`. UI:
+`apps/ui/src/components/studio/ChatTurn.tsx` mounted from StudioPage.
+Regression: `tests/test_chat_01_studio_turn.py`. Not COMPLETE.
+
 SERVED-ATTR-01 (#305): every `Executor.live_ask` envelope carries
 `served_attribution` (`reported` / `missing` / `none`). Setup fields and
 per-leg `served_provider` / `served_model` are copied from the Insights
