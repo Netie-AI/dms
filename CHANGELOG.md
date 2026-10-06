@@ -2,12 +2,6 @@
 
 Append-only. Never edited, only added to. Newest first.
 
-## 2026-10-01 - GRANT-READ-02: refuse by name before any Cortex or model call (#307)
-
-- **Ticket.** [dms#307](https://github.com/Netie-AI/dms/issues/307). Does not close it. Not COMPLETE. Only narrows.
-- **Change.** `Executor.live_ask` reads the Space grant once, before the follow-up, verified, pack, cascade, Insights and Cortex ask lanes. An unread grant returns a named ABSTAIN `grant_unreadable` (rendered text names the gap and says nothing was sent to a model). An empty grant does the same on the generative and exact lanes; on the product lane it skips only Insights, so doc RAG in a document-only Space still answers. A ticked table outside the grant raises the existing `GroundingRefused` (R-0005), so `POST /v1/chat/ask` answers 403 `grounding_not_grantable` naming the table. Untouched: `demo_acl`, manifest, `settings.py`, `cortex_read.py`, `qualifiers.py`, the dms#292 scorer.
-- **Gate.** `tests/test_grant_read_02.py` (10 tests) all fail on `87a9497`. One #297 assertion in `tests/test_grant_read_01.py` changed from "Insights called with empty schema" to the named ABSTAIN with zero Insights calls (Gating 20:18 MYT item 2).
-
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.
