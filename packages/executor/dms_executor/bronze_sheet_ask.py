@@ -72,14 +72,31 @@ _FILLER = (
     r"(?:(?:what(?:'s|\s+(?:are|is))|which\s+(?:are|is)|show(?:\s+me)?|list|give\s+me"
     r"|tell\s+me|(?:sila\s+)?(?:tunjukkan|senaraikan)|apakah)\s+)?(?:the\s+)?"
 )
-# ponytail: a city literal is at most two words; a longer city name abstains (safe, not served).
+# A city literal is one word, or one of these names whole. A second word is never bound
+# because a stored value could equal it: "KL only" as a cell would serve L0 for "only KL".
+# ponytail: a multi-word city not listed here abstains (safe, not served); the upgrade is a
+# steward-granted city lexicon per Space.
+_MULTI_WORD_CITIES = (
+    "Kuala Lumpur",
+    "Johor Bahru",
+    "Shah Alam",
+    "Petaling Jaya",
+    "Subang Jaya",
+    "George Town",
+    "Kota Kinabalu",
+    "Kota Bharu",
+    "Kuala Terengganu",
+    "Alor Setar",
+)
+_CITY_NAME = "|".join(r"\s+".join(map(re.escape, c.split())) for c in _MULTI_WORD_CITIES)
 _CITY_WORD = r"(?!(?:please|thanks|thank)\b)[^\W\d_]+"
+# N is ASCII digits only: "top ３" abstains like the fullwidth "？" does, not read as 3.
 _SHAPE = (
-    rf"top\s+(?P<n>\d+)\s+{_CAT_NOUN}\s+(?:by|of)\s+(?P<m1>{_MEASURE_PAT})\b"
-    rf"|(?P<n2>\d+)\s+kategori\s+teratas\s+mengikut\s+(?P<m2>{_MEASURE_PAT})\b"
+    rf"top\s+(?P<n>[0-9]+)\s+{_CAT_NOUN}\s+(?:by|of)\s+(?P<m1>{_MEASURE_PAT})\b"
+    rf"|(?P<n2>[0-9]+)\s+kategori\s+teratas\s+mengikut\s+(?P<m2>{_MEASURE_PAT})\b"
     rf"|total\s+(?P<m3>{_MEASURE_PAT})\s+for\s+"
     r"(?:sku\s+(?P<qs>['\"]?)(?P<sku>[A-Za-z0-9][\w-]*)(?P=qs)"
-    rf"|city\s+(?P<qc>['\"]?)(?P<city>{_CITY_WORD}(?:\s+{_CITY_WORD})?)(?P=qc))(?![\w-])"
+    rf"|city\s+(?P<qc>['\"]?)(?P<city>{_CITY_NAME}|{_CITY_WORD})(?P=qc))(?![\w-])"
 )
 _SYNONYM = r"(?:cat|categor(?:y|ies)|product\s+famil(?:y|ies)|product\s+lines?|kategori)"
 _GLOSS = rf"\(\s*{_SYNONYM}(?:\s*/\s*{_SYNONYM})*\s+synonyms?\s+for\s+category\s*\)"

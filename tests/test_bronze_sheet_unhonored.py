@@ -327,3 +327,100 @@ def test_empty_filter_result_still_abstains_via_rule_12(db: Path) -> None:
     env = _ask(db, "what is total sales_value_myr for sku SKU-X?")
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
+
+
+# Grok review of 9dc65d2c (PR #341): a second city word was bound into the exact filter, so a
+# stored city equal to the glued pair served L0 and rule 12 (empty result only) never fired.
+POISON = {"KL only": 7777.0, "KL not": 4242.0, "KL excluding": 3333.0, "Johor not": 8888.0}
+
+
+@pytest.fixture()
+def poisoned(db: Path) -> Path:
+    ident = bronze_table_for_sheet(WB, "Sales").split(".", 1)[-1]
+    con = duckdb.connect(str(db))
+    try:
+        rows = [*POISON.items(), ("KL", 111.0), ("Johor", 50.0), ("Shah Alam", 9000.0)]
+        con.executemany(
+            f"INSERT INTO bronze.\"{ident}\" VALUES ('Misc', 'SKU-9', ?, ?)",
+            [list(r) for r in rows],
+        )
+    finally:
+        con.close()
+    return db
+
+
+# tail -> (slot, span quoted back)
+GLUED_CITY = {
+    "kl-only-please": (
+        "what is total sales_value_myr for city KL only please?",
+        "suffix",
+        "only please",
+    ),
+    "quoted-kl-only": (
+        'what is total sales_value_myr for city "KL only"?',
+        "shape",
+        'total sales_value_myr for city "KL only"',
+    ),
+    "kl-not": ("what is total sales_value_myr for city KL not?", "suffix", "not"),
+    "kl-excluding": (
+        "what is total sales_value_myr for city KL excluding?",
+        "suffix",
+        "excluding",
+    ),
+    "johor-not": ("what is total sales_value_myr for city Johor not?", "suffix", "not"),
+}
+
+
+@pytest.mark.parametrize("case", list(GLUED_CITY.values()), ids=list(GLUED_CITY))
+def test_glued_city_word_abstains_even_when_stored(
+    poisoned: Path, case: tuple[str, str, str]
+) -> None:
+    tail, slot, span = case
+    env = _ask(poisoned, tail)
+    assert env["abstained"] is True, env["text"]
+    assert env["badge"] == "ABSTAIN"
+    assert env["route"] == "abstain"
+    assert not env["rows"] and not env["values"]
+    assert _reason(env) == f"bronze_sheet_unhonored:{slot}"
+    assert f"bronze_sheet_unparsed:{span}" in env["assumptions"], env["assumptions"]
+    assert "would ignore that clause" in env["text"]
+    for figure in ("7777", "4242", "3333", "8888", "111", "50.0"):
+        assert figure not in (env["text"] or ""), env["text"]
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize(
+    ("tail", "city", "figure"),
+    [
+        ("what is total sales_value_myr for city KL?", "KL", 111.0),
+        ("what is total sales_value_myr for city Shah Alam?", "Shah Alam", 9000.0),
+        ('what is total sales_value_myr for city "Kuala Lumpur"?', "Kuala Lumpur", 2500.0),
+    ],
+    ids=["one-word", "listed-two-word", "quoted-listed"],
+)
+def test_recognised_city_still_answers_on_poisoned_sheet(
+    poisoned: Path, tail: str, city: str, figure: float
+) -> None:
+    env = _ask(poisoned, tail)
+    assert env["abstained"] is False, env["text"]
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"] == [{"city": city, "sales_value_myr": figure}]
+    assert f"sales_value_myr={figure}" in env["text"]
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "what are the top ３ categories by sales_value_myr?",
+        "what are the top ٣ categories by sales_value_myr?",
+    ],
+    ids=["fullwidth", "arabic-indic"],
+)
+def test_non_ascii_top_n_digit_abstains(db: Path, tail: str) -> None:
+    env = _ask(db, tail)
+    assert env["abstained"] is True, env["text"]
+    assert not env["rows"] and not env["values"]
+    assert _reason(env) == "bronze_sheet_unhonored:shape"
+    assert "2000" not in (env["text"] or "")
+    assert_envelope_valid(env)
