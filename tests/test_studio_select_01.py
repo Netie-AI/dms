@@ -274,7 +274,10 @@ def test_ui_mounts_selector_and_posts_selection() -> None:
     """CI runs no vitest; this keeps the Studio wiring on the pytest job."""
     ui = Path(__file__).resolve().parents[1] / "apps" / "ui" / "src"
     page = (ui / "pages" / "StudioPage.tsx").read_text(encoding="utf-8")
-    assert "<DataSelector " in page
+    assert "<DataSelector" in page
+    # The selection answer reaches the #365 ResultView through the same state key.
+    assert "state: { studioEnvelope: env }" in page
+    assert "<ResultView envelope={studioEnvelope} />" in page
     api = (ui / "lib" / "api.ts").read_text(encoding="utf-8")
     assert "selection: payload.selection" in api
     sel = (ui / "components" / "studio" / "DataSelector.tsx").read_text(encoding="utf-8")
