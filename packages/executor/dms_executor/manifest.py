@@ -40,6 +40,8 @@ class SecurityEvent(ManifestMintError):
     """ACL / signature refusal — never re-mint."""
 
 
+#: OpenVault service_id. OV compares it case-sensitively: ``DMS`` is another service.
+OV_SERVICE_ID = "dms"
 #: Current ``dms`` service Bearer for OpenVault. Wins over the file.
 SERVICE_TOKEN_ENV = "DMS_OV_SERVICE_TOKEN"
 #: Path of the secret file holding that Bearer. A first mint writes it 0600.
@@ -129,13 +131,11 @@ class ManifestMinter:
         self,
         *,
         openvault_url: str | None = None,
-        service_id: str = "dms",
         http: httpx.Client | None = None,
     ) -> None:
         self.openvault_url = (
             openvault_url or os.environ.get("OPENVAULT_URL", "http://127.0.0.1:5000")
         ).rstrip("/")
-        self.service_id = service_id
         self._http = http or httpx.Client(timeout=OV_TIMEOUT, limits=OV_LIMITS)
         self._owns_http = http is None
         self._token = _load_service_token()
@@ -201,7 +201,7 @@ class ManifestMinter:
             return self._http.post(
                 f"{self.openvault_url}/keys/intermediate",
                 json={
-                    "service_id": self.service_id,
+                    "service_id": OV_SERVICE_ID,
                     "subject": "dms-manifest-signer",
                     "ttl_s": ttl_s,
                 },
@@ -233,7 +233,7 @@ class ManifestMinter:
             try:
                 reg = self._http.post(
                     f"{self.openvault_url}/keys/services",
-                    json={"service_id": self.service_id},
+                    json={"service_id": OV_SERVICE_ID},
                     headers={"X-OpenVault-Reveal": "intentional"},
                 )
             except httpx.HTTPError as exc:
@@ -248,7 +248,10 @@ class ManifestMinter:
                 )
             if reg.status_code >= 400:
                 raise OpenVaultTokenError(OV_MINT_FAILED, f"register: HTTP {reg.status_code}")
-            token = str(reg.json().get("token") or "").strip()
+            body = reg.json()
+            if body.get("service_id") != OV_SERVICE_ID:
+                raise OpenVaultTokenError(OV_MINT_FAILED, "register: service_id mismatch")
+            token = str(body.get("token") or "").strip()
             if not token:
                 raise OpenVaultTokenError(OV_MINT_FAILED, "register: no token in response")
             fh.write(token)

@@ -11,6 +11,7 @@ credential. OpenVault is mocked; no network.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 import stat
@@ -59,6 +60,7 @@ class _OpenVault:
     services_status: int | None = None
     wrong_token_status: int = 403
     not_after: str | None = "2099-01-01T00:00:00+00:00"
+    echo_service_id: str | None = None
     calls: list[httpx.Request] = field(default_factory=list)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -68,11 +70,14 @@ class _OpenVault:
             if self.services_status is not None:
                 return httpx.Response(self.services_status, json={"detail": "re-register"})
             self.accept = MINTED
-            return httpx.Response(200, json={"service_id": "dms", "token": MINTED})
+            sid = self.echo_service_id or json.loads(request.content)["service_id"]
+            return httpx.Response(200, json={"service_id": sid, "token": MINTED})
         if path == "/keys/intermediate":
             if self.intermediate_status is not None:
                 return httpx.Response(self.intermediate_status, json={"detail": "no"})
-            if request.headers.get("authorization") != f"Bearer {self.accept}":
+            # OV verify_service is an exact, case-sensitive match on service_id.
+            sid = json.loads(request.content)["service_id"]
+            if sid != "dms" or request.headers.get("authorization") != f"Bearer {self.accept}":
                 return httpx.Response(
                     self.wrong_token_status, json={"detail": "service is not authorised to sign"}
                 )
@@ -295,6 +300,59 @@ def test_first_mint_refused_by_ov_is_missing_and_writes_no_token(
     assert ov.paths() == ["/keys/services"]
     assert secret.read_text(encoding="utf-8") == ""
     ov.assert_no_admin()
+
+
+def test_ov_service_id_is_exactly_lowercase_dms_on_every_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """OV service_id is case-sensitive. ``DMS`` / ``Dms`` must never be sent."""
+    assert manifest_mod.OV_SERVICE_ID == "dms"
+    with pytest.raises(TypeError):
+        ManifestMinter(service_id="DMS")  # type: ignore[call-arg]
+    monkeypatch.setenv(SERVICE_TOKEN_FILE_ENV, str(tmp_path / "ov_token"))
+    ov = _OpenVault(accept="")
+    m = ov.minter()
+    m.fetch_intermediate()
+    m._key = None
+    m.fetch_intermediate()
+    ov_calls = [c for c in ov.calls if c.url.path.startswith("/keys/")]
+    assert [c.url.path for c in ov_calls] == [
+        "/keys/services",
+        "/keys/intermediate",
+        "/keys/intermediate",
+    ]
+    for c in ov_calls:
+        assert json.loads(c.content)["service_id"] == "dms"
+        assert b'"DMS"' not in c.content and b'"Dms"' not in c.content
+
+
+@pytest.mark.parametrize("wrong", ["DMS", "Dms"])
+def test_case_mismatched_service_id_is_refused_by_ov(
+    monkeypatch: pytest.MonkeyPatch, wrong: str
+) -> None:
+    """If the pin drifted in case, OV refuses it and DMS abstains named; no register."""
+    monkeypatch.setenv(SERVICE_TOKEN_ENV, CURRENT)
+    monkeypatch.setattr(manifest_mod, "OV_SERVICE_ID", wrong)
+    ov = _OpenVault()
+    with pytest.raises(OpenVaultTokenError) as ei:
+        ov.minter().fetch_intermediate()
+    assert ei.value.code == OV_TOKEN_UNAUTHORIZED
+    assert "/keys/services" not in ov.paths()
+
+
+@pytest.mark.parametrize("echo", ["DMS", "Dms"])
+def test_first_mint_rejects_register_echo_with_wrong_case(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, echo: str
+) -> None:
+    """A token OV issued for another-cased service is never persisted or used."""
+    secret = tmp_path / "ov_token"
+    monkeypatch.setenv(SERVICE_TOKEN_FILE_ENV, str(secret))
+    ov = _OpenVault(accept="", echo_service_id=echo)
+    with pytest.raises(OpenVaultTokenError) as ei:
+        ov.minter().fetch_intermediate()
+    assert ei.value.code == "ov_mint_failed"
+    assert secret.read_text(encoding="utf-8") == ""
+    assert "/keys/intermediate" not in ov.paths()
 
 
 def test_dms_source_never_names_the_ov_admin_credential() -> None:
