@@ -11,11 +11,13 @@ CI fixtures, not live. Fake httpx transport only. No network.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from cortex_client.models import LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest
 from dms_core.ask import GroundingRefused
 from dms_executor import Executor
@@ -64,12 +66,36 @@ def minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     return m
 
 
+@dataclass
+class _CountingCortex(_AskCortex):
+    """Every outbound seam the ask can reach, counted."""
+
+    insights: list[str] = field(default_factory=list)
+    ledger: list[LedgerAppendRequest] = field(default_factory=list)
+    mints: list[SessionAcl] = field(default_factory=list)
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
+        self.insights.append(question)
+        return super().compute_insights(question, **kwargs)
+
+    def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+        self.ledger.append(req)
+        return super().ledger_append(req)
+
+
 def _rig(
     tmp_path: Path, minter: ManifestMinter, name: str
-) -> tuple[Executor, _AskCortex, list[dict[str, Any]]]:
+) -> tuple[Executor, _CountingCortex, list[dict[str, Any]]]:
     wh = _seed_secret(tmp_path / f"{name}.duckdb")
     posts: list[dict[str, Any]] = []
-    cortex = _AskCortex(posts=posts)
+    cortex = _CountingCortex(posts=posts)
+    mint = minter.mint_manifest
+
+    def _counted_mint(acl: SessionAcl) -> Manifest:
+        cortex.mints.append(acl)
+        return mint(acl)
+
+    minter.mint_manifest = _counted_mint  # type: ignore[method-assign]
     exe = Executor(
         cortex=cortex,  # type: ignore[arg-type]
         minter=minter,
@@ -87,10 +113,20 @@ def _empty(self: Executor, *, space_id: str | None = None) -> list[str]:
     return []
 
 
-def _assert_no_calls(cortex: _AskCortex, posts: list[dict[str, Any]]) -> None:
-    assert _insights_bodies(posts) == [], posts
+def _assert_no_calls(
+    cortex: _CountingCortex,
+    posts: list[dict[str, Any]],
+    env: dict[str, Any] | None = None,
+) -> None:
+    # Any HTTP leaving cortex_client.compute, not only the Insights path.
+    assert posts == [], posts
+    assert cortex.insights == [], cortex.insights
     assert cortex.asks == [], cortex.asks
     assert cortex.submits == [], cortex.submits
+    assert cortex.ledger == [], cortex.ledger
+    assert cortex.mints == [], cortex.mints
+    if env is not None:
+        assert env["model_calls"] == 0, env["model_calls"]
 
 
 def _assert_grant_abstain(env: dict[str, Any]) -> None:
@@ -113,7 +149,7 @@ def test_unread_grant_abstains_named_with_zero_calls(
             GEN_Q, session_id=f"ses_boom_{ladder}", space_id=FINANCE, ask_path=ladder
         )
     _assert_grant_abstain(env)
-    _assert_no_calls(cortex, posts)
+    _assert_no_calls(cortex, posts, env)
 
 
 @pytest.mark.parametrize("ladder", ["generative", "exact"])
@@ -127,7 +163,7 @@ def test_empty_grant_abstains_named_with_zero_calls(
             GEN_Q, session_id=f"ses_empty_{ladder}", space_id=FINANCE, ask_path=ladder
         )
     _assert_grant_abstain(env)
-    _assert_no_calls(cortex, posts)
+    _assert_no_calls(cortex, posts, env)
 
 
 def test_empty_grant_on_product_lane_sends_no_empty_schema_generate(
@@ -256,7 +292,7 @@ def test_http_unread_grant_is_a_named_abstain_envelope(
     env = r.json()
     _assert_grant_abstain(env)
     assert env["demo_fallback_used"] is False
-    _assert_no_calls(cortex, posts)
+    _assert_no_calls(cortex, posts, env)
 
 
 def test_http_ungranted_tick_is_refused_by_name_before_insights(
