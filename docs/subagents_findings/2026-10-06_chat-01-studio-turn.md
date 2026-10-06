@@ -15,7 +15,7 @@ Main idea: Studio shows a plan / ontology / clarify turn before SQL. Confirm run
 
 ## Missing
 
-- Contract Answer has no plan and no clarify-question list. Pin `packages/cortex_contract/answer.py:47-63`. Vendored `contract/openapi-1.2.0.json:243-249` is `suggestions` only. Main Answer adds memory fields and still has no plan (`answer.py:64-87` on Cortex main).
+- Contract Answer has no plan and no clarify-question list. Pin `packages/cortex_contract/answer.py:47-63`. Vendored `contract/openapi-1.2.0.json:243-249` is `suggestions` only. Main Answer adds memory and served fields and still has no plan (`answer.py:64-88` on Cortex main).
 - `needs_clarification` is a route, not a list (`packages/cortex_client/cortex_client/models.py:83`).
 - Ontology GET does not return `query_plan` (`CortexOS/insights/routes.py:224-230`, `insights.py:1393-1408` ask=false). `DMSQueryResponse.query_plan` (`contract/openapi-1.2.0.json:2066-2077`) is on the execute response. This route does not call it.
 - No contract change. No abstain-rule change.

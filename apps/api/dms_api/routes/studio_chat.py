@@ -36,16 +36,6 @@ class ConfirmBody(BaseModel):
     preview: dict[str, Any]
 
 
-def _gate(cortex: Any, action: str, question: str) -> None:
-    decision = compliance_gate(
-        action=action,
-        metadata={"task_id": action, "question": question},
-        client=cortex,
-    )
-    # Read of a ranking, not a lake write. The ask route gates the SQL.
-    enforce(decision, mutation=False)
-
-
 def _closed(message: str, *, status_code: int = 503) -> JSONResponse:
     return JSONResponse(
         {
@@ -68,7 +58,13 @@ def studio_chat_plan(body: PlanBody, cortex: CortexDep) -> Any:
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
         )
-    _gate(cortex, "studio.chat_plan", question)
+    # Read of a ranking, not a lake write. The ask route gates the SQL.
+    decision = compliance_gate(
+        action="studio.chat_plan",
+        metadata={"task_id": "studio.chat_plan", "question": question},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     try:
         raw = cortex.insights_ontology(question)
     except InsightsError as exc:
@@ -83,7 +79,12 @@ def studio_chat_plan(body: PlanBody, cortex: CortexDep) -> Any:
 @router.post("/chat/confirm")
 def studio_chat_confirm(body: ConfirmBody, cortex: CortexDep) -> dict[str, Any]:
     """Authorize a later ask. This handler does not run SQL."""
-    _gate(cortex, "studio.chat_confirm", body.question.strip())
+    decision = compliance_gate(
+        action="studio.chat_confirm",
+        metadata={"task_id": "studio.chat_confirm", "question": body.question.strip()},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     if not confirm_allowed(body.preview, body.clarify_reply):
         raise HTTPException(status_code=409, detail="clarify unanswered")
     blocks = bool((body.preview.get("clarify") or {}).get("blocks"))
