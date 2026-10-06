@@ -1,6 +1,6 @@
 # Archive - STATUS.md shipped table + open-next snapshot (2026-10-06)
 
-Moved out of `STATUS.md` by DOCS-01 ([#371](https://github.com/Netie-AI/dms/issues/371)). Text below is verbatim from `main` @ `5bbcd74`; it is history, not current state.
+Moved out of `STATUS.md` by DOCS-01 ([#371](https://github.com/Netie-AI/dms/issues/371)). Text below is verbatim from `STATUS.md` before DOCS-01, minus the old "This tick" row; it is history, not current state. For the current tick, see STATUS / main.
 Live items are GitHub issues - see the issue links in `STATUS.md`.
 
 ---
@@ -38,7 +38,6 @@ Live items are GitHub issues - see the issue links in `STATUS.md`.
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **PROVE-SUBMIT-01** (#359, merged #360). Live pack ask still shows assumption `Cortex SQL fail` (misleading label; `POST /v1/contract/submit` was never called). Formal owner = vault / OV mint HTTP 401 `openvault_unauthenticated` (Cortex #301 / OV #126). Prior Cortex `279cbd85` submit/bind claim is incorrect. Live BLOCKED. Nothing PASS. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
