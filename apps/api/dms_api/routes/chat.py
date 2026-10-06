@@ -7,7 +7,7 @@ import re
 from typing import Any, Literal
 
 from cortex_client import compliance_gate
-from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.ask import AskServiceError, GroundingRefused, SelectionRefused
 from dms_core.bi_export import export_envelope_bi
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
 from fastapi import APIRouter, HTTPException
@@ -112,6 +112,13 @@ def _status_for(code: str, detail: str | None) -> int:
     return 504 if _looks_like_timeout(code, detail) else 502
 
 
+class SelectionItem(BaseModel):
+    """One Studio-ticked table and the columns ticked on it (STUDIO-SELECT-01)."""
+
+    table: str = Field(min_length=1, max_length=256)
+    columns: list[str] = Field(default_factory=list, max_length=256)
+
+
 class AskBody(BaseModel):
     question: str = Field(min_length=1)
     space_id: str | None = None
@@ -127,6 +134,17 @@ class AskBody(BaseModel):
     #: sets DMS_HARNESS_ASK_PATHS (GEN-03). A body field, not an x-dms header
     #: (DR-0004), and the switch that allows it is server config, not the request.
     ask_path: Literal["product", "exact", "generative"] | None = None
+    #: STUDIO-SELECT-01 (dms#364). Tables + columns ticked in Studio. The
+    #: executor packs their schema and the ontology joins between them into the
+    #: Cortex ask and narrows the manifest to those tables. [] is refused by
+    #: name; omit the field for "whole Space". Exclusive with grounded_tables.
+    selection: list[SelectionItem] | None = Field(default=None, max_length=32)
+
+
+def _selection_refused(code: str, message: str, names: list[str] | None = None) -> HTTPException:
+    return HTTPException(
+        status_code=400, detail={"code": code, "message": message, "names": list(names or [])}
+    )
 
 
 #: The ask_path values only a measurement origin may run (GEN-03).
@@ -237,6 +255,18 @@ def chat_ask(
             },
         )
 
+    if body.selection is not None and body.grounded_tables:
+        raise _selection_refused(
+            "selection_with_grounded_tables",
+            "Send selection or grounded_tables, not both.",
+        )
+    selection = (
+        None if body.selection is None else [s.model_dump() for s in body.selection]
+    )
+    # A selection is answered on the live path or refused. Demo numbers never
+    # stand in for a scope the demo seed cannot honour.
+    demo_fallback = settings.dms_demo_fallback and selection is None
+
     if body.space_id and store.get(body.space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
 
@@ -250,6 +280,12 @@ def chat_ask(
     if want_demo:
         if not decision.allowed and decision.reason not in _SOFT_GATE:
             raise HTTPException(status_code=403, detail=decision.reason)
+        if selection is not None:
+            raise _selection_refused(
+                "selection_needs_live_ask",
+                "A Studio selection is answered on the live ask path only; this "
+                "server runs DMS_ASK_MODE=demo.",
+            )
         env = ask.demo_ask(body.question, space_id=body.space_id)
         env["ask_mode"] = "demo"
         return env
@@ -258,7 +294,7 @@ def chat_ask(
         raise HTTPException(status_code=403, detail=decision.reason)
 
     if cortex is None:
-        if settings.dms_demo_fallback:
+        if demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _stamp_demo_fallback(env, "fallback — Cortex client missing")
         raise HTTPException(
@@ -273,7 +309,10 @@ def chat_ask(
             session_id=body.session_id,
             tables=body.grounded_tables,
             ask_path=body.ask_path,
+            selection=selection,
         )
+    except SelectionRefused as exc:
+        raise _selection_refused(exc.code, exc.message, exc.names) from exc
     except GroundingRefused as exc:
         # Refusing is the fix, not the failure: this used to widen the manifest
         # to the whole demo warehouse while the UI read "Grounded in 1 file".
@@ -293,19 +332,20 @@ def chat_ask(
         # failure — it is the scope working. Saying so beats handing back
         # "path_not_allowed: table 'alerts' is not named by this manifest",
         # which reads as a bug rather than as the answer to what was asked.
-        if exc.code == "path_not_allowed" and body.grounded_tables:
+        scoped = body.grounded_tables or [s.table for s in body.selection or []]
+        if exc.code == "path_not_allowed" and scoped:
             missing = _missing_table(exc.detail)
-            chosen = ", ".join(body.grounded_tables)
+            chosen = ", ".join(scoped)
             raise HTTPException(
                 status_code=403,
                 detail={
                     "code": "outside_grounded_scope",
                     "message": (
                         f"That needs {missing or 'a table'}, which is not in the "
-                        f"{len(body.grounded_tables)} file(s) you grounded this question in "
+                        f"{len(scoped)} file(s) you grounded this question in "
                         f"({chosen}). Widen the selection or clear it to use the whole Space."
                     ),
-                    "grounded_tables": list(body.grounded_tables),
+                    "grounded_tables": list(scoped),
                     "required_table": missing,
                 },
             ) from exc
@@ -325,7 +365,7 @@ def chat_ask(
             )
 
         # Never mask policy refusals with demo numbers (0 confidently wrong).
-        if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
+        if demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
@@ -334,7 +374,7 @@ def chat_ask(
             detail={"code": exc.code, "message": exc.detail or exc.code},
         ) from exc
     except Exception as exc:  # noqa: BLE001
-        if settings.dms_demo_fallback:
+        if demo_fallback:
             logger.warning("live ask failed: %s; demo fallback", exc)
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _stamp_demo_fallback(env, "fallback — live ask failed")

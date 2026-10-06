@@ -25,6 +25,10 @@ class AskServicePort(Protocol):
         #: Cortex ask; exact = pack/VQ only; generative = skip pack, no plan
         #: source on live_ask (bind_plan and POST /dms/query are off). None = product.
         ask_path: str | None = None,
+        #: STUDIO-SELECT-01: [{"table", "columns"}] from Studio. Packs schema +
+        #: ontology joins into the Cortex ask and narrows the manifest to those
+        #: tables. [] is refused, not "whole Space". None = no selection.
+        selection: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
@@ -65,6 +69,21 @@ class GroundingRefused(Exception):
     @property
     def message(self) -> str:
         return str(self)
+
+
+class SelectionRefused(Exception):
+    """A Studio table/column selection that cannot be honoured as asked.
+
+    Empty, unknown table (missing and ungranted read the same), unknown column,
+    or a table with no columns ticked. Refused by name, never widened to the
+    Space. Lives here for the same .importlinter reason as GroundingRefused.
+    """
+
+    def __init__(self, code: str, message: str, names: list[str] | None = None) -> None:
+        self.code = code
+        self.message = message
+        self.names = list(names or [])
+        super().__init__(message)
 
 
 # One lane list. BRONZE-GRANT-01 (#333, bronze_sheet_ask) and the pin both
