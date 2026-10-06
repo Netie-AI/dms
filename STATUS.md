@@ -15,7 +15,7 @@ pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
 python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
 ```
 
-Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove IAP = section 2.1) - AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
+Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove IAP = section 2.1, origin `https://studio.netie.ai`, `:8090` loopback) - AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
 
 ## Shipped / verified
 
