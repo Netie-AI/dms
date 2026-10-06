@@ -50,7 +50,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove
 | ID | Work |
 |----|------|
 | **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **PROVE-SUBMIT-01** (#359, merged #360). Live pack ask still shows assumption `Cortex SQL fail` (misleading label; `POST /v1/contract/submit` was never called). Formal owner = vault / OV mint HTTP 401 `openvault_unauthenticated` (Cortex #301 / OV #126). Prior Cortex `279cbd85` submit/bind claim is incorrect. Live BLOCKED. Nothing PASS. |
+| **This tick** | **STUDIO-RESULT-01** (#365) renders the ask envelope in Studio. UI only. No payload (#364), no mint (#362), no prove pin. Nothing PASS. Prove owner stays vault / OV mint 401. |
 | **CONNECT-01** | #366 draft. Read-only connectors (`dms_executor.connectors`) behind `DMS_CONNECTORS_ENABLED=0`; no API/Studio route. Creds via OV `service_id` only. Snowflake = contract mock. DR-0005 / P-DMS-28 question open (prd-agent). Not COMPLETE. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
