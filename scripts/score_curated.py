@@ -25,7 +25,7 @@ import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2638,9 +2638,7 @@ def score_pack_live(
             tallies["INVALID"] += 1
             badge = env.get("badge")
             route = env.get("route")
-            print(
-                f"{qid}\tINVALID\t{badge}\troute={route}\treason={invalid_reason}"
-            )
+            print(f"{qid}\tINVALID\troute={route}\treason={invalid_reason}")
             cases_out.append(
                 {
                     "id": qid,
@@ -2689,9 +2687,11 @@ def score_pack_live(
             extra += f"\treason={result.reason}"
         if oracle_db is not None:
             extra += f"\t{LEGACY_JUDGE_LABEL}={result.scorer_ok_rows_not_compared}"
+        # Badge and crag stay on the case record. They are not a printed figure
+        # until BADGE-GUARD-01 is stamped.
         print(
-            f"{qid}\t{verdict}\t{badge}\troute={route}\tpath={path}\t"
-            f"plan_source={plan_source}\tcrag={crag}"
+            f"{qid}\t{verdict}\troute={route}\tpath={path}\t"
+            f"plan_source={plan_source}"
             f"\trows={n}\texpect={case['expect']}{extra}"
         )
         cases_out.append(
@@ -2877,6 +2877,275 @@ def record_path_block() -> str | None:
     return None
 
 
+# FROM/JOIN names in pack oracle SQL. Refuse oracles are not scored answers.
+_SQL_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    re.IGNORECASE,
+)
+_SQL_TABLE_SKIP = frozenset(
+    {
+        "and",
+        "as",
+        "cross",
+        "from",
+        "full",
+        "group",
+        "inner",
+        "join",
+        "lateral",
+        "left",
+        "limit",
+        "on",
+        "or",
+        "order",
+        "outer",
+        "right",
+        "select",
+        "values",
+        "where",
+    }
+)
+# Private fixture snapshot, keyed by the table tuple. Not the shared warehouse.
+_SERVING_FIXTURE_CACHE: dict[tuple[str, ...], dict[str, Any]] = {}
+_TABLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _sql_table_names(sql: str) -> set[str]:
+    found: set[str] = set()
+    for match in _SQL_TABLE_RE.finditer(sql):
+        name = match.group(1).lower()
+        if name not in _SQL_TABLE_SKIP:
+            found.add(name)
+    return found
+
+
+def parse_pack_serving(
+    pack_path: Path = DEFAULT_PACK,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """FROM/JOIN tables in correct oracle SQL, and ids whose SQL did not parse.
+
+    Correct SQL is the oracle ``sql`` on a merged pack question that is not
+    ``expect: refuse``. The table set is those identifiers. A blank statement
+    or one that names no table is unparsed, and the round is ineligible.
+    It does not pass. Refuse rows are not scored answers.
+    """
+    pack = load_pack(pack_path)
+    ids = {
+        str(row.get("id") or "")
+        for row in merge_pack_questions(list(pack["questions"]))
+    }
+    found: set[str] = set()
+    unparsed: list[str] = []
+    for qid, row in load_oracles().items():
+        if str(qid) not in ids or not isinstance(row, dict):
+            continue
+        if str(row.get("expect") or "").strip().lower() == "refuse":
+            continue
+        sql = row.get("sql")
+        if not isinstance(sql, str) or not sql.strip():
+            unparsed.append(str(qid))
+            continue
+        names = _sql_table_names(sql)
+        if not names:
+            unparsed.append(str(qid))
+            continue
+        found.update(names)
+    return tuple(sorted(found)), tuple(sorted(unparsed))
+
+
+def pack_question_tables(pack_path: Path = DEFAULT_PACK) -> tuple[str, ...]:
+    """Tables named by correct oracle SQL. The names come from the parse."""
+    tables, _unparsed = parse_pack_serving(pack_path)
+    return tables
+
+
+# Platform writes these keys. live() reads them. Tests import this block.
+SERVING_PATH = "serving_path"
+SERVING_INODE = "serving_inode"
+SERVING_MTIME = "serving_mtime"
+SERVING_SNAPSHOT_HASH = "serving_snapshot_hash"
+SERVING_ROW_COUNTS = "serving_row_counts"
+SERVING_HASH_ALG = "sha256"
+# Until BADGE-GUARD-01 is stamped. A plan-source L2 badge is not a check.
+BADGES_UNVERIFIED_KEY = "badges_unverified"
+BADGES_UNVERIFIED_VALUE = "cortex_l2_off"
+BADGES_UNVERIFIED_LINE = f"{BADGES_UNVERIFIED_KEY}: {BADGES_UNVERIFIED_VALUE}"
+
+
+def serving_mtime_iso(epoch: float) -> str:
+    """UTC timestamp with a numeric offset. ``2023-11-14T22:13:20+00:00``."""
+    return datetime.fromtimestamp(epoch, UTC).isoformat()
+
+
+def serving_mtime_ok(value: object) -> bool:
+    """True for an ISO-8601 string that carries a timezone offset."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def serving_hash_ok(value: object) -> bool:
+    """True for a hex digest of ``SERVING_HASH_ALG``."""
+    import hashlib
+
+    if not isinstance(value, str):
+        return False
+    text = value.strip().lower()
+    try:
+        size = hashlib.new(SERVING_HASH_ALG).digest_size * 2
+    except ValueError:
+        return False
+    if len(text) != size:
+        return False
+    try:
+        int(text, 16)
+    except ValueError:
+        return False
+    return True
+
+
+def serving_precheck_gap(record: Mapping[str, Any], tables: tuple[str, ...]) -> bool:
+    """True when path, inode, mtime, snapshot hash, or a used table's rows are missing.
+
+    A used table that is absent from ``SERVING_ROW_COUNTS`` or has 0 rows is a gap.
+    mtime must be ISO-8601 with an offset. The hash must be ``SERVING_HASH_ALG`` hex.
+    """
+    path = record.get(SERVING_PATH)
+    if not isinstance(path, str) or not path.strip():
+        return True
+    inode = record.get(SERVING_INODE)
+    if isinstance(inode, bool) or not isinstance(inode, int):
+        return True
+    if not serving_mtime_ok(record.get(SERVING_MTIME)):
+        return True
+    if not serving_hash_ok(record.get(SERVING_SNAPSHOT_HASH)):
+        return True
+    counts = record.get(SERVING_ROW_COUNTS)
+    if not isinstance(counts, dict):
+        return True
+    for name in tables:
+        if name not in counts:
+            return True
+        try:
+            n = int(counts[name])
+        except (TypeError, ValueError):
+            return True
+        if n <= 0:
+            return True
+    return False
+
+
+def _table_row_counts(path: Path, tables: tuple[str, ...]) -> dict[str, int]:
+    """Row counts on a copy. A missing table is omitted (the gap check catches it)."""
+    import duckdb
+
+    wanted = [name for name in tables if _TABLE_IDENT.match(name)]
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        rows = con.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+        present = {str(row[0]).lower() for row in rows}
+        counts: dict[str, int] = {}
+        for name in wanted:
+            if name not in present:
+                continue
+            got = con.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()
+            counts[name] = int(got[0]) if got else 0
+        return counts
+    except duckdb.Error:
+        return {}
+    finally:
+        con.close()
+
+
+def _snapshot_serving_file(path: Path, tables: tuple[str, ...]) -> dict[str, Any]:
+    """Stat the serving file, hash a copy, count rows on the copy.
+
+    The live file is not attached. That is the shared-file lock this must
+    not bring back. A missing file is an empty record (a skipped precheck).
+    """
+    import hashlib
+    import shutil
+    import tempfile
+
+    src = Path(path)
+    if not src.is_file():
+        return {}
+    st = src.stat()
+    tmp = Path(tempfile.mkdtemp(prefix="serving_precheck_"))
+    copy = tmp / "snapshot.duckdb"
+    shutil.copy2(src, copy)
+    digest = hashlib.new(SERVING_HASH_ALG, copy.read_bytes()).hexdigest()
+    return {
+        SERVING_PATH: str(src.resolve()),
+        SERVING_INODE: int(st.st_ino),
+        SERVING_MTIME: serving_mtime_iso(st.st_mtime),
+        SERVING_SNAPSHOT_HASH: digest,
+        SERVING_ROW_COUNTS: _table_row_counts(copy, tables),
+    }
+
+
+def _fixture_serving_precheck(tables: tuple[str, ...]) -> dict[str, Any]:
+    """Private seeded file when no Cortex warehouse is configured.
+
+    Offline ``live()`` rounds (the #323 unit path) have no prove serving
+    file. Recording this snapshot keeps those rounds from looking skipped.
+    A prove baseline sets ``CORTEX_WAREHOUSE_DB`` or ``DMS_SERVING_PRECHECK``
+    to the file Cortex serves. This never calls ``ensure_demo_warehouse``
+    on that file.
+    """
+    import tempfile
+
+    cached = _SERVING_FIXTURE_CACHE.get(tables)
+    if cached is not None:
+        return {
+            **cached,
+            SERVING_ROW_COUNTS: dict(cached.get(SERVING_ROW_COUNTS) or {}),
+        }
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+
+    path = Path(tempfile.mkdtemp(prefix="serving_fixture_")) / "fixture.duckdb"
+    ensure_demo_warehouse(path)
+    record = _snapshot_serving_file(path, tables)
+    if not serving_precheck_gap(record, tables):
+        _SERVING_FIXTURE_CACHE[tables] = record
+    return record
+
+
+def load_serving_precheck(tables: tuple[str, ...]) -> dict[str, Any]:
+    """Serving block stored on the round summary.
+
+    Swap: ``DMS_SERVING_PRECHECK`` is the recorded JSON (Platform, or a test
+    that plants a skipped or partial check). Unset reads the explicit Cortex
+    file (``CORTEX_WAREHOUSE_DB`` / ``DMS_ORACLE_WAREHOUSE``) via a copy.
+    Neither set: a private fixture snapshot, not ``data/dms_demo.duckdb``.
+    """
+    raw = (os.environ.get("DMS_SERVING_PRECHECK") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return parsed
+    from dms_executor.warehouse_identity import explicit_engine_warehouse
+
+    explicit = explicit_engine_warehouse()
+    if explicit is not None:
+        return _snapshot_serving_file(explicit, tables)
+    return _fixture_serving_precheck(tables)
+
+
 def baseline_eligibility(
     *,
     path_block: str | None,
@@ -2886,13 +3155,17 @@ def baseline_eligibility(
     round_reason: str | None,
     pin_preflight_unavailable: bool = False,
     engine_clock_masked: bool = False,
+    serving_precheck_missing: bool = False,
 ) -> tuple[bool, list[str]]:
     """The only baseline gate. Eligible is true exactly when the list is empty.
 
     pin_preflight_unavailable is a blocked pin preflight. An in-round 503 does
     not set it. round_end_unread is a round INVALID reason and is listed here.
     engine_clock_masked is added when a clock field was masked, including
-    beside round_end_unread.
+    beside round_end_unread. serving_precheck_missing is a round record that
+    lacks the serving path, inode, mtime, snapshot hash, or a positive row
+    count for a table the pack questions use, or whose correct SQL did not
+    parse to a table.
     """
     reasons: list[str] = []
     if path_block:
@@ -2911,6 +3184,8 @@ def baseline_eligibility(
             reasons.append(invalid)
     if engine_clock_masked and "engine_clock_masked" not in reasons:
         reasons.append("engine_clock_masked")
+    if serving_precheck_missing and "serving_precheck_missing" not in reasons:
+        reasons.append("serving_precheck_missing")
     return (not reasons, reasons)
 
 
@@ -2965,7 +3240,8 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         f"WRONG {wrong}  abstain {tallies['ABSTAIN']}  layer {tallies['LAYER']}  "
         f"INVALID {invalid_n}  RATE_LIMIT {rate_limit}  "
         f"round_health {int(clock.get('round_health') or 0)}  "
-        f"n {n}  n_planned {int(clock.get('n_planned') or _planned_n())}  "
+        f"n {n}  {BADGES_UNVERIFIED_LINE}  "
+        f"n_planned {int(clock.get('n_planned') or _planned_n())}  "
         f"n_without_invalid {n - invalid_n}"
     )
     print(f"{OVERMASK_STAR_KEY} {overmask}")
@@ -3007,6 +3283,11 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
             reason = "record_write_failed"
     abs_record = rec_path if rec_path.is_absolute() else rec_path.absolute()
     path_block = record_path_block()
+    serving_tables, serving_unparsed = parse_pack_serving()
+    serving = load_serving_precheck(serving_tables)
+    precheck_missing = bool(serving_unparsed) or serving_precheck_gap(
+        serving, serving_tables
+    )
     eligible, ineligible = baseline_eligibility(
         path_block=path_block,
         write_failed=write_failed,
@@ -3015,6 +3296,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
         round_reason=reason if isinstance(reason, str) else None,
         pin_preflight_unavailable=bool(clock.get("pin_preflight_unavailable")),
         engine_clock_masked=bool(clock.get("engine_clock_masked")),
+        serving_precheck_missing=precheck_missing,
     )
     print(f"case_record={abs_record}")
     print(
@@ -3038,6 +3320,7 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 OVERMASK_STAR_KEY: overmask,
                 "total": n,
                 "n": n,
+                BADGES_UNVERIFIED_KEY: BADGES_UNVERIFIED_VALUE,
                 "n_planned": int(clock.get("n_planned") or _planned_n()),
                 "n_without_invalid": n - invalid_n,
                 "round_health": int(clock.get("round_health") or 0),
@@ -3062,6 +3345,12 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "run_id": run_id,
                 "commit_sha": sha,
                 "case_record": str(abs_record),
+                SERVING_PATH: serving.get(SERVING_PATH),
+                SERVING_INODE: serving.get(SERVING_INODE),
+                SERVING_MTIME: serving.get(SERVING_MTIME),
+                SERVING_SNAPSHOT_HASH: serving.get(SERVING_SNAPSHOT_HASH),
+                SERVING_ROW_COUNTS: serving.get(SERVING_ROW_COUNTS),
+                "serving_tables": list(serving_tables),
                 "baseline_eligible": eligible,
                 "baseline_ineligible_reasons": ineligible,
                 "cortex_l2": cortex_l2,
@@ -4202,10 +4491,12 @@ def grid_score_hook(
     """dms#299 row. Same live clock as live/climb/prove. Not the grid runner."""
     why = require_oracle_db(oracle_db)
     if why:
+        print(f"n 0  {BADGES_UNVERIFIED_LINE}")
         return {
             "kind": "dms.grid_score_hook",
             "issue": 299,
             "n": 0,
+            BADGES_UNVERIFIED_KEY: BADGES_UNVERIFIED_VALUE,
             "n_planned": _planned_n(),
             "n_without_invalid": 0,
             "round_health": 0,
@@ -4219,10 +4510,12 @@ def grid_score_hook(
     tallies, cases, clock = score_live_entry(url, timeout, oracle_db=oracle_db)
     n = sum(tallies.values())
     invalid_n = int(tallies.get("INVALID") or 0)
+    print(f"n {n}  {BADGES_UNVERIFIED_LINE}")
     return {
         "kind": "dms.grid_score_hook",
         "issue": 299,
         "n": n,
+        BADGES_UNVERIFIED_KEY: BADGES_UNVERIFIED_VALUE,
         "n_planned": int(clock.get("n_planned") or _planned_n()),
         "n_without_invalid": n - invalid_n,
         "round_health": int(clock.get("round_health") or 0),
