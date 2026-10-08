@@ -198,6 +198,7 @@ class Executor:
         # Same process memory as session turns. TTL matches the session ACL.
         self._clarify_attempts: dict[str, Any] = {}
         self._clarify_reask_parent: str | None = None
+        self._clarify_skipped: str | None = None
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
@@ -512,6 +513,7 @@ class Executor:
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
         self._clarify_reask_parent = None
+        self._clarify_skipped = None
         try:
             env = self._live_ask(
                 question,
@@ -550,6 +552,15 @@ class Executor:
         if parent and isinstance(env, dict):
             env["clarify_reask"] = True
             env["clarify_parent_id"] = parent
+        skipped = self._clarify_skipped
+        self._clarify_skipped = None
+        if skipped and isinstance(env, dict):
+            from dms_executor.ask_clarify import clarify_enabled, state_chosen_reading
+
+            # Flag on only. A clarify reply is not a skipped ask.
+            if clarify_enabled() and env.get("status") != "clarify":
+                env["clarify_skipped"] = skipped
+                state_chosen_reading(env)
         stamp_engine_clock(env)
         is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
         if is_clarify:
@@ -878,6 +889,7 @@ class Executor:
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
+            skip_out: list[str] = []
             gen_env = maybe_generative_ask(
                 question,
                 space_id=space_id,
@@ -910,7 +922,10 @@ class Executor:
                 clarify_model=self._clarify_model,
                 clarify_locked=clarify_locked,
                 clarify_original=asked,
+                clarify_skip_out=skip_out,
             )
+            if skip_out:
+                self._clarify_skipped = skip_out[-1]
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident

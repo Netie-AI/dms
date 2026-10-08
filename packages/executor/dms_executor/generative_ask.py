@@ -1148,8 +1148,13 @@ def _clarify_grounded_skip(
     clarify_original: str | None,
     space_id: str | None,
     session_id: str | None,
-) -> dict[str, Any] | None:
-    """Clarify a file-grounded ask, which otherwise skips this function."""
+) -> Any:
+    """Clarify a file-grounded ask, which otherwise skips this function.
+
+    ``None`` means clarify did not run. A gate with an envelope is the
+    clarify reply. A gate with ``skipped`` set means the writer was down
+    and the caller continues the normal pipeline.
+    """
     if not tables or compute is None or clarify_locked or clarify_store is None:
         return None
     from dms_executor.ask_clarify import clarify_enabled, consider_clarify
@@ -1185,7 +1190,7 @@ def _clarify_grounded_skip(
         session_id=session_id,
         compute=compute,
     )
-    return gate.envelope
+    return gate
 
 
 def maybe_generative_ask(
@@ -1205,6 +1210,7 @@ def maybe_generative_ask(
     clarify_model: Any = None,
     clarify_locked: bool = False,
     clarify_original: str | None = None,
+    clarify_skip_out: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1250,8 +1256,10 @@ def maybe_generative_ask(
             space_id=space_id,
             session_id=session_id,
         )
-        if clarified is not None:
-            return clarified
+        if clarified is not None and clarified.skipped and clarify_skip_out is not None:
+            clarify_skip_out.append(clarified.skipped)
+        if clarified is not None and clarified.envelope is not None:
+            return clarified.envelope
         return None
     q = normalize_ask_question(question)
     if not q:
@@ -1347,6 +1355,8 @@ def maybe_generative_ask(
             session_id=session_id,
             compute=compute,
         )
+        if gate.skipped and clarify_skip_out is not None:
+            clarify_skip_out.append(gate.skipped)
         if gate.envelope is not None:
             return gate.envelope
         if gate.prefetched:

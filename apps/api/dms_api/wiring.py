@@ -23,8 +23,8 @@ def build_ask_service(
 
     settings = get_settings()
     ov_url = openvault_url or settings.openvault_url
-    # Same OpenVault route as generate. If the vault is down the writer
-    # abstains (clarify_writer_unavailable) instead of serving a guess.
+    # Same OpenVault route as generate. One call. If the vault has no clarify
+    # model, clarify is skipped and the normal ask runs.
     exe = dms_executor.Executor(
         cortex=cortex,
         openvault_url=ov_url,

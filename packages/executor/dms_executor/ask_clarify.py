@@ -104,6 +104,8 @@ class Gate:
     payload: Any = None
     prefetched: bool = False
     check_planner: bool = False
+    #: Set when the clarify writer is down. The caller runs the normal pipeline.
+    skipped: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +117,7 @@ class Reask:
 
 
 class ClarifyWriterUnavailable(Exception):
-    """OpenVault could not write the question. The ask abstains. It does not serve."""
+    """OpenVault could not write the question. Clarify is skipped. The ask continues."""
 
 
 @dataclass
@@ -735,21 +737,25 @@ def _column_unreadable(
     )
 
 
-def _writer_unavailable(
-    *,
-    space_id: str | None,
-    session_id: str | None,
-    question: str,
-) -> Gate:
-    return Gate(
-        envelope=named_abstain(
-            "clarify_writer_unavailable",
-            "The clarifying question could not be written. Ask again.",
-            space_id=space_id,
-            session_id=session_id,
-            question=question,
-        )
-    )
+def state_chosen_reading(env: dict[str, Any]) -> None:
+    """Name the reading the pipeline used, so the user can correct it.
+
+    An abstain keeps the pipeline's own text. This does not invent a figure.
+    """
+    if env.get("abstained") or env.get("status") == "clarify":
+        return
+    sql = str(env.get("sql_used") or "").strip()
+    if sql and not sql.startswith("--"):
+        reading = sql
+    else:
+        reading = str(env.get("question") or "").strip()
+    if not reading:
+        return
+    sentence = f"Reading used: {reading}."
+    text = str(env.get("text") or "")
+    if sentence in text:
+        return
+    env["text"] = f"{text.rstrip()} {sentence}".strip()
 
 
 def consider_clarify(
@@ -792,9 +798,25 @@ def consider_clarify(
         try:
             raw = model(prompt)
         except ClarifyWriterUnavailable:
-            return _writer_unavailable(
-                space_id=space_id, session_id=session_id, question=original
-            )
+            # TODO(#405): one ticket, grouped like every other ticket. Call
+            # log_pipeline_failure_ticket from dms_executor.pipeline_failure.
+            # No local logger. Do not wrap that call in `except: pass`. The
+            # caller body stays the same if the writer raises. No ticket with
+            # the flag off (this branch runs only when the flag is on).
+            #
+            # log_pipeline_failure_ticket(
+            #     reason="writer_unavailable",
+            #     question=original,
+            #     sql=None,
+            #     retries=0,
+            #     stage="clarify",
+            #     ask_id="",
+            # )
+            if pii_failed:
+                return _column_unreadable(
+                    space_id=space_id, session_id=session_id, question=original
+                )
+            return Gate(skipped="writer_unavailable")
         except Exception:  # noqa: BLE001
             if pii_failed:
                 return _column_unreadable(
@@ -1180,8 +1202,10 @@ def openvault_clarify_writer(base_url: str | None) -> Any:
     """One completion on the generative OpenVault route.
 
     Same path (``/v1/chat/completions``), ``free+normal`` preference, and pin
-    stamp as Insights generate. OpenVault holds the provider key. If the vault
-    cannot be reached, the callable raises ``ClarifyWriterUnavailable``.
+    stamp as Insights generate. OpenVault holds the provider key and does any
+    key or provider fallback. This posts once and does not try another key.
+    If the vault cannot write the question, the callable raises
+    ``ClarifyWriterUnavailable`` and the ask continues without a clarify.
     """
     root = (base_url or "").strip().rstrip("/")
 

@@ -1042,12 +1042,13 @@ def test_wiring_writer_clarifies(wh: Path, monkeypatch: pytest.MonkeyPatch) -> N
         exe.close()
 
 
-def test_wiring_writer_down_abstains(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wiring_writer_down_continues(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One OpenVault attempt, then the normal pipeline. Fails on bd87a4bf."""
     import dms_executor
     from dms_api.wiring import build_ask_service
 
     monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
-    _install_http(monkeypatch, fail=True)
+    posts = _install_http(monkeypatch, fail=True)
     previous = dms_executor.probe_openvault
     dms_executor.probe_openvault = lambda **_k: (None, "off")  # type: ignore[method-assign]
     cortex = _Cortex()
@@ -1064,6 +1065,8 @@ def test_wiring_writer_down_abstains(wh: Path, monkeypatch: pytest.MonkeyPatch) 
         )
     finally:
         dms_executor.probe_openvault = previous
+    exe._minter = _minter()
+    reset_extra_model_calls()
     try:
         env = exe.live_ask(
             "show qxalpha771 and qxbeta771",
@@ -1071,12 +1074,18 @@ def test_wiring_writer_down_abstains(wh: Path, monkeypatch: pytest.MonkeyPatch) 
             session_id="ses_wire_down",
             tables=["qxalpha_fact", "qxbeta_fact"],
         )
-        assert env["abstain_reason"] == "clarify_writer_unavailable"
-        assert env["abstained"] is True
-        assert env["rows"] == []
-        assert env["values"] == []
-        assert cortex.submits == []
-        assert cortex.asks == []
+        chat = [p for p in posts if str(p["url"]).endswith("/v1/chat/completions")]
+        assert len(chat) == 1
+        assert extra_model_calls() == 1
+        assert env.get("status") != "clarify"
+        assert env.get("clarify_skipped") == "writer_unavailable"
+        assert env.get("abstain_reason") != "clarify_writer_unavailable"
+        if env.get("abstained"):
+            assert env.get("abstain_reason")
+            assert "clarify_writer" not in str(env.get("abstain_reason"))
+        else:
+            assert env["rows"]
+            assert "Reading used:" in str(env.get("text") or "")
         assert_envelope_valid(env)
     finally:
         exe.close()
