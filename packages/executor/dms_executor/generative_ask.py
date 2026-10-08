@@ -84,6 +84,7 @@ from dms_executor.ontology import (
     missing_join_for_ungranted,
     try_compile_multi_grain,
 )
+from dms_executor.schema_context import prepare_generate_context
 from dms_executor.semantic_retrieve import (
     bind_plan,
     intent_slots,
@@ -1232,8 +1233,18 @@ def maybe_generative_ask(
         ranked_env["generate_legs"] = generate_legs_view(None)
         return with_served_attribution(ranked_env, None)
     # Short retrieved context only -- not the full ontology dump.
+    # Schema prompt (types, keys, joins, measure SQL, masked samples) is
+    # stored for audit and attached when DMS_SCHEMA_CONTEXT is on.
     ctx = retrieve_short_context(
         q, warehouse=lake, grantable=allowed, ontology=onto
+    )
+    ctx = prepare_generate_context(
+        ctx,
+        question=q,
+        serving=lake,
+        grantable=allowed,
+        ontology=onto,
+        space_id=space_id,
     )
     try:
         payload = compute(ctx)
