@@ -16,11 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
-from pathlib import Path
 from typing import Any
-
-from dms_core.ask import AskServiceError
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -160,126 +156,16 @@ _BASE_PACK_METRICS: tuple[PackMetric, ...] = (
 )
 
 
-def _score_fixture_dir() -> Path:
-    """Repo fixture that already copies Cortex certified_queries. Not a second pack.
-
-    Never read at import: the API image does not ship ``tests/``. The pack
-    holds oracle answers, so it must not become package data either.
-    """
-    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "curated_ceo"
-
-
-class DemoPackUnavailable(AskServiceError):
-    """The curated pack is not on disk, so no pack phrase can be matched."""
-
-    def __init__(self, missing: Path) -> None:
-        super().__init__(
-            "demo_pack_unavailable",
-            f"curated demo pack not found at {missing}; this deployment has no demo pack",
-        )
-
-
-def _collapse_sql(raw: object) -> str:
-    if not isinstance(raw, str):
-        return ""
-    # The score oracle binds $as_of. The certified query runs CURRENT_DATE.
-    return " ".join(raw.split()).replace("$as_of", "CURRENT_DATE")
-
-
-def _tables_in_sql(sql: str) -> tuple[str, ...]:
-    from dms_executor.verified_queries import _named_warehouse_tables
-
-    return tuple(sorted(_named_warehouse_tables(sql)))
-
-
-# Score-pack exact phrases that are not already one of the ten base metrics.
-# Climb rise and synonym ids stay off this list: those questions are scored
-# as ontology_plan, and climb gates assert they are not PACK_METRICS.
-# cq_sales_top5_value stays off: the product lane contract ask owns that
-# phrase (one session bind, badge L0_CERTIFIED). cq_chemicals_list stays
-# off for the same fall-through. Not every expect:l0 row.
-SCORE_PACK_EXACT_IDS: frozenset[str] = frozenset(
-    {
-        "cq_sku_count",
-        "cq_sales_top3_volume",
-        "cq_sku_count_by_category",
-        "cq_supplier_ranking",
-        "trap_categoty",
-    }
-)
-
-
 def _norm(question: str) -> str:
     return " ".join(normalize_ask_question(question).casefold().split())
 
 
-def load_score_pack_metrics(
-    base: tuple[PackMetric, ...] = _BASE_PACK_METRICS,
-    ids: frozenset[str] = SCORE_PACK_EXACT_IDS,
-) -> tuple[PackMetric, ...]:
-    """Allowlisted score-pack ids whose question text is not already a base metric.
-
-    Reads the curated_ceo fixture (question + oracle SQL). An id not in
-    ``ids`` is not a metric. Same question text keeps the first metric.
-    """
-    import yaml
-
-    root = _score_fixture_dir()
-    for name in ("questions.yaml", "oracles.yaml"):
-        if not (root / name).is_file():
-            raise DemoPackUnavailable(root / name)
-    questions = yaml.safe_load((root / "questions.yaml").read_text(encoding="utf-8")) or {}
-    oracles = yaml.safe_load((root / "oracles.yaml").read_text(encoding="utf-8")) or {}
-    oracle_rows = oracles.get("oracles") or {}
-    taken = {_norm(m.question) for m in base}
-    extra: list[PackMetric] = []
-    for case in questions.get("questions") or []:
-        qid = str(case.get("id") or "")
-        if qid not in ids:
-            continue
-        question = str(case.get("question") or "").strip()
-        qn = _norm(question)
-        if not qn or qn in taken:
-            continue
-        sql = _collapse_sql((oracle_rows.get(qid) or {}).get("sql"))
-        if not sql:
-            continue
-        tables = _tables_in_sql(sql)
-        if not tables:
-            continue
-        extra.append(
-            PackMetric(
-                metric_id=qid,
-                question=question,
-                sql=sql,
-                tables=tables,
-            )
-        )
-        taken.add(qn)
-    return tuple(extra)
-
-
-# Climb 10-13 snapshot this tuple. Do not append here.
+# Climb 10-13 snapshot this tuple. Do not append here. Served /ask matches
+# only these code constants; no scored-pack file is read on the serve path.
 PACK_METRICS: tuple[PackMetric, ...] = _BASE_PACK_METRICS
 
 
-@lru_cache(maxsize=1)
-def score_pack_exact_metrics() -> tuple[PackMetric, ...]:
-    """Loaded on the first pack lookup. A missing pack raises and is not cached."""
-    return load_score_pack_metrics()
-
-
-def __getattr__(name: str) -> Any:
-    if name == "SCORE_PACK_EXACT_METRICS":
-        return score_pack_exact_metrics()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def _exact_pack_metrics() -> tuple[PackMetric, ...]:
-    return PACK_METRICS + score_pack_exact_metrics()
-
-
-# Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
+# Exact planted refuse phrases. Not regex. Cortex certify boundary:
 # cq_capacity_utilisation has no synonym; delayed_incoming_per_wh is TARGET.
 # Live L1 leak: vocabulary "how full" -> capacity utilisation, and
 # route_to_metric delayed+per+warehouse -> count_by_destination.
@@ -382,7 +268,7 @@ def match_pack_phrase(
     qn = _norm(question)
     if not qn:
         return None
-    return next((m for m in _exact_pack_metrics() if _norm(m.question) == qn), None)
+    return next((m for m in PACK_METRICS if _norm(m.question) == qn), None)
 
 
 def lookup_pack_metric(
@@ -393,7 +279,7 @@ def lookup_pack_metric(
 ) -> PackMetric | None:
     """Return the pack metric when the phrase matches and grants cover it.
 
-    The phrase set is the ten base metrics plus the score-pack allowlist.
+    The phrase set is the ten base metrics (``PACK_METRICS``).
     A Space that does not grant every table the SQL names is not a hit here
     (Warehouse Ops vs suppliers). ``maybe_pack_ask`` names that as ``grants
     fail`` instead of treating it as no match. Cortex ``warehouse_<table>``
@@ -413,45 +299,6 @@ def lookup_pack_metric(
     return hit
 
 
-def _curated_pack_path() -> Path:
-    return _score_fixture_dir() / "questions.yaml"
-
-
-@lru_cache(maxsize=1)
-def curated_l0_question_norms() -> frozenset[str]:
-    """Normalised curated_ceo questions whose expect is l0.
-
-    The file is the score pack. A missing file means this process cannot
-    tell a curated l0 ask from any other question.
-    """
-    path = _curated_pack_path()
-    if not path.is_file():
-        return frozenset()
-    try:
-        import yaml
-    except ImportError:
-        return frozenset()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    norms: set[str] = set()
-    for row in data.get("questions") or []:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("expect") or "").lower() != "l0":
-            continue
-        n = _norm(str(row.get("question") or ""))
-        if n:
-            norms.add(n)
-    return frozenset(norms)
-
-
-def is_curated_l0_without_pack_metric(question: str) -> bool:
-    """True when a curated l0 ask is absent from the exact pack (step 1 miss)."""
-    if match_pack_phrase(question) is not None:
-        return False
-    n = _norm(question)
-    return bool(n) and n in curated_l0_question_norms()
-
-
 def curated_pack_metric_miss(
     question: str,
     *,
@@ -460,10 +307,9 @@ def curated_pack_metric_miss(
 ) -> dict[str, Any]:
     """Named ABSTAIN for step 1: exact-match / pack-metric miss.
 
-    The exact pack (base metrics plus the score-pack allowlist) has no phrase
-    for this curated l0 question. ``cq_sku_count`` is on that allowlist, so
-    this miss is a still-unregistered phrase. The rendered text must not be
-    a generic generative abstain.
+    Scoring only (``score_curated`` offline exact lane): the scorer knows the
+    question is curated l0 and ``PACK_METRICS`` has no phrase for it. Served
+    /ask does not call this; it cannot tell a curated question from any other.
     """
     text = (
         "exact-match miss: pack-metric miss. "

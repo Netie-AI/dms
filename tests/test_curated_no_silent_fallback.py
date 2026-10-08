@@ -1,11 +1,11 @@
 """CURATED-NO-SILENT-FALLBACK-01: name the failed curated step.
 
 Pack match + a later failure must not fall through to a generic generative
-abstain. cq_sku_count is on the score-pack allowlist, so that exact phrase
-executes when grants, SQL, and the ledger succeed. A curated l0 phrase still
-absent from the exact pack is an exact-match / pack-metric miss, not a
-GEN-01 sentence. Offline score_curated reads Executor.grantable_tables,
-not DEMO_SPACE_GRANTS.
+abstain. Served /ask matches only the ten base PACK_METRICS and never reads
+the score pack (DEMO-PACK-LAZY-01, #386), so cq_sku_count and unregistered
+curated l0 phrases take the normal lanes like any other question. Only the
+offline scorer, which knows a case is curated l0, names a pack-metric miss.
+Offline score_curated reads Executor.grantable_tables, not DEMO_SPACE_GRANTS.
 """
 
 from __future__ import annotations
@@ -112,34 +112,22 @@ def _ask(tmp_path: Path, question: str, space: str, cortex: _Spoof) -> dict[str,
         exe.close()
 
 
-def test_sku_count_exact_match_does_not_fall_through(tmp_path: Path) -> None:
-    """#355 registered this phrase. A working later step answers. No generative."""
+@pytest.mark.parametrize("question", [SKU_Q, SKU_SYNONYM_Q])
+def test_curated_l0_off_the_pack_takes_the_normal_lanes(tmp_path: Path, question: str) -> None:
+    """Not a pack phrase on the serve path. Unsure Insights is a named abstain."""
     cortex = _Spoof()
-    env = _ask(tmp_path, SKU_Q, FINANCE, cortex)
-    assert_envelope_valid(env)
-    assert env["badge"] == "L1_GOVERNED_METRIC"
-    assert env["abstained"] is False
-    assert any("cq_sku_count" in str(a) for a in (env.get("assumptions") or []))
-    assert _GENERIC not in env["text"]
-    assert "999999" not in env["text"]
-    assert "exact-match miss" not in env["text"]
-    assert cortex.insights == []
-    assert cortex.asks == []
-
-
-def test_unregistered_l0_names_exact_match_miss_not_generic_abstain(tmp_path: Path) -> None:
-    cortex = _Spoof()
-    env = _ask(tmp_path, SKU_SYNONYM_Q, FINANCE, cortex)
+    env = _ask(tmp_path, question, FINANCE, cortex)
     assert_envelope_valid(env)
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert env["rows"] == []
     text = env["text"]
-    assert "exact-match miss" in text
-    assert "pack-metric miss" in text
-    assert _GENERIC not in text
-    assert "999999" not in text
+    assert _GENERIC in text
+    assert "pack-metric miss" not in text
     assert "exact match ok" not in text
+    assert "999999" not in text
+    assert cortex.insights
+    assert cortex.submits == []
 
 
 def test_ops_spend_names_grants_fail(tmp_path: Path) -> None:
@@ -247,9 +235,8 @@ def test_score_curated_uses_serve_grants_and_names_pack_miss(
     sku = by_id["cq_sku_count"]["exact_text"]
     synonym = by_id["cq_sku_count_syn_short"]["exact_text"]
     spend = by_id["cq_spend_by_country"]["exact_text"]
-    assert "exact match ok" in sku
-    assert "grants fail" in sku
-    assert "pack-metric miss" not in sku
+    assert "pack-metric miss" in sku
+    assert "exact match ok" not in sku
     assert "exact-match miss" in synonym
     assert "pack-metric miss" in synonym
     assert "grants fail" in spend

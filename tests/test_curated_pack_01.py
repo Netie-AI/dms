@@ -1,9 +1,9 @@
-"""PROVE-CURATED-DIAG-01: score-pack exact ids are an allowlist.
+"""Served pack lookup is the ten code-constant base metrics only.
 
-On main the lookup set is the ten base metrics and cq_sku_count misses.
-Climb rise and synonym rows stay off the allowlist. The product-lane
-contract phrases stay off it too. Not a grant change. Not a verified-query
-seed. Not COMPLETE.
+PROVE-CURATED-DIAG-01 (#355) added five score-pack ids read from
+curated_ceo. DEMO-PACK-LAZY-01 (#386) takes them back off the served path:
+served code never reads the score pack, and those five ids take the normal
+lanes like any other question. Not a grant change. Not COMPLETE.
 """
 
 from __future__ import annotations
@@ -13,13 +13,7 @@ from typing import Any
 
 import yaml
 from dms_executor.demo_grants import DEMO_SPACE_GRANTS
-from dms_executor.demo_pack import (
-    PACK_METRICS,
-    SCORE_PACK_EXACT_IDS,
-    load_score_pack_metrics,
-    lookup_pack_metric,
-    score_pack_exact_metrics,
-)
+from dms_executor.demo_pack import PACK_METRICS, lookup_pack_metric
 
 _FIXTURE = (
     Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
@@ -40,8 +34,15 @@ _BASE_IDS = {
     "cq_expired_items",
     "cq_cctv_wh_a",
 }
-# Climb rise / synonym ids. Not score-pack exact match.
-_NOT_EXACT = {
+_FIVE_IDS = {
+    "cq_sku_count",
+    "cq_sales_top3_volume",
+    "cq_sku_count_by_category",
+    "cq_supplier_ranking",
+    "trap_categoty",
+}
+# Climb rise / synonym ids. Not exact match.
+_NOT_EXACT = _FIVE_IDS | {
     "cq_sku_count_syn_short",
     "cq_sku_count_syn_label",
     "cq_sales_top5_syn_skus",
@@ -76,35 +77,18 @@ def _grants(space: str) -> set[str]:
     return set(entry[1])
 
 
-def test_cq_sku_count_exact_match_on_finance_grants() -> None:
-    case = next(row for row in _pack() if row["id"] == "cq_sku_count")
-    hit = lookup_pack_metric(str(case["question"]), grantable=_grants("finance"))
-    assert hit is not None
-    assert hit.metric_id == "cq_sku_count"
-    assert hit.tables == ("inventory",)
-    assert "FROM inventory" in hit.sql
-
-
-def test_allowlist_is_required_for_the_hit() -> None:
-    """Empty allowlist is the main registry: cq_sku_count misses."""
-    assert "cq_sku_count" in SCORE_PACK_EXACT_IDS
-    assert load_score_pack_metrics(ids=frozenset()) == ()
-    base_only = {m.metric_id for m in PACK_METRICS}
-    assert "cq_sku_count" not in base_only
-    assert {m.metric_id for m in score_pack_exact_metrics()} == set(SCORE_PACK_EXACT_IDS)
-
-
-def test_allowlist_hits_and_rise_ids_miss() -> None:
+def test_five_ids_and_rise_ids_miss_served_lookup() -> None:
     by_id = {str(row["id"]): row for row in _pack()}
-    for qid in SCORE_PACK_EXACT_IDS:
-        case = by_id[qid]
-        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
-        assert hit is not None, qid
-        assert hit.metric_id == qid
     for qid in _NOT_EXACT:
         case = by_id[qid]
         hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
         assert hit is None, qid
+
+
+def test_base_phrases_still_hit() -> None:
+    for m in PACK_METRICS:
+        hit = lookup_pack_metric(m.question, grantable=set(m.tables))
+        assert hit is not None and hit.metric_id == m.metric_id
 
 
 def test_refuse_and_abstain_stay_misses() -> None:
@@ -121,4 +105,3 @@ def test_refuse_and_abstain_stay_misses() -> None:
 
 def test_pack_metrics_stay_the_climb_snapshot() -> None:
     assert {m.metric_id for m in PACK_METRICS} == _BASE_IDS
-    assert "cq_sku_count_syn_short" not in {m.metric_id for m in score_pack_exact_metrics()}

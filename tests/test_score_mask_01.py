@@ -1091,8 +1091,8 @@ def test_ab_offline_counts_unchanged(
 ) -> None:
     """52-pack --ab. Order is OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR.
 
-    Exact quint is the score-pack allowlist on top of the ten base
-    metrics (0/23/29/0/0). Generative quint is the previous pin.
+    Exact quint is the ten base metrics (0/16/36/0/0); the five score-pack
+    ids are off the serve path again (#386). Generative quint is the previous pin.
     """
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     main(["--ab"])
@@ -1102,7 +1102,7 @@ def test_ab_offline_counts_unchanged(
     keys = ("ok", "layer", "abstain", "wrong", "oracle_error")
     exact_counts = [exact[key] for key in keys]
     gen_counts = [gen[key] for key in keys]
-    assert exact_counts == [0, 23, 29, 0, 0]
+    assert exact_counts == [0, 16, 36, 0, 0]
     assert gen_counts == [0, 26, 11, 15, 0]
     assert exact["n"] == 52
     assert gen["n"] == 52
