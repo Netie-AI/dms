@@ -557,8 +557,8 @@ def test_none_clears_credit_fields() -> None:
     }
     apply_sql_credit(env, None, None, dialect="duckdb")
     assert env["served_attribution"] == "none"
-    assert env["served_model"] is None
-    assert env["served_provider"] is None
+    assert env.get("served_model") is None
+    assert env.get("served_provider") is None
     assert env.get("ov_key_id") is None
 
 

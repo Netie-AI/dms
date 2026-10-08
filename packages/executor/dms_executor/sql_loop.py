@@ -606,13 +606,14 @@ def _call(
 
 
 def _clear_credit(env: dict[str, Any]) -> None:
-    """No model call: model and provider are null, and no OpenVault key field.
+    """No model call: drop credit fields so none does not name a model.
 
-    ``ov_key_id`` is removed. Writing the key as null still puts ``ov_`` on
-    the envelope, which the bearer leak scan rejects.
+    Absent is null for readers. Writing the keys, even as null, changes
+    flag-off bytes versus f9ffc3e (those envelopes omitted them) and
+    ``ov_key_id`` puts ``ov_`` on the envelope.
     """
-    env["served_model"] = None
-    env["served_provider"] = None
+    env.pop("served_model", None)
+    env.pop("served_provider", None)
     env.pop("ov_key_id", None)
 
 

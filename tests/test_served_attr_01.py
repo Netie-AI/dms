@@ -319,8 +319,8 @@ def test_bearer_refuse_makes_no_call_and_is_none(tmp_path: Path) -> None:
     assert fake.calls == []
     assert INSIGHTS_FAIL_BEARER_MISSING in " ".join(env["assumptions"])
     assert env["served_attribution"] == "none"
-    assert env["served_model"] is None
-    assert env["served_provider"] is None
+    assert env.get("served_model") is None
+    assert env.get("served_provider") is None
     assert env.get("ov_key_id") is None
 
 
