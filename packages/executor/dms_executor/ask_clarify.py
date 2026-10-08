@@ -106,6 +106,14 @@ class Gate:
     check_planner: bool = False
 
 
+@dataclass(frozen=True)
+class Reask:
+    """Free text is a new question. It is not a binding."""
+
+    question: str
+    parent_id: str
+
+
 class ClarifyWriterUnavailable(Exception):
     """OpenVault could not write the question. The ask abstains. It does not serve."""
 
@@ -990,25 +998,6 @@ def apply_binding(question: str, binding: dict[str, Any]) -> str:
     return f"{question.rstrip()}\n{payload}"
 
 
-def _match_reply(text: str, options: list[Any]) -> dict[str, Any] | None:
-    """One stored option, by id or by label. Zero or many is not a pick."""
-    folded = text.strip().casefold()
-    if not folded:
-        return None
-    hits: list[dict[str, Any]] = []
-    for opt in options:
-        if not isinstance(opt, dict):
-            continue
-        oid = str(opt.get("id") or "").strip()
-        label = str(opt.get("label") or "").strip()
-        if folded == oid.casefold() or (label and folded == label.casefold()):
-            if opt not in hits:
-                hits.append(opt)
-    if len(hits) == 1:
-        return hits[0]
-    return None
-
-
 def _binding_still_cleared(
     binding: dict[str, Any],
     cols: list[_Col],
@@ -1057,12 +1046,12 @@ def resolve_clarify(
     fallback_question: str,
     warehouse: Path | None = None,
     grantable: set[str] | None = None,
-) -> dict[str, Any] | str:
-    """Return the rewritten question, or a named abstain envelope.
+) -> dict[str, Any] | str | Reask:
+    """Return a bound question, a free-text re-ask, or a named abstain.
 
-    A pick is one stored option id, or free text that is exactly one stored
-    id or label. The binding is checked against the Space grant and the mask
-    again before the ask re-enters. Unknown and expired ids abstain.
+    An option id binds only after the grant and mask re-check. Free text
+    never binds. It is a new question (``Reask``). Unknown and expired ids
+    abstain. They do not raise.
     """
     attempt = store.get(clarify_id)
     if not isinstance(attempt, dict) or not _scope_ok(attempt, space_id, session_id):
@@ -1125,16 +1114,52 @@ def resolve_clarify(
             session_id=session_id,
             question=original,
         )
-    chosen = _match_reply(text, options)
-    if chosen is None or not isinstance(chosen.get("binding"), dict):
+    # One round. The id is spent. The text is not matched to an option.
+    store.pop(clarify_id, None)
+    return Reask(question=text, parent_id=clarify_id)
+
+
+def reask_refusal(
+    question: str,
+    *,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """Named refusal when the new question names an ungranted table or value.
+
+    This is the grant walk for a re-ask. A hit returns before any submit.
+    """
+    try:
+        _cols, secrets, pii_failed = _granted_columns(warehouse, set(grantable or ()))
+    except Exception:  # noqa: BLE001 -- do not serve an unreadable schema
         return named_abstain(
-            "clarify_pick_not_in_options",
-            "That reply is not one of the options. Ask again.",
+            "clarify_column_unreadable",
+            "A column could not be checked, so this ask was not answered.",
             space_id=space_id,
             session_id=session_id,
-            question=original,
+            question=question,
         )
-    return _accept(chosen)
+    if pii_failed:
+        return named_abstain(
+            "clarify_column_unreadable",
+            "A column could not be checked, so this ask was not answered.",
+            space_id=space_id,
+            session_id=session_id,
+            question=question,
+        )
+    hits = [secret for secret in secrets if secret.casefold() in question.casefold()]
+    if not hits:
+        return None
+    hits.sort(key=len, reverse=True)
+    return named_abstain(
+        f"ungranted_table:{hits[0]}",
+        "That reply names something this Space cannot read.",
+        space_id=space_id,
+        session_id=session_id,
+        question=question,
+    )
 
 
 _DEMO_VIEWER_KEY = "dms-demo-viewer-key"

@@ -29,10 +29,15 @@ def reset() -> None:
         _COMPLETION = 0
 
 
-def record_outcome(kind: str) -> None:
-    """Count one finished ask. ``clarify`` is not served and not an abstain."""
+def record_outcome(kind: str, *, replace_clarify: bool = False) -> None:
+    """Count one finished ask. ``clarify`` is not served and not an abstain.
+
+    A re-ask replaces the parent clarify so the question is counted once.
+    """
     global _SERVED, _ABSTAIN, _CLARIFY
     with _LOCK:
+        if replace_clarify and _CLARIFY > 0:
+            _CLARIFY -= 1
         if kind == "clarify":
             _CLARIFY += 1
         elif kind == "abstain":

@@ -197,6 +197,7 @@ class Executor:
         self._clarify_model = clarify_model
         # Same process memory as session turns. TTL matches the session ACL.
         self._clarify_attempts: dict[str, Any] = {}
+        self._clarify_reask_parent: str | None = None
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
@@ -510,6 +511,7 @@ class Executor:
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
+        self._clarify_reask_parent = None
         try:
             env = self._live_ask(
                 question,
@@ -543,6 +545,11 @@ class Executor:
                 question=question,
             )
             assert_envelope_valid(env)
+        parent = self._clarify_reask_parent
+        self._clarify_reask_parent = None
+        if parent and isinstance(env, dict):
+            env["clarify_reask"] = True
+            env["clarify_parent_id"] = parent
         stamp_engine_clock(env)
         is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
         if is_clarify:
@@ -574,7 +581,15 @@ class Executor:
         try:
             from dms_core.clarify_stats import record_outcome
 
-            if env.get("status") == "clarify":
+            if env.get("clarify_reask"):
+                # The parent clarify already counted. Keep one ask.
+                if env.get("status") == "clarify":
+                    return
+                record_outcome(
+                    "abstain" if env.get("abstained") else "served",
+                    replace_clarify=True,
+                )
+            elif env.get("status") == "clarify":
                 record_outcome("clarify")
             elif env.get("abstained"):
                 record_outcome("abstain")
@@ -638,8 +653,24 @@ class Executor:
                 )
                 if isinstance(resolved, dict):
                     return resolved
-                question = normalize_ask_question(resolved)
-                clarify_locked = True
+                from dms_executor.ask_clarify import Reask, reask_refusal
+
+                if isinstance(resolved, Reask):
+                    self._clarify_reask_parent = resolved.parent_id
+                    question = normalize_ask_question(resolved.question)
+                    clarify_locked = True
+                    refused = reask_refusal(
+                        question,
+                        warehouse=self._warehouse,
+                        grantable=granted_now,
+                        space_id=space_id,
+                        session_id=session_id,
+                    )
+                    if refused is not None:
+                        return refused
+                else:
+                    question = normalize_ask_question(resolved)
+                    clarify_locked = True
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
             ladder = "product"

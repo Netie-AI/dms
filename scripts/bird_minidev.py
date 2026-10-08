@@ -223,9 +223,11 @@ def envelope_rows(env: Mapping[str, Any]) -> list[dict[str, Any]]:
 def grade_envelope(env: Mapping[str, Any], gold_rows: Sequence[Any]) -> str:
     """OK / LAYER / ABSTAIN / WRONG / CLARIFY. Confident empty is WRONG even if gold is empty.
 
-    A clarify reply is not an answer and is not an abstain.
+    A clarify reply is not an answer and is not an abstain. ``none_fits`` is the same.
     """
-    if str(env.get("status") or "") == "clarify":
+    from score_curated import clarify_unanswered
+
+    if clarify_unanswered(env):
         return "CLARIFY"
     if not is_confident(env):
         return "ABSTAIN"

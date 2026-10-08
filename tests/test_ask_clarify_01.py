@@ -606,17 +606,19 @@ def test_clarify_records_tokens_and_rates(wh: Path) -> None:
 
 
 def test_free_text_outside_options_abstains(wh: Path) -> None:
+    writer = _Writer(_two_measures())
     cortex = _Cortex()
     env, _held, exe = _ask(
         wh,
         "show qxalpha771 and qxbeta771",
         ["qxalpha_fact", "qxbeta_fact"],
-        writer=_Writer(_two_measures()),
+        writer=writer,
         flag=True,
         cortex=cortex,
     )
     try:
         cid = env["clarify_id"]
+        reset_extra_model_calls()
         picked = exe.live_ask(
             "show qxalpha771 and qxbeta771",
             space_id=FINANCE,
@@ -625,40 +627,64 @@ def test_free_text_outside_options_abstains(wh: Path) -> None:
             clarify_id=cid,
             clarify_text="use qxhidden_fact ungranted-token-552",
         )
-        assert picked["abstain_reason"] == "clarify_pick_not_in_options"
+        assert str(picked["abstain_reason"]).startswith("ungranted_table:")
+        assert "qxhidden_fact" in picked["abstain_reason"]
         assert picked["abstained"] is True
         assert picked["rows"] == []
         assert picked["values"] == []
+        assert picked.get("status") != "clarify"
+        assert picked["clarify_reask"] is True
+        assert picked["clarify_parent_id"] == cid
         assert cortex.submits == []
         assert cortex.asks == []
-        assert cid in exe._clarify_attempts
+        assert len(writer.prompts) == 1
+        assert extra_model_calls() == 0
+        assert cid not in exe._clarify_attempts
+        rates = snapshot()
+        assert rates["asks"] == 1
+        assert rates["clarify"] == 0
+        assert rates["abstain"] == 1
         assert_envelope_valid(picked)
     finally:
         exe.close()
 
 
 def test_free_text_exact_label_serves(wh: Path) -> None:
+    writer = _Writer(_two_measures())
     cortex = _Cortex()
     env, _held, exe = _ask(
         wh,
         "show qxalpha771 and qxbeta771",
         ["qxalpha_fact", "qxbeta_fact"],
-        writer=_Writer(_two_measures()),
+        writer=writer,
         flag=True,
         cortex=cortex,
     )
     try:
+        cid = env["clarify_id"]
+        reset_extra_model_calls()
         picked = exe.live_ask(
             "show qxalpha771 and qxbeta771",
             space_id=FINANCE,
             session_id="ses_clarify",
             tables=["qxalpha_fact", "qxbeta_fact"],
-            clarify_id=env["clarify_id"],
+            clarify_id=cid,
             clarify_text="use-qxalpha771",
         )
+        assert picked.get("status") != "clarify"
+        assert picked["clarify_reask"] is True
+        assert picked["clarify_parent_id"] == cid
         assert picked["abstained"] is False
         assert picked["rows"] == [{"n": 4}]
-        assert '"name":"qxalpha771"' in cortex.asks[-1].question
+        assert cortex.asks
+        assert '"name":"qxalpha771"' not in cortex.asks[-1].question
+        assert "use-qxalpha771" in cortex.asks[-1].question
+        assert len(writer.prompts) == 1
+        assert extra_model_calls() == 0
+        rates = snapshot()
+        assert rates["asks"] == 1
+        assert rates["clarify"] == 0
+        assert rates["abstain"] == 0
     finally:
         exe.close()
 
@@ -974,6 +1000,43 @@ def test_wiring_writer_clarifies(wh: Path, monkeypatch: pytest.MonkeyPatch) -> N
         assert body["model_preference"] == "free+normal"
         assert "api_key" not in body
         assert "sk-" not in json.dumps(body)
+        writer_model = str(body["model"])
+        assert writer_model
+        import sys
+
+        scripts = str(Path(__file__).resolve().parents[1] / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        from clarify_pick import SameModelRefused, pick_clarify
+
+        def _same(_question: str, _options: list[dict[str, str]]) -> str:
+            raise AssertionError("pick model must not run when it is the writer")
+
+        try:
+            pick_clarify(
+                env,
+                _same,
+                writer_model_id=writer_model,
+                pick_model_id=writer_model,
+            )
+            raise AssertionError("same model id must be refused")
+        except SameModelRefused:
+            pass
+        seen: list[list[dict[str, str]]] = []
+
+        def _other(_question: str, options: list[dict[str, str]]) -> str:
+            seen.append(options)
+            return "opt_a"
+
+        got = pick_clarify(
+            env,
+            _other,
+            writer_model_id=writer_model,
+            pick_model_id=writer_model + "-pick",
+        )
+        assert got == {"outcome": "pick", "option_id": "opt_a"}
+        assert seen
+        assert "binding" not in json.dumps(seen)
         assert_envelope_valid(env)
     finally:
         exe.close()
@@ -1055,3 +1118,65 @@ def test_wiring_clear_ask_does_not_post(wh: Path, monkeypatch: pytest.MonkeyPatc
         assert env["rows"] == [{"n": 4}]
     finally:
         exe.close()
+
+
+def test_live_scorers_leave_unanswered_clarify_unanswered() -> None:
+    import sys
+
+    scripts = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from bird_minidev import grade_envelope
+    from score_answers import judge as hostile_judge
+    from score_bird import _path_report, _tally
+    from score_curated import judge as curated_judge
+    from score_curated import without_replaced_clarifies
+
+    clarify = {
+        "status": "clarify",
+        "clarify_id": "clr_parent",
+        "badge": "ABSTAIN",
+        "abstained": True,
+        "rows": [],
+        "question": "which-qx-measure-881",
+    }
+    none_fits = {
+        "outcome": "miss",
+        "option_id": "none_fits",
+        "badge": "L0_CERTIFIED",
+        "abstained": False,
+        "rows": [{"n": 4}],
+    }
+    reask_abs = {
+        "clarify_reask": True,
+        "clarify_parent_id": "clr_parent",
+        "badge": "ABSTAIN",
+        "abstained": True,
+        "rows": [],
+        "abstain_reason": "ungranted_table:qxhidden_fact",
+    }
+    reask_ok = {
+        "clarify_reask": True,
+        "clarify_parent_id": "clr_parent",
+        "badge": "L0_CERTIFIED",
+        "abstained": False,
+        "rows": [{"n": 4}],
+    }
+    case = {"expect": "l0", "min_rows": 1}
+    assert hostile_judge(clarify, [("n", 4.0)])[0] == "clarify"
+    assert hostile_judge(none_fits, [("n", 4.0)])[0] == "clarify"
+    assert hostile_judge(reask_abs, [("n", 4.0)])[0] == "abstained"
+    assert curated_judge(case, clarify) == "CLARIFY"
+    assert curated_judge(case, none_fits) == "CLARIFY"
+    assert curated_judge(case, reask_abs) == "ABSTAIN"
+    assert grade_envelope(none_fits, [{"n": 4}]) == "CLARIFY"
+    assert grade_envelope(clarify, []) == "CLARIFY"
+    bird = _tally()
+    for env in (clarify, none_fits, reask_abs):
+        verdict = curated_judge({"expect": "answered", "min_rows": 1}, env)
+        bird[verdict] += 1
+    report = _path_report("generative_live", bird, 3)
+    assert report["answered"] == 0
+    folded = without_replaced_clarifies([clarify, reask_ok])
+    assert folded == [reask_ok]
+    assert curated_judge(case, folded[0]) in {"OK", "LAYER"}

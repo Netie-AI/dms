@@ -744,9 +744,44 @@ class JudgeResult:
     scorer_ok_rows_not_compared: str
 
 
+def clarify_unanswered(env: Mapping[str, Any]) -> bool:
+    """A clarify that never became an answer, including a pick of none_fits.
+
+    A re-ask envelope is the final outcome of the parent question. It is
+    unanswered only when it abstains or is itself still a clarify.
+    """
+    if str(env.get("status") or "") == "clarify":
+        return True
+    if str(env.get("option_id") or "") == "none_fits" or env.get("none_fits") is True:
+        return True
+    if str(env.get("outcome") or "") == "miss":
+        return True
+    return False
+
+
+def without_replaced_clarifies(envs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop a clarify whose re-ask is in the same batch. One question, one row."""
+    parents = {
+        str(env.get("clarify_parent_id"))
+        for env in envs
+        if env.get("clarify_reask") and env.get("clarify_parent_id")
+    }
+    if not parents:
+        return list(envs)
+    kept: list[dict[str, Any]] = []
+    for env in envs:
+        if (
+            str(env.get("status") or "") == "clarify"
+            and str(env.get("clarify_id") or "") in parents
+        ):
+            continue
+        kept.append(env)
+    return kept
+
+
 def _judge_badge(case: dict[str, Any], env: dict[str, Any]) -> str:
     """OK | ABSTAIN | LAYER | WRONG | CLARIFY. Badge/min_rows only. No row compare."""
-    if str(env.get("status") or "") == "clarify":
+    if clarify_unanswered(env):
         return "CLARIFY"
     expect = str(case.get("expect") or "l0").lower()
     badge = str(env.get("badge") or "")
@@ -790,7 +825,7 @@ def judge_detailed(
     as_of: str | None = None,
 ) -> JudgeResult:
     """Row-compared judge when oracle_db is set. ORACLE_ERROR never OK."""
-    if str(env.get("status") or "") == "clarify":
+    if clarify_unanswered(env):
         return JudgeResult("CLARIFY", "", "CLARIFY")
     legacy = _judge_badge(case, env)
     expect = str(case.get("expect") or "l0").lower()

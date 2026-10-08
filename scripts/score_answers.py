@@ -429,10 +429,13 @@ def judge(env: dict[str, Any], expected: list[tuple[str, float]]) -> tuple[str, 
     outcome is one of: clarify | abstained | correct | WRONG
     Only 'correct' and 'WRONG' touch precision. 'abstained' costs coverage
     only - refusing is always allowed, being confidently wrong never is.
-    A clarify reply is neither served nor abstained.
+    A clarify reply is neither served nor abstained. ``none_fits`` is the same.
     """
-    if str(env.get("status") or "") == "clarify":
-        return "clarify", str(env.get("question") or env.get("text") or "")[:120]
+    from score_curated import clarify_unanswered
+
+    if clarify_unanswered(env):
+        detail = str(env.get("question") or env.get("text") or env.get("option_id") or "")
+        return "clarify", detail[:120]
     if env.get("abstained"):
         return "abstained", str(env.get("text") or "")[:120]
 
