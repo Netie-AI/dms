@@ -38,7 +38,13 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
     typed_query_plan,
 )
-from cortex_client.qualifiers import unhonored_qualifier_reason
+from cortex_client.qualifiers import (
+    parse_rank_window,
+    rank_window_group,
+    rank_window_measure,
+    rank_window_shape_reason,
+    unhonored_qualifier_reason,
+)
 
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
@@ -102,6 +108,9 @@ PLAN_SOURCES = frozenset(
 NOTE_INSIGHTS_RANKING = "insights_ranking:ontology_plan"
 NOTE_FALLBACK_GENERATE_EMPTY = "fallback:generate_empty"
 NOTE_FALLBACK_VALIDATE_PREFIX = "fallback:validate:"
+NOTE_RANK_WINDOW = "rank_window:deterministic_compile (no generate call)"
+_ENTITY_NOUN = {"sku": "SKUs", "supplier": "suppliers", "category": "categories",
+                "warehouse": "warehouses", "plant": "plants"}
 # Cortex#269 ROUTER-1 Insights fingerprint. Copy as received; never infer.
 SETUP_FIELD_KEYS: tuple[str, ...] = (
     "served_provider",
@@ -322,6 +331,7 @@ class QueryPlan:
     via: dict[str, str] | None = None
     limit: int | None = 50
     keep_gt: float | None = None
+    offset: int | None = None
 
 
 def ontology_catalog(onto: Ontology) -> dict[str, Any]:
@@ -599,6 +609,9 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
     lim = int(limit) if isinstance(limit, int) else 50
     keep_raw = raw.get("keep_gt")
     keep_gt = float(keep_raw) if isinstance(keep_raw, (int, float)) else None
+    # Offset 0 is no window; a negative one reaches compile and is refused there.
+    off_raw = raw.get("offset")
+    offset = off_raw if type(off_raw) is int and off_raw != 0 else None
     return QueryPlan(
         measure=measure,
         group_by=group_by,
@@ -606,6 +619,7 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
         via=via,
         limit=lim,
         keep_gt=keep_gt,
+        offset=offset,
     )
 
 
@@ -713,9 +727,11 @@ def _l2_envelope(
     coverage: Coverage | None = None,
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
+    lead: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
-    text = f"Found {len(out_rows)} row(s)."
+    text = f"{lead}\n" if lead else ""
+    text += f"Found {len(out_rows)} row(s)."
     if out_rows:
         text += "\n" + "\n".join(
             "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
@@ -784,6 +800,7 @@ def _submit_validated(
     where_paths: Sequence[WherePath] = (),
     warehouse: Path | None = None,
     plan_origin: str = "",
+    lead: str = "",
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -879,6 +896,7 @@ def _submit_validated(
         coverage=coverage,
         where_paths=where_paths,
         plan_origin=plan_origin,
+        lead=lead,
     )
 
 
@@ -1005,6 +1023,81 @@ def _try_multi_grain_envelope(
     )
 
 
+def rank_window_ask(
+    q: str,
+    *,
+    onto: Ontology | None,
+    allowed: set[str],
+    lake: Path | None,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+) -> dict[str, Any] | None:
+    """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
+
+    Grammar parse + verified ontology compile, then the shared Cortex submit
+    and ledger path. Does not call bind_plan, intent_slots,
+    ontology_plan_from_ranking or slots_for_measure. None only when the ask
+    is not a rank window and has no stray digit outside a top/next/ranks
+    span, or it is a clean window but no verified ontology is loaded. A
+    window with a filter, a second noun, a leftover number, no limit or no
+    measure word abstains here, so it never reaches Insights. plan_source is
+    ``other``: neither Cortex nor keyword bind produced this plan.
+    """
+
+    def _no(reason: str) -> dict[str, Any]:
+        return _abstain(
+            q, reason, space_id=space_id, session_id=session_id,
+            plan_source=PLAN_SOURCE_OTHER, notes=(NOTE_RANK_WINDOW,),
+        )
+
+    # Shape covers offset windows and a top/next/ranks phrase whose only
+    # problem is a digit outside that phrase. Abstain before Insights either way.
+    win = parse_rank_window(q)
+    shape = rank_window_shape_reason(q)
+    if shape:
+        return _no(shape)
+    if win is None:
+        return None
+    if onto is None or not onto.verified:
+        return None
+    pair = rank_window_group(win)
+    if pair is None:
+        return _no("rank_window_unhandled_terms:no_entity")
+    specs = {name: m.description or "" for name, m in onto.measures.items()}
+    measure, why, reading = rank_window_measure(q, specs)
+    if why or measure is None:
+        return _no(why or "unknown_measure")
+    if win.limit is None:
+        return _no("rank_window_open_ended")
+    compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
+    if isinstance(compiled, Refusal):
+        return _no(f"{compiled.reason}: {compiled.detail}")
+    bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    if bad:
+        return _no(f"validate:{bad}")
+    noun = _ENTITY_NOUN.get(str(win.entity), str(win.entity))
+    lead = (
+        f"Ranks {win.label} of {noun}; ranks 1-{win.offset} are excluded. "
+        f"{reading[:1].upper()}{reading[1:]}."
+    )
+    return _submit_validated(
+        compiled.sql,
+        question=q,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+        notes=(*compiled.notes, NOTE_RANK_WINDOW, f"measure: {reading}"),
+        plan_source=PLAN_SOURCE_OTHER,
+        measure=measure,
+        coverage=compiled.coverage,
+        warehouse=lake,
+        lead=lead,
+    )
+
+
 def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
     """Compile a plan that does not touch a failed subject (A2-06).
 
@@ -1021,6 +1114,7 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
         filters=plan.filters,
         via=plan.via,
         limit=plan.limit,
+        offset=plan.offset,
     )
 
 
@@ -1130,6 +1224,13 @@ def maybe_generative_ask(
                 declared = onto
                 onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
+    ranked_env = rank_window_ask(
+        q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
+        session_id=session_id, submit=submit, ledger_append=ledger_append,
+    )
+    if ranked_env is not None:
+        ranked_env["generate_legs"] = generate_legs_view(None)
+        return with_served_attribution(ranked_env, None)
     # Short retrieved context only -- not the full ontology dump.
     ctx = retrieve_short_context(
         q, warehouse=lake, grantable=allowed, ontology=onto

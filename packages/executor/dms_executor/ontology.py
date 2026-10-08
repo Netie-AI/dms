@@ -1361,8 +1361,12 @@ class Ontology:
         via: dict[str, str] | None = None,
         order_desc: bool = True,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> CompiledQuery | Refusal:
         """Turn a typed request into SQL that cannot inflate the measure.
+
+        ``offset`` skips the first n ranks. It adds a group-key tiebreak to
+        ORDER BY so "ranks 4-8" names the same rows on every run.
 
         ``group_by`` and ``filters`` are (object, column, ...) tuples. The model
         - or the UI - fills slots. It never writes SQL, which is Palantir's
@@ -1540,13 +1544,22 @@ class Ontology:
             sql += "\n" + "\n".join(joins)
         if where:
             sql += "\nWHERE " + "\n  AND ".join(where)
+        if offset is not None and (int(offset) < 0 or not group_keys):
+            return Refusal(
+                "bad_offset",
+                f"offset {offset!r} needs a non-negative value and a ranked group_by",
+            )
         if group_keys:
             sql += "\nGROUP BY " + ", ".join(group_keys)
             sql += f"\nORDER BY {_ident(m.name)} {'DESC' if order_desc else 'ASC'}"
+            if offset is not None:
+                sql += "".join(f", {k} ASC" for k in group_keys)
         if limit is not None:
             if int(limit) < 0:
                 return Refusal("bad_limit", f"limit {limit!r} is negative")
             sql += f"\nLIMIT {int(limit)}"
+        if offset is not None:
+            sql += (" " if limit is not None else "\n") + f"OFFSET {int(offset)}"
         where_paths = self._ranked_where_paths_for(m.grain, group_by, filters, via)
         if where_paths:
             notes.extend(
@@ -1561,6 +1574,8 @@ class Ontology:
             existential=existential,
             limit=limit,
             sql=sql,
+            offset=offset,
+            order_desc=order_desc,
         )
         if not coverage_valid(coverage):
             return Refusal(
@@ -1769,6 +1784,8 @@ def _query_coverage(
     existential: bool,
     limit: int | None,
     sql: str,
+    offset: int | None = None,
+    order_desc: bool = True,
 ) -> Coverage:
     """Include / exclude / unsure for one compiled number. No silent pad."""
     include = [f"grain={measure.grain}", f"measure={measure.name}"]
@@ -1785,6 +1802,14 @@ def _query_coverage(
         exclude.append("txn_type not in (OUT, outbound)")
     if "ADJUST" in (measure.description or "").upper():
         exclude.append("ADJUST unsigned and excluded")
+    if offset is not None:
+        n = int(offset)
+        last = f"{n + int(limit)}" if limit is not None else "end"
+        include.append(
+            f"ranks {n + 1}..{last} by {measure.name} "
+            f"{'DESC' if order_desc else 'ASC'}, ties broken by group key ASC"
+        )
+        exclude.append(f"ranks 1..{n} excluded (OFFSET {n})")
     if limit is not None:
         exclude.append(f"rows beyond LIMIT {int(limit)} not returned")
     # A calendar/group pad would fill missing keys with 0. This compiler
