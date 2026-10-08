@@ -3,6 +3,11 @@
 Steward-registered, not Cortex pack YAML. Match is exact normalize plus
 synonyms stored on the asset — not a product regex cascade (VQ-01 owns pack
 match). Leading underscore hides the table from Library listings.
+
+Every read goes through ``_rows_for_space``, which applies
+``filter_retrieved_rows``. A future few-shot lookup must use that helper
+(or call ``filter_retrieved_rows`` on the rows it loaded). Writes from a
+listed scored pack raise ``scored_pack_write_blocked``.
 """
 
 from __future__ import annotations
@@ -23,6 +28,11 @@ from dms_executor.demo_grants import canonical_space_id
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+from dms_executor.skills_quarantine import (
+    canonical_pack_hash,
+    filter_retrieved_rows,
+    reject_scored_write,
+)
 
 #: Leading underscore keeps this out of list_bronze_tables / Library tree.
 _TABLE = "main._verified_queries"
@@ -71,10 +81,24 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
           question_norm VARCHAR NOT NULL,
           sql_text VARCHAR NOT NULL,
           synonyms_json VARCHAR NOT NULL,
-          created_at TIMESTAMPTZ
+          created_at TIMESTAMPTZ,
+          pack_hash VARCHAR
         )
         """
     )
+    # Tables created before pack_hash existed. CREATE IF NOT EXISTS does not
+    # add the column. NULL means no provenance: the filter fingerprints those.
+    names = {
+        str(row[0]).lower()
+        for row in con.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = '_verified_queries'
+            """
+        ).fetchall()
+    }
+    if "pack_hash" not in names:
+        con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN pack_hash VARCHAR")
 
 
 def _connect(path: Path | None) -> duckdb.DuckDBPyConnection:
@@ -108,7 +132,7 @@ def _synonyms_norm(raw: list[str] | None) -> list[str]:
     return out
 
 
-def _row_out(row: tuple[Any, ...]) -> dict[str, Any]:
+def _stored_row(row: tuple[Any, ...]) -> dict[str, Any]:
     created = row[6]
     created_s = created.isoformat() if hasattr(created, "isoformat") else str(created)
     syn = json.loads(row[5] or "[]")
@@ -116,10 +140,43 @@ def _row_out(row: tuple[Any, ...]) -> dict[str, Any]:
         "asset_id": row[0],
         "space_id": row[1],
         "question": row[2],
+        "question_norm": row[3],
         "sql": row[4],
         "synonyms": syn if isinstance(syn, list) else [],
         "created_at": created_s,
+        "pack_hash": row[7],
     }
+
+
+def _public_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "asset_id": row["asset_id"],
+        "space_id": row["space_id"],
+        "question": row["question"],
+        "sql": row["sql"],
+        "synonyms": row["synonyms"],
+        "created_at": row["created_at"],
+    }
+
+
+def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
+    """Load one Space, then drop scored-pack rows. The only SELECT."""
+    con = _connect(db)
+    try:
+        _ensure(con)
+        raw = con.execute(
+            f"""
+            SELECT asset_id, space_id, question, question_norm, sql_text,
+                   synonyms_json, created_at, pack_hash
+            FROM {_TABLE}
+            WHERE space_id = ?
+            ORDER BY created_at DESC
+            """,
+            [sid],
+        ).fetchall()
+    finally:
+        con.close()
+    return filter_retrieved_rows(_stored_row(row) for row in raw)
 
 
 def register_verified_query(
@@ -128,6 +185,7 @@ def register_verified_query(
     question: str,
     sql: str,
     synonyms: list[str] | None = None,
+    pack_hash: str | None = None,
     path: Path | None = None,
 ) -> dict[str, Any]:
     """Persist a Space-scoped Q→SQL asset after hostile + grant checks."""
@@ -151,6 +209,11 @@ def register_verified_query(
         raise ValueError(f"sql_not_in_space:{','.join(sorted(leaked))}")
     qn = normalize_verified_question(q)
     syn = _synonyms_norm(synonyms)
+    carried = canonical_pack_hash(pack_hash)
+    # Before DELETE: a blocked rewrite must not drop the row already stored.
+    reject_scored_write(
+        {"question": q, "question_norm": qn, "synonyms": syn, "pack_hash": carried}
+    )
     asset_id = f"vq_{uuid.uuid4().hex[:16]}"
     created = datetime.now(UTC)
     with _LOCK:
@@ -164,10 +227,11 @@ def register_verified_query(
             con.execute(
                 f"""
                 INSERT INTO {_TABLE}
-                  (asset_id, space_id, question, question_norm, sql_text, synonyms_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                  (asset_id, space_id, question, question_norm, sql_text,
+                   synonyms_json, created_at, pack_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [asset_id, sid, q, qn, sql_text, json.dumps(syn), created],
+                [asset_id, sid, q, qn, sql_text, json.dumps(syn), created, carried],
             )
         finally:
             con.close()
@@ -184,30 +248,16 @@ def register_verified_query(
 def list_verified_queries(*, space_id: str, path: Path | None = None) -> list[dict[str, Any]]:
     sid = scope_key(space_id)
     db = path or warehouse_path()
-    con = _connect(db)
-    try:
-        _ensure(con)
-        rows = con.execute(
-            f"""
-            SELECT asset_id, space_id, question, question_norm, sql_text, synonyms_json, created_at
-            FROM {_TABLE}
-            WHERE space_id = ?
-            ORDER BY created_at DESC
-            """,
-            [sid],
-        ).fetchall()
-    finally:
-        con.close()
-    return [_row_out(r) for r in rows]
+    return [_public_row(row) for row in _rows_for_space(db, sid)]
 
 
-def _hit(question: str, row: tuple[Any, ...]) -> bool:
+def _hit(question: str, row: dict[str, Any]) -> bool:
     qn = normalize_verified_question(question)
     if not qn:
         return False
-    if row[3] == qn:
+    if row.get("question_norm") == qn:
         return True
-    syn = json.loads(row[5] or "[]")
+    syn = row.get("synonyms") or []
     return qn in syn if isinstance(syn, list) else False
 
 
@@ -224,23 +274,10 @@ def lookup_verified_query(
         return None
     sid = scope_key(space_id)
     db = warehouse or warehouse_path()
-    con = _connect(db)
-    try:
-        _ensure(con)
-        rows = con.execute(
-            f"""
-            SELECT asset_id, space_id, question, question_norm, sql_text, synonyms_json, created_at
-            FROM {_TABLE}
-            WHERE space_id = ?
-            """,
-            [sid],
-        ).fetchall()
-    finally:
-        con.close()
-    match = next((r for r in rows if _hit(question, r)), None)
+    match = next((row for row in _rows_for_space(db, sid) if _hit(question, row)), None)
     if match is None:
         return None
-    sql_text = str(match[4])
+    sql_text = str(match["sql"])
     allowed = grantable if grantable is not None else _grantable(space_id, db)
     if _sql_outside_space(sql_text, allowed):
         return None
@@ -248,7 +285,7 @@ def lookup_verified_query(
         reject_hostile_chat_sql(sql_text)
     except SecurityEvent:
         return None
-    return {"asset_id": str(match[0]), "sql": sql_text}
+    return {"asset_id": str(match["asset_id"]), "sql": sql_text}
 
 
 def rows_from_submit_result(result: Any) -> list[dict[str, Any]]:
