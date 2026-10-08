@@ -645,8 +645,8 @@ def test_offline_prove_path_is_bind_plan_not_cortex_ai() -> None:
         if row["generative"] in {"OK", "LAYER"}
     ]
     assert answered
-    # "List chemicals in inventory" is a grammar list (ontology_plan).
-    # Every other answered row is still the offline bind_plan compute.
+    # GEN-INTENT-01: cq_chemicals_list, ops_chemicals_list are the grammar
+    # list (ontology_plan, LAYER). Every other answered row stays bind_plan.
     grammar_list = {"cq_chemicals_list", "ops_chemicals_list"}
     for row in answered:
         if row["id"] in grammar_list:

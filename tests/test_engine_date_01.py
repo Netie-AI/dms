@@ -325,6 +325,7 @@ def test_ab_offline_counts_unchanged(
         )
 
     assert quint(exact) == (0, 23, 29, 0, 0)
+    # GEN-INTENT-01: cq_chemicals_list, ops_chemicals_list moved WRONG -> LAYER.
     assert quint(gen) == (0, 28, 11, 13, 0)
     assert exact["invalid"] == 0
     assert gen["invalid"] == 0

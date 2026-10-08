@@ -1105,6 +1105,7 @@ def test_ab_offline_counts_unchanged(
     exact_counts = [exact[key] for key in keys]
     gen_counts = [gen[key] for key in keys]
     assert exact_counts == [0, 23, 29, 0, 0]
+    # GEN-INTENT-01: cq_chemicals_list, ops_chemicals_list moved WRONG -> LAYER.
     assert gen_counts == [0, 28, 11, 13, 0]
     assert exact["n"] == 52
     assert gen["n"] == 52

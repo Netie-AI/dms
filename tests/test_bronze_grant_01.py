@@ -339,6 +339,7 @@ def test_pack_counts_stay_unchanged(
     gen = report["generative"]
     keys = ("ok", "layer", "abstain", "wrong", "oracle_error")
     assert [exact[key] for key in keys] == [0, 23, 29, 0, 0]
+    # GEN-INTENT-01: cq_chemicals_list, ops_chemicals_list moved WRONG -> LAYER.
     assert [gen[key] for key in keys] == [0, 28, 11, 13, 0]
     assert exact["invalid"] == 0
     assert gen["invalid"] == 0
