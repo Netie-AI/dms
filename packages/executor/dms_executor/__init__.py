@@ -237,6 +237,9 @@ class Executor:
         )
 
     def close(self) -> None:
+        from dms_executor.schema_context import stop_index_builds
+
+        stop_index_builds()
         self._minter.close()
         self._bound_sessions.clear()
         self._turns.clear()

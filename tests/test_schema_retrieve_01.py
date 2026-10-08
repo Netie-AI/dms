@@ -1007,10 +1007,11 @@ def test_show_ali_sends_the_typed_span() -> None:
         "show Ali",
         _people("Ali", "Mina Cole", "Jon Pell"),
     ).prompt
-    assert "person.rep = Ali" in prompt
+    assert "person.rep = Ali" not in prompt
+    assert "Ali" not in prompt
     assert "Mina Cole" not in prompt
     assert "Jon Pell" not in prompt
-    assert "FILTER HINTS" in prompt
+    assert "FILTER HINTS" not in prompt
 
 
 def test_show_ali_bang_keeps_the_question_characters() -> None:
@@ -1018,8 +1019,10 @@ def test_show_ali_bang_keeps_the_question_characters() -> None:
         "show ALI!",
         _people("Ali", "Mina Cole", "Jon Pell"),
     ).prompt
-    assert "person.rep = ALI!" in prompt
+    assert "person.rep = ALI!" not in prompt
     assert "person.rep = Ali" not in prompt
+    assert "FILTER HINTS" not in prompt
+    assert "Ali" not in prompt
 
 
 def test_list_chemicals_in_stock_sends_the_typed_span() -> None:
@@ -1051,10 +1054,13 @@ def test_longer_granted_value_blocks_the_short_span() -> None:
 
 
 def test_show_ali_bin_hints_when_ali_is_the_only_value() -> None:
-    """Honest case: no longer granted value, so the unigram is the longest match."""
+    """A one-word person value sends nothing, even when it is the only cell."""
     prompt = build_schema_context("show ali bin", _people("Ali")).prompt
-    assert "person.rep = ali" in prompt
+    assert "FILTER HINTS" not in prompt
+    assert "person.rep = ali" not in prompt
     assert "person.rep = Ali" not in prompt
+    assert "Ali" not in prompt
+    assert "ali" not in prompt
 
 
 def test_stubbed_model_span_cannot_create_a_hint() -> None:
@@ -1075,6 +1081,38 @@ def test_stubbed_model_span_cannot_create_a_hint() -> None:
     assert "ali" not in prompt
 
 
+def test_show_nora_on_opaque_columns_sends_no_hint() -> None:
+    attr = build_schema_context(
+        "show Nora Voss",
+        _one_table(_text_column("attr_8", ["Nora Voss"], distinct=40)),
+    ).prompt
+    assert "FILTER HINTS" not in attr
+    assert "Nora Voss" not in attr
+    assert "samples=" not in attr
+    field = build_schema_context(
+        "show Nora Voss",
+        _one_table(
+            _text_column("field_z", ["Nora Voss"], distinct=8, description="contact")
+        ),
+    ).prompt
+    assert "FILTER HINTS" not in field
+    assert "Nora Voss" not in field
+    assert "samples=" not in field
+    assert "description=contact" in field
+
+
+def test_low_cardinality_names_send_no_hint() -> None:
+    names = ["Nora Voss", "Mina Cole", "Jon Pell", "Ada Quinn", "Ruth Hale"]
+    prompt = build_schema_context(
+        "show Nora Voss",
+        _one_table(_text_column("rep", names, distinct=5)),
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "samples=" not in prompt
+    for name in names:
+        assert name not in prompt
+
+
 def test_envelope_masks_hint_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1088,8 +1126,10 @@ def test_envelope_masks_hint_values(
     con = duckdb.connect(str(serving))
     con.execute("CREATE TABLE person (rep VARCHAR)")
     con.execute("INSERT INTO person VALUES ('Ali'), ('Mina Cole'), ('Jon Pell')")
+    con.execute("CREATE TABLE item (category VARCHAR)")
+    con.execute("INSERT INTO item VALUES ('CHEMICALS')")
     con.close()
-    assert build_space_index(serving, "space-ali", {"person"}, "mysql") == ""
+    assert build_space_index(serving, "space-ali", {"person", "item"}, "mysql") == ""
     onto = Ontology()
     onto.verified = True
     monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
@@ -1102,9 +1142,9 @@ def test_envelope_masks_hint_values(
         return {"unsure": True}
 
     env = maybe_generative_ask(
-        "show Ali",
+        "list chemicals in stock",
         warehouse=serving,
-        grantable={"person"},
+        grantable={"person", "item"},
         ontology=onto,
         compute=_compute,
         submit=lambda _sql: None,
@@ -1118,28 +1158,113 @@ def test_envelope_masks_hint_values(
     assert "Ali" not in blob
     assert "Mina Cole" not in blob
     assert "Jon Pell" not in blob
+    assert "CHEMICALS" not in blob
+    assert "chemicals" not in env["schema_context"]
     assert "DMSHINT_" in env["schema_context"]
-    assert "person.rep = Ali" in seen["ctx"]["schema_context"]
+    prompt = seen["ctx"]["schema_context"]
+    assert "item.category = chemicals" in prompt
+    assert "Ali" not in prompt
+    assert "person.rep = Ali" not in prompt
     assert "_schema_context_envelope" not in seen["ctx"]
     receipt = json.dumps(env.get("audit_receipt"))
     assert "Ali" not in receipt
+    assert "CHEMICALS" not in receipt
     assert "Ali" not in caplog.text
     assert "Ali" not in json.dumps(ledger)
     stored = snapshot_turn(env)
     assert stored is None or "Ali" not in json.dumps(stored)
     body = _insights_body(
-        "show Ali",
+        "list chemicals in stock",
         session_id="sess-ali",
         space_id="space-ali",
         ontology=seen["ctx"],
     )
-    assert "person.rep = Ali" in body["schema_context"]
+    assert "item.category = chemicals" in body["schema_context"]
+    assert "Ali" not in body["schema_context"]
     rest = {
         key: value
         for key, value in body.items()
         if key not in {"schema_context", "question", "intent"}
     }
     assert "Ali" not in json.dumps(rest)
+    assert "CHEMICALS" not in json.dumps(rest)
+
+
+def test_index_file_has_no_raw_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import duckdb
+
+    serving = tmp_path / "people.duckdb"
+    con = duckdb.connect(str(serving))
+    con.execute(
+        "CREATE TABLE person (rep VARCHAR, email VARCHAR, passport_no VARCHAR)"
+    )
+    con.execute(
+        "INSERT INTO person VALUES "
+        "('Ali', 'ada.secret@example.com', 'A12345678'), "
+        "('Mina Cole', 'mina.secret@example.com', 'B12345678'), "
+        "('Jon Pell', 'jon.secret@example.com', 'C12345678')"
+    )
+    con.execute("CREATE TABLE item (category VARCHAR)")
+    con.execute("INSERT INTO item VALUES ('CHEMICALS')")
+    con.close()
+    assert build_space_index(serving, "space-ali", {"person", "item"}, "mysql") == ""
+    folder = Path(str(serving) + ".schema_index")
+    files = sorted(folder.rglob("*"))
+    assert files
+    blob = "\n".join(
+        path.read_text(encoding="utf-8") for path in files if path.is_file()
+    )
+    for raw in (
+        "Ali",
+        "Mina Cole",
+        "Jon Pell",
+        "Nora Voss",
+        "ada.secret@example.com",
+        "mina.secret@example.com",
+        "jon.secret@example.com",
+        "A12345678",
+        "CHEMICALS",
+    ):
+        assert raw not in blob
+    mem = cached_value_index("space-ali")
+    assert "Ali" not in json.dumps(mem)
+    assert "Mina Cole" not in json.dumps(mem)
+    assert mem["item.category"] == ("CHEMICALS",)
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    ctx = prepare_generate_context(
+        {},
+        question="list chemicals in stock",
+        serving=serving,
+        grantable={"person", "item"},
+        space_id="space-ali",
+        dialect="mysql",
+    )
+    assert "item.category = chemicals" in ctx["schema_context"]
+    assert "Ali" not in ctx["schema_context"]
+    assert "FILTER HINTS" in ctx["schema_context"]
+
+
+def test_index_build_thread_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import duckdb
+    from dms_executor.schema_context import schedule_index_build, stop_index_builds
+
+    serving = tmp_path / "people.duckdb"
+    con = duckdb.connect(str(serving))
+    con.execute("CREATE TABLE person (rep VARCHAR)")
+    con.execute("INSERT INTO person VALUES ('ONLYSPACEA')")
+    con.close()
+    monkeypatch.setattr(
+        "dms_executor.schema_context.build_space_index",
+        lambda *_args, **_kwargs: "",
+    )
+    schedule_index_build(serving, "space-stop", {"person"}, "mysql", "fp-stop")
+    stop_index_builds()
+    assert not any(
+        worker.is_alive() and worker.name == "schema-index"
+        for worker in threading.enumerate()
+    )
 
 
 def test_show_ali_bin_with_longer_value_sends_nothing() -> None:
@@ -1158,9 +1283,10 @@ def test_sales_by_ali_bin_abu_sends_the_long_typed_span() -> None:
         "sales by ali bin abu",
         _people("Ali", "Ali bin Abu"),
     ).prompt
-    hints = [line for line in prompt.splitlines() if line.startswith("- person.rep")]
-    assert hints == ["- person.rep = ali bin abu"]
+    assert "FILTER HINTS" not in prompt
+    assert "ali bin abu" not in prompt
     assert "Ali bin Abu" not in prompt
+    assert "Ali" not in prompt
 
 
 def test_chemicals_hint_survives_a_loaded_ontology() -> None:
@@ -1228,7 +1354,9 @@ def test_long_party_hint_survives_a_loaded_ontology() -> None:
         },
         ontology={"measures": measures},
     ).prompt
-    assert "party.name = Delta Logistics Co" in prompt
+    assert "party.name = Delta Logistics Co" not in prompt
+    assert "Delta Logistics Co" not in prompt
+    assert "FILTER HINTS" not in prompt
     assert "MEASURES" in prompt
 
 
@@ -1301,25 +1429,25 @@ def test_index_total_cap_drops_the_overflow_column(
     monkeypatch.setattr("dms_executor.schema_context.INDEX_TOTAL_CAP", 2)
     caplog.set_level(logging.WARNING, logger="dms_executor.schema_context")
     prompt = build_schema_context(
-        "show Alpha",
+        "show ALPHA",
         {
             "datasets": [
                 {
                     "name": "person",
                     "columns": [
-                        _text_column("rep", ["Alpha"], distinct=1),
-                        _text_column("other", ["Beta", "Gamma"], distinct=2),
+                        _text_column("rep", ["ALPHA"], distinct=1),
+                        _text_column("other", ["BETA", "GAMMA"], distinct=2),
                     ],
                 }
             ]
         },
         space_id="space-total-cap",
     ).prompt
-    assert "person.rep = Alpha" in prompt
-    assert "Beta" not in prompt
+    assert "person.rep = ALPHA" in prompt
+    assert "BETA" not in prompt
     assert "schema_index_cap" in caplog.text
     cached = cached_value_index("space-total-cap")
-    assert cached["person.rep"] == ("Alpha",)
+    assert cached["person.rep"] == ("ALPHA",)
     assert "person.other" not in cached
 
 

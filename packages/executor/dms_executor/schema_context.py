@@ -22,16 +22,22 @@ granted values. Only the longest matching span is kept. If that span is a
 strict prefix or substring of any other granted value in the column, no
 hint is sent. The model prompt shows the question's own characters for
 that span, not the stored casing. A model span is never consulted.
-Fuzzy or partial hints exist only for a tagged column, and those
-candidates are capped. Hints and the columns they cite take token budget
-before measures. The value index is built in the background when a source
-connects or its catalog fingerprint changes, and stored per Space next to
-the serving file. The ask path only looks that index up. A missing or
-failed index still answers, with catalog names and types and a named
-stamp. The model prompt is per request. Each picked table, column, and
-join carries a short reason. The customer envelope gets the same text
-with each hint value replaced by a token taken from the hint list. When
-the flag is off this module is not called.
+A hint is emitted only when the value and the column both clear the mask.
+A column the mask classifies, and a value its detectors would flag
+(including a one-word Title-Case token, which those detectors miss until
+it is repeated), sends nothing. Doubt or a mask failure sends nothing
+and the ask continues. Fuzzy or partial hints exist only for a tagged
+column, and those candidates are capped. Hints and the columns they cite
+take token budget before measures. The value index is built in the
+background when a source connects or its catalog fingerprint changes,
+and kept in memory per Space. The file next to the serving store records
+status and catalog shape only, with no cell values. The ask path only
+looks the in-memory index up. A missing or failed index still answers,
+with catalog names and types and a named stamp. The model prompt is per
+request. Each picked table, column, and join carries a short reason.
+The customer envelope gets the same text with each hint value replaced
+by a token taken from the hint list. When the flag is off this module
+is not called. The background build stops when the process shuts down.
 
 Cortex pin 279cbd85 ``InsightsAskIn`` does not read this text. The wire field
 is ``schema_context`` and leaves the box only when ``DMS_SCHEMA_CONTEXT`` is
@@ -40,6 +46,7 @@ on.
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import logging
@@ -53,7 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
-from dms_core.pii import fail_closed_mask_payload, is_mask_token
+from dms_core.pii import classify_column, fail_closed_mask_payload, is_mask_token
 
 from dms_executor.ontology import Ontology, relation_tables, table_is_granted
 
@@ -115,6 +122,11 @@ _NUM_TYPES = frozenset(
 )
 _INDEX_LOCK = threading.Lock()
 _SPACE_INDEX: dict[str, dict[str, tuple[str, ...]]] = {}
+_SPACE_SAMPLES: dict[str, dict[str, tuple[str, ...]]] = {}
+_SPACE_FP: dict[str, str] = {}
+_STOP = threading.Event()
+_WORKER_LOCK = threading.Lock()
+_WORKERS: list[threading.Thread] = []
 
 
 def estimate_tokens(text: str) -> int:
@@ -139,6 +151,40 @@ def _remember_index(space_id: str | None, index: dict[str, tuple[str, ...]]) -> 
     snap = {key: tuple(vals) for key, vals in index.items()}
     with _INDEX_LOCK:
         _SPACE_INDEX[space_id] = snap
+
+
+def _remember_built(
+    space_id: str,
+    fingerprint: str,
+    index: dict[str, tuple[str, ...]],
+    samples: dict[str, tuple[str, ...]],
+) -> None:
+    snap = {key: tuple(vals) for key, vals in index.items()}
+    held = {key: tuple(vals) for key, vals in samples.items()}
+    with _INDEX_LOCK:
+        _SPACE_INDEX[space_id] = snap
+        _SPACE_SAMPLES[space_id] = held
+        _SPACE_FP[space_id] = fingerprint
+
+
+def _forget_index(space_id: str) -> None:
+    with _INDEX_LOCK:
+        _SPACE_INDEX.pop(space_id, None)
+        _SPACE_SAMPLES.pop(space_id, None)
+        _SPACE_FP.pop(space_id, None)
+
+
+def _space_fingerprint(space_id: str) -> str:
+    with _INDEX_LOCK:
+        return _SPACE_FP.get(space_id, "")
+
+
+def _space_samples(space_id: str) -> dict[str, tuple[str, ...]]:
+    with _INDEX_LOCK:
+        found = _SPACE_SAMPLES.get(space_id)
+        if not found:
+            return {}
+        return {key: tuple(vals) for key, vals in found.items()}
 
 
 @dataclass(frozen=True)
@@ -552,18 +598,90 @@ def _hint_blocked(folded: str, others: Sequence[str]) -> bool:
     return any(folded != other and folded in other for other in others)
 
 
+def _mask_would_flag(value: str) -> bool:
+    """True when the mask's own detectors would not leave ``value`` raw.
+
+    ``classify_column`` on a free-text column runs those detectors. The
+    name detector needs two Title-Case words, so a one-word token is
+    repeated and shown to the same call. That is the mask's miss, not a
+    name list. An exception is doubt.
+    """
+    text = " ".join(str(value).split())
+    if not text or is_mask_token(text):
+        return False
+    try:
+        if classify_column("note", [text]) is not None:
+            return True
+        return classify_column("note", [f"{text} {text}"]) is not None
+    except Exception:  # noqa: BLE001 -- doubt: send no hint
+        return True
+
+
+def _hint_column_blocked(
+    table: str,
+    column: str,
+    values: Sequence[str],
+    description: str,
+) -> bool:
+    """True when this column must not contribute a filter hint."""
+    try:
+        if classify_column(column, list(values), table=table) is not None:
+            return True
+        if description and classify_column(description, (), table=table) is not None:
+            return True
+    except Exception:  # noqa: BLE001 -- doubt: send no hint
+        return True
+    return any(_mask_would_flag(value) for value in values)
+
+
+def _hint_value_cleared(table: str, column: str, emitted: str, stored: str) -> bool:
+    """True when the emitted span and the stored cell both clear the mask."""
+    if _mask_would_flag(emitted) or _mask_would_flag(stored):
+        return False
+    key = f"{table}.{column}"
+    try:
+        masked = fail_closed_mask_payload(
+            text=emitted,
+            rows=[{key: stored}],
+            values=[emitted],
+        )
+    except Exception:  # noqa: BLE001 -- doubt: send no hint
+        return False
+    if not isinstance(masked, dict) or masked.get("text") != emitted:
+        return False
+    if is_mask_token(emitted):
+        return False
+    rows = masked.get("rows")
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], dict)
+        or rows[0].get(key) != stored
+        or is_mask_token(str(rows[0].get(key)))
+    ):
+        return False
+    vals = masked.get("values")
+    return isinstance(vals, list) and len(vals) == 1 and vals[0] == emitted
+
+
 def _hint_values(
     spans: Sequence[tuple[int, str, str]],
     values: Sequence[str],
     *,
     tagged: bool,
+    table: str,
+    column: str,
+    description: str = "",
 ) -> list[tuple[str, bool, str]]:
     """Prompt text for each hint. Untagged text is the question's own slice.
 
     Untagged: exact fold only, longest span only, and nothing when that
     span sits inside another granted value. Tagged: capped fuzzy, stored
-    text. A model span is not an input.
+    text. A model span is not an input. A value the mask would flag, or
+    a column it classifies, is not a hint.
     """
+    if _hint_column_blocked(table, column, values, description):
+        return []
     groups: dict[str, list[str]] = {}
     for raw in values:
         folded = _normalize(raw)
@@ -587,6 +705,9 @@ def _hint_values(
                 continue
             if _hint_blocked(folded, folds):
                 continue
+            held = groups.get(folded) or []
+            if len(held) != 1 or not _hint_value_cleared(table, column, original, held[0]):
+                continue
             seen.add(folded)
             chosen.append((original, False, f"s{idx}"))
         return chosen
@@ -608,6 +729,8 @@ def _hint_values(
         fuzzy_matches.sort(key=lambda item: (_normalize(item[0]), item[0]))
         for value, fuzzy in fuzzy_matches[:HINT_CANDIDATE_CAP]:
             if value in seen:
+                continue
+            if not _hint_value_cleared(table, column, value, value):
                 continue
             seen.add(value)
             chosen.append((value, fuzzy, f"s{idx}"))
@@ -1114,7 +1237,14 @@ def build_schema_context(
             slots.append((f"{table}.__table__", table_desc))
             slot_meta.append(("table", table))
         description = _mask_known(str(item["description"]), known)
-        hints = _hint_values(spans, index.get(key, ()), tagged=bool(item["tagged"]))
+        hints = _hint_values(
+            spans,
+            index.get(key, ()),
+            tagged=bool(item["tagged"]),
+            table=table,
+            column=name,
+            description=str(item["description"]),
+        )
         item["hints"] = hints
         if description:
             slots.append((key, description))
@@ -1271,13 +1401,29 @@ def _load_record(serving: Path, space_id: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
+def _disk_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Status and catalog shape only. Cell values never reach the file."""
+
+    def _strip(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {
+                key: ([] if key in {"values", "samples"} else _strip(val))
+                for key, val in node.items()
+            }
+        if isinstance(node, list):
+            return [_strip(item) for item in node]
+        return node
+
+    return _strip(dict(payload))
+
+
 def _save_record(serving: Path, space_id: str, payload: Mapping[str, Any]) -> None:
     path = _serving_file(serving, space_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    # The prompt log stays off disk. This file is the Space index.
+    # The prompt log stays off disk. This file is status and catalog shape.
     with tmp.open("w", encoding="utf-8") as handle:
-        handle.write(json.dumps(dict(payload), sort_keys=True))
+        handle.write(json.dumps(_disk_payload(payload), sort_keys=True))
     tmp.replace(path)
 
 
@@ -1315,10 +1461,15 @@ def _bounded_read(con: Any, table: str, column: str, limit: int) -> list[str]:
     ]
 
 
-def _stored_values(values: Sequence[str]) -> list[str]:
-    """Mask before anything is written into the Space index."""
+def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[str]:
+    """Keep a cell in memory only when the mask clears it. Tokens stay; raw names do not."""
     listed = [value for value in values if value]
     if not listed:
+        return []
+    try:
+        if classify_column(column, listed, table=table) is not None:
+            return []
+    except Exception:  # noqa: BLE001 -- doubt: store nothing from this column
         return []
     masked = _mask_slots([(f"v{i}", value) for i, value in enumerate(listed)])
     if masked is None:
@@ -1326,7 +1477,12 @@ def _stored_values(values: Sequence[str]) -> list[str]:
     out: list[str] = []
     for raw, got in zip(listed, masked, strict=True):
         text = " ".join(got.split())
-        if text and (_cleared(raw, got) or is_mask_token(text)):
+        if not text:
+            continue
+        if is_mask_token(text):
+            out.append(text)
+            continue
+        if _cleared(raw, got) and not _mask_would_flag(raw):
             out.append(text)
     return out
 
@@ -1436,6 +1592,7 @@ def build_space_index(
         return "index_failed:ValueError"
     fingerprint, plain = read_catalog(serving, grantable, dialect)
     if not fingerprint:
+        _forget_index(space_id)
         _save_record(
             Path(serving),
             space_id,
@@ -1461,18 +1618,18 @@ def build_space_index(
     deadline = time.monotonic() + INDEX_BUILD_BUDGET_S
     try:
         for dataset in plain["datasets"]:
-            if time.monotonic() >= deadline or rows_left < 1:
+            if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
                 break
             table = str(dataset["name"])
             con = _open_serving(Path(serving))
             try:
                 for col in dataset["columns"]:
-                    if time.monotonic() >= deadline or rows_left < 1:
+                    if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
                         break
                     take = min(SAMPLE_ROWS, rows_left)
                     got = _bounded_read(con, table, str(col["name"]), take)
                     rows_left -= len(got)
-                    stored = _stored_values(got)
+                    stored = _stored_values(got, table=table, column=str(col["name"]))
                     if _type_family(str(col.get("type") or "")) == "text":
                         col["values"] = stored[:INDEX_COLUMN_CAP]
                     else:
@@ -1481,6 +1638,7 @@ def build_space_index(
                 con.close()
     except Exception as exc:  # noqa: BLE001
         name = type(exc).__name__
+        _forget_index(space_id)
         _save_record(
             Path(serving),
             space_id,
@@ -1493,6 +1651,18 @@ def build_space_index(
         )
         _LOG.warning("schema_index_failed %s", name)
         return f"index_failed:{name}"
+    if _STOP.is_set():
+        return ""
+    values: dict[str, tuple[str, ...]] = {}
+    samples: dict[str, tuple[str, ...]] = {}
+    for dataset in plain["datasets"]:
+        table = str(dataset["name"])
+        for col in dataset["columns"]:
+            key = f"{table}.{col['name']}"
+            if col.get("values"):
+                values[key] = tuple(col["values"])
+            if col.get("samples"):
+                samples[key] = tuple(col["samples"])
     _save_record(
         Path(serving),
         space_id,
@@ -1503,11 +1673,28 @@ def build_space_index(
             "schema": plain,
         },
     )
+    _remember_built(space_id, fingerprint, values, samples)
     return ""
 
 
 _BUILD_LOCK = threading.Lock()
 _BUILDING: set[str] = set()
+
+
+def stop_index_builds(timeout: float = 5.0) -> None:
+    """Stop background index builds and wait until their DuckDB calls finish."""
+    _STOP.set()
+    with _WORKER_LOCK:
+        workers = list(_WORKERS)
+    for worker in workers:
+        if worker.ident is None and not worker.is_alive():
+            continue
+        worker.join(timeout)
+    with _WORKER_LOCK:
+        alive = [worker for worker in _WORKERS if worker.is_alive()]
+        if not alive:
+            _WORKERS.clear()
+            _STOP.clear()
 
 
 def schedule_index_build(
@@ -1517,7 +1704,9 @@ def schedule_index_build(
     dialect: str | None,
     fingerprint: str,
 ) -> None:
-    """Start a background build. Returns immediately."""
+    """Start a background build. Returns immediately. Not a daemon thread."""
+    if _STOP.is_set():
+        return
     key = f"{space_id}\n{fingerprint}"
     with _BUILD_LOCK:
         if key in _BUILDING:
@@ -1536,12 +1725,19 @@ def schedule_index_build(
 
     def _job() -> None:
         try:
-            build_space_index(serving, space_id, grantable, dialect)
+            if not _STOP.is_set():
+                build_space_index(serving, space_id, grantable, dialect)
         finally:
             with _BUILD_LOCK:
                 _BUILDING.discard(key)
 
-    threading.Thread(target=_job, name="schema-index", daemon=True).start()
+    worker = threading.Thread(target=_job, name="schema-index", daemon=False)
+    with _WORKER_LOCK:
+        _WORKERS.append(worker)
+    worker.start()
+
+
+atexit.register(stop_index_builds)
 
 
 def note_serving_source(
@@ -1563,11 +1759,43 @@ def note_serving_source(
             rec
             and rec.get("status") == "ready"
             and rec.get("fingerprint") == fingerprint
+            and _space_fingerprint(space_id) == fingerprint
         ):
             return
         schedule_index_build(Path(serving), space_id, grantable, None, fingerprint)
     except Exception:  # noqa: BLE001
         return
+
+
+def _overlay_index(
+    schema: Mapping[str, Any],
+    values: Mapping[str, Sequence[str]],
+    samples: Mapping[str, Sequence[str]],
+) -> dict[str, Any]:
+    """Catalog shape plus the in-memory cells. The file's cells are not read."""
+    out = dict(schema)
+    datasets: list[dict[str, Any]] = []
+    for dataset in schema.get("datasets") or []:
+        if not isinstance(dataset, dict):
+            continue
+        table = _text(dataset.get("name"))
+        columns: list[dict[str, Any]] = []
+        for col in dataset.get("columns") or []:
+            if not isinstance(col, dict):
+                continue
+            copied = dict(col)
+            key = f"{table}.{_text(copied.get('name'))}"
+            if _type_family(_text(copied.get("type"))) == "text":
+                if key in values:
+                    copied["values"] = list(values[key])
+            elif key in samples:
+                copied["samples"] = list(samples[key])
+            columns.append(copied)
+        item = dict(dataset)
+        item["columns"] = columns
+        datasets.append(item)
+    out["datasets"] = datasets
+    return out
 
 
 def lookup_schema(
@@ -1582,14 +1810,18 @@ def lookup_schema(
         return plain, "index_pending"
     if not fingerprint:
         return plain, "index_failed:OSError"
-    rec = _load_record(Path(serving), space_id)
-    status = str((rec or {}).get("status") or "")
-    same = (rec or {}).get("fingerprint") == fingerprint
-    if status == "ready" and same and isinstance((rec or {}).get("schema"), dict):
-        schema = dict((rec or {})["schema"])
+    if _space_fingerprint(space_id) == fingerprint:
+        schema = _overlay_index(
+            plain,
+            cached_value_index(space_id),
+            _space_samples(space_id),
+        )
         if dialect and not _text(schema.get("dialect")):
             schema["dialect"] = _dialect(dialect)
         return schema, ""
+    rec = _load_record(Path(serving), space_id)
+    status = str((rec or {}).get("status") or "")
+    same = (rec or {}).get("fingerprint") == fingerprint
     if status == "failed" and same:
         err = str((rec or {}).get("error") or "Error")
         return plain, f"index_failed:{err}"
