@@ -81,6 +81,7 @@ from dms_executor.ontology import (
     missing_join_for_ungranted,
     sql_is_aggregate,
     try_compile_multi_grain,
+    ungrounded_qualifier,
 )
 from dms_executor.semantic_retrieve import (
     bind_plan,
@@ -1258,20 +1259,40 @@ def maybe_generative_ask(
                 plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
             )
         )
-    # A category list with a token this grammar cannot predicate abstains.
-    # It does not serve the distinct list and drop the token.
+    # A category list with a token this grammar cannot predicate abstains
+    # when there is no model SQL (generate empty). On the sql path the same
+    # token must ground in the parsed statement. Measure, grain, and category
+    # words are the allow-list (sql_path_allow_words). A word that does not
+    # ground is not dropped, and the model's SQL is not served.
     _list_decision, _list_extra = category_list_decision(q)
     if _list_decision == "unhandled":
-        return _stamp(
-            _abstain(
-                q,
-                "list_unhandled_terms:" + ",".join(_list_extra),
-                space_id=space_id,
-                session_id=session_id,
-                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
-                notes=trail_notes,
+        if kind == "sql":
+            _ground_sql = query_sql_from_payload(
+                payload if isinstance(payload, dict) else None
             )
-        )
+            _ground_reason = ungrounded_qualifier(q, _ground_sql or "", onto)
+            if _ground_reason:
+                return _stamp(
+                    _abstain(
+                        q,
+                        _ground_reason,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                        notes=trail_notes,
+                    )
+                )
+        else:
+            return _stamp(
+                _abstain(
+                    q,
+                    "list_unhandled_terms:" + ",".join(_list_extra),
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                    notes=trail_notes,
+                )
+            )
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)

@@ -960,11 +960,75 @@ def served_column_sources(
     return out
 
 
+@dataclass(frozen=True)
+class SqlGrounds:
+    """Tables, columns, predicate literals, and exclusion ops from a parse.
+
+    Built by walking the sqlglot tree. Not a scan of the SQL text.
+    """
+
+    idents: frozenset[str]
+    literals: frozenset[str]
+    has_exclusion: bool
+
+
+def _literal_in_predicate(node: exp.Expression) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if isinstance(parent, (exp.Where, exp.Having, exp.Join, exp.Predicate)):
+            return True
+        parent = parent.parent
+    return False
+
+
+def _add_ident(idents: set[str], name: str) -> None:
+    for part in re.findall(r"[a-z0-9]+", (name or "").lower()):
+        idents.add(part)
+
+
+def _add_predicate_literal(literals: set[str], value: str) -> None:
+    norm = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    if norm:
+        literals.add(norm)
+
+
+def sql_grounds(sql: str) -> SqlGrounds | None:
+    """Parse ``sql`` and return grounding facts. None when it does not parse."""
+    try:
+        tree = parse_one(sql or "", read=_DIALECT)
+    except Exception:  # noqa: BLE001 — unparseable SQL grounds nothing
+        return None
+    if tree is None:
+        return None
+    idents: set[str] = set()
+    literals: set[str] = set()
+    has_exclusion = False
+    for node in tree.walk():
+        if isinstance(node, exp.Table):
+            _add_ident(idents, str(node.name or ""))
+        elif isinstance(node, exp.Column):
+            _add_ident(idents, str(node.name or ""))
+        elif isinstance(node, (exp.NEQ, exp.Except)):
+            has_exclusion = True
+        elif isinstance(node, exp.Not) and not isinstance(node.this, exp.Is):
+            # IS NOT NULL is not an exclusion of a named value.
+            has_exclusion = True
+        elif isinstance(node, exp.Literal) and _literal_in_predicate(node):
+            _add_predicate_literal(literals, str(node.this or ""))
+    return SqlGrounds(
+        idents=frozenset(idents),
+        literals=frozenset(literals),
+        has_exclusion=has_exclusion,
+    )
+
+
 __all__ = [
     "SourceColumn",
+    "SqlGrounds",
     "asked_currencies",
     "asked_currency",
     "currency_mismatch_reason",
     "is_currency_column",
     "served_column_sources",
+    "sql_grounds",
 ]

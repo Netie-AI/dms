@@ -70,6 +70,7 @@ def customer_abstain_text(reason: str) -> str:
         or gap.startswith("validate:ungranted:")
         or gap.startswith("unrequested_measure:")
         or gap.startswith("list_unhandled_terms:")
+        or gap.startswith("ungrounded_qualifier:")
     )
     if not gap or (gap_reason_name(gap) is None and not named):
         return _GENERIC_ABSTAIN

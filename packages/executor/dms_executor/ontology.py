@@ -1889,13 +1889,181 @@ def is_list_intent(question: str) -> bool:
 
     The start-anchored arm still marks ``List ...`` / ``show all`` /
     ``which ... are in`` so a prefixed ranking does not climb. A category
-    list (``which skus are chemicals``) is list intent when its tokens are
-    the frame, the entity, and the category, or when a token is unhandled.
+    list (``which skus are chemicals``) is list intent only when every token
+    is the frame, the entity, or the category. An aggregate
+    (``total value of chemicals``) is not a list.
     """
+    if _MEASURE_PHRASE.search(question or ""):
+        return False
     if _LIST_INTENT.search(question or ""):
         return True
     decision, _extra = category_list_decision(question)
-    return decision != "not_list"
+    return decision == "serve"
+
+
+# Closed class. These carry no measure, grain, category, or value.
+# Not a denylist of places, suppliers, or codes.
+_QUESTION_FUNCTION = _LIST_FRAME | frozenset(
+    {
+        "a",
+        "an",
+        "of",
+        "do",
+        "does",
+        "did",
+        "when",
+        "where",
+        "who",
+        "how",
+        "is",
+        "on",
+        "at",
+        "from",
+        "to",
+        "for",
+        "by",
+        "and",
+        "or",
+        "with",
+        "that",
+        "be",
+        "there",
+        "was",
+        "were",
+        "have",
+        "has",
+        "had",
+    }
+)
+# Measure words from the phrases that already stay off the list lane.
+# ``sell`` is the stem of ``selling``. Not a denylist.
+_MEASURE_WORD = frozenset(
+    {
+        "stock",
+        "value",
+        "inventory",
+        "worth",
+        "revenue",
+        "selling",
+        "sales",
+        "sale",
+        "sell",
+        "freight",
+        "sku",
+        "count",
+        "quantity",
+        "qty",
+        "sold",
+        "reorder",
+        "utilisation",
+        "utilization",
+        "total",
+        "spend",
+    }
+)
+_EXCLUSION_WORD = frozenset({"except", "excluding", "exclude", "excluded"})
+
+
+def _stem(word: str) -> str:
+    w = (word or "").lower()
+    if len(w) <= 3:
+        return w
+    if w.endswith("ies") and len(w) > 5:
+        return w[:-3] + "y"
+    if w.endswith("ing") and len(w) > 6:
+        return w[:-3]
+    if w.endswith("ed") and len(w) > 5:
+        return w[:-2]
+    if w.endswith("es") and len(w) > 5:
+        return w[:-2]
+    if w.endswith("s") and not w.endswith("ss") and len(w) > 4:
+        return w[:-1]
+    if w.endswith("y") and len(w) > 4:
+        return w[:-1]
+    if w.endswith("e") and len(w) > 4:
+        return w[:-1]
+    return w
+
+
+def sql_path_allow_words(onto: Ontology | None) -> frozenset[str]:
+    """Measure, grain, and category words. Nothing else.
+
+    A content word outside this set must ground in the parsed SQL. This is
+    not a denylist of places, suppliers, or values.
+    """
+    words: set[str] = set(_LIST_CATEGORY)
+    words.update(_MEASURE_WORD)
+    words.update(SUPPLY_CHAIN_GRAINS)
+    for names in GRAIN_OBJECTS.values():
+        words.update(names)
+    words.update(_OBJECT_TO_GRAIN)
+    if onto is not None:
+        words.update(onto.objects)
+        words.update(onto.grain_aliases)
+        words.update(onto.missing_grains)
+        for name in onto.measures:
+            words.update(re.findall(r"[a-z0-9]+", name.lower()))
+    expanded: set[str] = set()
+    for word in words:
+        low = word.lower()
+        if not low:
+            continue
+        expanded.add(low)
+        expanded.add(_stem(low))
+        if low.endswith("s") and len(low) > 3:
+            expanded.add(low[:-1])
+        else:
+            expanded.add(low + "s")
+    return frozenset(item for item in expanded if item)
+
+
+def _content_allowed(token: str, allowed: frozenset[str]) -> bool:
+    if token in _QUESTION_FUNCTION:
+        return True
+    if "-" in token:
+        return token in allowed
+    return token in allowed or _stem(token) in allowed
+
+
+def _ident_grounds(token: str, idents: frozenset[str]) -> bool:
+    if "-" in token:
+        return False
+    stem = _stem(token)
+    for ident in idents:
+        if token == ident or stem == ident or token == _stem(ident) or stem == _stem(ident):
+            return True
+    return False
+
+
+def ungrounded_qualifier(
+    question: str, sql: str, onto: Ontology | None
+) -> str | None:
+    """First content word the parsed SQL does not ground.
+
+    Returns ``ungrounded_qualifier:<word>``, or None when every content word
+    is a measure, grain, or category word, or grounds to a table, column,
+    predicate literal, or exclusion operator in the sqlglot tree. Does not
+    scan the SQL text.
+    """
+    from dms_executor.sql_currency import sql_grounds
+
+    allowed = sql_path_allow_words(onto)
+    grounds = sql_grounds(sql)
+    for token in question_tokens(question):
+        if _content_allowed(token, allowed):
+            continue
+        if grounds is None:
+            return f"ungrounded_qualifier:{token}"
+        if token in _EXCLUSION_WORD:
+            if not grounds.has_exclusion:
+                return f"ungrounded_qualifier:{token}"
+            continue
+        if token in grounds.literals:
+            continue
+        if _ident_grounds(token, grounds.idents):
+            continue
+        return f"ungrounded_qualifier:{token}"
+    return None
 
 
 def sql_is_aggregate(sql: str) -> bool:
