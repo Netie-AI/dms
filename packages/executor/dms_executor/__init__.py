@@ -159,13 +159,28 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
+    prompt = question
+    kwargs: dict[str, Any] = {
+        "session_id": session_id,
+        "space_id": space_id,
+        "ontology": ontology,
+    }
+    if isinstance(ontology, dict):
+        from dms_executor.intent_spec import route_overrides
+
+        cleaned, extra = route_overrides(ontology)
+        if extra:
+            kwargs["ontology"] = cleaned
+            role = extra.get("dms_route_role")
+            if isinstance(role, str) and role.strip():
+                kwargs["role"] = role.strip()
+            override = extra.get("dms_route_prompt")
+            if isinstance(override, str) and override.strip():
+                prompt = override
+            if extra.get("dms_route_single_shot"):
+                kwargs["single_shot"] = True
     try:
-        return fn(
-            question,
-            session_id=session_id,
-            space_id=space_id,
-            ontology=ontology,
-        )
+        return fn(prompt, **kwargs)
     except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
         return None
 

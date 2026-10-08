@@ -68,6 +68,12 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
+from dms_executor.intent_spec import (
+    ROLE_INTENT_SPEC,
+    ROLE_SQL_WRITER,
+    apply_intent_spec,
+    intent_spec_enabled,
+)
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
     CompiledQuery,
@@ -92,6 +98,7 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason
+from dms_executor.sql_grounds import sql_grounds
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -818,6 +825,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    spec_allows_offset: bool = False,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -829,7 +837,9 @@ def _submit_validated(
             notes=notes,
         )
     gap = unhonored_qualifier_reason(question, sql=sql)
-    if gap:
+    # A spec that cited the offset is the authority for that offset. The
+    # word-grammar unrequested_offset check stays when the spec is off.
+    if gap and not (spec_allows_offset and str(gap).startswith("unrequested_offset:")):
         return _abstain(
             question,
             gap,
@@ -853,6 +863,16 @@ def _submit_validated(
             session_id=session_id,
             route="generated",
             question=question,
+        )
+    # Always-false SQL returns zero rows and must not be served as a clean answer.
+    if sql_grounds(sql).contradiction:
+        return _abstain(
+            question,
+            "contradiction",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
         )
     try:
         result = submit(sql)
@@ -1148,6 +1168,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    spec_compute: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1252,6 +1273,27 @@ def maybe_generative_ask(
     ctx = retrieve_short_context(
         q, warehouse=lake, grantable=allowed, ontology=onto
     )
+    if intent_spec_enabled() and isinstance(ctx, dict):
+        ctx = {**ctx, "dms_route_role": ROLE_SQL_WRITER}
+
+    def _spec_fetch(prompt: str) -> dict[str, Any] | None:
+        if spec_compute is not None:
+            got = spec_compute(prompt)
+            return got if isinstance(got, dict) else None
+        body = dict(ctx)
+        body["dms_route_role"] = ROLE_INTENT_SPEC
+        body["dms_route_prompt"] = prompt
+        body["dms_route_single_shot"] = True
+        got = compute(body)
+        return got if isinstance(got, dict) else None
+
+    def _retry_fetch(prompt: str) -> dict[str, Any] | None:
+        body = dict(ctx)
+        body["dms_route_role"] = ROLE_SQL_WRITER
+        body["dms_route_prompt"] = prompt
+        got = compute(body)
+        return got if isinstance(got, dict) else None
+
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1417,21 +1459,67 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
-            return _stamp(
-                _submit_validated(
-                    sql,
+            serve_sql = sql
+            offset_ok = False
+            attempt: dict[str, Any] | None = None
+            # INTENT-SPEC-01. Off by default: this block does not run, and the
+            # submit below is the pre-spec path. C-LOOP-B (#405) should call
+            # check_sql_against_spec from run_model_loop once that loop lands.
+            if intent_spec_enabled():
+                decision = apply_intent_spec(
                     question=q,
-                    space_id=space_id,
-                    session_id=session_id,
-                    submit=submit,
-                    ledger_append=ledger_append,
-                    notes=("GEN-01 Cortex ontology_plan SQL",),
-                    plan_source=source,
-                    coverage=coverage_from_sql_path(sql=sql),
-                    warehouse=lake,
-                    plan_origin=origin,
+                    sql=sql,
+                    writer_payload=payload if isinstance(payload, dict) else None,
+                    spec_fetch=_spec_fetch,
+                    retry_fetch=_retry_fetch,
+                    dialect="duckdb",
                 )
+                attempt = decision.attempt
+                if decision.abstain_reason:
+                    env = _abstain(
+                        q,
+                        decision.abstain_reason,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                        notes=trail_notes,
+                    )
+                    env["intent_spec_attempt"] = attempt
+                    return _stamp(env)
+                serve_sql = decision.sql or sql
+                offset_ok = decision.offset_approved
+                if serve_sql != sql:
+                    retry_why = validate_compiled_sql(
+                        serve_sql, grantable=allowed, warehouse=lake
+                    )
+                    if retry_why:
+                        env = _abstain(
+                            q,
+                            f"validate:{retry_why}",
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=source,
+                            notes=trail_notes,
+                        )
+                        env["intent_spec_attempt"] = attempt
+                        return _stamp(env)
+            env = _submit_validated(
+                serve_sql,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=("GEN-01 Cortex ontology_plan SQL",),
+                plan_source=source,
+                coverage=coverage_from_sql_path(sql=serve_sql),
+                warehouse=lake,
+                plan_origin=origin,
+                spec_allows_offset=offset_ok,
             )
+            if attempt is not None and isinstance(env, dict):
+                env["intent_spec_attempt"] = attempt
+            return _stamp(env)
     if kind != "plan":
         # Named Insights fail-closed: never bind. Product Cortex.ask still
         # runs only on a transport miss (no insights_fail stamp).

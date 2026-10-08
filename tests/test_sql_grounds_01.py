@@ -93,6 +93,8 @@ def test_self_compare_drops_the_conjunct() -> None:
     grounds = sql_grounds(f"{_SUM} WHERE category = category")
     assert grounds.unclear is False
     assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+    assert any(item.reason == "vacuous" for item in grounds.dropped)
 
 
 def test_select_only_category_is_not_a_conjunct() -> None:
@@ -128,14 +130,17 @@ def test_nested_not_drops_the_conjunct() -> None:
     assert grounds.conjuncts == ()
 
 
-def test_not_like_gives_no_conjunct() -> None:
+def test_not_like_is_kept() -> None:
     grounds = sql_grounds(
         f"{_SUM} WHERE category NOT LIKE '%a%' AND status = 'open'"
     )
     assert grounds.unclear is False
-    assert len(grounds.conjuncts) == 1
-    kept = grounds.conjuncts[0]
-    assert kept.operator == "eq" and kept.column == "status"
+    got = [(c.column, c.operator, c.literals, c.polarity) for c in grounds.conjuncts]
+    assert got == [
+        ("category", "not_like", ("%a%",), "neg"),
+        ("status", "eq", ("open",), "pos"),
+    ]
+    assert grounds.contradiction is None
 
 
 def test_neq_and_not_in_are_negative() -> None:
@@ -256,3 +261,202 @@ def test_l2_serve_keeps_rows_when_the_check_raises(monkeypatch: pytest.MonkeyPat
     shadow = env["served_check_shadow"]
     assert shadow["error"] == "RuntimeError: nope"
     assert "served_attribution" not in env
+
+
+def _reasons(sql: str) -> list[str]:
+    return [item.reason for item in sql_grounds(sql).dropped]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"{_SUM} WHERE 'EU' IS NOT NULL",
+        f"{_SUM} WHERE 1 IN (1, 2)",
+        f"{_SUM} WHERE 'a' LIKE '%'",
+        f"{_SUM} HAVING 'EU' IS NOT NULL",
+    ],
+)
+def test_column_free_is_in_like_is_a_tautology(sql: str) -> None:
+    grounds = sql_grounds(sql)
+    assert grounds.unclear is False
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+    assert "tautology" in _reasons(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"{_SUM} WHERE qty >= qty",
+        f"{_SUM} WHERE x = x",
+    ],
+)
+def test_column_compared_to_itself_is_vacuous(sql: str) -> None:
+    grounds = sql_grounds(sql)
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+    assert "vacuous" in _reasons(sql)
+    assert "tautology" not in _reasons(sql)
+
+
+def test_like_any_on_a_column_is_vacuous() -> None:
+    sql = f"{_SUM} WHERE col LIKE '%'"
+    grounds = sql_grounds(sql)
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+    assert "vacuous" in _reasons(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"{_SUM} WHERE 1 = 2",
+        f"{_SUM} WHERE 'a' <> 'a'",
+        f"{_SUM} WHERE 'X' = 'Y'",
+        f"{_SUM} WHERE x <> x",
+        f"{_SUM} WHERE x > x",
+        f"{_SUM} WHERE col NOT LIKE '%'",
+    ],
+)
+def test_always_false_is_a_contradiction(sql: str) -> None:
+    grounds = sql_grounds(sql)
+    assert grounds.unclear is False
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction == "contradiction"
+    assert "contradiction" in _reasons(sql)
+    assert grounds.as_dict()["contradiction"] == "contradiction"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"{_SUM} WHERE 1 <> 2",
+        f"{_SUM} WHERE 'a' <> 'b'",
+        f"{_SUM} WHERE 2 > 1",
+    ],
+)
+def test_always_true_comparison_is_not_a_contradiction(sql: str) -> None:
+    grounds = sql_grounds(sql)
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+    assert "tautology" in _reasons(sql)
+
+
+def test_or_containing_a_false_literal_is_not_a_contradiction() -> None:
+    grounds = sql_grounds(f"{_SUM} WHERE 1 = 2 OR region = 'KL'")
+    assert grounds.contradiction is None
+    assert grounds.conjuncts == ()
+    assert "or" in _reasons(f"{_SUM} WHERE 1 = 2 OR region = 'KL'")
+
+
+def test_join_key_is_not_an_equality_filter() -> None:
+    grounds = sql_grounds(
+        "SELECT SUM(s.amount) AS total FROM sales AS s "
+        "JOIN regions AS r ON s.region_id = r.id AND r.name = 'KL'"
+    )
+    assert [item.literals for item in grounds.conjuncts] == [("KL",)]
+    assert "join_key" in _reasons(
+        "SELECT SUM(s.amount) AS total FROM sales AS s "
+        "JOIN regions AS r ON s.region_id = r.id AND r.name = 'KL'"
+    )
+    assert all("region_id" not in item.column for item in grounds.conjuncts)
+
+
+def test_where_equating_different_columns_stays() -> None:
+    grounds = sql_grounds(f"{_SUM} WHERE sales.region_id = regions.id")
+    assert grounds.unclear is False
+    assert grounds.contradiction is None
+    assert len(grounds.conjuncts) == 1
+    assert grounds.dropped == ()
+
+
+def test_case_in_where_is_not_a_filter() -> None:
+    sql = f"{_SUM} WHERE CASE WHEN status = 'open' THEN 1 ELSE 0 END = 1"
+    grounds = sql_grounds(sql)
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+    assert "case" in _reasons(sql)
+    assert all("open" not in item.literals for item in grounds.conjuncts)
+
+
+def test_two_statements_are_unclear() -> None:
+    grounds = sql_grounds("SELECT 1 AS n; SELECT 2 AS n")
+    assert grounds.unclear is True
+    assert grounds.conjuncts == ()
+    assert grounds.contradiction is None
+
+
+def test_trailing_semicolon_is_one_statement() -> None:
+    grounds = sql_grounds(f"{_SUM} WHERE status = 'open';")
+    assert grounds.unclear is False
+    assert len(grounds.conjuncts) == 1
+
+
+def test_between_is_kept() -> None:
+    got = _one(f"{_SUM} WHERE amount BETWEEN 1 AND 5")
+    assert (got.column, got.operator, got.literals, got.polarity) == (
+        "amount",
+        "between",
+        ("1", "5"),
+        "pos",
+    )
+
+
+def test_bare_boolean_column_is_kept() -> None:
+    got = _one(f"{_SUM} WHERE active")
+    assert (got.column, got.operator, got.polarity) == ("active", "bool", "pos")
+
+
+def test_cte_where_is_kept() -> None:
+    grounds = sql_grounds(
+        "WITH c AS (SELECT * FROM sales WHERE status = 'open') "
+        "SELECT SUM(amount) AS total FROM c"
+    )
+    assert grounds.unclear is False
+    assert [(item.column, item.literals) for item in grounds.conjuncts] == [
+        ("status", ("open",))
+    ]
+
+
+def test_qualify_comparison_is_kept() -> None:
+    grounds = sql_grounds(
+        "SELECT category, SUM(amount) AS total FROM sales "
+        "GROUP BY category QUALIFY SUM(amount) > 10"
+    )
+    assert grounds.unclear is False
+    assert any(item.operator == "gt" and "10" in item.literals for item in grounds.conjuncts)
+
+
+def test_scalar_subquery_keeps_the_inner_filter() -> None:
+    grounds = sql_grounds(
+        f"{_SUM} WHERE region = (SELECT code FROM regions WHERE name = 'KL')"
+    )
+    assert grounds.unclear is False
+    assert ("KL",) in [item.literals for item in grounds.conjuncts]
+
+
+def test_derived_limit_is_reported() -> None:
+    grounds = sql_grounds(
+        "SELECT category FROM (SELECT category FROM sales LIMIT 2) AS derived"
+    )
+    assert grounds.unclear is False
+    assert grounds.limit is None
+    assert grounds.derived_limits == (2,)
+
+
+def test_group_by_is_reported() -> None:
+    grounds = sql_grounds("SELECT SUM(amount) AS total FROM sales GROUP BY category")
+    assert any("category" in item for item in grounds.group_by)
+
+
+def test_tsql_top_is_the_limit() -> None:
+    grounds = sql_grounds("SELECT TOP 3 category FROM sales", dialect="tsql")
+    assert grounds.unclear is False
+    assert grounds.limit == 3
+
+
+def test_dropped_conjuncts_carry_a_reason() -> None:
+    grounds = sql_grounds(f"{_SUM} WHERE 1 = 1 AND status = 'open'")
+    assert grounds.dropped
+    assert all(item.sql and item.reason for item in grounds.dropped)
+    assert grounds.as_dict()["dropped"][0]["reason"] == "tautology"

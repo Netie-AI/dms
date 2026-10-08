@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,20 @@ from dms_core.pii import column_is_pii, sanitize_retrieve_parts
 
 from dms_executor.demo_warehouse import connect_file
 from dms_executor.ontology import Ontology
+
+
+def _today() -> date:
+    """Clock for typed date filters. Tests patch this, not datetime.date."""
+    return date.today()
+
+
+class _Clock:
+    """Local date.today() so typed_filters does not rebind datetime.date."""
+
+    @staticmethod
+    def today() -> date:
+        return _today()
+
 
 MAX_CONTEXT_CHARS = 2400
 MAX_TABLES = 6
@@ -438,6 +453,7 @@ def _has_col(context: dict[str, Any], obj: str, col: str) -> bool:
 
 def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | None:
     """None = needs a filter we cannot type. [] = no extra filters."""
+    date = _Clock
     qn = (question or "").lower()
     bound = context.get("bound_values") or {}
     filters: list[list[Any]] = []
@@ -449,8 +465,6 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
     if re.search(r"\bexpir", qn):
         if not _has_col(context, "lot", "expiry_date"):
             return None
-        from datetime import date
-
         filters.append(["lot", "expiry_date", "<", date.today().isoformat()])
     if _WH_A.search(question or ""):
         code = bound.get("location.location_code")
@@ -466,8 +480,6 @@ def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | N
     if "audit" in qn and "overdue" in qn:
         measures = context.get("measures") or {}
         if _has_col(context, "supplier", "last_audit_date"):
-            from datetime import date, timedelta
-
             cutoff = (date.today() - timedelta(days=90)).isoformat()
             filters.append(["supplier", "last_audit_date", "<", cutoff])
         elif "audit_overdue" not in measures:

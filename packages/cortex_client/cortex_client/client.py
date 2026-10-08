@@ -200,6 +200,8 @@ class CortexClient:
         session_id: str | None = None,
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
+        role: str | None = None,
+        single_shot: bool = False,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
@@ -216,6 +218,8 @@ class CortexClient:
             ontology=ontology,
             api_key=self.api_key,
             timeout=bound,
+            role=role,
+            single_shot=single_shot,
         )
 
     def insights_law(self) -> dict[str, Any]:
