@@ -41,6 +41,7 @@ from cortex_client.qualifiers import (
     parse_rank_window,
     rank_window_group,
     rank_window_measure,
+    rank_window_shape_reason,
     unhonored_qualifier_reason,
 )
 
@@ -1031,16 +1032,15 @@ def rank_window_ask(
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
     Grammar parse + verified ontology compile, then the shared Cortex submit
-    and ledger path. None when the ask is no rank window, names no entity,
-    spans two grains, or no verified ontology is loaded: Insights and
-    QUAL-GUARD rank_window decide then. plan_source is ``other``: neither
-    Cortex nor keyword bind produced this plan.
+    and ledger path. Does not call bind_plan, intent_slots,
+    ontology_plan_from_ranking or slots_for_measure. None only when the ask
+    is not a rank window, or it is a clean window but no verified ontology
+    is loaded. A window with a filter, a second noun, no limit or no measure
+    word abstains here, so it never reaches Insights. plan_source is
+    ``other``: neither Cortex nor keyword bind produced this plan.
     """
     win = parse_rank_window(q)
-    pair = rank_window_group(win) if win is not None else None
-    if win is None or pair is None or onto is None or not onto.verified:
-        return None
-    if len(detect_supply_chain_grains(q)) >= 2:
+    if win is None:
         return None
 
     def _no(reason: str) -> dict[str, Any]:
@@ -1049,10 +1049,20 @@ def rank_window_ask(
             plan_source=PLAN_SOURCE_OTHER, notes=(NOTE_RANK_WINDOW,),
         )
 
+    shape = rank_window_shape_reason(q)
+    if shape:
+        return _no(shape)
+    if onto is None or not onto.verified:
+        return None
+    pair = rank_window_group(win)
+    if pair is None:
+        return _no("rank_window_unhandled_terms:no_entity")
     specs = {name: m.description or "" for name, m in onto.measures.items()}
     measure, why, reading = rank_window_measure(q, specs)
     if why or measure is None:
         return _no(why or "unknown_measure")
+    if win.limit is None:
+        return _no("rank_window_open_ended")
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")

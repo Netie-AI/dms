@@ -43,6 +43,11 @@ GAP_REASONS = frozenset(
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",
         "unhonored_qualifier",
+        "ambiguous_measure",
+        "rank_window_unhandled_terms",
+        "rank_window_entity_mismatch",
+        "rank_window_open_ended",
+        "unrequested_offset",
     }
 )
 

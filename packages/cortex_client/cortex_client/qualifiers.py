@@ -227,12 +227,33 @@ _BY_PHRASE_RE = re.compile(r"\bby\s+([a-z][a-z0-9 _'-]{0,40}?)\s*(?:[?.!,;]|$)")
 _SELLING_RE = re.compile(
     r"\b(?:most|best|top|highest)[\s-]+sell(?:ing|er|ers)?\b"
     r"|\bsell(?:s|ing)?\s+(?:the\s+)?most\b"
+    r"|\bsold\s+(?:the\s+)?most\b"
 )
-_UNITS_RE = re.compile(r"\b(?:units?|quantity|qty|volume)\b")
+_TOP_RE = re.compile(r"\btop\s+" + _NUM + r"\b")
+# Noun sitting on the excluded "top M" ("top 3 warehouses", "top 3 in warehouse").
+_NOUN_AFTER_RE = re.compile(
+    r"\s+(?:(?:of|in)\s+)?(?:the\s+)?"
+    r"(sk[uy](?:'?s|s')?|suppliers?|categor(?:y|ies)|warehouses?|plants?)\b"
+)
+_UNIT_WORD_RE = re.compile(r"\bunits?\b")
+_QTY_RE = re.compile(r"\b(?:quantity|qty|kg|kilos?|kilograms?)\b")
 _REVENUE_RE = re.compile(r"\b(?:revenue|sales|turnover)\b")
-# Candidate DMS measure names per reading, most specific first.
-UNITS_MEASURES = ("outbound_kg", "quantity_sold", "units_sold")
+# outbound_kg is weight. It is never a units measure.
+QUANTITY_MEASURES = ("outbound_kg", "quantity_sold")
 REVENUE_MEASURES = ("outbound_value_myr", "revenue", "sales")
+# Closed. A token not in this list, and not part of the window, the one entity
+# noun or the measure phrase, is rank_window_unhandled_terms. "in" / "at" are
+# not fillers: "in warehouse A" and "at WH-B" are filters we do not compile.
+_FILLERS = frozenset(
+    {
+        "the", "of", "our", "what", "whats", "what's", "are", "is", "which",
+        "me", "please", "show", "list", "give", "get", "by", "for", "to",
+        "and", "or", "that", "this", "their", "do", "does", "did", "my", "we",
+        "you", "how", "many", "was", "were", "be", "there", "those", "these",
+        "some", "any", "all", "its", "it", "on", "with", "from", "than",
+        "who", "whom", "just", "also", "only", "s",
+    }
+)
 
 
 def _num(raw: str | None) -> int | None:
@@ -243,13 +264,15 @@ def _num(raw: str | None) -> int | None:
 
 @dataclass(frozen=True)
 class RankWindow:
-    """Ranks ``offset+1 .. offset+limit`` (``limit`` None = every rank after)."""
+    """Ranks ``offset+1 .. offset+limit``. ``limit`` None is not servable."""
 
     offset: int
     limit: int | None
     entity: str | None
     measure_phrase: str
     span: tuple[int, int]
+    # Noun on the excluded "top M", when one was written there.
+    excluded_entity: str | None = None
 
     @property
     def label(self) -> str:
@@ -263,8 +286,62 @@ def _window_from_range(a: int | None, b: int | None) -> tuple[int, int] | None:
     return a - 1, b - a + 1
 
 
+def _entity_hits(qn: str) -> list[tuple[int, int, str]]:
+    hits: list[tuple[int, int, str]] = []
+    for pat, name in _ENTITY_RES:
+        for m in pat.finditer(qn):
+            hits.append((m.start(), m.end(), name))
+    hits.sort()
+    return hits
+
+
+def _noun_name(raw: str) -> str:
+    for pat, name in _ENTITY_RES:
+        if pat.fullmatch(raw):
+            return name
+    return ""
+
+
+def _excluded_noun(qn: str) -> tuple[str | None, tuple[int, int] | None]:
+    """The entity noun written on the excluded ``top M``, if any."""
+    excl = _EXCL_TOP_RE.search(qn)
+    if excl is None:
+        return None, None
+    m = _NOUN_AFTER_RE.match(qn, excl.end())
+    if m is None:
+        return None, None
+    return _noun_name(m.group(1)) or None, (m.start(1), m.end(1))
+
+
+def _ranked_entity(
+    qn: str,
+) -> tuple[str | None, str | None, tuple[int, int] | None]:
+    """(entity to rank, noun on the excluded top, that noun's span).
+
+    Exactly one entity noun, or the excluded noun when it is the only one.
+    Two nouns, or none, leave the entity empty; the shape check names why.
+    """
+    excluded, span = _excluded_noun(qn)
+    ranked: list[str] = []
+    for start, end, name in _entity_hits(qn):
+        if span is not None and not (end <= span[0] or start >= span[1]):
+            continue
+        if name not in ranked:
+            ranked.append(name)
+    if len(ranked) == 1:
+        return ranked[0], excluded, span
+    if not ranked and excluded:
+        return excluded, excluded, span
+    return None, excluded, span
+
+
 def parse_rank_window(question: str) -> RankWindow | None:
-    """Rank window the question asks for, or None. ``ranks 1-5`` is plain top-N."""
+    """Rank window the question asks for, or None. ``ranks 1-5`` is plain top-N.
+
+    ``top N excluding top M`` keeps ``limit = N - M`` when N > M. N <= M, or
+    no count at all, leaves ``limit`` None (not servable). ``ranks 8 to 4``
+    is not a window: the ends are not swapped.
+    """
     qn = (question or "").lower()
     offset: int | None = None
     limit: int | None = None
@@ -278,6 +355,12 @@ def parse_rank_window(question: str) -> RankWindow | None:
             limit = _num(next(g for g in nxt.groups() if g))
             span = (min(excl.start(), nxt.start()), max(excl.end(), nxt.end()))
         else:
+            # A leftover "top N" is the kept width, not a second exclusion.
+            top = _TOP_RE.search(rest)
+            if top is not None and offset is not None:
+                n = _num(top.group(1))
+                if n is not None and n > offset:
+                    limit = n - offset
             span = (excl.start(), excl.end())
         if not offset or (limit is not None and limit < 1):
             return None
@@ -298,15 +381,16 @@ def parse_rank_window(question: str) -> RankWindow | None:
             return None
         offset, limit = got
         span = (rng.start(), rng.end())
-    entity = next((name for pat, name in _ENTITY_RES if pat.search(qn)), None)
+    entity, excluded, _span = _ranked_entity(qn)
     by = _BY_PHRASE_RE.search(qn)
     phrase = by.group(1).strip() if by else ""
     if phrase.split(" ", 1)[0] in _DIM_GROUP:
         phrase = ""
-    if not phrase and _SELLING_RE.search(qn):
-        phrase = "most selling"
+    selling = _SELLING_RE.search(qn)
+    if not phrase and selling is not None:
+        phrase = selling.group(0)
     assert span is not None
-    return RankWindow(offset, limit, entity, phrase, span)
+    return RankWindow(offset, limit, entity, phrase, span, excluded)
 
 
 def rank_window_group(win: RankWindow) -> tuple[str, str] | None:
@@ -315,25 +399,133 @@ def rank_window_group(win: RankWindow) -> tuple[str, str] | None:
     return (pair[0], pair[1]) if pair else None
 
 
+def _true_units_measure(measures: dict[str, str]) -> str | None:
+    """A measure whose own name or description says unit/units. kg is not one."""
+    for name in sorted(measures):
+        words = set(re.findall(
+            r"[a-z0-9]+", f"{name} {measures[name]}".lower().replace("_", " ")
+        ))
+        if "unit" in words or "units" in words:
+            return name
+    return None
+
+
+def _window_blanks(qn: str, win: RankWindow) -> list[tuple[int, int]]:
+    """Spans the shape check may ignore. The gap between them is not ignored."""
+    blanks: list[tuple[int, int]] = []
+    excl = _EXCL_TOP_RE.search(qn)
+    if excl is not None:
+        blanks.append((excl.start(), excl.end()))
+        rest = qn[: excl.start()] + " " * (excl.end() - excl.start()) + qn[excl.end():]
+        nxt = _NEXT_RE.search(rest) or _SHOW_N_RE.search(rest)
+        if nxt is not None:
+            blanks.append((nxt.start(), nxt.end()))
+        else:
+            top = _TOP_RE.search(rest)
+            if top is not None:
+                blanks.append((top.start(), top.end()))
+    else:
+        blanks.append(win.span)
+    for start, end, name in _entity_hits(qn):
+        if name == win.entity or name == win.excluded_entity:
+            blanks.append((start, end))
+    selling = _SELLING_RE.search(qn)
+    if selling is not None:
+        blanks.append((selling.start(), selling.end()))
+    by = _BY_PHRASE_RE.search(qn)
+    if by is not None:
+        blanks.append((by.start(), by.end()))
+    return blanks
+
+
+def rank_window_shape_reason(question: str) -> str | None:
+    """Why this window cannot be compiled, or None when the grammar is clean.
+
+    Clean means exactly one entity, the noun on ``top M`` is that entity or
+    absent, nothing left after the window, the entity, the measure phrase and
+    the closed filler list, and a finite limit. No ontology and no pack.
+    """
+    win = parse_rank_window(question)
+    if win is None:
+        return None
+    qn = (question or "").lower()
+    _entity, excluded, span = _ranked_entity(qn)
+    outside: list[str] = []
+    for start, end, name in _entity_hits(qn):
+        if span is not None and not (end <= span[0] or start >= span[1]):
+            continue
+        if name not in outside:
+            outside.append(name)
+    if excluded and outside and excluded not in outside:
+        return f"rank_window_entity_mismatch:{excluded}!={outside[0]}"
+    if len(outside) > 1:
+        return "rank_window_unhandled_terms:" + ",".join(sorted(outside))
+    if win.entity is None:
+        return "rank_window_unhandled_terms:no_entity"
+    masked = list(qn)
+    for start, end in _window_blanks(qn, win):
+        for i in range(start, min(end, len(masked))):
+            masked[i] = " "
+    left = sorted({
+        tok for tok in re.findall(r"[a-z0-9]+", "".join(masked))
+        if tok not in _FILLERS and not tok.isdigit()
+    })
+    if left:
+        return "rank_window_unhandled_terms:" + ",".join(left)
+    if win.limit is None:
+        return "rank_window_open_ended"
+    return None
+
+
 def rank_window_measure(
     question: str, measures: dict[str, str]
 ) -> tuple[str | None, str | None, str]:
     """(measure, abstain_reason, reading_note) for a rank-window ask.
 
-    ``measures`` maps DMS measure name to its description. Units words pick
-    quantity sold, revenue words pick revenue. "Most selling" and no measure
-    at all read as revenue - the same reading "selling sku" already locks -
-    and the note says so. Both readings named is a named ambiguity.
+    Selling words ("most selling", "top selling", "best selling", "sold most")
+    read as revenue, the same reading "selling sku" already locks, and the
+    note says so. No measure word at all is ``ambiguous_measure:none``.
+    "units" maps to a measure that says units; ``outbound_kg`` is weight, so
+    with no such measure the reason is ``unknown_measure:units``.
     """
     qn = (question or "").lower()
     win = parse_rank_window(qn)
     phrase = win.measure_phrase if win else ""
-    units = bool(_UNITS_RE.search(qn))
-    revenue = bool(_REVENUE_RE.search(qn))
-    if units and revenue:
-        tag = "most_selling" if _SELLING_RE.search(qn) else "units_or_revenue"
+    unit = bool(_UNIT_WORD_RE.search(qn))
+    qty = bool(_QTY_RE.search(qn))
+    revenue_word = bool(_REVENUE_RE.search(qn))
+    selling = _SELLING_RE.search(qn)
+
+    def _named(
+        names: tuple[str, ...], reading: str, other: str, other_names: tuple[str, ...]
+    ) -> tuple[str | None, str | None, str]:
+        found = next((n for n in names if n in measures), None)
+        if found is None:
+            return None, f"unknown_measure:{names[0]}", ""
+        other_name = next((n for n in other_names if n in measures), "")
+        if selling is not None and not (qty or unit or revenue_word):
+            why = f"'{selling.group(0)}' read as"
+        else:
+            why = "ranked by"
+        alt = f", not {other} ({other_name})" if other_name else f", not {other}"
+        return found, None, f"{why} {reading} = {found}{alt}"
+
+    if unit and (qty or revenue_word or selling is not None):
+        tag = "most_selling" if selling is not None else "units_or_revenue"
         return None, f"ambiguous_measure:{tag}", ""
-    if not (units or revenue) and phrase not in ("", "most selling"):
+    if unit:
+        found = _true_units_measure(measures)
+        if found is None:
+            return None, "unknown_measure:units", ""
+        return found, None, f"ranked by units = {found}, not kg and not revenue"
+    if qty and (revenue_word or selling is not None):
+        tag = "most_selling" if selling is not None else "quantity_or_revenue"
+        return None, f"ambiguous_measure:{tag}", ""
+    if qty:
+        return _named(QUANTITY_MEASURES, "quantity sold (kg)", "revenue", REVENUE_MEASURES)
+    if revenue_word or selling is not None:
+        return _named(REVENUE_MEASURES, "revenue (sales value)", "quantity sold", QUANTITY_MEASURES)
+    if phrase:
         toks = set(re.findall(r"[a-z0-9]+", phrase)) - {"the", "a", "of", "total"}
 
         def _words(text: str) -> set[str]:
@@ -347,27 +539,7 @@ def rank_window_measure(
         if hits:
             return None, f"ambiguous_measure:{phrase}", ""
         return None, f"unknown_measure:{phrase}", ""
-    if units:
-        names, reading = UNITS_MEASURES, "quantity sold (units, kg)"
-        other = "revenue"
-    else:
-        names, reading = REVENUE_MEASURES, "revenue (sales value)"
-        other = "units sold"
-    found = next((n for n in names if n in measures), None)
-    if found is None:
-        return None, f"unknown_measure:{names[0]}", ""
-    other_name = next(
-        (n for n in (REVENUE_MEASURES if units else UNITS_MEASURES) if n in measures), ""
-    )
-    why = (
-        "'most selling' read as"
-        if phrase == "most selling"
-        else "no measure named; read as"
-        if not phrase and not (units or revenue)
-        else "ranked by"
-    )
-    alt = f", not {other} ({other_name})" if other_name else f", not {other}"
-    return found, None, f"{why} {reading} = {found}{alt}"
+    return None, "ambiguous_measure:none", ""
 
 
 def extract_qualifiers(question: str) -> tuple[tuple[str, str], ...]:
@@ -564,10 +736,13 @@ def _honors_rank_window(
     win = parse_rank_window(question)
     if win is None:
         return True
+    # An open window has no honest LIMIT. Do not treat "any limit" as a match.
+    if win.limit is None:
+        return False
     if isinstance(plan, dict) and not sql:
         off = plan.get("offset")
         lim = plan.get("limit")
-        return off == win.offset and (win.limit is None or lim == win.limit)
+        return off == win.offset and lim == win.limit
     text = (sql or "").strip().rstrip(";")
     order_at = text.lower().rfind("order by")
     tail = text[order_at:]
@@ -583,13 +758,37 @@ def _honors_rank_window(
     return "," in keys
 
 
+def _positive_offset(plan: dict[str, Any] | None, sql: str | None) -> int | None:
+    if sql:
+        nums = [int(n) for n in _SQL_OFFSET_RE.findall(sql) if int(n) > 0]
+        return nums[-1] if nums else None
+    if isinstance(plan, dict):
+        off = plan.get("offset")
+        if type(off) is int and off > 0:
+            return off
+    return None
+
+
 def unhonored_qualifier_reason(
     question: str,
     *,
     sql: str | None = None,
     plan: dict[str, Any] | None = None,
 ) -> str | None:
-    """First uncovered qualifier as ``unhonored_qualifier:<kind>=<value>``."""
+    """First uncovered qualifier as ``unhonored_qualifier:<kind>=<value>``.
+
+    Also ``rank_window_open_ended`` when the question's window has no limit,
+    and ``unrequested_offset:<n>`` when a plan or SQL carries OFFSET and the
+    question asked for no rank window. Main dropped that offset; keeping it
+    and serving it is a different question than the one asked.
+    """
+    win = parse_rank_window(question)
+    if win is None:
+        n = _positive_offset(plan, sql)
+        if n is not None:
+            return f"unrequested_offset:{n}"
+    elif win.limit is None:
+        return "rank_window_open_ended"
     for kind, value in extract_qualifiers(question):
         ok = False
         if kind == KIND_RANK_WINDOW:
@@ -659,6 +858,7 @@ __all__ = [
     "qualifier_reason",
     "rank_window_group",
     "rank_window_measure",
+    "rank_window_shape_reason",
     "retry_plan_covers_qualifiers",
     "unhonored_qualifier_reason",
 ]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import builtins
 import io
+import os
 import pathlib
 import re
 import time
@@ -66,11 +67,13 @@ KG_TOP3 = {"SKU-01", "SKU-02", "SKU-03"}
 
 CASES = [
     (FOUNDER_Q, "outbound_value_myr", REVENUE_4_8, REVENUE_TOP3, "'most selling' read as revenue"),
-    ("excluding top 3, next 5 skus by units sold", "outbound_kg", KG_4_8, KG_TOP3,
-     "quantity sold"),
-    ("ranks 4-8 skus by quantity sold", "outbound_kg", KG_4_8, KG_TOP3, "quantity sold"),
-    ("after the top 3, what are the next 5 SKUs", "outbound_value_myr", REVENUE_4_8,
-     REVENUE_TOP3, "no measure named; read as revenue"),
+    ("excluding top 3, next 5 best selling skus", "outbound_value_myr", REVENUE_4_8,
+     REVENUE_TOP3, "'best selling' read as revenue"),
+    ("excluding top 3, next 5 skus sold most", "outbound_value_myr", REVENUE_4_8,
+     REVENUE_TOP3, "'sold most' read as revenue"),
+    ("excluding top 3, next 5 skus by quantity sold", "outbound_kg", KG_4_8, KG_TOP3,
+     "quantity sold (kg)"),
+    ("ranks 4-8 skus by quantity sold", "outbound_kg", KG_4_8, KG_TOP3, "quantity sold (kg)"),
 ]
 
 
@@ -188,8 +191,10 @@ def test_rank_window_answers_ranks_4_to_8_without_generate(
     assert env["plan_source"] == "other"
     assert NOTE_RANK_WINDOW in env["assumptions"]
     assert reading.lower() in env["text"].lower(), env["text"]
-    other = "units sold" if measure == "outbound_value_myr" else "revenue"
+    other = "quantity sold" if measure == "outbound_value_myr" else "revenue"
     assert f"not {other}" in env["text"], env["text"]
+    if measure == "outbound_kg":
+        assert " unit" not in env["text"].lower(), env["text"]
     assert "ranks 1..3 excluded (OFFSET 3)" in env["coverage"]["exclude"]
     assert len(h.submits) == 1
 
@@ -230,28 +235,48 @@ def _assert_rank_abstain(env: dict[str, Any] | None) -> None:
     assert "unhonored_qualifier:rank_window=4-8" in _blob(env)
 
 
-def test_top5_plan_for_rank_window_is_named_abstain(lake: Path) -> None:
+def _lane_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the deterministic lane so the QUAL-GUARD sees the fake plan or SQL.
+
+    raising=False: on main the function does not exist and the ask never
+    called it, so the patch changes nothing there.
+    """
+    import dms_executor.generative_ask as ga
+
+    monkeypatch.setattr(ga, "rank_window_ask", lambda *_a, **_k: None, raising=False)
+
+
+def test_top5_plan_for_rank_window_is_named_abstain(
+    lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _lane_off(monkeypatch)
     h = _Harness(lake, payload={"query_plan": dict(_TOP5_PLAN), "plan_source": "ontology_plan"})
-    env = h.ask(_NO_ENTITY_Q)
-    assert h.computes, "no entity named: the lane defers to Insights"
+    env = h.ask(FOUNDER_Q)
+    assert h.computes, "guard test: the fake plan must be what is refused"
     _assert_rank_abstain(env)
     assert h.submits == []
 
 
 @pytest.mark.parametrize("sql", _BAD_SQL, ids=["no_offset", "ranks_1_8", "no_tiebreak"])
-def test_sql_ignoring_rank_window_is_named_abstain(lake: Path, sql: str) -> None:
+def test_sql_ignoring_rank_window_is_named_abstain(
+    lake: Path, sql: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _lane_off(monkeypatch)
     h = _Harness(lake, payload={"query_sql": sql, "plan_source": "ontology_plan"})
-    _assert_rank_abstain(h.ask(_NO_ENTITY_Q))
+    _assert_rank_abstain(h.ask(FOUNDER_Q))
     assert h.submits == []
 
 
-def test_sql_honouring_rank_window_still_answers(lake: Path) -> None:
+def test_sql_honouring_rank_window_still_answers(
+    lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _lane_off(monkeypatch)
     sql = (
         f"SELECT sku, {_REV} AS revenue FROM transactions GROUP BY sku "
         "ORDER BY 2 DESC, sku ASC LIMIT 5 OFFSET 3"
     )
     h = _Harness(lake, payload={"query_sql": sql, "plan_source": "ontology_plan"})
-    env = h.ask(_NO_ENTITY_Q)
+    env = h.ask(FOUNDER_Q)
     assert env is not None and env["badge"] == "L2_VALIDATED", _blob(env or {})
     assert [r["sku"] for r in env["rows"]] == [s for s, _v in REVENUE_4_8]
 
@@ -327,11 +352,15 @@ def test_intent_slots_carry_offset_not_excluded_prefix(lake: Path) -> None:
     }
 
 
-def test_plan_offset_compiles_limit_offset_with_tiebreak(lake: Path) -> None:
+def test_plan_offset_compiles_limit_offset_with_tiebreak(
+    lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan offset is kept only when the question's window asks for it."""
+    _lane_off(monkeypatch)
     h = _Harness(lake, payload={
         "query_plan": {**_TOP5_PLAN, "offset": 3}, "plan_source": "ontology_plan",
     })
-    env = h.ask(_NO_ENTITY_Q)
+    env = h.ask(FOUNDER_Q)
     assert env is not None and env["badge"] == "L2_VALIDATED", _blob(env or {})
     assert "LIMIT 5 OFFSET 3" in str(env["sql_used"])
     assert env["rows"] == [{"product_sku": s, "outbound_value_myr": v} for s, v in REVENUE_4_8]
@@ -357,6 +386,200 @@ def test_non_rank_questions_parse_no_window() -> None:
     from cortex_client.qualifiers import parse_rank_window
 
     assert [q for q in _NON_RANK_QS if parse_rank_window(q) is not None] == []
+
+
+# --- B1: a filter or a second noun is a named abstain, never a wrong L2 ---
+
+_B1 = (
+    ("excluding top 3, next 5 skus at WH-B", "rank_window_unhandled_terms:", ("wh",)),
+    ("excluding top 3 in warehouse A, next 5", "rank_window_unhandled_terms:", ("in", "a")),
+    ("excluding top 3, next 5 RAW skus", "rank_window_unhandled_terms:", ("raw",)),
+    ("excluding top 3, next 5 chemical skus", "rank_window_unhandled_terms:", ("chemical",)),
+    ("top 10 skus after the top 3 warehouses", "rank_window_entity_mismatch:warehouse!=sku", ()),
+)
+
+
+def _seed_multi(path: Path) -> None:
+    """Two warehouses, ranks that disagree. A missing WHERE is a different answer."""
+    ensure_demo_warehouse(path)
+    con = duckdb.connect(str(path))
+    try:
+        for table in ("transactions", "inventory", "shipments"):
+            con.execute(f"DELETE FROM {table}")
+        inv: list[tuple[Any, ...]] = []
+        txn: list[tuple[Any, ...]] = []
+        n = 0
+        for i in range(1, 9):
+            sku = f"SKU-{i:02d}"
+            for loc, kg in (("WH-A", 1000 - i * 10), ("WH-B", 100 + i * 50)):
+                inv.append((sku, loc, 10.0, 1.0, 2.0, "SUP-01", "RAW", None))
+                n += 1
+                txn.append((f"T{n:03d}", sku, loc, "outbound", float(kg), 2.0))
+        con.executemany("INSERT INTO inventory VALUES (?, ?, ?, ?, ?, ?, ?, ?)", inv)
+        con.executemany(
+            "INSERT INTO transactions VALUES (?, ?, ?, ?, ?, ?, TIMESTAMP '2026-07-01')",
+            txn,
+        )
+    finally:
+        con.close()
+
+
+@pytest.fixture()
+def multi(tmp_path: Path) -> Path:
+    path = tmp_path / "multi.duckdb"
+    _seed_multi(path)
+    return path
+
+
+@pytest.mark.parametrize(("question", "reason", "tokens"), _B1)
+def test_rank_window_does_not_drop_filters_or_rank_the_wrong_noun(
+    multi: Path, question: str, reason: str, tokens: tuple[str, ...]
+) -> None:
+    h = _Harness(multi, payload={"query_plan": dict(_TOP5_PLAN), "plan_source": "ontology_plan"})
+    env = h.ask(question)
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert env["rows"] == [] and env["values"] == []
+    blob = _blob(env)
+    assert reason in blob, blob
+    if tokens:
+        listed = blob.split("rank_window_unhandled_terms:", 1)[1].split()[0].rstrip(".,;")
+        assert set(tokens) <= set(listed.split(",")), blob
+    assert h.computes == [] and h.submits == []
+
+
+def test_rank_window_needs_exactly_one_entity(lake: Path) -> None:
+    h = _Harness(lake, payload={"query_plan": dict(_TOP5_PLAN), "plan_source": "ontology_plan"})
+    env = h.ask(_NO_ENTITY_Q)
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert "rank_window_unhandled_terms:no_entity" in _blob(env)
+    assert h.computes == [] and h.submits == []
+
+
+# --- B2: "top 5 excluding top 3" is ranks 4-5, and no count does not answer ---
+
+
+def test_top_n_excluding_top_m_keeps_the_difference(lake: Path) -> None:
+    h = _Harness(lake)
+    env = h.ask("top 5 skus excluding top 3 by revenue")
+    assert env is not None and env["badge"] == "L2_VALIDATED", _blob(env or {})
+    assert env["rows"] == [
+        {"product_sku": "SKU-09", "outbound_value_myr": 2400.0},
+        {"product_sku": "SKU-08", "outbound_value_myr": 2250.0},
+    ]
+    assert "LIMIT 2 OFFSET 3" in str(env["sql_used"])
+    assert h.computes == []
+    assert len(env["rows"]) != 9
+
+
+def test_open_ended_window_abstains_instead_of_every_later_rank(lake: Path) -> None:
+    q = "excluding top 3 skus by revenue"
+    h = _Harness(lake, payload={"query_plan": {**_TOP5_PLAN, "limit": 50}})
+    env = h.ask(q)
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert "rank_window_open_ended" in _blob(env)
+    assert env["rows"] == []
+    assert h.computes == [] and h.submits == []
+    assert unhonored_qualifier_reason(q, plan={**_TOP5_PLAN, "limit": 50}) == (
+        "rank_window_open_ended"
+    )
+
+
+def test_top_n_not_wider_than_the_exclusion_is_open_ended(lake: Path) -> None:
+    env = _Harness(lake).ask("top 3 skus excluding top 5 by revenue")
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert "rank_window_open_ended" in _blob(env)
+    assert env["rows"] == []
+
+
+# --- B3: an offset the question did not ask for is not served --------------
+
+
+def test_unrequested_plan_offset_is_named_abstain(lake: Path) -> None:
+    q = "next 5 skus by revenue"
+    h = _Harness(lake, payload={
+        "query_plan": {**_TOP5_PLAN, "offset": 3}, "plan_source": "ontology_plan",
+    })
+    env = h.ask(q)
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert "unrequested_offset:3" in _blob(env)
+    assert env["rows"] == []
+    assert h.submits == []
+
+
+def test_unrequested_sql_offset_is_named_abstain(lake: Path) -> None:
+    q = "next 5 skus by revenue"
+    sql = (
+        f"SELECT sku, {_REV} AS revenue FROM transactions GROUP BY sku "
+        "ORDER BY 2 DESC, sku ASC LIMIT 5 OFFSET 3"
+    )
+    h = _Harness(lake, payload={"query_sql": sql, "plan_source": "ontology_plan"})
+    env = h.ask(q)
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert "unrequested_offset:3" in _blob(env)
+    assert h.submits == []
+
+
+# --- measure words: none abstains, units is not kg, selling stays revenue --
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["excluding top 3, next 5 skus", "after the top 3, what are the next 5 SKUs"],
+)
+def test_no_measure_word_abstains_by_name(lake: Path, question: str) -> None:
+    h = _Harness(lake)
+    env = h.ask(question)
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    assert "ambiguous_measure:none" in _blob(env)
+    assert env["rows"] == []
+    assert h.computes == [] and h.submits == []
+    onto = load_verified_ontology(lake)
+    assert "measure" not in intent_slots(question, onto)
+
+
+def test_units_word_does_not_map_to_kilograms(lake: Path) -> None:
+    h = _Harness(lake)
+    env = h.ask("excluding top 3, next 5 skus by units sold")
+    assert env is not None and env["badge"] == "ABSTAIN", _blob(env or {})
+    blob = _blob(env)
+    assert "unknown_measure:units" in blob, blob
+    assert "outbound_kg" not in blob
+    assert env["rows"] == []
+    assert h.computes == [] and h.submits == []
+
+
+def test_lane_does_not_call_ranking_or_the_intent_binder(
+    lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dms_executor.generative_ask as ga
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("rank-window lane called a generate fallback")
+
+    monkeypatch.setattr(ga, "ontology_plan_from_ranking", _boom)
+    monkeypatch.setattr(ga, "bind_plan", _boom)
+    monkeypatch.setattr(ga, "intent_slots", _boom)
+    env = _Harness(lake).ask(FOUNDER_Q)
+    assert env is not None and env["badge"] == "L2_VALIDATED"
+    assert 'ORDER BY "outbound_value_myr" DESC, d0."sku" ASC\nLIMIT 5 OFFSET 3' in str(
+        env["sql_used"]
+    )
+
+
+# Tracked in RANK-WORDS-02. Not parsed here, and not turned into a window.
+_RANK_WORDS_02 = (
+    "skip the first 3",
+    "bottom 5 excluding bottom 3",
+    "ranks 8 to 4",
+    "excluding SKU X, top 5",
+)
+
+
+def test_rank_words_02_phrases_are_not_windows() -> None:
+    from cortex_client.qualifiers import parse_rank_window, rank_window_shape_reason
+
+    assert [q for q in _RANK_WORDS_02 if parse_rank_window(q) is not None] == []
+    assert [q for q in _RANK_WORDS_02 if rank_window_shape_reason(q) is not None] == []
 
 
 # --- grammar only: no scored pack is opened or imported -------------------
@@ -388,6 +611,7 @@ def test_rank_window_parse_and_compile_touch_no_scored_pack(
 
     monkeypatch.setattr(builtins, "open", _spy(builtins.open))
     monkeypatch.setattr(io, "open", _spy(io.open))
+    monkeypatch.setattr(os, "open", _spy(os.open))
     for name in ("open", "read_text", "read_bytes"):
         monkeypatch.setattr(pathlib.Path, name, _spy(getattr(pathlib.Path, name)))
     specs = {n: m.description or "" for n, m in onto.measures.items()}
