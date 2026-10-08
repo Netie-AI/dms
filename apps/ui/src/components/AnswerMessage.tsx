@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
+import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
+import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
 import {
   auditReceiptLines,
@@ -307,6 +309,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         >
           <Badge kind={envelope.badge} />
         </button>
+        <ServedModelLine envelope={envelope} />
         {(envelope.demo_fallback_used || envelope.ask_mode === "demo") && (
           <span className="border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-warn)]">
             {envelope.demo_fallback_used ? "fallback → demo" : "demo"}
@@ -420,6 +423,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           </a>
         )}
       </div>
+      <AbstainNote envelope={envelope} />
       {showLayer && (
         <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
           <p className="text-sm font-medium text-[var(--color-ink)]">
@@ -652,18 +656,9 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           )}
         </div>
       )}
-      {envelope.assumptions.length > 0 && (
-        <div className="mt-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            Assumptions
-          </p>
-          <ul className="mt-1 list-inside list-disc text-sm text-[var(--color-ink-muted)]">
-            {envelope.assumptions.map((a) => (
-              <li key={a}>{a}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <AnswerDetails envelope={envelope}>
+        <ResultView envelope={envelope} />
+      </AnswerDetails>
     </article>
   );
 }

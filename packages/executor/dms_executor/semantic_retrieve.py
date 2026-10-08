@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from cortex_client.compute import pack_id_shape
+from cortex_client.qualifiers import parse_rank_window, rank_window_group, rank_window_measure
 from dms_core.pii import column_is_pii, sanitize_retrieve_parts
 
 from dms_executor.demo_warehouse import connect_file
@@ -285,6 +286,21 @@ def intent_slots(question: str, ontology: Ontology | None = None) -> dict[str, A
         out["limit"] = int(top.group(1))
     if above:
         out["keep_gt"] = float(above.group(1))
+    win = parse_rank_window(q)
+    if win is not None:
+        # "excluding top 3": 3 is the skipped prefix, never the limit.
+        out.pop("limit", None)
+        out["offset"] = win.offset
+        if win.limit is not None:
+            out["limit"] = win.limit
+        pair = rank_window_group(win)
+        if pair and not hinted:
+            out["group_by"] = [list(pair)]
+        if not lock and ontology is not None:
+            specs = {n: m.description or "" for n, m in ontology.measures.items()}
+            measure = rank_window_measure(q, specs)[0]
+            if measure:
+                out["measure"] = measure
     return out
 
 
@@ -723,7 +739,11 @@ def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] |
     ):
         group_by = []
     limit = int(top.group(1)) if top else 50
+    win = parse_rank_window(q)
     plan: dict[str, Any] = {"measure": measure, "group_by": group_by, "limit": limit}
+    if win is not None:
+        plan["offset"] = win.offset
+        plan["limit"] = win.limit
     if filters:
         plan["filters"] = filters
     above = _ABOVE_PCT.search(q)

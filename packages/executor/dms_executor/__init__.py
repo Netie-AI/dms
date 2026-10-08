@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from cortex_client import CortexClient
+from cortex_client.compute import insights_budget_stop
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest
 from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ask import AskServiceError, GroundingRefused
@@ -35,6 +36,7 @@ from dms_executor.bronze import (
 from dms_executor.bronze_sheet_ask import (
     bronze_grant_abstain,
     bronze_lane_table,
+    bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
 from dms_executor.contract_infer import infer_contract
@@ -59,6 +61,7 @@ from dms_executor.demo_grants import (
 )
 from dms_executor.demo_pack import (
     curated_pack_metric_miss,
+    curated_pack_present,  # noqa: F401 - re-exported; wiring health reads it
     is_curated_l0_without_pack_metric,
     is_uncertified_paraphrase,
     maybe_pack_ask,
@@ -91,6 +94,7 @@ from dms_executor.generative_ask import (
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
+    OpenVaultTokenError,
     SessionAcl,
     SubmitError,
     classify_submit_error,
@@ -554,14 +558,36 @@ class Executor:
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
-        env = self._live_ask(
-            question,
-            space_id=space_id,
-            session_id=session_id,
-            tables=tables,
-            ask_path=ask_path,
-            seen=seen,
-        )
+        try:
+            env = self._live_ask(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+                ask_path=ask_path,
+                seen=seen,
+            )
+        except OpenVaultTokenError as exc:
+            # Every lane needs the signing key; no lane may relabel its absence.
+            env = build_answer_envelope(
+                answer_id="ans_ov_mint",
+                text=(
+                    "I can't answer this: DMS could not get its OpenVault "
+                    f"signing key ({exc.code}). No fallback answer was used."
+                ),
+                badge="ABSTAIN",
+                abstained=True,
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[exc.code, "no generative fallback", "no demo fallback"],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+                question=question,
+            )
+            assert_envelope_valid(env)
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
@@ -787,11 +813,19 @@ class Executor:
                 )
                 bronze_readable = active.intersection(granted)
                 if table_is_granted(target, bronze_readable):
-                    bronze_env = maybe_bronze_sheet_ask(
-                        question,
-                        space_id=space_id,
-                        session_id=session_id,
-                        warehouse=self._warehouse,
+                    # Flag off: do not call the sheet lane. Grant abstains above
+                    # and below stay. They return no rows. An ungranted table
+                    # or a missing Space is a refusal, and a later lane must
+                    # not answer it from some other table.
+                    bronze_env = (
+                        maybe_bronze_sheet_ask(
+                            question,
+                            space_id=space_id,
+                            session_id=session_id,
+                            warehouse=self._warehouse,
+                        )
+                        if bronze_sheet_lane_enabled()
+                        else None
                     )
                 else:
                     bronze_env = bronze_grant_abstain(
@@ -861,7 +895,12 @@ class Executor:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
                 # generative answer is left as-is. None still reaches Cortex ask.
-                if gen_env.get("abstained") and is_curated_l0_without_pack_metric(asked):
+                # A budget stop keeps its named reason (insights_timeout:<leg>).
+                if (
+                    gen_env.get("abstained")
+                    and not insights_budget_stop(gen_env)
+                    and is_curated_l0_without_pack_metric(asked)
+                ):
                     gen_env = curated_pack_metric_miss(
                         asked, space_id=space_id, session_id=session_id
                     )

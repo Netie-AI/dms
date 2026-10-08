@@ -39,6 +39,7 @@ GAP_REASONS = frozenset(
         "insights_refused",
         "insights_unauthorized",
         "insights_timeout",
+        "insights_call_cap",
         "insights_no_sql_no_ranking",
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",
@@ -48,6 +49,12 @@ GAP_REASONS = frozenset(
         "no_declared_measure",
         "ontology_store_unavailable",
         "untyped_numeric",
+        "ambiguous_measure",
+        "rank_window_unhandled_terms",
+        "ungrounded_qualifier",
+        "rank_window_entity_mismatch",
+        "rank_window_open_ended",
+        "unrequested_offset",
     }
 )
 

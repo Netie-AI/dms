@@ -22,7 +22,7 @@ from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
-from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
 SPEND_BY_COUNTRY_Q = "What is our total spend by supplier country?"
@@ -159,8 +159,22 @@ _BASE_PACK_METRICS: tuple[PackMetric, ...] = (
 
 
 def _score_fixture_dir() -> Path:
-    """Repo fixture that already copies Cortex certified_queries. Not a second pack."""
+    """Repo fixture that already copies Cortex certified_queries. Not a second pack.
+
+    Never read at import: the API image does not ship ``tests/``. The pack
+    holds oracle answers, so it must not become package data either.
+    """
     return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "curated_ceo"
+
+
+def curated_pack_present() -> bool:
+    """True when both curated_ceo fixture files are on disk.
+
+    A missing file is an empty pack, same as ``curated_l0_question_norms``.
+    It is not an error and it is not read at import.
+    """
+    root = _score_fixture_dir()
+    return (root / "questions.yaml").is_file() and (root / "oracles.yaml").is_file()
 
 
 def _collapse_sql(raw: object) -> str:
@@ -206,9 +220,11 @@ def load_score_pack_metrics(
     Reads the curated_ceo fixture (question + oracle SQL). An id not in
     ``ids`` is not a metric. Same question text keeps the first metric.
     """
+    root = _score_fixture_dir()
+    if not curated_pack_present():
+        return ()
     import yaml
 
-    root = _score_fixture_dir()
     questions = yaml.safe_load((root / "questions.yaml").read_text(encoding="utf-8")) or {}
     oracles = yaml.safe_load((root / "oracles.yaml").read_text(encoding="utf-8")) or {}
     oracle_rows = oracles.get("oracles") or {}
@@ -242,11 +258,22 @@ def load_score_pack_metrics(
 
 # Climb 10-13 snapshot this tuple. Do not append here.
 PACK_METRICS: tuple[PackMetric, ...] = _BASE_PACK_METRICS
-SCORE_PACK_EXACT_METRICS: tuple[PackMetric, ...] = load_score_pack_metrics()
+
+
+@lru_cache(maxsize=1)
+def score_pack_exact_metrics() -> tuple[PackMetric, ...]:
+    """Loaded on the first pack lookup. A missing pack is an empty tuple."""
+    return load_score_pack_metrics()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "SCORE_PACK_EXACT_METRICS":
+        return score_pack_exact_metrics()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _exact_pack_metrics() -> tuple[PackMetric, ...]:
-    return PACK_METRICS + SCORE_PACK_EXACT_METRICS
+    return PACK_METRICS + score_pack_exact_metrics()
 
 
 # Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
@@ -384,13 +411,7 @@ def lookup_pack_metric(
 
 
 def _curated_pack_path() -> Path:
-    return (
-        Path(__file__).resolve().parents[3]
-        / "tests"
-        / "fixtures"
-        / "curated_ceo"
-        / "questions.yaml"
-    )
+    return _score_fixture_dir() / "questions.yaml"
 
 
 @lru_cache(maxsize=1)
@@ -586,6 +607,8 @@ def maybe_pack_ask(
         )
     try:
         result = submit(hit.sql)
+    except OpenVaultTokenError:
+        raise
     except Exception:  # noqa: BLE001
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
