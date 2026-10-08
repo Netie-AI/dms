@@ -170,6 +170,7 @@ def test_finance_bronze_ask_follows_executor_warehouse(
     kind: str,
 ) -> None:
     """Three rows, one split. Membership is column 2. Outcome is column 3."""
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
     ingest, serving, table = _split(tmp_path)
     assert table == "bronze.granted_Sales"
     _point_split(monkeypatch, ingest, serving)

@@ -218,6 +218,7 @@ def test_granted_bronze_table_still_answers(
     filename = "granted.xlsx"
     table = _seed(db, filename, space_id=FINANCE, amount=42.5)
     _point_warehouse(monkeypatch, db)
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
     exe = _exe(db)
     assert table in exe.grantable_tables(space_id=FINANCE)
     env = exe.live_ask(

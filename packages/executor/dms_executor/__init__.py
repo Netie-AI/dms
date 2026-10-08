@@ -34,6 +34,7 @@ from dms_executor.bronze import (
 from dms_executor.bronze_sheet_ask import (
     bronze_grant_abstain,
     bronze_lane_table,
+    bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
 from dms_executor.contract_infer import infer_contract
@@ -755,11 +756,19 @@ class Executor:
                 )
                 bronze_readable = active.intersection(granted)
                 if table_is_granted(target, bronze_readable):
-                    bronze_env = maybe_bronze_sheet_ask(
-                        question,
-                        space_id=space_id,
-                        session_id=session_id,
-                        warehouse=self._warehouse,
+                    # Flag off: do not call the sheet lane. Grant abstains above
+                    # and below stay. They return no rows. An ungranted table
+                    # or a missing Space is a refusal, and a later lane must
+                    # not answer it from some other table.
+                    bronze_env = (
+                        maybe_bronze_sheet_ask(
+                            question,
+                            space_id=space_id,
+                            session_id=session_id,
+                            warehouse=self._warehouse,
+                        )
+                        if bronze_sheet_lane_enabled()
+                        else None
                     )
                 else:
                     bronze_env = bronze_grant_abstain(
