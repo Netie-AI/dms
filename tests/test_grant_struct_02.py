@@ -694,9 +694,16 @@ def test_qualified_mismatch_refuses_before_submit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sql = _placed(position, relation, anchor)
-    assert serve_gap(sql, grantable=set(grant), dialect="duckdb") == (
-        "sql_relation_not_granted"
-    ), (grant_name, position, relation)
+    # A source.table grant set names the miss. A bare grant keeps the
+    # default-schema refusal.
+    expected = (
+        "grant_key_missing" if grant_name == "qualified" else "sql_relation_not_granted"
+    )
+    assert serve_gap(sql, grantable=set(grant), dialect="duckdb") == expected, (
+        grant_name,
+        position,
+        relation,
+    )
     _grant_names(monkeypatch, tuple(grant))
     db = ensure_demo_warehouse(tmp_path / "qual.duckdb")
     model = _Gen(sql)
@@ -803,7 +810,7 @@ def test_postgres_unquoted_serves_and_quoted_schema_refuses() -> None:
         serve_gap(
             'SELECT 1 FROM "SRC_A".orders', grantable=granted, dialect="postgres"
         )
-        == "sql_relation_not_granted"
+        == "grant_key_missing"
     )
 
 
@@ -819,7 +826,7 @@ def test_snowflake_unquoted_serves_and_quoted_lower_refuses() -> None:
             grantable=granted,
             dialect="snowflake",
         )
-        == "sql_relation_not_granted"
+        == "grant_key_missing"
     )
 
 
@@ -888,5 +895,5 @@ def test_postgres_quoted_schema_refuses_shortlist_and_serve() -> None:
             grantable=granted,
             dialect="postgres",
         )
-        == "sql_relation_not_granted"
+        == "grant_key_missing"
     )

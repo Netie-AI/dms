@@ -366,6 +366,12 @@ def _allow(tree: exp.Expression, grantable: set[str], dialect: str) -> str | Non
         return "sql_relation_not_granted"
     default = _default_schema(dialect_name, engine)
     keys = _grant_keys(grantable, dialect)
+    # A fully qualified grant set is (source, table). Legacy bare names stay
+    # on the exact-key path below. Import is local: grant_key calls back into
+    # normalize_relation.
+    from dms_executor.grant_key import keyed_gap, keys_from_grantable
+
+    keyed = keys_from_grantable(set(grantable))
     ctes = _cte_keys(tree, engine)
     not_relation = False
     qualified_miss = False
@@ -406,6 +412,16 @@ def _allow(tree: exp.Expression, grantable: set[str], dialect: str) -> str | Non
         if len(names) == 1 and default:
             names = [default, names[0]]
         key = _relation_key(names)
+        if keyed is not None:
+            reason = keyed_gap(
+                key,
+                bare_table=None if had_qualifier else names[-1],
+                keys=keyed,
+                dialect=dialect,
+            )
+            if reason:
+                return reason
+            continue
         if key in keys:
             continue
         # One identifier that contains '.' is a path or a stored name

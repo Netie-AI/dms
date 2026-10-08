@@ -661,6 +661,27 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
+def _prepare_grant_sql(
+    sql: str,
+    *,
+    grantable: set[str],
+    warehouse: Path | None,
+    dialect: str,
+) -> tuple[str, str | None]:
+    """SQL ``serve_gap`` accepted, and a refusal.
+
+    Legacy grants return the same SQL. A keyed bare name is qualified to its
+    one source so the manifest filter binds, then ``serve_gap`` checks that
+    statement. The refusal, when there is one, is ``serve_gap``'s.
+    """
+    from dms_executor.grant_key import qualify_granted_sql
+
+    qualified = qualify_granted_sql(sql, grantable, dialect=dialect)
+    return qualified, validate_compiled_sql(
+        qualified, grantable=grantable, warehouse=warehouse, dialect=dialect
+    )
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -1021,7 +1042,7 @@ def _try_multi_grain_envelope(
             route="generated",
             question=q,
         )
-    why = validate_compiled_sql(
+    multi_sql, why = _prepare_grant_sql(
         multi.sql, grantable=allowed, warehouse=lake, dialect=dialect
     )
     if why == RESERVED_PARAM_AS_OF:
@@ -1038,7 +1059,7 @@ def _try_multi_grain_envelope(
             space_id=space_id, session_id=session_id, plan_source=source,
         )
     return _submit_validated(
-        multi.sql,
+        multi_sql,
         question=q,
         space_id=space_id,
         session_id=session_id,
@@ -1105,7 +1126,7 @@ def rank_window_ask(
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
-    bad = validate_compiled_sql(
+    bound, bad = _prepare_grant_sql(
         compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
     )
     if bad:
@@ -1116,7 +1137,7 @@ def rank_window_ask(
         f"{reading[:1].upper()}{reading[1:]}."
     )
     return _submit_validated(
-        compiled.sql,
+        bound,
         question=q,
         space_id=space_id,
         session_id=session_id,
@@ -1418,7 +1439,7 @@ def maybe_generative_ask(
                     space_id=space_id, session_id=session_id, plan_source=source,
                 )
             )
-        why = validate_compiled_sql(
+        sql, why = _prepare_grant_sql(
             sql, grantable=allowed, warehouse=lake, dialect=dialect
         )
         broken = (
@@ -1621,7 +1642,7 @@ def maybe_generative_ask(
             )
         )
 
-    why = validate_compiled_sql(
+    compiled_sql, why = _prepare_grant_sql(
         compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
     )
     if why == RESERVED_PARAM_AS_OF:
@@ -1648,7 +1669,7 @@ def maybe_generative_ask(
         )
     return _stamp(
         _submit_validated(
-            compiled.sql,
+            compiled_sql,
             question=q,
             space_id=space_id,
             session_id=session_id,

@@ -199,6 +199,9 @@ class Executor:
         self._warehouse = Path(warehouse_path) if warehouse_path else None
         self._bound_sessions: set[str] = set()
         self._turns: dict[tuple[str, str], dict[str, Any]] = {}
+        # Filled by grantable_tables. None means this Space's grants are the
+        # legacy bare-name seed. A dict is source.table -> that grant's filter.
+        self._keyed_predicates: dict[str, dict[str, str] | None] = {}
         # The Space boundary reads its facts from here. Defaults to the DR-0002
         # seed so the boundary holds without Postgres; swap for a Postgres-backed
         # store when P-DMS-2 lands, without touching the serving path.
@@ -353,7 +356,16 @@ class Executor:
             session_id="_grantable_probe",
             pool_id="default",
         )
-        return sorted(resolve_session_acl(ctx).row_predicates)
+        acl = resolve_session_acl(ctx)
+        from dms_executor.grant_key import grants_are_keyed
+
+        if grants_are_keyed(ctx.grants):
+            # Qualified relations and the filter each grant already carries.
+            # demo_acl and the ask path read this; they do not resolve again.
+            self._keyed_predicates[space_id] = dict(acl.row_predicates)
+        else:
+            self._keyed_predicates[space_id] = None
+        return sorted(acl.row_predicates)
 
     def demo_acl(
         self,
@@ -386,6 +398,29 @@ class Executor:
         being skipped.
         """
         grantable = self.grantable_tables(space_id=space_id)
+        keyed = self._keyed_predicates.get(space_id) if space_id else None
+        if keyed is not None:
+            selection = [t for t in (tables or []) if t]
+            ungrantable = [t for t in selection if t not in keyed]
+            if ungrantable:
+                raise GroundingRefused(ungrantable=ungrantable, grantable=sorted(keyed))
+            chosen = selection or sorted(keyed)
+            base = session_id or f"ses_{uuid4().hex[:16]}"
+            parts = []
+            if space_id:
+                parts.append(f"space:{space_id}")
+            if selection:
+                parts.append(f"scope:{'+'.join(sorted(selection))}")
+            sid = f"{base}::{'::'.join(parts)}" if parts else base
+            return SessionAcl(
+                session_id=sid,
+                org_id="tenant_demo",
+                space_id=space_id,
+                row_predicates={t: keyed[t] for t in chosen},
+                allowed_paths=[],
+                pool_id="default",
+                ttl_seconds=900,
+            )
         selection = [t for t in (tables or []) if t]
         ungrantable = [t for t in selection if t not in grantable]
         if ungrantable:
@@ -735,9 +770,15 @@ class Executor:
             granted = self.grantable_tables(space_id=space_id)
         except Exception:  # noqa: BLE001 -- empty context, never the whole space
             granted = []
+            if space_id:
+                self._keyed_predicates[space_id] = None
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
-        default_readable = [t for t in granted if t in DEMO_TABLES]
+        keyed = self._keyed_predicates.get(space_id) if space_id else None
+        if keyed is not None:
+            default_readable = sorted(keyed)
+        else:
+            default_readable = [t for t in granted if t in DEMO_TABLES]
         readable = requested or default_readable
         cascade = (
             run_cascade(
