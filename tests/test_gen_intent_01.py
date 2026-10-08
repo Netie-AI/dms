@@ -126,7 +126,9 @@ def _warehouse(tmp_path: Path) -> tuple[Path, Any]:
             """
             INSERT INTO inventory VALUES
               ('SKU-CHEM-B', 'WH-C', 10, 1, 2.0, 'SUP-04', 'Chemicals', NULL),
-              ('SKU-CHEM-C', 'WH-C', 4, 1, 3.0, 'SUP-04', 'chemical', NULL)
+              ('SKU-CHEM-C', 'WH-C', 4, 1, 3.0, 'SUP-04', 'chemical', NULL),
+              ('SKU-BIO', 'WH-C', 6, 1, 2.5, 'SUP-04', 'BIOCHEMICAL', NULL),
+              ('SKU-NON', 'WH-C', 8, 1, 1.5, 'SUP-04', 'NON-CHEMICAL', NULL)
             """
         )
     finally:
@@ -169,10 +171,6 @@ def _no_invented_measure(env: dict[str, Any]) -> None:
             assert "stock_value_myr" not in row
         assert "stock_value_myr" not in text
         assert env.get("plan_origin") != "ontology_ranking"
-        # Oracle answer is the exact CHEMICALS key. Variant rows stay in the
-        # lake (Chemicals / chemical) so this fails until LIST-MATCH-EXACT-01.
-        got = {str(row.get("lot_sku")) for row in rows}
-        assert got == {"SKU-GAMMA"}
     else:
         assert env.get("badge") == "ABSTAIN"
         assert env.get("abstained") is True
@@ -184,7 +182,6 @@ def _no_invented_measure(env: dict[str, Any]) -> None:
         )
 
 
-@pytest.mark.xfail(strict=True, reason="LIST-MATCH-EXACT-01")
 def test_generate_empty_list_is_not_stock_value(tmp_path: Path) -> None:
     db, onto = _warehouse(tmp_path)
     opened: list[str] = []
@@ -213,7 +210,6 @@ def test_generate_empty_list_is_not_stock_value(tmp_path: Path) -> None:
         assert needle not in blob
 
 
-@pytest.mark.xfail(strict=True, reason="LIST-MATCH-EXACT-01")
 def test_show_all_and_which_are_in_are_not_aggregates(tmp_path: Path) -> None:
     db, onto = _warehouse(tmp_path)
     grants = {"inventory", "locations", "transactions", "suppliers", "shipments"}
@@ -224,6 +220,25 @@ def test_show_all_and_which_are_in_are_not_aggregates(tmp_path: Path) -> None:
         env = _ask(db, onto, question, _rank("cq_chemicals_list"), grantable=grants)
         assert env is not None
         _no_invented_measure(env)
+
+
+_VARIANT_LIST_PHRASINGS = (
+    "List chemicals in inventory",
+    "show all chemicals in inventory",
+    "which chemicals are in inventory",
+)
+
+
+@pytest.mark.xfail(strict=True, reason="LIST-MATCH-EXACT-01")
+def test_list_rows_match_oracle_set_on_variant_lake(tmp_path: Path) -> None:
+    """Oracle set is the exact CHEMICALS key. Variant rows stay in the lake."""
+    db, onto = _warehouse(tmp_path)
+    grants = {"inventory", "locations", "transactions", "suppliers", "shipments"}
+    for question in _VARIANT_LIST_PHRASINGS:
+        env = _ask(db, onto, question, _rank("cq_chemicals_list"), grantable=grants)
+        assert env is not None
+        got = {str(row.get("lot_sku")) for row in (env.get("rows") or [])}
+        assert got == {"SKU-GAMMA"}, (question, got)
 
 
 def test_ungranted_validate_does_not_answer_the_list(tmp_path: Path) -> None:
