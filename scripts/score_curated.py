@@ -451,6 +451,8 @@ def load_pack(path: Path) -> dict[str, Any]:
         import yaml
     except ImportError as exc:  # pragma: no cover
         raise SystemExit("PyYAML required") from exc
+    if not path.is_file():
+        raise SystemExit(f"demo_pack_unavailable: {path} not found")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     questions = list(data.get("questions") or [])
     spaces = dict(data.get("spaces") or {})
@@ -511,6 +513,8 @@ def load_oracles(path: Path = DEFAULT_ORACLES) -> dict[str, Any]:
         import yaml
     except ImportError as exc:  # pragma: no cover
         raise SystemExit("PyYAML required") from exc
+    if not path.is_file():
+        raise SystemExit(f"demo_pack_unavailable: {path} not found")
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     rows = data.get("oracles") or {}
     if not isinstance(rows, dict):
