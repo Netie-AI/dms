@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 TIME_GRAINS = ("day", "week", "month", "quarter", "year")
@@ -18,6 +19,7 @@ KIND_TIME_GRAIN = "time_grain"
 KIND_TIME_FILTER = "time_filter"
 KIND_GROUP_BY = "group_by"
 KIND_NAMED_FILTER = "named_filter"
+KIND_RANK_WINDOW = "rank_window"
 
 # ponytail: closed needle list, not a parser. Ceiling: unseen synonyms
 # ("MoM", "fiscal period"). Upgrade: Cortex HTTP qualifier-check.
@@ -183,6 +185,191 @@ def qualifier_reason(kind: str, value: str) -> str:
     return f"unhonored_qualifier:{kind}={value}"
 
 
+# --- RANK-WINDOW-01: "excluding top 3, next 5" grammar. No pack, no model. ---
+
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15,
+    "twenty": 20,
+}
+_ORD_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+    "twelfth": 12, "fifteenth": 15, "twentieth": 20,
+}
+_NUM = r"(\d{1,3}|" + "|".join(_NUM_WORDS) + r")"
+_ORD = r"(?:(\d{1,3})(?:st|nd|rd|th)|(" + "|".join(_ORD_WORDS) + r"))"
+_TO = r"\s*(?:-|–|—|to|through|thru|and)\s*"
+_EXCL_TOP_RE = re.compile(
+    r"\b(?:excluding|exclude|except(?:\s+for)?|skip(?:ping)?|ignor(?:e|ing)|"
+    r"without|after|beyond|past|below|other\s+than|outside(?:\s+of)?|"
+    r"not\s+(?:in\s+)?)\s+(?:the\s+)?top\s+" + _NUM + r"\b"
+)
+_NEXT_RE = re.compile(r"\b(?:next|following)\s+" + _NUM + r"\b|\b" + _NUM + r"\s+more\b")
+_SHOW_N_RE = re.compile(
+    r"\b(?:show|list|give(?:\s+me)?|get|what\s+are|which\s+are)\s+(?:the\s+)?"
+    + _NUM + r"\b"
+)
+_RANKS_RE = re.compile(
+    r"\b(?:ranks?|ranked|ranking|positions?|numbers?|nos?\.?|#)\s*#?\s*" + _NUM
+    + r"(?:st|nd|rd|th)?" + _TO + r"#?\s*" + _NUM + r"(?:st|nd|rd|th)?\b"
+)
+_ORD_RANGE_RE = re.compile(r"\b" + _ORD + _TO + _ORD + r"\b")
+# sku / skus / sku's / skus' / skys (the founder typo). Whole word only.
+_ENTITY_RES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bsk[uy](?:'?s|s')?\b"), "sku"),
+    (re.compile(r"\bsuppliers?\b"), "supplier"),
+    (re.compile(r"\bcategor(?:y|ies)\b"), "category"),
+    (re.compile(r"\bwarehouses?\b"), "warehouse"),
+    (re.compile(r"\bplants?\b"), "plant"),
+)
+_BY_PHRASE_RE = re.compile(r"\bby\s+([a-z][a-z0-9 _'-]{0,40}?)\s*(?:[?.!,;]|$)")
+_SELLING_RE = re.compile(
+    r"\b(?:most|best|top|highest)[\s-]+sell(?:ing|er|ers)?\b"
+    r"|\bsell(?:s|ing)?\s+(?:the\s+)?most\b"
+)
+_UNITS_RE = re.compile(r"\b(?:units?|quantity|qty|volume)\b")
+_REVENUE_RE = re.compile(r"\b(?:revenue|sales|turnover)\b")
+# Candidate DMS measure names per reading, most specific first.
+UNITS_MEASURES = ("outbound_kg", "quantity_sold", "units_sold")
+REVENUE_MEASURES = ("outbound_value_myr", "revenue", "sales")
+
+
+def _num(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    return int(raw) if raw.isdigit() else _NUM_WORDS.get(raw) or _ORD_WORDS.get(raw)
+
+
+@dataclass(frozen=True)
+class RankWindow:
+    """Ranks ``offset+1 .. offset+limit`` (``limit`` None = every rank after)."""
+
+    offset: int
+    limit: int | None
+    entity: str | None
+    measure_phrase: str
+    span: tuple[int, int]
+
+    @property
+    def label(self) -> str:
+        first = self.offset + 1
+        return f"{first}-{self.offset + self.limit}" if self.limit else f"{first}+"
+
+
+def _window_from_range(a: int | None, b: int | None) -> tuple[int, int] | None:
+    if a is None or b is None or not (1 <= a <= b <= 1000) or a == 1:
+        return None
+    return a - 1, b - a + 1
+
+
+def parse_rank_window(question: str) -> RankWindow | None:
+    """Rank window the question asks for, or None. ``ranks 1-5`` is plain top-N."""
+    qn = (question or "").lower()
+    offset: int | None = None
+    limit: int | None = None
+    span: tuple[int, int] | None = None
+    excl = _EXCL_TOP_RE.search(qn)
+    if excl:
+        offset = _num(excl.group(1))
+        rest = qn[: excl.start()] + " " * (excl.end() - excl.start()) + qn[excl.end():]
+        nxt = _NEXT_RE.search(rest) or _SHOW_N_RE.search(rest)
+        if nxt:
+            limit = _num(next(g for g in nxt.groups() if g))
+            span = (min(excl.start(), nxt.start()), max(excl.end(), nxt.end()))
+        else:
+            span = (excl.start(), excl.end())
+        if not offset or (limit is not None and limit < 1):
+            return None
+    else:
+        rng = _RANKS_RE.search(qn)
+        if rng:
+            got = _window_from_range(_num(rng.group(1)), _num(rng.group(2)))
+        else:
+            rng = _ORD_RANGE_RE.search(qn)
+            got = (
+                _window_from_range(
+                    _num(rng.group(1) or rng.group(2)), _num(rng.group(3) or rng.group(4))
+                )
+                if rng
+                else None
+            )
+        if rng is None or got is None:
+            return None
+        offset, limit = got
+        span = (rng.start(), rng.end())
+    entity = next((name for pat, name in _ENTITY_RES if pat.search(qn)), None)
+    by = _BY_PHRASE_RE.search(qn)
+    phrase = by.group(1).strip() if by else ""
+    if phrase.split(" ", 1)[0] in _DIM_GROUP:
+        phrase = ""
+    if not phrase and _SELLING_RE.search(qn):
+        phrase = "most selling"
+    assert span is not None
+    return RankWindow(offset, limit, entity, phrase, span)
+
+
+def rank_window_group(win: RankWindow) -> tuple[str, str] | None:
+    """(object, column) the window ranks, or None when no entity was named."""
+    pair = _DIM_GROUP.get(win.entity or "")
+    return (pair[0], pair[1]) if pair else None
+
+
+def rank_window_measure(
+    question: str, measures: dict[str, str]
+) -> tuple[str | None, str | None, str]:
+    """(measure, abstain_reason, reading_note) for a rank-window ask.
+
+    ``measures`` maps DMS measure name to its description. Units words pick
+    quantity sold, revenue words pick revenue. "Most selling" and no measure
+    at all read as revenue - the same reading "selling sku" already locks -
+    and the note says so. Both readings named is a named ambiguity.
+    """
+    qn = (question or "").lower()
+    win = parse_rank_window(qn)
+    phrase = win.measure_phrase if win else ""
+    units = bool(_UNITS_RE.search(qn))
+    revenue = bool(_REVENUE_RE.search(qn))
+    if units and revenue:
+        tag = "most_selling" if _SELLING_RE.search(qn) else "units_or_revenue"
+        return None, f"ambiguous_measure:{tag}", ""
+    if not (units or revenue) and phrase not in ("", "most selling"):
+        toks = set(re.findall(r"[a-z0-9]+", phrase)) - {"the", "a", "of", "total"}
+
+        def _words(text: str) -> set[str]:
+            return set(re.findall(r"[a-z0-9]+", text.lower().replace("_", " ")))
+
+        hits = [n for n in sorted(measures) if toks and toks <= _words(n)] or [
+            n for n, desc in sorted(measures.items()) if toks and toks <= _words(desc)
+        ]
+        if len(hits) == 1:
+            return hits[0], None, f"ranked by {hits[0]} (named: {phrase})"
+        if hits:
+            return None, f"ambiguous_measure:{phrase}", ""
+        return None, f"unknown_measure:{phrase}", ""
+    if units:
+        names, reading = UNITS_MEASURES, "quantity sold (units, kg)"
+        other = "revenue"
+    else:
+        names, reading = REVENUE_MEASURES, "revenue (sales value)"
+        other = "units sold"
+    found = next((n for n in names if n in measures), None)
+    if found is None:
+        return None, f"unknown_measure:{names[0]}", ""
+    other_name = next(
+        (n for n in (REVENUE_MEASURES if units else UNITS_MEASURES) if n in measures), ""
+    )
+    why = (
+        "'most selling' read as"
+        if phrase == "most selling"
+        else "no measure named; read as"
+        if not phrase and not (units or revenue)
+        else "ranked by"
+    )
+    alt = f", not {other} ({other_name})" if other_name else f", not {other}"
+    return found, None, f"{why} {reading} = {found}{alt}"
+
+
 def extract_qualifiers(question: str) -> tuple[tuple[str, str], ...]:
     """Ordered unique (kind, value) pairs. Deterministic. No model."""
     q = question or ""
@@ -202,6 +389,10 @@ def extract_qualifiers(question: str) -> tuple[tuple[str, str], ...]:
         if key not in seen and value:
             seen.add(key)
             out.append(key)
+
+    win = parse_rank_window(q)
+    if win is not None and _take(*win.span):
+        _add(KIND_RANK_WINDOW, win.label)
 
     for m in _TIME_FILTER_RE.finditer(qn):
         if not _take(m.start(), m.end()):
@@ -251,6 +442,8 @@ def extract_qualifiers(question: str) -> tuple[tuple[str, str], ...]:
         if not _take(start, end):
             continue
         _add(KIND_GROUP_BY, value)
+    if win is not None and win.entity:
+        _add(KIND_GROUP_BY, win.entity)
 
     for m in _QUOTED_RE.finditer(q):
         raw = (m.group(1) or m.group(2) or "").strip()
@@ -356,6 +549,40 @@ def _honors_time_filter(value: str, *, sql: str | None, plan: dict[str, Any] | N
     return bool(_sql_where_blob(sql)) or ("interval" in blob) or (unit in blob and "where" in blob)
 
 
+_SQL_LIMIT_RE = re.compile(r"\blimit\s+(\d+)\b", re.I)
+_SQL_OFFSET_RE = re.compile(r"\boffset\s+(\d+)\b", re.I)
+
+
+def _honors_rank_window(
+    question: str, *, sql: str | None, plan: dict[str, Any] | None
+) -> bool:
+    """Outermost OFFSET/LIMIT equal the window, under a tie-broken ORDER BY.
+
+    ponytail: reads the SQL tail, not a parse tree. Ceiling: a window built
+    with ROW_NUMBER() or FETCH NEXT abstains. Upgrade: sqlglot over the tail.
+    """
+    win = parse_rank_window(question)
+    if win is None:
+        return True
+    if isinstance(plan, dict) and not sql:
+        off = plan.get("offset")
+        lim = plan.get("limit")
+        return off == win.offset and (win.limit is None or lim == win.limit)
+    text = (sql or "").strip().rstrip(";")
+    order_at = text.lower().rfind("order by")
+    tail = text[order_at:]
+    if order_at < 0 or tail.count(")") > tail.count("("):
+        return False
+    offs = _SQL_OFFSET_RE.findall(tail)
+    lims = _SQL_LIMIT_RE.findall(tail)
+    if offs != [str(win.offset)]:
+        return False
+    if win.limit is not None and lims != [str(win.limit)]:
+        return False
+    keys = re.split(r"\b(?:limit|offset)\b", tail[len("order by"):], flags=re.I)[0]
+    return "," in keys
+
+
 def unhonored_qualifier_reason(
     question: str,
     *,
@@ -365,7 +592,9 @@ def unhonored_qualifier_reason(
     """First uncovered qualifier as ``unhonored_qualifier:<kind>=<value>``."""
     for kind, value in extract_qualifiers(question):
         ok = False
-        if kind == KIND_TIME_GRAIN:
+        if kind == KIND_RANK_WINDOW:
+            ok = _honors_rank_window(question, sql=sql, plan=plan)
+        elif kind == KIND_TIME_GRAIN:
             ok = _honors_time_grain(value, sql=sql, plan=plan)
         elif kind == KIND_GROUP_BY:
             ok = _honors_group_by(value, sql=sql, plan=plan)
@@ -390,6 +619,13 @@ def apply_qualifiers_to_retry_plan(
     group = list(out.get("group_by") or [])
     if not isinstance(group, list):
         group = []
+    win = parse_rank_window(question)
+    if win is not None:
+        out["offset"] = win.offset
+        if win.limit is not None:
+            out["limit"] = win.limit
+        else:
+            out.pop("limit", None)
     for kind, value in extract_qualifiers(question):
         pair: list[str] | None = None
         if kind == KIND_TIME_GRAIN:
@@ -412,12 +648,17 @@ def retry_plan_covers_qualifiers(plan: dict[str, Any] | None, question: str) -> 
 __all__ = [
     "KIND_GROUP_BY",
     "KIND_NAMED_FILTER",
+    "KIND_RANK_WINDOW",
     "KIND_TIME_FILTER",
     "KIND_TIME_GRAIN",
     "TIME_GRAINS",
+    "RankWindow",
     "apply_qualifiers_to_retry_plan",
     "extract_qualifiers",
+    "parse_rank_window",
     "qualifier_reason",
+    "rank_window_group",
+    "rank_window_measure",
     "retry_plan_covers_qualifiers",
     "unhonored_qualifier_reason",
 ]
