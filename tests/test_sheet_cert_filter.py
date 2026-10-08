@@ -58,7 +58,23 @@ _UNGROUNDED = (
     ),
     (
         "what are the top 3 categories by sales_value_myr in 2024?",
-        "2024",
+        "in",
+    ),
+    (
+        "what are the top 3 categories by sales_value_myr at WH-B?",
+        "at",
+    ),
+    (
+        "what are the top 3 categories by sales_value_myr from the archive?",
+        "from",
+    ),
+    (
+        "what are the top 3 categories by sales_value_myr, bottom first?",
+        "bottom",
+    ),
+    (
+        "what are the top 3 categories by sales_value_myr, least first?",
+        "least",
     ),
     (
         "what are the top 3 categories by sales_value_myr where category is Misc?",
@@ -127,9 +143,9 @@ def _seed(path: Path) -> str:
         rank = _install(
             con,
             RANK_FILE,
-            "category VARCHAR, sales_value_myr DOUBLE",
-            "('Electronics', 1545366.40), ('Home', 1199018.49), "
-            "('Misc', 380948.33), ('Sports', 300000.0)",
+            "category VARCHAR, sales_value_myr DOUBLE, stock_value_myr DOUBLE",
+            "('Electronics', 1545366.40, 10.0), ('Home', 1199018.49, 50.0), "
+            "('Misc', 380948.33, 30.0), ('Sports', 300000.0, 40.0)",
         )
         _install(
             con,
@@ -219,6 +235,55 @@ def test_grounded_sku_filter_stays_l0(wh: Path) -> None:
     assert env["route"] == "bronze_sheet"
     assert env["rows"][0]["sku"] == "SKU-BETA"
     assert env["rows"][0]["sales_value_myr"] == 1500.75
+
+
+# Bare phrases are not a bronze hit. The certified entry is this sheet scope
+# plus the phrase. Stock totals differ from sales so a sales default fails.
+_STOCK_Q = _PREFIX + "top 3 categories by stock value"
+_PAIR_RULES = (
+    ("top 3 RAW by stock value excluding WH-B", "raw"),
+    ("top 3 parts by value last month", "parts"),
+    ("top 3 RAW, lowest first", "raw"),
+    ("top 3 categories in March", "in"),
+    ("top 3 categories in WH-B", "in"),
+    ("top 3 categories by stock value 2025", "2025"),
+    ("top 3 categories per 10023", "per"),
+)
+
+
+def test_top3_categories_by_stock_value_stays_l0(wh: Path) -> None:
+    assert "top 3 categories by stock value" in _STOCK_Q
+    env = _ask(wh, _STOCK_Q)
+    assert env["badge"] == "L0_CERTIFIED" and env["abstained"] is False
+    assert env["route"] == "bronze_sheet"
+    sql = str(env.get("sql_used") or "")
+    assert "stock_value_myr" in sql
+    assert "GROUP BY 1 ORDER BY 2 DESC LIMIT 3" in sql
+    assert [r["category"] for r in env["rows"]] == ["Home", "Sports", "Misc"]
+    assert env["rows"][0]["stock_value_myr"] == 50.0
+
+
+@pytest.mark.parametrize(("phrase", "word"), _PAIR_RULES)
+def test_connector_and_digit_rules_abstain(wh: Path, phrase: str, word: str) -> None:
+    env = _ask(wh, _PREFIX + phrase)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["route"] == "abstain"
+    assert env.get("sql_used") in (None, "")
+    assert not env["rows"]
+    assert f"ungrounded_qualifier:{word}" in str(env.get("text") or "")
+    assert "1545366" not in str(env.get("text") or "")
+    assert "50.0" not in str(env.get("text") or "")
+
+
+def test_never_free_words_stay_off_the_allow_list() -> None:
+    from dms_executor.bronze_sheet_ask import (
+        _CERTIFIED_NO_GROUND,
+        _CONNECTORS,
+        _NEVER_FREE,
+    )
+
+    assert _NEVER_FREE.isdisjoint(_CERTIFIED_NO_GROUND)
+    assert _CONNECTORS.isdisjoint(_CERTIFIED_NO_GROUND)
 
 
 def test_filter_shape_drops_nothing_it_does_not_cover(wh: Path) -> None:

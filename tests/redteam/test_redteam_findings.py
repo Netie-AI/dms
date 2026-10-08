@@ -305,6 +305,39 @@ def test_sheet_filter_is_not_a_confident_wrong(
     assert not env.get("rows")
 
 
+# Positive pin: rows equal the oracle, or this named abstain and no rows.
+# A non-empty row set that is not the oracle fails with both sets.
+_ORACLE_OR_NAMED = {
+    "B-049": "ungrounded_qualifier:sku",
+    "B-051": "ungrounded_qualifier:as",
+}
+
+
+@pytest.mark.parametrize("cid", ("B-049", "B-051"))
+def test_b049_b051_rows_match_oracle_or_named_abstain(
+    cid: str, served: dict[str, dict[str, Any]]
+) -> None:
+    rec = served[cid]
+    env = rec.get("envelope") or {}
+    rows = list(env.get("rows") or [])
+    gold = list(rec.get("gold_rows") or [])
+    if rows:
+        assert rows == gold, (
+            f"{cid} served rows that do not match the oracle\n"
+            f"served={rows}\n"
+            f"oracle={gold}\n"
+            f"badge={env.get('badge')} route={env.get('route')} "
+            f"text={env.get('text')}"
+        )
+        return
+    named = " ".join(str(a) for a in (env.get("assumptions") or []))
+    named = f"{named} {env.get('text') or ''}"
+    reason = _ORACLE_OR_NAMED[cid]
+    assert env.get("badge") == "ABSTAIN" and env.get("abstained") is True, env
+    assert reason in named, f"{cid} abstained without {reason}: {named}"
+    assert env.get("sql_used") in (None, "")
+
+
 @pytest.mark.parametrize("cid", CONTROLS)
 def test_correct_sql_is_still_answered(cid: str, served: dict[str, dict[str, Any]]) -> None:
     rec = served[cid]

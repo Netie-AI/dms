@@ -44,21 +44,18 @@ _TOKEN = re.compile(r"[A-Za-z0-9_]+")
 # live_ask prepends this. It is scope the grant already checked, not the ask.
 _SCOPE_PREFIX = re.compile(r"^Using only [^:]+:\s*", re.I)
 
-# Grammar, plus the ranking and measure words the certified sheet shapes
-# execute. A content word in neither this list nor the matched shape is an
-# ungrounded qualifier. This is not a block list.
+# Grammar the certified shapes may skip. A content word in neither this list
+# nor the matched shape is an ungrounded qualifier. This is not a block list.
+# by/per/in are not here: they pass only via _connector_pair. at/from never do.
 _CERTIFIED_NO_GROUND = frozenset(
     {
         "a",
         "an",
         "the",
         "of",
-        "by",
-        "in",
         "on",
         "for",
         "to",
-        "from",
         "with",
         "and",
         "or",
@@ -71,16 +68,46 @@ _CERTIFIED_NO_GROUND = frozenset(
         "our",
         "this",
         "that",
-        "at",
         "using",
         "only",
         "sheet",
         "top",
         "teratas",
-        "sales_value_myr",
-        "stock_value_myr",
     }
 )
+# Outright abstain if they show up as their own token. Never add these, or
+# by/per/in, to _CERTIFIED_NO_GROUND.
+_NEVER_FREE = frozenset(
+    {
+        "not",
+        "except",
+        "excluding",
+        "without",
+        "lowest",
+        "bottom",
+        "least",
+        "at",
+        "from",
+    }
+)
+_CONNECTORS = frozenset({"by", "per", "in"})
+# Longest token run wins. Bare "value" is not a measure. "stock value" is.
+_ENTRY_PHRASES: tuple[tuple[str, ...], ...] = (
+    ("sales_value_myr",),
+    ("stock_value_myr",),
+    ("product", "families"),
+    ("product", "family"),
+    ("product", "line"),
+    ("stock", "value"),
+    ("sales", "value"),
+    ("myr", "sales"),
+    ("categories",),
+    ("category",),
+    ("kategori",),
+)
+_STOCK_MEASURE = re.compile(r"\bstock(?:_value_myr|\s+value)\b", re.I)
+assert _NEVER_FREE.isdisjoint(_CERTIFIED_NO_GROUND)
+assert _CONNECTORS.isdisjoint(_CERTIFIED_NO_GROUND)
 # ponytail: "fail" is Malay for file on the certified Malay top-n question.
 # Grounded only when another Malay frame word is present, so English "fail"
 # stays a content word. Upgrade path: a locale tag on the ask.
@@ -92,44 +119,97 @@ def _tokens(text: str) -> list[str]:
     return [m.group(0).lower() for m in _TOKEN.finditer(text or "")]
 
 
+def _token_spans(text: str) -> list[tuple[int, int, str]]:
+    return [(m.start(), m.end(), m.group(0).lower()) for m in _TOKEN.finditer(text or "")]
+
+
 def _grounding_text(question: str) -> str:
     return _SCOPE_PREFIX.sub("", question or "", count=1)
 
 
-def _first_ungrounded(question: str, grounded: set[str]) -> str | None:
-    toks = _tokens(_grounding_text(question))
+def _phrase_at(toks: list[str], i: int) -> int:
+    """Length of the entry phrase starting at i, or 0. Longest run wins."""
+    rest = toks[i:]
+    best = 0
+    for phrase in _ENTRY_PHRASES:
+        n = len(phrase)
+        if n > best and tuple(rest[:n]) == phrase:
+            best = n
+    return best
+
+
+def _top_n_digit_span(text: str) -> tuple[int, int] | None:
+    """The only digit a certified ask may contain: N in ``top N`` / ``N kategori``."""
+    match = _TOP_N.search(text)
+    if not match:
+        return None
+    group = 1 if match.group(1) else 2
+    return match.start(group), match.end(group)
+
+
+def _connector_pair(toks: list[str], i: int, stem: str) -> int:
+    """How many tokens ``by`` / ``per`` / ``in`` consume when the next phrase is the entry.
+
+    Returns 0 when it does not pair, and the caller abstains on that word.
+    ``in`` + the workbook stem is the file-scope pair (``In {file}.xlsx``).
+    ``in March`` and ``in WH-B`` return 0. ``by stock value`` returns 3.
+    ``per 10023`` and ``by value`` return 0.
+    """
+    tok = toks[i]
+    if tok == "in" and i + 1 < len(toks) and toks[i + 1] == stem:
+        return 2
+    n = _phrase_at(toks, i + 1)
+    if n:
+        return 1 + n
+    return 0
+
+
+def _sheet_measure(question: str) -> str:
+    """``stock value`` / ``stock_value_myr`` read that column. Else sales."""
+    if _STOCK_MEASURE.search(_grounding_text(question)):
+        return "stock_value_myr"
+    return "sales_value_myr"
+
+
+def _first_ungrounded(
+    question: str,
+    *,
+    workbook: str,
+    sheet: str,
+    extra: frozenset[str] = frozenset(),
+) -> str | None:
+    text = _grounding_text(question)
+    spans = _token_spans(text)
+    toks = [tok for _, _, tok in spans]
+    allowed = _CERTIFIED_NO_GROUND | set(_tokens(workbook)) | set(_tokens(sheet)) | extra
     if _MALAY_FRAME.intersection(toks):
-        grounded = grounded | _MALAY_FUNCTION
-    for tok in toks:
-        if tok in grounded or tok in _CERTIFIED_NO_GROUND:
+        allowed = allowed | _MALAY_FUNCTION
+    stem = workbook.lower().removesuffix(".xlsx")
+    top_digit = _top_n_digit_span(text)
+    i = 0
+    while i < len(spans):
+        start, end, tok = spans[i]
+        if tok in _CONNECTORS:
+            taken = _connector_pair(toks, i, stem)
+            if not taken:
+                return tok
+            i += taken
+            continue
+        # Any digit outside the matched top-N span abstains (year, SKU id, "excluding 3").
+        if tok.isdigit():
+            if top_digit == (start, end):
+                i += 1
+                continue
+            return tok
+        if tok in allowed:
+            i += 1
+            continue
+        n = _phrase_at(toks, i)
+        if n:
+            i += n
             continue
         return tok
     return None
-
-
-def _topn_grounded(question: str, workbook: str, sheet: str, n: int) -> set[str]:
-    text = _grounding_text(question)
-    grounded = set(_tokens(workbook))
-    grounded.update(_tokens(sheet))
-    grounded.add(str(n))
-    for rx in (_TOP_N, _CATEGORY, _MEASURE):
-        for match in rx.finditer(text):
-            grounded.update(_tokens(match.group(0)))
-    return grounded
-
-
-def _filter_grounded(
-    question: str, workbook: str, sheet: str, col: str, value: str
-) -> set[str]:
-    text = _grounding_text(question)
-    grounded = set(_tokens(workbook))
-    grounded.update(_tokens(sheet))
-    grounded.update(_tokens(col))
-    grounded.update(_tokens(value))
-    grounded.add("total")
-    for match in _MEASURE.finditer(text):
-        grounded.update(_tokens(match.group(0)))
-    return grounded
 
 
 def sheet_lane() -> str:
@@ -165,7 +245,10 @@ def bronze_lane_table(question: str) -> str | None:
     if not _IDENT.match(ident):
         return None
     n_m = _TOP_N.search(question or "")
-    if n_m and _CATEGORY.search(question or ""):
+    if n_m:
+        # Claim the lane even when the category word was replaced (RAW, parts).
+        # Serving L0 still requires the category phrase; anything else abstains
+        # inside maybe_bronze_sheet_ask before SQL.
         n = int(n_m.group(1) or n_m.group(2))
         if 1 <= n <= 50:
             return table
@@ -228,11 +311,11 @@ def maybe_bronze_sheet_ask(
         return None
 
     n_m = _TOP_N.search(question or "")
-    if n_m and _CATEGORY.search(question or ""):
+    if n_m:
         n = int(n_m.group(1) or n_m.group(2))
         if n < 1 or n > 50:
             return None
-        word = _first_ungrounded(question, _topn_grounded(question, workbook, sheet, n))
+        word = _first_ungrounded(question, workbook=workbook, sheet=sheet)
         if word:
             return bronze_grant_abstain(
                 question,
@@ -240,9 +323,9 @@ def maybe_bronze_sheet_ask(
                 space_id=space_id,
                 session_id=session_id,
             )
-        measure_m = _MEASURE.search(question or "")
-        raw_measure = (measure_m.group(1) if measure_m else "sales_value_myr").lower()
-        measure = "sales_value_myr" if raw_measure == "myr sales" else raw_measure
+        if not _CATEGORY.search(question or ""):
+            return None
+        measure = _sheet_measure(question)
         return _grouped_top_n(
             ident,
             measure=measure,
@@ -259,14 +342,16 @@ def maybe_bronze_sheet_ask(
     filt = _FOR_FILTER.search(question or "")
     measure_m = _MEASURE.search(question or "")
     if filt and measure_m and _TOTAL.search(question or ""):
-        raw_measure = measure_m.group(1).lower()
-        measure = "sales_value_myr" if raw_measure == "myr sales" else raw_measure
+        measure = _sheet_measure(question)
         col = filt.group(1).lower()
         value = filt.group(2).strip().strip("'\"")
         if not value or not _IDENT.match(col):
             return None
         word = _first_ungrounded(
-            question, _filter_grounded(question, workbook, sheet, col, value)
+            question,
+            workbook=workbook,
+            sheet=sheet,
+            extra=frozenset([*(_tokens(col)), *(_tokens(value)), "total"]),
         )
         if word:
             return bronze_grant_abstain(
