@@ -31,6 +31,7 @@ from cortex_client.compute import (
     PLAN_ORIGINS,
     SERVED_LEG_KEYS,
     generate_model_called,
+    insights_budget_stop,
     insights_fail_reason,
     insights_query_sql,
     insights_was_reached,
@@ -260,16 +261,20 @@ def with_served_attribution(
 ) -> dict[str, Any] | None:
     """Stamp ``served_attribution`` on any ask envelope.
 
-    When a generate call ran, its setup fields and ``generate_legs`` are
-    copied onto envelopes that lack them (the Cortex contract-ask fallback
-    after a generative miss). The diagnostic flag adds the Insights payload's
-    top-level key names and their count, never a value.
+    When a generate call ran, its setup fields, ``generate_legs`` and a
+    budget-stop ``insights_fail`` are copied onto envelopes that lack them
+    (the Cortex contract-ask fallback after a generative miss). The diagnostic
+    flag adds the Insights payload's top-level key names and their count,
+    never a value.
     """
     if not isinstance(env, dict):
         return env
     if isinstance(payload, dict):
         with_setup_fields(env, payload)
         env.setdefault("generate_legs", generate_legs_view(payload))
+        stop = insights_budget_stop(payload)
+        if stop:
+            env.setdefault("insights_fail", stop)
         if served_diag_enabled():
             keys = sorted(str(k) for k in payload)
             env["served_payload_keys"] = {"count": len(keys), "keys": keys}
@@ -1161,6 +1166,18 @@ def maybe_generative_ask(
     kind = parse_compute_plan(payload)
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
+    budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
+    if budget_stop:
+        # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
+        return _stamp(
+            _abstain(
+                q,
+                budget_stop,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+            )
+        )
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)

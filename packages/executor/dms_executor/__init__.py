@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from cortex_client import CortexClient
+from cortex_client.compute import insights_budget_stop
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest
 from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ask import AskServiceError, GroundingRefused
@@ -807,7 +808,12 @@ class Executor:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
                 # generative answer is left as-is. None still reaches Cortex ask.
-                if gen_env.get("abstained") and is_curated_l0_without_pack_metric(asked):
+                # A budget stop keeps its named reason (insights_timeout:<leg>).
+                if (
+                    gen_env.get("abstained")
+                    and not insights_budget_stop(gen_env)
+                    and is_curated_l0_without_pack_metric(asked)
+                ):
                     gen_env = curated_pack_metric_miss(
                         asked, space_id=space_id, session_id=session_id
                     )
