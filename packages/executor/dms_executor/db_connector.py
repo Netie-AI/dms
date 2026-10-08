@@ -189,6 +189,9 @@ class SourceExtract:
     #: Requested by name but not exposed to this login. Reported, never silently
     #: dropped - a table the steward asked for and did not get is news.
     skipped: list[str] = field(default_factory=list)
+    #: Qualified names ``list_source_tables`` returned on this connection.
+    #: Names only. No row samples.
+    exposed_tables: list[str] = field(default_factory=list)
 
 
 def _odbc_value(value: str) -> str:
@@ -630,4 +633,5 @@ def ingest_source_database(
         keys=keys,
         manifest_entry=keys.manifest_entry(pulls, source=source),
         skipped=skipped,
+        exposed_tables=[t.qualified for t in available],
     )

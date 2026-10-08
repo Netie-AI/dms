@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -17,6 +18,7 @@ from pathlib import Path
 import httpx
 from cortex_contract.execution import Manifest, canonical_manifest_bytes
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from dms_core.control_plane.connect_secrets import ConnectCredentialError, key_id_for_ref
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,20 @@ def _load_service_token() -> str:
     if path is not None and path.is_file():
         return path.read_text(encoding="utf-8").strip()
     return ""
+
+
+def match_service_bearer(presented: str) -> str | None:
+    """Short id of the configured service bearer when ``presented`` matches.
+
+    Same token ``_load_service_token`` already sends to OpenVault. No new mint.
+    The return value is a hash prefix. The token is not returned or logged.
+    """
+    expected = _load_service_token()
+    if not expected or not presented:
+        return None
+    if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        return None
+    return hashlib.sha256(expected.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
@@ -195,6 +211,40 @@ class ManifestMinter:
         )
         self._notify_cortex_jwks_refresh()
         return self._key
+
+    def resolve_credential(self, ref: str) -> str:
+        """Reveal one vault secret for a connect. Plaintext stays with the caller.
+
+        Uses the same HTTP client and the reveal header ``_first_mint`` already
+        sends. A bare id or ``service/kid`` both hit the existing
+        ``GET /api/keys/{key_id}/secret`` (the kid, when the ref has a slash).
+        Failures raise ``ConnectCredentialError`` and do not include the secret
+        or the vault body.
+        """
+        key_id = key_id_for_ref(ref)
+        if key_id is None:
+            raise ConnectCredentialError()
+        token = self._token or _load_service_token()
+        headers = {"X-OpenVault-Reveal": "intentional"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            res = self._http.get(
+                f"{self.openvault_url}/api/keys/{key_id}/secret",
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            raise ConnectCredentialError() from None
+        if res.status_code >= 400:
+            raise ConnectCredentialError() from None
+        try:
+            body = res.json()
+        except ValueError:
+            raise ConnectCredentialError() from None
+        secret = body.get("secret") if isinstance(body, dict) else None
+        if not isinstance(secret, str) or secret == "":
+            raise ConnectCredentialError() from None
+        return secret
 
     def _post_intermediate(self, token: str, ttl_s: int) -> httpx.Response:
         try:
