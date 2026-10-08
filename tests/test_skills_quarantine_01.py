@@ -653,3 +653,124 @@ def test_result_probe_disables_external_access(tmp_path: Path) -> None:
     duckdb.connect(str(path)).close()
     rows = _readonly_rows(path, "SELECT current_setting('enable_external_access') AS flag")
     assert rows == [{"flag": False}]
+
+
+def _stored_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    con = duckdb.connect(str(path))
+    try:
+        names = {str(row[0]) for row in con.execute("SHOW TABLES").fetchall()}
+        if "_verified_queries" not in names:
+            return 0
+        row = con.execute("SELECT count(*) FROM main._verified_queries").fetchone()
+    finally:
+        con.close()
+    return int(row[0]) if row else 0
+
+
+# Shapes the read path already treats as unusable. Each one must refuse a write.
+_BAD_CONFIGS = (
+    ("pack_empty", "DMS_SCORED_PACK_HASHES", ""),
+    ("pack_malformed", "DMS_SCORED_PACK_HASHES", "not-a-hash"),
+    ("pack_separators", "DMS_SCORED_PACK_HASHES", " , "),
+    ("item_empty", "DMS_SCORED_ITEM_HASHES", ""),
+    ("item_malformed", "DMS_SCORED_ITEM_HASHES", "not-a-hash"),
+    ("item_separators", "DMS_SCORED_ITEM_HASHES", "   ,  "),
+    ("result_empty", "DMS_SCORED_RESULT_HASHES", ""),
+    ("result_malformed", "DMS_SCORED_RESULT_HASHES", "not-a-hash"),
+    ("result_short", "DMS_SCORED_RESULT_HASHES", "abcd"),
+    ("file_missing", "DMS_SCORED_ITEM_HASHES_FILE", "__missing__"),
+    ("file_empty", "DMS_SCORED_ITEM_HASHES_FILE", "__empty__"),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "env_name", "raw"),
+    _BAD_CONFIGS,
+    ids=[c[0] for c in _BAD_CONFIGS],
+)
+def test_invalid_config_write_stores_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    label: str,
+    env_name: str,
+    raw: str,
+) -> None:
+    """A write under an unusable hash source stores nothing. Fails on 9475d79."""
+    del label
+    _clear_hash_env(monkeypatch)
+    path = tmp_path / "write.duckdb"
+    if raw == "__missing__":
+        monkeypatch.setenv(env_name, str(tmp_path / "missing-hash-file"))
+    elif raw == "__empty__":
+        empty = tmp_path / "empty-hash-file.txt"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setenv(env_name, str(empty))
+    else:
+        monkeypatch.setenv(env_name, raw)
+    with caplog.at_level("WARNING"):
+        with pytest.raises(ValueError, match=CONFIG_STAMP):
+            register_verified_query(
+                space_id=SPACE,
+                question=KEEPER,
+                sql="SELECT 4 AS n",
+                path=path,
+            )
+    assert CONFIG_STAMP in caplog.text
+    assert KEEPER not in caplog.text
+    assert _stored_count(path) == 0
+    monkeypatch.delenv(env_name, raising=False)
+    assert list_verified_queries(space_id=SPACE, path=path) == []
+
+
+def test_valid_config_still_stores_unlisted_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_hash_env(monkeypatch)
+    listed = "SELECT 9 AS n"
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(listed))
+    path = tmp_path / "valid.duckdb"
+    kept = register_verified_query(
+        space_id=SPACE, question=KEEPER, sql="SELECT 8 AS n", path=path
+    )
+    assert kept["sql"] == "SELECT 8 AS n"
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        register_verified_query(
+            space_id=SPACE, question=SCORED_Q, sql=listed, path=path
+        )
+    stored = list_verified_queries(space_id=SPACE, path=path)
+    assert [row["question"] for row in stored] == [KEEPER]
+
+
+def test_studio_post_refuses_invalid_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Studio POST under not-a-hash is a named 4xx and stores nothing. Fails on 9475d79."""
+    from cortex_client.gate import ComplianceDecision
+    from dms_api.app import create_app
+    from fastapi.testclient import TestClient
+
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", "not-a-hash")
+    warehouse = tmp_path / "studio.duckdb"
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+
+    def allow(*, action: str, actor: str | None = None, **_: Any) -> ComplianceDecision:
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    monkeypatch.setattr("dms_api.routes.studio.compliance_gate", allow)
+    client = TestClient(create_app())
+    response = client.post(
+        "/v1/studio/verified-queries",
+        json={"space_id": SPACE, "question": KEEPER, "sql": "SELECT 4 AS n"},
+    )
+    assert response.status_code == 400
+    assert response.status_code not in {200, 500, 503}
+    assert response.json()["detail"] == CONFIG_STAMP
+    assert _stored_count(warehouse) == 0
+    monkeypatch.delenv("DMS_SCORED_ITEM_HASHES", raising=False)
+    listed = client.get(f"/v1/studio/verified-queries?space_id={SPACE}")
+    assert listed.status_code == 200
+    assert listed.json() == []

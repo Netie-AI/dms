@@ -13,8 +13,9 @@ A row is excluded when any listed key matches:
 
 Question text is not an input. Unset variables mean no quarantine: retrieval
 is unchanged. A variable that is set but empty, malformed, or unreadable
-fails closed: retrieval returns no rows, and answer envelopes carry
-``skills_quarantine_config_invalid``. The ask still runs.
+fails closed: retrieval returns no rows, writes are refused with
+``skills_quarantine_config_invalid``, and answer envelopes carry that
+stamp. The ask still runs.
 
 When result hashes are configured, a row with no stored ``result_rows`` is
 executed read-only on the Space warehouse after the chat SQL guard, with
@@ -393,11 +394,15 @@ def reject_scored_write(
     *,
     warehouse: Path | None = None,
 ) -> None:
-    """Block a write of a listed scored row. Logs no question text."""
+    """Block a write of a listed scored row. Logs no question text.
+
+    An unusable hash source refuses the write. A row is not stored when this
+    process cannot tell whether it is scored.
+    """
     cfg = _load_config()
     if cfg.invalid:
         logger.warning(CONFIG_STAMP)
-        return
+        raise ValueError(CONFIG_STAMP)
     try:
         blocked = _excluded(row, cfg, warehouse)
     except Exception:
