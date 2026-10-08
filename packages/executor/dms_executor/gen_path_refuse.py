@@ -45,6 +45,7 @@ GAP_REASONS = frozenset(
         "unhonored_qualifier",
         "ambiguous_measure",
         "rank_window_unhandled_terms",
+        "ungrounded_qualifier",
         "rank_window_entity_mismatch",
         "rank_window_open_ended",
         "unrequested_offset",

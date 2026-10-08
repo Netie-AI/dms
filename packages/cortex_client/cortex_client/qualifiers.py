@@ -498,6 +498,42 @@ def _window_blanks(qn: str, win: RankWindow) -> list[tuple[int, int]]:
     return blanks
 
 
+def _mask_spans(qn: str, spans: list[tuple[int, int]]) -> str:
+    masked = list(qn)
+    for start, end in spans:
+        for i in range(max(start, 0), min(end, len(masked))):
+            masked[i] = " "
+    return "".join(masked)
+
+
+def _is_calendar_year(tok: str) -> bool:
+    """Same year shape QUAL-GUARD already extracts as ``time_filter``."""
+    return _NAMED_YEAR_RE.fullmatch(tok) is not None
+
+
+def _stray_digits(text: str) -> list[str]:
+    """Digit tokens that are not calendar years. Window spans are already blank."""
+    return sorted({
+        tok for tok in re.findall(r"[a-z0-9]+", text)
+        if tok.isdigit() and not _is_calendar_year(tok)
+    })
+
+
+def _plain_ranking_spans(qn: str) -> list[tuple[int, int]]:
+    """Number spans of a top / next / ranks phrase that is not an offset window."""
+    spans: list[tuple[int, int]] = []
+    for rx in (_TOP_RE, _NEXT_RE, _SHOW_N_RE, _RANKS_RE, _ORD_RANGE_RE):
+        spans.extend((m.start(), m.end()) for m in rx.finditer(qn))
+    return spans
+
+
+def _stray_digit_reason(qn: str, spans: list[tuple[int, int]]) -> str | None:
+    digits = _stray_digits(_mask_spans(qn, spans))
+    if not digits:
+        return None
+    return "ungrounded_qualifier:" + ",".join(digits)
+
+
 def rank_window_shape_reason(question: str) -> str | None:
     """Why this window cannot be compiled, or None when the grammar is clean.
 
@@ -505,12 +541,21 @@ def rank_window_shape_reason(question: str) -> str | None:
     absent, nothing left after the window, the entity, and the measure words
     (not the rest of the by-phrase), and a finite limit. A token after ``by``
     that is not in ``_MEASURE_KEYWORDS`` or ``_MEASURE_PHRASE_FILLERS`` is
-    ``rank_window_unhandled_terms``. No ontology and no pack.
+    ``rank_window_unhandled_terms``. A digit outside the recognised ranking
+    spans (anywhere in the question, not only before ``by``) is
+    ``ungrounded_qualifier``. A calendar year is not that digit: QUAL-GUARD
+    ``time_filter`` still names it. No ontology and no pack.
     """
     win = parse_rank_window(question)
-    if win is None:
-        return None
     qn = (question or "").lower()
+    if win is None:
+        # "top 5 ... not 10023" / "next 5 ... excluding 3" are not offset
+        # windows. A number outside the top/next/ranks span still must not
+        # fall through to a ranking that drops it.
+        spans = _plain_ranking_spans(qn)
+        if not spans:
+            return None
+        return _stray_digit_reason(qn, spans)
     _entity, excluded, span = _ranked_entity(qn)
     outside: list[str] = []
     for start, end, name in _entity_hits(qn):
@@ -524,19 +569,24 @@ def rank_window_shape_reason(question: str) -> str | None:
         return "rank_window_unhandled_terms:" + ",".join(sorted(outside))
     if win.entity is None:
         return "rank_window_unhandled_terms:no_entity"
-    masked = list(qn)
-    for start, end in _window_blanks(qn, win):
-        for i in range(start, min(end, len(masked))):
-            masked[i] = " "
-    left = sorted({
-        tok for tok in re.findall(r"[a-z0-9]+", "".join(masked))
+    masked = _mask_spans(qn, _window_blanks(qn, win))
+    # Same allow-list as before. A word leftover still wins, and a digit that
+    # sits next to one (SUP-01) stays in that list. Years stay in it too so a
+    # by-phrase year is unchanged; a year outside the by-phrase is left for
+    # QUAL-GUARD time_filter.
+    scanned = {
+        tok for tok in re.findall(r"[a-z0-9]+", masked)
         if tok not in _FILLERS and not tok.isdigit()
-    })
-    # Question-level fillers ("please", "for", "only") are not measure words.
-    # Put them back when they sit in the by-phrase next to a measure keyword.
-    left = sorted(set(left).union(_by_phrase_extra_tokens(qn)))
-    if left:
+    }
+    left = sorted(scanned.union(_by_phrase_extra_tokens(qn)))
+    words = [t for t in left if not t.isdigit() or _is_calendar_year(t)]
+    if words:
         return "rank_window_unhandled_terms:" + ",".join(left)
+    # Window numbers are already blank. A remaining digit is not part of the
+    # span. Fillers must not hide it.
+    digits = _stray_digits(masked)
+    if digits:
+        return "ungrounded_qualifier:" + ",".join(digits)
     if win.limit is None:
         return "rank_window_open_ended"
     return None

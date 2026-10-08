@@ -1034,14 +1034,12 @@ def rank_window_ask(
     Grammar parse + verified ontology compile, then the shared Cortex submit
     and ledger path. Does not call bind_plan, intent_slots,
     ontology_plan_from_ranking or slots_for_measure. None only when the ask
-    is not a rank window, or it is a clean window but no verified ontology
-    is loaded. A window with a filter, a second noun, no limit or no measure
-    word abstains here, so it never reaches Insights. plan_source is
+    is not a rank window and has no stray digit outside a top/next/ranks
+    span, or it is a clean window but no verified ontology is loaded. A
+    window with a filter, a second noun, a leftover number, no limit or no
+    measure word abstains here, so it never reaches Insights. plan_source is
     ``other``: neither Cortex nor keyword bind produced this plan.
     """
-    win = parse_rank_window(q)
-    if win is None:
-        return None
 
     def _no(reason: str) -> dict[str, Any]:
         return _abstain(
@@ -1049,9 +1047,14 @@ def rank_window_ask(
             plan_source=PLAN_SOURCE_OTHER, notes=(NOTE_RANK_WINDOW,),
         )
 
+    # Shape covers offset windows and a top/next/ranks phrase whose only
+    # problem is a digit outside that phrase. Abstain before Insights either way.
+    win = parse_rank_window(q)
     shape = rank_window_shape_reason(q)
     if shape:
         return _no(shape)
+    if win is None:
+        return None
     if onto is None or not onto.verified:
         return None
     pair = rank_window_group(win)
