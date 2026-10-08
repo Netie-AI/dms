@@ -308,8 +308,11 @@ def test_retry_that_drops_a_filter_is_rejected(
 
 
 def test_credit_is_missing_when_ranking_serves_after_a_model_call(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Credit rewrite is flag-on. Keep the ontology lane so ranking still serves.
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "1")
     rejected = "SELECT secret_col FROM not_granted"
 
     def compute(_ctx: dict[str, Any]) -> dict[str, Any]:
@@ -325,7 +328,9 @@ def test_credit_is_missing_when_ranking_serves_after_a_model_call(
     assert env["badge"] == "L2_VALIDATED"
     assert env["sql_used"] != rejected
     assert env["served_attribution"] == "missing"
-    assert "loop" not in env
+    assert env["loop"][0]["sql"] == rejected
+    assert str(env["loop"][0]["outcome"]).startswith("checker:")
+    assert env["loop"][0]["outcome"] != "served"
 
 
 def test_credit_names_model_and_key_when_model_sql_is_served(
@@ -517,7 +522,10 @@ def test_db_error_text_is_masked_before_prompt_and_attempt(
     assert env["badge"] == "L2_VALIDATED"
 
 
-def test_from_payload_sets_attribution_and_does_not_keep_stale_reported() -> None:
+def test_from_payload_sets_attribution_and_does_not_keep_stale_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _loop(monkeypatch)
     ranking = "SELECT location_code FROM locations"
     env = {
         "sql_used": ranking,
@@ -547,7 +555,8 @@ def test_from_payload_sets_attribution_and_does_not_keep_stale_reported() -> Non
     assert env["served_attribution"] != "reported"
 
 
-def test_none_clears_credit_fields() -> None:
+def test_none_clears_credit_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    _loop(monkeypatch)
     env = {
         "sql_used": None,
         "served_attribution": "reported",

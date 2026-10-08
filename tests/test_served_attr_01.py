@@ -206,7 +206,13 @@ def test_provider_without_model_is_missing(tmp_path: Path) -> None:
 # -- ranking / ontology plan (fallback after an empty generate) --------------
 
 
-def test_ranking_after_model_call_reports_served_fields(tmp_path: Path) -> None:
+def test_ranking_after_model_call_reports_served_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Credit rewrite is the flag-on rule. The ontology lane stays on so this
+    # still serves the ranking compile, not the extract loop.
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "1")
     # Both legs (first generate and the ranked retry) report attribution.
     leg = {"phase": "generate", **_STAMP, **_SERVED}
     fake = _Http([leg, leg], ranking=["cq_cold_storage"])
@@ -296,7 +302,11 @@ def _assert_abstain(env: dict[str, Any] | None) -> dict[str, Any]:
     return env
 
 
-def test_abstain_after_model_call_carries_served_fields(tmp_path: Path) -> None:
+def test_abstain_after_model_call_carries_served_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "1")
     refused = {"phase": "generate", "status": "REFUSE", **_STAMP, **_SERVED}
     fake = _Http([refused, refused], ranking=[])
     env = _assert_abstain(_ask(tmp_path, "How many florbs did wibble sell?", fake))
@@ -446,6 +456,8 @@ def _chat_ask(
 def test_chat_ask_contract_fallback_after_generate_keeps_served_fields(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "1")
     # Generate ran (a model was called and reported), returned no SQL or plan,
     # and the ranking named nothing DMS compiles: the product lane misses into
     # the Cortex contract ask. That envelope used to drop served_* entirely.

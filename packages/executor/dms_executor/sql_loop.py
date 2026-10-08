@@ -16,7 +16,12 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from cortex_client.compute import generate_model_called, insights_call_cap, recorded_model_calls
+from cortex_client.compute import (
+    cloop_b_enabled,
+    generate_model_called,
+    insights_call_cap,
+    recorded_model_calls,
+)
 
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
@@ -624,11 +629,31 @@ def _stamp_reported(
     env["served_model"] = model
     if provider:
         env["served_provider"] = provider
-    if key:
+    # Main never sends this key. Only the extract loop may add it.
+    if key and cloop_b_enabled():
         env["ov_key_id"] = key
 
 
 def apply_sql_credit(
+    env: dict[str, Any],
+    payload: dict[str, Any] | None,
+    loop: list[dict[str, Any]] | None,
+    *,
+    dialect: str,
+) -> None:
+    """Name the model only when the served SQL is one a model attempt wrote.
+
+    With ``DMS_CLOOP_B`` off, this is a no-op besides dropping ``ov_key_id``.
+    Main never sends that key, and ``with_served_attribution`` has already
+    set ``served_attribution``. The rewrite runs only when the flag is on.
+    """
+    if not cloop_b_enabled():
+        env.pop("ov_key_id", None)
+        return
+    _apply_sql_credit(env, payload, loop, dialect=dialect)
+
+
+def _apply_sql_credit(
     env: dict[str, Any],
     payload: dict[str, Any] | None,
     loop: list[dict[str, Any]] | None,
