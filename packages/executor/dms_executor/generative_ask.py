@@ -48,6 +48,7 @@ from cortex_client.qualifiers import (
     unhonored_qualifier_reason,
 )
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
@@ -719,12 +720,18 @@ def _abstain(
     session_id: str | None,
     plan_source: str = PLAN_SOURCE_OTHER,
     notes: Sequence[str] = (),
+    sql: str | None = None,
+    retries: int = 0,
+    stage: str = "generative",
 ) -> dict[str, Any]:
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason=reason,
+        question=question,
+        sql=sql,
+        retries=retries,
+        stage=stage,
         answer_id="ans_gen01_abstain",
         text=customer_abstain_text(reason),
-        badge="ABSTAIN",
-        abstained=True,
         rows=[],
         sql_used=None,
         assumptions=[f"GEN-01: {reason}", *[n for n in notes if str(n).strip()]],
@@ -733,7 +740,6 @@ def _abstain(
         session_id=session_id,
         ask_mode="live",
         route="generated",
-        question=question,
     )
     assert_envelope_valid(env)
     return with_plan_source(env, plan_source)
@@ -1215,13 +1221,22 @@ def _run_extract_loop(
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
         )
 
-    def abstain(reason: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    def abstain(
+        reason: str,
+        _attempts: list[dict[str, Any]],
+        *,
+        sql: str | None = None,
+        retries: int = 0,
+    ) -> dict[str, Any]:
         if reason == RESERVED_PARAM_AS_OF:
             return reserved_as_of_abstain(
                 space_id=space_id,
                 session_id=session_id,
                 route="generated",
                 question=question,
+                sql=sql,
+                retries=retries,
+                stage="extract_loop",
             )
         return _abstain(
             question,
@@ -1229,6 +1244,9 @@ def _run_extract_loop(
             space_id=space_id,
             session_id=session_id,
             plan_source=PLAN_SOURCE_ONTOLOGY,
+            sql=sql,
+            retries=retries,
+            stage="extract_loop",
         )
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1439,6 +1457,7 @@ def maybe_generative_ask(
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                stage="insights_budget",
             )
         )
     if (
@@ -1459,6 +1478,8 @@ def maybe_generative_ask(
                         session_id=session_id,
                         route="generated",
                         question=q,
+                        sql=sql_in,
+                        stage="extract_loop",
                     )
                 )
             return _stamp(
@@ -1500,6 +1521,7 @@ def maybe_generative_ask(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                    stage="serve_gap",
                 )
             )
     if kind == "unsure":

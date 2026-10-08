@@ -5,10 +5,12 @@ this function and do not keep a second logger. The parameter names are
 ``reason``, ``question``, ``sql``, ``retries``, ``stage``, and ``ask_id``.
 There is no alias: ``rejected_sql`` and ``retry_count`` are not parameters.
 
-The extract loop calls it when ``DMS_CLOOP_B`` is on and an abstain leaves
-the loop. Each line is logged at WARNING as ``pipeline_failure`` plus one
-JSON object, on the logger ``dms_executor.pipeline_failure``. WARNING is
-what a process with no log handler still writes to stderr.
+``build_abstain`` calls it when ``DMS_CLOOP_B`` is on. Each line is logged
+at WARNING as ``pipeline_failure`` plus one JSON object, on the logger
+``dms_executor.pipeline_failure``. WARNING is what a process with no log
+handler still writes to stderr. The return value is the ticket id from
+``mint_id`` (letters only). The same group keeps the same id. The envelope
+stamps that id only after this function returns.
 
 The line never contains the question text or the SQL text. It carries
 ``question_hash``, ``stage``, ``retries``, and ``ask_id``. ``ask_id`` is
@@ -58,8 +60,8 @@ _LOG = logging.getLogger(__name__)
 PIPELINE_FAILURE_CAP = 256
 PIPELINE_FAILURE_TTL_S = 600.0
 _LOCK = threading.Lock()
-# group id -> (count, last_seen monotonic)
-_GROUPS: OrderedDict[str, tuple[int, float]] = OrderedDict()
+# group id -> (count, last_seen monotonic, ticket id)
+_GROUPS: OrderedDict[str, tuple[int, float, str]] = OrderedDict()
 _TOKEN = re.compile(r"^[a-z][a-z0-9_]*$")
 # Closed set. A token that is not here is data or an error message.
 _CODES = frozenset(
@@ -69,20 +71,28 @@ _CODES = frozenset(
         "checker",
         "db_error",
         "empty_result_unverified",
+        "envelope_demoted",
         "explain",
         "filter_dropped",
         "filter_parse_failed",
+        "generate",
         "hostile_sql",
+        "insights_call_cap",
+        "insights_timeout",
         "intent_spec_mismatch",
         "intent_spec_unverified",
         "loop_exhausted",
         "multi_statement",
         "no_sql",
+        "ontology",
+        "openvault_mint",
         "path_not_allowed",
         "reserved_param",
+        "retry",
         "sql_not_analyzable",
         "statement_not_allowed",
         "submit_failed",
+        "ticket_missing",
         "ungranted",
         "value_exists_pending",
         "warehouse_missing",
@@ -93,6 +103,7 @@ _CLOSED = frozenset(
     {
         "db_error",
         "explain",
+        "insights_call_cap",
         "intent_spec_mismatch",
         "intent_spec_unverified",
         "ungranted",
@@ -109,12 +120,20 @@ def _normalise(text: str) -> str:
     return " ".join(text.casefold().split())
 
 
+def _known_codes() -> frozenset[str]:
+    """Allowlist plus the named gap reasons. Prose still fails the token check."""
+    from dms_executor.gen_path_refuse import GAP_REASONS
+
+    return _CODES | GAP_REASONS
+
+
 def _reason_code(raw: str) -> str:
     """Named code only. Error prose and unknown tokens are dropped."""
+    known = _known_codes()
     codes: list[str] = []
     for part in str(raw or "").casefold().split(":"):
         token = part.strip()
-        if not _TOKEN.fullmatch(token) or token not in _CODES:
+        if not _TOKEN.fullmatch(token) or token not in known:
             break
         codes.append(token)
         if token in _CLOSED:
@@ -144,23 +163,28 @@ def _masked(value: Any) -> tuple[str | None, bool]:
         return None, True
 
 
-def _bump(group: str) -> int:
+def _bump(group: str) -> tuple[int, str]:
+    from dms_core.ids import mint_id
+
     now = time.monotonic()
     ttl = PIPELINE_FAILURE_TTL_S
     cap = PIPELINE_FAILURE_CAP if PIPELINE_FAILURE_CAP >= 1 else 1
     with _LOCK:
-        expired = [key for key, (_count, seen) in _GROUPS.items() if now - seen > ttl]
+        expired = [
+            key for key, (_count, seen, _ticket) in _GROUPS.items() if now - seen > ttl
+        ]
         for key in expired:
             _GROUPS.pop(key, None)
         if group in _GROUPS:
-            count, _seen = _GROUPS.pop(group)
+            count, _seen, ticket_id = _GROUPS.pop(group)
             count += 1
-            _GROUPS[group] = (count, now)
-            return count
+            _GROUPS[group] = (count, now, ticket_id)
+            return count, ticket_id
         while len(_GROUPS) >= cap:
             _GROUPS.popitem(last=False)
-        _GROUPS[group] = (1, now)
-        return 1
+        ticket_id = mint_id("tkt")
+        _GROUPS[group] = (1, now, ticket_id)
+        return 1, ticket_id
 
 
 def log_pipeline_failure_ticket(
@@ -170,11 +194,12 @@ def log_pipeline_failure_ticket(
     retries: int,
     stage: str,
     ask_id: str,
-) -> None:
+) -> str:
     """Log one WARNING snapshot for this reason code and question.
 
-    See the module docstring for the parameter names, grouping, the cap,
-    and the TTL. Question text and SQL text are not written.
+    Returns the letters-only ticket id for this group. See the module
+    docstring for the parameter names, grouping, the cap, and the TTL.
+    Question text and SQL text are not written.
     """
     reason_s = _reason_code(reason)
     stage_s = str(stage or "").strip() or "unspecified"
@@ -195,16 +220,21 @@ def log_pipeline_failure_ticket(
     }
     if question_failed or sql_failed:
         group = uuid.uuid4().hex
+        count, ticket_id = _bump(group)
         payload["mask_failed"] = True
         payload["group"] = group
-        payload["count"] = _bump(group)
+        payload["count"] = count
+        payload["ticket_id"] = ticket_id
     else:
         question_hash = hashlib.sha256(_normalise(question_text or "").encode()).hexdigest()
         group = hashlib.sha256(f"{reason_s}\n{question_hash}".encode()).hexdigest()
+        count, ticket_id = _bump(group)
         payload["question_hash"] = question_hash
         payload["group"] = group
-        payload["count"] = _bump(group)
+        payload["count"] = count
+        payload["ticket_id"] = ticket_id
     _LOG.warning(
         "pipeline_failure %s",
         json.dumps(payload, sort_keys=True, default=str),
     )
+    return ticket_id
