@@ -237,7 +237,7 @@ class CortexClient:
             "/ontology",
             api_key=self.api_key,
             params={"q": q},
-            timeout=min(8.0, self.timeout),
+            timeout=min(insights_timeout_s(), self.timeout),
         )
 
     def insights_ask(

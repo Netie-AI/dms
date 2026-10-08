@@ -243,6 +243,26 @@ def test_live_client_path_honours_timeout_env(
     assert compute.insights_timeout_s() == effective
 
 
+def test_only_insights_legs_read_env_law_keys_identity_stay_8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ontology (client.py ~:240) reads the env; law/keys/identity stay min(8.0, ...)."""
+    monkeypatch.setenv(_TIMEOUT_ENV, "60")
+    seen: dict[str, float] = {}
+
+    def _get(_base: str, tail: str = "", **kw: Any) -> dict[str, Any]:
+        seen[tail or "/"] = kw["timeout"]
+        return {}
+
+    monkeypatch.setattr("cortex_client.client.insights_get", _get)
+    client = CortexClient(_ROOT, timeout=120.0)
+    client.insights_law()
+    client.insights_keys()
+    client.insights_identity()
+    client.insights_ontology("how many skus")
+    assert seen == {"/": 8.0, "/keys": 8.0, "/identity": 8.0, "/ontology": 60.0}
+
+
 @pytest.mark.parametrize("leg", ["generate", "ontology", "retry"])
 def test_timeout_env_set_names_the_leg(
     leg: str, onto: Ontology, wh: Path, monkeypatch: pytest.MonkeyPatch
