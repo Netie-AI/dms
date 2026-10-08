@@ -7,6 +7,7 @@ replace it. The only other allowed difference is ``served_check_shadow``.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from typing import Any
 
@@ -16,7 +17,27 @@ from tests.fixtures.ask_guide.capture_flag_off_52 import HERE, dump_rows, replay
 
 _AS_OF = "<as_of>"
 _SHADOW = "served_check_shadow"
+# Capture day of flag_off_52_f9ffc3e1.json. semantic_retrieve uses
+# date.today() - 90 days, which was 2026-07-10 on this day.
+_CAPTURE_DAY = (2026, 10, 8)
 GOLDEN = HERE / "flag_off_52_f9ffc3e1.json"
+
+
+def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin date.today() to the capture day.
+
+    typed_filters imports date inside the function, and datetime.date is
+    immutable, so the class on the datetime module is swapped. A later
+    system clock still yields the golden literal 2026-07-10.
+    """
+    base = dt.date
+
+    class _CaptureDate(base):
+        @classmethod
+        def today(cls) -> dt.date:
+            return base(*_CAPTURE_DAY)
+
+    monkeypatch.setattr(dt, "date", _CaptureDate)
 
 
 def _stable(env: dict[str, Any]) -> dict[str, Any]:
@@ -55,7 +76,10 @@ def _diff_paths(left: Any, right: Any, path: str = "") -> list[str]:
     return []
 
 
-def test_flag_off_envelopes_match_f9ffc3e1_except_shadow() -> None:
+def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _pin_capture_day(monkeypatch)
     live = replay_pack()
     assert len(live) == 52
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
