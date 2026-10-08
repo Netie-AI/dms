@@ -1092,7 +1092,9 @@ def test_ab_offline_counts_unchanged(
     """52-pack --ab. Order is OK/LAYER/ABSTAIN/WRONG/ORACLE_ERROR.
 
     Exact quint is the score-pack allowlist on top of the ten base
-    metrics (0/23/29/0/0). Generative quint is the previous pin.
+    metrics (0/23/29/0/0). Generative layer 26->28 and wrong 15->13:
+    the two chemicals-list asks are a grammar list (LAYER), not the
+    invented stock_value aggregate (WRONG).
     """
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     main(["--ab"])
@@ -1103,6 +1105,6 @@ def test_ab_offline_counts_unchanged(
     exact_counts = [exact[key] for key in keys]
     gen_counts = [gen[key] for key in keys]
     assert exact_counts == [0, 23, 29, 0, 0]
-    assert gen_counts == [0, 26, 11, 15, 0]
+    assert gen_counts == [0, 28, 11, 13, 0]
     assert exact["n"] == 52
     assert gen["n"] == 52

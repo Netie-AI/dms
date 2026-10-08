@@ -328,7 +328,9 @@ def test_pack_counts_stay_unchanged(
 ) -> None:
     """52-pack through ab_offline. Not a mocked scorer.
 
-    Exact quint is the allowlist registry (0/23/29/0/0). Generative quint unchanged.
+    Exact quint is the allowlist registry (0/23/29/0/0). Generative layer
+    26->28 and wrong 15->13: the two chemicals-list asks are a grammar list
+    (LAYER) instead of the invented stock_value aggregate (WRONG).
     """
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     ab_offline()
@@ -337,7 +339,7 @@ def test_pack_counts_stay_unchanged(
     gen = report["generative"]
     keys = ("ok", "layer", "abstain", "wrong", "oracle_error")
     assert [exact[key] for key in keys] == [0, 23, 29, 0, 0]
-    assert [gen[key] for key in keys] == [0, 26, 11, 15, 0]
+    assert [gen[key] for key in keys] == [0, 28, 11, 13, 0]
     assert exact["invalid"] == 0
     assert gen["invalid"] == 0
     assert exact["n"] == 52

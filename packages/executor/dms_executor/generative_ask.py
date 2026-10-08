@@ -1355,9 +1355,12 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
-            listed = _list_instead_of_aggregate("unrequested_measure:aggregate")
-            if listed is not None:
-                return _stamp(listed)
+            # A non-aggregate projection ("SELECT sku FROM lots") stays.
+            # SUM/COUNT/GROUP BY does not answer a list ask.
+            if is_list_intent(q) and sql_is_aggregate(sql):
+                listed = _list_instead_of_aggregate("unrequested_measure:aggregate")
+                if listed is not None:
+                    return _stamp(listed)
             return _stamp(
                 _submit_validated(
                     sql,
@@ -1528,6 +1531,8 @@ def maybe_generative_ask(
             if NOTE_INSIGHTS_RANKING in trail_notes
             else PLAN_ORIGIN_GENERATE_SQL
         )
+    # Empty-generate abstain is list intent only. Ranking and aggregate
+    # questions keep the compiled plan (the 8 replay cases).
     if is_list_intent(q):
         if NOTE_FALLBACK_GENERATE_EMPTY in trail_notes:
             list_reason = "generate_empty_no_ranking_answer"

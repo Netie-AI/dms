@@ -645,8 +645,14 @@ def test_offline_prove_path_is_bind_plan_not_cortex_ai() -> None:
         if row["generative"] in {"OK", "LAYER"}
     ]
     assert answered
+    # "List chemicals in inventory" is a grammar list (ontology_plan).
+    # Every other answered row is still the offline bind_plan compute.
+    grammar_list = {"cq_chemicals_list", "ops_chemicals_list"}
     for row in answered:
-        assert row["plan_source"] == "bind_plan", row
+        if row["id"] in grammar_list:
+            assert row["plan_source"] == "ontology_plan", row
+        else:
+            assert row["plan_source"] == "bind_plan", row
     prove_cases = [
         {
             "id": row["id"],
@@ -669,8 +675,11 @@ def test_offline_prove_path_is_bind_plan_not_cortex_ai() -> None:
     blob = json.dumps(report)
     assert "COMPLETE" not in blob
     assert report[HOLD_MAY_CLEAR_FIELD] == "NO"
-    assert report["by_plan_source"]["ontology_plan"]["answered"] == 0
-    assert report["by_plan_source"]["bind_plan"]["answered"] == gen["answered"]
+    assert report["by_plan_source"]["ontology_plan"]["answered"] == len(grammar_list)
+    assert (
+        report["by_plan_source"]["bind_plan"]["answered"]
+        == gen["answered"] - len(grammar_list)
+    )
 
 
 def test_prove_path_climb_without_url_is_config(monkeypatch) -> None:
