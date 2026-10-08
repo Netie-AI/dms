@@ -36,6 +36,7 @@ from dms_executor.bronze_sheet_ask import (
     bronze_lane_table,
     maybe_bronze_sheet_ask,
 )
+from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -1141,6 +1142,7 @@ __all__ = [
     "build_library_tree",
     "classify_bytes",
     "classify_grid",
+    "connector_tables",
     "ingest_batch",
     "DEFAULT_MAX_ROWS",
     "SourceConfig",

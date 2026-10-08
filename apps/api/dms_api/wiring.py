@@ -292,10 +292,8 @@ def connect_registered_source(
     token_id: str,
 ) -> dict[str, Any]:
     """Read the connector listing, then register and grant through the book."""
-    from dms_executor.connectors import connector_tables
-
     try:
-        exposed = connector_tables(connector_id)
+        exposed = dms_executor.connector_tables(connector_id)
     except KeyError:
         raise ValueError("connector_unknown") from None
     return bind_connected_space(
