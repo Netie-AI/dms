@@ -806,6 +806,23 @@ def _l2_envelope(
     env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
     if where_paths:
         env["where_paths"] = where_paths_for_envelope(where_paths)
+    # Shadow only. A check failure is recorded and the serve above stands.
+    try:
+        from dms_executor.sql_grounds import served_check_shadow
+
+        env["served_check_shadow"] = served_check_shadow(sql)
+    except Exception as exc:  # noqa: BLE001 — shadow never changes the serve
+        version = ""
+        try:
+            from dms_executor.sql_grounds import CHECKER_VERSION
+
+            version = CHECKER_VERSION
+        except Exception:
+            version = ""
+        env["served_check_shadow"] = {
+            "checker_version": version,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     return env
 
 
