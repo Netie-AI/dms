@@ -7,15 +7,25 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
+
+from cortex_client.qualifiers import (
+    exclusion_literals,
+    rank_words_present,
+    rank_words_unhonored,
+)
 
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    connect_file,
     execute_sql,
     stamp_engine_clock,
     total_outbound_revenue,
+    warehouse_path,
 )
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.gen_path_refuse import customer_abstain_text
 
 SUGGESTIONS = [
     "What was total revenue?",
@@ -215,6 +225,54 @@ def _excluded_skus(question: str) -> list[str]:
     return out
 
 
+def known_sku_values(warehouse: Path | None = None) -> set[str] | None:
+    """Distinct sku values in the warehouse, or None when the file cannot be read.
+
+    Used to validate an exclusion literal. Not an oracle read.
+    """
+    path = Path(warehouse) if warehouse is not None else warehouse_path()
+    if not path.is_file():
+        return None
+    found: set[str] = set()
+    try:
+        con = connect_file(path)
+    except Exception:  # noqa: BLE001 -- cannot validate, caller abstains
+        return None
+    try:
+        for table in ("transactions", "inventory", "shipments"):
+            try:
+                rows = con.execute(
+                    f"SELECT DISTINCT CAST(sku AS VARCHAR) FROM {table} "
+                    "WHERE sku IS NOT NULL"
+                ).fetchall()
+            except Exception:  # noqa: BLE001 -- that table has no sku
+                continue
+            found.update(str(r[0]) for r in rows if r and r[0] is not None)
+    finally:
+        con.close()
+    return found
+
+
+def _screen_rank_words(question: str, env: dict[str, Any]) -> dict[str, Any]:
+    """Named abstain when a rank/skip/exclusion word is missing from the SQL.
+
+    Questions with none of those words return the same envelope object.
+    """
+    if not rank_words_present(question):
+        return env
+    known = known_sku_values() if exclusion_literals(question) else None
+    gap = rank_words_unhonored(
+        question, sql=env.get("sql_used"), known_values=known
+    )
+    if gap is None:
+        return env
+    return _abstain(
+        space_id=env.get("space_id"),
+        text=customer_abstain_text(gap),
+        assumptions=[f"RANK-WORDS-02: {gap}"],
+    )
+
+
 def _resolve_exclude_skus(tokens: list[str]) -> list[str]:
     """Map bare tokens like BETA → SKU-BETA against live distinct SKUs."""
     if not tokens:
@@ -279,6 +337,10 @@ def _rank_window(question: str) -> tuple[int, int] | None:
 
 
 def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[str, Any]:
+    return _screen_rank_words(question, _answer_demo_question(question, space_id=space_id))
+
+
+def _answer_demo_question(question: str, *, space_id: str | None = None) -> dict[str, Any]:
     """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN."""
     q = question.lower().strip()
 

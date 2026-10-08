@@ -43,6 +43,9 @@ GAP_REASONS = frozenset(
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",
         "unhonored_qualifier",
+        "rank_window_ambiguous",
+        "rank_window_reversed",
+        "unhandled_exclusion",
     }
 )
 

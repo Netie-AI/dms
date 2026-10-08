@@ -356,13 +356,339 @@ def _honors_time_filter(value: str, *, sql: str | None, plan: dict[str, Any] | N
     return bool(_sql_where_blob(sql)) or ("interval" in blob) or (unit in blob and "where" in blob)
 
 
+# ponytail: closed rank/skip/exclusion grammar, not a parser. Ceiling: a
+# window built with ROW_NUMBER() or FETCH NEXT, and unseen synonyms
+# ("MoM", "all but the podium"). Upgrade: Cortex HTTP qualifier-check.
+_NUM_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+_NUM_ALT = r"(?:\d{1,3}|" + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")"
+_SKIP_RE = re.compile(
+    r"\b(?:skip(?:ping)?|ignor(?:e|ing)|omit(?:ting)?|past|beyond|after)\s+"
+    r"(?:the\s+)?first\s+(" + _NUM_ALT + r")\b",
+    re.I,
+)
+_NEXT_RE = re.compile(
+    r"\b(?:next|following)\s+(" + _NUM_ALT + r")\b",
+    re.I,
+)
+_BOTTOM_RE = re.compile(
+    r"\b(?:bottom|lowest|worst)\s+(" + _NUM_ALT + r")\b",
+    re.I,
+)
+_EXCL_BOTTOM_RE = re.compile(
+    r"\b(?:excluding|except(?:ing)?|without|minus)\s+(?:the\s+)?"
+    r"(?:bottom|lowest|worst)\s+(" + _NUM_ALT + r")\b",
+    re.I,
+)
+_RANGE_RE = re.compile(
+    r"\b(?:ranks?|positions?|numbers?|nos?)\s*#?\s*("
+    + _NUM_ALT
+    + r")(?:st|nd|rd|th)?\s*(?:to|through|thru|-)\s*#?\s*("
+    + _NUM_ALT
+    + r")(?:st|nd|rd|th)?\b",
+    re.I,
+)
+_EXCL_LIT_RE = re.compile(
+    r"\b(?:excluding|exclude|except(?:\s+for)?|ignor(?:e|ing)|without|minus)\s+"
+    r"(?:the\s+)?(?P<body>sku(?:[\s_\-]+[a-z0-9]+)+|[a-z0-9]*\d[a-z0-9-]*"
+    r"|[a-z0-9]+(?:-[a-z0-9]+)+)",
+    re.I,
+)
+_TOP_LIMIT_RE = re.compile(r"\btop\s+(" + _NUM_ALT + r")\b", re.I)
+_SQL_LIMIT_RE = re.compile(r"\blimit\s+(\d+)\b", re.I)
+_SQL_OFFSET_RE = re.compile(r"\boffset\s+(\d+)\b", re.I)
+_NOT_IN_RE = re.compile(r"\bnot\s+in\s*\(([^)]*)\)", re.I | re.S)
+_NEQ_RE = re.compile(r"(?:<>|!=)\s*'([^']*)'", re.I)
+_ORDER_RE = re.compile(
+    r"\border\s+by\s+(.+?)(?:\blimit\b|\boffset\b|$)",
+    re.I | re.S,
+)
+
+
+def _num(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    token = raw.lower()
+    n = int(token) if token.isdigit() else _NUM_WORDS.get(token)
+    if n is None or not 1 <= n <= 1000:
+        return None
+    return n
+
+
+def _phrase(question: str, start: int, end: int) -> str:
+    chunk = re.sub(r"\s+", " ", (question or "")[start:end]).strip(" ,.;")
+    return chunk.lower()
+
+
+def exclusion_literals(question: str) -> tuple[str, ...]:
+    """SKU-shaped tokens in an exclusion clause. Not 'excluding top N'."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _EXCL_LIT_RE.finditer(question or ""):
+        body = re.sub(r"\s+", " ", m.group("body")).strip()
+        key = body.lower()
+        if body and key not in seen:
+            seen.add(key)
+            out.append(body)
+    return tuple(out)
+
+
+def _norm_code(value: str) -> str:
+    return re.sub(r"[\s_\-]+", "", (value or "").lower())
+
+
+def match_exclusion_literal(literal: str, known: set[str]) -> str | None:
+    """Canonical known value for a question literal, or None if it is not in the data."""
+    raw = re.sub(r"[\s_]+", "-", literal.strip())
+    raw = re.sub(r"-{2,}", "-", raw).strip("-")
+    low = raw.lower()
+    by_low = {k.lower(): k for k in known}
+    if low in by_low:
+        return by_low[low]
+    want = _norm_code(low)
+    for key in known:
+        if _norm_code(key) == want:
+            return key
+    tail = low.split("-")[-1]
+    hits = [k for k in known if k.lower() == tail or k.lower().endswith("-" + tail)]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _primary_desc(sql: str) -> bool | None:
+    m = _ORDER_RE.search(sql or "")
+    if not m:
+        return None
+    first = m.group(1).split(",")[0]
+    if re.search(r"\bdesc\b", first, re.I):
+        return True
+    return False
+
+
+def _window_limits(sql: str | None, plan: dict[str, Any] | None) -> tuple[int | None, int | None]:
+    """(offset, limit) from SQL, else from a typed plan. Missing offset is 0 only with a limit."""
+    if sql:
+        lims = _SQL_LIMIT_RE.findall(sql)
+        offs = _SQL_OFFSET_RE.findall(sql)
+        if not lims:
+            return None, None
+        off = int(offs[-1]) if offs else 0
+        return off, int(lims[-1])
+    if isinstance(plan, dict):
+        lim = plan.get("limit")
+        if not isinstance(lim, int):
+            return None, None
+        off = plan.get("offset", 0)
+        if not isinstance(off, int):
+            off = 0
+        return off, lim
+    return None, None
+
+
+def _honors_window(
+    *,
+    sql: str | None,
+    plan: dict[str, Any] | None,
+    offset: int,
+    limit: int,
+    asc: bool,
+) -> bool:
+    off, lim = _window_limits(sql, plan)
+    if off != offset or lim != limit:
+        return False
+    if sql:
+        desc = _primary_desc(sql)
+        if desc is None:
+            return False
+        return (not desc) if asc else desc
+    if isinstance(plan, dict):
+        # Compile default is DESC. An explicit order_desc False is ASC.
+        desc = plan.get("order_desc", True) is not False
+        return (not desc) if asc else desc
+    return False
+
+
+def _negated_codes(sql: str | None, plan: dict[str, Any] | None) -> set[str]:
+    found: set[str] = set()
+    text = sql or ""
+    for m in _NOT_IN_RE.finditer(text):
+        for a, b in re.findall(r"'([^']*)'|\"([^\"]*)\"", m.group(1)):
+            found.add(a or b)
+    found.update(_NEQ_RE.findall(text))
+    if isinstance(plan, dict):
+        for item in plan.get("filters") or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 4 and str(item[2]) in {"<>", "!="}:
+                found.add(str(item[3]))
+    return found
+
+
+def _code_in(literal: str, found: set[str]) -> bool:
+    want = _norm_code(literal)
+    if not want:
+        return False
+    for item in found:
+        got = _norm_code(item)
+        if got == want or got.endswith(want) or want.endswith(got):
+            return True
+    return False
+
+
+def _limit_matches(question: str, sql: str | None, plan: dict[str, Any] | None) -> bool:
+    m = _TOP_LIMIT_RE.search(question or "")
+    if not m:
+        return True
+    want = _num(m.group(1))
+    if want is None:
+        return False
+    _off, lim = _window_limits(sql, plan)
+    return lim == want
+
+
+def _reversed_window(question: str) -> tuple[int, int, str] | str | None:
+    m = _RANGE_RE.search(question or "")
+    if not m:
+        return None
+    a, b = _num(m.group(1)), _num(m.group(2))
+    phrase = _phrase(question, m.start(), m.end())
+    if a is None or b is None or a == b:
+        return f"rank_window_ambiguous:{phrase}"
+    if a < b:
+        # Forward range belongs to the rank-window lane. This guard stays quiet.
+        return None
+    return b - 1, a - b + 1, phrase
+
+
+def _bottom_window(question: str) -> tuple[int, int, str] | str | None:
+    q = question or ""
+    excl = _EXCL_BOTTOM_RE.search(q)
+    if not excl:
+        return None
+    n = _num(excl.group(1))
+    outer = None
+    for m in _BOTTOM_RE.finditer(q):
+        if not (m.end() <= excl.start() or m.start() >= excl.end()):
+            continue
+        outer = m
+        break
+    end = excl.end() if outer is None else max(excl.end(), outer.end())
+    start = excl.start() if outer is None else min(excl.start(), outer.start())
+    phrase = _phrase(q, start, end)
+    k = _num(outer.group(1)) if outer is not None else None
+    if k is None or n is None or k <= n:
+        return f"rank_window_ambiguous:{phrase}"
+    return n, k - n, phrase
+
+
+def _skip_window(question: str) -> tuple[int, int] | str | None:
+    q = question or ""
+    skip = _SKIP_RE.search(q)
+    if not skip:
+        return None
+    nxt = _NEXT_RE.search(q)
+    n = _num(skip.group(1))
+    m = _num(nxt.group(1)) if nxt else None
+    if n is None or m is None:
+        end = skip.end() if nxt is None else max(skip.end(), nxt.end())
+        start = skip.start() if nxt is None else min(skip.start(), nxt.start())
+        return f"rank_window_ambiguous:{_phrase(q, start, end)}"
+    return n, m
+
+
+def rank_words_present(question: str) -> bool:
+    """True when the question uses a rank, skip, or SKU-exclusion word."""
+    return (
+        _RANGE_RE.search(question or "") is not None
+        or _EXCL_BOTTOM_RE.search(question or "") is not None
+        or _SKIP_RE.search(question or "") is not None
+        or bool(exclusion_literals(question))
+    )
+
+
+def rank_words_unhonored(
+    question: str,
+    *,
+    sql: str | None = None,
+    plan: dict[str, Any] | None = None,
+    known_values: set[str] | None = None,
+) -> str | None:
+    """Named abstain when a rank/skip/exclusion word is not in the compiled SQL.
+
+    A forward ``ranks 4 to 8`` is not this guard's (the rank-window lane owns
+    it). A reversed range that the SQL already serves as the low-to-high
+    window is honoured. An exclusion literal is honoured only when a negative
+    predicate names it; ``known_values`` is the data check.
+    """
+    rev = _reversed_window(question)
+    if isinstance(rev, str):
+        return rev
+    if rev is not None:
+        offset, limit, _phrase_txt = rev
+        if _honors_window(sql=sql, plan=plan, offset=offset, limit=limit, asc=False):
+            return None
+        return "rank_window_reversed"
+    bot = _bottom_window(question)
+    if isinstance(bot, str):
+        return bot
+    if bot is not None:
+        offset, limit, _phrase_txt = bot
+        if _honors_window(sql=sql, plan=plan, offset=offset, limit=limit, asc=True):
+            return None
+        return f"unhonored_qualifier:rank_window=asc,offset={offset},limit={limit}"
+    skip = _skip_window(question)
+    if isinstance(skip, str):
+        return skip
+    if skip is not None:
+        offset, limit = skip
+        if _honors_window(sql=sql, plan=plan, offset=offset, limit=limit, asc=False):
+            return None
+        return f"unhonored_qualifier:rank_window=offset={offset},limit={limit}"
+    literals = exclusion_literals(question)
+    if not literals:
+        return None
+    found = _negated_codes(sql, plan)
+    limit_ok = _limit_matches(question, sql, plan)
+    for lit in literals:
+        if known_values is not None and match_exclusion_literal(lit, known_values) is None:
+            return f"unhandled_exclusion:{lit}"
+        if known_values is None and not _code_in(lit, found):
+            # No data check and the SQL does not name the literal: not validated.
+            return f"unhandled_exclusion:{lit}"
+        if not _code_in(lit, found) or not limit_ok:
+            return f"unhonored_qualifier:exclusion={lit}"
+    return None
+
+
 def unhonored_qualifier_reason(
     question: str,
     *,
     sql: str | None = None,
     plan: dict[str, Any] | None = None,
+    known_values: set[str] | None = None,
 ) -> str | None:
-    """First uncovered qualifier as ``unhonored_qualifier:<kind>=<value>``."""
+    """First uncovered qualifier as ``unhonored_qualifier:<kind>=<value>``.
+
+    Rank, skip, and entity-exclusion words use the same gate. A dropped one
+    is a named abstain (``rank_window_reversed``, ``rank_window_ambiguous``,
+    ``unhandled_exclusion``, or ``unhonored_qualifier``).
+    """
+    gap = rank_words_unhonored(
+        question, sql=sql, plan=plan, known_values=known_values
+    )
+    if gap:
+        return gap
     for kind, value in extract_qualifiers(question):
         ok = False
         if kind == KIND_TIME_GRAIN:
@@ -416,8 +742,12 @@ __all__ = [
     "KIND_TIME_GRAIN",
     "TIME_GRAINS",
     "apply_qualifiers_to_retry_plan",
+    "exclusion_literals",
     "extract_qualifiers",
+    "match_exclusion_literal",
     "qualifier_reason",
+    "rank_words_present",
+    "rank_words_unhonored",
     "retry_plan_covers_qualifiers",
     "unhonored_qualifier_reason",
 ]

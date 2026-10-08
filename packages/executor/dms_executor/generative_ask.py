@@ -37,9 +37,14 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
     typed_query_plan,
 )
-from cortex_client.qualifiers import unhonored_qualifier_reason
+from cortex_client.qualifiers import (
+    exclusion_literals,
+    match_exclusion_literal,
+    rank_words_unhonored,
+    unhonored_qualifier_reason,
+)
 
-from dms_executor.demo_ask import _is_predictive, normalize_ask_question
+from dms_executor.demo_ask import _is_predictive, known_sku_values, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
@@ -665,6 +670,32 @@ def validate_compiled_sql(
 
 def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _attach_validated_exclusions(
+    question: str, plan: dict[str, Any], warehouse: Path | None
+) -> str | None:
+    """Put ``sku <> literal`` on the plan when the literal is in the data.
+
+    A literal that is not in the data is ``unhandled_exclusion`` and the plan
+    is left unchanged. No rank-window compile: that lane is separate.
+    """
+    literals = exclusion_literals(question)
+    if not literals:
+        return None
+    known = known_sku_values(warehouse)
+    if known is None:
+        return f"unhandled_exclusion:{literals[0]}"
+    filters = list(plan.get("filters") or [])
+    for lit in literals:
+        canon = match_exclusion_literal(lit, known)
+        if canon is None:
+            return f"unhandled_exclusion:{lit}"
+        row = ["transaction", "sku", "<>", canon]
+        if row not in filters:
+            filters.append(row)
+    plan["filters"] = filters
+    return None
 
 
 def _abstain(
@@ -1346,10 +1377,11 @@ def maybe_generative_ask(
             )
         if kind != "plan":
             methods = ",".join(str(m) for m in (ctx.get("methods") or []))
+            named = rank_words_unhonored(q)
             return _stamp(
                 _abstain(
                     q,
-                    f"query_plan was not typed after retrieve ({methods})",
+                    named or f"query_plan was not typed after retrieve ({methods})",
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
@@ -1359,6 +1391,20 @@ def maybe_generative_ask(
         trail_notes = [fallback_note]
 
     assert isinstance(payload, dict)
+    raw_plan = payload.get("query_plan")
+    if isinstance(raw_plan, dict):
+        blocked = _attach_validated_exclusions(q, raw_plan, lake)
+        if blocked:
+            return _stamp(
+                _abstain(
+                    q,
+                    blocked,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
     plan = plan_from_payload(payload)
     if plan is None:
         return _stamp(
@@ -1368,7 +1414,6 @@ def maybe_generative_ask(
                 notes=trail_notes,
             )
         )
-    raw_plan = payload.get("query_plan")
     gap = unhonored_qualifier_reason(
         q, plan=raw_plan if isinstance(raw_plan, dict) else None
     )
