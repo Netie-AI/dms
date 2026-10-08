@@ -24,6 +24,11 @@ class SourceGrant:
     table_name: str | None = None
     # SQL boolean; use TRUE when no row filter. Required if table_name set.
     row_predicate: str = "TRUE"
+    # Source half of the grant key. None is the migrated one-source-per-table
+    # seed: the predicate stays the bare relation those Spaces already read.
+    # A name here means the key is (source_name, table_name), and the predicate
+    # is that qualified relation so a second source's table cannot overwrite it.
+    source_name: str | None = None
 
 
 @dataclass
@@ -52,6 +57,21 @@ class SessionStore(Protocol):
     def default_pool_id(self, tenant_id: str) -> str: ...
 
 
+def _grant_relation(g: SourceGrant) -> str | None:
+    """Predicate key for one grant.
+
+    A grant with ``source_name`` is ``source.table``. Two sources that both
+    expose the same table therefore keep two keys. A grant without one keeps
+    the bare table name the migrated seed already published.
+    """
+    if not g.table_name:
+        return None
+    source_name = getattr(g, "source_name", None)
+    if source_name:
+        return f"{source_name}.{g.table_name}"
+    return g.table_name
+
+
 def resolve_session_acl(ctx: SessionContext) -> SessionAcl:
     """Map SessionContext grants into SessionAcl, enforcing minting layout rules.
 
@@ -61,8 +81,9 @@ def resolve_session_acl(ctx: SessionContext) -> SessionAcl:
     paths: list[str] = []
     predicates: dict[str, str] = {}
     for g in ctx.grants:
-        if g.table_name:
-            predicates[g.table_name] = g.row_predicate or "TRUE"
+        relation = _grant_relation(g)
+        if relation:
+            predicates[relation] = g.row_predicate or "TRUE"
         if g.parquet_glob:
             # Minting invariant: do not also attach a non-TRUE predicate for the
             # same underlying table — checked later in ManifestMinter.

@@ -21,6 +21,7 @@ from typing import Any, Generic, TypeVar
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.grant_struct import serve_gap, sql_refusal_envelope, structural_grant_stop
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -534,6 +535,15 @@ def lookup_pack_metric(
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
         return None
+    # serve_gap compares exact keys. ``_grant_covers`` already decided the
+    # Cortex ``warehouse_<table>`` alias. Hand the checker that bare name.
+    covered = set(allowed)
+    for table in hit.tables:
+        if _grant_covers(table, allowed):
+            covered.add(table)
+    gap = serve_gap(hit.sql, grantable=covered, dialect="duckdb")
+    if gap:
+        return None
     return hit
 
 
@@ -710,6 +720,15 @@ def maybe_pack_ask(
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
         return None
+    gap = serve_gap(phrase.sql, grantable=set(grantable or ()), dialect="duckdb")
+    if gap and structural_grant_stop(gap):
+        return sql_refusal_envelope(
+            reason=gap,
+            space_id=space_id,
+            session_id=session_id,
+            route="governed_metric",
+            question=question,
+        )
     try:
         reject_hostile_chat_sql(phrase.sql)
     except SecurityEvent:

@@ -21,6 +21,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from dms_executor.acl import SourceGrant
 
@@ -83,7 +84,13 @@ def company_default_tables() -> tuple[str, ...]:
 
 
 def source_id_for(table: str) -> uuid.UUID:
-    """Stable id for a table-backed source."""
+    """Stable id for a migrated table-backed source.
+
+    This id is the table name alone. It is the source half of a legacy key
+    after ``grant_key.migrate_seed``, and it is the wrong id for a second
+    source that happens to expose the same table. New sources pass their own
+    name to ``GrantKey``.
+    """
     return uuid.uuid5(_SOURCE_NS, table)
 
 
@@ -139,6 +146,19 @@ class DemoSessionStore:
     def _tables_for(self, space_id: str) -> tuple[str, ...]:
         entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space_id))
         return entry[1] if entry else ()
+
+    def grant_keys(self, space_id: str) -> frozenset[Any]:
+        """Migrated (source, table) keys for this Space.
+
+        The source is the historical per-table id. The readable table names
+        are ``_tables_for``. #408 and #421 should read keys from here rather
+        than minting a source id from the bare table name.
+        """
+        from dms_executor.grant_key import GrantKey
+
+        return frozenset(
+            GrantKey(str(source_id_for(table)), table) for table in self._tables_for(space_id)
+        )
 
     def is_space_member(self, space_id: str, user_id: str) -> bool:
         # The demo has one steward who belongs to every seeded Space. An id that

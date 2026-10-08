@@ -56,8 +56,13 @@ def load_responses() -> dict[str, Any]:
     return data
 
 
-def replay_pack() -> list[dict[str, Any]]:
-    """POST every pack question. Flag stays unset. Same stub on every call."""
+def replay_pack(*, execute: bool = False) -> list[dict[str, Any]]:
+    """POST every pack question. Flag stays unset. Same stub on every call.
+
+    ``execute=True`` runs each submitted SQL statement on the demo warehouse
+    and returns those rows. The default keeps the recorded submit rows the
+    flag-off fixture was captured with.
+    """
     os.environ.pop("DMS_ASK_CLARIFY", None)
     import yaml
     from cortex_client.models import (
@@ -105,11 +110,21 @@ def replay_pack() -> list[dict[str, Any]]:
                     run_id=str(bind["run_id"]),
                 )
             body = self._row()["submit"]
+            rows = list(body["rows"])
+            if execute:
+                req_body = getattr(req, "body", None)
+                sql = ""
+                if isinstance(req_body, dict):
+                    sql = str(req_body.get("sql") or "")
+                if sql.strip():
+                    from dms_executor.demo_warehouse import execute_sql
+
+                    rows = execute_sql(sql)
             return QueryResult(
                 ok=bool(body["ok"]),
                 status=str(body["status"]),
                 run_id=str(body["run_id"]),
-                output={"rows": list(body["rows"])},
+                output={"rows": rows},
             )
 
         def ask(self, req: AskRequest) -> AskResponse:

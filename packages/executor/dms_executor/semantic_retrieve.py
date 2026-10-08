@@ -17,7 +17,12 @@ from typing import Any
 
 from cortex_client.compute import pack_id_shape
 from cortex_client.qualifiers import parse_rank_window, rank_window_group, rank_window_measure
-from dms_core.pii import column_is_pii, sanitize_retrieve_parts
+from dms_core.pii import (
+    column_is_pii,
+    fail_closed_mask_payload,
+    is_mask_token,
+    sanitize_retrieve_parts,
+)
 
 from dms_executor.demo_warehouse import connect_file
 from dms_executor.ontology import Ontology
@@ -182,34 +187,79 @@ def _safe_ident(name: str) -> str | None:
     return name if _IDENT.match(name) else None
 
 
+def _grant_labels(grantable: set[str]) -> tuple[list[str], list[tuple[str, str, str]]]:
+    """Bare names, and (label, schema, table) for source-qualified grants."""
+    from dms_executor.grant_key import split_grant_name
+
+    bare: list[str] = []
+    qualified: list[tuple[str, str, str]] = []
+    for raw in grantable:
+        token = str(raw)
+        if _safe_ident(token):
+            bare.append(token)
+            continue
+        split = split_grant_name(token)
+        if split is not None:
+            schema, table = split
+            qualified.append((f"{schema}.{table}", schema, table))
+    return sorted(set(bare)), sorted(set(qualified))
+
+
 def retrieve_schema_sql(
     warehouse: Path | None,
     grantable: set[str],
     toks: set[str],
 ) -> list[dict[str, Any]]:
     """SQL-filter: granted tables/columns from information_schema, scored in Python."""
-    tables = sorted(t for t in grantable if _safe_ident(t))
-    if warehouse is None or not Path(warehouse).is_file() or not tables:
+    bare, qualified = _grant_labels(grantable)
+    if warehouse is None or not Path(warehouse).is_file() or not (bare or qualified):
         return []
-    listed = ", ".join("'" + t.replace("'", "''") + "'" for t in tables)
-    sql = (
-        "SELECT table_name, column_name FROM information_schema.columns "
-        f"WHERE table_name IN ({listed})"
-    )
+    # Bare-only keeps the original statement. A qualified grant adds a schema
+    # predicate on this same connection.
+    params: list[str] = []
+    if not qualified:
+        listed = ", ".join("'" + t.replace("'", "''") + "'" for t in bare)
+        sql = (
+            "SELECT table_name, column_name FROM information_schema.columns "
+            f"WHERE table_name IN ({listed})"
+        )
+    else:
+        clauses: list[str] = []
+        for _label, schema, table in qualified:
+            clauses.append("(table_schema = ? AND table_name = ?)")
+            params.extend([schema, table])
+        if bare:
+            listed = ", ".join("'" + t.replace("'", "''") + "'" for t in bare)
+            clauses.append(f"table_name IN ({listed})")
+        sql = (
+            "SELECT table_schema, table_name, column_name "
+            "FROM information_schema.columns WHERE " + " OR ".join(clauses)
+        )
     con = connect_file(Path(warehouse))
     try:
-        rows = con.execute(sql).fetchall()
+        fetched = con.execute(sql, params).fetchall() if params else con.execute(sql).fetchall()
     except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
         return []
     finally:
         con.close()
+    labels = {(schema, table): label for label, schema, table in qualified}
+    pairs: list[tuple[str, str]] = []
+    for row in fetched:
+        if qualified:
+            label = labels.get((str(row[0]), str(row[1])))
+            column_name = row[2]
+            if label is None and _safe_ident(str(row[1])):
+                label = str(row[1])
+        else:
+            label = _safe_ident(str(row[0]))
+            column_name = row[1]
+        col = _safe_ident(str(column_name))
+        if not label or not col:
+            continue
+        pairs.append((label, col))
     by_table: dict[str, list[str]] = {}
     table_score: dict[str, int] = {}
-    for table_name, column_name in rows:
-        table = _safe_ident(str(table_name))
-        col = _safe_ident(str(column_name))
-        if not table or not col:
-            continue
+    for table, col in pairs:
         sc = _score(table, toks) + _score(col, toks)
         if sc <= 0 and _score(table, toks) <= 0:
             continue
@@ -226,6 +276,48 @@ def retrieve_schema_sql(
     return out
 
 
+def _quote_part(part: str) -> str:
+    return '"' + str(part).replace('"', '""') + '"'
+
+
+def _mask_column(column: str, vals: list[str]) -> list[str] | None:
+    """Cell strings after ``fail_closed_mask_payload``, or None on failure.
+
+    None means the whole retrieve publishes no samples. A blanked unknown
+    token is a failure, same as an exception.
+    """
+    try:
+        masked = fail_closed_mask_payload(rows=[{column: value} for value in vals])
+    except Exception:  # noqa: BLE001 -- no samples, the ask continues
+        return None
+    rows = masked.get("rows") if isinstance(masked, dict) else None
+    if not isinstance(rows, list) or len(rows) != len(vals):
+        return None
+    texts: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        got = row.get(column)
+        texts.append("" if got is None else str(got))
+    if texts and all(text.startswith("DMSMASK_unknown") for text in texts):
+        return None
+    return texts
+
+
+def _cleared_tokens(originals: list[str], masked: list[str]) -> list[str] | None:
+    """Tokens for a column the mask replaced. An unchanged value is not cleared."""
+    kept: list[str] = []
+    for original, text in zip(originals, masked, strict=True):
+        if (
+            not is_mask_token(text)
+            or text == str(original)
+            or text.startswith("DMSMASK_unknown")
+        ):
+            return None
+        kept.append(text)
+    return kept or None
+
+
 def retrieve_value_encodings(
     warehouse: Path | None,
     schema: list[dict[str, Any]],
@@ -234,31 +326,49 @@ def retrieve_value_encodings(
     """Perfect-SQL-as-filter: DISTINCT samples for retrieved dimension columns."""
     if warehouse is None or not Path(warehouse).is_file():
         return {}
+    from dms_executor.grant_key import split_grant_name
+
     skip = re.compile(r"(amount|qty|quantity|cost|kg|myr|score|load|capacity|date|id)$", re.I)
     encodings: dict[str, list[str]] = {}
     con = connect_file(Path(warehouse))
     try:
         for item in schema:
-            table = _safe_ident(str(item.get("table") or ""))
-            if not table:
+            raw_table = str(item.get("table") or "")
+            table = _safe_ident(raw_table)
+            qualified = None if table else split_grant_name(raw_table)
+            if not table and qualified is None:
                 continue
             for col in item.get("columns") or []:
                 name = _safe_ident(str(col))
                 if not name or skip.search(name) or _score(name, toks) <= 0:
                     continue
+                label = table or raw_table
                 # Name-flagged PII is never sampled. Detector errors fail closed.
-                if column_is_pii(name, (), table=table):
+                if column_is_pii(name, (), table=label):
                     continue
-                key = f"{table}.{name}"
+                key = f"{label}.{name}"
+                if qualified is not None:
+                    from_sql = f"{_quote_part(qualified[0])}.{_quote_part(qualified[1])}"
+                else:
+                    from_sql = table or ""
                 try:
                     fetched = con.execute(
-                        f"SELECT DISTINCT CAST({name} AS VARCHAR) FROM {table} "
+                        f"SELECT DISTINCT CAST({name} AS VARCHAR) FROM {from_sql} "
                         f"WHERE {name} IS NOT NULL LIMIT {MAX_SAMPLE}"
                     ).fetchall()
                 except Exception:  # noqa: BLE001
                     continue
                 vals = [str(r[0]) for r in fetched if r and r[0] is not None]
                 if not vals:
+                    continue
+                # Both paths. A mask failure drops every sample from this retrieve.
+                masked = _mask_column(name, vals)
+                if masked is None:
+                    return {}
+                if qualified is not None:
+                    cleared = _cleared_tokens(vals, masked)
+                    if cleared:
+                        encodings[key] = cleared
                     continue
                 if column_is_pii(name, vals, table=table):
                     continue

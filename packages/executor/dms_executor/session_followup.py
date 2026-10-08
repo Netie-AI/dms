@@ -18,6 +18,7 @@ from dms_executor.envelope import (
     build_answer_envelope,
     reserved_as_of_abstain,
 )
+from dms_executor.grant_struct import serve_gap, sql_refusal_envelope
 
 _AVG = re.compile(r"^\s*average of them\s*[.?]?\s*$", re.I)
 _ADD = re.compile(r"^\s*add\s+(-?\d+(?:\.\d+)?)\s*[.?]?\s*$", re.I)
@@ -135,10 +136,20 @@ def _followup_execute(
     space_id: str | None,
     session_id: str | None,
     question: str,
+    grantable: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
     """Rows, or a reserved_param abstain. The placeholder never reaches DuckDB."""
     if sql_has_reserved_as_of(sql):
         return None, reserved_as_of_abstain(
+            space_id=space_id,
+            session_id=session_id,
+            route="followup",
+            question=question,
+        )
+    gap = serve_gap(sql, grantable=set(grantable or ()), dialect="duckdb")
+    if gap:
+        return None, sql_refusal_envelope(
+            reason=gap,
             space_id=space_id,
             session_id=session_id,
             route="followup",
@@ -156,6 +167,7 @@ def run_followup_sql(
     question: str,
     why: str,
     text: str,
+    grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     """Follow-up SQL. A real $as_of placeholder abstains and does not run."""
     rows, refused = _followup_execute(
@@ -164,6 +176,7 @@ def run_followup_sql(
         space_id=space_id,
         session_id=session_id,
         question=question,
+        grantable=grantable,
     )
     if refused is not None:
         return refused
@@ -186,6 +199,7 @@ def maybe_followup(
     session_id: str | None = None,
     warehouse: Path | None = None,
     tables: list[str] | None = None,
+    grantable: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Envelope for a follow-up, or None when this ask is not a follow-up."""
     if tables:
@@ -213,6 +227,7 @@ def maybe_followup(
                 space_id=space_id,
                 session_id=session_id,
                 question=question,
+                grantable=grantable,
             )
         except Exception:  # noqa: BLE001
             return _abstain(
@@ -247,6 +262,7 @@ def maybe_followup(
             space_id=space_id,
             session_id=session_id,
             question=question,
+            grantable=grantable,
         )
     except Exception:  # noqa: BLE001
         return _abstain(

@@ -32,9 +32,8 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import (
+    bronze_candidate_sql,
     bronze_grant_abstain,
-    bronze_lane_table,
-    bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
 from dms_executor.contract_infer import infer_contract
@@ -83,14 +82,15 @@ from dms_executor.generative_ask import (
     path_miss_envelope,
     with_served_attribution,
 )
+from dms_executor.grant_struct import bronze_gap, serve_gap, sql_refusal_envelope
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
     OpenVaultTokenError,
+    SecurityEvent,
     SessionAcl,
     SubmitError,
     classify_submit_error,
-    reject_hostile_chat_sql,
     should_rement,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
@@ -199,6 +199,9 @@ class Executor:
         self._warehouse = Path(warehouse_path) if warehouse_path else None
         self._bound_sessions: set[str] = set()
         self._turns: dict[tuple[str, str], dict[str, Any]] = {}
+        # Filled by grantable_tables. None means this Space's grants are the
+        # legacy bare-name seed. A dict is source.table -> that grant's filter.
+        self._keyed_predicates: dict[str, dict[str, str] | None] = {}
         # The Space boundary reads its facts from here. Defaults to the DR-0002
         # seed so the boundary holds without Postgres; swap for a Postgres-backed
         # store when P-DMS-2 lands, without touching the serving path.
@@ -257,10 +260,14 @@ class Executor:
             return
         self._turns[key] = snap
 
-    def execute(self, sql: str) -> list[dict[str, Any]]:
-        reject_hostile_chat_sql(sql)
+    def execute(
+        self, sql: str, *, grantable: set[str] | None = None
+    ) -> list[dict[str, Any]]:
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
+        gap = serve_gap(sql, grantable=set(grantable or ()), dialect="duckdb")
+        if gap:
+            raise SecurityEvent(gap, gap)
         ensure_demo_warehouse(self._warehouse)
         return execute_sql(sql, path=self._warehouse, product=True)
 
@@ -279,7 +286,20 @@ class Executor:
                 route="user_sql",
                 question=sql,
             )
-        rows = self.execute(sql)
+        try:
+            grants = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
+            grants = set()
+        gap = serve_gap(sql, grantable=grants, dialect="duckdb")
+        if gap:
+            return sql_refusal_envelope(
+                reason=gap,
+                space_id=space_id,
+                session_id=session_id,
+                route="user_sql",
+                question=None,
+            )
+        rows = self.execute(sql, grantable=grants)
         env = build_answer_envelope(
             answer_id="ans_user_sql",
             text="Query result.",
@@ -336,7 +356,16 @@ class Executor:
             session_id="_grantable_probe",
             pool_id="default",
         )
-        return sorted(resolve_session_acl(ctx).row_predicates)
+        acl = resolve_session_acl(ctx)
+        from dms_executor.grant_key import grants_are_keyed
+
+        if grants_are_keyed(ctx.grants):
+            # Qualified relations and the filter each grant already carries.
+            # demo_acl and the ask path read this; they do not resolve again.
+            self._keyed_predicates[space_id] = dict(acl.row_predicates)
+        else:
+            self._keyed_predicates[space_id] = None
+        return sorted(acl.row_predicates)
 
     def demo_acl(
         self,
@@ -369,6 +398,29 @@ class Executor:
         being skipped.
         """
         grantable = self.grantable_tables(space_id=space_id)
+        keyed = self._keyed_predicates.get(space_id) if space_id else None
+        if keyed is not None:
+            selection = [t for t in (tables or []) if t]
+            ungrantable = [t for t in selection if t not in keyed]
+            if ungrantable:
+                raise GroundingRefused(ungrantable=ungrantable, grantable=sorted(keyed))
+            chosen = selection or sorted(keyed)
+            base = session_id or f"ses_{uuid4().hex[:16]}"
+            parts = []
+            if space_id:
+                parts.append(f"space:{space_id}")
+            if selection:
+                parts.append(f"scope:{'+'.join(sorted(selection))}")
+            sid = f"{base}::{'::'.join(parts)}" if parts else base
+            return SessionAcl(
+                session_id=sid,
+                org_id="tenant_demo",
+                space_id=space_id,
+                row_predicates={t: keyed[t] for t in chosen},
+                allowed_paths=[],
+                pool_id="default",
+                ttl_seconds=900,
+            )
         selection = [t for t in (tables or []) if t]
         ungrantable = [t for t in selection if t not in grantable]
         if ungrantable:
@@ -621,6 +673,10 @@ class Executor:
 
         key = turn_key(session_id, space_id)
         if allow_follow:
+            try:
+                follow_grants = set(self.grantable_tables(space_id=space_id))
+            except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
+                follow_grants = set()
             follow = maybe_followup(
                 question,
                 prior=self._turns.get(key) if key else None,
@@ -628,6 +684,7 @@ class Executor:
                 session_id=session_id,
                 warehouse=self._warehouse,
                 tables=tables,
+                grantable=follow_grants,
             )
             if follow is not None:
                 self._store_turn(session_id, space_id, follow)
@@ -713,9 +770,15 @@ class Executor:
             granted = self.grantable_tables(space_id=space_id)
         except Exception:  # noqa: BLE001 -- empty context, never the whole space
             granted = []
+            if space_id:
+                self._keyed_predicates[space_id] = None
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
-        default_readable = [t for t in granted if t in DEMO_TABLES]
+        keyed = self._keyed_predicates.get(space_id) if space_id else None
+        if keyed is not None:
+            default_readable = sorted(keyed)
+        else:
+            default_readable = [t for t in granted if t in DEMO_TABLES]
         readable = requested or default_readable
         cascade = (
             run_cascade(
@@ -740,53 +803,46 @@ class Executor:
 
         asked = question
         question = with_grounded_scope(question, tables)
+        # The phrase only builds the statement the sheet server would read.
+        # Whether that statement is granted is bronze_gap on the parsed SQL.
+        # An ungranted statement waits: a later plan that only touches granted
+        # tables may still serve. No model, and the pending reason is returned.
+        pending_bronze: str | None = None
         if allow_bronze:
-            # dms#284: readable bronze tables are the active listing intersected
-            # with the grants ``grantable_tables`` just returned. Same predicate
-            # as the grounded ask (``table_is_granted``). No Space fails closed.
-            target = bronze_lane_table(question)
-            if target is None:
-                bronze_env = None
-            elif not space_id:
+            candidate = bronze_candidate_sql(question)
+            if candidate is not None and not space_id:
                 bronze_env = bronze_grant_abstain(
                     question,
                     reason="no_space",
                     space_id=space_id,
                     session_id=session_id,
                 )
-            else:
-                from dms_executor.ontology import table_is_granted
-
-                active = set(
-                    ingested_bronze_tables(self._warehouse, space_id=space_id)
-                )
-                bronze_readable = active.intersection(granted)
-                if table_is_granted(target, bronze_readable):
-                    # Flag off: do not call the sheet lane. Grant abstains above
-                    # and below stay. They return no rows. An ungranted table
-                    # or a missing Space is a refusal, and a later lane must
-                    # not answer it from some other table.
-                    bronze_env = (
-                        maybe_bronze_sheet_ask(
-                            question,
-                            space_id=space_id,
-                            session_id=session_id,
-                            warehouse=self._warehouse,
-                        )
-                        if bronze_sheet_lane_enabled()
-                        else None
-                    )
-                else:
-                    bronze_env = bronze_grant_abstain(
-                        question,
-                        reason=f"ungranted_table:{target}",
-                        space_id=space_id,
-                        session_id=session_id,
-                    )
-            if bronze_env is not None:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+            if candidate is not None:
+                active = set(
+                    ingested_bronze_tables(self._warehouse, space_id=space_id)
+                )
+                bronze_readable = set(active).intersection(granted)
+                gap = bronze_gap(
+                    candidate, grantable=bronze_readable, dialect="duckdb"
+                )
+                if gap is None:
+                    # Flag off: maybe_bronze_sheet_ask returns None. A granted
+                    # sheet then continues. An ungranted one is pending below.
+                    served = maybe_bronze_sheet_ask(
+                        question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        warehouse=self._warehouse,
+                    )
+                    if served is not None:
+                        env = attach_cascade(served, cascade)
+                        self._store_turn(session_id, space_id, env)
+                        return env
+                else:
+                    pending_bronze = gap
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -836,6 +892,16 @@ class Executor:
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        if pending_bronze:
+            bronze_env = bronze_grant_abstain(
+                question,
+                reason=pending_bronze,
+                space_id=space_id,
+                session_id=session_id,
+            )
+            env = attach_cascade(bronze_env, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
         if not allow_cortex:
             env = path_miss_envelope(
                 question,
@@ -873,6 +939,20 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        raw_sql = getattr(resp, "sql_used", None)
+        if raw_sql and str(raw_sql).strip() and not getattr(resp, "abstained", False):
+            gap = serve_gap(str(raw_sql), grantable=set(readable), dialect="duckdb")
+            if gap:
+                refused = sql_refusal_envelope(
+                    reason=gap,
+                    space_id=space_id,
+                    session_id=session_id,
+                    route="abstain",
+                    question=question,
+                )
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -895,12 +975,16 @@ class Executor:
         *,
         reminted: bool = False,
     ) -> Any:
-        reject_hostile_chat_sql(sql)
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
         if self._cortex is None:
             raise RuntimeError("CortexClient required for submit")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
+        gap = serve_gap(
+            sql, grantable=set(acl.row_predicates), dialect="duckdb"
+        )
+        if gap:
+            raise SecurityEvent(gap, gap)
         manifest = self._minter.mint_manifest(acl)
         req = SubmitRequest(
             pool=PoolSpec(id=acl.pool_id),
