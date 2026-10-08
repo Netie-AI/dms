@@ -64,16 +64,6 @@ WRONG: dict[str, tuple[str, str]] = {
         "No customer or revenue data exists; served invents 'revenue' as outbound "
         "qty*unit_cost (a cost basis) grouped",
     ),
-    "B-049": (
-        "WRONG_GRAIN",
-        "Question wants one top SKU per category (4 rows); served groups by "
-        "category, LIMIT 1, returning Electronics to",
-    ),
-    "B-051": (
-        "WRONG_MEASURE",
-        "Asked for share of total (45.12%, 35.00%, 11.12%); served returns "
-        "absolute sums, no percentage computed.",
-    ),
     "B-054": (
         "DROPPED_ROWS",
         "SUM(DISTINCT quantity_kg) collapses duplicate quantities (400 appears in "
@@ -281,15 +271,27 @@ def test_gate_does_not_serve_confident_wrong_answer(
     )
 
 
-# SHEET-CERT-FILTER-01: were strict xfails. The sheet lane now abstains
-# instead of stamping L0_CERTIFIED over a filter it does not apply.
-_SHEET_FILTER_FIXED = ("E-067", "E-069")
+# SHEET-CERT-FILTER-01: were strict xfails. The same grounding check abstains
+# on B-049 (SKU per category) and B-051 (percentage of total). strict=True
+# would XPASS those two, so their markers come off with E-067 and E-069.
+# Every other WRONG entry is unchanged.
+_SHEET_FILTER_FIXED = (
+    "B-049",
+    "B-051",
+    "E-067",
+    "E-069",
+)
 
 
 @pytest.mark.parametrize(
     "cid",
     _SHEET_FILTER_FIXED,
-    ids=["E-067-DROPPED_FILTER", "E-069-WRONG_FILTER_POLARITY"],
+    ids=[
+        "B-049-WRONG_GRAIN",
+        "B-051-WRONG_MEASURE",
+        "E-067-DROPPED_FILTER",
+        "E-069-WRONG_FILTER_POLARITY",
+    ],
 )
 def test_sheet_filter_is_not_a_confident_wrong(
     cid: str, served: dict[str, dict[str, Any]]
