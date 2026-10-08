@@ -1,13 +1,11 @@
-"""Pairwise with RANK-WINDOW-01 (#392).
+"""Pairwise with RANK-WINDOW-01 (#392), now on main.
 
-Skip only when ``cortex_client.qualifiers.rank_window_shape_reason`` cannot
-be imported. That name is the #392 shape check. On a head that has it, every
-case runs: if the rank-window lane abstains, the generate_empty ranked
-fallback must not serve the question.
+Every case runs. ``rank_window_shape_reason`` is imported directly. If the
+rank-window lane would abstain, the generate_empty ranked fallback must not
+serve the question.
 
 ``rank_window_ask`` is forced to None so the check is the fallback, not the
-rank-window abstain itself. A missing ``rank_window_ask`` while the shape
-symbol imports is a failure, not a second skip.
+rank-window abstain itself. A missing ``rank_window_ask`` is a failure.
 """
 
 from __future__ import annotations
@@ -16,19 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cortex_client.qualifiers import rank_window_shape_reason
 from test_gen_empty_ranked_01 import _blob, _executor
-
-_SYMBOL = "cortex_client.qualifiers.rank_window_shape_reason"
-_SKIP_REASON = (
-    f"{_SYMBOL} cannot be imported; RANK-WINDOW-01 (#392) is not on this head"
-)
-
-try:
-    from cortex_client.qualifiers import rank_window_shape_reason as _shape_reason
-except ImportError:
-    _shape_reason = None
-
-pytestmark = pytest.mark.skipif(_shape_reason is None, reason=_SKIP_REASON)
 
 # Stray-digit and window phrasings from #392 tests
 # test_rank_window_02_trailing_filter.py and test_rank_window_03_stray_digit.py.
@@ -90,13 +77,13 @@ _PHRASINGS = (
 def test_ranked_fallback_does_not_serve_when_rank_window_abstains(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, question: str
 ) -> None:
-    assert _shape_reason is not None
-    reason = _shape_reason(question)
+    reason = rank_window_shape_reason(question)
     assert reason is not None, question
     import dms_executor.generative_ask as gen_ask
 
     assert hasattr(gen_ask, "rank_window_ask"), (
-        f"{_SYMBOL} imported but dms_executor.generative_ask.rank_window_ask is missing"
+        "rank_window_shape_reason imported but "
+        "dms_executor.generative_ask.rank_window_ask is missing"
     )
     monkeypatch.setattr(gen_ask, "rank_window_ask", lambda *_a, **_k: None)
 
