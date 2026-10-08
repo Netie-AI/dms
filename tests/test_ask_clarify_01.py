@@ -63,12 +63,14 @@ def _minter() -> ManifestMinter:
 class _Cortex:
     computes: list[str] = field(default_factory=list)
     asks: list[Any] = field(default_factory=list)
+    submits: list[Any] = field(default_factory=list)
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         self.computes.append(question)
         return {}
 
     def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
         return QueryResult(ok=True, status="bound", run_id="run_clarify")
 
     def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
@@ -177,6 +179,7 @@ def _ask(
     session_id: str = "ses_clarify",
     clarify_id: str | None = None,
     option_id: str | None = None,
+    clarify_text: str | None = None,
     cortex: _Cortex | None = None,
 ) -> tuple[dict[str, Any], _Cortex, Executor]:
     assert _MP is not None
@@ -193,6 +196,7 @@ def _ask(
         tables=tables,
         clarify_id=clarify_id,
         option_id=option_id,
+        clarify_text=clarify_text,
     )
     return env, held, exe
 
@@ -597,5 +601,457 @@ def test_clarify_records_tokens_and_rates(wh: Path) -> None:
         assert rates["clarify_rate"] == 1.0
         assert rates["abstain_rate"] == 0.0
         assert rates["tokens_per_clarify"] == 18.0
+    finally:
+        exe.close()
+
+
+def test_free_text_outside_options_abstains(wh: Path) -> None:
+    cortex = _Cortex()
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        cortex=cortex,
+    )
+    try:
+        cid = env["clarify_id"]
+        picked = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+            clarify_id=cid,
+            clarify_text="use qxhidden_fact ungranted-token-552",
+        )
+        assert picked["abstain_reason"] == "clarify_pick_not_in_options"
+        assert picked["abstained"] is True
+        assert picked["rows"] == []
+        assert picked["values"] == []
+        assert cortex.submits == []
+        assert cortex.asks == []
+        assert cid in exe._clarify_attempts
+        assert_envelope_valid(picked)
+    finally:
+        exe.close()
+
+
+def test_free_text_exact_label_serves(wh: Path) -> None:
+    cortex = _Cortex()
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        cortex=cortex,
+    )
+    try:
+        picked = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+            clarify_id=env["clarify_id"],
+            clarify_text="use-qxalpha771",
+        )
+        assert picked["abstained"] is False
+        assert picked["rows"] == [{"n": 4}]
+        assert '"name":"qxalpha771"' in cortex.asks[-1].question
+    finally:
+        exe.close()
+
+
+def test_unknown_option_id_abstains(wh: Path) -> None:
+    cortex = _Cortex()
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        cortex=cortex,
+    )
+    try:
+        picked = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+            clarify_id=env["clarify_id"],
+            option_id="opt_missing",
+        )
+        assert picked["abstain_reason"] == "clarify_option_unknown"
+        assert picked["rows"] == []
+        assert cortex.submits == []
+        assert cortex.asks == []
+    finally:
+        exe.close()
+
+
+def test_tampered_binding_abstains(wh: Path) -> None:
+    cortex = _Cortex()
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        cortex=cortex,
+    )
+    try:
+        cid = env["clarify_id"]
+        exe._clarify_attempts[cid]["options"][0]["binding"] = {
+            "kind": "table",
+            "name": "qxhidden_fact",
+        }
+        picked = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+            clarify_id=cid,
+            option_id="opt_a",
+        )
+        assert picked["abstain_reason"] == "clarify_binding_ungranted"
+        assert picked["abstained"] is True
+        assert picked["rows"] == []
+        assert picked["values"] == []
+        assert cortex.submits == []
+        assert cortex.asks == []
+        assert picked.get("badge") != "L0_CERTIFIED"
+        assert_envelope_valid(picked)
+    finally:
+        exe.close()
+
+
+def test_time_range_dates_match_the_store(wh: Path) -> None:
+    payload = {
+        "question": "which-qx-range-882",
+        "prompt_tokens": 5,
+        "completion_tokens": 4,
+        "options": [
+            _opt(
+                "opt_q1",
+                "range-qx-one",
+                {
+                    "kind": "time_range",
+                    "table": "qxgamma_fact",
+                    "column": "event_date",
+                    "start": "2024-01-01",
+                    "end": "2024-03-31",
+                },
+            ),
+            _opt(
+                "opt_q2",
+                "range-qx-two",
+                {
+                    "kind": "time_range",
+                    "table": "qxgamma_fact",
+                    "column": "event_date",
+                    "start": "2024-04-01",
+                    "end": "2024-06-30",
+                },
+            ),
+        ],
+    }
+    env, _cortex, exe = _ask(
+        wh,
+        "show qxgamma771",
+        ["qxgamma_fact"],
+        writer=_Writer(payload),
+        flag=True,
+    )
+    try:
+        stored = exe._clarify_attempts[env["clarify_id"]]["options"]
+        assert env["options"] == stored
+        blob = json.dumps(env["options"])
+        assert "2024-01-01" in blob
+        assert "2024-03-31" in blob
+        assert "2024-04-01" in blob
+        assert "2024-06-30" in blob
+        assert "DMSMASK_dob" not in blob
+    finally:
+        exe.close()
+
+
+def test_clear_ask_does_not_sample(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def _spy(warehouse: Path, table: str, column: str) -> list[str]:
+        seen.append((table, column))
+        return []
+
+    monkeypatch.setattr("dms_executor.ask_clarify._samples", _spy)
+    env, _cortex, exe = _ask(
+        wh,
+        "show qxdelta771",
+        ["qxdelta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        session_id="ses_nosample",
+    )
+    try:
+        assert env["rows"] == [{"n": 4}]
+        assert env.get("status") != "clarify"
+        assert seen == []
+    finally:
+        exe.close()
+
+
+def test_ambiguous_samples_skip_ungranted(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def _spy(warehouse: Path, table: str, column: str) -> list[str]:
+        seen.append((table, column))
+        return []
+
+    monkeypatch.setattr("dms_executor.ask_clarify._samples", _spy)
+    env, _cortex, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        session_id="ses_sample",
+    )
+    try:
+        assert env["status"] == "clarify"
+        assert seen
+        assert all(table != "qxhidden_fact" for table, _col in seen)
+        assert all(column != "email" for _table, column in seen)
+    finally:
+        exe.close()
+
+
+def test_pii_raise_does_not_serve(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("detector down")
+
+    monkeypatch.setattr("dms_executor.ask_clarify.column_is_pii", _boom)
+    cortex = _Cortex()
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        cortex=cortex,
+        session_id="ses_pii",
+    )
+    try:
+        assert env["abstain_reason"] == "clarify_column_unreadable"
+        assert env["abstained"] is True
+        assert env["rows"] == []
+        assert env["values"] == []
+        assert env.get("status") != "clarify"
+        assert cortex.submits == []
+        assert cortex.asks == []
+        assert_envelope_valid(env)
+    finally:
+        exe.close()
+
+
+def _completion(content: str) -> dict[str, Any]:
+    return {
+        "choices": [{"message": {"content": content}}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+    }
+
+
+class _Http:
+    def __init__(self, posts: list[dict[str, Any]], *, fail: bool) -> None:
+        self.posts = posts
+        self.fail = fail
+
+    def __enter__(self) -> _Http:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+    def get(self, _url: str) -> Any:
+        import httpx
+
+        raise httpx.ConnectError("vault down")
+
+    def post(
+        self,
+        url: str,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        import httpx
+
+        self.posts.append({"url": url, "json": json or {}, "headers": headers or {}})
+        if self.fail:
+            raise httpx.ConnectError("vault down")
+        return _ChatResp()
+
+
+class _ChatResp:
+    status_code = 200
+
+    def json(self) -> dict[str, Any]:
+        body = {
+            "question": "which-qx-measure-881",
+            "options": [
+                {
+                    "id": "opt_a",
+                    "label": "use-qxalpha771",
+                    "binding": {
+                        "kind": "measure",
+                        "name": "qxalpha771",
+                        "table": "qxalpha_fact",
+                    },
+                },
+                {
+                    "id": "opt_b",
+                    "label": "use-qxbeta771",
+                    "binding": {
+                        "kind": "measure",
+                        "name": "qxbeta771",
+                        "table": "qxbeta_fact",
+                    },
+                },
+            ],
+        }
+        return _completion(json.dumps(body))
+
+
+def _install_http(monkeypatch: pytest.MonkeyPatch, *, fail: bool) -> list[dict[str, Any]]:
+    import httpx
+
+    posts: list[dict[str, Any]] = []
+
+    def _client(*_args: object, **_kwargs: object) -> _Http:
+        return _Http(posts, fail=fail)
+
+    monkeypatch.setattr(httpx, "Client", _client)
+    return posts
+
+
+def test_wiring_writer_clarifies(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_executor
+    from dms_api.wiring import build_ask_service
+
+    monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
+    posts = _install_http(monkeypatch, fail=False)
+    previous = dms_executor.probe_openvault
+    dms_executor.probe_openvault = lambda **_k: (None, "off")  # type: ignore[method-assign]
+    cortex = _Cortex()
+    try:
+        exe = build_ask_service(
+            cortex,  # type: ignore[arg-type]
+            openvault_url="http://ov.test",
+            warehouse_path=wh,
+            session_store=DemoSessionStore(
+                extra_grants=_GRANTED,
+                uploads=lambda: (),
+                warehouse=wh,
+            ),
+        )
+    finally:
+        dms_executor.probe_openvault = previous
+    try:
+        env = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_wire",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+        )
+        assert env["status"] == "clarify"
+        assert env["rows"] == []
+        assert cortex.submits == []
+        assert cortex.asks == []
+        chat = [p for p in posts if str(p["url"]).endswith("/v1/chat/completions")]
+        assert len(chat) == 1
+        body = chat[0]["json"]
+        assert body["model_preference"] == "free+normal"
+        assert "api_key" not in body
+        assert "sk-" not in json.dumps(body)
+        assert_envelope_valid(env)
+    finally:
+        exe.close()
+
+
+def test_wiring_writer_down_abstains(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_executor
+    from dms_api.wiring import build_ask_service
+
+    monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
+    _install_http(monkeypatch, fail=True)
+    previous = dms_executor.probe_openvault
+    dms_executor.probe_openvault = lambda **_k: (None, "off")  # type: ignore[method-assign]
+    cortex = _Cortex()
+    try:
+        exe = build_ask_service(
+            cortex,  # type: ignore[arg-type]
+            openvault_url="http://ov.test",
+            warehouse_path=wh,
+            session_store=DemoSessionStore(
+                extra_grants=_GRANTED,
+                uploads=lambda: (),
+                warehouse=wh,
+            ),
+        )
+    finally:
+        dms_executor.probe_openvault = previous
+    try:
+        env = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_wire_down",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+        )
+        assert env["abstain_reason"] == "clarify_writer_unavailable"
+        assert env["abstained"] is True
+        assert env["rows"] == []
+        assert env["values"] == []
+        assert cortex.submits == []
+        assert cortex.asks == []
+        assert_envelope_valid(env)
+    finally:
+        exe.close()
+
+
+def test_wiring_clear_ask_does_not_post(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_executor
+    from dms_api.wiring import build_ask_service
+
+    monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
+    posts = _install_http(monkeypatch, fail=False)
+    previous = dms_executor.probe_openvault
+    dms_executor.probe_openvault = lambda **_k: (None, "off")  # type: ignore[method-assign]
+    cortex = _Cortex()
+    try:
+        exe = build_ask_service(
+            cortex,  # type: ignore[arg-type]
+            openvault_url="http://ov.test",
+            warehouse_path=wh,
+            session_store=DemoSessionStore(
+                extra_grants=_GRANTED,
+                uploads=lambda: (),
+                warehouse=wh,
+            ),
+        )
+    finally:
+        dms_executor.probe_openvault = previous
+    exe._minter = _minter()
+    try:
+        env = exe.live_ask(
+            "show qxdelta771",
+            space_id=FINANCE,
+            session_id="ses_wire_clear",
+            tables=["qxdelta_fact"],
+        )
+        chat = [p for p in posts if str(p["url"]).endswith("/v1/chat/completions")]
+        assert chat == []
+        assert env.get("status") != "clarify"
+        assert env["rows"] == [{"n": 4}]
     finally:
         exe.close()

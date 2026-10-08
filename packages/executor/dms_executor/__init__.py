@@ -24,6 +24,7 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
+from dms_executor.ask_clarify import openvault_clarify_writer
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
@@ -620,6 +621,10 @@ class Executor:
             from dms_executor.ask_clarify import clarify_enabled, resolve_clarify
 
             if clarify_enabled():
+                try:
+                    granted_now = set(self.grantable_tables(space_id=space_id))
+                except Exception:  # noqa: BLE001 -- fail closed, never 500 the pick
+                    granted_now = set()
                 resolved = resolve_clarify(
                     self._clarify_attempts,
                     clarify_id=clarify_id,
@@ -628,6 +633,8 @@ class Executor:
                     space_id=space_id,
                     session_id=session_id,
                     fallback_question=question,
+                    warehouse=self._warehouse,
+                    grantable=granted_now,
                 )
                 if isinstance(resolved, dict):
                     return resolved
@@ -1197,6 +1204,7 @@ __all__ = [
     "SourceGrant",
     "answer_demo_question",
     "assert_envelope_valid",
+    "openvault_clarify_writer",
     "build_answer_envelope",
     "normalize_contributing_sources",
     "build_library_tree",

@@ -16,12 +16,22 @@ def build_ask_service(
     cortex: CortexClient | None,
     *,
     openvault_url: str | None = None,
+    warehouse_path: Any = None,
+    session_store: Any | None = None,
 ) -> AskServicePort:
     from dms_api.settings import get_settings
 
     settings = get_settings()
     ov_url = openvault_url or settings.openvault_url
-    exe = dms_executor.Executor(cortex=cortex, openvault_url=ov_url)
+    # Same OpenVault route as generate. If the vault is down the writer
+    # abstains (clarify_writer_unavailable) instead of serving a guess.
+    exe = dms_executor.Executor(
+        cortex=cortex,
+        openvault_url=ov_url,
+        warehouse_path=warehouse_path,
+        session_store=session_store,
+        clarify_model=dms_executor.openvault_clarify_writer(ov_url),
+    )
     exe.startup()
     return exe
 

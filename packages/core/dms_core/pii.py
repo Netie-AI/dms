@@ -197,7 +197,9 @@ SAFE_ENVELOPE_KEYS = _KEEP_KEYS | frozenset(
 )
 
 # Already masked by mask_payload. The generic scan must not replace that walk:
-# rows and text keep the birth-cue rule.
+# rows and text keep the birth-cue rule. Clarify options are masked once at
+# creation (period boundaries stay dates); scanning them again would turn
+# those dates into DOB tokens.
 _HANDLED_KEYS = frozenset(
     {
         "text",
@@ -207,6 +209,7 @@ _HANDLED_KEYS = frozenset(
         "chart",
         "sql_used",
         "audit_receipt",
+        "options",
     }
 )
 

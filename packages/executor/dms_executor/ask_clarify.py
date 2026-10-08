@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from dms_core.clarify_stats import record_clarify_tokens
-from dms_core.pii import column_is_pii
+from dms_core.pii import column_is_pii, fail_closed_mask_payload
 
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.semantic_retrieve import _safe_ident, _score, question_tokens
@@ -104,6 +104,10 @@ class Gate:
     payload: Any = None
     prefetched: bool = False
     check_planner: bool = False
+
+
+class ClarifyWriterUnavailable(Exception):
+    """OpenVault could not write the question. The ask abstains. It does not serve."""
 
 
 @dataclass
@@ -268,25 +272,29 @@ def _time_missing(question_columns: list[_Col], scored: list[dict[str, Any]]) ->
     return any(col.table in tables and _temporal(col.type_name) for col in question_columns)
 
 
-def structural_signal(
-    question: str,
-    *,
+def _name_pii(table: str, col: str) -> tuple[bool, bool]:
+    """(is_pii, detector_failed). A raise clears nothing and adds no value."""
+    try:
+        return bool(column_is_pii(col, (), table=table)), False
+    except Exception:  # noqa: BLE001 -- fail closed, do not serve
+        return True, True
+
+
+def _granted_columns(
     warehouse: Path | None,
     grantable: set[str],
-    ctx: dict[str, Any] | None,
-) -> tuple[bool, list[_Col], set[str]]:
-    """Return (clear, granted columns, secret tokens).
+) -> tuple[list[_Col], set[str], bool]:
+    """Metadata and name-only mask. No ``SELECT DISTINCT``.
 
-    ``clear`` means one candidate is ahead and a time range is present or not
-    needed. That path makes zero clarify model calls.
+    Ungranted tables stay on the denylist by name. A detector raise marks
+    that column uncleared and sets the failure flag. It does not sample it.
     """
     granted = {t for t in grantable if _safe_ident(t)}
-    raw = _load_columns(warehouse)
     granted_cols: list[_Col] = []
     secrets: set[str] = set()
-    table_scores = _schema_table_scores(ctx)
+    pii_failed = False
     by_table: dict[str, list[tuple[str, str]]] = {}
-    for table, col, typ in raw:
+    for table, col, typ in _load_columns(warehouse):
         by_table.setdefault(table, []).append((col, typ))
         if table not in granted:
             if len(table) >= _MIN_SECRET:
@@ -294,43 +302,74 @@ def structural_signal(
             if len(col) >= _MIN_SECRET:
                 secrets.add(col)
     for table, pairs in by_table.items():
-        allowed = table in granted
+        if table not in granted:
+            continue
         for col, typ in pairs:
-            samples = _samples(warehouse, table, col)
-            # Sample only to build the denylist. The prompt never sees them.
-            pii = False
-            try:
-                pii = column_is_pii(col, samples, table=table)
-            except Exception:  # noqa: BLE001 -- fail closed
-                pii = True
-            if not allowed or pii:
-                for val in samples:
-                    if len(val) >= _MIN_SECRET:
-                        secrets.add(val)
-                if pii and len(col) >= _MIN_SECRET and not allowed:
-                    secrets.add(col)
-            if allowed:
-                granted_cols.append(
-                    _Col(
-                        table=table,
-                        name=col,
-                        type_name=typ,
-                        score=0,
-                        cleared=not pii,
-                    )
+            pii, failed = _name_pii(table, col)
+            if failed:
+                pii_failed = True
+            granted_cols.append(
+                _Col(
+                    table=table,
+                    name=col,
+                    type_name=typ,
+                    score=0,
+                    cleared=not pii,
                 )
-    measures = {}
+            )
+    return granted_cols, secrets, pii_failed
+
+
+def structural_signal(
+    question: str,
+    *,
+    warehouse: Path | None,
+    grantable: set[str],
+    ctx: dict[str, Any] | None,
+) -> tuple[bool, list[_Col], set[str], bool]:
+    """Return (clear, granted columns, secret tokens, detector_failed).
+
+    ``clear`` means one candidate is ahead and a time range is present or not
+    needed. That path makes zero clarify model calls and zero sample queries.
+    Samples run only when the ask is not clear, and only on granted columns
+    the name check already cleared. A detector raise is not clear: the ask
+    must not be served.
+    """
+    granted_cols, secrets, pii_failed = _granted_columns(warehouse, grantable)
+    table_scores = _schema_table_scores(ctx)
+    measures: dict[str, Any] = {}
     if isinstance(ctx, dict) and isinstance(ctx.get("measures"), dict):
         measures = ctx["measures"]
     scored = _candidates(question, granted_cols, table_scores, measures)
-    ahead = _clearly_ahead(scored)
-    missing_time = _time_missing(granted_cols, scored)
-    clear = ahead and not missing_time
+    clear = _clearly_ahead(scored) and not _time_missing(granted_cols, scored)
+    if pii_failed:
+        clear = False
+    if not clear:
+        for col in granted_cols:
+            if not col.cleared:
+                continue
+            samples = _samples(warehouse, col.table, col.name)
+            try:
+                value_pii = column_is_pii(col.name, samples, table=col.table)
+            except Exception:  # noqa: BLE001 -- this column contributes nothing
+                pii_failed = True
+                col.cleared = False
+                continue
+            if value_pii:
+                col.cleared = False
+                for val in samples:
+                    if len(val) >= _MIN_SECRET:
+                        secrets.add(val)
+        scored = _candidates(question, granted_cols, table_scores, measures)
+        clear = _clearly_ahead(scored) and not _time_missing(granted_cols, scored)
+        if pii_failed:
+            clear = False
     # Drop secrets that are also granted identifiers the user may say.
     allowed_names = {c.table for c in granted_cols} | {c.name for c in granted_cols}
     allowed_names |= {str(m) for m in measures}
-    secrets = {s for s in secrets if s.casefold() not in {n.casefold() for n in allowed_names}}
-    return clear, granted_cols, secrets
+    folded = {n.casefold() for n in allowed_names}
+    secrets = {s for s in secrets if s.casefold() not in folded}
+    return clear, granted_cols, secrets, pii_failed
 
 
 def _iso_day(value: object) -> bool:
@@ -501,6 +540,60 @@ def _validate_options(
     return question, kept
 
 
+def _mask_stored_options(
+    options: list[dict[str, Any]], cols: list[_Col]
+) -> list[dict[str, Any]]:
+    """Mask each option once. The store and the envelope keep this list.
+
+    A time-range boundary on a cleared temporal column is a period, not a
+    birth date, so the same ISO string is what the UI shows and what binds.
+    """
+    masked: list[dict[str, Any]] = []
+    for opt in options:
+        binding = opt.get("binding")
+        if not isinstance(binding, dict):
+            continue
+        label = str(opt.get("label") or "")
+        row: dict[str, Any] = {}
+        sources: dict[str, frozenset[str]] = {}
+        date_src: frozenset[str] | None = None
+        if str(binding.get("kind") or "") == "time_range":
+            table = str(binding.get("table") or "")
+            column = str(binding.get("column") or "")
+            typed = any(
+                c.table == table
+                and c.name == column
+                and c.cleared
+                and _temporal(c.type_name)
+                for c in cols
+            )
+            if typed:
+                date_src = frozenset({f"{table}.{column}"})
+        for key, val in binding.items():
+            if key == "kind":
+                continue
+            row[key] = val
+            if date_src is not None and key in {"start", "end"}:
+                sources[key] = date_src
+        got = fail_closed_mask_payload(
+            text=label,
+            rows=[row] if row else [],
+            column_sources=sources or None,
+        )
+        new_binding = dict(binding)
+        rows = got.get("rows") if isinstance(got, dict) else None
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            for key, val in rows[0].items():
+                new_binding[key] = val
+        new_label = str(got.get("text") if isinstance(got, dict) else "").strip()
+        if not new_label:
+            continue
+        masked.append({"id": opt["id"], "label": new_label, "binding": new_binding})
+    if len(masked) < _MIN_OPTIONS:
+        return []
+    return masked
+
+
 def _envelope(
     *,
     clarify_id: str,
@@ -585,6 +678,9 @@ def _finish(
     question, options = _validate_options(data, cols, measures, secrets)
     if not options:
         return None
+    options = _mask_stored_options(options, cols)
+    if not options:
+        return None
     clarify_id = "clr_" + uuid.uuid4().hex[:16]
     _store_attempt(
         store,
@@ -614,6 +710,40 @@ def _measures(ctx: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+def _column_unreadable(
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    question: str,
+) -> Gate:
+    return Gate(
+        envelope=named_abstain(
+            "clarify_column_unreadable",
+            "A column could not be checked, so this ask was not answered.",
+            space_id=space_id,
+            session_id=session_id,
+            question=question,
+        )
+    )
+
+
+def _writer_unavailable(
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    question: str,
+) -> Gate:
+    return Gate(
+        envelope=named_abstain(
+            "clarify_writer_unavailable",
+            "The clarifying question could not be written. Ask again.",
+            space_id=space_id,
+            session_id=session_id,
+            question=question,
+        )
+    )
+
+
 def consider_clarify(
     question: str,
     *,
@@ -634,23 +764,41 @@ def consider_clarify(
     existing ``compute`` call is reused and not repeated by the caller.
     """
     try:
-        clear, cols, secrets = structural_signal(
+        clear, cols, secrets, pii_failed = structural_signal(
             question, warehouse=warehouse, grantable=grantable, ctx=ctx
         )
-    except Exception:  # noqa: BLE001 -- fall through, never 500 the ask
-        return Gate(check_planner=False)
+    except Exception:  # noqa: BLE001 -- do not serve an unreadable schema
+        return _column_unreadable(
+            space_id=space_id, session_id=session_id, question=original
+        )
     if clear:
         return Gate(check_planner=True)
     measure_names = {str(n) for n in _measures(ctx)}
+    if pii_failed and model is None:
+        return _column_unreadable(
+            space_id=space_id, session_id=session_id, question=original
+        )
     if model is not None:
         _note_call()
         prompt = _prompt(question, cols, _measures(ctx))
         try:
             raw = model(prompt)
+        except ClarifyWriterUnavailable:
+            return _writer_unavailable(
+                space_id=space_id, session_id=session_id, question=original
+            )
         except Exception:  # noqa: BLE001
+            if pii_failed:
+                return _column_unreadable(
+                    space_id=space_id, session_id=session_id, question=original
+                )
             return Gate()
         data, prompt_tokens, completion_tokens = _parse_model(raw)
         if data is None:
+            if pii_failed:
+                return _column_unreadable(
+                    space_id=space_id, session_id=session_id, question=original
+                )
             return Gate()
         env = _finish(
             data,
@@ -665,6 +813,10 @@ def consider_clarify(
             space_id=space_id,
             session_id=session_id,
         )
+        if env is None and pii_failed:
+            return _column_unreadable(
+                space_id=space_id, session_id=session_id, question=original
+            )
         return Gate(envelope=env)
     try:
         payload = compute(ctx)
@@ -758,12 +910,18 @@ def clarify_from_planner(
     if not isinstance(payload, dict) or _planner_block(payload) is None:
         return None
     try:
-        _clear, cols, secrets = structural_signal(
+        _clear, cols, secrets, pii_failed = structural_signal(
             question, warehouse=warehouse, grantable=grantable, ctx=ctx
         )
-    except Exception:  # noqa: BLE001
-        return None
-    return _from_planner_payload(
+    except Exception:  # noqa: BLE001 -- do not serve an unreadable schema
+        return named_abstain(
+            "clarify_column_unreadable",
+            "A column could not be checked, so this ask was not answered.",
+            space_id=space_id,
+            session_id=session_id,
+            question=original,
+        )
+    planned = _from_planner_payload(
         payload,
         cols=cols,
         measures={str(n) for n in _measures(ctx)},
@@ -773,6 +931,15 @@ def clarify_from_planner(
         space_id=space_id,
         session_id=session_id,
     )
+    if planned is None and pii_failed:
+        return named_abstain(
+            "clarify_column_unreadable",
+            "A column could not be checked, so this ask was not answered.",
+            space_id=space_id,
+            session_id=session_id,
+            question=original,
+        )
+    return planned
 
 
 def named_abstain(
@@ -823,6 +990,62 @@ def apply_binding(question: str, binding: dict[str, Any]) -> str:
     return f"{question.rstrip()}\n{payload}"
 
 
+def _match_reply(text: str, options: list[Any]) -> dict[str, Any] | None:
+    """One stored option, by id or by label. Zero or many is not a pick."""
+    folded = text.strip().casefold()
+    if not folded:
+        return None
+    hits: list[dict[str, Any]] = []
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        oid = str(opt.get("id") or "").strip()
+        label = str(opt.get("label") or "").strip()
+        if folded == oid.casefold() or (label and folded == label.casefold()):
+            if opt not in hits:
+                hits.append(opt)
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _binding_still_cleared(
+    binding: dict[str, Any],
+    cols: list[_Col],
+    secrets: set[str],
+    warehouse: Path | None,
+) -> bool:
+    """Every table and column in the binding is granted and mask-cleared."""
+    measures = {c.name for c in cols if c.cleared and _numeric(c.type_name)}
+    if not _binding_ok(binding, cols, measures):
+        return False
+    blob = "\n".join(str(v) for v in binding.values())
+    if _leaks(blob, secrets):
+        return False
+    targets: list[tuple[str, str]] = []
+    kind = str(binding.get("kind") or "")
+    if kind in {"column", "measure"}:
+        table = str(binding.get("table") or "")
+        name = str(binding.get("name") or "")
+        if table and name:
+            targets.append((table, name))
+    elif kind == "time_range":
+        table = str(binding.get("table") or "")
+        name = str(binding.get("column") or "")
+        if table and name:
+            targets.append((table, name))
+    for table, name in targets:
+        samples = _samples(warehouse, table, name)
+        try:
+            if column_is_pii(name, samples, table=table):
+                return False
+        except Exception:  # noqa: BLE001 -- do not re-enter on an unreadable column
+            return False
+        if _leaks("\n".join(samples), secrets):
+            return False
+    return True
+
+
 def resolve_clarify(
     store: dict[str, Any],
     *,
@@ -832,10 +1055,14 @@ def resolve_clarify(
     space_id: str | None,
     session_id: str | None,
     fallback_question: str,
+    warehouse: Path | None = None,
+    grantable: set[str] | None = None,
 ) -> dict[str, Any] | str:
     """Return the rewritten question, or a named abstain envelope.
 
-    Unknown and expired ids abstain. They do not raise.
+    A pick is one stored option id, or free text that is exactly one stored
+    id or label. The binding is checked against the Space grant and the mask
+    again before the ask re-enters. Unknown and expired ids abstain.
     """
     attempt = store.get(clarify_id)
     if not isinstance(attempt, dict) or not _scope_ok(attempt, space_id, session_id):
@@ -856,9 +1083,26 @@ def resolve_clarify(
             question=fallback_question,
         )
     original = str(attempt.get("question") or fallback_question)
+    raw_options = attempt.get("options")
+    options = raw_options if isinstance(raw_options, list) else []
+    cols, secrets, _pii_failed = _granted_columns(warehouse, set(grantable or ()))
+
+    def _accept(chosen: dict[str, Any]) -> dict[str, Any] | str:
+        binding = chosen.get("binding")
+        if not isinstance(binding, dict) or not _binding_still_cleared(
+            binding, cols, secrets, warehouse
+        ):
+            return named_abstain(
+                "clarify_binding_ungranted",
+                "That option is not granted on this Space. Ask again.",
+                space_id=space_id,
+                session_id=session_id,
+                question=original,
+            )
+        store.pop(clarify_id, None)
+        return apply_binding(original, binding)
+
     if option_id:
-        raw_options = attempt.get("options")
-        options = raw_options if isinstance(raw_options, list) else []
         chosen = next(
             (opt for opt in options if isinstance(opt, dict) and opt.get("id") == option_id),
             None,
@@ -871,8 +1115,7 @@ def resolve_clarify(
                 session_id=session_id,
                 question=original,
             )
-        store.pop(clarify_id, None)
-        return apply_binding(original, chosen["binding"])
+        return _accept(chosen)
     text = (clarify_text or "").strip()
     if not text:
         return named_abstain(
@@ -882,5 +1125,87 @@ def resolve_clarify(
             session_id=session_id,
             question=original,
         )
-    store.pop(clarify_id, None)
-    return apply_binding(original, {"kind": "text", "text": text})
+    chosen = _match_reply(text, options)
+    if chosen is None or not isinstance(chosen.get("binding"), dict):
+        return named_abstain(
+            "clarify_pick_not_in_options",
+            "That reply is not one of the options. Ask again.",
+            space_id=space_id,
+            session_id=session_id,
+            question=original,
+        )
+    return _accept(chosen)
+
+
+_DEMO_VIEWER_KEY = "dms-demo-viewer-key"
+_CHAT_PATH = "/v1/chat/completions"
+
+
+def _relay_bearer() -> str | None:
+    """Relay a configured ov_ key. Never the demo viewer key and never a provider key."""
+    for name in ("OPENVAULT_API_KEY", "CORTEX_API_KEY"):
+        raw = os.environ.get(name, "").strip()
+        if not raw or raw == _DEMO_VIEWER_KEY:
+            continue
+        return raw
+    return None
+
+
+def openvault_clarify_writer(base_url: str | None) -> Any:
+    """One completion on the generative OpenVault route.
+
+    Same path (``/v1/chat/completions``), ``free+normal`` preference, and pin
+    stamp as Insights generate. OpenVault holds the provider key. If the vault
+    cannot be reached, the callable raises ``ClarifyWriterUnavailable``.
+    """
+    root = (base_url or "").strip().rstrip("/")
+
+    def _write(prompt: str) -> dict[str, Any]:
+        if not root:
+            raise ClarifyWriterUnavailable("openvault_url_missing")
+        from cortex_client.compute import FREEROUTE_PREFERENCE
+        from cortex_client.strict_pin import stamp_generate_body, stamp_generate_headers
+
+        body = stamp_generate_body(
+            {
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 512,
+                "stream": False,
+                "model_preference": FREEROUTE_PREFERENCE,
+            }
+        )
+        if body.get("pin_refusal"):
+            raise ClarifyWriterUnavailable(str(body["pin_refusal"]))
+        headers: dict[str, str] = {}
+        bearer = _relay_bearer()
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        stamped = stamp_generate_headers(headers) or {}
+        import httpx
+
+        try:
+            with httpx.Client(timeout=5.0) as http:
+                res = http.post(root + _CHAT_PATH, json=body, headers=stamped)
+        except httpx.HTTPError as exc:
+            raise ClarifyWriterUnavailable("openvault_unreachable") from exc
+        if res.status_code >= 400:
+            raise ClarifyWriterUnavailable(f"openvault_http_{res.status_code}")
+        try:
+            payload = res.json()
+        except ValueError as exc:
+            raise ClarifyWriterUnavailable("openvault_bad_body") from exc
+        if not isinstance(payload, dict):
+            raise ClarifyWriterUnavailable("openvault_bad_body")
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ClarifyWriterUnavailable("openvault_no_content") from exc
+        usage = payload.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        return {
+            "raw": content,
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+        }
+
+    return _write
