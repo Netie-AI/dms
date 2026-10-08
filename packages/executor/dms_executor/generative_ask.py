@@ -30,6 +30,7 @@ from cortex_client.compute import (
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
     SERVED_LEG_KEYS,
+    cloop_b_enabled,
     generate_model_called,
     insights_budget_stop,
     insights_fail_reason,
@@ -92,9 +93,10 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
-from dms_executor.sql_currency import currency_mismatch_reason
+from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
+    EXTRACT_DIALECT,
     apply_sql_credit,
     extract_dialect,
     loop_entry,
@@ -1166,6 +1168,8 @@ def _run_extract_loop(
         return query_sql_from_payload(body) or insights_query_sql(body)
 
     def check(sql: str) -> str | None:
+        if is_multi_statement(sql, dialect):
+            return "multi_statement"
         why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
         if why and why.startswith("explain:"):
             detail = _explain_error_text(sql, warehouse)
@@ -1211,11 +1215,12 @@ def _run_extract_loop(
         )
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        # Reached only when empty_result_reason returns None (VALUE-EXISTS-01).
         env = build_answer_envelope(
             answer_id="ans_gen01",
             text=EMPTY_NOTE,
-            badge="ABSTAIN",
-            abstained=True,
+            badge="L2_VALIDATED",
+            abstained=False,
             rows=[],
             sql_used=sql,
             assumptions=[EMPTY_NOTE],
@@ -1377,7 +1382,7 @@ def maybe_generative_ask(
     trail_notes: list[str] = []
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
-    dialect = extract_dialect(lake)
+    dialect = EXTRACT_DIALECT if cloop_b_enabled() else extract_dialect(lake)
 
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
@@ -1419,7 +1424,11 @@ def maybe_generative_ask(
                 plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
             )
         )
-    if not ontology_ranked_lane_enabled() and isinstance(payload, dict):
+    if (
+        cloop_b_enabled()
+        and not ontology_ranked_lane_enabled()
+        and isinstance(payload, dict)
+    ):
         # Ranking compile stays off this path. Model SQL runs on the extract.
         sql_in = query_sql_from_payload(payload)
         would_rank = kind == "miss" and ontology_plan_from_ranking(
@@ -1554,15 +1563,16 @@ def maybe_generative_ask(
                 )
             )
         if why:
-            loop_attempts.append(
-                loop_entry(
-                    prompt=q,
-                    payload=payload if isinstance(payload, dict) else None,
-                    sql=sql,
-                    outcome=f"checker:{why}",
-                    dialect=dialect,
+            if cloop_b_enabled():
+                loop_attempts.append(
+                    loop_entry(
+                        prompt=q,
+                        payload=payload if isinstance(payload, dict) else None,
+                        sql=sql,
+                        outcome=f"checker:{why}",
+                        dialect=dialect,
+                    )
                 )
-            )
             if why.startswith("hostile_sql:") or ranked_slots is None:
                 return _stamp(
                     _abstain(

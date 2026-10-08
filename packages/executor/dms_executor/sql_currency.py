@@ -1018,6 +1018,17 @@ def _root_selects(tree: exp.Expression) -> list[exp.Select]:
     return []
 
 
+def _select_conjuncts(select: exp.Select, dialect: str) -> set[str]:
+    nodes: list[exp.Expression | None] = [
+        select.args.get("where"),
+        select.args.get("having"),
+    ]
+    for join in select.args.get("joins") or []:
+        if hasattr(join, "args"):
+            nodes.append(join.args.get("on"))
+    return {expr.sql(dialect=dialect) for node in nodes for expr in _conjuncts(node)}
+
+
 def top_level_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
     """Normalised top-level WHERE, HAVING, and JOIN ON conjuncts.
 
@@ -1030,24 +1041,46 @@ def top_level_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
         return None
     found: set[str] = set()
     for select in _root_selects(tree):
-        nodes: list[exp.Expression | None] = [
-            select.args.get("where"),
-            select.args.get("having"),
-        ]
-        for join in select.args.get("joins") or []:
-            if hasattr(join, "args"):
-                nodes.append(join.args.get("on"))
-        for expr in (c for node in nodes for c in _conjuncts(node)):
-            found.add(expr.sql(dialect=dialect))
+        found |= _select_conjuncts(select, dialect)
     return frozenset(found)
+
+
+def scoped_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
+    """WHERE, HAVING, and JOIN ON conjuncts in every select scope.
+
+    CTEs, subqueries, and derived tables are included. None if ``sql`` does
+    not parse in ``dialect``. An empty set is a statement with no predicate.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    found: set[str] = set()
+    for select in tree.find_all(exp.Select):
+        found |= _select_conjuncts(select, dialect)
+    return frozenset(found)
+
+
+def is_multi_statement(sql: str, dialect: str) -> bool:
+    """True when ``sql`` parses as more than one statement in ``dialect``."""
+    from sqlglot import parse
+
+    try:
+        trees = parse(sql or "", read=dialect)
+    except Exception:
+        return False
+    return len([tree for tree in trees if tree is not None]) > 1
 
 
 def dropped_conjuncts(
     previous: str, nxt: str, dialect: str
 ) -> frozenset[str] | None:
-    """Conjuncts in ``previous`` missing from ``nxt``. None if either fails to parse."""
-    prev = top_level_conjuncts(previous, dialect)
-    cur = top_level_conjuncts(nxt, dialect)
+    """Conjuncts in ``previous`` missing from ``nxt``, every select scope.
+
+    None if either statement fails to parse. Callers treat None as fail-closed.
+    """
+    prev = scoped_conjuncts(previous, dialect)
+    cur = scoped_conjuncts(nxt, dialect)
     if prev is None or cur is None:
         return None
     return frozenset(prev - cur)
@@ -1060,6 +1093,8 @@ __all__ = [
     "currency_mismatch_reason",
     "dropped_conjuncts",
     "is_currency_column",
+    "is_multi_statement",
+    "scoped_conjuncts",
     "normalize_sql",
     "served_column_sources",
     "sql_byte_equal",

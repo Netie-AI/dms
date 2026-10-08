@@ -80,6 +80,8 @@ INSIGHTS_CALL_CAP_DEFAULT = 2
 INSIGHTS_CALL_CAP_CEILING = 4
 #: Ontology-ranked compile as the generate-path answer. Default off.
 LANE_ONTOLOGY_RANKED_ENV = "DMS_LANE_ONTOLOGY_RANKED"
+#: Extract SQL loop (retry on a database error or a checker flag). Default off.
+CLOOP_B_ENV = "DMS_CLOOP_B"
 _LANE_ON = frozenset({"1", "true", "yes", "on"})
 INSIGHTS_FAIL_UNARMED = "insights_unarmed"
 INSIGHTS_FAIL_REFUSED = "insights_refused"
@@ -140,15 +142,29 @@ def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
     )
 
 
+def _flag_on(env: Mapping[str, str] | None, name: str) -> bool:
+    src = os.environ if env is None else env
+    raw = str(src.get(name) or "").strip().lower()
+    return raw in _LANE_ON
+
+
 def ontology_ranked_lane_enabled(env: Mapping[str, str] | None = None) -> bool:
     """``DMS_LANE_ONTOLOGY_RANKED``: off unless set to a true token.
 
     Off, a question that reached generate is not answered by the ontology
-    ranked fallback. The cap ceiling is unchanged.
+    ranked fallback. The cap ceiling is unchanged. With ``DMS_CLOOP_B`` also
+    off, the pre-loop ranking path still runs.
     """
-    src = os.environ if env is None else env
-    raw = str(src.get(LANE_ONTOLOGY_RANKED_ENV) or "").strip().lower()
-    return raw in _LANE_ON
+    return _flag_on(env, LANE_ONTOLOGY_RANKED_ENV)
+
+
+def cloop_b_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_CLOOP_B``: off unless set to a true token.
+
+    Off, the extract SQL loop does not run and the ask follows the pre-loop
+    path. On, model SQL runs on the extract when the ontology lane is off.
+    """
+    return _flag_on(env, CLOOP_B_ENV)
 
 
 def insights_call_cap(env: Mapping[str, str] | None = None) -> int:
@@ -1107,10 +1123,10 @@ def _run_insights_legs(
     retry_ok = bool(ranked_plan) and retry_plan_covers_qualifiers(
         ranked_plan, question
     )
-    # Ranked-slot retry is the ontology lane. Off, that call stays in the cap
-    # for the extract SQL loop instead.
+    # Ranked-slot retry is the pre-loop path. The extract loop (DMS_CLOOP_B)
+    # keeps that call inside the cap instead, unless the ontology lane is on.
     if (
-        ontology_ranked_lane_enabled()
+        (not cloop_b_enabled() or ontology_ranked_lane_enabled())
         and generate_retry_eligible(insights_payload)
         and retry_ok
         and ranked_plan is not None
@@ -1339,7 +1355,9 @@ __all__ = [
     "INSIGHTS_CALL_CAP_CEILING",
     "INSIGHTS_CALL_CAP_DEFAULT",
     "INSIGHTS_CALL_CAP_ENV",
+    "CLOOP_B_ENV",
     "LANE_ONTOLOGY_RANKED_ENV",
+    "cloop_b_enabled",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
     "INSIGHTS_FAIL_CALL_CAP",

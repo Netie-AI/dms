@@ -212,8 +212,9 @@ def test_ranking_after_model_call_reports_served_fields(tmp_path: Path) -> None:
     fake = _Http([leg, leg], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     assert env["plan_origin"] == "ontology_ranking"
-    # Ontology compile served. That SQL is not the model's, so credit is none.
-    assert env["served_attribution"] == "none"
+    # A model call happened. The served SQL is the ontology compile, not that
+    # model's SQL, so credit is missing. The copied served_* fields stay.
+    assert env["served_attribution"] == "missing"
     assert env["generate_legs"]["legs"][0] == {"returned": "nothing", **_SERVED}
 
 
@@ -221,7 +222,7 @@ def test_ranking_after_model_call_without_served_is_missing(tmp_path: Path) -> N
     fake = _Http([{"phase": "generate", **_STAMP}], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     assert env["plan_origin"] == "ontology_ranking"
-    assert env["served_attribution"] == "none"
+    assert env["served_attribution"] == "missing"
 
 
 def test_one_unattributed_retry_leg_makes_the_ask_missing(tmp_path: Path) -> None:
@@ -234,7 +235,7 @@ def test_one_unattributed_retry_leg_makes_the_ask_missing(tmp_path: Path) -> Non
     assert len(legs) == 2
     assert legs[0] == {"returned": "nothing", **_SERVED}
     assert "served_provider" not in legs[1]
-    assert env["served_attribution"] == "none"
+    assert env["served_attribution"] == "missing"
 
 
 def test_ranking_only_with_no_model_call_is_none(tmp_path: Path) -> None:
@@ -301,15 +302,15 @@ def test_abstain_after_model_call_carries_served_fields(tmp_path: Path) -> None:
     env = _assert_abstain(_ask(tmp_path, "How many florbs did wibble sell?", fake))
     assert env["served_provider"] == "prov-305-unique"
     assert env["served_model"] == "model-305-unique"
-    # No model SQL was served. Fields stay copied; credit is none.
-    assert env["served_attribution"] == "none"
+    # A model call happened and no model SQL was served. Fields stay copied.
+    assert env["served_attribution"] == "missing"
 
 
 def test_abstain_after_model_call_without_served_is_missing(tmp_path: Path) -> None:
     refused = {"phase": "generate", "status": "REFUSE", **_STAMP}
     fake = _Http([refused, refused], ranking=[])
     env = _assert_abstain(_ask(tmp_path, "How many florbs did wibble sell?", fake))
-    assert env["served_attribution"] == "none"
+    assert env["served_attribution"] == "missing"
 
 
 def test_bearer_refuse_makes_no_call_and_is_none(tmp_path: Path) -> None:
@@ -318,6 +319,9 @@ def test_bearer_refuse_makes_no_call_and_is_none(tmp_path: Path) -> None:
     assert fake.calls == []
     assert INSIGHTS_FAIL_BEARER_MISSING in " ".join(env["assumptions"])
     assert env["served_attribution"] == "none"
+    assert env["served_model"] is None
+    assert env["served_provider"] is None
+    assert env.get("ov_key_id") is None
 
 
 # -- diagnostic flag ----------------------------------------------------------
@@ -456,8 +460,8 @@ def test_chat_ask_contract_fallback_after_generate_keeps_served_fields(
     assert "5" in body["text"]
     assert body["served_provider"] == "prov-305-unique"
     assert body["served_model"] == "model-305-unique"
-    # Contract SQL is not the model SQL. Fields stay copied; credit is none.
-    assert body["served_attribution"] == "none"
+    # A model call happened. Contract SQL is not the model SQL.
+    assert body["served_attribution"] == "missing"
     assert body["generate_legs"]["count"] >= 1
 
 
@@ -472,7 +476,7 @@ def test_chat_ask_contract_fallback_without_served_is_missing(
     assert_envelope_valid(body)
     assert body["rows"] == [{"location_count": 5}]
     assert "served_provider" not in body
-    assert body["served_attribution"] == "none"
+    assert body["served_attribution"] == "missing"
 
 
 def test_chat_ask_pre_gate_abstain_no_model_is_none(
@@ -488,4 +492,6 @@ def test_chat_ask_pre_gate_abstain_no_model_is_none(
     assert body["badge"] == "ABSTAIN"
     assert body["rows"] == []
     assert body["served_attribution"] == "none"
-    assert "served_provider" not in body
+    assert body.get("served_provider") is None
+    assert body.get("served_model") is None
+    assert body.get("ov_key_id") is None

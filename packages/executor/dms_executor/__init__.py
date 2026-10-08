@@ -841,9 +841,12 @@ class Executor:
                     and not insights_budget_stop(gen_env)
                     and is_curated_l0_without_pack_metric(asked)
                 ):
+                    kept_loop = gen_env.get("loop")
                     gen_env = curated_pack_metric_miss(
                         asked, space_id=space_id, session_id=session_id
                     )
+                    if kept_loop:
+                        gen_env["loop"] = kept_loop
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env

@@ -51,6 +51,10 @@ GAP_REASONS = frozenset(
         "rank_window_open_ended",
         "unrequested_offset",
         "loop_exhausted",
+        "empty_result_unverified",
+        "no_sql",
+        "multi_statement",
+        "warehouse_missing",
     }
 )
 

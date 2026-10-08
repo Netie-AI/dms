@@ -1,0 +1,732 @@
+[
+ {
+  "question": "What is our total spend by supplier country?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "What is total stock value by category?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Top 5 selling SKUs by revenue",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "How many SKUs do we have in inventory?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show warehouse capacity utilisation",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Top 3 SKUs by quantity sold",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show SKU count by category",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which SKUs are below reorder level in warehouse A?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "What is total stock value by category?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show shipment cost by destination",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "What is our total spend by supplier country?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show top 3 categoty sales",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Just give me last month's number",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Are we short on anything the warehouse should worry about?",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which locations are cold storage?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which locations are above 90 percent capacity?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which items are expired?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "List chemicals in inventory",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "Rank suppliers by combined risk and lead time score",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show the CCTV camera for warehouse A",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which suppliers have an audit overdue?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "How many SKUs in inventory?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "SKU count in inventory",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "Top 5 SKUs by revenue",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "top 3 categories by sales value",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "Top 5 selling SKUs by sales",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "show top 3 category sales",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "top 3 category sales",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "top 3 categoty sales",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "How many SKUs do we have in inventory?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show SKU count by category",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "How many SKUs in inventory?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "SKU count in inventory",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "List chemicals in inventory",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "Which items are expired?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which locations are cold storage?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which locations are above 90 percent capacity?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show warehouse capacity utilisation",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show the CCTV camera for warehouse A",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Which SKUs are below reorder level in warehouse A?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "SKU count by category",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "stock value by category",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "shipment cost by destination",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "how many SKUs per category",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "what is our inventory worth per category",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "freight spend per destination",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "List active alerts across the warehouse network",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "Which high-risk suppliers have pending shipments?",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "Rank suppliers by combined risk and lead time score",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "How many delayed incoming shipments per warehouse?",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "Show stock by storage bin",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "how full is each warehouse",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "List chemicals in inventory",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "What chemicals do we have in stock?",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "top 5 SKUs by sales",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "show the five best-selling SKUs",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "top 3 categories by value",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "show top 3 categoty sales",
+  "badge": "ABSTAIN",
+  "route": "abstain",
+  "plan_origin": null,
+  "served_attribution": "none",
+  "served_model": null,
+  "served_provider": null,
+  "ov_key_id": null
+ },
+ {
+  "question": "which supplier audits are overdue",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "what's the freight cost by destination",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "what's the bottom three categories by stock value",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "which three categories are sitting on the least inventory value",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "give me the lowest five categories by stock value",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "the three cheapest categories by stock",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "who is the third-lowest category by stock value",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "are there any chemicals expiring in November 2026",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "can you list the chemicals we carry",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "show me our top five SKUs by sales",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "top 3 categoty by value",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "which supplier audits are overdue",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "what's freight looking like by destination",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "how many florbs did wibble sell last quarter",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ },
+ {
+  "question": "what is the meaning of life for this warehouse",
+  "badge": "ABSTAIN",
+  "route": "generated",
+  "plan_origin": null,
+  "served_attribution": "missing",
+  "served_model": "stub-model",
+  "served_provider": "stub-provider",
+  "ov_key_id": null
+ }
+]
