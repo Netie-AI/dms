@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -92,6 +93,20 @@ def _load_service_token() -> str:
     if path is not None and path.is_file():
         return path.read_text(encoding="utf-8").strip()
     return ""
+
+
+def match_service_bearer(presented: str) -> str | None:
+    """Short id of the configured service bearer when ``presented`` matches.
+
+    Same token ``_load_service_token`` already sends to OpenVault. No new mint.
+    The return value is a hash prefix. The token is not returned or logged.
+    """
+    expected = _load_service_token()
+    if not expected or not presented:
+        return None
+    if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        return None
+    return hashlib.sha256(expected.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
