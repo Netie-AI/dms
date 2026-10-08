@@ -32,6 +32,8 @@ from cortex_client.insights import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
     INSIGHTS_FAIL_BEARER_MISSING,
     INSIGHTS_PATH,
+    SCHEMA_CONTEXT_FIELD,
+    apply_schema_context,
     generate_bearer_refuse,
 )
 
@@ -962,6 +964,22 @@ def classify_insights_fail(
     return INSIGHTS_FAIL_EMPTY
 
 
+def _split_schema_context(
+    ontology: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Lift ``schema_context`` off the catalog so it is not an ontology key.
+
+    Cortex caller-ontology rejects measure SQL and ignores unknown keys, so
+    the prompt is a sibling field, not part of ``ontology``.
+    """
+    if not isinstance(ontology, dict) or SCHEMA_CONTEXT_FIELD not in ontology:
+        return ontology, None
+    onto = dict(ontology)
+    raw = onto.pop(SCHEMA_CONTEXT_FIELD, None)
+    text = raw if isinstance(raw, str) and raw.strip() else None
+    return (onto or None), text
+
+
 def _insights_body(
     question: str,
     *,
@@ -976,6 +994,7 @@ def _insights_body(
         prev = str(sql_feedback.get("previous_sql") or "")
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
+    onto, schema_context = _split_schema_context(ontology)
     body: dict[str, Any] = {
         "intent": asked,
         "question": asked,
@@ -987,10 +1006,10 @@ def _insights_body(
         "mode": ONTOLOGY_MODE,
         "model_preference": FREEROUTE_PREFERENCE,
     }
-    if ontology is not None:
-        body["ontology"] = ontology
-        if isinstance(ontology, dict):
-            slots = ontology.get("intent_slots")
+    if onto is not None:
+        body["ontology"] = onto
+        if isinstance(onto, dict):
+            slots = onto.get("intent_slots")
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
     if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
@@ -998,6 +1017,7 @@ def _insights_body(
             "previous_sql": str(sql_feedback.get("previous_sql") or ""),
             "reason": str(sql_feedback.get("reason") or ""),
         }
+    apply_schema_context(body, schema_context)
     from cortex_client.strict_pin import stamp_generate_body
 
     return stamp_generate_body(body)
