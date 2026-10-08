@@ -56,6 +56,39 @@ def test_constant_tautology_drops_the_conjunct(sql: str) -> None:
     assert grounds.conjuncts == ()
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"{_SUM} WHERE 'X' = 'Y'",
+        f"{_SUM} WHERE 1 <> 2",
+    ],
+)
+def test_unequal_constants_drop_the_conjunct(sql: str) -> None:
+    grounds = sql_grounds(sql)
+    assert grounds.unclear is False
+    assert grounds.conjuncts == ()
+
+
+@pytest.mark.parametrize(
+    ("sql", "column", "literal"),
+    [
+        (f"{_SUM} WHERE 1 = 1 AND status = 'open'", "status", "open"),
+        (f"{_SUM} WHERE 2 > 1 AND status = 'open'", "status", "open"),
+        (f"{_SUM} WHERE 'a' <> 'b' AND region = 'KL'", "region", "KL"),
+    ],
+)
+def test_constant_comparison_drops_and_keeps_the_sibling(
+    sql: str, column: str, literal: str
+) -> None:
+    kept = _one(sql)
+    assert (kept.column, kept.operator, kept.literals, kept.polarity) == (
+        column,
+        "eq",
+        (literal,),
+        "pos",
+    )
+
+
 def test_self_compare_drops_the_conjunct() -> None:
     grounds = sql_grounds(f"{_SUM} WHERE category = category")
     assert grounds.unclear is False

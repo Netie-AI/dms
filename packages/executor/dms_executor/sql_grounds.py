@@ -75,17 +75,28 @@ def _unwrap(node: exp.Expression) -> exp.Expression:
     return node
 
 
+# Binary comparisons. A side is constant when it holds no column node.
+_COMPARISON = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+
+
+def _no_column(node: exp.Expression) -> bool:
+    return not any(isinstance(child, exp.Column) for child in node.walk())
+
+
 def _is_tautology(node: exp.Expression) -> bool:
     node = _unwrap(node)
     if isinstance(node, exp.Boolean):
         return bool(node.this)
-    if isinstance(node, (exp.EQ, exp.NEQ)):
+    if isinstance(node, _COMPARISON):
         left, right = _unwrap(node.this), _unwrap(node.expression)
-        if isinstance(left, exp.Literal) and isinstance(right, exp.Literal):
-            return str(left.this) == str(right.this)
-        if isinstance(left, exp.Boolean) and isinstance(right, exp.Boolean):
-            return bool(left.this) == bool(right.this)
-        if isinstance(left, exp.Column) and isinstance(right, exp.Column):
+        # Both sides constant: 1=1, 'X'='Y', 1<>2, 2>1. No literal list.
+        if _no_column(left) and _no_column(right):
+            return True
+        if (
+            isinstance(node, (exp.EQ, exp.NEQ))
+            and isinstance(left, exp.Column)
+            and isinstance(right, exp.Column)
+        ):
             return str(left.name).lower() == str(right.name).lower()
     return False
 
@@ -102,7 +113,7 @@ def _has_blocker(node: exp.Expression) -> bool:
             return True
         if isinstance(child, exp.Not) and child is not root:
             return True
-        if isinstance(child, (exp.EQ, exp.NEQ)) and child is not root and _is_tautology(child):
+        if isinstance(child, _COMPARISON) and child is not root and _is_tautology(child):
             return True
     return False
 
