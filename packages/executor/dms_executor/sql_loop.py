@@ -11,6 +11,7 @@ a reply with no SQL abstain at once and are not pasted into a retry prompt.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -363,6 +364,29 @@ def _can_retry(*, retries: int, used: int, cap: int) -> bool:
     return retries < MAX_SQL_RETRIES and used < cap
 
 
+def _note_pipeline_failure(
+    reason: str,
+    question: str,
+    sql: str | None,
+    retries: int,
+) -> None:
+    """One ticket per loop abstain. A writer failure leaves the envelope as it was."""
+    if not cloop_b_enabled():
+        return
+    try:
+        from dms_executor.pipeline_failure import log_pipeline_failure_ticket
+
+        log_pipeline_failure_ticket(
+            reason=reason,
+            question=question,
+            sql=sql,
+            retries=retries,
+            stage="extract_loop",
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("pipeline_failure ticket was not written")
+
+
 def _served_outcome(env: dict[str, Any]) -> str:
     """Log ``served`` only when the envelope is not an abstain."""
     if not env.get("abstained"):
@@ -455,6 +479,7 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            _note_pipeline_failure("no_sql", question, None, retries)
             return abstain("no_sql", attempts)
 
         if protected_sql:
@@ -471,7 +496,9 @@ def run_model_loop(
                     )
                 )
                 if not _can_retry(retries=retries, used=used, cap=cap):
-                    return abstain(f"loop_exhausted:{flag}", attempts)
+                    head = f"loop_exhausted:{flag}"
+                    _note_pipeline_failure(head, question, sql, retries)
+                    return abstain(head, attempts)
                 retries += 1
                 used += 1
                 prev_sql = sql
@@ -489,7 +516,9 @@ def run_model_loop(
                     )
                 )
                 if not _can_retry(retries=retries, used=used, cap=cap):
-                    return abstain("loop_exhausted:filter_dropped", attempts)
+                    head = "loop_exhausted:filter_dropped"
+                    _note_pipeline_failure(head, question, sql, retries)
+                    return abstain(head, attempts)
                 retries += 1
                 used += 1
                 prev_sql = sql
@@ -511,6 +540,7 @@ def run_model_loop(
                 )
             )
             if why in no_retry_reasons:
+                _note_pipeline_failure(why, question, sql, retries)
                 return abstain(why, attempts)
             if _no_model_retry(why, no_retry_reasons) or not _can_retry(
                 retries=retries, used=used, cap=cap
@@ -520,6 +550,7 @@ def run_model_loop(
                     if _no_model_retry(why, no_retry_reasons)
                     else f"loop_exhausted:{outcome}"
                 )
+                _note_pipeline_failure(head, question, sql, retries)
                 return abstain(head, attempts)
             protected_sql = sql
             retries += 1
@@ -536,6 +567,7 @@ def run_model_loop(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
+            _note_pipeline_failure(outcome, question, sql, retries)
             return abstain(outcome, attempts)
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
@@ -549,7 +581,9 @@ def run_model_loop(
             )
             protected_sql = sql
             if not _can_retry(retries=retries, used=used, cap=cap):
-                return abstain(f"loop_exhausted:{outcome}", attempts)
+                head = f"loop_exhausted:{outcome}"
+                _note_pipeline_failure(head, question, sql, retries)
+                return abstain(head, attempts)
             retries += 1
             used += 1
             prev_sql = sql
@@ -570,6 +604,7 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
+                _note_pipeline_failure(decision, question, sql, retries)
                 return abstain(decision, attempts)
             return _finish_attempt(
                 empty_answer(sql, attempts),
@@ -579,7 +614,7 @@ def run_model_loop(
                 sql=sql,
                 dialect=dialect,
             )
-        return _finish_attempt(
+        env = _finish_attempt(
             submit_sql(sql, attempts),
             attempts=attempts,
             prompt=prompt,
@@ -587,6 +622,9 @@ def run_model_loop(
             sql=sql,
             dialect=dialect,
         )
+        if env.get("abstained"):
+            _note_pipeline_failure(_served_outcome(env), question, sql, retries)
+        return env
 
 
 def _call(
