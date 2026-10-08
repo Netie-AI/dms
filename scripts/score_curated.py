@@ -2808,7 +2808,7 @@ def _case_record(
         outcome = "INVALID"
         oracle_verdict = "INVALID"
         reason = reason or "INVALID"
-    return {
+    rec = {
         "id": qid,
         "outcome": outcome,
         "reason": reason,
@@ -2820,6 +2820,10 @@ def _case_record(
         "engine_date": engine_date,
         "clock_source": clock_source,
     }
+    for key in ("served_provenance_layer", "served_metric_id"):
+        if env and env.get(key):
+            rec[key] = env[key]
+    return rec
 
 
 def merge_commit_sha() -> str:
