@@ -743,6 +743,7 @@ def _l2_envelope(
         question=question,
         audit_id=audit_id,
         grounded_tables=sorted(cited_relations(sql)),
+        run_id=str(getattr(result, "run_id", None) or ""),
     )
     if env.get("abstained"):
         assert_envelope_valid(env)

@@ -1366,6 +1366,7 @@ def build_answer_envelope(
     cascade_path: bool = False,
     exclude_reasons: list[Any] | None = None,
     column_schema: dict[str, Any] | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -1736,6 +1737,10 @@ def build_answer_envelope(
         env["constraint_trace"] = trace_out
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
+    # SQL submit id only. Empty / missing stays off the dict so an envelope
+    # Cortex did not tag is byte-identical to one built without this argument.
+    if isinstance(run_id, str) and run_id.strip():
+        env["run_id"] = run_id
     return mask_unknown_keys(env)
 
 
