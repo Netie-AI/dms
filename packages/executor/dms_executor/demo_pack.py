@@ -543,6 +543,7 @@ def envelope_from_pack_submit(
         question=question,
         audit_id=receipt,
         grounded_tables=list(metric.tables),
+        run_id=str(run_id) if run_id else "",
     )
     assert_envelope_valid(env)
     return env

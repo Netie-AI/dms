@@ -311,6 +311,7 @@ def envelope_from_verified_submit(
         route="verified_query",
         question=question,
         audit_id=receipt,
+        run_id=str(run_id) if run_id else "",
     )
     assert_envelope_valid(env)
     return env

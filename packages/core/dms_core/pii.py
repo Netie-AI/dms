@@ -175,6 +175,7 @@ _KEEP_KEYS = frozenset(
         "ask_mode",
         "as_of",
         "audit_id",
+        "run_id",
         "space_id",
         "session_id",
         "route",
