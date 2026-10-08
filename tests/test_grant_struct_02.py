@@ -836,3 +836,57 @@ def test_duckdb_quoted_schema_matches_the_engine(tmp_path: Path) -> None:
     sql = 'SELECT n FROM "SRC_A".orders'
     assert serve_gap(sql, grantable={"src_a.orders"}, dialect="duckdb") is None
     assert serve_gap('SELECT n FROM "orders"', grantable={"orders"}, dialect="duckdb") is None
+
+
+def test_postgres_quoted_schema_refuses_shortlist_and_serve() -> None:
+    """Quoted mixed case is a different Postgres schema. Both checks refuse it."""
+    from dms_executor.schema_context import build_schema_context
+
+    granted = {"src_a.orders"}
+    refused = '"SRC_A".orders'
+    prompt = build_schema_context(
+        "how many qwestbeta alphagrant orders",
+        {
+            "dialect": "postgres",
+            "datasets": [
+                {
+                    "name": "src_a.orders",
+                    "columns": [
+                        {
+                            "name": "category",
+                            "type": "varchar",
+                            "distinct": 1,
+                            "values": ["ALPHAGRANT"],
+                        }
+                    ],
+                },
+                {
+                    "name": refused,
+                    "columns": [
+                        {
+                            "name": "category",
+                            "type": "varchar",
+                            "distinct": 1,
+                            "values": ["QWESTBETA"],
+                        }
+                    ],
+                },
+            ],
+        },
+        grantable=granted,
+    ).prompt
+    assert "src_a.orders" in prompt
+    assert refused not in prompt
+    assert "SRC_A" not in prompt
+    assert "QWESTBETA" not in prompt
+    assert "qwestbeta" not in prompt
+    assert "FILTER HINTS" in prompt
+    assert "alphagrant" in prompt
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "SRC_A".orders',
+            grantable=granted,
+            dialect="postgres",
+        )
+        == "sql_relation_not_granted"
+    )

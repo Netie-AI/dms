@@ -9,6 +9,7 @@ invented values.
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -16,6 +17,11 @@ from urllib.parse import urlparse
 import httpx
 
 INSIGHTS_PATH = "/v1/insights"
+#: Top-level Insights POST field for the granted-schema prompt.
+#: Cortex pin 279cbd85 InsightsAskIn does not declare it. DMS sends it only
+#: when DMS_SCHEMA_CONTEXT is on, so a pin that 422s unknown fields stays quiet.
+SCHEMA_CONTEXT_FIELD = "schema_context"
+SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
 #: Cortex's published demo viewer key (also the DMS settings default). Not a
 #: secret. Generate=true must not send it; KEY-01 (dms#273) removes the default.
 DEMO_VIEWER_KEY = "dms-demo-viewer-key"
@@ -226,6 +232,23 @@ def insights_get(
     )
 
 
+def schema_context_enabled() -> bool:
+    """True when the schema prompt may leave on the Insights POST."""
+    return os.environ.get(SCHEMA_CONTEXT_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def apply_schema_context(body: dict[str, Any], text: str | None) -> dict[str, Any]:
+    """Put ``schema_context`` on the body only when the flag is on.
+
+    The key is removed first so a caller cannot leave it on a nested object
+    and also send it while the flag is off.
+    """
+    body.pop(SCHEMA_CONTEXT_FIELD, None)
+    if schema_context_enabled() and isinstance(text, str) and text.strip():
+        body[SCHEMA_CONTEXT_FIELD] = text
+    return body
+
+
 def insights_post(
     base_url: str,
     *,
@@ -238,6 +261,7 @@ def insights_post(
     consumer: str = "dms",
     api_key: str | None = None,
     timeout: float = 120.0,
+    schema_context: str | None = None,
 ) -> dict[str, Any]:
     if generate:
         refuse = generate_bearer_refuse(api_key, base_url)
@@ -252,6 +276,7 @@ def insights_post(
         "space_id": space_id,
         "consumer": consumer,
     }
+    apply_schema_context(body, schema_context)
     extra_headers: dict[str, str] | None = None
     if generate:
         from cortex_client.strict_pin import stamp_generate_body, stamp_generate_headers
@@ -282,7 +307,11 @@ __all__ = [
     "generate_bearer_refuse",
     "generate_transport_is_safe",
     "honest_envelope",
+    "SCHEMA_CONTEXT_ENV",
+    "SCHEMA_CONTEXT_FIELD",
+    "apply_schema_context",
     "insights_get",
     "insights_post",
     "redact_secrets",
+    "schema_context_enabled",
 ]
