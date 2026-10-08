@@ -10,6 +10,7 @@ import builtins
 import io
 import os
 import pathlib
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +21,13 @@ from cortex_client.insights import insights_post
 from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.ontology import Ontology
 from dms_executor.schema_context import (
+    HINT_CANDIDATE_CAP,
     MAX_PROMPT_TOKENS,
     build_schema_context,
+    cached_value_index,
     estimate_tokens,
-    last_schema_prompt,
     ontology_payload,
     prepare_generate_context,
-    schema_prompt_audit_path,
 )
 
 _NAME = "Zelda Qwerty"
@@ -70,7 +71,8 @@ def _crm_schema() -> dict[str, Any]:
                         "name": "segment",
                         "type": "varchar",
                         "description": "market segment",
-                        "samples": [_SEGMENT],
+                        "distinct": 1,
+                        "values": [_SEGMENT],
                     },
                 ],
             },
@@ -93,17 +95,20 @@ def _crm_schema() -> dict[str, Any]:
                         "name": "customer_name",
                         "type": "varchar",
                         "description": "person name",
-                        "samples": [_NAME],
+                        "distinct": 40,
+                        "values": [_NAME],
                     },
                     {
                         "name": "email",
                         "type": "varchar",
-                        "samples": [_EMAIL],
+                        "distinct": 40,
+                        "values": [_EMAIL],
                     },
                     {
                         "name": "phone",
                         "type": "varchar",
-                        "samples": [_PHONE],
+                        "distinct": 40,
+                        "values": [_PHONE],
                     },
                     {
                         "name": "date_of_birth",
@@ -115,7 +120,15 @@ def _crm_schema() -> dict[str, Any]:
                         "name": "passport_no",
                         "type": "varchar",
                         "description": "travel document",
-                        "samples": [_PASSPORT],
+                        "distinct": 40,
+                        "values": [_PASSPORT],
+                    },
+                    {
+                        "name": "memo",
+                        "type": "varchar",
+                        "description": f"reach {_EMAIL}",
+                        "distinct": 1,
+                        "values": ["noted"],
                     },
                 ],
             },
@@ -138,7 +151,21 @@ def _crm_schema() -> dict[str, Any]:
                 "from_column": "account_id",
                 "to": "account",
                 "to_column": "account_id",
-            }
+            },
+            {
+                "name": "account_self",
+                "from": "account",
+                "from_column": "account_id",
+                "to": "account",
+                "to_column": "account_id",
+            },
+            {
+                "name": "missing_edge",
+                "from": "contact",
+                "from_column": "missing_col",
+                "to": "account",
+                "to_column": "account_id",
+            },
         ],
     }
 
@@ -167,7 +194,8 @@ def _finance_schema() -> dict[str, Any]:
                         "name": "status",
                         "type": "varchar",
                         "description": "invoice status",
-                        "samples": ["OPEN"],
+                        "distinct": 1,
+                        "values": ["OPEN"],
                     },
                 ],
             },
@@ -252,7 +280,10 @@ def test_crm_empty_ontology_masks_pii_and_keeps_cleared_samples() -> None:
             assert raw not in prompt
         assert "RESTRICTEDTOKEN" not in prompt
         assert "restricted_note" not in prompt
-        assert _SEGMENT in prompt
+        assert f"account.segment = {_SEGMENT}" in prompt
+        assert f"samples={_SEGMENT}" not in prompt
+        assert "account_self" not in prompt
+        assert "missing_col" not in prompt
         assert "samples=" in prompt
         assert "date_of_birth" in prompt
         assert "passport_no" in prompt
@@ -281,7 +312,9 @@ def test_finance_model_ontology_and_curated_object_share_one_shape() -> None:
     assert _EXPR in prompt
     assert _ALIAS in prompt
     assert _MEASURE_DESC in prompt
-    assert "OPEN" in prompt
+    assert "invoice.status = OPEN" in prompt
+    assert "samples=OPEN" not in prompt
+    assert "samples=40.00" in prompt
     assert "payment.invoice_id = invoice.invoice_id (payment_invoice)" in prompt
     assert "MEASURES" in prompt
 
@@ -340,6 +373,9 @@ def test_token_cap_drops_unrelated_datasets() -> None:
                     "name": "keep_me_col",
                     "type": "varchar",
                     "samples": ["KEEPTOKEN"],
+                    "values": ["KEEPTOKEN"],
+                    "distinct": 1,
+                    "non_personal": {"evidence": "fixture-keep"},
                 }
             ],
         }
@@ -400,29 +436,35 @@ def test_context_does_not_load_scored_pack(monkeypatch: pytest.MonkeyPatch) -> N
     assert _PACK_ID not in prompt
 
 
-def test_prompt_is_stored_for_audit(
+def test_prompt_stays_on_the_request_and_off_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audit = tmp_path / "schema_prompt.txt"
     monkeypatch.setenv("DMS_SCHEMA_PROMPT_LOG", str(audit))
-    monkeypatch.delenv("DMS_SCHEMA_CONTEXT", raising=False)
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    writes: list[str] = []
+
+    def _no_write(self: Path, *args: Any, **kwargs: Any) -> Any:
+        writes.append(str(self))
+        raise AssertionError("schema context wrote a file")
+
+    monkeypatch.setattr(pathlib.Path, "write_text", _no_write)
     ctx = prepare_generate_context(
         {"schema": [{"table": "account", "columns": ["segment"]}]},
         question="which accounts are midmarket",
         schema=_crm_schema(),
         ontology={},
         grantable={"account", "contact"},
-        space_id="space-1",
+        space_id="space-audit",
     )
-    assert "schema_context" not in ctx
-    stored = last_schema_prompt()
-    assert stored
-    assert audit.read_text(encoding="utf-8") == stored
+    stored = ctx["schema_context"]
+    assert not audit.exists()
+    assert writes == []
     for raw in _PII:
         assert raw not in stored
-    assert _SEGMENT in stored
+    assert _EMAIL not in stored
+    assert f"account.segment = {_SEGMENT}" in stored
     assert "DIALECT: mysql" in stored
-    assert schema_prompt_audit_path() == audit
 
 
 def test_schema_context_field_is_behind_the_flag(
@@ -532,7 +574,7 @@ def test_generative_ask_attaches_reflected_context_when_flagged(
         seen["ctx"] = ctx
         return {"unsure": True}
 
-    maybe_generative_ask(
+    env = maybe_generative_ask(
         "which accounts are midmarket",
         warehouse=serving,
         grantable={"account", "contact"},
@@ -541,13 +583,314 @@ def test_generative_ask_attaches_reflected_context_when_flagged(
         submit=lambda _sql: None,
         ledger_append=lambda _payload: None,
         space_id="space-1",
+        dialect="mysql",
     )
     prompt = seen["ctx"]["schema_context"]
-    assert prompt == last_schema_prompt()
-    assert _SEGMENT in prompt
+    assert env is not None
+    assert env["schema_context"] == prompt
+    assert f"account.segment = {_SEGMENT}" in prompt
+    assert f"samples={_SEGMENT}" not in prompt
     for raw in _PII:
         assert raw not in prompt
     assert "RESTRICTEDTOKEN" not in prompt
     assert "postgres" not in prompt.lower()
-    assert prompt.startswith("DIALECT:")
+    assert "undeclared" not in prompt.lower()
+    assert prompt.startswith("DIALECT: mysql")
     assert "MEASURES" not in prompt
+
+
+def _text_column(name: str, values: list[str], **extra: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "name": name,
+        "type": "varchar",
+        "distinct": extra.pop("distinct", len(values)),
+        "values": values,
+    }
+    body.update(extra)
+    return body
+
+
+def _one_table(column: dict[str, Any], *, dialect: str = "mysql") -> dict[str, Any]:
+    return {"dialect": dialect, "datasets": [{"name": "person", "columns": [column]}]}
+
+
+def test_opaque_text_column_sends_no_samples() -> None:
+    prompt = build_schema_context(
+        "list people",
+        _one_table(_text_column("attr_8", ["Nora Voss", "Mina Cole"], distinct=40)),
+    ).prompt
+    assert "Nora Voss" not in prompt
+    assert "Mina Cole" not in prompt
+    assert "samples=" not in prompt
+    assert "distinct=40" in prompt
+    assert "attr_8" in prompt
+
+
+def test_description_contact_sends_no_samples() -> None:
+    prompt = build_schema_context(
+        "list people",
+        _one_table(
+            _text_column(
+                "field_z",
+                ["Nora Voss"],
+                distinct=8,
+                description="contact",
+            )
+        ),
+    ).prompt
+    assert "Nora Voss" not in prompt
+    assert "samples=" not in prompt
+    assert "description=contact" in prompt
+    assert "field_z" in prompt
+
+
+def test_low_cardinality_names_send_no_samples() -> None:
+    names = ["Nora Voss", "Mina Cole", "Jon Pell", "Ada Quinn", "Ruth Hale"]
+    prompt = build_schema_context(
+        "who sold this",
+        _one_table(_text_column("rep", names, distinct=5)),
+    ).prompt
+    for name in names:
+        assert name not in prompt
+    assert "samples=" not in prompt
+    assert "distinct=5" in prompt
+
+
+def test_partial_name_sends_nothing() -> None:
+    prompt = build_schema_context(
+        "show Ali",
+        _one_table(_text_column("rep", ["Ali Bakar", "Ali Hassan"], distinct=2)),
+    ).prompt
+    assert "Ali Bakar" not in prompt
+    assert "Ali Hassan" not in prompt
+    assert "FILTER HINTS" not in prompt
+    assert "samples=" not in prompt
+
+
+def test_typo_sends_no_hint() -> None:
+    prompt = build_schema_context(
+        "how many chemcals",
+        {
+            "dialect": "mysql",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("category", ["CHEMICALS"], distinct=1)],
+                }
+            ],
+        },
+    ).prompt
+    assert "CHEMICALS" not in prompt
+    assert "FILTER HINTS" not in prompt
+    assert "samples=" not in prompt
+
+
+def _sql_from_exact_hint(prompt: str) -> str:
+    """Stub model: the only filter it may emit is an exact hint from the prompt."""
+    for line in prompt.splitlines():
+        if line.startswith("- ") and " = " in line and "~" not in line:
+            left, value = line[2:].split(" = ", 1)
+            column = left.strip().split(".")[-1]
+            return f"SELECT COUNT(*) FROM item WHERE {column} = '{value.strip()}'"
+    raise AssertionError(prompt)
+
+
+def test_exact_normalised_hint_filters_sql() -> None:
+    prompt = build_schema_context(
+        "how many chemicals SKUs",
+        {
+            "dialect": "mysql",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [
+                        _text_column("category", ["CHEMICALS"], distinct=1),
+                        {
+                            "name": "qty",
+                            "type": "integer",
+                            "samples": ["4"],
+                        },
+                    ],
+                }
+            ],
+        },
+    ).prompt
+    assert "item.category = CHEMICALS" in prompt
+    assert "samples=CHEMICALS" not in prompt
+    for line in prompt.splitlines():
+        if "category" in line and line.strip().startswith("- category"):
+            assert "samples=" not in line
+    sql = _sql_from_exact_hint(prompt)
+    assert sql == "SELECT COUNT(*) FROM item WHERE category = 'CHEMICALS'"
+
+
+def test_tagged_column_fuzzy_hints_are_capped() -> None:
+    values = [
+        "midmarket east",
+        "midmarket north",
+        "midmarket south",
+        "midmarket west",
+        "enterprise",
+    ]
+    prompt = build_schema_context(
+        "midmarket coverage",
+        _one_table(
+            _text_column(
+                "shade",
+                values,
+                distinct=5,
+                non_personal={"evidence": "fixture-shade"},
+            )
+        ),
+    ).prompt
+    fuzzy = [line for line in prompt.splitlines() if " ~ " in line]
+    assert len(fuzzy) == HINT_CANDIDATE_CAP
+    assert HINT_CANDIDATE_CAP < 4
+    assert "midmarket west" not in prompt
+    assert "enterprise" not in prompt
+
+
+def test_two_spaces_do_not_share_a_value_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompts: dict[str, str] = {}
+
+    def _run(space: str, token: str) -> None:
+        ctx = prepare_generate_context(
+            {},
+            question=token,
+            schema=_one_table(_text_column("label", [token], distinct=1)),
+            space_id=space,
+        )
+        prompts[space] = ctx["schema_context"]
+
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    left = threading.Thread(target=_run, args=("space-left", "ONLYSPACEA"))
+    right = threading.Thread(target=_run, args=("space-right", "ONLYSPACEB"))
+    left.start()
+    right.start()
+    left.join()
+    right.join()
+    assert "ONLYSPACEA" in prompts["space-left"]
+    assert "ONLYSPACEB" not in prompts["space-left"]
+    assert "ONLYSPACEB" in prompts["space-right"]
+    assert "ONLYSPACEA" not in prompts["space-right"]
+    assert "ONLYSPACEA" in cached_value_index("space-left")["person.label"]
+    assert "ONLYSPACEB" not in cached_value_index("space-left")["person.label"]
+    assert "ONLYSPACEB" in cached_value_index("space-right")["person.label"]
+    assert "ONLYSPACEA" not in cached_value_index("space-right").get("person.label", ())
+
+
+def test_flag_off_calls_no_schema_function(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dms_executor.schema_context as mod
+
+    called: list[str] = []
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        called.append("called")
+        raise AssertionError("schema_context ran while the flag was off")
+
+    for name, obj in list(vars(mod).items()):
+        if name.startswith("_") or not callable(obj):
+            continue
+        if getattr(obj, "__module__", "") == mod.__name__:
+            monkeypatch.setattr(mod, name, _boom)
+    monkeypatch.setattr("dms_executor.generative_ask.prepare_generate_context", _boom)
+    monkeypatch.delenv("DMS_SCHEMA_CONTEXT", raising=False)
+    serving = tmp_path / "crm.duckdb"
+    _seed_crm(serving)
+    onto = Ontology()
+    onto.verified = True
+    seen: dict[str, Any] = {}
+
+    def _compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        seen["ctx"] = ctx
+        return {"unsure": True}
+
+    env = maybe_generative_ask(
+        "which accounts are midmarket",
+        warehouse=serving,
+        grantable={"account", "contact"},
+        ontology=onto,
+        compute=_compute,
+        submit=lambda _sql: None,
+        ledger_append=lambda _payload: None,
+        space_id="space-off",
+    )
+    assert called == []
+    assert "schema_context" not in seen["ctx"]
+    assert env is not None
+    assert "schema_context" not in env
+
+
+def test_blank_dialect_is_omitted_and_not_invented() -> None:
+    import dms_executor.schema_context as mod
+
+    source = Path(mod.__file__).read_text(encoding="utf-8")
+    assert "undeclared" not in source
+    assert "postgres" not in source.lower()
+    assert "column_is_pii" not in source
+    assert "write_text" not in source
+    prompt = build_schema_context(
+        "count rows",
+        {"datasets": [{"name": "item", "columns": [{"name": "qty", "type": "integer"}]}]},
+    ).prompt
+    assert "DIALECT" not in prompt
+    assert prompt.startswith("SCHEMA")
+
+
+def test_measures_are_reserved_before_columns() -> None:
+    columns = [
+        {
+            "name": f"wide_{i:02d}",
+            "type": "varchar",
+            "description": "y" * 180,
+            "distinct": 10,
+        }
+        for i in range(8)
+    ]
+    prompt = build_schema_context(
+        "open receivable",
+        {"dialect": "sqlserver", "datasets": [{"name": "invoice", "columns": columns}]},
+        ontology=_finance_model(),
+        max_tokens=90,
+    ).prompt
+    assert _EXPR in prompt
+    assert sum(1 for i in range(8) if f"wide_{i:02d}" in prompt) < 8
+
+
+def test_description_email_is_masked() -> None:
+    prompt = _crm_prompt(None)
+    assert _EMAIL not in prompt
+
+
+def test_non_personal_without_evidence_stays_untagged() -> None:
+    column = _text_column(
+        "rep",
+        ["Ali Bakar", "Ali Hassan"],
+        distinct=2,
+        non_personal=True,
+    )
+    prompt = build_schema_context("show Ali", _one_table(column)).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "samples=" not in prompt
+    assert "Ali Bakar" not in prompt
+    blank = _text_column(
+        "rep",
+        ["Ali Bakar"],
+        distinct=1,
+        non_personal={"evidence": "  "},
+    )
+    blank_prompt = build_schema_context("show Ali", _one_table(blank)).prompt
+    assert "FILTER HINTS" not in blank_prompt
+    assert "samples=" not in blank_prompt
+
+
+def test_untagged_folded_ties_send_nothing() -> None:
+    prompt = build_schema_context(
+        "acme",
+        _one_table(_text_column("label", ["Acme", "ACME"], distinct=2)),
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "Acme" not in prompt
+    assert "ACME" not in prompt

@@ -38,6 +38,7 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
     typed_query_plan,
 )
+from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
 from cortex_client.qualifiers import (
     parse_rank_window,
     rank_window_group,
@@ -1132,6 +1133,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1233,19 +1235,21 @@ def maybe_generative_ask(
         ranked_env["generate_legs"] = generate_legs_view(None)
         return with_served_attribution(ranked_env, None)
     # Short retrieved context only -- not the full ontology dump.
-    # Schema prompt (types, keys, joins, measure SQL, masked samples) is
-    # stored for audit and attached when DMS_SCHEMA_CONTEXT is on.
+    # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
+    # introspection, no sampling, no prompt, no value index.
     ctx = retrieve_short_context(
         q, warehouse=lake, grantable=allowed, ontology=onto
     )
-    ctx = prepare_generate_context(
-        ctx,
-        question=q,
-        serving=lake,
-        grantable=allowed,
-        ontology=onto,
-        space_id=space_id,
-    )
+    if schema_context_enabled():
+        ctx = prepare_generate_context(
+            ctx,
+            question=q,
+            serving=lake,
+            grantable=allowed,
+            ontology=onto,
+            dialect=dialect,
+            space_id=space_id,
+        )
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1263,7 +1267,11 @@ def maybe_generative_ask(
         env["generate_legs"] = generate_legs_view(
             setup_src, validate_reason=validate_why
         )
-        return with_served_attribution(env, setup_src)
+        env = with_served_attribution(env, setup_src)
+        held = ctx.get(SCHEMA_CONTEXT_FIELD)
+        if isinstance(env, dict) and isinstance(held, str) and held:
+            env[SCHEMA_CONTEXT_FIELD] = held
+        return env
 
     if verify_cache_missing:
         return _stamp(
