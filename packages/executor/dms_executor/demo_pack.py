@@ -22,7 +22,7 @@ from typing import Any
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
-from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
 SPEND_BY_COUNTRY_Q = "What is our total spend by supplier country?"
@@ -586,6 +586,8 @@ def maybe_pack_ask(
         )
     try:
         result = submit(hit.sql)
+    except OpenVaultTokenError:
+        raise
     except Exception:  # noqa: BLE001
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
