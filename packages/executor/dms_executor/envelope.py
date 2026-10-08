@@ -1736,7 +1736,14 @@ def build_answer_envelope(
         env["constraint_trace"] = trace_out
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
-    return mask_unknown_keys(env)
+    masked = mask_unknown_keys(env)
+    # Lazy: this module must not import the quarantine filter at load.
+    from dms_executor.skills_quarantine import config_stamp
+
+    stamp = config_stamp()
+    if stamp:
+        masked["skills_quarantine"] = stamp
+    return masked
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:
