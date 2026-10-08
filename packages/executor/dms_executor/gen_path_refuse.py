@@ -50,6 +50,7 @@ GAP_REASONS = frozenset(
         "rank_window_entity_mismatch",
         "rank_window_open_ended",
         "unrequested_offset",
+        "loop_exhausted",
     }
 )
 

@@ -109,6 +109,7 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.sql_loop import apply_sql_credit, extract_dialect
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -157,13 +158,31 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
+    onto = ontology
+    feedback = None
+    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
+        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
+        raw = ontology.get("sql_loop_feedback")
+        feedback = raw if isinstance(raw, dict) else None
     try:
-        return fn(
-            question,
-            session_id=session_id,
-            space_id=space_id,
-            ontology=ontology,
-        )
+        kwargs: dict[str, Any] = {
+            "session_id": session_id,
+            "space_id": space_id,
+            "ontology": onto,
+        }
+        if feedback is not None:
+            kwargs["sql_feedback"] = feedback
+        return fn(question, **kwargs)
+    except TypeError:
+        try:
+            return fn(
+                question,
+                session_id=session_id,
+                space_id=space_id,
+                ontology=onto,
+            )
+        except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
+            return None
     except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
         return None
 
@@ -534,6 +553,14 @@ class Executor:
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
         out = stamped if stamped is not None else env
+        if isinstance(out, dict):
+            raw_loop = out.get("loop")
+            apply_sql_credit(
+                out,
+                payload if isinstance(payload, dict) else None,
+                raw_loop if isinstance(raw_loop, list) else None,
+                dialect=extract_dialect(getattr(self, "_warehouse", None)),
+            )
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 

@@ -78,6 +78,9 @@ INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS = 60.0
 INSIGHTS_CALL_CAP_ENV = "DMS_INSIGHTS_CALL_CAP"
 INSIGHTS_CALL_CAP_DEFAULT = 2
 INSIGHTS_CALL_CAP_CEILING = 4
+#: Ontology-ranked compile as the generate-path answer. Default off.
+LANE_ONTOLOGY_RANKED_ENV = "DMS_LANE_ONTOLOGY_RANKED"
+_LANE_ON = frozenset({"1", "true", "yes", "on"})
 INSIGHTS_FAIL_UNARMED = "insights_unarmed"
 INSIGHTS_FAIL_REFUSED = "insights_refused"
 INSIGHTS_FAIL_UNAUTHORIZED = "insights_unauthorized"
@@ -135,6 +138,17 @@ def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
         env, INSIGHTS_TIMEOUT_ENV, INSIGHTS_ASK_TIMEOUT_SECONDS,
         INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS,
     )
+
+
+def ontology_ranked_lane_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_LANE_ONTOLOGY_RANKED``: off unless set to a true token.
+
+    Off, a question that reached generate is not answered by the ontology
+    ranked fallback. The cap ceiling is unchanged.
+    """
+    src = os.environ if env is None else env
+    raw = str(src.get(LANE_ONTOLOGY_RANKED_ENV) or "").strip().lower()
+    return raw in _LANE_ON
 
 
 def insights_call_cap(env: Mapping[str, str] | None = None) -> int:
@@ -938,10 +952,17 @@ def _insights_body(
     session_id: str | None,
     space_id: str | None,
     ontology: dict[str, Any] | None,
+    sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    asked = question
+    if isinstance(sql_feedback, dict):
+        reason = str(sql_feedback.get("reason") or "")
+        prev = str(sql_feedback.get("previous_sql") or "")
+        if reason:
+            asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
     body: dict[str, Any] = {
-        "intent": question,
-        "question": question,
+        "intent": asked,
+        "question": asked,
         "ask": False,
         "generate": True,
         "session_id": session_id or "demo",
@@ -956,6 +977,11 @@ def _insights_body(
             slots = ontology.get("intent_slots")
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
+    if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
+        body["sql_feedback"] = {
+            "previous_sql": str(sql_feedback.get("previous_sql") or ""),
+            "reason": str(sql_feedback.get("reason") or ""),
+        }
     from cortex_client.strict_pin import stamp_generate_body
 
     return stamp_generate_body(body)
@@ -1081,7 +1107,14 @@ def _run_insights_legs(
     retry_ok = bool(ranked_plan) and retry_plan_covers_qualifiers(
         ranked_plan, question
     )
-    if generate_retry_eligible(insights_payload) and retry_ok and ranked_plan is not None:
+    # Ranked-slot retry is the ontology lane. Off, that call stays in the cap
+    # for the extract SQL loop instead.
+    if (
+        ontology_ranked_lane_enabled()
+        and generate_retry_eligible(insights_payload)
+        and retry_ok
+        and ranked_plan is not None
+    ):
         retry_body = dict(insights_body)
         retry_body["query_plan"] = {
             k: v for k, v in ranked_plan.items() if k != "ranked_id"
@@ -1113,6 +1146,7 @@ def compute_query(
     timeout: float = 120.0,
     dms_query: bool = True,
     call_cap: int | None = None,
+    sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
 
@@ -1145,7 +1179,11 @@ def compute_query(
     headers = _auth_headers(api_key)
     root = base_url.rstrip("/")
     insights_body = _insights_body(
-        question, session_id=session_id, space_id=space_id, ontology=ontology
+        question,
+        session_id=session_id,
+        space_id=space_id,
+        ontology=ontology,
+        sql_feedback=sql_feedback,
     )
     if insights_body.get("pin_refusal"):
         from cortex_client.strict_pin import refusal_payload
@@ -1270,6 +1308,7 @@ def compute_insights(
     ontology: dict[str, Any] | None = None,
     api_key: str | None = None,
     timeout: float | None = None,
+    sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
 
@@ -1288,6 +1327,7 @@ def compute_insights(
         api_key=api_key,
         timeout=insights_timeout_s() if timeout is None else timeout,
         dms_query=False,
+        sql_feedback=sql_feedback,
     )
 
 
@@ -1299,6 +1339,7 @@ __all__ = [
     "INSIGHTS_CALL_CAP_CEILING",
     "INSIGHTS_CALL_CAP_DEFAULT",
     "INSIGHTS_CALL_CAP_ENV",
+    "LANE_ONTOLOGY_RANKED_ENV",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
     "INSIGHTS_FAIL_CALL_CAP",
@@ -1329,6 +1370,7 @@ __all__ = [
     "insights_timeout_env_set",
     "insights_timeout_s",
     "insights_was_reached",
+    "ontology_ranked_lane_enabled",
     "normalize_insights_compute",
     "overlay_pack_id_from_question",
     "pack_id_shape",

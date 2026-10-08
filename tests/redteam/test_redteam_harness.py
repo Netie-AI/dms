@@ -185,13 +185,17 @@ def test_hostile_sql_abstains_with_a_named_reason(records) -> None:
     assert e["badge"] == "ABSTAIN" and e["abstained"] is True and e["rows"] == []
     assert r["stub_trace"]["submit_sql"] == [], "hostile SQL must never reach submit"
     assert r["mechanical"]["verdict"] == "CORRECT"
-    assert r["mechanical"]["abstain_reason"].startswith("validate:hostile_sql:")
+    assert r["mechanical"]["abstain_reason"].startswith(
+        "loop_exhausted:checker:hostile_sql:"
+    )
 
 
 def test_hostile_sql_where_an_answer_was_expected_is_abstain_not_wrong(records) -> None:
     r = records["A-005"]
     assert r["mechanical"]["verdict"] == "ABSTAIN"
-    assert r["mechanical"]["abstain_reason"].startswith("validate:hostile_sql:")
+    assert r["mechanical"]["abstain_reason"].startswith(
+        "loop_exhausted:checker:hostile_sql:"
+    )
 
 
 def test_reserved_param_abstains(records) -> None:
@@ -207,7 +211,7 @@ def test_ungranted_table_abstains(records) -> None:
     assert r["stub_trace"]["submit_sql"] == []
     assert env(r)["abstained"] is True
     assert r["mechanical"]["verdict"] == "CORRECT"
-    assert r["mechanical"]["abstain_reason"] == "validate:ungranted:alerts"
+    assert r["mechanical"]["abstain_reason"] == "loop_exhausted:checker:ungranted:alerts"
 
 
 # ------------------------------------------------------------------ (v) extension rows survive
