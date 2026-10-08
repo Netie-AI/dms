@@ -32,6 +32,7 @@ from dms_api.app import create_app
 from dms_api.settings import Settings, get_settings
 from dms_executor import Executor
 from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.generative_ask import unsure_cause
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
@@ -334,9 +335,10 @@ def test_served_source_has_no_scored_pack_path() -> None:
     assert [h for h in hits if h.split(":")[0] not in allow] == []
 
 
-#: Normal lanes, no pack phrase, no special case. The fake Insights is unsure
-#: and carries no ``audit_receipt.unsure.why``, so the reason names that gap.
-#: Never a number. Never a silent generic ``compute abstained (unsure)``.
+#: Normal lanes, no pack phrase, no special case. The fake Insights is
+#: ``{"unsure": True}`` and carries no ``validation.unsure[].why``, so the
+#: reason names that gap. Never a number. Never a silent generic
+#: ``compute abstained (unsure)``.
 _GEN01 = "GEN-01: compute abstained (unsure: why_missing)"
 _OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 _RANK_Q = "Rank suppliers by combined risk and lead time score"
@@ -477,17 +479,73 @@ class _WhyCortex(_Cortex):
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         return {
             "unsure": True,
-            "audit_receipt": {"unsure": {"why": "rank_tie"}},
+            "validation": {
+                "unsure": [{"id": "generative_sql", "kind": "sql", "why": "rank_tie"}],
+            },
         }
 
 
-def test_unsure_reason_carries_audit_receipt_why(tmp_path: Path) -> None:
-    """Must-fail on 71b38947: the reason ignored audit_receipt.unsure.why."""
+def test_unsure_reason_carries_validation_unsure_why(tmp_path: Path) -> None:
+    """Must-fail on 71b38947: the reason ignored validation.unsure[].why."""
     env = _live(tmp_path, _WhyCortex(), GENERIC_Q, FINANCE)
     reason = "GEN-01: compute abstained (unsure: rank_tie)"
     assert env["assumptions"] == [reason]
     assert env["audit_receipt"]["unsure"]["why"] == reason
     _none_served(env)
+
+
+# Word for word from Cortex 279cbd85 CortexOS/crew/insights.py.
+# ABSTAIN return dict :1372-1389 (literal fields only; intent, ontology,
+# sql_used and law are filled at runtime and are not copied here).
+# validation.unsure item: extra_unsure :1364-1368, same {id, kind, why}
+# as the append at :1225-1230. why: _generative_unsure_why :1046-1048
+# with VALIDATOR :1043 and the ``or "table scope"`` check at :1047.
+# answer fallback: :1377-1378 (the ``or`` literal; note is runtime).
+_CORTEX_279_WHY = (
+    "FreeRoute SQL passed the static sqlglot guardrail: "
+    "not EXPLAINed, not manifest-enforced, not executed (table scope); "
+    "not executed in crew"
+)
+_CORTEX_279_ABSTAIN: dict[str, Any] = {
+    "ok": True,
+    "status": "ABSTAIN",
+    "phase": "generate",
+    "answer": (
+        "Validated SQL via FreeRoute. Numbers not certified: "
+        "static sqlglot guardrail: not EXPLAINed, not manifest-enforced, not executed."
+    ),
+    "badge": "abstain",
+    "audit_id": None,
+    "values": [],
+    "trials": [],
+    "validation": {
+        "unsure": [
+            {
+                "id": "generative_sql",
+                "kind": "sql",
+                "why": _CORTEX_279_WHY,
+            }
+        ]
+    },
+    "scale": "1GB to 10TB is a design target only; not COMPLETE",
+}
+
+
+def test_unsure_cause_reads_cortex_279_validation_why() -> None:
+    """Unit. Not end to end. Payload copied from Cortex 279cbd85, cited above."""
+    cause = unsure_cause(_CORTEX_279_ABSTAIN)
+    reason = f"GEN-01: compute abstained (unsure: {cause})"
+    assert reason == f"GEN-01: compute abstained (unsure: {_CORTEX_279_WHY})"
+    assert _CORTEX_279_WHY in reason
+
+
+def test_bare_unsure_stub_cause_is_why_missing() -> None:
+    """Golden stub ``{"unsure": True}`` has no validation.unsure[].why."""
+    assert unsure_cause({"unsure": True}) == "why_missing"
+    assert (
+        f"GEN-01: compute abstained (unsure: {unsure_cause({'unsure': True})})"
+        == "GEN-01: compute abstained (unsure: why_missing)"
+    )
 
 
 def test_ops_supplier_rank_boundary_keeps_grants_fail(tmp_path: Path) -> None:
@@ -507,18 +565,23 @@ def test_ops_supplier_rank_boundary_keeps_grants_fail(tmp_path: Path) -> None:
     assert "GEN-01" not in " ".join(str(a) for a in env["assumptions"])
 
 
-# Lead ruling, PR #390 fix: the ONE approved verdict change.
-# Offline A/B exact score: curated:cq_supplier_ranking goes LAYER -> ABSTAIN.
-# Badge is ABSTAIN with no rows on both sides, so sql_used=null and
-# grounded_tables=[] are the honest values. Main's shape gate still carried
-# the pack SQL and its tables.
 def test_cq_supplier_ranking_approved_verdict_change(
     with_pack: dict[str, str],
 ) -> None:
+    """Two approved flip sets. They overlap on 6 ids.
+
+    cq_supplier_ranking is only in the exact-lane LAYER to ABSTAIN set.
+    default:0 is only in the L1 to ABSTAIN set vs 72df50d8. Badge is
+    ABSTAIN with no rows on both sides, so sql_used is null and
+    grounded_tables is empty.
+    """
     golden = _golden()
     pin = golden["approved_verdict_change"]
     assert pin["key"] == "curated:cq_supplier_ranking"
     assert "Lead" in pin["ruling"]
+    assert "ONE approved verdict change" not in pin["ruling"]
+    assert "cq_supplier_ranking is only in the exact-lane set" in pin["ruling"]
+    assert "default:0 is only in the L1 set" in pin["ruling"]
     key = pin["key"]
     env = json.loads(with_pack[key].split(" ", 1)[1])
     main = json.loads(golden["main"][key].split(" ", 1)[1])

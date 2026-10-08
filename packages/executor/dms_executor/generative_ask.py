@@ -215,17 +215,24 @@ def with_setup_fields(
 
 
 def unsure_cause(payload: dict[str, Any] | None) -> str:
-    """Real cause of a compute unsure, from ``audit_receipt.unsure.why``.
+    """First non-blank ``validation.unsure[].why``, in list order.
 
-    Absent or blank stays ``why_missing``. Never a silent generic abstain.
+    Cortex 279cbd85 ``CortexOS/crew/insights.py`` appends ``{id, kind, why}``
+    onto ``validation.unsure`` at :1223-1238. ``_generative_unsure_why``
+    builds that why at :1046-1048. Several items: the first non-blank ``why``
+    wins. Absent or blank stays ``why_missing``.
     """
+    # Cortex 279cbd85 CortexOS/crew/insights.py:1223-1238
     if isinstance(payload, dict):
-        receipt = payload.get("audit_receipt")
-        uns = receipt.get("unsure") if isinstance(receipt, dict) else None
-        if isinstance(uns, dict):
-            why = uns.get("why")
-            if isinstance(why, str) and why.strip():
-                return why.strip()
+        validation = payload.get("validation")
+        rows = validation.get("unsure") if isinstance(validation, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                why = row.get("why")
+                if isinstance(why, str) and why.strip():
+                    return why.strip()
     return "why_missing"
 
 
@@ -614,6 +621,13 @@ def parse_compute_plan(payload: dict[str, Any] | None) -> str:
     """Return miss | unsure | plan | sql. Plan body is payload['query_plan'] when plan."""
     if not isinstance(payload, dict):
         return "miss"
+    # CORTEX-ABSTAIN-WHY-01 (tier:full) owns both gaps. Live Cortex 279cbd85
+    # POST /v1/insights is status CERTIFIED, ABSTAIN or REFUSE, and does not
+    # set top-level unsure/abstain. This branch does not run, so unsure_cause
+    # (generative_ask.py:217) is not reached on the live path. The none stamp
+    # has the same gap: _bare_unsure (generative_ask.py:239-255) and
+    # generate_model_called (cortex_client/compute.py:1028-1038) key on that
+    # flag. A Cortex-shaped ABSTAIN goes to the contract ask. Routing stays.
     if payload.get("unsure") is True or payload.get("abstain") is True:
         return "unsure"
     plan = payload.get("query_plan")
