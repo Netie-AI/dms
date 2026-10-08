@@ -544,7 +544,35 @@ class Executor:
             out["lane"] = mapped
         else:
             out.pop("lane", None)
-        return mask_unknown_keys(out)
+        masked = mask_unknown_keys(out)
+        # Flag off returns this object unchanged (no clarify key).
+        from dms_core.ask import ask_clarify_enabled
+
+        if not ask_clarify_enabled():
+            return masked
+        from dms_executor.ask_clarify import apply_ask_guide, resolve_lake
+
+        try:
+            granted = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001 — no options rather than a wider grant
+            granted = set()
+        return apply_ask_guide(
+            masked,
+            warehouse=resolve_lake(self._warehouse),
+            grantable=granted,
+            space_id=space_id,
+            session_id=session_id,
+            submit=lambda sql: self._submit_verified_sql(
+                sql, space_id=space_id, session_id=session_id, tables=tables
+            ),
+            ledger_append=lambda payload: self._ledger_verified_query(
+                asset_sql=str(payload.get("sql") or ""),
+                run_id=str(payload.get("run_id") or ""),
+                space_id=space_id,
+                session_id=session_id,
+                event_type="ask.generated_ontology",
+            ),
+        )
 
     def _live_ask(
         self,
@@ -871,6 +899,70 @@ class Executor:
         )
         self._store_turn(session_id, space_id, env)
         return env
+
+    def confirm_clarify(
+        self,
+        *,
+        option_id: str,
+        plan: dict[str, Any],
+        space_id: str | None = None,
+        session_id: str | None = None,
+        tables: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Recompile a guided reading and submit it. Refuses when the flag is off.
+
+        Client SQL is not read. The pick goes through ``_submit_validated``.
+        """
+        from dms_core.ask import ask_clarify_enabled
+
+        if not ask_clarify_enabled():
+            raise AskServiceError("clarify_disabled", "DMS_ASK_CLARIFY is off")
+        from dms_executor.ask_clarify import confirm_reading, resolve_lake
+
+        try:
+            granted = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001
+            granted = set()
+        try:
+            return confirm_reading(
+                option_id_value=option_id,
+                plan=plan,
+                warehouse=resolve_lake(self._warehouse),
+                grantable=granted,
+                space_id=space_id,
+                session_id=session_id,
+                submit=lambda sql: self._submit_verified_sql(
+                    sql, space_id=space_id, session_id=session_id, tables=tables
+                ),
+                ledger_append=lambda payload: self._ledger_verified_query(
+                    asset_sql=str(payload.get("sql") or ""),
+                    run_id=str(payload.get("run_id") or ""),
+                    space_id=space_id,
+                    session_id=session_id,
+                    event_type="ask.generated_ontology",
+                ),
+            )
+        except OpenVaultTokenError as exc:
+            env = build_answer_envelope(
+                answer_id="ans_ov_mint",
+                text=(
+                    "I can't answer this: DMS could not get its OpenVault "
+                    f"signing key ({exc.code}). No fallback answer was used."
+                ),
+                badge="ABSTAIN",
+                abstained=True,
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[exc.code, "no generative fallback", "no demo fallback"],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+                question=str((plan or {}).get("measure") or ""),
+            )
+            assert_envelope_valid(env)
+            return env
 
     def submit_sql(
         self,

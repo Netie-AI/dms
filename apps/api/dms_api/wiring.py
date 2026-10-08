@@ -115,6 +115,16 @@ def library_tree(
     )
 
 
+def confirm_clarify(ask: Any, **kwargs: Any) -> dict[str, Any]:
+    """ASK-GUIDE-01 Run. The executor recompiles; this does not read client SQL."""
+    from dms_core.ask import AskServiceError
+
+    fn = getattr(ask, "confirm_clarify", None)
+    if not callable(fn):
+        raise AskServiceError("clarify_disabled", "DMS_ASK_CLARIFY is off")
+    return fn(**kwargs)
+
+
 def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     """Composition-root wrapper so routes never import dms_executor.envelope."""
     env = dms_executor.build_answer_envelope(**kwargs)

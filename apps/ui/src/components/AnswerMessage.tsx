@@ -28,6 +28,11 @@ import {
 } from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
+import {
+  ClarifyPanel,
+  InsightTiersView,
+  TrustBadge,
+} from "@/components/studio/ClarifyPanel";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
 const EXCLUSION_NO_RE = /^No — show\b|without excluding/i;
@@ -124,7 +129,8 @@ function renderWithValues(
 }
 
 export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
-  const { selectValue, setSourcePanelOpen, ask, suggestions, productMode } = useApp();
+  const { selectValue, setSourcePanelOpen, ask, runClarify, suggestions, productMode } = useApp();
+  const [pickedId, setPickedId] = useState<string | null>(null);
   const [showSql, setShowSql] = useState(false);
   const [showLayer, setShowLayer] = useState(false);
   const [showCopilot, setShowCopilot] = useState(false);
@@ -486,6 +492,12 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           </p>
         </div>
       )}
+      {envelope.badge !== "ABSTAIN" ? (
+        <>
+          <TrustBadge badge={envelope.badge} />
+          <InsightTiersView insights={envelope.insights} />
+        </>
+      ) : null}
       <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
         {renderWithValues(prose, envelope.values, selectValue)}
       </p>
@@ -500,6 +512,18 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             ))}
           </ul>
         </div>
+      )}
+
+      {envelope.badge === "ABSTAIN" && Array.isArray(envelope.clarify?.options) && (
+        <ClarifyPanel
+          options={envelope.clarify.options}
+          pickedId={pickedId}
+          onPick={setPickedId}
+          onRephrase={() => setPickedId(null)}
+          onRun={(option) => {
+            void runClarify(option);
+          }}
+        />
       )}
 
       {/* Usability rule 12 — abstain is never a dead end. */}
@@ -657,7 +681,12 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </div>
       )}
       <AnswerDetails envelope={envelope}>
-        <ResultView envelope={envelope} />
+        <ResultView
+          envelope={envelope}
+          onClarifyRun={(option) => {
+            void runClarify(option);
+          }}
+        />
       </AnswerDetails>
     </article>
   );

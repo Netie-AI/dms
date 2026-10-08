@@ -3,6 +3,7 @@
 import type {
   AdminOverview,
   AnswerEnvelope,
+  ClarifyPlan,
   LibrarySource,
   OntologyAction,
   OntologyBundle,
@@ -171,6 +172,40 @@ export async function postAsk(
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`ask ${res.status}: ${detail}`);
+  }
+  return (await res.json()) as AnswerEnvelope;
+}
+
+export type ClarifyRunPayload = {
+  option_id: string;
+  plan: ClarifyPlan;
+  space_id?: string | null;
+  session_id?: string | null;
+  grounded_tables?: string[] | null;
+};
+
+/** Confirmed reading. Sends the option id and plan slots. Never the SQL preview. */
+export async function postClarifyRun(
+  payload: ClarifyRunPayload,
+  signal?: AbortSignal,
+): Promise<AnswerEnvelope> {
+  const res = await fetch("/api/v1/chat/clarify/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      option_id: payload.option_id,
+      plan: payload.plan,
+      space_id: payload.space_id ?? undefined,
+      session_id: payload.session_id ?? undefined,
+      grounded_tables: payload.grounded_tables?.length
+        ? payload.grounded_tables
+        : undefined,
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`clarify ${res.status}: ${detail}`);
   }
   return (await res.json()) as AnswerEnvelope;
 }

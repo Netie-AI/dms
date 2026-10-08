@@ -5,6 +5,13 @@ import { copyText } from "@/lib/copilotPrompts";
 import { splitInsights } from "@/lib/splitInsights";
 import { isAbstain, namedAbstainReason, type AbstainFields } from "./abstainReason";
 import { chartFromRows } from "./chartShape";
+import {
+  ClarifyPanel,
+  InsightTiersView,
+  TrustBadge,
+  type ClarifyOption,
+  type InsightTiers,
+} from "./ClarifyPanel";
 import { StampsPanel } from "./StampsPanel";
 
 /** Fields this view reads. Stamp keys stay optional and are not defaulted. */
@@ -23,6 +30,9 @@ export type StudioAskEnvelope = AbstainFields & {
   plan_source?: string | null;
   plan_origin?: string | null;
   lane?: string | null;
+  badge?: string | null;
+  clarify?: { options?: ClarifyOption[] } | null;
+  insights?: InsightTiers | null;
   engine_as_of?: string | null;
   engine_as_of_after?: string | null;
   engine_timezone?: string | null;
@@ -35,6 +45,7 @@ const PAGE_SIZE = 10;
 
 type Props = {
   envelope: StudioAskEnvelope | null;
+  onClarifyRun?: (option: ClarifyOption) => void;
 };
 
 /**
@@ -42,9 +53,10 @@ type Props = {
  * Chart is SimpleChart (apps/ui/src/components/SimpleChart.tsx), the SVG
  * chart already in the UI. No chart package is added.
  */
-export function ResultView({ envelope }: Props) {
+export function ResultView({ envelope, onClarifyRun }: Props) {
   const [page, setPage] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [pickedId, setPickedId] = useState<string | null>(null);
   if (!envelope) return null;
 
   const abstained = isAbstain(envelope);
@@ -75,9 +87,20 @@ export function ResultView({ envelope }: Props) {
           <p data-testid="studio-abstain-reason" className="mt-2 text-sm font-medium text-[var(--color-ink)]">
             {namedAbstainReason(envelope)}
           </p>
+          {Array.isArray(envelope.clarify?.options) ? (
+            <ClarifyPanel
+              options={envelope.clarify.options}
+              pickedId={pickedId}
+              onPick={setPickedId}
+              onRephrase={() => setPickedId(null)}
+              onRun={onClarifyRun}
+            />
+          ) : null}
         </div>
       ) : (
         <div data-testid="studio-insight" className="mt-3 text-sm text-[var(--color-ink)]">
+          <TrustBadge badge={envelope.badge} />
+          <InsightTiersView insights={envelope.insights} />
           {prose ? <p className="whitespace-pre-wrap">{prose}</p> : null}
           {insights.length > 0 ? (
             <ul className="mt-2 list-disc space-y-1 pl-5">
