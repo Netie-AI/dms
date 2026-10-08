@@ -493,7 +493,10 @@ def test_judge_packets_are_blind(records) -> None:
     assert served_sql not in blob
 
 
-def test_results_file_round_trips_through_the_cli(tmp_path) -> None:
+def test_results_file_round_trips_through_the_cli(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
     sample = Path(__file__).with_name("sample_cases.yaml")
     res = harness.run_cases(sample, out_dir=tmp_path, run_id="cli1", judge_packets=True)
     lines = [json.loads(x) for x in res.results_path.read_text(encoding="utf-8").splitlines()]
