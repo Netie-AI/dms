@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from cortex_client import compliance_gate
 from dms_core.control_plane.connect_secrets import (
     ConnectCredentialError,
-    body_has_raw_secret,
+    body_violation,
     key_id_for_ref,
 )
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -79,8 +79,8 @@ def _map_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail="bad_request")
 
 
-async def _object(request: Request) -> dict[str, Any]:
-    """Parse a JSON object. A secret-shaped body is a named 400 with no echo."""
+async def _object(request: Request, *, schema: str) -> dict[str, Any]:
+    """Parse a JSON object against the allow-list. No echo of rejected text."""
     raw = await request.body()
     if len(raw) > _MAX_BODY:
         raise HTTPException(status_code=400, detail="bad_request")
@@ -88,11 +88,12 @@ async def _object(request: Request) -> dict[str, Any]:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="bad_request") from None
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="bad_request")
-    if body_has_raw_secret(payload):
+    code = body_violation(payload, schema=schema)
+    if code == _RAW_SECRET:
         raise HTTPException(status_code=400, detail=_RAW_SECRET)
-    return payload
+    if code:
+        raise HTTPException(status_code=400, detail=code)
+    return payload  # type: ignore[return-value]
 
 
 def _tables(payload: dict[str, Any], key: str, *, required: bool) -> list[str] | None:
@@ -120,7 +121,7 @@ async def connect_source(
 ) -> dict[str, Any]:
     """Read the connector listing for an OpenVault reference and grant those tables."""
     _enabled(settings)
-    payload = await _object(request)
+    payload = await _object(request, schema="sources")
     token_id = _require_bearer(authorization)
     connector_id = payload.get("connector_id")
     space_name = payload.get("space_name")
@@ -133,7 +134,11 @@ async def connect_source(
         raise HTTPException(status_code=400, detail="credential_ref_required")
     if key_id_for_ref(credential_ref.strip()) is None:
         raise HTTPException(status_code=400, detail="bad_credential_ref")
-    grant_tables = _tables(payload, "grant_tables", required=False)
+    options = payload.get("options")
+    if options is None:
+        grant_tables = None
+    else:
+        grant_tables = _tables(options, "grant_tables", required=False)
     decision = compliance_gate(
         action="connect.register",
         actor=settings.dms_actor_user_id,
@@ -174,7 +179,7 @@ async def grant_source(
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     _enabled(settings)
-    payload = await _object(request)
+    payload = await _object(request, schema="tables")
     token_id = _require_bearer(authorization)
     tables = _tables(payload, "tables", required=True)
     assert tables is not None
@@ -205,7 +210,7 @@ async def revoke_source(
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     _enabled(settings)
-    payload = await _object(request)
+    payload = await _object(request, schema="tables")
     token_id = _require_bearer(authorization)
     tables = _tables(payload, "tables", required=True)
     assert tables is not None

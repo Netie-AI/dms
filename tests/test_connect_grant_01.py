@@ -202,7 +202,7 @@ def _connect(
         "credential_ref": REF,
     }
     if grant is not None:
-        body["grant_tables"] = grant
+        body["options"] = {"grant_tables": grant}
     res = client.post("/v1/connect/sources", headers=_auth(), json=body)
     assert res.status_code == 201, res.text
     return res.json()
@@ -387,7 +387,7 @@ def test_raw_dsn_is_rejected_with_no_trace(
             "connector_id": "cg-src",
             "space_name": "Cg dsn",
             "credential_ref": dsn,
-            "grant_tables": [LEFT],
+            "options": {"grant_tables": [LEFT]},
         },
     )
     assert res.status_code == 400
@@ -439,6 +439,116 @@ def test_password_field_is_rejected(
     audit = client.get("/v1/connect/audit", headers=_auth()).json()
     assert secret not in str(audit)
     assert audit["rows"] == []
+
+
+def _base_body() -> dict[str, Any]:
+    return {
+        "connector_id": "cg-src",
+        "space_name": "Cg allow",
+        "credential_ref": REF,
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "body", "secret"),
+    [
+        ("apiKey", {**_base_body(), "apiKey": "plain-key"}, "plain-key"),
+        (
+            "connectionString",
+            {**_base_body(), "connectionString": "just-a-string"},
+            "just-a-string",
+        ),
+        ("ApiKey", {**_base_body(), "ApiKey": "plain-key"}, "plain-key"),
+        ("api-key", {**_base_body(), "api-key": "plain-key"}, "plain-key"),
+        (
+            "options.password",
+            {**_base_body(), "options": {"password": "nested-secret"}},
+            "nested-secret",
+        ),
+        (
+            "options.auth.token",
+            {**_base_body(), "options": {"auth": {"token": "nested-token"}}},
+            "nested-token",
+        ),
+        (
+            "list apiKey",
+            {**_base_body(), "options": {"grant_tables": [{"apiKey": "list-secret"}]}},
+            "list-secret",
+        ),
+        (
+            "urlencoded dsn",
+            {
+                **_base_body(),
+                "credential_ref": "postgresql://alice%3As3cret-pass@db.example/cgdb",
+            },
+            "s3cret-pass",
+        ),
+    ],
+)
+def test_undeclared_or_encoded_secret_is_rejected(
+    harness: tuple[TestClient, _Cortex],
+    caplog: pytest.LogCaptureFixture,
+    label: str,
+    body: dict[str, Any],
+    secret: str,
+) -> None:
+    client, _cortex = harness
+    caplog.set_level(logging.DEBUG)
+    register_connector("cg-src", lambda _cred: [LEFT])
+    res = client.post("/v1/connect/sources", headers=_auth(), json=body)
+    assert res.status_code == 400, label
+    assert res.json()["detail"] == "connect_raw_secret_rejected", label
+    assert secret not in res.text
+    assert secret not in caplog.text
+    audit = client.get("/v1/connect/audit", headers=_auth()).json()
+    assert audit["rows"] == []
+    assert secret not in str(audit)
+
+
+def test_bare_kid_ref_resolves(
+    harness: tuple[TestClient, _Cortex],
+) -> None:
+    client, _cortex = harness
+    register_connector("cg-src", lambda cred: [LEFT] if cred == SECRET else [])
+    res = client.post(
+        "/v1/connect/sources",
+        headers=_auth(),
+        json={
+            "connector_id": "cg-src",
+            "space_name": "Cg kid",
+            "credential_ref": "cg-kid",
+            "options": {"grant_tables": [LEFT]},
+        },
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["granted_tables"] == [LEFT]
+    assert SECRET not in res.text
+    calls = client.app.state.ask_service._minter._http.calls
+    assert any(url.endswith("/api/keys/cg-kid/secret") for url in calls)
+
+
+def test_serving_grant_check_ignores_connect(
+    harness: tuple[TestClient, _Cortex],
+) -> None:
+    """Ask-path refusal stays the grant check. sql_grounds does not grant."""
+    import inspect
+
+    import dms_executor.sql_grounds as grounds_mod
+
+    client, cortex = harness
+    res = client.post(
+        "/v1/chat/ask",
+        json={"question": QUESTION, "grounded_tables": [LEFT]},
+    )
+    assert res.status_code == 403, res.text
+    assert res.json()["detail"]["code"] == "grounding_not_grantable"
+    assert cortex.asks == []
+    source = inspect.getsource(grounds_mod)
+    assert "connect_grants" not in source
+    assert "connect_secrets" not in source
+    parsed = grounds_mod.sql_grounds(f"SELECT marker FROM {LEFT}")
+    assert parsed.as_dict()["checker_version"] == grounds_mod.CHECKER_VERSION
+    assert parsed.unclear is False
 
 
 def test_ov_resolution_failure_is_named_and_has_no_secret(
