@@ -1,0 +1,3189 @@
+{
+ "captured_from": "f9ffc3e15ac81574ee5d21d326a3b46aa559f960",
+ "cases": {
+  "cq_audit_overdue": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_audit_overdue",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_capacity_above_90": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_capacity_above_90",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_capacity_above_90",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "100.0 * current_load_kg / capacity_kg > 90",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_capacity_above_90",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_capacity_utilisation": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_capacity_utilisation",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_capacity_utilisation",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_capacity_utilisation",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_cctv_wh_a": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_cctv_wh_a",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_cctv_wh_a",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "location_code = 'WH-A'",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_cctv_wh_a",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT location_code, cctv_camera_id FROM locations WHERE location_code = 'WH-A'",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_chemicals_list": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_chemicals_list",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_cold_storage": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_cold_storage",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_cold_storage",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "is_cold_storage = true",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_cold_storage",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT location_code FROM locations WHERE is_cold_storage = true",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_expired_items": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_expired_items",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_expired_items",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_expired_items",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT sku FROM inventory WHERE expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_low_stock_wh_a": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_low_stock_wh_a",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_low_stock_wh_a",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A'",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory",
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_low_stock_wh_a",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT i.sku, i.quantity_kg FROM inventory i JOIN locations l ON i.location_id = l.location_id WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A' ORDER BY i.quantity_kg ASC",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_sales_top3_volume": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_sales_top3_volume",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_sales_top3_volume",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "txn_type = 'outbound'",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "transactions"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_sales_top3_volume",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT sku, SUM(quantity_kg) AS total_sold_kg FROM transactions WHERE txn_type = 'outbound' GROUP BY sku ORDER BY total_sold_kg DESC, sku ASC LIMIT 3",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_sales_top5_syn_sales": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_sales_top5_syn_sales",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_sales_top5_syn_skus": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_sales_top5_syn_skus",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_sales_top5_value": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_sales_top5_value",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_sku_count": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_sku_count",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_sku_count",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_sku_count",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_sku_count_by_category": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_sku_count_by_category",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_sku_count_by_category",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_sku_count_by_category",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_sku_count_by_category_per": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_sku_count_by_category_per",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_sku_count_syn_label": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_sku_count_syn_label",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_sku_count_syn_short": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_sku_count_syn_short",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_spend_by_country": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_spend_by_country",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric spend_by_country",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory",
+     "suppliers"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_spend_by_country",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) AS total_spend_myr FROM inventory AS i JOIN suppliers AS s ON i.supplier_id = s.supplier_id GROUP BY s.country ORDER BY total_spend_myr DESC, s.country ASC",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_stock_value_by_category": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_stock_value_by_category",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric stock_value_by_category",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_cq_stock_value_by_category",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr FROM inventory GROUP BY category ORDER BY stock_value_myr DESC, category ASC",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "cq_stock_value_worth": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_stock_value_worth",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_supplier_ranking": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_cq_supplier_ranking",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_supplier_ranking",
+     "executed via Cortex submit",
+     "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "governed metric cq_supplier_ranking"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "suppliers"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_cq_supplier_ranking",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT supplier_id, ROUND((risk_score * 0.65) + ((lead_time_days / 60.0) * 0.35), 3) AS ranking_score FROM suppliers ORDER BY ranking_score DESC, risk_score DESC, lead_time_days DESC LIMIT 10",
+    "suggestions": [],
+    "text": "You asked for a breakdown, and the query I matched returns a single total instead - it has no grouping, so it cannot answer per-group or top-N. Rather than show you one number as though it were the breakdown, I'm stopping here. Name the grouping column, or ask for the overall total if that is what you want.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_top3_category_syn_plain": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_top3_category_syn_plain",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_top3_category_syn_show": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_top3_category_syn_show",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_top3_category_syn_typo": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_top3_category_syn_typo",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "cq_top3_category_syn_value": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_cq_top3_category_syn_value",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_capacity_above_90": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_capacity_above_90",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_capacity_above_90",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "100.0 * current_load_kg / capacity_kg > 90",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_capacity_above_90",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT location_code FROM locations WHERE 100.0 * current_load_kg / capacity_kg > 90",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_capacity_utilisation": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_capacity_utilisation",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_capacity_utilisation",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_capacity_utilisation",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT location_code, ROUND(100.0 * current_load_kg / capacity_kg, 1) AS pct_used FROM locations",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_cctv_wh_a": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_cctv_wh_a",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_cctv_wh_a",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "location_code = 'WH-A'",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_cctv_wh_a",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT location_code, cctv_camera_id FROM locations WHERE location_code = 'WH-A'",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_chemicals_list": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_chemicals_list",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_cold_storage": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_cold_storage",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_cold_storage",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "is_cold_storage = true",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_cold_storage",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT location_code FROM locations WHERE is_cold_storage = true",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_expired_items": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_expired_items",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_expired_items",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_expired_items",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT sku FROM inventory WHERE expiry_date IS NOT NULL AND CAST(expiry_date AS DATE) < CURRENT_DATE",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_freight_spend_destination": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_freight_spend_destination",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_low_stock_wh_a": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_low_stock_wh_a",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_low_stock_wh_a",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A'",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory",
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_low_stock_wh_a",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT i.sku, i.quantity_kg FROM inventory i JOIN locations l ON i.location_id = l.location_id WHERE i.quantity_kg < i.reorder_level_kg AND i.reorder_level_kg > 0 AND l.location_code = 'WH-A' ORDER BY i.quantity_kg ASC",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_shipment_cost": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_cost_by_destination",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_cost_by_destination",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "shipments",
+     "locations"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_shipment_cost",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id GROUP BY l.location_code",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_shipment_cost_syn": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_shipment_cost_syn",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_sku_count": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_sku_count",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_sku_count",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_sku_count",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT COUNT(DISTINCT sku) AS sku_count FROM inventory",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_sku_count_by_category": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_cq_sku_count_by_category",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric cq_sku_count_by_category",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_sku_count_by_category",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT category, COUNT(*) AS sku_count FROM inventory GROUP BY category",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_sku_count_by_category_syn": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_sku_count_by_category_syn",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_sku_count_syn_label": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_sku_count_syn_label",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_sku_count_syn_short": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_sku_count_syn_short",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_spend_boundary": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact match ok",
+     "grants fail",
+     "no generative fallback"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact match ok"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_ops_spend_boundary",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "The curated pack matched this question (exact match ok) but a later step failed: grants fail. I am not answering from a generative fallback.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_stock_value": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_stock_value_by_category",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric stock_value_by_category",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_ops_stock_value",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": "SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr FROM inventory GROUP BY category ORDER BY stock_value_myr DESC, category ASC",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "ops_stock_value_syn": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact-match miss",
+     "pack-metric miss"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact-match miss"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_ops_stock_value_syn",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "exact-match miss: pack-metric miss. The exact pack has no metric for this curated question, so the pack lookup did not match. This is not a generic generative abstain.",
+    "values": []
+   },
+   "status": 200
+  },
+  "ops_supplier_rank_boundary": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_curated_step",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "exact match ok",
+     "grants fail",
+     "no generative fallback"
+    ],
+    "audit_id": "ans_curated_step",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "exact match ok"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_ops_supplier_rank_boundary",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "The curated pack matched this question (exact match ok) but a later step failed: grants fail. I am not answering from a generative fallback.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_alerts_ungranted": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_gen01_abstain",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "GEN-01: compute abstained (unsure)"
+    ],
+    "audit_id": "ans_gen01_abstain",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "GEN-01: compute abstained (unsure)"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "lane": "generative",
+    "model_calls": 0,
+    "plan_source": "other",
+    "route": "generated",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_trap_alerts_ungranted",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "I cannot certify an ontology-grounded query for that question, so I am not executing one.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_categoty": {
+   "body": {
+    "abstained": false,
+    "answer_id": "ans_trap_categoty",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "governed metric trap_categoty",
+     "executed via Cortex submit"
+    ],
+    "audit_id": "led_boot",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [
+       {
+        "detail": "t.txn_type = 'outbound'",
+        "kind": "where"
+       }
+      ],
+      "status": "filters",
+      "why": "extracted from executed SQL WHERE/HAVING/FILTER; grain-level exclusions not claimed"
+     },
+     "include": {
+      "row_count": 1,
+      "rows": [
+       {
+        "n": 7
+       }
+      ],
+      "status": "rows",
+      "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+     },
+     "unsure": {
+      "abstained": false,
+      "badge": "L1_GOVERNED_METRIC",
+      "status": "none",
+      "why": "not abstained; badge=L1_GOVERNED_METRIC"
+     }
+    },
+    "badge": "L1_GOVERNED_METRIC",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [
+     "inventory",
+     "transactions"
+    ],
+    "lane": "curated",
+    "model_calls": 0,
+    "route": "governed_metric",
+    "rows": [
+     {
+      "n": 7
+     }
+    ],
+    "served_attribution": "none",
+    "session_id": "ses_trap_categoty",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": "SELECT c.category, ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS sales_value_myr FROM transactions t JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku WHERE t.txn_type = 'outbound' GROUP BY c.category ORDER BY sales_value_myr DESC, c.category ASC LIMIT 3",
+    "suggestions": [],
+    "text": "Found 1 row(s).\n  - n=7",
+    "values": [
+     {
+      "id": "v0",
+      "label": "n",
+      "value": 7.0
+     }
+    ]
+   },
+   "status": 200
+  },
+  "trap_delayed_count": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_uncertified_paraphrase",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "uncertified paraphrase: not on certified_queries.yaml",
+     "fail-closed; Cortex L1 synonym/regex is not a certify boundary"
+    ],
+    "audit_id": "ans_uncertified_paraphrase",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "uncertified paraphrase: not on certified_queries.yaml"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_trap_delayed_count",
+    "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "I cannot certify delayed-incoming counts per warehouse. That golden is TARGET, not a Cortex certified query. A governed number here would be a guess.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_high_risk_pending": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_gen01_abstain",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "GEN-01: compute abstained (unsure)"
+    ],
+    "audit_id": "ans_gen01_abstain",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "GEN-01: compute abstained (unsure)"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "generate_legs": {
+     "count": 1,
+     "legs": [
+      {
+       "returned": "nothing"
+      }
+     ]
+    },
+    "grounded_tables": [],
+    "lane": "generative",
+    "model_calls": 0,
+    "plan_source": "other",
+    "route": "generated",
+    "rows": [],
+    "served_attribution": "missing",
+    "session_id": "ses_trap_high_risk_pending",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "I cannot certify an ontology-grounded query for that question, so I am not executing one.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_how_full_synonym": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_uncertified_paraphrase",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "uncertified paraphrase: not on certified_queries.yaml",
+     "fail-closed; Cortex L1 synonym/regex is not a certify boundary"
+    ],
+    "audit_id": "ans_uncertified_paraphrase",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "uncertified paraphrase: not on certified_queries.yaml"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_trap_how_full_synonym",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [
+     "Show warehouse capacity utilisation"
+    ],
+    "text": "I cannot certify that phrasing. It is not a certified synonym of warehouse capacity utilisation. Ask 'Show warehouse capacity utilisation'.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_last_month": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_gen01_abstain",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "GEN-01: question is too vague or time-unbounded to ground"
+    ],
+    "audit_id": "ans_gen01_abstain",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "GEN-01: question is too vague or time-unbounded to ground"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "lane": "generative",
+    "model_calls": 0,
+    "plan_source": "other",
+    "route": "generated",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_trap_last_month",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "I cannot certify an ontology-grounded query for that question, so I am not executing one.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_short_paraphrase": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_gen01_abstain",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "GEN-01: question is too vague or time-unbounded to ground"
+    ],
+    "audit_id": "ans_gen01_abstain",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "GEN-01: question is too vague or time-unbounded to ground"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "lane": "generative",
+    "model_calls": 0,
+    "plan_source": "other",
+    "route": "generated",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_trap_short_paraphrase",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "I cannot certify an ontology-grounded query for that question, so I am not executing one.",
+    "values": []
+   },
+   "status": 200
+  },
+  "trap_stock_by_bin": {
+   "body": {
+    "abstained": true,
+    "answer_id": "ans_uncertified_paraphrase",
+    "as_of": "<as_of>",
+    "ask_mode": "live",
+    "assumptions": [
+     "uncertified paraphrase: not on certified_queries.yaml",
+     "fail-closed; Cortex L1 synonym/regex is not a certify boundary"
+    ],
+    "audit_id": "ans_uncertified_paraphrase",
+    "audit_receipt": {
+     "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+     },
+     "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+     },
+     "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "uncertified paraphrase: not on certified_queries.yaml"
+     }
+    },
+    "badge": "ABSTAIN",
+    "chart": null,
+    "contributing_sources": [],
+    "demo_fallback_used": false,
+    "drillthrough_token": null,
+    "grounded_tables": [],
+    "model_calls": 0,
+    "route": "abstain",
+    "rows": [],
+    "served_attribution": "none",
+    "session_id": "ses_trap_stock_by_bin",
+    "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    "sql_used": null,
+    "suggestions": [],
+    "text": "I cannot certify stock by storage bin. No Cortex certified query pins that grain. A governed number here would be a guess.",
+    "values": []
+   },
+   "status": 200
+  }
+ },
+ "fixture": "tests/fixtures/curated_ceo/questions.yaml",
+ "flags_off": [
+  "DMS_CCA_CASCADE",
+  "DMS_DEMO_FALLBACK",
+  "DMS_SERVED_ATTR_DIAG",
+  "DMS_INSIGHTS_TIMEOUT_S",
+  "DMS_INSIGHTS_CALL_CAP",
+  "DMS_HARNESS_ASK_PATHS"
+ ]
+}
