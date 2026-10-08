@@ -13,13 +13,13 @@ from cortex_contract.execution import QueryResult as ContractQueryResult
 from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 
 from cortex_client.compute import (
-    INSIGHTS_ASK_TIMEOUT_SECONDS,
-)
-from cortex_client.compute import (
     compute_insights as post_compute_insights,
 )
 from cortex_client.compute import (
     compute_query as post_compute_query,
+)
+from cortex_client.compute import (
+    insights_timeout_s,
 )
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
@@ -203,11 +203,11 @@ class CortexClient:
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
-        Timeout is min(INSIGHTS_ASK_TIMEOUT_SECONDS, this client's timeout) so
-        the product lane cannot stall on a 45s leftover /dms/query or the 120s
+        Timeout is min(insights_timeout_s(), this client's timeout) so the
+        product lane cannot stall on a 45s leftover /dms/query or the 120s
         contract timeout. OpenVault keys stay in Cortex.
         """
-        bound = min(INSIGHTS_ASK_TIMEOUT_SECONDS, float(self.timeout))
+        bound = min(insights_timeout_s(), float(self.timeout))
         return post_compute_insights(
             self.base_url,
             question=question,
