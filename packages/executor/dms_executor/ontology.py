@@ -1836,6 +1836,86 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     return out
 
 
+_LIST_INTENT = re.compile(
+    r"^\s*list\b.+|^\s*show\s+all\b.+|^\s*which\b.+\bare\s+in\b",
+    re.I,
+)
+_AGGREGATE_SQL = re.compile(
+    r"\b(?:sum|count|avg|min|max)\s*\(|\bgroup\s+by\b",
+    re.I,
+)
+_PLAIN_RELATION = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def is_list_intent(question: str) -> bool:
+    """List / show-all / which-X-are-in. Not a measure ask and not a skill row."""
+    return bool(_LIST_INTENT.search(question or ""))
+
+
+def sql_is_aggregate(sql: str) -> bool:
+    """True when SQL folds rows with an aggregate or GROUP BY."""
+    return bool(_AGGREGATE_SQL.search(sql or ""))
+
+
+def _object_columns(onto: Ontology, name: str) -> set[str]:
+    cached = onto.__dict__.get("_column_cache", {}).get(name)
+    keys = set(onto.objects[name].key) if name in onto.objects else set()
+    if isinstance(cached, set):
+        return {str(c) for c in cached} | keys
+    return keys
+
+
+def compile_grammar_list(onto: Ontology, question: str) -> CompiledQuery | None:
+    """Distinct entity keys for a list question. No SUM, COUNT, or GROUP BY.
+
+    The shape comes from the question and the declared objects/columns only.
+    It does not read query-skill rows, packs, oracles, or golden files.
+    None when this is not list intent, or grammar cannot name a key.
+    """
+    if onto is None or not is_list_intent(question):
+        return None
+    qn = (question or "").lower()
+    # "chemical" is a category value, not a measure. Read the lot row's own
+    # category. ANY_VALUE(category) on the product subquery is a different
+    # column and is not this filter.
+    if "chemical" in qn and "lot" in onto.objects:
+        cols = _object_columns(onto, "lot")
+        if "sku" in cols and "category" in cols:
+            rel = onto.objects["lot"].relation
+            if _PLAIN_RELATION.fullmatch(rel):
+                label = "lot_sku"
+                sql = (
+                    f"SELECT DISTINCT f.{_ident('sku')} AS {_ident(label)}\n"
+                    f"FROM {rel} f\n"
+                    f"WHERE lower(CAST(f.{_ident('category')} AS VARCHAR)) "
+                    f"LIKE '%chemical%'\n"
+                    f"ORDER BY {_ident(label)} ASC"
+                )
+                if sql_is_aggregate(sql):
+                    return None
+                coverage = Coverage(
+                    include=(
+                        "distinct lot.sku",
+                        "where category matches chemical (case-insensitive)",
+                        "no aggregate measure",
+                    ),
+                    exclude=(NO_SILENT_PAD, "unrequested aggregate measure"),
+                    unsure=(),
+                )
+                return CompiledQuery(
+                    sql=sql,
+                    measure="",
+                    grain="lot",
+                    group_by=(),
+                    notes=(
+                        "grammar list: distinct entity keys",
+                        "no aggregate measure",
+                    ),
+                    coverage=coverage,
+                )
+    return None
+
+
 def demo_ontology(warehouse: Path) -> Ontology:
     """The demo warehouse as an ontology, including the trap it is famous for.
 

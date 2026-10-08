@@ -71,11 +71,14 @@ from dms_executor.ontology import (
     Refusal,
     Violation,
     WherePath,
+    compile_grammar_list,
     coverage_from_sql_path,
     coverage_valid,
     demo_ontology,
     detect_supply_chain_grains,
+    is_list_intent,
     missing_join_for_ungranted,
+    sql_is_aggregate,
     try_compile_multi_grain,
 )
 from dms_executor.semantic_retrieve import (
@@ -1153,6 +1156,50 @@ def maybe_generative_ask(
         )
         return with_served_attribution(env, setup_src)
 
+    def _serve_grammar_list() -> dict[str, Any] | None:
+        """Validated distinct-key list. Not the ranking fallback and not a skill row."""
+        if onto is None or not onto.verified:
+            return None
+        compiled_list = compile_grammar_list(onto, q)
+        if not isinstance(compiled_list, CompiledQuery) or not compiled_list.sql:
+            return None
+        if sql_is_aggregate(compiled_list.sql):
+            return None
+        why_list = validate_compiled_sql(
+            compiled_list.sql, grantable=allowed, warehouse=lake
+        )
+        if why_list:
+            return None
+        return _submit_validated(
+            compiled_list.sql,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=tuple(compiled_list.notes),
+            plan_source=PLAN_SOURCE_ONTOLOGY,
+            coverage=compiled_list.coverage,
+            warehouse=lake,
+            plan_origin="",
+        )
+
+    def _list_instead_of_aggregate(reason: str) -> dict[str, Any] | None:
+        """List intent does not keep SUM/COUNT/GROUP BY. None if not a list ask."""
+        if not is_list_intent(q):
+            return None
+        listed = _serve_grammar_list()
+        if listed is not None:
+            return listed
+        return _abstain(
+            q,
+            reason,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=source,
+            notes=trail_notes,
+        )
+
     if verify_cache_missing:
         return _stamp(
             _abstain(
@@ -1279,6 +1326,15 @@ def maybe_generative_ask(
                 )
             )
         if why:
+            # List intent does not climb an ungranted generate into a measure.
+            if is_list_intent(q) and str(why).startswith("ungranted:"):
+                return _stamp(
+                    _abstain(
+                        q, f"validate:{why}",
+                        space_id=space_id, session_id=session_id, plan_source=source,
+                        notes=trail_notes,
+                    )
+                )
             if why.startswith("hostile_sql:") or ranked_slots is None:
                 return _stamp(
                     _abstain(
@@ -1299,6 +1355,9 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            listed = _list_instead_of_aggregate("unrequested_measure:aggregate")
+            if listed is not None:
+                return _stamp(listed)
             return _stamp(
                 _submit_validated(
                     sql,
@@ -1469,6 +1528,14 @@ def maybe_generative_ask(
             if NOTE_INSIGHTS_RANKING in trail_notes
             else PLAN_ORIGIN_GENERATE_SQL
         )
+    if is_list_intent(q):
+        if NOTE_FALLBACK_GENERATE_EMPTY in trail_notes:
+            list_reason = "generate_empty_no_ranking_answer"
+        else:
+            list_reason = f"unrequested_measure:{plan.measure}"
+        listed = _list_instead_of_aggregate(list_reason)
+        if listed is not None:
+            return _stamp(listed)
     return _stamp(
         _submit_validated(
             compiled.sql,
