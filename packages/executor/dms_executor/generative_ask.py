@@ -38,6 +38,7 @@ from cortex_client.compute import (
     query_plan_from_insights_ranking,
     typed_query_plan,
 )
+from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
 from cortex_client.qualifiers import (
     parse_rank_window,
     rank_window_group,
@@ -45,6 +46,7 @@ from cortex_client.qualifiers import (
     rank_window_shape_reason,
     unhonored_qualifier_reason,
 )
+from dms_core.pii import mask_unknown_keys
 
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
@@ -83,6 +85,11 @@ from dms_executor.ontology import (
     detect_supply_chain_grains,
     missing_join_for_ungranted,
     try_compile_multi_grain,
+)
+from dms_executor.schema_context import (
+    SCHEMA_CONTEXT_ENVELOPE_KEY,
+    SCHEMA_INDEX_STAMP_KEY,
+    prepare_generate_context,
 )
 from dms_executor.semantic_retrieve import (
     bind_plan,
@@ -1148,6 +1155,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1249,9 +1257,31 @@ def maybe_generative_ask(
         ranked_env["generate_legs"] = generate_legs_view(None)
         return with_served_attribution(ranked_env, None)
     # Short retrieved context only -- not the full ontology dump.
+    # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
+    # introspection, no sampling, no prompt, no value index.
     ctx = retrieve_short_context(
         q, warehouse=lake, grantable=allowed, ontology=onto
     )
+    envelope_prompt = ""
+    index_stamp = ""
+    if schema_context_enabled():
+        ctx = prepare_generate_context(
+            ctx,
+            question=q,
+            serving=lake,
+            grantable=allowed,
+            ontology=onto,
+            dialect=dialect,
+            space_id=space_id,
+        )
+        # The model prompt stays on schema_context. The envelope copy and
+        # the index stamp are not part of the Insights catalog.
+        held_envelope = ctx.pop(SCHEMA_CONTEXT_ENVELOPE_KEY, "")
+        if isinstance(held_envelope, str):
+            envelope_prompt = held_envelope
+        held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
+        if isinstance(held_stamp, str):
+            index_stamp = held_stamp
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1269,7 +1299,15 @@ def maybe_generative_ask(
         env["generate_legs"] = generate_legs_view(
             setup_src, validate_reason=validate_why
         )
-        return with_served_attribution(env, setup_src)
+        env = with_served_attribution(env, setup_src)
+        if isinstance(env, dict) and (envelope_prompt or index_stamp):
+            if envelope_prompt:
+                env[SCHEMA_CONTEXT_FIELD] = envelope_prompt
+            if index_stamp:
+                env["index_stamp"] = index_stamp
+            # Through PII-01, not after it. Hint values are already tokens.
+            env = mask_unknown_keys(env)
+        return env
 
     if verify_cache_missing:
         return _stamp(
