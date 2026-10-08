@@ -227,7 +227,7 @@ def test_dialect_is_an_input() -> None:
     assert sqlglot_dialect("no-such-engine") is None
     assert serve_gap(sql, grantable=set(), dialect="mysql") == "ungranted:secret_tbl"
     assert serve_gap(sql, grantable=set(), dialect="duckdb") == "ungranted:unparsed"
-    assert serve_gap(sql, grantable=set(), dialect="no-such-engine") == "ungranted:unparsed"
+    assert serve_gap(sql, grantable=set(), dialect="no-such-engine") == "sql_dialect_unknown"
     assert serve_gap("", grantable={"alpha_metric"}, dialect="duckdb") == "ungranted:unparsed"
     assert (
         serve_gap("SELECT n FROM alpha_metric", grantable={"alpha_metric"}, dialect="duckdb")

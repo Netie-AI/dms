@@ -19,6 +19,7 @@ from typing import Any
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 
 from dms_executor.demo_warehouse import clear_engine_clock
@@ -43,26 +44,60 @@ _STOP = frozenset(
         "ungranted:unparsed",
         "multi_statement",
         "sql_relation_not_granted",
+        "sql_relation_unresolved",
+        "sql_dialect_unknown",
     }
 )
 
 
 def sqlglot_dialect(kind: str) -> str | None:
     """sqlglot read-dialect for a kind production already passes. None if unknown."""
-    return _DIALECTS.get((kind or "").strip().lower())
+    return _dialect_name(kind)
+
+
+def normalize_relation(name: str, *, dialect: str) -> str | None:
+    """Canonical relation key for ``dialect``, or None if it cannot be settled.
+
+    One function. sqlglot's own ``normalize_identifier`` applies that
+    dialect's fold (the engine's rule). There is no blanket lowercase and
+    no match on the bare table tail. A single identifier uses the dialect's
+    fixed default schema when the engine has one. #422 imports this; it
+    must not keep a second copy.
+    """
+    found = _engine(dialect)
+    if found is None:
+        return None
+    dialect_name, engine = found
+    text = str(name or "").strip()
+    if not text:
+        return None
+    try:
+        tree = sqlglot.parse_one(f"SELECT * FROM {text}", read=dialect_name)
+    except SqlglotError:
+        return None
+    if tree is None:
+        return None
+    table = next(tree.find_all(exp.Table), None)
+    if table is None:
+        return None
+    return _table_key(table, dialect_name, engine)
 
 
 def serve_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
     """None when the statement is one granted read.
 
-    Order: parse, then one statement, then the existing hostile scanner,
-    then the allow-list. A file function the scanner already names keeps
-    that sentence. A reader the parser types as a table or external-read
-    function, in any position, is ``sql_relation_not_granted``. A schema
-    other than the default, unless that qualified name is granted, is the
-    same sentence. A missing name in the default schema stays
-    ``ungranted:<bare>``.
+    Order: the dialect has to be one sqlglot knows, then parse, then one
+    statement, then the existing hostile scanner, then the allow-list.
+    Names are normalized once, with that dialect's rules. A qualified
+    relation is granted only when that exact key is granted. A bare grant
+    covers the default schema only. An unknown dialect is
+    ``sql_dialect_unknown``. A name that cannot be settled is
+    ``sql_relation_unresolved``. A reader the parser types as a table or
+    external-read function, in any position, is ``sql_relation_not_granted``.
+    A missing name in the default schema stays ``ungranted:<name>``.
     """
+    if _engine(dialect) is None:
+        return "sql_dialect_unknown"
     trees = _trees(sql, dialect)
     if trees is None:
         return "ungranted:unparsed"
@@ -72,12 +107,7 @@ def serve_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    unresolved, missing = _allow(trees[0], grantable, dialect)
-    if unresolved:
-        return "sql_relation_not_granted"
-    if missing:
-        return "ungranted:" + ",".join(missing)
-    return None
+    return _allow(trees[0], grantable, dialect)
 
 
 def bronze_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
@@ -192,6 +222,10 @@ def _relations(tree: exp.Expression) -> list[tuple[str, str]]:
     return found
 
 
+# Fixed default schema an unqualified name resolves to. DuckDB's
+# current_schema() on a fresh connection is main. Postgres search_path
+# resolves to public. TSQL's built-in default is dbo. Snowflake's current
+# schema is the session, so a bare name stays unqualified.
 _DEFAULT_SCHEMA = {
     "duckdb": "main",
     "postgres": "public",
@@ -199,31 +233,98 @@ _DEFAULT_SCHEMA = {
 }
 
 
-def _default_schema(dialect: str) -> str:
-    read = sqlglot_dialect(dialect) or ""
-    return _DEFAULT_SCHEMA.get(read, "")
+def _dialect_name(kind: str) -> str | None:
+    key = (kind or "").strip().lower()
+    if not key:
+        return None
+    mapped = _DIALECTS.get(key, key)
+    try:
+        Dialect.get_or_raise(mapped)
+    except ValueError:
+        return None
+    return mapped
 
 
-def _grant_keys(grantable: set[str], default: str) -> set[str]:
-    """Qualified names the grant allows.
+def _engine(dialect: str) -> tuple[str, Dialect] | None:
+    name = _dialect_name(dialect)
+    if name is None:
+        return None
+    engine = Dialect.get_or_raise(name)
+    if not isinstance(engine, Dialect):
+        return None
+    return name, engine
 
-    A bare name is the default schema. ``warehouse_<table>`` is the same
-    table, and so is the qualifier ``warehouse.<table>`` (the alias Cortex
-    already writes). Any other schema has to be present as that qualified name.
-    """
+
+def _norm_ident(node: exp.Expression, engine: Dialect) -> str | None:
+    if not isinstance(node, exp.Identifier):
+        return None
+    copied = node.copy()
+    engine.normalize_identifier(copied)
+    text = str(copied.name or "")
+    if not text or _slash_path(text):
+        return None
+    return text
+
+
+def _default_schema(dialect_name: str, engine: Dialect) -> str | None:
+    raw = _DEFAULT_SCHEMA.get(dialect_name)
+    if not raw:
+        return None
+    return _norm_ident(exp.to_identifier(raw), engine)
+
+
+def _relation_key(parts: list[str]) -> str:
+    rendered: list[str] = []
+    for part in parts:
+        if "." in part or '"' in part:
+            rendered.append('"' + part.replace('"', '""') + '"')
+        else:
+            rendered.append(part)
+    return ".".join(rendered)
+
+
+def _table_key(table: exp.Table, dialect_name: str, engine: Dialect) -> str | None:
+    nodes = [
+        node
+        for node in (table.args.get("catalog"), table.args.get("db"), table.this)
+        if node is not None
+    ]
+    if not nodes or any(not isinstance(node, exp.Identifier) for node in nodes):
+        return None
+    names: list[str] = []
+    for node in nodes:
+        text = _norm_ident(node, engine)
+        if not text:
+            return None
+        names.append(text)
+    if len(names) == 1:
+        default = _default_schema(dialect_name, engine)
+        if default:
+            names.insert(0, default)
+    return _relation_key(names)
+
+
+def _grant_keys(grantable: set[str], dialect: str) -> set[str]:
+    """Exact keys. A dotted token is also the one-identifier table name."""
     keys: set[str] = set()
+    found = _engine(dialect)
+    if found is None:
+        return keys
+    _dialect_name, engine = found
+    quote = str(engine.IDENTIFIER_START or '"')
+    end = str(engine.IDENTIFIER_END or quote)
     for raw in grantable:
-        token = str(raw).strip().strip('"').strip("`").strip("[]").lower()
+        token = str(raw).strip()
         if not token or _slash_path(token):
             continue
-        keys.add(token)
-        if "." in token:
-            continue
-        bare = token[len("warehouse_") :] if token.startswith("warehouse_") else token
-        keys.add(bare)
-        keys.add(f"warehouse.{bare}")
-        if default:
-            keys.add(f"{default}.{bare}")
+        key = normalize_relation(token, dialect=dialect)
+        if key:
+            keys.add(key)
+        if "." in token and quote not in token and end not in token and "`" not in token:
+            one = token.replace(end, end + end)
+            quoted = normalize_relation(f"{quote}{one}{end}", dialect=dialect)
+            if quoted:
+                keys.add(quoted)
     return keys
 
 
@@ -243,44 +344,88 @@ def _external_read(tree: exp.Expression) -> bool:
     return False
 
 
-def _allow(
-    tree: exp.Expression, grantable: set[str], dialect: str
-) -> tuple[bool, list[str]]:
+def _cte_keys(tree: exp.Expression, engine: Dialect) -> set[str]:
+    names: set[str] = set()
+    for cte in tree.find_all(exp.CTE):
+        alias = cte.args.get("alias")
+        ident = getattr(alias, "this", None)
+        if not isinstance(ident, exp.Identifier):
+            continue
+        text = _norm_ident(ident, engine)
+        if text:
+            names.add(text)
+    return names
+
+
+def _allow(tree: exp.Expression, grantable: set[str], dialect: str) -> str | None:
+    found = _engine(dialect)
+    if found is None:
+        return "sql_dialect_unknown"
+    dialect_name, engine = found
     if _external_read(tree):
-        return True, []
-    default = _default_schema(dialect)
-    keys = _grant_keys(grantable, default)
-    ctes = _cte_names(tree)
-    unresolved = False
+        return "sql_relation_not_granted"
+    default = _default_schema(dialect_name, engine)
+    keys = _grant_keys(grantable, dialect)
+    ctes = _cte_keys(tree, engine)
+    not_relation = False
+    qualified_miss = False
+    unsettled = False
     missing: set[str] = set()
     for table in tree.find_all(exp.Table):
         this = table.this
         if not isinstance(this, exp.Identifier):
-            unresolved = True
+            # A function in the relation slot is not a granted name.
+            # Placeholder and a deeper dot have no name to settle.
+            if isinstance(this, exp.Func):
+                not_relation = True
+            else:
+                unsettled = True
             continue
-        name = str(table.name or "")
-        if not name or _slash_path(name):
-            unresolved = True
+        nodes = [
+            node
+            for node in (table.args.get("catalog"), table.args.get("db"), this)
+            if node is not None
+        ]
+        if any(not isinstance(node, exp.Identifier) for node in nodes):
+            unsettled = True
             continue
-        db = str(table.db or "")
-        catalog = str(table.catalog or "")
-        if not db and not catalog and name.lower() in ctes:
+        names: list[str] = []
+        broken = False
+        for node in nodes:
+            text = _norm_ident(node, engine)
+            if not text:
+                broken = True
+                break
+            names.append(text)
+        if broken or not names:
+            not_relation = True
             continue
-        low = name.lower()
-        # One identifier that contains a dot ("usd.book", 'hidden.csv').
-        if not db and not catalog and "." in name:
-            dotted = {low}
-            if default:
-                dotted.add(f"{default}.{low}")
-            if not dotted.intersection(keys):
-                unresolved = True
+        if len(names) == 1 and names[0] in ctes:
             continue
-        schema = (db or default).lower()
-        key = ".".join(part for part in (catalog.lower(), schema, low) if part)
+        had_qualifier = bool(table.args.get("db") or table.args.get("catalog"))
+        if len(names) == 1 and default:
+            names = [default, names[0]]
+        key = _relation_key(names)
         if key in keys:
             continue
-        if catalog or (default and schema != default):
-            unresolved = True
+        # One identifier that contains '.' is a path or a stored name
+        # (``"usd.book"``). An exact grant key already continued. A miss is
+        # not a default-schema table: ``ungranted:`` would echo the name.
+        if len(nodes) == 1 and "." in names[-1]:
+            not_relation = True
             continue
-        missing.add(low)
-    return unresolved, sorted(missing)
+        schema = names[0] if len(names) > 1 else ""
+        non_default = had_qualifier and (
+            not default or schema != default or bool(table.args.get("catalog"))
+        )
+        if non_default:
+            qualified_miss = True
+            continue
+        missing.add(names[-1])
+    if unsettled:
+        return "sql_relation_unresolved"
+    if not_relation or qualified_miss:
+        return "sql_relation_not_granted"
+    if missing:
+        return "ungranted:" + ",".join(sorted(missing))
+    return None

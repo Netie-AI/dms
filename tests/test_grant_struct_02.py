@@ -19,7 +19,7 @@ from dms_executor import DEMO_TABLES, Executor
 from dms_executor.demo_pack import PackMetric, maybe_pack_ask
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
-from dms_executor.grant_struct import serve_gap
+from dms_executor.grant_struct import normalize_relation, serve_gap, structural_grant_stop
 from dms_executor.manifest import SecurityEvent, SessionAcl
 from dms_executor.session_followup import run_followup_sql
 from dms_executor.verified_queries import (
@@ -639,3 +639,200 @@ def test_followup_serves_a_granted_table(tmp_path: Path) -> None:
     assert env["abstained"] is False
     assert env["rows"]
     assert env["sql_used"]
+
+
+def _grant_names(monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...]) -> None:
+    import dms_executor as pkg
+
+    monkeypatch.setattr(pkg, "DEMO_TABLES", (*DEMO_TABLES, *names))
+    real = pkg.Executor.grantable_tables
+
+    def _grants(self: Executor, *, space_id: str | None) -> list[str]:
+        base = list(real(self, space_id=space_id))
+        for name in names:
+            if name not in base:
+                base.append(name)
+        return base
+
+    monkeypatch.setattr(pkg.Executor, "grantable_tables", _grants)
+
+
+_QUAL_BAD = (
+    "src_b.orders",
+    "other_schema.orders",
+    "catalog.src_b.orders",
+    '"src_b".orders',
+    "SRC_B.Orders",
+)
+_QUAL_POS = ("from", "join", "cte", "subquery")
+_QUAL_GRANTS = (
+    ("bare", {"orders"}, "orders"),
+    ("qualified", {"src_a.orders"}, "src_a.orders"),
+)
+
+
+def _placed(position: str, relation: str, anchor: str) -> str:
+    if position == "from":
+        return f"SELECT 1 AS n FROM {relation}"
+    if position == "join":
+        return f"SELECT 1 AS n FROM {anchor} a JOIN {relation} b ON TRUE"
+    if position == "cte":
+        return f"WITH c AS (SELECT 1 AS n FROM {relation}) SELECT * FROM c"
+    return f"SELECT * FROM (SELECT 1 AS n FROM {relation}) s"
+
+
+@pytest.mark.parametrize("relation", _QUAL_BAD)
+@pytest.mark.parametrize("position", _QUAL_POS)
+@pytest.mark.parametrize(("grant_name", "grant", "anchor"), _QUAL_GRANTS)
+def test_qualified_mismatch_refuses_before_submit(
+    relation: str,
+    position: str,
+    grant_name: str,
+    grant: set[str],
+    anchor: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sql = _placed(position, relation, anchor)
+    assert serve_gap(sql, grantable=set(grant), dialect="duckdb") == (
+        "sql_relation_not_granted"
+    ), (grant_name, position, relation)
+    _grant_names(monkeypatch, tuple(grant))
+    db = ensure_demo_warehouse(tmp_path / "qual.duckdb")
+    model = _Gen(sql)
+    exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_qual")
+    assert env["abstained"] is True
+    assert env["sql_used"] is None
+    assert "sql_relation_not_granted" in _reason(env)
+    assert _sql_submits(model.submits) == []
+    fb = _Fallback(sql)
+    fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_qual_fb")
+    assert fb_env["abstained"] is True
+    assert "sql_relation_not_granted" in _reason(fb_env)
+    assert _sql_submits(fb.submits) == []
+
+
+def test_normalize_relation_follows_the_engine() -> None:
+    """Same key the dialect folds. Quoted case differs only when the engine keeps it."""
+    assert normalize_relation("orders", dialect="duckdb") == normalize_relation(
+        '"Orders"', dialect="duckdb"
+    )
+    assert normalize_relation("orders", dialect="duckdb") == normalize_relation(
+        "main.orders", dialect="duckdb"
+    )
+    assert normalize_relation('"SRC_A".orders', dialect="duckdb") == normalize_relation(
+        "src_a.orders", dialect="duckdb"
+    )
+    assert normalize_relation("SRC_A.ORDERS", dialect="postgres") == normalize_relation(
+        "src_a.orders", dialect="postgres"
+    )
+    assert normalize_relation('"SRC_A".orders', dialect="postgres") != normalize_relation(
+        "src_a.orders", dialect="postgres"
+    )
+    assert normalize_relation("src_a.orders", dialect="snowflake") == normalize_relation(
+        "SRC_A.ORDERS", dialect="snowflake"
+    )
+    assert normalize_relation('"src_a"."orders"', dialect="snowflake") != normalize_relation(
+        "src_a.orders", dialect="snowflake"
+    )
+    assert normalize_relation("orders", dialect="no-such-engine") is None
+    assert serve_gap("SELECT 1 FROM orders", grantable={"orders"}, dialect="nope") == (
+        "sql_dialect_unknown"
+    )
+    assert serve_gap("SELECT * FROM ?", grantable={"orders"}, dialect="duckdb") == (
+        "sql_relation_unresolved"
+    )
+
+
+def test_unknown_dialect_and_unsettled_name_abstain_without_submit() -> None:
+    """#405's ticket logger is not on main. The named reason is the abstain exit."""
+    from dms_executor.generative_ask import maybe_generative_ask
+
+    assert structural_grant_stop("sql_dialect_unknown")
+    assert structural_grant_stop("sql_relation_unresolved")
+    submits: list[str] = []
+
+    def _submit(sql: str) -> Any:
+        submits.append(sql)
+        raise AssertionError("must not submit")
+
+    def _ledger(_payload: dict[str, Any]) -> Any:
+        raise AssertionError("must not append")
+
+    env = maybe_generative_ask(
+        Q,
+        grantable={"orders"},
+        compute=lambda _c: {
+            "query_sql": "SELECT 1 FROM orders",
+            "plan_source": "ontology_plan",
+        },
+        submit=_submit,
+        ledger_append=_ledger,
+        dialect="no-such-engine",
+    )
+    assert env is not None
+    assert env["abstained"] is True
+    assert submits == []
+    assert "sql_dialect_unknown" in _reason(env)
+    env = maybe_generative_ask(
+        Q,
+        grantable={"orders"},
+        compute=lambda _c: {
+            "query_sql": "SELECT * FROM ?",
+            "plan_source": "ontology_plan",
+        },
+        submit=_submit,
+        ledger_append=_ledger,
+        dialect="duckdb",
+    )
+    assert env is not None
+    assert env["abstained"] is True
+    assert submits == []
+    assert "sql_relation_unresolved" in _reason(env)
+
+
+def test_postgres_unquoted_serves_and_quoted_schema_refuses() -> None:
+    granted = {"src_a.orders"}
+    assert (
+        serve_gap("SELECT 1 FROM SRC_A.ORDERS", grantable=granted, dialect="postgres")
+        is None
+    )
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "SRC_A".orders', grantable=granted, dialect="postgres"
+        )
+        == "sql_relation_not_granted"
+    )
+
+
+def test_snowflake_unquoted_serves_and_quoted_lower_refuses() -> None:
+    granted = {"src_a.orders"}
+    assert (
+        serve_gap("SELECT 1 FROM src_a.orders", grantable=granted, dialect="snowflake")
+        is None
+    )
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "src_a"."orders"',
+            grantable=granted,
+            dialect="snowflake",
+        )
+        == "sql_relation_not_granted"
+    )
+
+
+def test_duckdb_quoted_schema_matches_the_engine(tmp_path: Path) -> None:
+    """DuckDB resolves \"SRC_A\".orders to src_a.orders. The checker must serve it."""
+    con = duckdb.connect(str(tmp_path / "fold.duckdb"))
+    try:
+        con.execute("CREATE SCHEMA src_a")
+        con.execute("CREATE TABLE src_a.orders (n INTEGER)")
+        con.execute("INSERT INTO src_a.orders VALUES (7)")
+        assert con.execute('SELECT n FROM "SRC_A".orders').fetchall() == [(7,)]
+    finally:
+        con.close()
+    sql = 'SELECT n FROM "SRC_A".orders'
+    assert serve_gap(sql, grantable={"src_a.orders"}, dialect="duckdb") is None
+    assert serve_gap('SELECT n FROM "orders"', grantable={"orders"}, dialect="duckdb") is None
