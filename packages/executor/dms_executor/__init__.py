@@ -53,7 +53,8 @@ from dms_executor.demo_ask import (
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_pack import (
     curated_pack_metric_miss,
-    curated_pack_present,  # noqa: F401 - re-exported; wiring health reads it
+    curated_pack_present,  # noqa: F401 - re-exported; files-on-disk check
+    curated_pack_status,  # noqa: F401 - re-exported; wiring health reads it
     is_curated_l0_without_pack_metric,
     is_uncertified_paraphrase,
     maybe_pack_ask,
