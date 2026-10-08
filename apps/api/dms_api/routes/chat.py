@@ -88,6 +88,8 @@ _STATUS_BY_CODE: dict[str, int] = {
     "statement_timeout": 504,
     # Caller sent something unusable.
     "sql_required": 400,
+    # This deployment has no curated demo pack on disk. Not an engine failure.
+    "demo_pack_unavailable": 503,
 }
 
 _TIMEOUT_HINTS = ("timed out", "timeout", "deadline exceeded")
