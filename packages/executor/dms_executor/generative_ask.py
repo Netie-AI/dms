@@ -68,7 +68,8 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
-from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
+from dms_executor.grant_struct import serve_gap, structural_grant_stop
+from dms_executor.manifest import OpenVaultTokenError
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -658,18 +659,20 @@ def validate_compiled_sql(
     *,
     grantable: set[str],
     warehouse: Path | None,
+    dialect: str = "duckdb",
 ) -> str | None:
-    """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
+    """None if the compiled SQL may be submitted. Else a reason (do not execute).
+
+    Grants are the objects sqlglot sees in ``dialect`` (the extract dialect the
+    caller already uses; warehouse SQL is duckdb). ``serve_gap`` counts
+    statements, runs the hostile scanner, then the allow-list. A miss
+    returns here, before EXPLAIN.
+    """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
-    try:
-        reject_hostile_chat_sql(sql)
-    except SecurityEvent as exc:
-        return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
-    if missing:
-        return f"ungranted:{','.join(sorted(missing))}"
+    gap = serve_gap(sql, grantable=grantable, dialect=dialect)
+    if gap:
+        return gap
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     con = connect_file(Path(warehouse))
@@ -982,6 +985,7 @@ def _try_multi_grain_envelope(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
+    dialect: str = "duckdb",
 ) -> dict[str, Any] | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
@@ -1010,7 +1014,9 @@ def _try_multi_grain_envelope(
             route="generated",
             question=q,
         )
-    why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    why = validate_compiled_sql(
+        multi.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     if why == RESERVED_PARAM_AS_OF:
         return reserved_as_of_abstain(
             space_id=space_id,
@@ -1050,6 +1056,7 @@ def rank_window_ask(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
+    dialect: str = "duckdb",
 ) -> dict[str, Any] | None:
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
@@ -1091,7 +1098,9 @@ def rank_window_ask(
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
-    bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    bad = validate_compiled_sql(
+        compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     if bad:
         return _no(f"validate:{bad}")
     noun = _ENTITY_NOUN.get(str(win.entity), str(win.entity))
@@ -1148,6 +1157,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    dialect: str = "duckdb",
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1244,6 +1254,7 @@ def maybe_generative_ask(
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
+        dialect=dialect,
     )
     if ranked_env is not None:
         ranked_env["generate_legs"] = generate_legs_view(None)
@@ -1353,6 +1364,7 @@ def maybe_generative_ask(
         session_id=session_id,
         submit=submit,
         ledger_append=ledger_append,
+        dialect=dialect,
     )
     if multi_env is not None:
         return _stamp(with_plan_origin(multi_env, origin))
@@ -1369,7 +1381,9 @@ def maybe_generative_ask(
                     space_id=space_id, session_id=session_id, plan_source=source,
                 )
             )
-        why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        why = validate_compiled_sql(
+            sql, grantable=allowed, warehouse=lake, dialect=dialect
+        )
         broken = (
             violations_cited_by_sql(sql, declared, declared_violations)
             if declared is not None and not why
@@ -1397,7 +1411,13 @@ def maybe_generative_ask(
                 )
             )
         if why:
-            if why.startswith("hostile_sql:") or ranked_slots is None:
+            # A file or a script that did not parse must not climb. The climb
+            # would hand the reject text, including an object name, back out.
+            if (
+                why.startswith("hostile_sql:")
+                or structural_grant_stop(why)
+                or ranked_slots is None
+            ):
                 return _stamp(
                     _abstain(
                         q, f"validate:{why}",
@@ -1564,7 +1584,9 @@ def maybe_generative_ask(
             )
         )
 
-    why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    why = validate_compiled_sql(
+        compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     if why == RESERVED_PARAM_AS_OF:
         return _stamp(
             reserved_as_of_abstain(
