@@ -56,6 +56,19 @@ def sheet_lane() -> str:
     return name
 
 
+def bronze_sheet_lane_enabled() -> bool:
+    """Hand-coded workbook lane. Off unless ``DMS_LANE_BRONZE_SHEET`` is set.
+
+    Only ``1``, ``true``, ``yes``, and ``on`` (any case) turn it on. Swap: a
+    host that still wants this lane sets the env. Default off, so the ask
+    continues down the generative path. Read per call.
+    """
+    import os
+
+    raw = os.environ.get("DMS_LANE_BRONZE_SHEET", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def bronze_lane_table(question: str) -> str | None:
     """Bronze table this question would read, or None if it is not that lane.
 
@@ -125,6 +138,8 @@ def maybe_bronze_sheet_ask(
     session_id: str | None = None,
     warehouse: Path | None = None,
 ) -> dict[str, Any] | None:
+    if not bronze_sheet_lane_enabled():
+        return None
     if bronze_lane_table(question) is None:
         return None
     scoped = _SCOPED.search(question or "")
@@ -145,17 +160,19 @@ def maybe_bronze_sheet_ask(
         measure_m = _MEASURE.search(question or "")
         raw_measure = (measure_m.group(1) if measure_m else "sales_value_myr").lower()
         measure = "sales_value_myr" if raw_measure == "myr sales" else raw_measure
-        return _grouped_top_n(
-            ident,
-            measure=measure,
-            n=n,
-            workbook=workbook,
-            sheet=sheet,
-            warehouse=warehouse,
-            space_id=space_id,
-            session_id=session_id,
-            question=question,
-            table=table,
+        return _bronze_origin(
+            _grouped_top_n(
+                ident,
+                measure=measure,
+                n=n,
+                workbook=workbook,
+                sheet=sheet,
+                warehouse=warehouse,
+                space_id=space_id,
+                session_id=session_id,
+                question=question,
+                table=table,
+            )
         )
 
     filt = _FOR_FILTER.search(question or "")
@@ -167,20 +184,30 @@ def maybe_bronze_sheet_ask(
         value = filt.group(2).strip().strip("'\"")
         if not value or not _IDENT.match(col):
             return None
-        return _eq_filter_total(
-            ident,
-            col=col,
-            value=value,
-            measure=measure,
-            workbook=workbook,
-            sheet=sheet,
-            warehouse=warehouse,
-            space_id=space_id,
-            session_id=session_id,
-            question=question,
-            table=table,
+        return _bronze_origin(
+            _eq_filter_total(
+                ident,
+                col=col,
+                value=value,
+                measure=measure,
+                workbook=workbook,
+                sheet=sheet,
+                warehouse=warehouse,
+                space_id=space_id,
+                session_id=session_id,
+                question=question,
+                table=table,
+            )
         )
     return None
+
+
+def _bronze_origin(env: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Attribution for a sheet-lane envelope. ``served_attribution`` stays ``none``."""
+    if not isinstance(env, dict):
+        return None
+    env["plan_origin"] = "bronze_sheet"
+    return env
 
 
 def _grouped_top_n(
