@@ -681,12 +681,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </div>
       )}
       <AnswerDetails envelope={envelope}>
-        <ResultView
-          envelope={envelope}
-          onClarifyRun={(option) => {
-            void runClarify(option);
-          }}
-        />
+        <ResultView envelope={envelope} onClarifyRun={(option) => { void runClarify(option); }} />
       </AnswerDetails>
     </article>
   );
