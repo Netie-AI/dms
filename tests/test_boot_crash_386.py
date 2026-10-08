@@ -1,17 +1,19 @@
 """#386: the API image boots when ``tests/`` is absent.
 
-``apps/api/Dockerfile`` does not copy ``tests/``. ``demo_pack`` used to call
-``load_score_pack_metrics()`` at import, which reads
-``tests/fixtures/curated_ceo``, so the container died on start.
+``apps/api/Dockerfile`` does not copy ``tests/``. On ``f9ffc3e1``,
+``demo_pack.py:245`` assigned ``SCORE_PACK_EXACT_METRICS =
+load_score_pack_metrics()`` at import, so the process died with
+``FileNotFoundError``.
 
-This file's boot test fails on ``f9ffc3e1`` (import raises ``FileNotFoundError``)
-and passes once that read is deferred to the first pack lookup.
+A missing fixture is an empty pack (no file-backed phrases), the same as
+``curated_l0_question_norms``. ``/health`` says the pack is absent. An
+ungrounded ``POST /v1/chat/ask`` returns a normal envelope, never 503.
 
-Flag-off live ``POST /v1/chat/ask`` envelopes for every question already in
+Flag-off live envelopes for every question already in
 ``tests/fixtures/curated_ceo/questions.yaml`` stay the bytes captured from
-``f9ffc3e1``. Flags left unset: ``DMS_CCA_CASCADE``, ``DMS_DEMO_FALLBACK``,
-``DMS_SERVED_ATTR_DIAG``, ``DMS_INSIGHTS_TIMEOUT_S``, ``DMS_INSIGHTS_CALL_CAP``,
-``DMS_HARNESS_ASK_PATHS``.
+``f9ffc3e1`` when that fixture is on disk. Flags left unset:
+``DMS_CCA_CASCADE``, ``DMS_DEMO_FALLBACK``, ``DMS_SERVED_ATTR_DIAG``,
+``DMS_INSIGHTS_TIMEOUT_S``, ``DMS_INSIGHTS_CALL_CAP``, ``DMS_HARNESS_ASK_PATHS``.
 """
 
 from __future__ import annotations
@@ -225,27 +227,136 @@ def _image_layout(dst: Path) -> None:
         shutil.copy2(ROOT / rel, dst / rel)
 
 
-_BOOT = """
-import json
-from dms_api.app import create_app
-from dms_executor import demo_pack
-from fastapi.testclient import TestClient
+# f9ffc3e1 demo_pack.py:245. Import reads the fixture. No tests/ -> FileNotFoundError.
+_F9_IMPORT = """
+from pathlib import Path
 
-health = TestClient(create_app()).get("/health")
-try:
-    demo_pack.match_pack_phrase("What is our total spend?")
-    pack = "loaded"
-except demo_pack.DemoPackUnavailable as exc:
-    pack = exc.code
-print(json.dumps({"file": demo_pack.__file__, "health": health.status_code, "pack": pack}))
+def load_score_pack_metrics():
+    root = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "curated_ceo"
+    return (root / "questions.yaml").read_text(encoding="utf-8")
+
+SCORE_PACK_EXACT_METRICS = load_score_pack_metrics()
 """
 
 
-def test_api_boots_without_tests_dir_and_health_is_200(tmp_path: Path) -> None:
-    """Reproduces #386: on f9ffc3e1 this import dies with FileNotFoundError."""
-    app_root = tmp_path / "app"
-    _image_layout(app_root)
-    assert not (app_root / "tests").exists()
+def test_f9ffc3e1_import_crashes_without_tests_dir(tmp_path: Path) -> None:
+    """The f9ffc3e1 import-time read. This head does not do that read."""
+    pkg = tmp_path / "packages" / "executor" / "dms_executor"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "demo_pack.py").write_text(_F9_IMPORT, encoding="utf-8")
+    assert not (tmp_path / "tests").exists()
+    env = {**os.environ, "PYTHONPATH": str(tmp_path / "packages" / "executor")}
+    proc = subprocess.run(
+        [sys.executable, "-c", "import dms_executor.demo_pack"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode != 0, proc.stdout
+    assert "FileNotFoundError" in proc.stderr
+    assert "curated_ceo" in proc.stderr and "questions.yaml" in proc.stderr
+
+
+_BOOT = """
+import json
+from pathlib import Path
+from typing import Any
+
+from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
+from cortex_contract.execution import Manifest, QueryResult
+from dms_api.app import create_app
+from dms_executor import Executor
+from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.envelope import assert_envelope_valid
+from dms_executor.manifest import ManifestMinter, SessionAcl
+from fastapi.testclient import TestClient
+
+class Cortex:
+    def compute_insights(self, question: str, **_k: Any) -> dict[str, Any]:
+        return {"unsure": True}
+
+    def submit(self, req: Any) -> QueryResult:
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else None
+        if kind == "sql":
+            return QueryResult(
+                ok=True, status="ok", run_id="run_boot_sql", output={"rows": [{"n": 7}]}
+            )
+        return QueryResult(ok=True, status="bound", run_id="run_boot_bind")
+
+    def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+        return LedgerAppendResponse(entry_id="led_boot", hash="hash_boot_not_entry")
+
+    def ask(self, req: AskRequest) -> AskResponse:
+        return AskResponse(
+            answer="Top 5 SKUs by revenue, highest first.",
+            badge="certified",
+            sql_used="SELECT 1",
+            rows=[{"n": 1}],
+            assumptions="fixture",
+            audit_id="aud_boot",
+            route="sql",
+        )
+
+def minter() -> ManifestMinter:
+    m = ManifestMinter()
+
+    def _mint(acl: SessionAcl) -> Manifest:
+        return Manifest(
+            session_id=acl.session_id,
+            org_id=acl.org_id,
+            space_id=acl.space_id,
+            pool_id=acl.pool_id,
+            issuer_key_id="test-kid",
+            allowed_paths=list(acl.allowed_paths),
+            row_predicates=dict(acl.row_predicates),
+            issued_at="2026-10-08T00:00:00+00:00",
+            expires_at="2026-10-08T01:00:00+00:00",
+            signature="dGVzdA",
+        )
+
+    m.mint_manifest = _mint  # type: ignore[method-assign]
+    m.fetch_intermediate = lambda: None  # type: ignore[method-assign]
+    m.close = lambda: None  # type: ignore[method-assign]
+    m.invalidate = lambda *_a, **_k: None  # type: ignore[method-assign]
+    return m
+
+app = create_app()
+wh = Path("wh.duckdb")
+ensure_demo_warehouse(wh)
+cortex = Cortex()
+exe = Executor(cortex=cortex, minter=minter(), warehouse_path=wh)
+app.state.ask_service = exe
+app.state.cortex = cortex
+client = TestClient(app)
+health = client.get("/health")
+ask = client.post(
+    "/v1/chat/ask",
+    json={
+        "question": "How many SKUs do we have in inventory?",
+        "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+        "session_id": "ses_boot",
+    },
+)
+body = ask.json()
+if ask.status_code == 200 and isinstance(body, dict) and "badge" in body:
+    assert_envelope_valid(body)
+print(json.dumps({
+    "health": health.status_code,
+    "pack": (health.json().get("gen_path_climb") or {}).get("pack"),
+    "ask": ask.status_code,
+    "badge": body.get("badge") if isinstance(body, dict) else None,
+    "abstained": body.get("abstained") if isinstance(body, dict) else None,
+}))
+exe.close()
+"""
+
+
+def _image_env(app_root: Path) -> dict[str, str]:
     paths = (
         "apps/api",
         "packages/core",
@@ -260,10 +371,20 @@ def test_api_boots_without_tests_dir_and_health_is_200(tmp_path: Path) -> None:
         "DMS_DEMO_FALLBACK": "0",
     }
     env.pop("DATABASE_URL", None)
+    for name in _FLAGS_OFF:
+        env.pop(name, None)
+    return env
+
+
+def test_image_layout_health_is_absent_and_ask_is_not_503(tmp_path: Path) -> None:
+    """Dockerfile COPY set, no tests/. Health names the pack absent. Ask is an envelope."""
+    app_root = tmp_path / "app"
+    _image_layout(app_root)
+    assert not (app_root / "tests").exists()
     proc = subprocess.run(
         [sys.executable, "-c", _BOOT],
         cwd=app_root,
-        env=env,
+        env=_image_env(app_root),
         capture_output=True,
         text=True,
         timeout=180,
@@ -271,9 +392,19 @@ def test_api_boots_without_tests_dir_and_health_is_200(tmp_path: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr[-4000:]
     got = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert Path(got["file"]).resolve().is_relative_to(app_root.resolve()), got
     assert got["health"] == 200, got
-    assert got["pack"] == "demo_pack_unavailable", got
+    assert got["pack"] == "absent", got
+    assert got["ask"] == 200, got
+    assert got["badge"] in {"ABSTAIN", "L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED"}, got
+    assert got["pack"] != "curated_ceo"
+
+
+def test_health_pack_stays_curated_ceo_when_the_fixture_is_present() -> None:
+    from dms_api.routes.health import GEN_PATH_CLIMB
+    from dms_api.wiring import health_pack_name
+
+    assert GEN_PATH_CLIMB["pack"] == "curated_ceo"
+    assert health_pack_name() == "curated_ceo"
 
 
 def test_pack_is_not_read_at_import() -> None:
@@ -284,19 +415,19 @@ def test_pack_is_not_read_at_import() -> None:
     assert demo_pack.SCORE_PACK_EXACT_METRICS == demo_pack.score_pack_exact_metrics()
 
 
-def test_pack_lookup_with_pack_missing_raises_named_error(pack_missing: None) -> None:
-    from dms_core.ask import AskServiceError
-    from dms_executor.demo_pack import DemoPackUnavailable, maybe_pack_ask
-
-    with pytest.raises(DemoPackUnavailable) as caught:
-        maybe_pack_ask("What is our total spend?", grantable={"inventory", "suppliers"})
-    assert isinstance(caught.value, AskServiceError)
-    assert caught.value.code == "demo_pack_unavailable"
-
-
-def test_ask_with_pack_missing_returns_demo_pack_unavailable(
+def test_missing_pack_is_empty_and_ask_is_not_503(
     pack_missing: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from dms_executor.demo_pack import maybe_pack_ask, score_pack_exact_metrics
+
+    assert score_pack_exact_metrics() == ()
+    assert (
+        maybe_pack_ask(
+            "How many SKUs do we have in inventory?",
+            grantable={"inventory"},
+        )
+        is None
+    )
     _flags_off(monkeypatch)
     cortex = _Cortex()
     client, exe = _client(cortex, tmp_path / "wh.duckdb")
@@ -304,19 +435,19 @@ def test_ask_with_pack_missing_returns_demo_pack_unavailable(
         r = client.post(
             "/v1/chat/ask",
             json={
-                "question": "What is our total spend?",
+                "question": "How many SKUs do we have in inventory?",
                 "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "session_id": "ses_missing",
             },
         )
     finally:
         exe.close()
-    assert r.status_code == 503, r.text
-    detail = r.json()["detail"]
-    assert detail["code"] == "demo_pack_unavailable"
-    assert "curated demo pack not found" in detail["message"]
-    assert "Traceback" not in r.text
-    assert cortex.asks == []
-    assert cortex.submits == []
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert_envelope_valid(body)
+    assert body["badge"] == "ABSTAIN"
+    assert body["abstained"] is True
+    assert "demo_pack_unavailable" not in r.text
 
 
 def test_flag_off_fixture_envelopes_match_f9ffc3e1(
