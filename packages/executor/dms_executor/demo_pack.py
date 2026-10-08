@@ -180,27 +180,51 @@ def curated_pack_present() -> bool:
 _T = TypeVar("_T")
 
 
-class _HitCache(Generic[_T]):
-    """Remember one successful non-empty load. Empty results are not stored.
+_PACK_FILES = ("questions.yaml", "oracles.yaml")
 
-    ponytail: one process-local slot, no mtime check. A good load stays until
-    ``cache_clear`` or restart, so a file replaced after that load is invisible.
-    Upgrade path: key the slot on the fixture mtime.
+_PackKey = tuple[tuple[int, int] | None, ...]
+
+
+def _pack_file_key() -> _PackKey:
+    """``(mtime_ns, size)`` per pack file, ``None`` for a file not on disk."""
+    root = _score_fixture_dir()
+    key: list[tuple[int, int] | None] = []
+    for name in _PACK_FILES:
+        try:
+            st = (root / name).stat()
+        except OSError:
+            key.append(None)
+            continue
+        key.append((st.st_mtime_ns, st.st_size))
+    return tuple(key)
+
+
+class _HitCache(Generic[_T]):
+    """Remember one successful non-empty load while the pack files are unchanged.
+
+    The slot is keyed on each file's modification time and size, read before
+    the load. A changed time or size, or a file that is gone, drops the slot
+    and loads again. Empty results are not stored.
     """
 
     def __init__(self, load: Callable[[], _T]) -> None:
         self._load = load
         self._hit: _T | None = None
+        self._key: _PackKey | None = None
 
     def cache_clear(self) -> None:
         self._hit = None
+        self._key = None
 
     def __call__(self) -> _T:
-        if self._hit is not None:
+        key = _pack_file_key()
+        if self._hit is not None and self._key == key:
             return self._hit
+        self.cache_clear()
         loaded = self._load()
-        if loaded:
+        if loaded and None not in key:
             self._hit = loaded
+            self._key = key
         return loaded
 
 
