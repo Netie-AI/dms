@@ -13,7 +13,9 @@ from typing import Any
 import duckdb
 
 from dms_executor.demo_warehouse import (
+    connect_file,
     connect_readonly,
+    connect_serving,
     ensure_demo_warehouse,
     warehouse_path,
 )
@@ -192,7 +194,7 @@ def claim_source_table_name(
     Returns ``(table_name, collision_note)``. The note is ``None`` when nothing collided.
     """
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db, write=True)
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
@@ -235,7 +237,7 @@ def record_source_pull(
     ).hexdigest()
     stamp = extracted_at or mint_extracted_at()
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db, write=True)
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
@@ -261,7 +263,19 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
     db = path or warehouse_path()
     if not Path(db).is_file():
         return {}
-    con = duckdb.connect(str(db))
+    from dms_executor.lake_registry import (
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        serving_lease_blocked,
+    )
+
+    # The ask already failed to take a lease. Do not wait the cap out again.
+    if serving_lease_blocked():
+        return {}
+    try:
+        con = connect_serving(db)
+    except (ServingLeaseCap, ServingLeaseQueueFull):
+        return {}
     try:
         rows = con.execute(
             f"SELECT table_name, filename, extracted_at, truncated, source_kind "
@@ -374,7 +388,7 @@ def ingest_csv_bytes(
     if not text.endswith("\n"):
         text += "\n"
     tmp.write_text(text, encoding="utf-8")
-    con = duckdb.connect(str(db))
+    con = connect_file(db, write=True)
     try:
         ensure_lake_schemas(con)
         # The registry has to exist before *any* path that renames a table into
@@ -491,7 +505,7 @@ def write_bronze_rows(
     if not columns:
         raise ValueError("columns required")
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db, write=True)
     try:
         ensure_lake_schemas(con)
         con.execute(f'DROP TABLE IF EXISTS "{schema}"."{name}"')
@@ -525,77 +539,80 @@ def list_bronze_tables(
     from dms_executor.demo_grants import canonical_space_id
 
     canon_space = canonical_space_id(space_id) if space_id else None
-    # One write-mode attach for ensure + list. DuckDB 1.5 unique-file-handle
-    # 500s a second RW attach of the same file; connect_readonly serializes.
-    # Mixed read_only=True vs RW also 500s (Library fires /tree twice).
+    # Serving cursor only. Creating the registry is an ingest write. A missing
+    # registry is an empty list, which is what an empty registry would return.
     con = connect_readonly(path)
     try:
-        ensure_lake_schemas(con)
-        _ensure_registry(con)
-        # Internal bookkeeping tables are named with a leading underscore and
-        # must not reach the file picker — _ingest_registry used to exist only
-        # after a CSV ingest, and now that it is created up front it would
-        # otherwise appear as a tickable "file" in Studio.
-        if canon_space:
-            rows = con.execute(
-                f"""
-                SELECT t.table_schema, t.table_name, r.space_id
-                  FROM information_schema.tables t
-                  INNER JOIN {_REGISTRY} r ON r.table_name = t.table_name
-                 WHERE ((t.table_schema = 'bronze')
-                     OR (t.table_schema = 'main' AND t.table_name LIKE 'bronze_%'))
-                   AND t.table_name NOT LIKE '\\_%' ESCAPE '\\'
-                   AND r.space_id = ?
-                 ORDER BY t.table_schema, t.table_name
-                """,
-                [canon_space],
-            ).fetchall()
-        else:
-            rows = [
-                (*row, None)
-                for row in con.execute(
-                    """
-                    SELECT table_schema, table_name FROM information_schema.tables
-                    WHERE ((table_schema = 'bronze')
-                        OR (table_schema = 'main' AND table_name LIKE 'bronze_%'))
-                      AND table_name NOT LIKE '\\_%' ESCAPE '\\'
-                    ORDER BY table_schema, table_name
-                    """
-                ).fetchall()
-            ]
-        watermarks: dict[str, tuple[Any, ...]] = {}
-        try:
-            for reg in con.execute(
-                f"SELECT table_name, filename, extracted_at, truncated, source_kind "
-                f"FROM {_REGISTRY}"
-            ).fetchall():
-                watermarks[str(reg[0])] = reg
-        except Exception:  # noqa: BLE001 - old warehouse without the columns
-            watermarks = {}
-        out = []
-        for schema, name, row_space in rows:
-            cnt = scalar_int(
-                con.execute(f'SELECT COUNT(*) FROM "{schema}"."{name}"').fetchone()
-            )
-            label = f"{schema}.{name}" if schema != "main" else name
-            entry: dict[str, Any] = {"table": label, "row_count": cnt}
-            if row_space:
-                entry["space_id"] = row_space
-            wm = watermarks.get(name)
-            if wm is not None:
-                filename, extracted_at, truncated, source_kind = wm[1], wm[2], wm[3], wm[4]
-                entry["source"] = None if filename is None else str(filename)
-                entry["extracted_at"] = None if extracted_at is None else str(extracted_at)
-                entry["truncated"] = None if truncated is None else bool(truncated)
-                entry["source_kind"] = source_kind or classify_source_kind(
-                    None if filename is None else str(filename)
-                )
-            else:
-                entry["source"] = None
-                entry["extracted_at"] = None
-                entry["truncated"] = None
-                entry["source_kind"] = None
-            out.append(entry)
-        return out
+        return _list_bronze_rows(con, canon_space)
+    except (duckdb.CatalogException, duckdb.BinderException):
+        return []
     finally:
         con.close()
+
+
+def _list_bronze_rows(
+    con: duckdb.DuckDBPyConnection, canon_space: str | None
+) -> list[dict[str, Any]]:
+    # Internal bookkeeping tables are named with a leading underscore and
+    # must not reach the file picker. _ingest_registry used to exist only
+    # after a CSV ingest, and now that it is created up front it would
+    # otherwise appear as a tickable "file" in Studio.
+    if canon_space:
+        rows = con.execute(
+            f"""
+            SELECT t.table_schema, t.table_name, r.space_id
+              FROM information_schema.tables t
+              INNER JOIN {_REGISTRY} r ON r.table_name = t.table_name
+             WHERE ((t.table_schema = 'bronze')
+                 OR (t.table_schema = 'main' AND t.table_name LIKE 'bronze_%'))
+               AND t.table_name NOT LIKE '\\_%' ESCAPE '\\'
+               AND r.space_id = ?
+             ORDER BY t.table_schema, t.table_name
+            """,
+            [canon_space],
+        ).fetchall()
+    else:
+        rows = [
+            (*row, None)
+            for row in con.execute(
+                """
+                SELECT table_schema, table_name FROM information_schema.tables
+                WHERE ((table_schema = 'bronze')
+                    OR (table_schema = 'main' AND table_name LIKE 'bronze_%'))
+                  AND table_name NOT LIKE '\\_%' ESCAPE '\\'
+                ORDER BY table_schema, table_name
+                """
+            ).fetchall()
+        ]
+    watermarks: dict[str, tuple[Any, ...]] = {}
+    try:
+        for reg in con.execute(
+            f"SELECT table_name, filename, extracted_at, truncated, source_kind "
+            f"FROM {_REGISTRY}"
+        ).fetchall():
+            watermarks[str(reg[0])] = reg
+    except Exception:  # noqa: BLE001 - registry missing, or old columns
+        watermarks = {}
+    out = []
+    for schema, name, row_space in rows:
+        cnt = scalar_int(con.execute(f'SELECT COUNT(*) FROM "{schema}"."{name}"').fetchone())
+        label = f"{schema}.{name}" if schema != "main" else name
+        entry: dict[str, Any] = {"table": label, "row_count": cnt}
+        if row_space:
+            entry["space_id"] = row_space
+        wm = watermarks.get(name)
+        if wm is not None:
+            filename, extracted_at, truncated, source_kind = wm[1], wm[2], wm[3], wm[4]
+            entry["source"] = None if filename is None else str(filename)
+            entry["extracted_at"] = None if extracted_at is None else str(extracted_at)
+            entry["truncated"] = None if truncated is None else bool(truncated)
+            entry["source_kind"] = source_kind or classify_source_kind(
+                None if filename is None else str(filename)
+            )
+        else:
+            entry["source"] = None
+            entry["extracted_at"] = None
+            entry["truncated"] = None
+            entry["source_kind"] = None
+        out.append(entry)
+    return out

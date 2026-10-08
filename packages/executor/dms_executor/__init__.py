@@ -83,6 +83,12 @@ from dms_executor.generative_ask import (
     path_miss_envelope,
     with_served_attribution,
 )
+from dms_executor.lake_registry import (
+    ServingLeaseCap,
+    ServingLeaseQueueFull,
+    block_serving_lease,
+    reset_serving_lease_block,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -244,6 +250,9 @@ class Executor:
         self._minter.close()
         self._bound_sessions.clear()
         self._turns.clear()
+        from dms_executor.lake_registry import close_lakes
+
+        close_lakes()
 
     def _store_turn(
         self, session_id: str | None, space_id: str | None, env: dict[str, Any]
@@ -537,6 +546,42 @@ class Executor:
                 question=question,
             )
             assert_envelope_valid(env)
+        except (ServingLeaseCap, ServingLeaseQueueFull) as exc:
+            # Same abstain exit as a missing signing key. The reason code is
+            # the assumption. No log line and no ticket write here. While the
+            # envelope is built, another serving open must not wait again.
+            token = block_serving_lease(exc.code)
+            try:
+                if exc.code == ServingLeaseQueueFull.code:
+                    text = (
+                        "I can't answer this right now: the serving wait "
+                        f"queue is full ({exc.code}). No figure was returned."
+                    )
+                    answer_id = "ans_serving_lease_queue_full"
+                else:
+                    text = (
+                        "I can't answer this right now: serving connections are "
+                        f"at the cap ({exc.code}). No figure was returned."
+                    )
+                    answer_id = "ans_serving_lease_cap"
+                env = build_answer_envelope(
+                    answer_id=answer_id,
+                    text=text,
+                    badge="ABSTAIN",
+                    abstained=True,
+                    values=[],
+                    rows=[],
+                    sql_used=None,
+                    assumptions=[exc.code],
+                    space_id=space_id,
+                    session_id=session_id,
+                    ask_mode="live",
+                    route="abstain",
+                    question=question,
+                )
+                assert_envelope_valid(env)
+            finally:
+                reset_serving_lease_block(token)
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)

@@ -52,7 +52,7 @@ from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
-    connect_file,
+    connect_serving,
     sql_has_reserved_as_of,
     warehouse_path,
 )
@@ -383,7 +383,7 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     else:
         target = demo_ontology(Path(warehouse))
         declared = False
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         violations = target.verify(con)
     finally:
@@ -419,7 +419,7 @@ def declared_ontology_violations(warehouse: Path | None, onto: Ontology) -> list
     """
     if warehouse is None or not Path(warehouse).is_file():
         return []
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         return list(onto.verify(con))
     finally:
@@ -679,7 +679,7 @@ def validate_compiled_sql(
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001

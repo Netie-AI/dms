@@ -19,7 +19,7 @@ from cortex_client.compute import pack_id_shape
 from cortex_client.qualifiers import parse_rank_window, rank_window_group, rank_window_measure
 from dms_core.pii import column_is_pii, sanitize_retrieve_parts
 
-from dms_executor.demo_warehouse import connect_file
+from dms_executor.demo_warehouse import connect_serving
 from dms_executor.ontology import Ontology
 
 MAX_CONTEXT_CHARS = 2400
@@ -196,7 +196,7 @@ def retrieve_schema_sql(
         "SELECT table_name, column_name FROM information_schema.columns "
         f"WHERE table_name IN ({listed})"
     )
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         rows = con.execute(sql).fetchall()
     except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
@@ -236,7 +236,7 @@ def retrieve_value_encodings(
         return {}
     skip = re.compile(r"(amount|qty|quantity|cost|kg|myr|score|load|capacity|date|id)$", re.I)
     encodings: dict[str, list[str]] = {}
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         for item in schema:
             table = _safe_ident(str(item.get("table") or ""))
@@ -390,7 +390,7 @@ def summarize_context(parts: dict[str, Any]) -> dict[str, Any]:
 
 
 def _one_value(warehouse: Path, sql: str) -> str | None:
-    con = connect_file(warehouse)
+    con = connect_serving(warehouse)
     try:
         rows = con.execute(sql).fetchall()
     except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
