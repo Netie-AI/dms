@@ -72,9 +72,12 @@ def trust_summary(settings: SettingsDep) -> dict[str, Any]:
         api_key=settings.cortex_api_key,
         timeout=6.0,
     )
+    from dms_core.clarify_stats import snapshot
+
     extra = {
         "ask_path": ask_path_scores(),
         "gen_path_prove": gen_path_prove_scores(),
+        "ask_clarify": snapshot(),
     }
     if not result["ok"]:
         return {

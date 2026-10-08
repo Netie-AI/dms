@@ -221,7 +221,12 @@ def envelope_rows(env: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def grade_envelope(env: Mapping[str, Any], gold_rows: Sequence[Any]) -> str:
-    """OK / LAYER / ABSTAIN / WRONG. Confident empty is WRONG even if gold is empty."""
+    """OK / LAYER / ABSTAIN / WRONG / CLARIFY. Confident empty is WRONG even if gold is empty.
+
+    A clarify reply is not an answer and is not an abstain.
+    """
+    if str(env.get("status") or "") == "clarify":
+        return "CLARIFY"
     if not is_confident(env):
         return "ABSTAIN"
     got = envelope_rows(env)
@@ -664,31 +669,49 @@ def score_cases(
         }
         for key in SETUP_FIELD_KEYS:
             case[key] = served[key]
+        case["clarify_prompt_tokens"] = int(env.get("clarify_prompt_tokens") or 0)
+        case["clarify_completion_tokens"] = int(env.get("clarify_completion_tokens") or 0)
         rows.append(case)
     return rows
 
 
 def _slice_tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    tallies = {"OK": 0, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0, "GOLD_ERROR": 0}
+    tallies = {"OK": 0, "LAYER": 0, "ABSTAIN": 0, "WRONG": 0, "GOLD_ERROR": 0, "CLARIFY": 0}
+    prompt = 0
+    completion = 0
     for row in rows:
         key = str(row.get("verdict") or "")
         if key in tallies:
             tallies[key] += 1
-    n = tallies["OK"] + tallies["LAYER"] + tallies["ABSTAIN"] + tallies["WRONG"]
+        if key == "CLARIFY":
+            prompt += int(row.get("clarify_prompt_tokens") or 0)
+            completion += int(row.get("clarify_completion_tokens") or 0)
+    n = (
+        tallies["OK"]
+        + tallies["LAYER"]
+        + tallies["ABSTAIN"]
+        + tallies["WRONG"]
+        + tallies["CLARIFY"]
+    )
     answered = tallies["OK"] + tallies["LAYER"]
     wrong = tallies["WRONG"]
     denom = answered + wrong
+    clarify_n = tallies["CLARIFY"]
+    per = round((prompt + completion) / clarify_n, 4) if clarify_n else None
     return {
         "n": n,
         "ok": tallies["OK"],
         "layer": tallies["LAYER"],
         "abstain": tallies["ABSTAIN"],
+        "clarify": clarify_n,
         "wrong": wrong,
         "gold_error": tallies["GOLD_ERROR"],
         "answered": answered,
         "right": tallies["OK"] + tallies["LAYER"],
         "ex_on_answered_pct": round(100.0 * answered / denom, 2) if denom else None,
         "abstain_rate_pct": round(100.0 * tallies["ABSTAIN"] / n, 2) if n else None,
+        "clarify_rate_pct": round(100.0 * clarify_n / n, 2) if n else None,
+        "tokens_per_clarify": per,
         "bound_pct": bound_pct(answered),
     }
 
@@ -726,6 +749,11 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
         f"GOLD_ERROR={summary['gold_error']} (excluded from n)"
     )
     print(f"EX on answered={ex_s} abstain rate={abs_txt}")
+    clr = summary.get("clarify_rate_pct")
+    clr_txt = "n/a" if clr is None else f"{clr:.2f} pct"
+    per = summary.get("tokens_per_clarify")
+    per_txt = "n/a" if per is None else f"{per:.4f}"
+    print(f"clarify rate={clr_txt} tokens per clarify={per_txt}")
     print(f"  {bound_line(answered)}")
     if limit is not None:
         print(f"limit={limit} of {total} (smoke, not a Mini-Dev score)")

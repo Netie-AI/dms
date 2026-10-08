@@ -745,7 +745,9 @@ class JudgeResult:
 
 
 def _judge_badge(case: dict[str, Any], env: dict[str, Any]) -> str:
-    """OK | ABSTAIN | LAYER | WRONG. Badge/min_rows only. No row compare."""
+    """OK | ABSTAIN | LAYER | WRONG | CLARIFY. Badge/min_rows only. No row compare."""
+    if str(env.get("status") or "") == "clarify":
+        return "CLARIFY"
     expect = str(case.get("expect") or "l0").lower()
     badge = str(env.get("badge") or "")
     rows = env.get("rows") or env.get("values") or []
@@ -788,6 +790,8 @@ def judge_detailed(
     as_of: str | None = None,
 ) -> JudgeResult:
     """Row-compared judge when oracle_db is set. ORACLE_ERROR never OK."""
+    if str(env.get("status") or "") == "clarify":
+        return JudgeResult("CLARIFY", "", "CLARIFY")
     legacy = _judge_badge(case, env)
     expect = str(case.get("expect") or "l0").lower()
     if expect in REFUSE or oracle_db is None:
@@ -912,8 +916,9 @@ def pack_category_report(
     oracle_error = int(tallies.get("ORACLE_ERROR") or 0)
     invalid = int(tallies.get("INVALID") or 0)
     rate_limit = int(tallies.get("RATE_LIMIT") or 0)
+    clarify = int(tallies.get("CLARIFY") or 0)
     answered = ok + layer
-    accounted = ok + layer + abstain + wrong + oracle_error + invalid + rate_limit
+    accounted = ok + layer + abstain + wrong + oracle_error + invalid + rate_limit + clarify
     denom = max(PACK_DENOMINATOR, accounted)
     excluded = denom - accounted
 
@@ -927,6 +932,8 @@ def pack_category_report(
         "answered_of": frac(answered),
         "abstained": abstain,
         "abstained_of": frac(abstain),
+        "clarify": clarify,
+        "clarify_of": frac(clarify),
         "wrong": wrong,
         "wrong_of": frac(wrong),
         "layer": layer,
@@ -2705,6 +2712,8 @@ def score_pack_live(
                 "crag": crag,
                 "rows": n,
                 "expect": case.get("expect"),
+                "clarify_prompt_tokens": int(env.get("clarify_prompt_tokens") or 0),
+                "clarify_completion_tokens": int(env.get("clarify_completion_tokens") or 0),
                 "demo_fallback_used": bool(env.get("demo_fallback_used")),
                 "reason": result.reason,
                 LEGACY_JUDGE_LABEL: result.scorer_ok_rows_not_compared,
@@ -3042,6 +3051,26 @@ def live(url: str, timeout: float, oracle_db: Path | None = None) -> int:
                 "n_without_invalid": n - invalid_n,
                 "round_health": int(clock.get("round_health") or 0),
                 "abstained": tallies["ABSTAIN"],
+                "clarify": int(tallies.get("CLARIFY") or 0),
+                "abstain_rate": (
+                    round(tallies["ABSTAIN"] / n, 4) if n else None
+                ),
+                "clarify_rate": (
+                    round(int(tallies.get("CLARIFY") or 0) / n, 4) if n else None
+                ),
+                "tokens_per_clarify": (
+                    round(
+                        sum(
+                            int(c.get("clarify_prompt_tokens") or 0)
+                            + int(c.get("clarify_completion_tokens") or 0)
+                            for c in cases
+                        )
+                        / int(tallies.get("CLARIFY") or 0),
+                        4,
+                    )
+                    if int(tallies.get("CLARIFY") or 0)
+                    else None
+                ),
                 "reason": reason,
                 "passed": (
                     wrong == 0
@@ -3142,6 +3171,7 @@ def _tally() -> dict[str, int]:
         "ORACLE_ERROR": 0,
         "INVALID": 0,
         "RATE_LIMIT": 0,
+        "CLARIFY": 0,
     }
 
 

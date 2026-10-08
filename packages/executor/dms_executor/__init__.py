@@ -189,8 +189,12 @@ class Executor:
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
         session_store: Any | None = None,
+        clarify_model: Any = None,
     ) -> None:
         self._cortex = cortex
+        self._clarify_model = clarify_model
+        # Same process memory as session turns. TTL matches the session ACL.
+        self._clarify_attempts: dict[str, Any] = {}
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
@@ -490,6 +494,9 @@ class Executor:
         session_id: str | None = None,
         tables: list[str] | None = None,
         ask_path: str | None = None,
+        clarify_id: str | None = None,
+        option_id: str | None = None,
+        clarify_text: str | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
 
@@ -509,6 +516,9 @@ class Executor:
                 tables=tables,
                 ask_path=ask_path,
                 seen=seen,
+                clarify_id=clarify_id,
+                option_id=option_id,
+                clarify_text=clarify_text,
             )
         except OpenVaultTokenError as exc:
             # Every lane needs the signing key; no lane may relabel its absence.
@@ -532,9 +542,13 @@ class Executor:
             )
             assert_envelope_valid(env)
         stamp_engine_clock(env)
-        payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
-        stamped = with_served_attribution(env, payload)
-        out = stamped if stamped is not None else env
+        is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
+        if is_clarify:
+            out = env
+        else:
+            payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
+            stamped = with_served_attribution(env, payload)
+            out = stamped if stamped is not None else env
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 
@@ -545,7 +559,27 @@ class Executor:
             out["lane"] = mapped
         else:
             out.pop("lane", None)
-        return mask_unknown_keys(out)
+        masked = mask_unknown_keys(out)
+        if is_clarify:
+            for key in list(masked):
+                if str(key).startswith("served_"):
+                    masked.pop(key, None)
+        self._record_ask_outcome(masked)
+        return masked
+
+    def _record_ask_outcome(self, env: dict[str, Any]) -> None:
+        """Count served / abstain / clarify. A stats failure must not change the ask."""
+        try:
+            from dms_core.clarify_stats import record_outcome
+
+            if env.get("status") == "clarify":
+                record_outcome("clarify")
+            elif env.get("abstained"):
+                record_outcome("abstain")
+            else:
+                record_outcome("served")
+        except Exception:  # noqa: BLE001
+            return
 
     def _live_ask(
         self,
@@ -556,6 +590,9 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
         seen: list[dict[str, Any] | None],
+        clarify_id: str | None = None,
+        option_id: str | None = None,
+        clarify_text: str | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -577,6 +614,24 @@ class Executor:
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
+        clarify_locked = False
+        if clarify_id:
+            from dms_executor.ask_clarify import clarify_enabled, resolve_clarify
+
+            if clarify_enabled():
+                resolved = resolve_clarify(
+                    self._clarify_attempts,
+                    clarify_id=clarify_id,
+                    option_id=option_id,
+                    clarify_text=clarify_text,
+                    space_id=space_id,
+                    session_id=session_id,
+                    fallback_question=question,
+                )
+                if isinstance(resolved, dict):
+                    return resolved
+                question = normalize_ask_question(resolved)
+                clarify_locked = True
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
             ladder = "product"
@@ -804,6 +859,10 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                clarify_store=self._clarify_attempts,
+                clarify_model=self._clarify_model,
+                clarify_locked=clarify_locked,
+                clarify_original=asked,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain

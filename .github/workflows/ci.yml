@@ -233,4 +233,4 @@ jobs:
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/answerStamp.test.ts
+          npx vitest run src/components/studio/ResultView.test.ts src/components/answerStamp.test.ts src/components/ClarifyChoices.test.ts
