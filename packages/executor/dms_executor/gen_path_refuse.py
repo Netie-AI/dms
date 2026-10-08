@@ -58,6 +58,14 @@ _GENERIC_ABSTAIN = (
     "so I am not executing one."
 )
 
+#: GRANT-READ-02 (dms#307): the Space's grant could not be read or was empty.
+GRANT_UNREADABLE = "grant_unreadable"
+_GRANT_UNREADABLE_TEXT = (
+    "I could not read which tables this Space may use (gap: grant_unreadable), "
+    "so I am not answering. No query ran and nothing was sent to a model. "
+    "Check the Space's sources in Studio, then ask again."
+)
+
 
 def gap_reason_name(reason: str) -> str | None:
     """Head token of a compile/ranking refusal, or None if not a named gap."""
@@ -68,6 +76,8 @@ def gap_reason_name(reason: str) -> str | None:
 def customer_abstain_text(reason: str) -> str:
     """Rendered ABSTAIN text. Named gaps appear in the sentence (hard rule 10)."""
     gap = str(reason or "").strip()
+    if gap == GRANT_UNREADABLE:
+        return _GRANT_UNREADABLE_TEXT
     if gap.startswith("currency_mismatch:"):
         body = gap.split(":", 1)[1].strip()
         return body if body else _GENERIC_ABSTAIN
@@ -139,6 +149,7 @@ def ranking_missing_metric_gap(
 
 __all__ = [
     "GAP_REASONS",
+    "GRANT_UNREADABLE",
     "customer_abstain_text",
     "gap_reason_name",
     "ranking_missing_metric_gap",
