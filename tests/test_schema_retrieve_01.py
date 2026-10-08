@@ -1025,6 +1025,70 @@ def test_show_ali_bang_keeps_the_question_characters() -> None:
     assert "Ali" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("question", "value"),
+    [
+        ("show ali", "ali"),
+        ("show JOHN SMITH", "JOHN SMITH"),
+        ("show john smith", "john smith"),
+        ("show aLi", "aLi"),
+        ("show JOHN-SMITH", "JOHN-SMITH"),
+        ("show nora voss", "nora voss"),
+        ("show NORA VOSS", "NORA VOSS"),
+    ],
+)
+def test_generic_column_name_casings_send_no_hint(
+    question: str, value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lower, upper, mixed, and separator-joined names on a generic column."""
+    prompt = build_schema_context(
+        question,
+        {
+            "dialect": "duckdb",
+            "datasets": [
+                {"name": "t", "columns": [_text_column("col1", [value], distinct=1)]}
+            ],
+        },
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert value not in prompt
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    body = _insights_body(
+        question,
+        session_id="sess-case",
+        space_id="space-case",
+        ontology={"schema_context": prompt},
+    )
+    catalog = str(body.get("schema_context") or "")
+    assert "FILTER HINTS" not in catalog
+    assert value not in catalog
+    assert "FILTER HINTS" not in json.dumps(body)
+    rest = {
+        key: item
+        for key, item in body.items()
+        if key not in {"question", "intent"}
+    }
+    assert value not in json.dumps(rest)
+
+
+def test_title_case_category_is_not_hinted() -> None:
+    """Known over-block: a Title-Case category looks like a one-word name."""
+    prompt = build_schema_context(
+        "list Electronics",
+        {
+            "dialect": "duckdb",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("category", ["Electronics"], distinct=1)],
+                }
+            ],
+        },
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "Electronics" not in prompt
+
+
 def test_list_chemicals_in_stock_sends_the_typed_span() -> None:
     prompt = build_schema_context(
         "list chemicals in stock",

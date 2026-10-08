@@ -22,12 +22,16 @@ granted values. Only the longest matching span is kept. If that span is a
 strict prefix or substring of any other granted value in the column, no
 hint is sent. The model prompt shows the question's own characters for
 that span, not the stored casing. A model span is never consulted.
-A hint is emitted only when the value and the column both clear the mask.
-A column the mask classifies, and a value its detectors would flag
-(including a one-word Title-Case token, which those detectors miss until
-it is repeated), sends nothing. Doubt or a mask failure sends nothing
-and the ask continues. Fuzzy or partial hints exist only for a tagged
-column, and those candidates are capped. Hints and the columns they cite
+A hint is emitted only when the value and the column both clear the mask
+under every casing that is tried: as typed, lower, Title, upper, and with
+separators folded to spaces. A one-word value that contains a lowercase
+letter is also shown to the detector as a repeated Title-Case pair, because
+that detector needs two words. An all-caps code is not repeated. If any
+variant flags, or the detector raises, nothing is sent. Doubt or a mask
+failure sends nothing and the ask continues. Fuzzy hints stay on a tagged
+column; that tag does not re-title a multi-word phrase into a name.
+Fuzzy or partial hints exist only for a tagged column, and those
+candidates are capped. Hints and the columns they cite
 take token budget before measures. The value index is built in the
 background when a source connects or its catalog fingerprint changes,
 and kept in memory per Space. The file next to the serving store records
@@ -598,21 +602,54 @@ def _hint_blocked(folded: str, others: Sequence[str]) -> bool:
     return any(folded != other and folded in other for other in others)
 
 
-def _mask_would_flag(value: str) -> bool:
-    """True when the mask's own detectors would not leave ``value`` raw.
+def _separator_norm(text: str) -> str:
+    """Fold hyphen, underscore, and slash into spaces. Not a name pattern."""
+    chars = [" " if ch in "-_/" else ch for ch in text]
+    return " ".join("".join(chars).split())
 
-    ``classify_column`` on a free-text column runs those detectors. The
-    name detector needs two Title-Case words, so a one-word token is
-    repeated and shown to the same call. That is the mask's miss, not a
-    name list. An exception is doubt.
+
+def _casing_variants(text: str) -> list[str]:
+    """As typed, lower, Title, upper, plus the same after separators fold."""
+    seeds: list[str] = []
+    for seed in (text, _separator_norm(text)):
+        if seed and seed not in seeds:
+            seeds.append(seed)
+    out: list[str] = []
+    seen: set[str] = set()
+    for seed in seeds:
+        for variant in (seed, seed.lower(), seed.upper(), seed.title()):
+            if variant not in seen:
+                seen.add(variant)
+                out.append(variant)
+    return out
+
+
+def _mask_would_flag(value: str, *, variants: bool) -> bool:
+    """True when the mask would not leave ``value`` raw.
+
+    ``variants`` also runs lower, Title, upper, and separator-folded
+    forms through the same detector. A one-word value that contains a
+    lowercase letter is repeated after Title case, because the detector
+    needs two words. An all-caps code is not repeated. An exception is
+    doubt. This is not a name list.
     """
     text = " ".join(str(value).split())
     if not text or is_mask_token(text):
         return False
     try:
-        if classify_column("note", [text]) is not None:
-            return True
-        return classify_column("note", [f"{text} {text}"]) is not None
+        probed = _casing_variants(text) if variants else [text]
+        for variant in probed:
+            if classify_column("note", [variant]) is not None:
+                return True
+        # Untagged only. A tagged phrase such as a multi-word code is not
+        # re-titled. One lowercase word is the detector's miss, so it is
+        # repeated. An all-caps code has no lowercase letter and is not.
+        if variants and any(ch.islower() for ch in text):
+            titled = _separator_norm(text).title()
+            if titled and " " not in titled:
+                if classify_column("note", [f"{titled} {titled}"]) is not None:
+                    return True
+        return False
     except Exception:  # noqa: BLE001 -- doubt: send no hint
         return True
 
@@ -622,6 +659,8 @@ def _hint_column_blocked(
     column: str,
     values: Sequence[str],
     description: str,
+    *,
+    tagged: bool,
 ) -> bool:
     """True when this column must not contribute a filter hint."""
     try:
@@ -631,12 +670,28 @@ def _hint_column_blocked(
             return True
     except Exception:  # noqa: BLE001 -- doubt: send no hint
         return True
-    return any(_mask_would_flag(value) for value in values)
+    # A non_personal tag does not re-title a multi-word phrase. Untagged
+    # columns still see every casing. One-word lowercase is always probed.
+    return any(_mask_would_flag(value, variants=not tagged) for value in values)
 
 
-def _hint_value_cleared(table: str, column: str, emitted: str, stored: str) -> bool:
-    """True when the emitted span and the stored cell both clear the mask."""
-    if _mask_would_flag(emitted) or _mask_would_flag(stored):
+def _hint_value_cleared(
+    table: str,
+    column: str,
+    emitted: str,
+    stored: str,
+    *,
+    variants: bool,
+) -> bool:
+    """True when the stored cell clears the mask, including casing variants.
+
+    The emitted span is the question's own slice of that cell. It is checked
+    as typed so a lowercase rendering of an all-caps code is not turned into
+    a repeated Title-Case pair.
+    """
+    if _mask_would_flag(stored, variants=variants) or _mask_would_flag(
+        emitted, variants=False
+    ):
         return False
     key = f"{table}.{column}"
     try:
@@ -680,7 +735,7 @@ def _hint_values(
     text. A model span is not an input. A value the mask would flag, or
     a column it classifies, is not a hint.
     """
-    if _hint_column_blocked(table, column, values, description):
+    if _hint_column_blocked(table, column, values, description, tagged=tagged):
         return []
     groups: dict[str, list[str]] = {}
     for raw in values:
@@ -706,7 +761,9 @@ def _hint_values(
             if _hint_blocked(folded, folds):
                 continue
             held = groups.get(folded) or []
-            if len(held) != 1 or not _hint_value_cleared(table, column, original, held[0]):
+            if len(held) != 1 or not _hint_value_cleared(
+                table, column, original, held[0], variants=not tagged
+            ):
                 continue
             seen.add(folded)
             chosen.append((original, False, f"s{idx}"))
@@ -730,7 +787,7 @@ def _hint_values(
         for value, fuzzy in fuzzy_matches[:HINT_CANDIDATE_CAP]:
             if value in seen:
                 continue
-            if not _hint_value_cleared(table, column, value, value):
+            if not _hint_value_cleared(table, column, value, value, variants=not tagged):
                 continue
             seen.add(value)
             chosen.append((value, fuzzy, f"s{idx}"))
@@ -1482,7 +1539,7 @@ def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[st
         if is_mask_token(text):
             out.append(text)
             continue
-        if _cleared(raw, got) and not _mask_would_flag(raw):
+        if _cleared(raw, got) and not _mask_would_flag(raw, variants=True):
             out.append(text)
     return out
 
