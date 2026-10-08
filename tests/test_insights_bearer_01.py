@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from cortex_client import CortexClient
 from cortex_client.compute import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
@@ -23,7 +24,6 @@ from cortex_client.compute import (
     insights_fail_reason,
 )
 from cortex_client.insights import (
-    DEMO_VIEWER_KEY,
     generate_bearer_refuse,
     insights_get,
     insights_post,
@@ -38,6 +38,10 @@ from score_curated import judge  # noqa: E402
 
 # Seeded fake. Not a real OpenVault token. Never log or echo this in answers.
 _FAKE = "seeded-test-token-bearer01"
+# KEY-01 (dms#273): the published demo viewer key no longer exists anywhere in apps/
+# or packages/ (it was cortex_client.insights.DEMO_VIEWER_KEY, the DMS default).
+# This literal stays ONLY so these tests can assert it is refused. Not a credential.
+DEMO_VIEWER_KEY = "dms-demo-viewer-key"
 _LOOPBACK = "http://127.0.0.1:8010"
 _REMOTE_HTTP = "http://203.0.113.10:8010"
 _REMOTE_HTTPS = "https://cortex.example.test"
@@ -200,8 +204,13 @@ def test_guard_names_and_transport_units() -> None:
     assert (
         generate_bearer_refuse(_FAKE, _REMOTE_HTTP) == INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT
     )
-    assert generate_bearer_refuse(_FAKE, _LOOPBACK, missing_none=False) is None
-    assert generate_bearer_refuse(None, _LOOPBACK, missing_none=False) is None
+    # KEY-01 (dms#273): the None exception is gone. Was `missing_none=False -> None`
+    # (None key let a generate call out); None now refuses by name, and there is no
+    # kwarg left to switch that off.
+    with pytest.raises(TypeError):
+        generate_bearer_refuse(None, _LOOPBACK, missing_none=False)  # type: ignore[call-arg]
+    assert generate_bearer_refuse(None, _LOOPBACK) == INSIGHTS_FAIL_BEARER_MISSING
+    assert generate_bearer_refuse(None, _REMOTE_HTTP) == INSIGHTS_FAIL_BEARER_MISSING
 
 
 def test_loopback_generate_sends_bearer_header() -> None:

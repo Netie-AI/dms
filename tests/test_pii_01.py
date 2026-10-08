@@ -389,10 +389,13 @@ def test_insights_ontology_body_has_no_seeded_values(tmp_path: Path) -> None:
             return _Resp()
 
     def compute(catalog: dict[str, Any]) -> dict[str, Any] | None:
+        # KEY-01 (dms#273): the ask lane makes no call without a key, so this body-capture
+        # test carries a seeded fake token. Not a credential.
         return compute_insights(
             "http://127.0.0.1:8010",
             question=LIST_Q,
             ontology=catalog,
+            api_key="seeded-test-token-pii01",
         )
 
     with patch("cortex_client.compute.httpx.Client", _CaptureHttp):

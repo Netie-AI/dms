@@ -96,6 +96,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.space_store = store
     app.state.space_store_binding = binding
+    if settings.dms_ask_mode == "live" and not settings.cortex_api_key:
+        # KEY-01 (dms#273): there is no default key. Say so once at start, by name,
+        # and never print a key. Calls refuse individually; startup is not blocked
+        # because offline demo mode and the unkeyed routes still work.
+        logger.warning(
+            "DMS_ASK_MODE=live and CORTEX_API_KEY is not set: keyed Cortex calls refuse "
+            "(cortex_key_missing on reads and /v1/insights, insights_bearer_missing on ask)"
+        )
     cortex = CortexClient(
         settings.cortex_url,
         timeout=settings.cortex_timeout_seconds,

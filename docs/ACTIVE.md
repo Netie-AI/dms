@@ -106,12 +106,28 @@ closed if Cortex or (generate) OpenVault is down. No LIVE_KEY invent;
 `live_5000_ci` always false. Regression: `tests/test_insights_host.py`.
 Live hosted walk = Platform after merge. Not COMPLETE.
 
-BEARER-01 (#289): generate=true `/v1/insights` (hosted + `compute_insights`)
-refuses a missing/empty/demo-viewer key and plain http to a non-loopback
-host. Named ABSTAIN `insights_bearer_missing` /
-`insights_bearer_insecure_transport`. Ranked lanes unchanged. KEY-01
-(#273) removes the settings default. Regression:
-`tests/test_insights_bearer_01.py`. Not COMPLETE.
+BEARER-01 (#289): generate=true `/v1/insights` (hosted `insights_post` and
+ask-lane `compute_insights`) refuses a missing, empty or demo-viewer key and
+plain http to a non-loopback host. Named ABSTAIN `insights_bearer_missing` /
+`insights_bearer_insecure_transport`. Ranked lanes unchanged. Correction by
+KEY-01: the hosted path already refused a `None` key under the default
+`missing_none=True`. The ask lane did not, because `compute_query` passed
+`missing_none=False` (the frozen GEN-RESTORE tests ran keyless). KEY-01 removes
+that opt-out and the settings default, so a `None` key now refuses on both.
+Regression: `tests/test_insights_bearer_01.py`. Not COMPLETE.
+
+KEY-01 (#273): `settings.cortex_api_key` has no default and no fallback; the
+key comes only from explicit config (`CORTEX_API_KEY`, from OpenVault). Unset
+or blank is "missing", and a missing key makes no keyed Cortex call, by name:
+`cortex_key_missing` on `cortex_read` (ontology, trust) and `/v1/insights`
+routes, `insights_bearer_missing` on the ask lane (`compute_insights`,
+`compute_query(dms_query=False)`, zero HTTP). `missing_none=False` is removed.
+`compute_query(dms_query=True)` is not refused; it has no product caller and
+`tests/test_key_01_fail_closed.py` locks that. The F5 gate still posts
+anonymous with no key (pinned in `tests/test_compliance_gate.py`); it never
+sends a demo key. Offline demo mode needs no key. Regression:
+`tests/test_key_01_fail_closed.py`. Does not clear the pilot security bar:
+Platform must show live that an unkeyed DMS API refuses. Not COMPLETE.
 
 SCALE-FREE-AI-01 (#233): FreeRoute free+normal providers resolve through
 OpenVault API only (`dms_core.freeroute`, `GET /v1/freeroute/providers`).
