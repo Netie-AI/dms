@@ -1,14 +1,18 @@
-"""SKILLS-QUARANTINE-01: scored-pack rows never leave the verified-question store.
+"""SKILLS-QUARANTINE-01: scored rows never leave the verified-question store.
 
-Readers (each has its own test):
+Readers (each has its own test, and the N-row test hits all three):
 - list_verified_queries
 - lookup_verified_query
 - maybe_verified_ask
+
+Exclusion keys are pack hash, item_content_hash(sql), and item_result_hash(rows).
+Question text is not a key.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +21,16 @@ import pytest
 import yaml
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.skills_quarantine import (
+    CONFIG_EMPTY,
+    CONFIG_INVALID,
+    FILE_UNREADABLE,
+    HASH_FAILED,
+    RESULT_UNCOMPUTABLE,
     WRITE_BLOCKED,
     curated_questions_path,
     filter_retrieved_rows,
+    item_content_hash,
+    item_result_hash,
     questions_file_hash,
 )
 from dms_executor.verified_queries import (
@@ -34,7 +45,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SPACE = "space-quarantine-01"
 KEEPER = "ordinary steward item"
 SCORED_Q = "synthetic scored item"
+SAME_WORDING = "shared wording synthetic"
 SQL = "SELECT 1"
+BASE_SQL = "SELECT a AS b FROM t WHERE a > 1 ORDER BY b LIMIT 2"
 LISTED = "ab" * 32
 OTHER = "cd" * 32
 
@@ -45,6 +58,7 @@ def _insert(
     asset_id: str,
     question: str,
     pack_hash: str | None,
+    sql: str = SQL,
     synonyms: list[str] | None = None,
 ) -> None:
     con = duckdb.connect(str(path))
@@ -61,7 +75,7 @@ def _insert(
                 SPACE,
                 question,
                 normalize_verified_question(question),
-                SQL,
+                sql,
                 json.dumps(synonyms or []),
                 pack_hash,
             ],
@@ -74,11 +88,19 @@ def _store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Keeper row plus a row whose pack hash is listed in the env."""
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", LISTED)
     path = tmp_path / "store.duckdb"
-    register_verified_query(
-        space_id=SPACE, question=KEEPER, sql=SQL, path=path
-    )
+    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
     _insert(path, asset_id="vq_scored", question=SCORED_Q, pack_hash=LISTED)
     return path
+
+
+def _clear_hash_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "DMS_SCORED_PACK_HASHES",
+        "DMS_SCORED_ITEM_HASHES",
+        "DMS_SCORED_ITEM_HASHES_FILE",
+        "DMS_SCORED_RESULT_HASHES",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class _Submit:
@@ -102,6 +124,45 @@ class _Ledger:
 
     def __call__(self, payload: dict[str, Any]) -> _Ledger:
         return self
+
+
+def test_item_content_hash_same_sql_different_spelling() -> None:
+    digest = item_content_hash(BASE_SQL)
+    variants = [
+        'select  A   as  "b"  from  T  where  A>1  order  by  b  limit  2',
+        "SELECT a AS `b` FROM t WHERE a > 1 ORDER BY b LIMIT 2",
+        "SELECT a AS b FROM t WHERE a > 1 ORDER BY b LIMIT 2 -- note",
+        "SELECT a AS b FROM t WHERE a > 1 /* note */ ORDER BY b LIMIT 2",
+    ]
+    assert [item_content_hash(sql) for sql in variants] == [digest, digest, digest, digest]
+
+
+def test_item_content_hash_different_sql() -> None:
+    digest = item_content_hash(BASE_SQL)
+    changed = [
+        BASE_SQL.replace("> 1", "> 2"),
+        BASE_SQL.replace("LIMIT 2", "LIMIT 3"),
+        BASE_SQL.replace("ORDER BY b", "ORDER BY a"),
+        BASE_SQL.replace("FROM t", "FROM u"),
+    ]
+    assert all(item_content_hash(sql) != digest for sql in changed)
+    assert item_content_hash("SELECT a FROM t WHERE a = 'X'") != item_content_hash(
+        "SELECT a FROM t WHERE a = 'x'"
+    )
+
+
+def test_item_content_hash_unparsed_sql_still_hashes() -> None:
+    assert item_content_hash("not sql !!!") == item_content_hash("NOT   SQL !!!")
+    assert len(item_content_hash("not sql !!!")) == 64
+
+
+def test_item_result_hash_canonical_rows() -> None:
+    digest = item_result_hash([{"n": 1}, {"n": None}])
+    assert digest == item_result_hash([{"n": None}, {"n": 1.0}])
+    assert digest != item_result_hash([{"n": 2}])
+    assert item_result_hash([{"a": 1, "b": 2}]) != item_result_hash([{"b": 2, "a": 1}])
+    assert item_result_hash([{"n": True}]) != item_result_hash([{"n": 1}])
+    assert len(item_result_hash([])) == 64
 
 
 def test_list_verified_queries_excludes_listed_pack(
@@ -152,53 +213,153 @@ def test_maybe_verified_ask_excludes_listed_pack(
     assert submit.calls == [SQL]
 
 
-def test_unprovenanced_fingerprint_matches_listed_pack_item(
+def test_reworded_question_same_sql_is_excluded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pack = tmp_path / "questions.yaml"
-    pack.write_text(
-        yaml.safe_dump({"questions": [{"id": "fake", "question": SCORED_Q}]}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_questions_path", lambda: pack
-    )
-    monkeypatch.delenv("DMS_SCORED_PACK_HASHES", raising=False)
-    path = tmp_path / "fp.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
-    _insert(path, asset_id="vq_fp", question=SCORED_Q, pack_hash=None)
+    """Must-pass: different question text, same SQL, is excluded."""
+    _clear_hash_env(monkeypatch)
+    scored_sql = "SELECT a FROM t_scored"
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(scored_sql))
+    path = tmp_path / "reword.duckdb"
+    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT a FROM t_kept", path=path)
     _insert(
         path,
-        asset_id="vq_syn",
-        question="synonym carrier",
+        asset_id="vq_reword",
+        question="reworded copy of a scored item",
         pack_hash=None,
-        synonyms=[SCORED_Q],
+        sql="select  A  from  t_scored",
     )
-    # Provenance that is not the listed file hash wins over the fingerprint.
-    _insert(path, asset_id="vq_other", question=SCORED_Q, pack_hash=OTHER)
+    questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
+    assert questions == {KEEPER}
+    assert lookup_verified_query(
+        "reworded copy of a scored item", space_id=SPACE, warehouse=path
+    ) is None
 
-    rows = list_verified_queries(space_id=SPACE, path=path)
-    ids = {row["asset_id"] for row in rows}
-    assert "vq_fp" not in ids
-    assert "vq_syn" not in ids
-    assert "vq_other" in ids
-    assert any(row["question"] == KEEPER for row in rows)
-    hit = lookup_verified_query(SCORED_Q, space_id=SPACE, warehouse=path)
-    assert hit is not None
-    assert hit["asset_id"] == "vq_other"
-    assert lookup_verified_query("synonym carrier", space_id=SPACE, warehouse=path) is None
+
+def test_same_question_different_sql_is_not_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail: same question wording, different SQL, is not excluded."""
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv(
+        "DMS_SCORED_ITEM_HASHES", item_content_hash("SELECT a FROM t_scored")
+    )
+    rows = [
+        {"question": SAME_WORDING, "sql": "SELECT a FROM t_scored"},
+        {"question": SAME_WORDING, "sql": "SELECT a FROM t_kept"},
+    ]
+    kept = filter_retrieved_rows(rows)
+    assert [row["sql"] for row in kept] == ["SELECT a FROM t_kept"]
+
+
+def test_equivalent_sql_same_rows_excluded_by_result_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-pass: different SQL, same result rows, excluded via the result hash."""
+    _clear_hash_env(monkeypatch)
+    listed = item_result_hash([{"n": 1}])
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", listed)
+    in_memory = filter_retrieved_rows(
+        [
+            {
+                "question": "equivalent sql",
+                "sql": "SELECT 2 - 1 AS n",
+                "result_rows": [{"n": 1}],
+            },
+            {
+                "question": KEEPER,
+                "sql": "SELECT 0 AS n",
+                "result_rows": [{"n": 0}],
+            },
+        ]
+    )
+    assert [row["question"] for row in in_memory] == [KEEPER]
+
+    path = tmp_path / "result.duckdb"
+    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n", path=path)
+    _insert(
+        path,
+        asset_id="vq_equiv",
+        question="stored equivalent sql",
+        pack_hash=None,
+        sql="SELECT 2 - 1 AS n",
+    )
+    questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
+    assert questions == {KEEPER}
+    assert lookup_verified_query("stored equivalent sql", space_id=SPACE, warehouse=path) is None
+
+
+def test_different_result_is_not_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail: a normal row with a different result is not excluded."""
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
+    kept = filter_retrieved_rows(
+        [{"question": KEEPER, "sql": "SELECT 2 AS n", "result_rows": [{"n": 2}]}]
+    )
+    assert [row["question"] for row in kept] == [KEEPER]
+
+    path = tmp_path / "other-result.duckdb"
+    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 2 AS n", path=path)
+    questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
+    assert questions == {KEEPER}
+
+
+def test_every_reader_returns_no_scored_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_hash_env(monkeypatch)
+    scored = [(f"scored question {i}", f"SELECT {i} AS n FROM t_scored") for i in range(3)]
+    normal = [(f"normal question {i}", f"SELECT {i} AS n FROM t_normal") for i in range(2)]
+    monkeypatch.setenv(
+        "DMS_SCORED_ITEM_HASHES",
+        ",".join(item_content_hash(sql) for _, sql in scored),
+    )
+    path = tmp_path / "many.duckdb"
+    for question, sql in normal:
+        register_verified_query(space_id=SPACE, question=question, sql=sql, path=path)
+    for index, (question, sql) in enumerate(scored):
+        _insert(path, asset_id=f"vq_scored_{index}", question=question, pack_hash=None, sql=sql)
+
+    listed = list_verified_queries(space_id=SPACE, path=path)
+    assert {row["question"] for row in listed} == {question for question, _ in normal}
+    submit = _Submit()
+    for question, _sql in scored:
+        assert lookup_verified_query(question, space_id=SPACE, warehouse=path) is None
+        assert (
+            maybe_verified_ask(
+                question,
+                space_id=SPACE,
+                warehouse=path,
+                submit=submit,
+                ledger_append=_Ledger(),
+            )
+            is None
+        )
+    assert submit.calls == []
+    for question, sql in normal:
+        hit = lookup_verified_query(question, space_id=SPACE, warehouse=path)
+        assert hit is not None
+        assert hit["sql"] == sql
+        env = maybe_verified_ask(
+            question,
+            space_id=SPACE,
+            warehouse=path,
+            submit=submit,
+            ledger_append=_Ledger(),
+        )
+        assert env is not None
+        assert env["abstained"] is False
+    assert submit.calls == [sql for _, sql in normal]
 
 
 def test_scored_pack_write_blocked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     path = tmp_path / "write.duckdb"
+    _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", LISTED)
-    _insert_ready = tmp_path / "questions.yaml"
-    _insert_ready.write_text(
-        yaml.safe_dump({"questions": [{"question": SCORED_Q}]}),
-        encoding="utf-8",
-    )
     register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
     _insert(path, asset_id="vq_old", question=SCORED_Q, pack_hash=LISTED)
     with caplog.at_level("WARNING"):
@@ -211,6 +372,7 @@ def test_scored_pack_write_blocked(
                 path=path,
             )
     assert WRITE_BLOCKED in caplog.text
+    assert SCORED_Q not in caplog.text
     con = duckdb.connect(str(path))
     try:
         still = con.execute(
@@ -220,30 +382,25 @@ def test_scored_pack_write_blocked(
         con.close()
     assert still == [("vq_old",)]
 
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_questions_path", lambda: _insert_ready
-    )
     monkeypatch.delenv("DMS_SCORED_PACK_HASHES", raising=False)
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(SQL))
     with pytest.raises(ValueError, match=WRITE_BLOCKED):
-        register_verified_query(
-            space_id=SPACE, question=SCORED_Q, sql=SQL, path=path
-        )
+        register_verified_query(space_id=SPACE, question=SCORED_Q, sql=SQL, path=path)
     kept = register_verified_query(
-        space_id=SPACE, question="second steward item", sql=SQL, path=path
+        space_id=SPACE, question="second steward item", sql="SELECT 3 AS n", path=path
     )
     assert kept["question"] == "second steward item"
 
 
 def test_config_hash_list_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", f" {LISTED.upper()}, {OTHER} ")
     rows = [
         {"question": KEEPER, "pack_hash": LISTED},
         {"question": "second steward item", "pack_hash": OTHER},
         {"question": "third steward item"},
     ]
-    assert [row["question"] for row in filter_retrieved_rows(rows)] == [
-        "third steward item"
-    ]
+    assert [row["question"] for row in filter_retrieved_rows(rows)] == ["third steward item"]
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", "")
     assert [row["question"] for row in filter_retrieved_rows(rows)] == [
         KEEPER,
@@ -252,10 +409,160 @@ def test_config_hash_list_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
+def test_empty_or_malformed_config_excludes_nothing_extra(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", "")
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", "not-a-hash")
+    monkeypatch.setattr(
+        "dms_executor.skills_quarantine.curated_oracles_path",
+        lambda: Path("/tmp/quarantine-missing-oracles.yaml"),
+    )
+    monkeypatch.setattr(
+        "dms_executor.skills_quarantine.curated_questions_path",
+        lambda: Path("/tmp/quarantine-missing-questions.yaml"),
+    )
+    rows = [{"question": KEEPER, "sql": "SELECT 9 AS n FROM t_plain"}]
+    with caplog.at_level("WARNING"):
+        assert [row["question"] for row in filter_retrieved_rows(rows)] == [KEEPER]
+    assert CONFIG_EMPTY in caplog.text
+    assert CONFIG_INVALID in caplog.text
+
+
+def test_operator_hash_file_and_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    sql = "SELECT a FROM t_file"
+    path = tmp_path / "hashes.txt"
+    path.write_text(item_content_hash(sql) + "\n", encoding="utf-8")
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(path))
+    monkeypatch.setattr(
+        "dms_executor.skills_quarantine.curated_oracles_path",
+        lambda: tmp_path / "missing-oracles.yaml",
+    )
+    kept = filter_retrieved_rows(
+        [
+            {"question": SCORED_Q, "sql": sql},
+            {"question": KEEPER, "sql": "SELECT a FROM t_kept"},
+        ]
+    )
+    assert [row["question"] for row in kept] == [KEEPER]
+
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(tmp_path / "absent.txt"))
+    with caplog.at_level("WARNING"):
+        again = filter_retrieved_rows([{"question": KEEPER, "sql": sql}])
+    assert [row["question"] for row in again] == [KEEPER]
+    assert FILE_UNREADABLE in caplog.text
+
+
+def test_fixture_sql_hash_excludes_matching_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_hash_env(monkeypatch)
+    sql = "SELECT a FROM t_fixture_only"
+    ora = tmp_path / "oracles.yaml"
+    ora.write_text(yaml.safe_dump({"oracles": {"x": {"sql": sql}}}), encoding="utf-8")
+    monkeypatch.setattr("dms_executor.skills_quarantine.curated_oracles_path", lambda: ora)
+    kept = filter_retrieved_rows(
+        [
+            {"question": "reworded fixture item", "sql": "select A from t_fixture_only"},
+            {"question": KEEPER, "sql": "SELECT a FROM t_kept"},
+        ]
+    )
+    assert [row["question"] for row in kept] == [KEEPER]
+
+
+def test_missing_fixture_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setattr(
+        "dms_executor.skills_quarantine.curated_oracles_path",
+        lambda: tmp_path / "no-oracles.yaml",
+    )
+    monkeypatch.setattr(
+        "dms_executor.skills_quarantine.curated_questions_path",
+        lambda: tmp_path / "no-questions.yaml",
+    )
+    with caplog.at_level("WARNING"):
+        kept = filter_retrieved_rows([{"question": KEEPER, "sql": "SELECT 4 AS n"}])
+    assert [row["question"] for row in kept] == [KEEPER]
+    assert caplog.text == ""
+
+
+def test_hash_exception_excludes_only_that_row(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setattr(
+        "dms_executor.skills_quarantine.curated_oracles_path",
+        lambda: Path("/tmp/quarantine-missing-oracles.yaml"),
+    )
+    real = item_content_hash
+
+    def boom(sql: str) -> str:
+        if "BOOM" in sql:
+            raise RuntimeError("boom")
+        return real(sql)
+
+    monkeypatch.setattr("dms_executor.skills_quarantine.item_content_hash", boom)
+    rows = [
+        {"question": SCORED_Q, "sql": "SELECT BOOM"},
+        {"question": KEEPER, "sql": "SELECT a FROM t_kept"},
+    ]
+    with caplog.at_level("WARNING"):
+        kept = filter_retrieved_rows(rows)
+    assert [row["question"] for row in kept] == [KEEPER]
+    assert HASH_FAILED in caplog.text
+    assert SCORED_Q not in caplog.text
+
+
+def test_uncomputable_result_hash_excludes_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
+    path = tmp_path / "bad.duckdb"
+    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n", path=path)
+    bad_sql = "SELECT * FROM t_missing_quarantine"
+    _insert(path, asset_id="vq_bad", question="bad sql", pack_hash=None, sql=bad_sql)
+    with caplog.at_level("WARNING"):
+        questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
+    assert questions == {KEEPER}
+    assert RESULT_UNCOMPUTABLE in caplog.text
+    assert "t_missing_quarantine" not in caplog.text
+    assert "bad sql" not in caplog.text
+
+
+def test_result_hash_timeout_excludes_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
+    path = tmp_path / "slow.duckdb"
+    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n", path=path)
+    _insert(
+        path,
+        asset_id="vq_slow",
+        question="slow sql",
+        pack_hash=None,
+        sql="SELECT SUM(range) FROM range(100000000000)",
+    )
+    started = time.monotonic()
+    with caplog.at_level("WARNING"):
+        questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
+    elapsed = time.monotonic() - started
+    assert questions == {KEEPER}
+    assert RESULT_UNCOMPUTABLE in caplog.text
+    assert elapsed < 8
+
+
 def test_in_repo_questions_file_hash_is_listed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("DMS_SCORED_PACK_HASHES", raising=False)
+    _clear_hash_env(monkeypatch)
     digest = questions_file_hash(curated_questions_path())
     path = tmp_path / "repo.duckdb"
     register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
@@ -265,6 +572,7 @@ def test_in_repo_questions_file_hash_is_listed(
 
 
 def test_pack_name_is_not_an_exclusion_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", "curated_ceo")
     rows = [{"question": KEEPER, "source": "curated_ceo", "pack_hash": "curated_ceo"}]
     assert [row["question"] for row in filter_retrieved_rows(rows)] == [KEEPER]
@@ -303,7 +611,18 @@ def test_old_table_without_provenance_column(tmp_path: Path) -> None:
 
 
 def test_store_has_one_retrieval_select() -> None:
-    text = (ROOT / "packages/executor/dms_executor/verified_queries.py").read_text(
-        encoding="utf-8"
-    )
+    text = (ROOT / "packages/executor/dms_executor/verified_queries.py").read_text(encoding="utf-8")
     assert text.count("SELECT asset_id") == 1
+
+
+def test_malformed_result_rows_excluded(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
+    with caplog.at_level("WARNING"):
+        kept = filter_retrieved_rows(
+            [{"question": SCORED_Q, "sql": "SELECT 1 AS n", "result_rows": "nope"}]
+        )
+    assert kept == []
+    assert RESULT_UNCOMPUTABLE in caplog.text

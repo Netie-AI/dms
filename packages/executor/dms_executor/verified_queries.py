@@ -6,8 +6,9 @@ match). Leading underscore hides the table from Library listings.
 
 Every read goes through ``_rows_for_space``, which applies
 ``filter_retrieved_rows``. A future few-shot lookup must use that helper
-(or call ``filter_retrieved_rows`` on the rows it loaded). Writes from a
-listed scored pack raise ``scored_pack_write_blocked``.
+(or call ``filter_retrieved_rows`` on the rows it loaded). Writes whose
+pack hash, SQL content hash, or result hash is listed raise
+``scored_pack_write_blocked``.
 """
 
 from __future__ import annotations
@@ -87,7 +88,8 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     # Tables created before pack_hash existed. CREATE IF NOT EXISTS does not
-    # add the column. NULL means no provenance: the filter fingerprints those.
+    # add the column. NULL means no provenance: the filter then uses the SQL
+    # content hash and, when result hashes are configured, the result hash.
     names = {
         str(row[0]).lower()
         for row in con.execute(
@@ -176,7 +178,7 @@ def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
         ).fetchall()
     finally:
         con.close()
-    return filter_retrieved_rows(_stored_row(row) for row in raw)
+    return filter_retrieved_rows((_stored_row(row) for row in raw), warehouse=db)
 
 
 def register_verified_query(
@@ -211,9 +213,8 @@ def register_verified_query(
     syn = _synonyms_norm(synonyms)
     carried = canonical_pack_hash(pack_hash)
     # Before DELETE: a blocked rewrite must not drop the row already stored.
-    reject_scored_write(
-        {"question": q, "question_norm": qn, "synonyms": syn, "pack_hash": carried}
-    )
+    # Question text is not an exclusion input.
+    reject_scored_write({"sql": sql_text, "pack_hash": carried}, warehouse=db)
     asset_id = f"vq_{uuid.uuid4().hex[:16]}"
     created = datetime.now(UTC)
     with _LOCK:
@@ -269,7 +270,7 @@ def lookup_verified_query(
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
 ) -> dict[str, str] | None:
-    """Return ``{asset_id, sql}`` for a Space hit. Never executes SQL."""
+    """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer."""
     if tables:
         return None
     sid = scope_key(space_id)
