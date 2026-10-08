@@ -282,8 +282,88 @@ def test_never_free_words_stay_off_the_allow_list() -> None:
         _NEVER_FREE,
     )
 
+    assert _CERTIFIED_NO_GROUND == frozenset(
+        {
+            "a",
+            "an",
+            "the",
+            "of",
+            "on",
+            "for",
+            "to",
+            "with",
+            "and",
+            "or",
+            "what",
+            "are",
+            "is",
+            "show",
+            "me",
+            "please",
+            "our",
+            "this",
+            "that",
+            "using",
+            "only",
+            "sheet",
+            "top",
+            "teratas",
+        }
+    )
     assert _NEVER_FREE.isdisjoint(_CERTIFIED_NO_GROUND)
     assert _CONNECTORS.isdisjoint(_CERTIFIED_NO_GROUND)
+    for word in (
+        "bottom",
+        "least",
+        "lowest",
+        "smallest",
+        "terendah",
+        "terbawah",
+        "highest",
+        "biggest",
+        "worst",
+        "last",
+    ):
+        assert word not in _CERTIFIED_NO_GROUND
+
+
+# Ranked-N that is not ``top N``. On 7f3c13d6 these miss the lane and fall
+# through. Head must abstain on the direction word before any answer SQL.
+_NON_TOP_RANK = (
+    ("bottom 3 categories by stock value", "bottom"),
+    ("least 3 categories by stock value", "least"),
+    ("lowest 3 categories by stock value", "lowest"),
+    ("smallest 3 categories by stock value", "smallest"),
+    ("3 kategori terendah mengikut nilai stok", "terendah"),
+    ("bottom three categories by stock value", "bottom"),
+    ("3 lowest categories by stock value", "lowest"),
+)
+
+
+@pytest.mark.parametrize(("phrase", "word"), _NON_TOP_RANK)
+def test_non_top_rank_abstains_before_sql(
+    wh: Path, monkeypatch: pytest.MonkeyPatch, phrase: str, word: str
+) -> None:
+    def _no_sql(*_a: object, **_k: object) -> None:
+        raise AssertionError("answer SQL path opened")
+
+    # _grouped_top_n and _eq_filter_total both go through this before execute.
+    monkeypatch.setattr("dms_executor.bronze_sheet_ask._db_with_table", _no_sql)
+    env = _ask(wh, _PREFIX + phrase)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["route"] == "abstain"
+    assert env.get("lane") in (None, "")
+    assert env.get("sql_used") in (None, "")
+    assert not env["rows"]
+    assert not env.get("values")
+    blob = str(env.get("text") or "") + " " + " ".join(
+        str(a) for a in (env.get("assumptions") or [])
+    )
+    assert f"ungrounded_qualifier:{word}" in blob
+    assert "ov_service_token_missing" not in blob
+    assert "ORDER BY" not in blob
+    assert "50.0" not in blob
+    assert "1545366" not in blob
 
 
 def test_filter_shape_drops_nothing_it_does_not_cover(wh: Path) -> None:

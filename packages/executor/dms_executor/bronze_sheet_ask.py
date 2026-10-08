@@ -29,6 +29,33 @@ _SCOPED = re.compile(
     re.I,
 )
 _TOP_N = re.compile(r"(?:\btop\s+(\d+)\b|(\d+)\s+kategori\s+teratas)", re.I)
+# ponytail: spelled rank slot is the cardinals one..twenty. Ordinals (third)
+# and twenty-one+ are not a number here, so that ask does not take this lane.
+# Upgrade path is SHEET-BOTTOM-N-01, which is the only place ASC may be served.
+_SPELLED_RANK_N = frozenset(
+    {
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    }
+)
 _NO_SQL = re.compile(r"without\s+running\s+(?:warehouse\s+)?sql", re.I)
 _CATEGORY = re.compile(
     r"\b(?:categor(?:y|ies)|kategori|product\s+famil(?:y|ies)|product\s+line)\b",
@@ -136,6 +163,76 @@ def _phrase_at(toks: list[str], i: int) -> int:
         if n > best and tuple(rest[:n]) == phrase:
             best = n
     return best
+
+
+def _is_rank_n(tok: str) -> bool:
+    """True for the N in a ranked-N slot: a digit 1..50, or a spelled cardinal."""
+    if tok.isdigit():
+        return 1 <= int(tok) <= 50
+    return tok in _SPELLED_RANK_N
+
+
+def _grain_len(toks: list[str], i: int) -> int:
+    """Length of a category grain at i. Measures (``stock value``) are not grains."""
+    n = _phrase_at(toks, i)
+    if not n:
+        return 0
+    phrase = tuple(toks[i : i + n])
+    if phrase in {
+        ("categories",),
+        ("category",),
+        ("kategori",),
+        ("product", "families"),
+        ("product", "family"),
+        ("product", "line"),
+    }:
+        return n
+    return 0
+
+
+def _is_direction(toks: list[str], i: int) -> bool:
+    """Content word in the rank slot. Allow-list words are not one.
+
+    ``top`` and ``teratas`` sit on ``_CERTIFIED_NO_GROUND`` and are the only
+    directions this lane serves, via ``_TOP_N``. Anything else next to N is
+    returned as the abstain word. This is not a block list.
+    """
+    if i < 0 or i >= len(toks):
+        return False
+    tok = toks[i]
+    if tok in _CERTIFIED_NO_GROUND or tok in _CONNECTORS or tok in _MALAY_FUNCTION:
+        return False
+    if _is_rank_n(tok) or _phrase_at(toks, i):
+        return False
+    return True
+
+
+def _non_serving_rank_word(question: str) -> str | None:
+    """Direction word of a ranked-N shape ``_TOP_N`` does not implement.
+
+    Shapes: ``<word> <N> <grain>``, ``<N> <word> <grain>``, ``<N> <grain> <word>``.
+    N is a digit 1..50 or a spelled cardinal (``bottom three``). ``_TOP_N``
+    (``top N`` / ``N kategori teratas``) owns the question when it matches.
+    No ASC SQL. SHEET-BOTTOM-N-01 is the serving ticket.
+    """
+    raw = question or ""
+    text = _grounding_text(raw)
+    if _TOP_N.search(raw) or _TOP_N.search(text):
+        return None
+    if not (_CATEGORY.search(raw) or _CATEGORY.search(text)):
+        return None
+    toks = _tokens(text)
+    for i, tok in enumerate(toks):
+        if not _is_rank_n(tok):
+            continue
+        if _is_direction(toks, i - 1) and _grain_len(toks, i + 1):
+            return toks[i - 1]
+        if _is_direction(toks, i + 1) and _grain_len(toks, i + 2):
+            return toks[i + 1]
+        glen = _grain_len(toks, i + 1)
+        if glen and _is_direction(toks, i + 1 + glen):
+            return toks[i + 1 + glen]
+    return None
 
 
 def _top_n_digit_span(text: str) -> tuple[int, int] | None:
@@ -253,6 +350,10 @@ def bronze_lane_table(question: str) -> str | None:
         if 1 <= n <= 50:
             return table
         return None
+    # Not ``top N``. Still this lane, so live_ask cannot fall through.
+    # maybe_bronze_sheet_ask abstains on the direction word before SQL.
+    if _non_serving_rank_word(question):
+        return table
     filt = _FOR_FILTER.search(question or "")
     measure_m = _MEASURE.search(question or "")
     if filt and measure_m and _TOTAL.search(question or ""):
@@ -337,6 +438,15 @@ def maybe_bronze_sheet_ask(
             session_id=session_id,
             question=question,
             table=table,
+        )
+
+    word = _non_serving_rank_word(question)
+    if word:
+        return bronze_grant_abstain(
+            question,
+            reason=f"ungrounded_qualifier:{word}",
+            space_id=space_id,
+            session_id=session_id,
         )
 
     filt = _FOR_FILTER.search(question or "")
