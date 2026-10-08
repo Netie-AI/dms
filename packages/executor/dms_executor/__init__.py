@@ -75,6 +75,8 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    NOTE_FALLBACK_GENERATE_EMPTY,
+    SERVED_ATTR_NONE,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -534,6 +536,14 @@ class Executor:
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
         out = stamped if stamped is not None else env
+        notes = out.get("assumptions") or []
+        if any(
+            isinstance(item, str) and NOTE_FALLBACK_GENERATE_EMPTY in item
+            for item in notes
+        ):
+            # Empty generate discarded the model text. The ranking gate
+            # served or abstained, so this envelope is not model-reported.
+            out["served_attribution"] = SERVED_ATTR_NONE
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 

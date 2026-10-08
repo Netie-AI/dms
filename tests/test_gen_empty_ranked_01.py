@@ -236,6 +236,7 @@ def _assert_named_abstain(env: dict[str, Any], word: str) -> None:
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
+    assert env.get("served_attribution") == "none"
     assert f"ungrounded_qualifier:{word}" in _blob(env)
     assert "25654" not in _blob(env)
     assert "fallback:generate_empty" in _blob(env)
@@ -245,7 +246,8 @@ def _assert_served(env: dict[str, Any]) -> None:
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED"
     assert env.get("plan_origin") == "ontology_ranking"
-    assert env.get("served_attribution") != "missing"
+    # Empty generate discarded the model output. Never reported.
+    assert env.get("served_attribution") == "none"
     assert "fallback:generate_empty" in _blob(env)
 
 
@@ -306,6 +308,57 @@ def test_excluding_packaging(tmp_path: Path) -> None:
     assert ("RS622XK", 3915.0) in _skus(env)
 
 
+def test_except_sku_gamma_drops_that_sku(tmp_path: Path) -> None:
+    env = _ask(_executor(tmp_path), "top 5 skus by revenue except SKU-GAMMA")
+    got = _skus(env)
+    assert "SKU-GAMMA" not in {s for s, _v in got}, got
+    assert len(got) == 5, got
+    _assert_served(env)
+    sql = str(env["sql_used"]).upper()
+    assert "SKU-GAMMA" in sql
+    assert "<>" in sql or "NOT IN" in sql
+    assert "OUTBOUND_VALUE_MYR" in sql
+
+
+def test_excluding_two_skus_is_case_insensitive(tmp_path: Path) -> None:
+    env = _ask(
+        _executor(tmp_path),
+        "top 5 skus by revenue excluding sku-gamma and sku-alpha",
+    )
+    banned = {s for s, _v in _skus(env)}
+    assert "SKU-GAMMA" not in banned, _skus(env)
+    assert "SKU-ALPHA" not in banned, _skus(env)
+    assert len(env["rows"]) == 5, _skus(env)
+    _assert_served(env)
+    sql = str(env["sql_used"]).upper()
+    assert "SKU-GAMMA" in sql
+    assert "SKU-ALPHA" in sql
+    assert "<>" in sql or "NOT IN" in sql
+    assert "OUTBOUND_VALUE_MYR" in sql
+
+
+def test_chemicals_revenue_is_not_stock_value(tmp_path: Path) -> None:
+    env = _ask(_executor(tmp_path), "top 5 skus by revenue for chemicals")
+    assert _skus(env) == [("SKU-GAMMA", 2640.0)], (env.get("sql_used"), _skus(env))
+    sql = str(env["sql_used"])
+    assert "stock_value_myr" not in sql
+    assert "outbound_value_myr" in sql
+    assert "CHEMICALS" in sql
+    _assert_served(env)
+
+
+def test_spelled_five_does_not_use_default_limit(tmp_path: Path) -> None:
+    env = _ask(_executor(tmp_path), "top five skus by revenue")
+    assert env["rows"] == [], (env.get("sql_used"), env["rows"])
+    _assert_named_abstain(env, "five")
+
+
+def test_second_page_does_not_serve_page_one(tmp_path: Path) -> None:
+    env = _ask(_executor(tmp_path), "second page of top skus by revenue")
+    assert env["rows"] == [], (env.get("sql_used"), env["rows"])
+    _assert_named_abstain(env, "second")
+
+
 def test_chemicals_by_sales_is_not_stock_value(tmp_path: Path) -> None:
     env = _ask(_executor(tmp_path), "top 5 chemicals SKUs by sales")
     _assert_served(env)
@@ -357,6 +410,8 @@ def test_replay_eight_ontology_ranking(tmp_path: Path) -> None:
             assert _skus(env) == expect
         else:
             assert [(r["product_category"], r["outbound_value_myr"]) for r in env["rows"]] == expect
+        # fallback:validate still reports the model. generate_empty does not.
+        assert env.get("served_attribution") == "reported"
 
     empty_top5 = _ask(exe, "Top 5 selling SKUs by sales", session_id="replay-empty")
     _assert_served(empty_top5)
@@ -408,10 +463,11 @@ def test_extra_phrasings_predicate_or_named_abstain(tmp_path: Path, question: st
     blob = _blob(env)
     if env["abstained"]:
         assert env["rows"] == []
+        assert env.get("served_attribution") == "none"
         assert "ungrounded_qualifier:" in blob or "unhonored_qualifier:" in blob
         return
     assert env["badge"] == "L2_VALIDATED"
-    assert env.get("served_attribution") != "missing"
+    assert env.get("served_attribution") == "none"
     sql = str(env.get("sql_used") or "")
     assert sql
     if "WH-B" in question or "warehouse B" in question:
@@ -470,6 +526,7 @@ def test_blind_spot_named_abstain_or_not_served(
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
     assert env.get("sql_used") in (None, "")
+    assert env.get("served_attribution") == "none"
     assert any(needle in blob for needle in needles), blob
     assert "25654" not in blob
 
@@ -510,6 +567,65 @@ JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
 WHERE t.txn_type = 'outbound' AND c.category = 'CHEMICALS'
 GROUP BY t.sku
 ORDER BY outbound_value_myr DESC
+"""
+_EXCEPT_GAMMA_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+WHERE t.txn_type = 'outbound' AND t.sku <> 'SKU-GAMMA'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 5
+"""
+_EXCEPT_GAMMA_ALPHA_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+WHERE t.txn_type = 'outbound'
+  AND t.sku NOT IN ('SKU-GAMMA', 'SKU-ALPHA')
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 5
+"""
+_CHEM_REVENUE_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+WHERE t.txn_type = 'outbound' AND c.category = 'CHEMICALS'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 5
+"""
+_EXCEPT_DELTA_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+WHERE t.txn_type = 'outbound' AND t.sku <> 'SKU-DELTA'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 5
+"""
+_EXCEPT_BETA_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+WHERE t.txn_type = 'outbound' AND t.sku <> 'SKU-BETA'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 5
+"""
+_EXCL_PACK_CHEM_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+WHERE t.txn_type = 'outbound'
+  AND c.category <> 'PACKAGING'
+  AND c.category <> 'CHEMICALS'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 3
 """
 
 
@@ -557,6 +673,21 @@ def test_new_served_rows_match_independent_sql(tmp_path: Path) -> None:
         ("top 3 RAW skus by stock value", _RAW_SQL),
         ("top 4 skus by sales excluding packaging", _EXCL_PACK_SQL),
         ("top 5 chemicals SKUs by sales", _CHEM_SALES_SQL),
+        ("top 5 skus by revenue except SKU-GAMMA", _EXCEPT_GAMMA_SQL),
+        (
+            "top 5 skus by revenue excluding sku-gamma and sku-alpha",
+            _EXCEPT_GAMMA_ALPHA_SQL,
+        ),
+        ("top 5 skus by revenue for chemicals", _CHEM_REVENUE_SQL),
+        ("top 5 skus by revenue except sku-gamma", _EXCEPT_GAMMA_SQL),
+        ("top 5 skus by revenue for the chemicals category", _CHEM_REVENUE_SQL),
+        ("top 5 skus by revenue without SKU-DELTA", _EXCEPT_DELTA_SQL),
+        ("what are the best chemicals by revenue", _CHEM_REVENUE_SQL),
+        (
+            "top 3 skus by revenue excluding packaging and chemicals",
+            _EXCL_PACK_CHEM_SQL,
+        ),
+        ("show me top 5 skus by revenue except SKU-BETA", _EXCEPT_BETA_SQL),
     )
     for question, sql in checks:
         env = _ask(exe, question, session_id="indep")

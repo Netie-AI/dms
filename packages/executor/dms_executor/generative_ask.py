@@ -690,6 +690,13 @@ def _value_index(warehouse: Path | None) -> dict[str, list[tuple[str, str, str]]
         countries = con.execute(
             "SELECT DISTINCT CAST(country AS VARCHAR) FROM suppliers"
         ).fetchall()
+        try:
+            skus = con.execute(
+                "SELECT DISTINCT CAST(sku AS VARCHAR) FROM inventory "
+                "WHERE sku IS NOT NULL"
+            ).fetchall()
+        except Exception:  # noqa: BLE001 -- no sku column; other encodings stand
+            skus = []
     except Exception:  # noqa: BLE001 -- empty index, caller abstains the token
         return out
     finally:
@@ -723,6 +730,14 @@ def _value_index(warehouse: Path | None) -> dict[str, list[tuple[str, str, str]]
         raw = str(country)
         add(raw.lower(), "supplier", "country", raw)
         add(_norm_key(raw), "supplier", "country", raw)
+    # SKU codes are stored values. A question token matches the whole code
+    # (case-insensitive), never a fragment such as "beta" or "gamma".
+    for (sku,) in skus:
+        if not sku:
+            continue
+        raw = str(sku)
+        add(raw.lower(), "product", "sku", raw)
+        add(_norm_key(raw), "product", "sku", raw)
     return out
 
 
@@ -781,6 +796,16 @@ def _category_obj(onto: Ontology, measure: str) -> str:
     return "product"
 
 
+def _sku_obj(onto: Ontology, measure: str) -> str:
+    """Grain that owns ``sku``, so the predicate is ``f.sku`` not a guess."""
+    spec = onto.measures.get(measure)
+    grain = spec.grain if spec is not None else ""
+    cols = (onto.__dict__.get("_column_cache") or {}).get(grain) or set()
+    if "sku" in cols:
+        return grain
+    return "product"
+
+
 def _append_filter(
     plan: dict[str, Any],
     onto: Ontology,
@@ -789,8 +814,11 @@ def _append_filter(
     op: str,
     val: str,
 ) -> None:
+    measure = str(plan.get("measure") or "")
     if col == "category" or obj == "category":
-        obj, col = _category_obj(onto, str(plan.get("measure") or "")), "category"
+        obj, col = _category_obj(onto, measure), "category"
+    elif col == "sku":
+        obj, col = _sku_obj(onto, measure), "sku"
     filters = plan.setdefault("filters", [])
     if not isinstance(filters, list):
         filters = list(filters)
@@ -885,6 +913,47 @@ def _is_wh_letter(tok: str) -> bool:
     )
 
 
+def _bind_exclusion_run(
+    tokens: list[str],
+    start: int,
+    index: dict[str, list[tuple[str, str, str]]],
+    plan: dict[str, Any],
+    onto: Ontology,
+) -> int:
+    """Bind ``<>`` for each lake value after an exclude word.
+
+    ``start`` is the exclude word. Returns the token index to resume.
+    If the first value is not a stored encoding, returns ``start`` so the
+    caller abstains that word. ``and`` / ``or`` keep the exclusion only when
+    a later token is also a stored value (grammar fillers in between count).
+    A non-value such as ``10023`` stops the list and is left to abstain.
+    """
+    j = start + 1
+    bound = False
+    while j < len(tokens):
+        word = tokens[j]
+        if word in {"and", "or"}:
+            k = j + 1
+            while k < len(tokens) and tokens[k] in _EMPTY_GRAMMAR:
+                k += 1
+            nxtw = tokens[k] if k < len(tokens) else ""
+            hits = _bind_hits(nxtw, index) if nxtw else []
+            if not bound or not hits:
+                break
+            obj, col, val = hits[0]
+            _append_filter(plan, onto, obj, col, "<>", val)
+            j = k + 1
+            continue
+        hits = _bind_hits(word, index)
+        if not hits:
+            break
+        obj, col, val = hits[0]
+        _append_filter(plan, onto, obj, col, "<>", val)
+        bound = True
+        j += 1
+    return j if bound else start
+
+
 def _guard_generate_empty_ranked(
     question: str,
     payload: dict[str, Any],
@@ -947,6 +1016,11 @@ def _guard_generate_empty_ranked(
                 _append_filter(plan, onto, "location", "location_code", "=", code)
                 i += 3
                 continue
+            if tok in _EXCLUDE_WORDS:
+                resumed = _bind_exclusion_run(tokens, i, index, plan, onto)
+                if resumed != i:
+                    i = resumed
+                    continue
             blob = _blob_tokens(onto, plan)
             grain = onto.measures[str(plan["measure"])].grain
             hits = _bind_hits(nxt, index)
