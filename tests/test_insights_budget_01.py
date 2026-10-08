@@ -230,6 +230,19 @@ def test_both_use_sites_read_one_resolved_value(monkeypatch: pytest.MonkeyPatch)
     assert fake.timeouts == [resolved, resolved, resolved]
 
 
+@pytest.mark.parametrize(("raw", "effective"), [("30", 30.0), ("120", 60.0)])
+def test_live_client_path_honours_timeout_env(
+    raw: str, effective: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CortexClient.compute_insights (client.py ~:210) is the live product path."""
+    monkeypatch.setenv(_TIMEOUT_ENV, raw)
+    fake = _Scripted()
+    with patch("cortex_client.compute.httpx.Client", fake):
+        CortexClient(_ROOT, timeout=120.0).compute_insights(_Q)
+    assert fake.timeouts == [effective]
+    assert compute.insights_timeout_s() == effective
+
+
 @pytest.mark.parametrize("leg", ["generate", "ontology", "retry"])
 def test_timeout_env_set_names_the_leg(
     leg: str, onto: Ontology, wh: Path, monkeypatch: pytest.MonkeyPatch
