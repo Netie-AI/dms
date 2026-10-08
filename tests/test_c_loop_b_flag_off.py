@@ -1,11 +1,15 @@
-"""Flag off is byte-equal to main ce08153 on the 73-ask set.
+"""Flag off is byte-equal to main on the 73-ask set, shadow fields included.
 
 The stub binds the session, then runs one canned SELECT. Several asks
 serve L2 from that SQL. Planted and pre-gate asks abstain. The stub
 does not route on question words.
 
 Wall-clock fields are placeholders. Every other key and value is
-compared. A key main does not send fails the test.
+compared, including ``served_check_shadow``. A key main does not send
+fails the test.
+
+The fixture bytes were captured from ce08153. The same bytes match
+beabdc6 (skills quarantine, no stamp on this stub).
 """
 
 from __future__ import annotations
@@ -240,6 +244,7 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
         sql_used = str(env.get("sql_used") or "")
         if env.get("badge") == "L2_VALIDATED" and "is_cold_storage" in sql_used:
             canned += 1
+    assert any("served_check_shadow" in row["envelope"] for row in got)
     assert l2 >= 5, l2
     assert abstain >= 1, abstain
     assert canned >= 3, canned
