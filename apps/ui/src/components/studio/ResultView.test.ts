@@ -132,9 +132,11 @@ describe("Studio result view", () => {
     expect(markup).toContain("Timings");
   });
 
-  it("StudioPage mounts ResultView", () => {
+  it("Chat answer card mounts ResultView", () => {
+    const card = readFileSync(join(here, "../AnswerMessage.tsx"), "utf8");
+    expect(card).toContain("ResultView");
     const studio = readFileSync(join(here, "../../pages/StudioPage.tsx"), "utf8");
-    expect(studio).toContain("ResultView");
-    expect(studio).toContain("studioEnvelope");
+    expect(studio).not.toContain("ResultView");
+    expect(studio).not.toContain("studioEnvelope");
   });
 });
