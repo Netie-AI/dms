@@ -59,6 +59,7 @@ from dms_executor.demo_pack import (
 )
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    SERVING_DIALECT,
     ReservedParamError,
     ensure_demo_warehouse,
     execute_sql,
@@ -803,6 +804,7 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                dialect=SERVING_DIALECT,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain

@@ -56,12 +56,21 @@ def turn_key(session_id: str | None, space_id: str | None) -> tuple[str, str] | 
 
 
 def snapshot_turn(env: dict[str, Any]) -> dict[str, Any] | None:
+    stamp = env.get("index_stamp")
+    stamp_s = stamp if isinstance(stamp, str) and stamp else ""
     if env.get("abstained") is True:
+        if stamp_s:
+            return {"index_stamp": stamp_s}
         return None
     nums = numeric_values(env)
     if not nums:
+        if stamp_s:
+            return {"index_stamp": stamp_s}
         return None
-    return {"values": nums, "sql_used": env.get("sql_used")}
+    out: dict[str, Any] = {"values": nums, "sql_used": env.get("sql_used")}
+    if stamp_s:
+        out["index_stamp"] = stamp_s
+    return out
 
 
 def _abstain(*, space_id: str | None, session_id: str | None, why: str) -> dict[str, Any]:

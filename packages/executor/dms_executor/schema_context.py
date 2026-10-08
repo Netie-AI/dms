@@ -7,20 +7,31 @@ description. Synonyms and extra joins come only from an ontology payload.
 A curated ``Ontology`` and a later model-built mapping use one shape.
 An empty ontology still yields a prompt from the connector description.
 
-Text columns send no sample values unless a later model has tagged the
-column ``non_personal`` with stored evidence. This module never sets that
-tag. Numeric, date, and boolean columns may send samples. Every sample,
-description, and filter hint passes ``fail_closed_mask_payload``. If that
-call fails, the prompt goes out with no samples, no hints, and no
-descriptions. The ask still runs.
+Text columns send no sample values unless the ontology payload marks the
+column ``non_personal`` with ``source`` and ``field``. A tag on the column
+dict is ignored. This module never sets that tag. Numeric, date, and
+boolean columns may send samples. Descriptions are masked against the
+value index before ``fail_closed_mask_payload``. Every sample,
+description, and filter hint still passes that call. If it fails, the
+prompt goes out with no samples, no hints, and no descriptions. The ask
+still runs.
 
-Untagged text columns can still contribute one filter hint when a span of
-the question equals one distinct value after case, whitespace, and
-punctuation are folded. Fuzzy or partial hints exist only for a tagged
-column, and those candidates are capped. The value index lives in memory,
-keyed by Space. It is not written to disk and it is not shared across
-Spaces. The prompt itself is per request. When the flag is on it is copied
-onto the ask envelope. When the flag is off this module is not called.
+Untagged hints come from the question's word n-grams looked up exactly,
+after case, whitespace, and punctuation are folded, in that column's
+granted values. Only the longest matching span is kept. If that span is a
+strict prefix or substring of any other granted value in the column, no
+hint is sent. The model prompt shows the question's own characters for
+that span, not the stored casing. A model span is never consulted.
+Fuzzy or partial hints exist only for a tagged column, and those
+candidates are capped. Hints and the columns they cite take token budget
+before measures. The value index is built in the background when a source
+connects or its catalog fingerprint changes, and stored per Space next to
+the serving file. The ask path only looks that index up. A missing or
+failed index still answers, with catalog names and types and a named
+stamp. The model prompt is per request. Each picked table, column, and
+join carries a short reason. The customer envelope gets the same text
+with each hint value replaced by a token taken from the hint list. When
+the flag is off this module is not called.
 
 Cortex pin 279cbd85 ``InsightsAskIn`` does not read this text. The wire field
 is ``schema_context`` and leaves the box only when ``DMS_SCHEMA_CONTEXT`` is
@@ -29,10 +40,15 @@ on.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import re
 import threading
+import time
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +68,22 @@ _SAMPLE_CHARS = 80
 # near-matches keeps only the first 3 in normalised order. Upgrade: the
 # tagging model ranks them.
 HINT_CANDIDATE_CAP = 3
+# ponytail: a column over the cap is omitted whole, not truncated, so a
+# missing longer value cannot unlock a short hint. Ceiling: a wide text
+# column sends no hint. Upgrade: an equality index that still knows the
+# longest value without holding every string.
+INDEX_COLUMN_CAP = 500
+INDEX_TOTAL_CAP = 5000
+# Rows pulled per column, and across the whole build. LIMIT, never a full scan.
+SAMPLE_ROWS = 20
+INDEX_ROW_BUDGET = 8000
+# Background build ceiling. The ask path does not wait on this.
+INDEX_BUILD_BUDGET_S = 20.0
+# Columns considered when packing a prompt. Cited hint columns are kept first.
+_SHORTLIST = 48
 _SPAN_WIDTH = 6
 _PARTIAL_MIN_CHARS = 3
+_LOG = logging.getLogger("dms_executor.schema_context")
 _BOOL_TYPES = frozenset({"bool", "boolean"})
 _DATE_TYPES = frozenset(
     {"date", "time", "timestamp", "datetime", "timestamptz", "timetz"}
@@ -122,6 +152,7 @@ class ColumnFact:
     samples: tuple[str, ...]
     distinct: int | None
     score: float
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -141,6 +172,7 @@ class JoinFact:
     right_table: str
     right_col: str
     label: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,6 +181,7 @@ class HintFact:
     column: str
     value: str
     fuzzy: bool
+    span_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -156,6 +189,13 @@ class SchemaContext:
     prompt: str
     samples_included: bool
     dialect: str
+    envelope_prompt: str
+
+
+# Popped off the compute catalog before Insights sees it. Not a wire field.
+SCHEMA_CONTEXT_ENVELOPE_KEY = "_schema_context_envelope"
+# Popped before Insights. Copied onto the envelope as ``index_stamp``.
+SCHEMA_INDEX_STAMP_KEY = "_schema_index_stamp"
 
 
 def _ident(name: str) -> bool:
@@ -401,16 +441,35 @@ def _count(value: Any) -> int | None:
     return value
 
 
-def _tagged(column: Mapping[str, Any]) -> bool:
-    """True only when a later model stored evidence on ``non_personal``.
+def _ontology_tags(ontology: Ontology | Mapping[str, Any] | None) -> set[tuple[str, str]]:
+    """Columns the ontology payload marks non_personal, with source and field.
 
-    Nothing in this module writes that tag.
+    A ``non_personal`` entry on a column dict is ignored. Evidence is a
+    non-empty ``source`` and a non-empty ``field``, plus the table and column.
     """
-    tag = column.get("non_personal")
-    if not isinstance(tag, Mapping):
-        return False
-    evidence = tag.get("evidence")
-    return isinstance(evidence, str) and bool(evidence.strip())
+    raw: Any = None
+    if isinstance(ontology, Mapping):
+        raw = ontology.get("non_personal")
+    elif ontology is not None:
+        raw = getattr(ontology, "non_personal", None)
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return set()
+    found: set[tuple[str, str]] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        table = _text(item.get("table"))
+        column = _text(item.get("column"))
+        source = item.get("source")
+        field = item.get("field")
+        if not table or not column:
+            continue
+        if not isinstance(source, str) or not source.strip():
+            continue
+        if not isinstance(field, str) or not field.strip():
+            continue
+        found.add((table, column))
+    return found
 
 
 def _string_list(column: Mapping[str, Any], key: str) -> list[str]:
@@ -455,46 +514,86 @@ def _normalize(text: str) -> str:
     return " ".join("".join(chars).split())
 
 
-def _spans(question: str) -> list[str]:
-    tokens = _normalize(question).split()
-    out: list[str] = []
-    seen: set[str] = set()
-    width_max = min(_SPAN_WIDTH, len(tokens))
+def _question_spans(question: str) -> list[tuple[int, str, str]]:
+    """Word n-grams as ``(width, folded, original slice)``.
+
+    The original slice is the question's own characters, punctuation
+    included. Folding is only for the lookup.
+    """
+    text = question or ""
+    parts: list[tuple[str, int, int]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        while i < n and not text[i].isspace():
+            i += 1
+        folded = _normalize(text[start:i])
+        if folded:
+            parts.append((folded, start, i))
+    out: list[tuple[int, str, str]] = []
+    width_max = min(_SPAN_WIDTH, len(parts))
     for width in range(1, width_max + 1):
-        for start in range(len(tokens) - width + 1):
-            span = " ".join(tokens[start : start + width])
-            if span and span not in seen:
-                seen.add(span)
-                out.append(span)
+        for start_i in range(len(parts) - width + 1):
+            chunk = parts[start_i : start_i + width]
+            folded = " ".join(item[0] for item in chunk)
+            original = text[chunk[0][1] : chunk[-1][2]]
+            if folded:
+                out.append((width, folded, original))
     return out
 
 
+def _hint_blocked(folded: str, others: Sequence[str]) -> bool:
+    """True when ``folded`` is a strict prefix or substring of another value."""
+    return any(folded != other and folded in other for other in others)
+
+
 def _hint_values(
-    spans: Sequence[str],
+    spans: Sequence[tuple[int, str, str]],
     values: Sequence[str],
     *,
     tagged: bool,
-) -> list[tuple[str, bool]]:
-    """Original values to hint. Untagged: one exact normalised match. Tagged: capped fuzzy."""
+) -> list[tuple[str, bool, str]]:
+    """Prompt text for each hint. Untagged text is the question's own slice.
+
+    Untagged: exact fold only, longest span only, and nothing when that
+    span sits inside another granted value. Tagged: capped fuzzy, stored
+    text. A model span is not an input.
+    """
     groups: dict[str, list[str]] = {}
     for raw in values:
         folded = _normalize(raw)
         if folded:
             groups.setdefault(folded, []).append(raw)
-    chosen: list[tuple[str, bool]] = []
-    seen: set[str] = set()
-    for span in spans:
-        if not tagged:
-            originals = groups.get(span) or []
-            if len(originals) != 1:
+    if not tagged:
+        matches: list[tuple[int, str, str, int]] = []
+        for idx, (width, folded, original) in enumerate(spans):
+            stored = groups.get(folded) or []
+            if len(stored) != 1:
                 continue
-            value = originals[0]
-            if value in seen:
+            matches.append((width, folded, original, idx))
+        if not matches:
+            return []
+        longest = max(item[0] for item in matches)
+        chosen: list[tuple[str, bool, str]] = []
+        seen: set[str] = set()
+        folds = list(groups)
+        for width, folded, original, idx in matches:
+            if width != longest or folded in seen:
                 continue
-            seen.add(value)
-            chosen.append((value, False))
-            continue
-        matches: list[tuple[str, bool]] = []
+            if _hint_blocked(folded, folds):
+                continue
+            seen.add(folded)
+            chosen.append((original, False, f"s{idx}"))
+        return chosen
+    chosen = []
+    seen = set()
+    for idx, (_width, span, _original) in enumerate(spans):
+        fuzzy_matches: list[tuple[str, bool]] = []
         for folded, originals in groups.items():
             exact = folded == span
             partial = (
@@ -505,14 +604,94 @@ def _hint_values(
             if not exact and not partial:
                 continue
             for value in originals:
-                matches.append((value, not exact))
-        matches.sort(key=lambda item: (_normalize(item[0]), item[0]))
-        for value, fuzzy in matches[:HINT_CANDIDATE_CAP]:
+                fuzzy_matches.append((value, not exact))
+        fuzzy_matches.sort(key=lambda item: (_normalize(item[0]), item[0]))
+        for value, fuzzy in fuzzy_matches[:HINT_CANDIDATE_CAP]:
             if value in seen:
                 continue
             seen.add(value)
-            chosen.append((value, fuzzy))
+            chosen.append((value, fuzzy, f"s{idx}"))
     return chosen
+
+
+def _envelope_hint(index: int) -> str:
+    """Token for hint ``index`` (1-based). Built from the list, not the masker."""
+    return f"DMSHINT_{index:02d}"
+
+
+def _limit_index(
+    rows: Sequence[tuple[str, tuple[str, ...]]],
+) -> tuple[dict[str, tuple[str, ...]], bool]:
+    """Drop a column that would exceed the per-column or total cap.
+
+    A partial column is not kept. Hinting from the first N values would
+    miss a longer name and allow a short span.
+    """
+    kept: dict[str, tuple[str, ...]] = {}
+    total = 0
+    capped = False
+    for key, values in rows:
+        unique = tuple(dict.fromkeys(value for value in values if value))
+        if not unique:
+            continue
+        if len(unique) > INDEX_COLUMN_CAP or total + len(unique) > INDEX_TOTAL_CAP:
+            capped = True
+            continue
+        kept[key] = unique
+        total += len(unique)
+    return kept, capped
+
+
+def _value_token_pairs(values: Sequence[str]) -> list[tuple[str, str]]:
+    """Longest values first. One token per folded value, from the value list."""
+    raws: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        text = " ".join(str(raw).split())
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        raws.append(text)
+    raws.sort(key=lambda item: (-len(item), item.lower()))
+    by_fold: dict[str, str] = {}
+    pairs: list[tuple[str, str]] = []
+    number = 0
+    for raw in raws:
+        fold = _normalize(raw)
+        if not fold:
+            continue
+        token = by_fold.get(fold)
+        if token is None:
+            number += 1
+            token = f"DMSVAL_{number:02d}"
+            by_fold[fold] = token
+        pairs.append((raw, token))
+    return pairs
+
+
+def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Replace index values in ``text``. Longest alternative is tried first."""
+    if not text or not pairs:
+        return text
+    pattern = "|".join(re.escape(raw) for raw, _token in pairs)
+    if not pattern:
+        return text
+    lookup = {raw.lower(): token for raw, token in pairs}
+
+    def _sub(match: re.Match[str]) -> str:
+        return lookup.get(match.group(0).lower(), match.group(0))
+
+    return re.compile(pattern, re.IGNORECASE).sub(_sub, text)
+
+
+def _fk_if_present(col: ColumnFact, chosen_ids: set[tuple[str, str]]) -> ColumnFact:
+    target = col.foreign_key
+    if "." not in target:
+        return col
+    table, _, name = target.partition(".")
+    if (table, name) in chosen_ids:
+        return col
+    return replace(col, foreign_key="")
 
 
 def _mask_slots(slots: list[tuple[str, str]]) -> list[str] | None:
@@ -558,6 +737,10 @@ def _join_facts(items: Sequence[Mapping[str, str]]) -> list[JoinFact]:
                 right_table=item["to"],
                 right_col=item["to_column"],
                 label=item["name"],
+                reason=(
+                    f"path:{item['from']}.{item['from_column']}"
+                    f">{item['to']}.{item['to_column']}"
+                ),
             )
         )
     return out
@@ -575,6 +758,8 @@ def _format_column(col: ColumnFact) -> str:
         bits.append("samples=" + ", ".join(v[:_SAMPLE_CHARS] for v in col.samples))
     elif col.distinct is not None:
         bits.append(f"distinct={col.distinct}")
+    if col.reason:
+        bits.append(f"reason={col.reason}")
     return "- " + " ".join(bits)
 
 
@@ -590,7 +775,8 @@ def _format_measure(measure: MeasureFact) -> str:
 def _format_join(link: JoinFact) -> str:
     return (
         f"- {link.left_table}.{link.left_col} = "
-        f"{link.right_table}.{link.right_col} ({link.label})"
+        f"{link.right_table}.{link.right_col} ({link.label}) "
+        f"reason={link.reason or 'path:' + link.left_table + '.' + link.left_col}"
     )
 
 
@@ -616,7 +802,8 @@ def _render(
     for col in columns:
         by_table.setdefault(col.table, []).append(col)
     for table in sorted(by_table):
-        head = f"- {table}"
+        best = max((col.score for col in by_table[table]), default=0.0)
+        head = f"- {table} reason=score:{best:.2f}"
         note = notes.get(table, "")
         if note:
             head = f"{head} description={note}"
@@ -647,42 +834,6 @@ def _joins_for(columns: Sequence[ColumnFact], joins: Sequence[JoinFact]) -> list
         and (link.left_table, link.left_col) in chosen
         and (link.right_table, link.right_col) in chosen
     ]
-
-
-def _header_tokens(
-    dialect: str,
-    hints: Sequence[HintFact],
-    measures: Sequence[MeasureFact],
-) -> int:
-    return estimate_tokens(_render(dialect, [], [], hints, measures))
-
-
-def _measures_that_fit(
-    dialect: str,
-    measures: Sequence[MeasureFact],
-    max_tokens: int,
-) -> list[MeasureFact]:
-    chosen: list[MeasureFact] = []
-    ordered = sorted(measures, key=lambda item: (-item.score, item.name))
-    for measure in ordered:
-        trial = [*chosen, measure]
-        if _header_tokens(dialect, [], trial) <= max_tokens:
-            chosen = trial
-    return chosen
-
-
-def _hints_that_fit(
-    dialect: str,
-    hints: Sequence[HintFact],
-    measures: Sequence[MeasureFact],
-    max_tokens: int,
-) -> list[HintFact]:
-    chosen: list[HintFact] = []
-    for hint in hints:
-        trial = [*chosen, hint]
-        if _header_tokens(dialect, trial, measures) <= max_tokens:
-            chosen = trial
-    return chosen
 
 
 def _fits(
@@ -725,18 +876,63 @@ def _select(
     measures: Sequence[MeasureFact],
     max_tokens: int,
 ) -> tuple[list[ColumnFact], list[JoinFact], list[HintFact], list[MeasureFact]]:
-    """Reserve measures, then hints, then pack columns into what is left.
+    """Hints and the columns they cite take budget before measures.
+
+    With no hints, measures are still reserved before unrelated columns.
 
     ponytail: greedy pack, O(n^2) over columns. Ceiling: a few hundred
     columns. Upgrade: a fixed token budget per dataset with a vector index.
     """
-    reserved = _measures_that_fit(dialect, measures, max_tokens)
-    kept_hints = _hints_that_fit(dialect, hints, reserved, max_tokens)
-    ordered = sorted(columns, key=lambda item: (-item.score, item.table, item.name))
+    by_key = {(col.table, col.name): col for col in columns}
+    kept_hints: list[HintFact] = []
+    cited: list[ColumnFact] = []
+    cited_ids: set[tuple[str, str]] = set()
+    for hint in hints:
+        key = (hint.table, hint.column)
+        col = by_key.get(key)
+        trial_hints = [*kept_hints, hint]
+        if col is not None and key not in cited_ids:
+            trial_cited = [*cited, col]
+        else:
+            trial_cited = list(cited)
+        if not _fits(
+            dialect,
+            trial_cited,
+            _joins_for(trial_cited, joins),
+            trial_hints,
+            [],
+            max_tokens,
+        ):
+            continue
+        kept_hints = trial_hints
+        cited = trial_cited
+        if col is not None and key not in cited_ids:
+            cited_ids.add(key)
+    reserved: list[MeasureFact] = []
+    for measure in sorted(measures, key=lambda item: (-item.score, item.name)):
+        trial_measures = [*reserved, measure]
+        if _fits(
+            dialect,
+            cited,
+            _joins_for(cited, joins),
+            kept_hints,
+            trial_measures,
+            max_tokens,
+        ):
+            reserved = trial_measures
+    ordered = sorted(
+        (col for col in columns if (col.table, col.name) not in cited_ids),
+        key=lambda item: (-item.score, item.table, item.name),
+    )
+    room = _SHORTLIST - len(cited)
+    if room < 1:
+        ordered = []
+    elif len(ordered) > room:
+        ordered = ordered[:room]
     pending: deque[ColumnFact] = deque(ordered)
     queued = {(col.table, col.name) for col in ordered}
-    chosen: list[ColumnFact] = []
-    chosen_ids: set[tuple[str, str]] = set()
+    chosen: list[ColumnFact] = list(cited)
+    chosen_ids: set[tuple[str, str]] = set(cited_ids)
     while pending:
         col = pending.popleft()
         key = (col.table, col.name)
@@ -752,6 +948,8 @@ def _select(
         for extra in _related(col, columns, joins):
             extra_key = (extra.table, extra.name)
             if extra_key in chosen_ids or extra_key in queued:
+                continue
+            if len(chosen_ids) + len(queued) >= _SHORTLIST:
                 continue
             queued.add(extra_key)
             pending.appendleft(extra)
@@ -822,12 +1020,18 @@ def build_schema_context(
     grantable: set[str] | None = None,
     space_id: str | None = None,
     max_tokens: int = MAX_PROMPT_TOKENS,
+    entity_spans: Any = None,
 ) -> SchemaContext:
-    """Rank the connector description and render a prompt inside ``max_tokens``."""
+    """Rank the connector description and render a prompt inside ``max_tokens``.
+
+    ``entity_spans`` is not read. Hints come from the value index only, so a
+    stub that returns a span cannot create one.
+    """
+    del entity_spans
     described = schema if isinstance(schema, Mapping) else {}
     dialect = _dialect(described.get("dialect"))
     question_vec = _trigrams(question or "")
-    spans = _spans(question or "")
+    spans = _question_spans(question or "")
     datasets = [
         item
         for item in _dataset_items(described)
@@ -862,58 +1066,72 @@ def build_schema_context(
     for link in joins:
         fk_of.setdefault((link.left_table, link.left_col), f"{link.right_table}.{link.right_col}")
 
-    slots: list[tuple[str, str]] = []
-    slot_meta: list[tuple[str, str]] = []
+    tags = _ontology_tags(ontology)
+    loaded_values: list[str] = []
+    index_rows: list[tuple[str, tuple[str, ...]]] = []
     prepared: list[dict[str, Any]] = []
-    index: dict[str, tuple[str, ...]] = {}
     for dataset in datasets:
         table = _text(dataset.get("name"))
         table_desc = _text(dataset.get("description"))
-        if table_desc:
-            slots.append((f"{table}.__table__", table_desc))
-            slot_meta.append(("table", table))
         for column in _column_items(dataset):
             name = _text(column.get("name"))
             if not name:
                 continue
             family = _type_family(_text(column.get("type")))
-            tagged = _tagged(column)
+            tagged = (table, name) in tags
             values = _index_values(column, family)
             if values:
-                index[f"{table}.{name}"] = tuple(values)
+                loaded_values.extend(values)
+                index_rows.append((f"{table}.{name}", tuple(values)))
             samples = _sample_values(column, family, tagged)
-            hints = _hint_values(spans, values, tagged=tagged)
-            description = _text(column.get("description"))
             prepared.append(
                 {
                     "table": table,
                     "name": name,
-                    "family": family,
                     "type": _text(column.get("type")),
                     "primary_key": bool(column.get("primary_key")),
-                    "description": description,
+                    "description": _text(column.get("description")),
                     "samples": samples,
-                    "hints": hints,
                     "distinct": _distinct_count(column, values or samples),
                     "table_desc": table_desc,
+                    "tagged": tagged,
                 }
             )
-            if description:
-                slots.append((f"{table}.{name}", description))
-                slot_meta.append(("column", f"{table}.{name}"))
-            for sample in samples:
-                slots.append((f"{table}.{name}", sample))
-                slot_meta.append(("sample", f"{table}.{name}"))
-            for value, fuzzy in hints:
-                slots.append((f"{table}.{name}", value))
-                slot_meta.append(("hint", f"{table}.{name}|{int(fuzzy)}|{value}"))
+    index, capped = _limit_index(index_rows)
+    if capped:
+        _LOG.warning("schema_index_cap")
+    known = _value_token_pairs(loaded_values)
+    slots: list[tuple[str, str]] = []
+    slot_meta: list[tuple[str, str]] = []
+    seen_tables: set[str] = set()
+    for item in prepared:
+        table = str(item["table"])
+        name = str(item["name"])
+        key = f"{table}.{name}"
+        table_desc = _mask_known(str(item["table_desc"]), known)
+        if table_desc and table not in seen_tables:
+            seen_tables.add(table)
+            slots.append((f"{table}.__table__", table_desc))
+            slot_meta.append(("table", table))
+        description = _mask_known(str(item["description"]), known)
+        hints = _hint_values(spans, index.get(key, ()), tagged=bool(item["tagged"]))
+        item["hints"] = hints
+        if description:
+            slots.append((key, description))
+            slot_meta.append(("column", key))
+        for sample in item["samples"]:
+            slots.append((key, str(sample)))
+            slot_meta.append(("sample", key))
+        for value, fuzzy, span_id in hints:
+            slots.append((key, value))
+            slot_meta.append(("hint", f"{key}|{int(fuzzy)}|{span_id}|{value}"))
     measure_items = [
         item
         for item in (onto.get("measures") or [])
         if _grain_ok(str(item["grain"]), object_tables, names)
     ]
     for item in measure_items:
-        description = _text(item.get("description"))
+        description = _mask_known(_text(item.get("description")), known)
         if description:
             slots.append((str(item["name"]), description))
             slot_meta.append(("measure", str(item["name"])))
@@ -922,7 +1140,7 @@ def build_schema_context(
     table_desc_out: dict[str, str] = {}
     column_desc_out: dict[str, str] = {}
     sample_groups: dict[str, list[tuple[str, str]]] = {}
-    hint_rows: list[tuple[str, str, bool, str]] = []
+    hint_rows: list[tuple[str, str, bool, str, str]] = []
     measure_desc_out: dict[str, str] = {}
     if masked is not None:
         for (kind, ref), got, (_field, raw) in zip(slot_meta, masked, slots, strict=True):
@@ -933,8 +1151,8 @@ def build_schema_context(
             elif kind == "sample":
                 sample_groups.setdefault(ref, []).append((raw, got))
             elif kind == "hint":
-                col_key, flag, value = ref.split("|", 2)
-                hint_rows.append((col_key, value, flag == "1", got))
+                col_key, flag, span_id, value = ref.split("|", 3)
+                hint_rows.append((col_key, value, flag == "1", span_id, got))
             elif kind == "measure" and got.strip():
                 measure_desc_out[ref] = " ".join(got.split())
     sample_out: dict[str, tuple[str, ...]] = {}
@@ -943,13 +1161,18 @@ def build_schema_context(
             continue
         sample_out[ref] = tuple(got for _raw, got in pairs)
     hint_out: list[HintFact] = []
-    for ref, value, fuzzy, got in hint_rows:
+    for ref, value, fuzzy, span_id, got in hint_rows:
         if not _cleared(value, got):
             continue
         hint_table, hint_column = ref.split(".", 1)
-        hint_out.append(HintFact(hint_table, hint_column, value, fuzzy))
+        hint_out.append(HintFact(hint_table, hint_column, value, fuzzy, span_id))
 
     _remember_index(space_id, index)
+    span_of = {
+        f"{hint.table}.{hint.column}": hint.span_id
+        for hint in hint_out
+        if hint.span_id
+    }
     facts: list[ColumnFact] = []
     for item in prepared:
         table = str(item["table"])
@@ -960,6 +1183,10 @@ def build_schema_context(
         document = " ".join(
             (table, name, str(item["type"]), description, " ".join(kept_samples))
         )
+        score = _cosine(question_vec, _trigrams(document))
+        reason = f"score:{score:.2f}"
+        if span_of.get(key):
+            reason = f"{reason},span:{span_of[key]}"
         facts.append(
             ColumnFact(
                 table=table,
@@ -970,7 +1197,8 @@ def build_schema_context(
                 description=description,
                 samples=kept_samples,
                 distinct=item["distinct"] if isinstance(item["distinct"], int) else None,
-                score=_cosine(question_vec, _trigrams(document)),
+                score=score,
+                reason=reason,
             )
         )
     if masked is None:
@@ -985,6 +1213,8 @@ def build_schema_context(
     chosen, kept_joins, kept_hints, kept_measures = _select(
         dialect, facts, joins, hint_out, measures, max_tokens
     )
+    chosen_ids = {(col.table, col.name) for col in chosen}
+    chosen = [_fk_if_present(col, chosen_ids) for col in chosen]
     prompt = _render(
         dialect,
         chosen,
@@ -995,10 +1225,25 @@ def build_schema_context(
     )
     if estimate_tokens(prompt) > max_tokens:
         prompt = _fallback_prompt(dialect)
+        envelope_prompt = prompt
+    else:
+        token_hints = [
+            HintFact(hint.table, hint.column, _envelope_hint(i), hint.fuzzy, hint.span_id)
+            for i, hint in enumerate(kept_hints, start=1)
+        ]
+        envelope_prompt = _render(
+            dialect,
+            chosen,
+            kept_joins,
+            token_hints,
+            kept_measures,
+            table_desc_out,
+        )
     return SchemaContext(
         prompt=prompt,
         samples_included=any(col.samples for col in chosen),
         dialect=dialect,
+        envelope_prompt=envelope_prompt,
     )
 
 
@@ -1012,28 +1257,54 @@ def _constraint_names(value: Any) -> list[str]:
     return []
 
 
-def _count_distinct(con: Any, table: str, column: str) -> int | None:
+def _serving_file(serving: Path, space_id: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in space_id)[:96]
+    return Path(str(Path(serving)) + ".schema_index") / f"{safe or 'default'}.json"
+
+
+def _load_record(serving: Path, space_id: str) -> dict[str, Any] | None:
+    path = _serving_file(serving, space_id)
     try:
-        row = con.execute(
-            f"SELECT COUNT(DISTINCT {_quote(column)}) FROM {_quote(table)}"
-        ).fetchone()
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
-    if not row or row[0] is None:
-        return None
-    return int(row[0])
+    return raw if isinstance(raw, dict) else None
 
 
-def _distinct_text(con: Any, table: str, column: str, *, limit: int | None) -> list[str]:
-    # ponytail: an untagged text column loads every distinct value into the
-    # Space index so an exact hint can match. Ceiling: memory grows with
-    # distinct text. Upgrade: a capped in-memory index that still answers
-    # equality and reports the true distinct count.
-    tail = "" if limit is None else f" LIMIT {int(limit)}"
+def _save_record(serving: Path, space_id: str, payload: Mapping[str, Any]) -> None:
+    path = _serving_file(serving, space_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    # The prompt log stays off disk. This file is the Space index.
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(dict(payload), sort_keys=True))
+    tmp.replace(path)
+
+
+def _open_serving(serving: Path) -> Any:
+    from dms_executor.demo_warehouse import connect_file
+
+    return connect_file(Path(serving))
+
+
+def _fingerprint(
+    columns: Sequence[tuple[str, str, str]], sizes: Mapping[str, int]
+) -> str:
+    lines = [
+        f"{table}\t{column}\t{data_type}\t{int(sizes.get(table, 0))}"
+        for table, column, data_type in columns
+    ]
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:20]
+
+
+def _bounded_read(con: Any, table: str, column: str, limit: int) -> list[str]:
+    """At most ``limit`` rows. No DISTINCT and no full-table aggregate."""
+    if limit < 1:
+        return []
     try:
         rows = con.execute(
-            f"SELECT DISTINCT CAST({_quote(column)} AS VARCHAR) FROM {_quote(table)} "
-            f"WHERE {_quote(column)} IS NOT NULL ORDER BY 1{tail}"
+            f"SELECT CAST({_quote(column)} AS VARCHAR) FROM {_quote(table)} "
+            f"WHERE {_quote(column)} IS NOT NULL LIMIT {int(limit)}"
         ).fetchall()
     except Exception:  # noqa: BLE001
         return []
@@ -1044,43 +1315,60 @@ def _distinct_text(con: Any, table: str, column: str, *, limit: int | None) -> l
     ]
 
 
-def schema_from_serving(
+def _stored_values(values: Sequence[str]) -> list[str]:
+    """Mask before anything is written into the Space index."""
+    listed = [value for value in values if value]
+    if not listed:
+        return []
+    masked = _mask_slots([(f"v{i}", value) for i, value in enumerate(listed)])
+    if masked is None:
+        return []
+    out: list[str] = []
+    for raw, got in zip(listed, masked, strict=True):
+        text = " ".join(got.split())
+        if text and (_cleared(raw, got) or is_mask_token(text)):
+            out.append(text)
+    return out
+
+
+def read_catalog(
     serving: Path | None,
     grantable: set[str] | None,
-    *,
     dialect: str | None = None,
-) -> dict[str, Any]:
-    """Reflect granted datasets from a serving file. No dataset name is fixed.
-
-    ``dialect`` is copied when the caller already has it. This reader does
-    not invent one. Text values stay in ``values`` for the local index.
-    Only numeric, date, and boolean columns get ``samples``.
-    """
+) -> tuple[str, dict[str, Any]]:
+    """Names, types, keys, and row-count estimates. No table-body reads."""
     named = _dialect(dialect)
     body: dict[str, Any] = {"datasets": [], "relationships": []}
     if named:
         body["dialect"] = named
     if serving is None or not Path(serving).is_file():
-        return body
-    import duckdb
-
+        return "", body
     try:
-        con = duckdb.connect(str(serving), read_only=True)
-    except Exception:  # noqa: BLE001 -- empty description, ask continues
-        return body
+        con = _open_serving(Path(serving))
+    except Exception:  # noqa: BLE001
+        return "", body
     try:
         rows = con.execute(
             "SELECT table_name, column_name, data_type "
             "FROM information_schema.columns WHERE table_schema = 'main' "
             "ORDER BY table_name, ordinal_position"
         ).fetchall()
+        sizes: dict[str, int] = {}
+        try:
+            for table_name, estimate in con.execute(
+                "SELECT table_name, estimated_size FROM duckdb_tables() "
+                "WHERE schema_name = 'main'"
+            ).fetchall():
+                sizes[str(table_name)] = int(estimate or 0)
+        except Exception:  # noqa: BLE001
+            sizes = {}
         keys: dict[str, set[str]] = {}
         try:
             constraints = con.execute(
                 "SELECT table_name, constraint_type, constraint_column_names "
                 "FROM duckdb_constraints() WHERE schema_name = 'main'"
             ).fetchall()
-        except Exception:  # noqa: BLE001 -- types still ship without key metadata
+        except Exception:  # noqa: BLE001
             constraints = []
         for table_name, kind, cols in constraints:
             if _text(kind).upper() != "PRIMARY KEY":
@@ -1088,41 +1376,225 @@ def schema_from_serving(
             table = str(table_name)
             keys.setdefault(table, set()).update(_constraint_names(cols))
         grouped: dict[str, list[dict[str, Any]]] = {}
+        fp_rows: list[tuple[str, str, str]] = []
         for table_name, column_name, data_type in rows:
             table = str(table_name)
-            column = str(column_name)
-            if not _ident(table) or not _ident(column):
+            column_name_text = str(column_name)
+            if not _ident(table) or not _ident(column_name_text):
                 continue
             if not _granted(table, grantable):
                 continue
-            family = _type_family(str(data_type or ""))
-            distinct = _count_distinct(con, table, column)
-            if family == "text":
-                values = _distinct_text(con, table, column, limit=None)
-                samples: list[str] = []
-            else:
-                values = []
-                samples = _distinct_text(con, table, column, limit=_SAMPLE_LIMIT)
+            data = str(data_type or "")
+            fp_rows.append((table, column_name_text, data))
             grouped.setdefault(table, []).append(
                 {
-                    "name": column,
-                    "type": str(data_type or ""),
+                    "name": column_name_text,
+                    "type": data,
                     "description": "",
-                    "primary_key": column in keys.get(table, set()),
-                    "distinct": distinct,
-                    "values": values,
-                    "samples": samples,
+                    "primary_key": column_name_text in keys.get(table, set()),
+                    "distinct": None,
+                    "values": [],
+                    "samples": [],
                 }
             )
         body["datasets"] = [
             {"name": table, "description": "", "columns": cols}
             for table, cols in sorted(grouped.items())
         ]
+        if not fp_rows:
+            return "", body
+        return _fingerprint(fp_rows, sizes), body
     except Exception:  # noqa: BLE001
-        return body
+        return "", body
     finally:
         con.close()
+
+
+def schema_from_serving(
+    serving: Path | None,
+    grantable: set[str] | None,
+    *,
+    dialect: str | None = None,
+) -> dict[str, Any]:
+    """Catalog description only. Value samples are not read here."""
+    _fp, body = read_catalog(serving, grantable, dialect)
     return body
+
+
+def build_space_index(
+    serving: Path | None,
+    space_id: str | None,
+    grantable: set[str] | None = None,
+    dialect: str | None = None,
+) -> str:
+    """Build one Space index off the ask path. Returns a stamp, or ``""``.
+
+    Each column read is ``LIMIT``-bounded. The serving lock is taken per
+    table and released, so a live ask can attach between tables.
+    """
+    if not space_id or serving is None or not Path(serving).is_file():
+        return "index_failed:ValueError"
+    fingerprint, plain = read_catalog(serving, grantable, dialect)
+    if not fingerprint:
+        _save_record(
+            Path(serving),
+            space_id,
+            {
+                "status": "failed",
+                "fingerprint": "",
+                "error": "OSError",
+                "schema": plain,
+            },
+        )
+        return "index_failed:OSError"
+    _save_record(
+        Path(serving),
+        space_id,
+        {
+            "status": "building",
+            "fingerprint": fingerprint,
+            "error": "",
+            "schema": {},
+        },
+    )
+    rows_left = INDEX_ROW_BUDGET
+    deadline = time.monotonic() + INDEX_BUILD_BUDGET_S
+    try:
+        for dataset in plain["datasets"]:
+            if time.monotonic() >= deadline or rows_left < 1:
+                break
+            table = str(dataset["name"])
+            con = _open_serving(Path(serving))
+            try:
+                for col in dataset["columns"]:
+                    if time.monotonic() >= deadline or rows_left < 1:
+                        break
+                    take = min(SAMPLE_ROWS, rows_left)
+                    got = _bounded_read(con, table, str(col["name"]), take)
+                    rows_left -= len(got)
+                    stored = _stored_values(got)
+                    if _type_family(str(col.get("type") or "")) == "text":
+                        col["values"] = stored[:INDEX_COLUMN_CAP]
+                    else:
+                        col["samples"] = stored[:_SAMPLE_LIMIT]
+            finally:
+                con.close()
+    except Exception as exc:  # noqa: BLE001
+        name = type(exc).__name__
+        _save_record(
+            Path(serving),
+            space_id,
+            {
+                "status": "failed",
+                "fingerprint": fingerprint,
+                "error": name,
+                "schema": {},
+            },
+        )
+        _LOG.warning("schema_index_failed %s", name)
+        return f"index_failed:{name}"
+    _save_record(
+        Path(serving),
+        space_id,
+        {
+            "status": "ready",
+            "fingerprint": fingerprint,
+            "error": "",
+            "schema": plain,
+        },
+    )
+    return ""
+
+
+_BUILD_LOCK = threading.Lock()
+_BUILDING: set[str] = set()
+
+
+def schedule_index_build(
+    serving: Path,
+    space_id: str,
+    grantable: set[str] | None,
+    dialect: str | None,
+    fingerprint: str,
+) -> None:
+    """Start a background build. Returns immediately."""
+    key = f"{space_id}\n{fingerprint}"
+    with _BUILD_LOCK:
+        if key in _BUILDING:
+            return
+        _BUILDING.add(key)
+    _save_record(
+        Path(serving),
+        space_id,
+        {
+            "status": "building",
+            "fingerprint": fingerprint,
+            "error": "",
+            "schema": {},
+        },
+    )
+
+    def _job() -> None:
+        try:
+            build_space_index(serving, space_id, grantable, dialect)
+        finally:
+            with _BUILD_LOCK:
+                _BUILDING.discard(key)
+
+    threading.Thread(target=_job, name="schema-index", daemon=True).start()
+
+
+def note_serving_source(
+    serving: Path | None,
+    space_id: str | None,
+    grantable: set[str] | None = None,
+) -> None:
+    """Schedule an index build when a source connects or its catalog changes."""
+    if not schema_context_enabled():
+        return
+    if not space_id or serving is None or not Path(serving).is_file():
+        return
+    try:
+        fingerprint, _plain = read_catalog(serving, grantable, None)
+        if not fingerprint:
+            return
+        rec = _load_record(Path(serving), space_id)
+        if (
+            rec
+            and rec.get("status") == "ready"
+            and rec.get("fingerprint") == fingerprint
+        ):
+            return
+        schedule_index_build(Path(serving), space_id, grantable, None, fingerprint)
+    except Exception:  # noqa: BLE001
+        return
+
+
+def lookup_schema(
+    serving: Path | None,
+    grantable: set[str] | None,
+    dialect: str | None,
+    space_id: str | None,
+) -> tuple[dict[str, Any], str]:
+    """Ask path. Catalog read plus a stored-index lookup. Never samples values."""
+    fingerprint, plain = read_catalog(serving, grantable, dialect)
+    if serving is None or not Path(serving).is_file() or not space_id:
+        return plain, "index_pending"
+    if not fingerprint:
+        return plain, "index_failed:OSError"
+    rec = _load_record(Path(serving), space_id)
+    status = str((rec or {}).get("status") or "")
+    same = (rec or {}).get("fingerprint") == fingerprint
+    if status == "ready" and same and isinstance((rec or {}).get("schema"), dict):
+        schema = dict((rec or {})["schema"])
+        if dialect and not _text(schema.get("dialect")):
+            schema["dialect"] = _dialect(dialect)
+        return schema, ""
+    if status == "failed" and same:
+        err = str((rec or {}).get("error") or "Error")
+        return plain, f"index_failed:{err}"
+    schedule_index_build(Path(serving), space_id, grantable, dialect, fingerprint)
+    return plain, "index_pending"
 
 
 def prepare_generate_context(
@@ -1139,16 +1611,18 @@ def prepare_generate_context(
 ) -> dict[str, Any]:
     """Attach the prompt when the flag is on. Do nothing when it is off.
 
-    A connector ``schema`` wins. Otherwise the granted serving file is
-    reflected. A build error leaves ``ctx`` unchanged. The ask continues.
-    The prompt is returned on ``ctx`` only. Nothing is written to disk.
+    A caller-supplied ``schema`` is rendered as given. A serving file is a
+    lookup: the stored index when it is ready, otherwise catalog names and
+    types plus ``index_pending`` or ``index_failed:<class>``. The ask does
+    not build the index and does not wait for it.
     """
     if not schema_context_enabled():
         return ctx
+    stamp = ""
     try:
         described = schema
         if described is None:
-            described = schema_from_serving(serving, grantable, dialect=dialect)
+            described, stamp = lookup_schema(serving, grantable, dialect, space_id)
         elif dialect and isinstance(described, Mapping) and not _text(described.get("dialect")):
             described = dict(described)
             described["dialect"] = dialect
@@ -1166,4 +1640,7 @@ def prepare_generate_context(
         return ctx
     out = dict(ctx)
     out[SCHEMA_CONTEXT_FIELD] = built.prompt
+    out[SCHEMA_CONTEXT_ENVELOPE_KEY] = built.envelope_prompt
+    if stamp:
+        out[SCHEMA_INDEX_STAMP_KEY] = stamp
     return out

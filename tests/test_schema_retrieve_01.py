@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import builtins
 import io
+import json
 import os
 import pathlib
 import threading
@@ -22,12 +23,15 @@ from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.ontology import Ontology
 from dms_executor.schema_context import (
     HINT_CANDIDATE_CAP,
+    INDEX_COLUMN_CAP,
     MAX_PROMPT_TOKENS,
     build_schema_context,
+    build_space_index,
     cached_value_index,
     estimate_tokens,
     ontology_payload,
     prepare_generate_context,
+    schema_from_serving,
 )
 
 _NAME = "Zelda Qwerty"
@@ -280,7 +284,8 @@ def test_crm_empty_ontology_masks_pii_and_keeps_cleared_samples() -> None:
             assert raw not in prompt
         assert "RESTRICTEDTOKEN" not in prompt
         assert "restricted_note" not in prompt
-        assert f"account.segment = {_SEGMENT}" in prompt
+        assert "account.segment = midmarket" in prompt
+        assert _SEGMENT not in prompt
         assert f"samples={_SEGMENT}" not in prompt
         assert "account_self" not in prompt
         assert "missing_col" not in prompt
@@ -292,6 +297,8 @@ def test_crm_empty_ontology_masks_pii_and_keeps_cleared_samples() -> None:
         assert "varchar" in prompt
         assert "primary_key" in prompt
         assert "foreign_key=account.account_id" in prompt
+        assert "reason=score:" in prompt
+        assert "reason=path:contact.account_id>account.account_id" in prompt
         assert "contact.account_id = account.account_id (contact_account)" in prompt
         assert "DIALECT: mysql" in prompt
         assert "postgres" not in prompt.lower()
@@ -312,7 +319,8 @@ def test_finance_model_ontology_and_curated_object_share_one_shape() -> None:
     assert _EXPR in prompt
     assert _ALIAS in prompt
     assert _MEASURE_DESC in prompt
-    assert "invoice.status = OPEN" in prompt
+    assert "invoice.status = open" in prompt
+    assert "OPEN" not in prompt
     assert "samples=OPEN" not in prompt
     assert "samples=40.00" in prompt
     assert "payment.invoice_id = invoice.invoice_id (payment_invoice)" in prompt
@@ -375,7 +383,6 @@ def test_token_cap_drops_unrelated_datasets() -> None:
                     "samples": ["KEEPTOKEN"],
                     "values": ["KEEPTOKEN"],
                     "distinct": 1,
-                    "non_personal": {"evidence": "fixture-keep"},
                 }
             ],
         }
@@ -397,6 +404,16 @@ def test_token_cap_drops_unrelated_datasets() -> None:
     prompt = build_schema_context(
         "keep_me_table keep_me_col",
         {"dialect": "sqlite", "datasets": datasets},
+        ontology={
+            "non_personal": [
+                {
+                    "table": "keep_me_table",
+                    "column": "keep_me_col",
+                    "source": "fixture",
+                    "field": "keep_me_col",
+                }
+            ]
+        },
     ).prompt
     assert estimate_tokens(prompt) <= MAX_PROMPT_TOKENS
     assert "keep_me_table" in prompt
@@ -463,7 +480,8 @@ def test_prompt_stays_on_the_request_and_off_disk(
     for raw in _PII:
         assert raw not in stored
     assert _EMAIL not in stored
-    assert f"account.segment = {_SEGMENT}" in stored
+    assert "account.segment = midmarket" in stored
+    assert _SEGMENT not in stored
     assert "DIALECT: mysql" in stored
 
 
@@ -567,6 +585,9 @@ def test_generative_ask_attaches_reflected_context_when_flagged(
     _seed_crm(serving)
     onto = Ontology()
     onto.verified = True
+    assert (
+        build_space_index(serving, "space-1", {"account", "contact"}, "mysql") == ""
+    )
     monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
     seen: dict[str, Any] = {}
 
@@ -587,8 +608,13 @@ def test_generative_ask_attaches_reflected_context_when_flagged(
     )
     prompt = seen["ctx"]["schema_context"]
     assert env is not None
-    assert env["schema_context"] == prompt
-    assert f"account.segment = {_SEGMENT}" in prompt
+    assert "_schema_context_envelope" not in seen["ctx"]
+    assert env["schema_context"] != prompt
+    assert "DMSHINT_" in env["schema_context"]
+    assert _SEGMENT not in json.dumps(env)
+    assert "midmarket" not in json.dumps(env)
+    assert "account.segment = midmarket" in prompt
+    assert _SEGMENT not in prompt
     assert f"samples={_SEGMENT}" not in prompt
     for raw in _PII:
         assert raw not in prompt
@@ -715,13 +741,14 @@ def test_exact_normalised_hint_filters_sql() -> None:
             ],
         },
     ).prompt
-    assert "item.category = CHEMICALS" in prompt
+    assert "item.category = chemicals" in prompt
+    assert "CHEMICALS" not in prompt
     assert "samples=CHEMICALS" not in prompt
     for line in prompt.splitlines():
         if "category" in line and line.strip().startswith("- category"):
             assert "samples=" not in line
     sql = _sql_from_exact_hint(prompt)
-    assert sql == "SELECT COUNT(*) FROM item WHERE category = 'CHEMICALS'"
+    assert sql == "SELECT COUNT(*) FROM item WHERE category = 'chemicals'"
 
 
 def test_tagged_column_fuzzy_hints_are_capped() -> None:
@@ -734,14 +761,17 @@ def test_tagged_column_fuzzy_hints_are_capped() -> None:
     ]
     prompt = build_schema_context(
         "midmarket coverage",
-        _one_table(
-            _text_column(
-                "shade",
-                values,
-                distinct=5,
-                non_personal={"evidence": "fixture-shade"},
-            )
-        ),
+        _one_table(_text_column("shade", values, distinct=5)),
+        ontology={
+            "non_personal": [
+                {
+                    "table": "person",
+                    "column": "shade",
+                    "source": "fixture",
+                    "field": "shade",
+                }
+            ]
+        },
     ).prompt
     fuzzy = [line for line in prompt.splitlines() if " ~ " in line]
     assert len(fuzzy) == HINT_CANDIDATE_CAP
@@ -750,33 +780,84 @@ def test_tagged_column_fuzzy_hints_are_capped() -> None:
     assert "enterprise" not in prompt
 
 
-def test_two_spaces_do_not_share_a_value_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    prompts: dict[str, str] = {}
+def test_two_asks_on_different_spaces_do_not_cross(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import duckdb
 
-    def _run(space: str, token: str) -> None:
-        ctx = prepare_generate_context(
-            {},
-            question=token,
-            schema=_one_table(_text_column("label", [token], distinct=1)),
-            space_id=space,
-        )
-        prompts[space] = ctx["schema_context"]
+    def _seed(path: Path, token: str) -> None:
+        con = duckdb.connect(str(path))
+        try:
+            con.execute("CREATE TABLE person (rep VARCHAR)")
+            con.execute("INSERT INTO person VALUES (?)", [token])
+        finally:
+            con.close()
 
+    left_db = tmp_path / "left.duckdb"
+    right_db = tmp_path / "right.duckdb"
+    _seed(left_db, "ONLYSPACEA")
+    _seed(right_db, "ONLYSPACEB")
+    assert build_space_index(left_db, "space-left", {"person"}, "mysql") == ""
+    assert build_space_index(right_db, "space-right", {"person"}, "mysql") == ""
+    onto = Ontology()
+    onto.verified = True
     monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
-    left = threading.Thread(target=_run, args=("space-left", "ONLYSPACEA"))
-    right = threading.Thread(target=_run, args=("space-right", "ONLYSPACEB"))
+    prompts: dict[str, str] = {}
+    envelopes: dict[str, dict[str, Any]] = {}
+    errors: list[BaseException] = []
+
+    def _ask(path: Path, space: str, question: str) -> None:
+        try:
+            def _compute(ctx: dict[str, Any]) -> dict[str, Any]:
+                prompts[space] = str(ctx.get("schema_context") or "")
+                return {"unsure": True}
+
+            env = maybe_generative_ask(
+                question,
+                warehouse=path,
+                grantable={"person"},
+                ontology=onto,
+                compute=_compute,
+                submit=lambda _sql: None,
+                ledger_append=lambda _payload: None,
+                space_id=space,
+                session_id=space,
+            )
+            if env is None:
+                raise AssertionError(space)
+            envelopes[space] = env
+        except BaseException as exc:  # noqa: BLE001 -- surfaced after join
+            errors.append(exc)
+
+    left = threading.Thread(
+        target=_ask, args=(left_db, "space-left", "show ONLYSPACEA")
+    )
+    right = threading.Thread(
+        target=_ask, args=(right_db, "space-right", "show ONLYSPACEB")
+    )
     left.start()
     right.start()
     left.join()
     right.join()
-    assert "ONLYSPACEA" in prompts["space-left"]
+    assert errors == []
+    assert "person.rep = ONLYSPACEA" in prompts["space-left"]
     assert "ONLYSPACEB" not in prompts["space-left"]
-    assert "ONLYSPACEB" in prompts["space-right"]
+    assert "person.rep = ONLYSPACEB" in prompts["space-right"]
     assert "ONLYSPACEA" not in prompts["space-right"]
-    assert "ONLYSPACEA" in cached_value_index("space-left")["person.label"]
-    assert "ONLYSPACEB" not in cached_value_index("space-left")["person.label"]
-    assert "ONLYSPACEB" in cached_value_index("space-right")["person.label"]
-    assert "ONLYSPACEA" not in cached_value_index("space-right").get("person.label", ())
+    left_copy = envelopes["space-left"]["schema_context"]
+    right_copy = envelopes["space-right"]["schema_context"]
+    assert "DMSHINT_" in left_copy
+    assert "DMSHINT_" in right_copy
+    assert "ONLYSPACEA" not in left_copy
+    assert "ONLYSPACEB" not in left_copy
+    assert "ONLYSPACEB" not in right_copy
+    assert "ONLYSPACEA" not in right_copy
+    assert "ONLYSPACEB" not in json.dumps(envelopes["space-left"])
+    assert "ONLYSPACEA" not in json.dumps(envelopes["space-right"])
+    assert "ONLYSPACEA" in cached_value_index("space-left")["person.rep"]
+    assert "ONLYSPACEB" not in cached_value_index("space-left")["person.rep"]
+    assert "ONLYSPACEB" in cached_value_index("space-right")["person.rep"]
+    assert "ONLYSPACEA" not in cached_value_index("space-right").get("person.rep", ())
 
 
 def test_flag_off_calls_no_schema_function(
@@ -884,6 +965,27 @@ def test_non_personal_without_evidence_stays_untagged() -> None:
     blank_prompt = build_schema_context("show Ali", _one_table(blank)).prompt
     assert "FILTER HINTS" not in blank_prompt
     assert "samples=" not in blank_prompt
+    self_set = _text_column(
+        "rep",
+        ["Ali Bakar", "Ali Hassan"],
+        distinct=2,
+        non_personal={"evidence": "column says so"},
+    )
+    self_prompt = build_schema_context("show Ali", _one_table(self_set)).prompt
+    assert " ~ " not in self_prompt
+    assert "FILTER HINTS" not in self_prompt
+    assert "Ali Bakar" not in self_prompt
+    missing_field = build_schema_context(
+        "show Ali",
+        _one_table(_text_column("rep", ["Ali Bakar", "Ali Hassan"], distinct=2)),
+        ontology={
+            "non_personal": [
+                {"table": "person", "column": "rep", "source": "fixture"}
+            ]
+        },
+    ).prompt
+    assert "FILTER HINTS" not in missing_field
+    assert "Ali Bakar" not in missing_field
 
 
 def test_untagged_folded_ties_send_nothing() -> None:
@@ -894,3 +996,586 @@ def test_untagged_folded_ties_send_nothing() -> None:
     assert "FILTER HINTS" not in prompt
     assert "Acme" not in prompt
     assert "ACME" not in prompt
+
+
+def _people(*values: str) -> dict[str, Any]:
+    return _one_table(_text_column("rep", list(values), distinct=len(values)))
+
+
+def test_show_ali_sends_the_typed_span() -> None:
+    prompt = build_schema_context(
+        "show Ali",
+        _people("Ali", "Mina Cole", "Jon Pell"),
+    ).prompt
+    assert "person.rep = Ali" in prompt
+    assert "Mina Cole" not in prompt
+    assert "Jon Pell" not in prompt
+    assert "FILTER HINTS" in prompt
+
+
+def test_show_ali_bang_keeps_the_question_characters() -> None:
+    prompt = build_schema_context(
+        "show ALI!",
+        _people("Ali", "Mina Cole", "Jon Pell"),
+    ).prompt
+    assert "person.rep = ALI!" in prompt
+    assert "person.rep = Ali" not in prompt
+
+
+def test_list_chemicals_in_stock_sends_the_typed_span() -> None:
+    prompt = build_schema_context(
+        "list chemicals in stock",
+        {
+            "dialect": "mysql",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("category", ["CHEMICALS"], distinct=1)],
+                }
+            ],
+        },
+    ).prompt
+    assert "item.category = chemicals" in prompt
+    assert "CHEMICALS" not in prompt
+    assert "samples=" not in prompt
+
+
+def test_longer_granted_value_blocks_the_short_span() -> None:
+    prompt = build_schema_context(
+        "show ali",
+        _people("Ali", "Ali bin Abu"),
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "Ali" not in prompt
+    assert "Ali bin Abu" not in prompt
+
+
+def test_show_ali_bin_hints_when_ali_is_the_only_value() -> None:
+    """Honest case: no longer granted value, so the unigram is the longest match."""
+    prompt = build_schema_context("show ali bin", _people("Ali")).prompt
+    assert "person.rep = ali" in prompt
+    assert "person.rep = Ali" not in prompt
+
+
+def test_stubbed_model_span_cannot_create_a_hint() -> None:
+    called: list[str] = []
+
+    def _model(question: str) -> list[str]:
+        called.append(question)
+        return ["ali"]
+
+    prompt = build_schema_context(
+        "show ali bin",
+        _people("Ali", "Ali bin Abu"),
+        entity_spans=_model,
+    ).prompt
+    assert called == []
+    assert "FILTER HINTS" not in prompt
+    assert "Ali" not in prompt
+    assert "ali" not in prompt
+
+
+def test_envelope_masks_hint_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    import duckdb
+    from cortex_client.compute import _insights_body
+    from dms_executor.session_followup import snapshot_turn
+
+    serving = tmp_path / "people.duckdb"
+    con = duckdb.connect(str(serving))
+    con.execute("CREATE TABLE person (rep VARCHAR)")
+    con.execute("INSERT INTO person VALUES ('Ali'), ('Mina Cole'), ('Jon Pell')")
+    con.close()
+    assert build_space_index(serving, "space-ali", {"person"}, "mysql") == ""
+    onto = Ontology()
+    onto.verified = True
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    caplog.set_level(logging.DEBUG)
+    ledger: list[dict[str, Any]] = []
+    seen: dict[str, Any] = {}
+
+    def _compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        seen["ctx"] = ctx
+        return {"unsure": True}
+
+    env = maybe_generative_ask(
+        "show Ali",
+        warehouse=serving,
+        grantable={"person"},
+        ontology=onto,
+        compute=_compute,
+        submit=lambda _sql: None,
+        ledger_append=lambda payload: ledger.append(payload),
+        space_id="space-ali",
+        session_id="sess-ali",
+        dialect="mysql",
+    )
+    assert env is not None
+    blob = json.dumps(env)
+    assert "Ali" not in blob
+    assert "Mina Cole" not in blob
+    assert "Jon Pell" not in blob
+    assert "DMSHINT_" in env["schema_context"]
+    assert "person.rep = Ali" in seen["ctx"]["schema_context"]
+    assert "_schema_context_envelope" not in seen["ctx"]
+    receipt = json.dumps(env.get("audit_receipt"))
+    assert "Ali" not in receipt
+    assert "Ali" not in caplog.text
+    assert "Ali" not in json.dumps(ledger)
+    stored = snapshot_turn(env)
+    assert stored is None or "Ali" not in json.dumps(stored)
+    body = _insights_body(
+        "show Ali",
+        session_id="sess-ali",
+        space_id="space-ali",
+        ontology=seen["ctx"],
+    )
+    assert "person.rep = Ali" in body["schema_context"]
+    rest = {
+        key: value
+        for key, value in body.items()
+        if key not in {"schema_context", "question", "intent"}
+    }
+    assert "Ali" not in json.dumps(rest)
+
+
+def test_show_ali_bin_with_longer_value_sends_nothing() -> None:
+    prompt = build_schema_context(
+        "show ali bin",
+        _people("Ali", "Ali bin Abu"),
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "Ali bin Abu" not in prompt
+    assert "person.rep = Ali" not in prompt
+    assert "person.rep = ali" not in prompt
+
+
+def test_sales_by_ali_bin_abu_sends_the_long_typed_span() -> None:
+    prompt = build_schema_context(
+        "sales by ali bin abu",
+        _people("Ali", "Ali bin Abu"),
+    ).prompt
+    hints = [line for line in prompt.splitlines() if line.startswith("- person.rep")]
+    assert hints == ["- person.rep = ali bin abu"]
+    assert "Ali bin Abu" not in prompt
+
+
+def test_chemicals_hint_survives_a_loaded_ontology() -> None:
+    measures = [
+        {
+            "name": f"measure_{i:02d}",
+            "grain": "item",
+            "expression": f"SUM(f.metric_{i:02d})",
+            "description": "d" * 80,
+            "aliases": [f"alias {i:02d}"],
+        }
+        for i in range(10)
+    ]
+    columns: list[dict[str, Any]] = [
+        _text_column("category", ["CHEMICALS"], distinct=1, description="item class"),
+    ]
+    for i in range(12):
+        columns.append(
+            {
+                "name": f"wide_{i:02d}",
+                "type": "varchar",
+                "description": "w" * 120,
+                "distinct": 4,
+            }
+        )
+    prompt = build_schema_context(
+        "total stock value for chemicals",
+        {"datasets": [{"name": "item", "columns": columns}]},
+        ontology={"measures": measures},
+    ).prompt
+    assert estimate_tokens(prompt) <= MAX_PROMPT_TOKENS
+    assert "item.category = chemicals" in prompt
+    assert "CHEMICALS" not in prompt
+    assert any(
+        line.startswith("- category ") for line in prompt.splitlines()
+    )
+    assert "MEASURES" in prompt
+
+
+def test_long_party_hint_survives_a_loaded_ontology() -> None:
+    measures = [
+        {
+            "name": f"measure_{i:02d}",
+            "grain": "party",
+            "expression": f"SUM(f.metric_{i:02d})",
+            "description": "d" * 80,
+        }
+        for i in range(10)
+    ]
+    prompt = build_schema_context(
+        "orders for Delta Logistics Co",
+        {
+            "datasets": [
+                {
+                    "name": "party",
+                    "columns": [
+                        _text_column(
+                            "name",
+                            ["Delta Logistics Co", "Other Carrier"],
+                            distinct=2,
+                        )
+                    ],
+                }
+            ]
+        },
+        ontology={"measures": measures},
+    ).prompt
+    assert "party.name = Delta Logistics Co" in prompt
+    assert "MEASURES" in prompt
+
+
+def test_description_masks_a_known_name() -> None:
+    prompt = build_schema_context(
+        "who sold this",
+        _one_table(
+            _text_column(
+                "rep",
+                ["Nora Voss", "Mina Cole"],
+                distinct=2,
+                description="primary rep Nora Voss covers the book",
+            )
+        ),
+    ).prompt
+    assert "Nora Voss" not in prompt
+    assert "Mina Cole" not in prompt
+    assert "DMSVAL_" in prompt
+    assert "varchar" in prompt
+    assert "distinct=2" in prompt
+    assert "samples=" not in prompt
+
+
+def test_ungranted_table_value_is_absent() -> None:
+    prompt = build_schema_context(
+        "show UNGRANTEDONLY",
+        {
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("label", ["CHEMICALS"], distinct=1)],
+                },
+                {
+                    "name": "secret",
+                    "columns": [_text_column("note", ["UNGRANTEDONLY"], distinct=1)],
+                },
+            ]
+        },
+        grantable={"item"},
+    ).prompt
+    assert "UNGRANTEDONLY" not in prompt
+    assert "secret" not in prompt
+    assert "FILTER HINTS" not in prompt
+
+
+def test_index_cap_drops_the_column_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    values = [f"V{i:04d}" for i in range(INDEX_COLUMN_CAP + 1)]
+    values[0] = "Alpha"
+    caplog.set_level(logging.WARNING, logger="dms_executor.schema_context")
+    prompt = build_schema_context(
+        "show Alpha",
+        _one_table(_text_column("rep", values, distinct=len(values))),
+        space_id="space-cap",
+    ).prompt
+    assert "FILTER HINTS" not in prompt
+    assert "Alpha" not in prompt
+    assert "schema_index_cap" in caplog.text
+    assert "person.rep" not in cached_value_index("space-cap")
+
+
+def test_index_total_cap_drops_the_overflow_column(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    monkeypatch.setattr("dms_executor.schema_context.INDEX_TOTAL_CAP", 2)
+    caplog.set_level(logging.WARNING, logger="dms_executor.schema_context")
+    prompt = build_schema_context(
+        "show Alpha",
+        {
+            "datasets": [
+                {
+                    "name": "person",
+                    "columns": [
+                        _text_column("rep", ["Alpha"], distinct=1),
+                        _text_column("other", ["Beta", "Gamma"], distinct=2),
+                    ],
+                }
+            ]
+        },
+        space_id="space-total-cap",
+    ).prompt
+    assert "person.rep = Alpha" in prompt
+    assert "Beta" not in prompt
+    assert "schema_index_cap" in caplog.text
+    cached = cached_value_index("space-total-cap")
+    assert cached["person.rep"] == ("Alpha",)
+    assert "person.other" not in cached
+
+
+def test_foreign_key_drops_when_the_target_column_is_omitted() -> None:
+    prompt = build_schema_context(
+        "contact link",
+        {
+            "datasets": [
+                {
+                    "name": "account",
+                    "columns": [
+                        {
+                            "name": "account_id",
+                            "type": "bigint",
+                            "primary_key": True,
+                            "description": "k" * 400,
+                        }
+                    ],
+                },
+                {
+                    "name": "contact",
+                    "columns": [
+                        {
+                            "name": "account_id",
+                            "type": "bigint",
+                            "description": "link",
+                        }
+                    ],
+                },
+            ],
+            "relationships": [
+                {
+                    "name": "contact_account",
+                    "from": "contact",
+                    "from_column": "account_id",
+                    "to": "account",
+                    "to_column": "account_id",
+                }
+            ],
+        },
+        max_tokens=40,
+    ).prompt
+    assert "contact" in prompt
+    assert "foreign_key=" not in prompt
+
+
+def _seed_person(path: Path, value: str) -> None:
+    import duckdb
+
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE person (rep VARCHAR, qty INTEGER)")
+        con.execute("INSERT INTO person VALUES (?, 3)", [value])
+    finally:
+        con.close()
+
+
+def test_index_pending_ask_uses_catalog_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor.session_followup import snapshot_turn
+
+    serving = tmp_path / "people.duckdb"
+    _seed_person(serving, "Nora Voss")
+    onto = Ontology()
+    onto.verified = True
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    sampled: list[str] = []
+
+    def _no_build(*_args: Any, **_kwargs: Any) -> str:
+        return ""
+
+    def _no_sample(*_args: Any, **_kwargs: Any) -> list[str]:
+        sampled.append("read")
+        return []
+
+    monkeypatch.setattr("dms_executor.schema_context.build_space_index", _no_build)
+    monkeypatch.setattr("dms_executor.schema_context._bounded_read", _no_sample)
+    env = maybe_generative_ask(
+        "show Nora Voss",
+        warehouse=serving,
+        grantable={"person"},
+        ontology=onto,
+        compute=lambda _ctx: {"unsure": True},
+        submit=lambda _sql: None,
+        ledger_append=lambda _payload: None,
+        space_id="space-pending",
+        session_id="sess-pending",
+    )
+    assert env is not None
+    assert env["index_stamp"] == "index_pending"
+    assert "Nora Voss" not in env["schema_context"]
+    assert "rep" in env["schema_context"]
+    assert "reason=score:" in env["schema_context"]
+    assert sampled == []
+    stored = snapshot_turn(env)
+    assert stored is not None
+    assert stored["index_stamp"] == "index_pending"
+
+
+def test_index_failed_stamp_on_envelope_and_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor.session_followup import snapshot_turn
+
+    serving = tmp_path / "people.duckdb"
+    _seed_person(serving, "Nora Voss")
+
+    def _boom(*_args: Any, **_kwargs: Any) -> list[str]:
+        raise RuntimeError("sample down")
+
+    monkeypatch.setattr("dms_executor.schema_context._bounded_read", _boom)
+    assert (
+        build_space_index(serving, "space-failed", {"person"})
+        == "index_failed:RuntimeError"
+    )
+    onto = Ontology()
+    onto.verified = True
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    env = maybe_generative_ask(
+        "show Nora Voss",
+        warehouse=serving,
+        grantable={"person"},
+        ontology=onto,
+        compute=lambda _ctx: {"unsure": True},
+        submit=lambda _sql: None,
+        ledger_append=lambda _payload: None,
+        space_id="space-failed",
+        session_id="sess-failed",
+    )
+    assert env is not None
+    assert env["index_stamp"] == "index_failed:RuntimeError"
+    assert "Nora Voss" not in env["schema_context"]
+    assert "rep" in env["schema_context"]
+    stored = snapshot_turn(env)
+    assert stored is not None
+    assert stored["index_stamp"] == "index_failed:RuntimeError"
+
+
+def test_three_hundred_table_shortlist_p95_under_two_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    import duckdb
+
+    serving = tmp_path / "wide.duckdb"
+    con = duckdb.connect(str(serving))
+    try:
+        for i in range(300):
+            con.execute(f"CREATE TABLE t{i:03d} (c0 VARCHAR, c1 INTEGER)")
+            con.execute(f"INSERT INTO t{i:03d} VALUES ('v{i:03d}', {i})")
+    finally:
+        con.close()
+    import dms_executor.schema_context as schema_mod
+
+    rows_read = 0
+    real_read = schema_mod._bounded_read
+
+    def _counting(con: Any, table: str, column: str, limit: int) -> list[str]:
+        nonlocal rows_read
+        got = real_read(con, table, column, limit)
+        rows_read += len(got)
+        return got
+
+    monkeypatch.setattr(schema_mod, "_bounded_read", _counting)
+    started = time.perf_counter()
+    assert build_space_index(serving, "space-wide") == ""
+    build_s = time.perf_counter() - started
+    build_rows = rows_read
+    data_sql: list[str] = []
+    real_execute = duckdb.DuckDBPyConnection.execute
+
+    def _execute(self: Any, sql: str, *args: Any, **kwargs: Any) -> Any:
+        folded = " ".join(str(sql).split()).lower()
+        catalog = (
+            "information_schema" in folded
+            or "duckdb_tables" in folded
+            or "duckdb_constraints" in folded
+        )
+        if not catalog and " from " in f" {folded} ":
+            data_sql.append(folded)
+        return real_execute(self, sql, *args, **kwargs)
+
+    monkeypatch.setattr(duckdb.DuckDBPyConnection, "execute", _execute)
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    times: list[float] = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        ctx = prepare_generate_context(
+            {},
+            question="how many of t000 are open",
+            serving=serving,
+            space_id="space-wide",
+        )
+        times.append(time.perf_counter() - t0)
+        assert "schema_context" in ctx
+        assert "reason=score:" in ctx["schema_context"]
+        assert "index_pending" not in ctx.get("_schema_index_stamp", "")
+    ordered = sorted(times)
+    p50 = ordered[len(ordered) // 2]
+    p95 = ordered[min(len(ordered) - 1, 18)]
+    timing = (
+        f"build_s={build_s:.3f} p50_s={p50:.3f} p95_s={p95:.3f} "
+        f"build_rows={build_rows} ask_data_queries={len(data_sql)}"
+    )
+    assert data_sql == [], timing
+    assert build_rows > 0, timing
+    assert p95 < 2.0, timing
+    Path("/tmp/schema_index_timing.txt").write_text(timing + "\n", encoding="utf-8")
+
+
+def test_schema_from_serving_reuses_the_serving_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import duckdb
+
+    serving = tmp_path / "people.duckdb"
+    con = duckdb.connect(str(serving))
+    con.execute("CREATE TABLE person (rep VARCHAR)")
+    con.execute("INSERT INTO person VALUES ('Ada')")
+    con.close()
+    seen: list[dict[str, Any]] = []
+    real = duckdb.connect
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(dict(kwargs))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(duckdb, "connect", _spy)
+    body = schema_from_serving(serving, {"person"}, dialect="duckdb")
+    assert body["dialect"] == "duckdb"
+    assert seen
+    assert all(not item.get("read_only") for item in seen)
+    prompt = build_schema_context("count rows", body).prompt
+    assert prompt.startswith("DIALECT: duckdb")
+
+
+def test_live_ask_passes_the_serving_dialect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    captured: dict[str, Any] = {}
+
+    def _spy(*_args: Any, **kwargs: Any) -> None:
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr("dms_executor.maybe_generative_ask", _spy)
+    monkeypatch.setattr("dms_executor.cca.cascade.cascade_enabled", lambda: False)
+    executor = Executor(
+        cortex=object(),  # type: ignore[arg-type]
+        warehouse_path=tmp_path / "absent.duckdb",
+    )
+    executor.live_ask("count the rows please", ask_path="generative")
+    assert captured["dialect"] == SERVING_DIALECT
+    assert SERVING_DIALECT == "duckdb"
