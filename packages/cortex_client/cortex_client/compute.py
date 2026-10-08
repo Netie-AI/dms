@@ -1025,6 +1025,17 @@ def generate_model_called(payload: dict[str, Any] | None) -> bool:
         return False
     climb = gen_d.get("climb")
     final = str((climb if isinstance(climb, dict) else {}).get("final") or "").upper()
+    # A bare unsure/abstain (no stamp, no legs, no SQL; those returned above)
+    # did not serve a model. ``missing`` is a leg that served and was unstamped.
+    if payload.get("unsure") is True or payload.get("abstain") is True:
+        if not (payload.get("served_provider") or payload.get("served_model")) and not final:
+            raw_legs = payload.get("generate_legs")
+            leg_count = 0
+            if isinstance(raw_legs, dict):
+                got = raw_legs.get("legs")
+                leg_count = len(got) if isinstance(got, list) else int(raw_legs.get("count") or 0)
+            if leg_count == 0:
+                return False
     return final not in _NO_MODEL_CLIMB
 
 

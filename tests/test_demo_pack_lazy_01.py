@@ -334,9 +334,12 @@ def test_served_source_has_no_scored_pack_path() -> None:
     assert [h for h in hits if h.split(":")[0] not in allow] == []
 
 
-#: Normal lanes, no pack phrase, no special case. The fake Insights is unsure,
-#: so each is the generative lane's named abstain. Never a number.
-_GEN01 = "GEN-01: compute abstained (unsure)"
+#: Normal lanes, no pack phrase, no special case. The fake Insights is unsure
+#: and carries no ``audit_receipt.unsure.why``, so the reason names that gap.
+#: Never a number. Never a silent generic ``compute abstained (unsure)``.
+_GEN01 = "GEN-01: compute abstained (unsure: why_missing)"
+_OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+_RANK_Q = "Rank suppliers by combined risk and lead time score"
 _GEN01_TEXT = (
     "I cannot certify an ontology-grounded query for that question, so I am not executing one."
 )
@@ -362,6 +365,14 @@ def test_five_ids_pinned_outcome_same_with_and_without_pack(
         assert env["audit_receipt"]["unsure"]["why"] == reason, qid
         assert env["text"] == text, qid
         assert env["rows"] == [] and env["values"] == [] and env["sql_used"] is None, qid
+        assert env["served_attribution"] == "none", qid
+        assert env["served_model"] == "none" and env["served_provider"] == "none", qid
+        for leg in env["generate_legs"]["legs"]:
+            assert (
+                leg["served_attribution"],
+                leg["served_model"],
+                leg["served_provider"],
+            ) == ("none", "none", "none"), qid
     _assert_no_oracle_sql_in_served_source()
 
 
@@ -395,14 +406,17 @@ def test_every_other_question_bytes_match_main_golden(
     five_q = {by_key[k]["question"] for k in five}
     for key in sorted(want_keys):
         if key in golden["head_intended"]:
-            # Only two reasons to differ from main: the same text as one of
-            # the five ids, or main's questions.yaml curated-l0 override.
+            # Reasons a row may differ from main: the same text as one of the
+            # five ids, main's questions.yaml curated-l0 override, or a row
+            # that was already the generic GEN-01 unsure abstain (the reason
+            # and attribution fix touches those too).
             same_text = by_key[key]["question"] in five_q
             override = (
                 '"answer_id":"ans_curated_step"' in golden["main"][key]
                 and "pack-metric miss" in golden["main"][key]
             )
-            assert same_text or override, key
+            already_gen01 = "GEN-01: compute abstained (unsure)" in golden["main"][key]
+            assert same_text or override or already_gen01, key
         want = golden["head_intended"].get(key, golden["main"][key])
         assert with_pack[key] == want, key
         assert absent[key] == want, key
@@ -423,6 +437,96 @@ def test_api_boots_without_tests_dir_and_health_is_200(
     for key, raw in got["asks"].items():
         assert not raw.startswith("503 "), key
         assert "demo_pack_unavailable" not in raw, key
+
+
+def _none_served(env: dict[str, Any]) -> None:
+    """No model answered: none at the top and on every generate leg."""
+    assert env["served_attribution"] == "none"
+    assert env["served_model"] == "none"
+    assert env["served_provider"] == "none"
+    legs = env["generate_legs"]["legs"]
+    assert legs
+    for leg in legs:
+        assert leg["served_attribution"] == "none"
+        assert leg["served_model"] == "none"
+        assert leg["served_provider"] == "none"
+
+
+def _live(tmp_path: Path, cortex: _Cortex, question: str, space: str) -> dict[str, Any]:
+    db = tmp_path / "wh.duckdb"
+    exe = Executor(cortex=cortex, minter=_minter(), warehouse_path=db)  # type: ignore[arg-type]
+    try:
+        return exe.live_ask(question, space_id=space, session_id="ses_lazy_fix")
+    finally:
+        exe.close()
+
+
+def test_unsure_abstain_attribution_is_none(tmp_path: Path) -> None:
+    """Must-fail on 71b38947. The stub answers unsure and no model served.
+
+    ``missing`` means a leg served and was unstamped. This row is ``none``.
+    """
+    env = _live(tmp_path, _Cortex(), GENERIC_Q, FINANCE)
+    assert env["badge"] == "ABSTAIN" and env["rows"] == []
+    assert env["assumptions"] == [_GEN01]
+    assert "why_missing" in env["assumptions"][0]
+    _none_served(env)
+
+
+class _WhyCortex(_Cortex):
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "unsure": True,
+            "audit_receipt": {"unsure": {"why": "rank_tie"}},
+        }
+
+
+def test_unsure_reason_carries_audit_receipt_why(tmp_path: Path) -> None:
+    """Must-fail on 71b38947: the reason ignored audit_receipt.unsure.why."""
+    env = _live(tmp_path, _WhyCortex(), GENERIC_Q, FINANCE)
+    reason = "GEN-01: compute abstained (unsure: rank_tie)"
+    assert env["assumptions"] == [reason]
+    assert env["audit_receipt"]["unsure"]["why"] == reason
+    _none_served(env)
+
+
+def test_ops_supplier_rank_boundary_keeps_grants_fail(tmp_path: Path) -> None:
+    """Must-fail on 71b38947: grants fail became a generative unsure abstain.
+
+    That head added generate_legs and served_attribution missing.
+    """
+    env = _live(tmp_path, _Cortex(), _RANK_Q, _OPS)
+    assert env["badge"] == "ABSTAIN" and env["rows"] == []
+    assert env["route"] == "abstain"
+    assert "exact match ok" in env["text"]
+    assert "grants fail" in env["text"]
+    assert env["assumptions"] == ["exact match ok", "grants fail", "no generative fallback"]
+    assert "generate_legs" not in env
+    assert env["served_attribution"] == "none"
+    assert "served_model" not in env and "served_provider" not in env
+    assert "GEN-01" not in " ".join(str(a) for a in env["assumptions"])
+
+
+# Lead ruling, PR #390 fix: the ONE approved verdict change.
+# Offline A/B exact score: curated:cq_supplier_ranking goes LAYER -> ABSTAIN.
+# Badge is ABSTAIN with no rows on both sides, so sql_used=null and
+# grounded_tables=[] are the honest values. Main's shape gate still carried
+# the pack SQL and its tables.
+def test_cq_supplier_ranking_approved_verdict_change(
+    with_pack: dict[str, str],
+) -> None:
+    golden = _golden()
+    pin = golden["approved_verdict_change"]
+    assert pin["key"] == "curated:cq_supplier_ranking"
+    assert "Lead" in pin["ruling"]
+    key = pin["key"]
+    env = json.loads(with_pack[key].split(" ", 1)[1])
+    main = json.loads(golden["main"][key].split(" ", 1)[1])
+    assert env["badge"] == "ABSTAIN" and main["badge"] == "ABSTAIN"
+    assert env["rows"] == [] and main["rows"] == []
+    assert env["sql_used"] is None and env["grounded_tables"] == []
+    assert main["sql_used"] and main["grounded_tables"] == ["suppliers"]
+    assert env["assumptions"] == [_GEN01]
 
 
 def test_score_pack_missing_is_named_demo_pack_unavailable(tmp_path: Path) -> None:

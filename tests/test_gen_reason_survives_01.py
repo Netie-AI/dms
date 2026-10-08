@@ -279,8 +279,35 @@ def test_guard_rejected_retry_keeps_named_reason(
 def test_budget_stop_keeps_named_reason_through_live_ask(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """insights_timeout:retry through live_ask. Not the maybe_generative_ask case."""
+    """insights_timeout:retry through live_ask. Not the maybe_generative_ask case.
+
+    Regression guard, not a must-fail: passes on 38afd6bd and 72df50d8 because
+    #393's exemption already let budget stops through.
+    """
     monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "60")
     env, cortex = _live(tmp_path, [_nothing(), "timeout"])
     _assert_kept(env, cortex, "insights_timeout:retry")
     assert env["insights_fail"] == "insights_timeout:retry"
+
+
+def test_call_cap_keeps_named_reason_through_live_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """insights_call_cap through live_ask. Its own stub, not the golden unsure.
+
+    Regression guard, not a must-fail: the cap stop already survives live_ask
+    on 71b38947. The retry POST must not run, and it is not called guided.
+    """
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "1")
+    monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+    env, cortex = _live(tmp_path, [_nothing()])
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["badge"] == "ABSTAIN"
+    assert _named_reason(env) == "insights_call_cap:1"
+    assert "GEN-01: insights_call_cap:1" in env["assumptions"]
+    assert env["insights_fail"] == "insights_call_cap:1"
+    assert env["text"] == customer_abstain_text("insights_call_cap:1")
+    assert cortex.submits == []
+    assert not any(retry for _kind, retry in cortex.http.calls)

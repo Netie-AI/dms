@@ -214,6 +214,40 @@ def with_setup_fields(
     return env
 
 
+def unsure_cause(payload: dict[str, Any] | None) -> str:
+    """Real cause of a compute unsure, from ``audit_receipt.unsure.why``.
+
+    Absent or blank stays ``why_missing``. Never a silent generic abstain.
+    """
+    if isinstance(payload, dict):
+        receipt = payload.get("audit_receipt")
+        uns = receipt.get("unsure") if isinstance(receipt, dict) else None
+        if isinstance(uns, dict):
+            why = uns.get("why")
+            if isinstance(why, str) and why.strip():
+                return why.strip()
+    return "why_missing"
+
+
+def _bare_unsure(payload: dict[str, Any] | None) -> bool:
+    """True when the payload is an unsure/abstain flag and no model answered."""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("unsure") is not True and payload.get("abstain") is not True:
+        return False
+    if payload.get("served_provider") or payload.get("served_model"):
+        return False
+    if payload.get("query_sql") or isinstance(payload.get("query_plan"), dict):
+        return False
+    gen = payload.get("generative")
+    if isinstance(gen, dict) and gen:
+        return False
+    raw = payload.get("generate_legs")
+    if isinstance(raw, dict) and (raw.get("legs") or int(raw.get("count") or 0)):
+        return False
+    return True
+
+
 def served_attribution(payload: dict[str, Any] | None) -> str:
     """SERVED-ATTR-01 (dms#305): reported / missing / none for one ask.
 
@@ -279,6 +313,18 @@ def with_served_attribution(
             keys = sorted(str(k) for k in payload)
             env["served_payload_keys"] = {"count": len(keys), "keys": keys}
     env["served_attribution"] = served_attribution(payload)
+    # No model answered: stamp ``none`` on the envelope and every leg.
+    # ``missing`` means a leg served and was unstamped, not this.
+    if env["served_attribution"] == SERVED_ATTR_NONE and _bare_unsure(payload):
+        env["served_provider"] = SERVED_ATTR_NONE
+        env["served_model"] = SERVED_ATTR_NONE
+        legs_view = env.get("generate_legs")
+        if isinstance(legs_view, dict):
+            for leg in legs_view.get("legs") or []:
+                if isinstance(leg, dict):
+                    leg["served_provider"] = SERVED_ATTR_NONE
+                    leg["served_model"] = SERVED_ATTR_NONE
+                    leg["served_attribution"] = SERVED_ATTR_NONE
     return env
 
 
@@ -1202,10 +1248,11 @@ def maybe_generative_ask(
                 )
             )
     if kind == "unsure":
+        cause = unsure_cause(payload if isinstance(payload, dict) else None)
         return _stamp(
             _abstain(
                 q,
-                "compute abstained (unsure)",
+                f"compute abstained (unsure: {cause})",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,

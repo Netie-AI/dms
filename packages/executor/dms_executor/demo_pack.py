@@ -33,6 +33,10 @@ COLD_STORAGE_Q = "Which locations are cold storage?"
 CAPACITY_ABOVE_90_Q = "Which locations are above 90 percent capacity?"
 EXPIRED_ITEMS_Q = "Which items are expired?"
 CCTV_WH_A_Q = "Show the CCTV camera for warehouse A"
+# Not a base metric. Ops is not granted suppliers, so this phrase keeps the
+# named grants fail (Lead, PR #390). Finance is granted suppliers and is not
+# a pack hit: cq_supplier_ranking stays off this lane.
+SUPPLIER_RANK_Q = "Rank suppliers by combined risk and lead time score"
 HOW_FULL_TRAP_Q = "how full is each warehouse"
 DELAYED_COUNT_TRAP_Q = "How many delayed incoming shipments per warehouse?"
 STOCK_BY_BIN_TRAP_Q = "Show stock by storage bin"
@@ -436,6 +440,19 @@ def maybe_pack_ask(
     """
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
+        # Same question text as cq_supplier_ranking. That id is not a base
+        # metric, so a Space that grants suppliers is not a pack hit.
+        # Ops does not grant suppliers: keep the named grants fail instead
+        # of falling through to a generative abstain (Lead, PR #390).
+        if (
+            not tables
+            and grantable is not None
+            and _norm(question) == _norm(SUPPLIER_RANK_Q)
+            and not _grant_covers("suppliers", grantable)
+        ):
+            return _curated_step_refusal(
+                question, "grants fail", space_id=space_id, session_id=session_id
+            )
         return None
     try:
         reject_hostile_chat_sql(phrase.sql)
