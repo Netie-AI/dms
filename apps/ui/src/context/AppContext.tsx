@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
+import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk, postClarifyRun } from "@/lib/api";
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
@@ -19,7 +19,13 @@ import {
   shouldExpandSourcesDock,
   sourcesStartOpen,
 } from "@/lib/viewport";
-import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
+import type {
+  AnswerEnvelope,
+  AppRole,
+  ClarifyOption,
+  ContributingSource,
+  SpaceSummary,
+} from "@/lib/types";
 
 export type ChatMessage =
   | { id: string; role: "user"; text: string }
@@ -77,6 +83,8 @@ type AppState = {
   groundedLabels: string[];
   setGrounded: (tables: string[], labels?: string[]) => void;
   ask: (question: string) => Promise<void>;
+  /** Confirmed clarify reading. Does not call ask. */
+  runClarify: (option: ClarifyOption) => Promise<void>;
   clearThread: () => void;
   focusedSourceId: string | null;
   setFocusedSourceId: (id: string | null) => void;
@@ -381,6 +389,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [runAsk]);
 
+  const runClarify = useCallback(async (option: ClarifyOption) => {
+    setAsking(true);
+    setActivity({ label: "Running the confirmed reading…", progress: null });
+    setAskError(null);
+    try {
+      const envelope = await postClarifyRun({
+        option_id: option.id,
+        plan: option.plan,
+        space_id: activeSpaceIdRef.current,
+        session_id: sessionIdRef.current,
+        grounded_tables: groundedTablesRef.current,
+      });
+      setMessages((prev) => [
+        ...prev,
+        { id: envelope.answer_id || `a_${Date.now()}`, role: "assistant", envelope },
+      ]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "clarify run failed";
+      setAskError(msg);
+    } finally {
+      setAsking(false);
+      setActivity(null);
+    }
+  }, []);
+
   const ask = useCallback(
     async (question: string) => {
       const trimmed = question.trim();
@@ -448,6 +481,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activity,
     setActivity,
     ask,
+    runClarify,
     clearThread,
     focusedSourceId,
     setFocusedSourceId,

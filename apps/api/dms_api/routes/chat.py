@@ -7,7 +7,7 @@ import re
 from typing import Any, Literal
 
 from cortex_client import compliance_gate
-from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.ask import AskServiceError, GroundingRefused, ask_clarify_enabled
 from dms_core.bi_export import export_envelope_bi
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
 from fastapi import APIRouter, HTTPException
@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from dms_api.deps import AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
 from dms_api.gatekeeping import enforce
+from dms_api.wiring import confirm_clarify
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
@@ -351,6 +352,62 @@ def chat_ask(
                 "message": str(exc)[:400],
                 "retryable": timed_out,
             },
+        ) from exc
+
+
+class ClarifyRunBody(BaseModel):
+    """Confirmed reading. SQL text is not a field: the server recompiles the plan."""
+
+    option_id: str = Field(min_length=1, max_length=80)
+    plan: dict[str, Any]
+    space_id: str | None = None
+    session_id: str | None = None
+    grounded_tables: list[str] | None = Field(default=None, max_length=32)
+
+
+@router.post("/clarify/run")
+def chat_clarify_run(
+    body: ClarifyRunBody,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+) -> dict[str, Any]:
+    """Run a guided reading. Refuses with ``clarify_disabled`` when the flag is off."""
+    if body.space_id and store.get(body.space_id) is None:
+        raise HTTPException(status_code=404, detail="space_not_found")
+    decision = compliance_gate(
+        action="chat.clarify_run",
+        metadata={
+            "option_id": body.option_id,
+            "space_id": body.space_id,
+            "task_id": "chat.clarify_run",
+        },
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+    if not ask_clarify_enabled():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "clarify_disabled",
+                "message": "DMS_ASK_CLARIFY is off",
+            },
+        )
+    try:
+        return confirm_clarify(
+            ask,
+            option_id=body.option_id,
+            plan=body.plan,
+            space_id=body.space_id,
+            session_id=body.session_id,
+            tables=body.grounded_tables,
+        )
+    except AskServiceError as exc:
+        status = 409 if exc.code in {"clarify_disabled", "clarify_plan_mismatch"} else 502
+        raise HTTPException(
+            status_code=status,
+            detail={"code": exc.code, "message": exc.detail or exc.code},
         ) from exc
 
 

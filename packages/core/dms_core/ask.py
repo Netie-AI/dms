@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Protocol, runtime_checkable
+
+# ASK-GUIDE-01. Unset / 0 is off. Enabling it in prove or Studio is a
+# separate tier:full step. This function only reads the env; nothing here
+# turns it on.
+_CLARIFY_ON = frozenset({"1", "true", "yes", "on"})
+
+
+def ask_clarify_enabled() -> bool:
+    """True only when ``DMS_ASK_CLARIFY`` is explicitly on."""
+    raw = os.environ.get("DMS_ASK_CLARIFY", "")
+    return raw.strip().lower() in _CLARIFY_ON
 
 
 @runtime_checkable

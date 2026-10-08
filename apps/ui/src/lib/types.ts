@@ -90,6 +90,32 @@ export type AnswerEnvelope = {
   served_model?: string | null;
   /** Named abstain when the writer set it. Other names live in assumptions. */
   abstain_reason?: string | null;
+  /** ASK-GUIDE-01. Present only when DMS_ASK_CLARIFY is on and the abstain is ambiguous. */
+  clarify?: {
+    options?: ClarifyOption[];
+  };
+  /** ASK-GUIDE-01 insight tiers. Absent when the flag is off. */
+  insights?: InsightTiers;
+};
+
+export type ClarifyPlan = {
+  measure: string;
+  entity: { object: string; column: string } | null;
+  filter: null;
+  time_grain: string | null;
+};
+
+export type ClarifyOption = {
+  id: string;
+  plan: ClarifyPlan;
+  text: string;
+  sql_preview?: string;
+};
+
+export type InsightTiers = {
+  tier1?: { label: string; value: number };
+  tier2?: { text: string; sql: string; rows?: Record<string, unknown>[] };
+  tier3?: string[];
 };
 
 export type SpaceSummary = {
