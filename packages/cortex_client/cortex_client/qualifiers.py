@@ -241,9 +241,26 @@ _REVENUE_RE = re.compile(r"\b(?:revenue|sales|turnover)\b")
 # outbound_kg is weight. It is never a units measure.
 QUANTITY_MEASURES = ("outbound_kg", "quantity_sold")
 REVENUE_MEASURES = ("outbound_value_myr", "revenue", "sales")
+# Allow-list of measure words the rank-window keyword match may lock.
+# Keep in lockstep with _REVENUE_RE, _QTY_RE and _UNIT_WORD_RE.
+# ponytail: closed list, not a parser. A synonym that is not listed abstains
+# (lost coverage) instead of swallowing the tokens that follow it.
+# Upgrade: Cortex HTTP qualifier-check.
+_MEASURE_KEYWORDS = frozenset({
+    "revenue", "sales", "turnover",
+    "quantity", "qty", "kg", "kilo", "kilos", "kilogram", "kilograms",
+    "unit", "units",
+})
+# Words that may sit inside an exact measure phrase ("quantity sold",
+# "units and revenue", "the total revenue"). Not the question-level filler
+# list: "please", "for", "with", "from", "only", "that" after "by" are leftovers.
+_MEASURE_PHRASE_FILLERS = frozenset({
+    "sold", "and", "the", "a", "of", "total",
+})
 # Closed. A token not in this list, and not part of the window, the one entity
-# noun or the measure phrase, is rank_window_unhandled_terms. "in" / "at" are
-# not fillers: "in warehouse A" and "at WH-B" are filters we do not compile.
+# noun or an allow-listed measure word, is rank_window_unhandled_terms.
+# "in" / "at" are not fillers: "in warehouse A" and "at WH-B" are filters we
+# do not compile. This list does not forgive a token inside a by-phrase.
 _FILLERS = frozenset(
     {
         "the", "of", "our", "what", "whats", "what's", "are", "is", "which",
@@ -410,6 +427,43 @@ def _true_units_measure(measures: dict[str, str]) -> str | None:
     return None
 
 
+def _by_phrase_tokens(qn: str) -> list[str] | None:
+    """Tokens after ``by``, or None when the question has no by-phrase."""
+    by = _BY_PHRASE_RE.search(qn)
+    if by is None:
+        return None
+    return re.findall(r"[a-z0-9]+", by.group(1))
+
+
+def _by_phrase_extra_tokens(qn: str) -> list[str]:
+    """Tokens after ``by`` that are not the measure or its own fillers.
+
+    Empty when there is no by-phrase, when the phrase is only measure words,
+    and when it names no known measure keyword (that path is
+    ``unknown_measure``, not a dropped filter). Any other token, including
+    ones that are question-level fillers, is a leftover. Allow-list: there
+    is no list of places, suppliers, or direction words.
+    """
+    toks = _by_phrase_tokens(qn)
+    if not toks or not any(t in _MEASURE_KEYWORDS for t in toks):
+        return []
+    return sorted({
+        t for t in toks
+        if t not in _MEASURE_KEYWORDS and t not in _MEASURE_PHRASE_FILLERS
+    })
+
+
+def _blank_allowlisted_by_tokens(by: re.Match[str]) -> list[tuple[int, int]]:
+    """Spans of ``by`` plus the measure words. The rest of the phrase stays."""
+    spans = [(by.start(), by.start() + len("by"))]
+    base = by.start(1)
+    for m in re.finditer(r"[a-z0-9]+", by.group(1)):
+        tok = m.group(0)
+        if tok in _MEASURE_KEYWORDS or tok in _MEASURE_PHRASE_FILLERS:
+            spans.append((base + m.start(), base + m.end()))
+    return spans
+
+
 def _window_blanks(qn: str, win: RankWindow) -> list[tuple[int, int]]:
     """Spans the shape check may ignore. The gap between them is not ignored."""
     blanks: list[tuple[int, int]] = []
@@ -434,7 +488,13 @@ def _window_blanks(qn: str, win: RankWindow) -> list[tuple[int, int]]:
         blanks.append((selling.start(), selling.end()))
     by = _BY_PHRASE_RE.search(qn)
     if by is not None:
-        blanks.append((by.start(), by.end()))
+        # The regex runs to the next punctuation. Blank only the measure
+        # words when anything else is in that span; an unknown measure name
+        # ("profit margin") is still the whole phrase.
+        if _by_phrase_extra_tokens(qn):
+            blanks.extend(_blank_allowlisted_by_tokens(by))
+        else:
+            blanks.append((by.start(), by.end()))
     return blanks
 
 
@@ -442,8 +502,10 @@ def rank_window_shape_reason(question: str) -> str | None:
     """Why this window cannot be compiled, or None when the grammar is clean.
 
     Clean means exactly one entity, the noun on ``top M`` is that entity or
-    absent, nothing left after the window, the entity, the measure phrase and
-    the closed filler list, and a finite limit. No ontology and no pack.
+    absent, nothing left after the window, the entity, and the measure words
+    (not the rest of the by-phrase), and a finite limit. A token after ``by``
+    that is not in ``_MEASURE_KEYWORDS`` or ``_MEASURE_PHRASE_FILLERS`` is
+    ``rank_window_unhandled_terms``. No ontology and no pack.
     """
     win = parse_rank_window(question)
     if win is None:
@@ -470,6 +532,9 @@ def rank_window_shape_reason(question: str) -> str | None:
         tok for tok in re.findall(r"[a-z0-9]+", "".join(masked))
         if tok not in _FILLERS and not tok.isdigit()
     })
+    # Question-level fillers ("please", "for", "only") are not measure words.
+    # Put them back when they sit in the by-phrase next to a measure keyword.
+    left = sorted(set(left).union(_by_phrase_extra_tokens(qn)))
     if left:
         return "rank_window_unhandled_terms:" + ",".join(left)
     if win.limit is None:
@@ -487,14 +552,26 @@ def rank_window_measure(
     note says so. No measure word at all is ``ambiguous_measure:none``.
     "units" maps to a measure that says units; ``outbound_kg`` is weight, so
     with no such measure the reason is ``unknown_measure:units``.
+    A by-phrase locks a keyword only when every token is that measure or
+    ``_MEASURE_PHRASE_FILLERS``. Any other token is
+    ``rank_window_unhandled_terms`` and is not ranked DESC. An explicit
+    by-phrase that names no known measure keyword is not overridden by a
+    selling word elsewhere in the question.
     """
     qn = (question or "").lower()
+    extra = _by_phrase_extra_tokens(qn)
+    if extra:
+        return None, "rank_window_unhandled_terms:" + ",".join(extra), ""
     win = parse_rank_window(qn)
     phrase = win.measure_phrase if win else ""
-    unit = bool(_UNIT_WORD_RE.search(qn))
-    qty = bool(_QTY_RE.search(qn))
-    revenue_word = bool(_REVENUE_RE.search(qn))
-    selling = _SELLING_RE.search(qn)
+    by_toks = _by_phrase_tokens(qn)
+    # An explicit by-phrase that is not a known measure ("profit margin")
+    # must not pick up "revenue" or "most selling" from the rest of the ask.
+    by_unknown = by_toks is not None and not any(t in _MEASURE_KEYWORDS for t in by_toks)
+    unit = False if by_unknown else bool(_UNIT_WORD_RE.search(qn))
+    qty = False if by_unknown else bool(_QTY_RE.search(qn))
+    revenue_word = False if by_unknown else bool(_REVENUE_RE.search(qn))
+    selling = None if by_unknown else _SELLING_RE.search(qn)
 
     def _named(
         names: tuple[str, ...], reading: str, other: str, other_names: tuple[str, ...]
