@@ -16,9 +16,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -171,10 +170,116 @@ def curated_pack_present() -> bool:
     """True when both curated_ceo fixture files are on disk.
 
     A missing file is an empty pack, same as ``curated_l0_question_norms``.
-    It is not an error and it is not read at import.
+    It is not an error and it is not read at import. On disk is not readable:
+    ``curated_pack_status`` is the health check.
     """
     root = _score_fixture_dir()
     return (root / "questions.yaml").is_file() and (root / "oracles.yaml").is_file()
+
+
+_T = TypeVar("_T")
+
+
+class _HitCache(Generic[_T]):
+    """Remember one successful non-empty load. Empty results are not stored.
+
+    ponytail: one process-local slot, no mtime check. A good load stays until
+    ``cache_clear`` or restart, so a file replaced after that load is invisible.
+    Upgrade path: key the slot on the fixture mtime.
+    """
+
+    def __init__(self, load: Callable[[], _T]) -> None:
+        self._load = load
+        self._hit: _T | None = None
+
+    def cache_clear(self) -> None:
+        self._hit = None
+
+    def __call__(self) -> _T:
+        if self._hit is not None:
+            return self._hit
+        loaded = self._load()
+        if loaded:
+            self._hit = loaded
+        return loaded
+
+
+@dataclass(frozen=True)
+class PackStatus:
+    """``name`` is ``curated_ceo``, ``absent``, or ``unreadable``.
+
+    ``error_class`` is the exception class for ``unreadable`` and nothing else.
+    It is never the message, which can quote the file.
+    """
+
+    name: str
+    error_class: str | None = None
+
+
+def _require_question_list(data: dict[str, Any]) -> None:
+    rows = data.get("questions", [])
+    if rows is None:
+        return
+    if not isinstance(rows, list) or any(not isinstance(item, dict) for item in rows):
+        raise ValueError("pack document has the wrong shape")
+
+
+def _require_oracle_map(data: dict[str, Any]) -> None:
+    rows = data.get("oracles", {})
+    if rows is None:
+        return
+    if not isinstance(rows, dict) or any(
+        item is not None and not isinstance(item, dict) for item in rows.values()
+    ):
+        raise ValueError("pack document has the wrong shape")
+
+
+def _read_pack_file(
+    path: Path,
+    require: Callable[[dict[str, Any]], None],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(doc, None)`` when the file loads, ``(None, None)`` when it is not on disk.
+
+    ``(None, error_class)`` when it is on disk but cannot be used. The class
+    name only.
+    """
+    if not path.is_file():
+        return None, None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return None, type(exc).__name__
+    try:
+        import yaml
+
+        data = yaml.safe_load(text)
+    except Exception as exc:  # noqa: BLE001 - invalid YAML is an unreadable pack
+        return None, type(exc).__name__
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None, "ValueError"
+    try:
+        require(data)
+    except ValueError:
+        return None, "ValueError"
+    return data, None
+
+
+def _inspect_pack() -> tuple[PackStatus, dict[str, Any], dict[str, Any]]:
+    root = _score_fixture_dir()
+    questions, q_err = _read_pack_file(root / "questions.yaml", _require_question_list)
+    oracles, o_err = _read_pack_file(root / "oracles.yaml", _require_oracle_map)
+    if q_err or o_err:
+        return PackStatus("unreadable", q_err or o_err), {}, {}
+    if questions is None or oracles is None:
+        return PackStatus("absent"), {}, {}
+    return PackStatus("curated_ceo"), questions, oracles
+
+
+def curated_pack_status() -> PackStatus:
+    """Loaded, absent, or unreadable. Does not cache a miss."""
+    return _inspect_pack()[0]
 
 
 def _collapse_sql(raw: object) -> str:
@@ -219,14 +324,11 @@ def load_score_pack_metrics(
 
     Reads the curated_ceo fixture (question + oracle SQL). An id not in
     ``ids`` is not a metric. Same question text keeps the first metric.
+    A missing or unreadable pack is an empty tuple, same as an absent one.
     """
-    root = _score_fixture_dir()
-    if not curated_pack_present():
+    status, questions, oracles = _inspect_pack()
+    if status.name != "curated_ceo":
         return ()
-    import yaml
-
-    questions = yaml.safe_load((root / "questions.yaml").read_text(encoding="utf-8")) or {}
-    oracles = yaml.safe_load((root / "oracles.yaml").read_text(encoding="utf-8")) or {}
     oracle_rows = oracles.get("oracles") or {}
     taken = {_norm(m.question) for m in base}
     extra: list[PackMetric] = []
@@ -260,10 +362,11 @@ def load_score_pack_metrics(
 PACK_METRICS: tuple[PackMetric, ...] = _BASE_PACK_METRICS
 
 
-@lru_cache(maxsize=1)
-def score_pack_exact_metrics() -> tuple[PackMetric, ...]:
-    """Loaded on the first pack lookup. A missing pack is an empty tuple."""
+def _load_exact_metrics() -> tuple[PackMetric, ...]:
     return load_score_pack_metrics()
+
+
+score_pack_exact_metrics = _HitCache(_load_exact_metrics)
 
 
 def __getattr__(name: str) -> Any:
@@ -414,31 +517,26 @@ def _curated_pack_path() -> Path:
     return _score_fixture_dir() / "questions.yaml"
 
 
-@lru_cache(maxsize=1)
-def curated_l0_question_norms() -> frozenset[str]:
+def _load_l0_norms() -> frozenset[str]:
     """Normalised curated_ceo questions whose expect is l0.
 
-    The file is the score pack. A missing file means this process cannot
-    tell a curated l0 ask from any other question.
+    A missing or unreadable file means this process cannot tell a curated l0
+    ask from any other question. An empty result is not cached.
     """
-    path = _curated_pack_path()
-    if not path.is_file():
+    doc, err = _read_pack_file(_curated_pack_path(), _require_question_list)
+    if err or doc is None:
         return frozenset()
-    try:
-        import yaml
-    except ImportError:
-        return frozenset()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     norms: set[str] = set()
-    for row in data.get("questions") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in doc.get("questions") or []:
         if str(row.get("expect") or "").lower() != "l0":
             continue
         n = _norm(str(row.get("question") or ""))
         if n:
             norms.add(n)
     return frozenset(norms)
+
+
+curated_l0_question_norms = _HitCache(_load_l0_norms)
 
 
 def is_curated_l0_without_pack_metric(question: str) -> bool:
