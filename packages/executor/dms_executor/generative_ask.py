@@ -71,6 +71,7 @@ from dms_executor.ontology import (
     Refusal,
     Violation,
     WherePath,
+    category_list_decision,
     compile_grammar_list,
     coverage_from_sql_path,
     coverage_valid,
@@ -288,18 +289,17 @@ def with_served_attribution(
 def _clear_discarded_model_credit(env: dict[str, Any]) -> None:
     """Grammar list is not the model's SQL. Credit is none, not that model."""
     env["served_attribution"] = SERVED_ATTR_NONE
-    for key in ("served_model", "served_provider"):
-        if key in env:
-            env[key] = SERVED_ATTR_NONE
+    env["served_model"] = SERVED_ATTR_NONE
+    env["served_provider"] = SERVED_ATTR_NONE
     legs = env.get("generate_legs")
     if not isinstance(legs, dict):
         return
     for leg in legs.get("legs") or []:
         if not isinstance(leg, dict):
             continue
-        for key in ("served_model", "served_provider"):
-            if key in leg:
-                leg[key] = SERVED_ATTR_NONE
+        leg["served_attribution"] = SERVED_ATTR_NONE
+        leg["served_model"] = SERVED_ATTR_NONE
+        leg["served_provider"] = SERVED_ATTR_NONE
 
 
 def where_paths_for_envelope(paths: Sequence[WherePath]) -> list[dict[str, Any]]:
@@ -1209,7 +1209,17 @@ def maybe_generative_ask(
 
     def _list_instead_of_aggregate(reason: str) -> dict[str, Any] | None:
         """List intent does not keep SUM/COUNT/GROUP BY. None if not a list ask."""
-        if not is_list_intent(q):
+        decision, extra = category_list_decision(q)
+        if decision == "unhandled":
+            return _abstain(
+                q,
+                "list_unhandled_terms:" + ",".join(extra),
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        if decision != "serve" and not is_list_intent(q):
             return None
         listed = _serve_grammar_list()
         if listed is not None:
@@ -1246,6 +1256,20 @@ def maybe_generative_ask(
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+            )
+        )
+    # A category list with a token this grammar cannot predicate abstains.
+    # It does not serve the distinct list and drop the token.
+    _list_decision, _list_extra = category_list_decision(q)
+    if _list_decision == "unhandled":
+        return _stamp(
+            _abstain(
+                q,
+                "list_unhandled_terms:" + ",".join(_list_extra),
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                notes=trail_notes,
             )
         )
     ranked_slots: dict[str, Any] | None = None

@@ -75,6 +75,7 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    _clear_discarded_model_credit,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -532,8 +533,15 @@ class Executor:
             assert_envelope_valid(env)
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
+        # Grammar list replaced the model SQL and cleared credit to none.
+        # with_served_attribution copies the Insights payload and would credit
+        # that model again (reported) or mark an empty generate missing.
+        notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+        grammar_list = "grammar list:" in notes
         stamped = with_served_attribution(env, payload)
         out = stamped if stamped is not None else env
+        if grammar_list and isinstance(out, dict):
+            _clear_discarded_model_credit(out)
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 

@@ -1845,11 +1845,57 @@ _AGGREGATE_SQL = re.compile(
     re.I,
 )
 _PLAIN_RELATION = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_QUESTION_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+# Positive vocabulary. A token outside this set is not a list frame, an entity
+# word, or the matched category. It is not a denylist of places or suppliers.
+_LIST_FRAME = frozenset({"list", "show", "all", "which", "what", "are", "in", "the"})
+_LIST_ENTITY = frozenset({"sku", "skus", "item", "items", "inventory", "lot", "lots"})
+_LIST_CATEGORY = frozenset({"chemical", "chemicals"})
+# Measure phrases stay on the measure lane. "chemical" is not one of them.
+_MEASURE_PHRASE = re.compile(
+    r"\b(?:stock value|inventory worth|value of stock|revenue|selling|sales|"
+    r"freight|how many|sku count|quantity sold|qty sold|reorder|utilisation|"
+    r"utilization|total spend|spend by|worth per)\b",
+    re.I,
+)
+
+
+def question_tokens(question: str) -> list[str]:
+    """Lowercase content tokens. Hyphenated codes stay one token (``wh-b``)."""
+    return _QUESTION_TOKEN.findall((question or "").lower())
+
+
+def category_list_decision(question: str) -> tuple[str, tuple[str, ...]]:
+    """``serve`` / ``unhandled`` / ``not_list`` for a category list.
+
+    Serve only when every token is a list-frame word, an entity word, or the
+    matched category word. Any other token is unhandled: the grammar list has
+    no predicate for it. A measure phrase is not a list.
+    """
+    tokens = question_tokens(question)
+    if not tokens or not any(tok in _LIST_CATEGORY for tok in tokens):
+        return ("not_list", ())
+    if _MEASURE_PHRASE.search(question or ""):
+        return ("not_list", ())
+    allowed = _LIST_FRAME | _LIST_ENTITY | _LIST_CATEGORY
+    extra = tuple(dict.fromkeys(tok for tok in tokens if tok not in allowed))
+    if extra:
+        return ("unhandled", extra)
+    return ("serve", ())
 
 
 def is_list_intent(question: str) -> bool:
-    """List / show-all / which-X-are-in. Not a measure ask and not a skill row."""
-    return bool(_LIST_INTENT.search(question or ""))
+    """List ask. Category lists use the token allow-list, not a phrase table.
+
+    The start-anchored arm still marks ``List ...`` / ``show all`` /
+    ``which ... are in`` so a prefixed ranking does not climb. A category
+    list (``which skus are chemicals``) is list intent when its tokens are
+    the frame, the entity, and the category, or when a token is unhandled.
+    """
+    if _LIST_INTENT.search(question or ""):
+        return True
+    decision, _extra = category_list_decision(question)
+    return decision != "not_list"
 
 
 def sql_is_aggregate(sql: str) -> bool:
@@ -1873,6 +1919,9 @@ def compile_grammar_list(onto: Ontology, question: str) -> CompiledQuery | None:
     None when this is not list intent, or grammar cannot name a key.
     """
     if onto is None or not is_list_intent(question):
+        return None
+    # Unhandled tokens have no predicate in this SQL. Do not emit it.
+    if category_list_decision(question)[0] != "serve":
         return None
     qn = (question or "").lower()
     # "chemical" is a category value, not a measure. Read the lot row's own

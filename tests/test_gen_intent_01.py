@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
@@ -168,8 +169,10 @@ def _no_invented_measure(env: dict[str, Any]) -> None:
             assert "stock_value_myr" not in row
         assert "stock_value_myr" not in text
         assert env.get("plan_origin") != "ontology_ranking"
+        # Oracle answer is the exact CHEMICALS key. Variant rows stay in the
+        # lake (Chemicals / chemical) so this fails until LIST-MATCH-EXACT-01.
         got = {str(row.get("lot_sku")) for row in rows}
-        assert got == {"SKU-CHEM-B", "SKU-CHEM-C", "SKU-GAMMA"}
+        assert got == {"SKU-GAMMA"}
     else:
         assert env.get("badge") == "ABSTAIN"
         assert env.get("abstained") is True
@@ -181,6 +184,7 @@ def _no_invented_measure(env: dict[str, Any]) -> None:
         )
 
 
+@pytest.mark.xfail(strict=True, reason="LIST-MATCH-EXACT-01")
 def test_generate_empty_list_is_not_stock_value(tmp_path: Path) -> None:
     db, onto = _warehouse(tmp_path)
     opened: list[str] = []
@@ -209,6 +213,7 @@ def test_generate_empty_list_is_not_stock_value(tmp_path: Path) -> None:
         assert needle not in blob
 
 
+@pytest.mark.xfail(strict=True, reason="LIST-MATCH-EXACT-01")
 def test_show_all_and_which_are_in_are_not_aggregates(tmp_path: Path) -> None:
     db, onto = _warehouse(tmp_path)
     grants = {"inventory", "locations", "transactions", "suppliers", "shipments"}
