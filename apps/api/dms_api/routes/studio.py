@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from dms_api.deps import CortexDep, SettingsDep, SpaceStoreDep
+from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.wiring import (
     batch_ingest,
@@ -16,7 +16,6 @@ from dms_api.wiring import (
     list_document_chunks,
     list_verified_queries,
     register_verified_query,
-    service_bearer_id,
     sql_source_describe,
     sql_source_ingest,
     xlsx_orch_crosscheck,
@@ -273,19 +272,8 @@ def sql_source_ingest_route(
     body: SqlSourceIn,
     cortex: CortexDep,
     settings: SettingsDep,
-    store: SpaceStoreDep,
-    authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
-    """Extract a SQL Server, MySQL, or PostgreSQL source into bronze. Credentials are not stored.
-
-    A matching service bearer also registers a Space and grants the tables the
-    connector listed. No Authorization header keeps the previous receipt.
-    """
-    token_id: str | None = None
-    if authorization:
-        token_id = service_bearer_id(authorization)
-        if token_id is None:
-            raise HTTPException(status_code=401, detail="bearer_denied")
+    """Extract a SQL Server, MySQL, or PostgreSQL source into bronze. Credentials are not stored."""
     label = sql_source_describe(
         kind=body.kind, host=body.host, database=body.database, port=body.port
     )
@@ -308,9 +296,6 @@ def sql_source_ingest_route(
         space_id=body.space_id,
         encrypt=body.encrypt,
         trust_server_certificate=body.trust_server_certificate,
-        store=store if token_id else None,
-        token_id=token_id,
-        actor=settings.dms_actor_user_id,
     )
 
 

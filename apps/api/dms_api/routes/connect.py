@@ -1,21 +1,33 @@
 """Register a connected source's Space and grant only its exposed tables.
 
-Postgres grants stay parked. The book is process memory. Every mutation
-checks the configured service bearer (the same token OpenVault already
-uses) and then compliance_gate. The bearer is not a new mint and is not
-written to the audit row; the row stores a short hash id.
+Off unless ``DMS_CONNECT_API`` is 1/true/yes/on. The book is process memory
+(lost on restart, not shared across workers). The body carries an OpenVault
+credential reference. A raw secret is rejected and is not logged, stored,
+audited, or copied into the error.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, Field
+from dms_core.control_plane.connect_secrets import (
+    ConnectCredentialError,
+    body_has_raw_secret,
+    key_id_for_ref,
+)
+from fastapi import APIRouter, Header, HTTPException, Request
 
-from dms_api.deps import CortexDep, SettingsDep, SpaceStoreDep, StoreBindingDep
+from dms_api.deps import (
+    AskServiceDep,
+    CortexDep,
+    SettingsDep,
+    SpaceStoreDep,
+    StoreBindingDep,
+)
 from dms_api.gatekeeping import enforce
+from dms_api.settings import Settings
 from dms_api.wiring import (
     connect_audit_rows,
     connect_registered_source,
@@ -26,16 +38,14 @@ from dms_api.wiring import (
 
 router = APIRouter(prefix="/v1/connect", tags=["connect"])
 
-
-class ConnectIn(BaseModel):
-    connector_id: str = Field(min_length=1, max_length=128)
-    space_name: str = Field(min_length=1, max_length=120)
-    #: Subset of the connector listing. Omit to grant every exposed table.
-    grant_tables: list[str] | None = Field(default=None, max_length=64)
+_MAX_BODY = 16_384
+_DISABLED = "connect_api_disabled"
+_RAW_SECRET = "connect_raw_secret_rejected"
 
 
-class TablesIn(BaseModel):
-    tables: list[str] = Field(min_length=1, max_length=64)
+def _enabled(settings: Settings) -> None:
+    if not settings.dms_connect_api:
+        raise HTTPException(status_code=404, detail=_DISABLED)
 
 
 def _require_bearer(authorization: str | None) -> str:
@@ -48,39 +58,88 @@ def _require_bearer(authorization: str | None) -> str:
 
 
 def _map_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ConnectCredentialError):
+        return HTTPException(status_code=400, detail="connect_credential_unresolved")
     if isinstance(exc, KeyError):
-        missing = str(exc.args[0]) if exc.args else ""
-        if missing == "connector" or not missing:
-            return HTTPException(status_code=404, detail="connector_unknown")
         return HTTPException(status_code=404, detail="source_not_found")
     code = str(exc)
     if code == "space_name_taken":
         return HTTPException(status_code=409, detail=code)
     if code == "connector_unknown":
         return HTTPException(status_code=404, detail=code)
-    if code in {"table_not_exposed", "table_not_granted", "bad_table_name", "space_not_found"}:
-        status = 404 if code == "space_not_found" else 400
-        return HTTPException(status_code=status, detail=code)
+    if code in {
+        "table_not_exposed",
+        "table_not_granted",
+        "bad_table_name",
+        "connector_failed",
+    }:
+        return HTTPException(status_code=400, detail=code)
+    if code == "space_not_found":
+        return HTTPException(status_code=404, detail=code)
     return HTTPException(status_code=400, detail="bad_request")
 
 
+async def _object(request: Request) -> dict[str, Any]:
+    """Parse a JSON object. A secret-shaped body is a named 400 with no echo."""
+    raw = await request.body()
+    if len(raw) > _MAX_BODY:
+        raise HTTPException(status_code=400, detail="bad_request")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="bad_request") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="bad_request")
+    if body_has_raw_secret(payload):
+        raise HTTPException(status_code=400, detail=_RAW_SECRET)
+    return payload
+
+
+def _tables(payload: dict[str, Any], key: str, *, required: bool) -> list[str] | None:
+    if key not in payload:
+        if required:
+            raise HTTPException(status_code=400, detail="bad_request")
+        return None
+    raw = payload[key]
+    if not isinstance(raw, list) or not raw or len(raw) > 64:
+        raise HTTPException(status_code=400, detail="bad_request")
+    if not all(isinstance(item, str) for item in raw):
+        raise HTTPException(status_code=400, detail="bad_request")
+    return raw
+
+
 @router.post("/sources", status_code=201)
-def connect_source(
-    body: ConnectIn,
+async def connect_source(
+    request: Request,
     cortex: CortexDep,
     settings: SettingsDep,
     store: SpaceStoreDep,
     binding: StoreBindingDep,
+    ask: AskServiceDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
-    """Read the connector's schema listing and grant this Space only those tables."""
+    """Read the connector listing for an OpenVault reference and grant those tables."""
+    _enabled(settings)
+    payload = await _object(request)
     token_id = _require_bearer(authorization)
+    connector_id = payload.get("connector_id")
+    space_name = payload.get("space_name")
+    credential_ref = payload.get("credential_ref")
+    if not isinstance(connector_id, str) or not connector_id.strip():
+        raise HTTPException(status_code=400, detail="bad_request")
+    if not isinstance(space_name, str) or not space_name.strip():
+        raise HTTPException(status_code=400, detail="bad_request")
+    if not isinstance(credential_ref, str) or not credential_ref.strip():
+        raise HTTPException(status_code=400, detail="credential_ref_required")
+    if key_id_for_ref(credential_ref.strip()) is None:
+        raise HTTPException(status_code=400, detail="bad_credential_ref")
+    grant_tables = _tables(payload, "grant_tables", required=False)
     decision = compliance_gate(
         action="connect.register",
         actor=settings.dms_actor_user_id,
         metadata={
             "task_id": "connect.register",
-            "connector_id": body.connector_id,
+            "connector_id": connector_id.strip(),
         },
         client=cortex,
     )
@@ -88,13 +147,15 @@ def connect_source(
     try:
         registered = connect_registered_source(
             store=store,
-            connector_id=body.connector_id,
-            space_name=body.space_name,
-            grant_tables=body.grant_tables,
+            ask=ask,
+            connector_id=connector_id.strip(),
+            space_name=space_name.strip(),
+            grant_tables=grant_tables,
+            credential_ref=credential_ref.strip(),
             actor=settings.dms_actor_user_id,
             token_id=token_id,
         )
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, ConnectCredentialError) as exc:
         raise _map_error(exc) from None
     return {
         **registered,
@@ -105,14 +166,18 @@ def connect_source(
 
 
 @router.post("/sources/{source_id}/grants")
-def grant_source(
+async def grant_source(
     source_id: str,
-    body: TablesIn,
+    request: Request,
     cortex: CortexDep,
     settings: SettingsDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
+    _enabled(settings)
+    payload = await _object(request)
     token_id = _require_bearer(authorization)
+    tables = _tables(payload, "tables", required=True)
+    assert tables is not None
     decision = compliance_gate(
         action="connect.grant",
         actor=settings.dms_actor_user_id,
@@ -123,7 +188,7 @@ def grant_source(
     try:
         return grant_connected_tables(
             source_id=source_id,
-            tables=body.tables,
+            tables=tables,
             actor=settings.dms_actor_user_id,
             token_id=token_id,
         )
@@ -132,14 +197,18 @@ def grant_source(
 
 
 @router.post("/sources/{source_id}/revoke")
-def revoke_source(
+async def revoke_source(
     source_id: str,
-    body: TablesIn,
+    request: Request,
     cortex: CortexDep,
     settings: SettingsDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
+    _enabled(settings)
+    payload = await _object(request)
     token_id = _require_bearer(authorization)
+    tables = _tables(payload, "tables", required=True)
+    assert tables is not None
     decision = compliance_gate(
         action="connect.revoke",
         actor=settings.dms_actor_user_id,
@@ -150,7 +219,7 @@ def revoke_source(
     try:
         return revoke_connected_tables(
             source_id=source_id,
-            tables=body.tables,
+            tables=tables,
             actor=settings.dms_actor_user_id,
             token_id=token_id,
         )
@@ -165,6 +234,7 @@ def list_connect_audit(
     binding: StoreBindingDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
+    _enabled(settings)
     token_id = _require_bearer(authorization)
     decision = compliance_gate(
         action="connect.audit.read",

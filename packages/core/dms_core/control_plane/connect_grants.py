@@ -3,7 +3,8 @@
 ``dms.acl_grants`` and ``dms.data_sources`` stay empty (P-DMS-2). This book is
 the stand-in the API writes and the ask path reads: process memory, same
 durability as ``DemoSpaceStore`` when ``DATABASE_URL`` is unset. A restart
-drops every row. Do not put secrets or cell values in here.
+drops every row, and two workers do not share the book. Do not put secrets
+or cell values in here.
 
 ponytail: the grant key is the table name. Two sources that expose the same
 name share one source id (``source_id_for``). Upgrade path is source id plus

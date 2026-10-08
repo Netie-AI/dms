@@ -282,20 +282,49 @@ def bind_connected_space(
     }
 
 
+def _resolve_connect_secret(ask: Any, credential_ref: str) -> str:
+    """Call the OpenVault client already on the ask service. No logging."""
+    from dms_core.control_plane.connect_secrets import ConnectCredentialError
+
+    minter = getattr(ask, "_minter", None)
+    resolve = getattr(minter, "resolve_credential", None)
+    if not callable(resolve):
+        raise ConnectCredentialError()
+    try:
+        secret = resolve(credential_ref)
+    except ConnectCredentialError:
+        raise
+    except Exception:
+        raise ConnectCredentialError() from None
+    if not isinstance(secret, str) or secret == "":
+        raise ConnectCredentialError()
+    return secret
+
+
 def connect_registered_source(
     *,
     store: Any,
+    ask: Any,
     connector_id: str,
     space_name: str,
     grant_tables: list[str] | None,
+    credential_ref: str,
     actor: str,
     token_id: str,
 ) -> dict[str, Any]:
-    """Read the connector listing, then register and grant through the book."""
+    """Resolve the OpenVault reference, read the listing, grant through the book.
+
+    The resolved secret is an argument to the connector and is then dropped.
+    It is not written to the grant book or the audit row.
+    """
+    secret = _resolve_connect_secret(ask, credential_ref)
     try:
-        exposed = dms_executor.connector_tables(connector_id)
-    except KeyError:
-        raise ValueError("connector_unknown") from None
+        try:
+            exposed = dms_executor.connector_tables(connector_id, secret)
+        except KeyError:
+            raise ValueError("connector_unknown") from None
+    finally:
+        secret = ""
     return bind_connected_space(
         store=store,
         space_id=None,
@@ -372,9 +401,6 @@ def sql_source_ingest(
     space_id: str | None = None,
     encrypt: bool = True,
     trust_server_certificate: bool = False,
-    store: Any | None = None,
-    token_id: str | None = None,
-    actor: str | None = None,
 ) -> dict[str, Any]:
     """Pull a SQL source into bronze. Receipt is built field-by-field, never asdict."""
     ceiling = dms_executor.DEFAULT_MAX_ROWS
@@ -441,26 +467,6 @@ def sql_source_ingest(
         "declared_foreign_keys": len(extract.keys.foreign_keys),
         "links": links,
     }
-    # Authenticated connect only. A request with no bearer keeps the old
-    # receipt and does not open a Space. Names come from the connector
-    # listing captured on this pull, not from a caller-supplied allowlist.
-    if token_id and store is not None and actor:
-        try:
-            result["connection"] = bind_connected_space(
-                store=store,
-                space_id=space_id,
-                space_name=None,
-                connector_id=extract.source,
-                exposed=list(extract.exposed_tables),
-                grant_tables=None,
-                actor=actor,
-                token_id=token_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": str(exc), "message": str(exc)},
-            ) from None
     return result
 
 

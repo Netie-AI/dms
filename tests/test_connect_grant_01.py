@@ -7,6 +7,7 @@ Table names here are synthetic. No warehouse fixture is loaded.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,8 @@ OTHER = 11
 QUESTION = "cg marker tally please"
 TOKEN = "cg-harness-bearer"
 SEEDED = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+REF = "dms/cg-kid"
+SECRET = "ov-mem-only"
 
 
 def _holds(readable: set[str], table: str) -> bool:
@@ -85,6 +88,28 @@ class _Cortex:
         )
 
 
+class _OvResponse:
+    def __init__(self, status_code: int, body: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self) -> dict[str, Any]:
+        return self._body
+
+
+class _OvHttp:
+    """Stub of the OpenVault client the minter already holds."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.status_code = 200
+        self.body: dict[str, Any] = {"id": "cg-kid", "secret": SECRET}
+
+    def get(self, url: str, headers: dict[str, str] | None = None) -> _OvResponse:
+        self.calls.append(url)
+        return _OvResponse(self.status_code, self.body)
+
+
 def _minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     minter = ManifestMinter()
 
@@ -106,6 +131,7 @@ def _minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     monkeypatch.setattr(minter, "fetch_intermediate", lambda: None)
     monkeypatch.setattr(minter, "close", lambda: None)
     monkeypatch.setattr(minter, "invalidate", lambda *_a, **_k: None)
+    minter._http = _OvHttp()  # type: ignore[assignment]
     return minter
 
 
@@ -114,6 +140,7 @@ def harness(tmp_path, monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Cor
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(tmp_path / "cg.duckdb"))
     monkeypatch.delenv("CORTEX_WAREHOUSE_DB", raising=False)
     monkeypatch.setenv("DMS_OV_SERVICE_TOKEN", TOKEN)
+    monkeypatch.setenv("DMS_CONNECT_API", "1")
     monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
     monkeypatch.setenv("DMS_ASK_MODE", "live")
     monkeypatch.setenv("DMS_CCA_CASCADE", "0")
@@ -163,8 +190,17 @@ def _connect(
     grant: list[str] | None,
     space_name: str,
 ) -> dict[str, Any]:
-    register_connector(connector_id, lambda: list(tables))
-    body: dict[str, Any] = {"connector_id": connector_id, "space_name": space_name}
+    def _listing(credential: str) -> list[str]:
+        if credential != SECRET:
+            return []
+        return list(tables)
+
+    register_connector(connector_id, _listing)
+    body: dict[str, Any] = {
+        "connector_id": connector_id,
+        "space_name": space_name,
+        "credential_ref": REF,
+    }
     if grant is not None:
         body["grant_tables"] = grant
     res = client.post("/v1/connect/sources", headers=_auth(), json=body)
@@ -197,6 +233,7 @@ def test_harness_connects_grants_and_asks_without_session_injection(
     assert space_id != SEEDED
     assert registered["exposed_tables"] == [LEFT, RIGHT]
     assert registered["granted_tables"] == [LEFT]
+    assert SECRET not in res_text(registered)
     assert registered["persisted"] is False
     assert registered["storage"]["backend"] == "memory"
     exe = client.app.state.ask_service
@@ -211,9 +248,12 @@ def test_harness_connects_grants_and_asks_without_session_injection(
     assert env["badge"] == "L0_CERTIFIED"
     assert env["rows"] == [{"marker": MARKER}]
     assert str(MARKER) in env["text"]
+    assert SECRET not in res.text
     assert LEFT in env["grounded_tables"]
     assert RIGHT not in env["grounded_tables"]
     assert cortex.asks, "the granted ask must reach the engine"
+    calls = client.app.state.ask_service._minter._http.calls
+    assert any(url.endswith("/api/keys/cg-kid/secret") for url in calls)
 
 
 def test_ungranted_table_in_a_connected_source_is_denied(
@@ -322,57 +362,165 @@ def test_each_action_writes_an_audit_row(harness: tuple[TestClient, _Cortex]) ->
         assert row["at"]
         blob = str(row)
         assert TOKEN not in blob
+        assert SECRET not in blob
         assert "marker" not in blob
     assert rows[0]["tables"] == [LEFT, RIGHT]
     assert rows[1]["tables"] == [LEFT]
     assert rows[2]["tables"] == [LEFT]
 
 
-def test_sql_connector_bearer_registers_the_listing(
-    harness: tuple[TestClient, _Cortex], monkeypatch: pytest.MonkeyPatch
+def res_text(payload: object) -> str:
+    return str(payload)
+
+
+def test_raw_dsn_is_rejected_with_no_trace(
+    harness: tuple[TestClient, _Cortex], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Existing POST /v1/studio/sources/sql, with the service bearer, grants the listing."""
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
-    from test_db_connector import _FakeConnection, _install
-
     client, _cortex = harness
-    secret = "cg-secret-value"
-    con = _FakeConnection(
-        [("cgsch", LEFT), ("cgsch", RIGHT)],
-        {
-            LEFT: (["marker"], [[str(MARKER)]]),
-            RIGHT: (["marker"], [[str(OTHER)]]),
-        },
-    )
-    _install(monkeypatch, con)
+    caplog.set_level(logging.DEBUG)
+    secret = "s3cret-pass"
+    dsn = f"postgresql://alice:{secret}@db.example/cgdb"
     res = client.post(
-        "/v1/studio/sources/sql",
+        "/v1/connect/sources",
         headers=_auth(),
         json={
-            "kind": "sqlserver",
-            "host": "db.example.net",
-            "database": "cgdb",
-            "user": "reader",
-            "password": secret,
-            "tables": [LEFT],
+            "connector_id": "cg-src",
+            "space_name": "Cg dsn",
+            "credential_ref": dsn,
+            "grant_tables": [LEFT],
         },
     )
-    assert res.status_code == 200, res.text
+    assert res.status_code == 400
+    assert res.json()["detail"] == "connect_raw_secret_rejected"
     assert secret not in res.text
-    body = res.json()
-    connection = body["connection"]
-    assert connection["exposed_tables"] == [f"cgsch.{LEFT}", f"cgsch.{RIGHT}"]
-    assert connection["granted_tables"] == connection["exposed_tables"]
+    assert dsn not in res.text
+    assert secret not in caplog.text
+    audit = client.get("/v1/connect/audit", headers=_auth()).json()
+    assert audit["rows"] == []
+    assert secret not in str(audit)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "api_key",
+        "api-key",
+        "dsn",
+        "connection_string",
+    ],
+)
+def test_password_field_is_rejected(
+    harness: tuple[TestClient, _Cortex],
+    caplog: pytest.LogCaptureFixture,
+    field: str,
+) -> None:
+    client, _cortex = harness
+    caplog.set_level(logging.DEBUG)
+    secret = "field-secret-value"
+    res = client.post(
+        "/v1/connect/sources",
+        headers=_auth(),
+        json={
+            "connector_id": "cg-src",
+            "space_name": "Cg pwd",
+            "credential_ref": REF,
+            field: secret,
+        },
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "connect_raw_secret_rejected"
+    assert secret not in res.text
+    assert secret not in caplog.text
     audit = client.get("/v1/connect/audit", headers=_auth()).json()
     assert secret not in str(audit)
-    assert "marker" not in str(audit)
-    asked = _ask(client, space_id=connection["space"]["id"], table=f"cgsch.{LEFT}")
-    assert asked.status_code == 200, asked.text
-    env = asked.json()
-    assert_envelope_valid(env)
-    assert env["abstained"] is False
-    assert env["rows"] == [{"marker": MARKER}]
-    assert str(MARKER) in env["text"]
+    assert audit["rows"] == []
+
+
+def test_ov_resolution_failure_is_named_and_has_no_secret(
+    harness: tuple[TestClient, _Cortex],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, _cortex = harness
+    caplog.set_level(logging.DEBUG)
+    leaked = "should-not-leak"
+    http = client.app.state.ask_service._minter._http
+    http.status_code = 502
+    http.body = {"secret": leaked, "detail": f"password={leaked}"}
+    register_connector("cg-src", lambda _cred: [LEFT])
+    res = client.post(
+        "/v1/connect/sources",
+        headers=_auth(),
+        json={
+            "connector_id": "cg-src",
+            "space_name": "Cg ov",
+            "credential_ref": REF,
+        },
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "connect_credential_unresolved"
+    assert leaked not in res.text
+    assert "password=" not in res.text
+    assert leaked not in caplog.text
+    audit = client.get("/v1/connect/audit", headers=_auth()).json()
+    assert audit["rows"] == []
+    assert leaked not in str(audit)
+
+
+def test_connect_api_off_returns_404_and_leaves_grants_alone(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(tmp_path / "cg.duckdb"))
+    monkeypatch.delenv("DMS_CONNECT_API", raising=False)
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    import dms_api.app as app_mod
+    from dms_api import settings as settings_mod
+
+    settings_mod.get_settings.cache_clear()
+    reset_grants()
+    secret = "off-flag-secret"
+    app = app_mod.create_app()
+    with TestClient(app) as client:
+        res = client.post(
+            "/v1/connect/sources",
+            headers=_auth(),
+            json={
+                "connector_id": "cg-src",
+                "space_name": "Cg off",
+                "credential_ref": REF,
+                "password": secret,
+            },
+        )
+        assert res.status_code == 404
+        assert res.json()["detail"] == "connect_api_disabled"
+        assert secret not in res.text
+        assert secret not in caplog.text
+    assert DemoSessionStore().is_space_member(SEEDED, "user") is True
+    assert DemoSessionStore().is_space_member("no-such-space", "user") is False
+    settings_mod.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "on", "TRUE", "On"])
+def test_connect_api_flag_on_tokens(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_CONNECT_API", raw)
+    from dms_api import settings as settings_mod
+
+    settings_mod.get_settings.cache_clear()
+    assert settings_mod.get_settings().dms_connect_api is True
+    settings_mod.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("raw", ["0", "false", "no", "off"])
+def test_connect_api_flag_off_tokens(raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_CONNECT_API", raw)
+    from dms_api import settings as settings_mod
+
+    settings_mod.get_settings.cache_clear()
+    assert settings_mod.get_settings().dms_connect_api is False
+    settings_mod.get_settings.cache_clear()
