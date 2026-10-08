@@ -26,7 +26,9 @@ A hint is emitted only from a column that is positively cleared: an
 ontology ``non_personal`` tag with source and field, or a column name the
 mask's own metric skip treats as non-personal. An unknown column such as
 ``col1`` is not cleared, so it sends no hint even when the value probe
-would leave the cell raw. On a cleared column the value probe is the
+would leave the cell raw. Value hints are looked up on the masker's
+output for the question, never on the raw question. A span the masker
+replaced cannot seed a hint. On a cleared column the value probe is the
 second layer. It flags a cell the detector already flags, including a
 repeated Title-Case word. It does not re-title a one-word or hyphenated
 code, because that drop removes a cleared metric code. If any check
@@ -80,6 +82,7 @@ from dms_core.pii import (
     classify_column,
     fail_closed_mask_payload,
     is_mask_token,
+    mask_personal_spans,
 )
 
 from dms_executor.ontology import Ontology, relation_tables, table_is_granted
@@ -804,7 +807,7 @@ def _hint_values(
             partial = (
                 not exact
                 and len(span) >= _PARTIAL_MIN_CHARS
-                and (span in folded or folded in span)
+                and (_word_hit(folded, span) or _word_hit(span, folded))
             )
             if not exact and not partial:
                 continue
@@ -877,18 +880,60 @@ def _value_token_pairs(values: Sequence[str]) -> list[tuple[str, str]]:
 
 
 def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
-    """Replace index values in ``text``. Longest alternative is tried first."""
+    """Replace index values in ``text`` on word boundaries.
+
+    A shorter known value does not match inside a longer word. Longest
+    alternative is tried first.
+    """
     if not text or not pairs:
         return text
-    pattern = "|".join(re.escape(raw) for raw, _token in pairs)
-    if not pattern:
+    ordered = sorted((raw for raw, _token in pairs if raw), key=len, reverse=True)
+    if not ordered:
         return text
+    pattern = "|".join(re.escape(raw) for raw in ordered)
     lookup = {raw.lower(): token for raw, token in pairs}
 
     def _sub(match: re.Match[str]) -> str:
         return lookup.get(match.group(0).lower(), match.group(0))
 
-    return re.compile(pattern, re.IGNORECASE).sub(_sub, text)
+    return re.compile(
+        rf"(?<![A-Za-z0-9])(?:{pattern})(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    ).sub(_sub, text)
+
+
+def _word_hit(haystack: str, needle: str) -> bool:
+    """True when ``needle`` is a whole word or phrase inside ``haystack``."""
+    if not needle or not haystack:
+        return False
+    return (
+        re.search(rf"(?<![0-9a-z]){re.escape(needle)}(?![0-9a-z])", haystack) is not None
+    )
+
+
+def _masked_question(question: str, keep_exact: set[str] | None = None) -> str:
+    """Question text the value-hint matcher is allowed to see.
+
+    Personal spans are replaced first, then the rest of the masker runs.
+    A question that is exactly one granted value skips the lower/ALL-CAPS
+    pass so a multi-word metric code still hints. A failure sends no spans,
+    so no value hint. The raw question is not the lookup text.
+    """
+    try:
+        folded = _normalize(question or "")
+        named = mask_personal_spans(
+            question or "",
+            uniform=not (keep_exact and folded in keep_exact),
+        )
+        masked = fail_closed_mask_payload(text=named)
+    except Exception:  # noqa: BLE001 -- doubt: no value hint
+        return ""
+    if not isinstance(masked, dict):
+        return ""
+    text = masked.get("text")
+    if not isinstance(text, str) or is_mask_token(text):
+        return ""
+    return text
 
 
 def _fk_if_present(col: ColumnFact, chosen_ids: set[tuple[str, str]]) -> ColumnFact:
@@ -1238,7 +1283,6 @@ def build_schema_context(
     described = schema if isinstance(schema, Mapping) else {}
     dialect = _dialect(described.get("dialect"))
     question_vec = _trigrams(question or "")
-    spans = _question_spans(question or "")
     datasets = [
         item
         for item in _dataset_items(described)
@@ -1307,6 +1351,13 @@ def build_schema_context(
     index, capped = _limit_index(index_rows)
     if capped:
         _LOG.warning("schema_index_cap")
+    keep_exact = {
+        fold
+        for values in index.values()
+        for fold in (_normalize(value) for value in values)
+        if fold
+    }
+    spans = _question_spans(_masked_question(question or "", keep_exact))
     known = _value_token_pairs(loaded_values)
     slots: list[tuple[str, str]] = []
     slot_meta: list[tuple[str, str]] = []

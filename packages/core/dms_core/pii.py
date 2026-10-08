@@ -639,6 +639,89 @@ class Masker:
         return token
 
 
+_NAME_WORD = re.compile(r"[A-Za-z]{2,25}")
+# ponytail: a lower or ALL-CAPS run is a name only when every word is at most
+# this long. A cleared metric token of 8 or more letters shares the Title-Case
+# shape once it is cased for the detector, so it is not a candidate. Ceiling:
+# a given name longer than 7 letters is not removed. Upgrade: Cortex NER.
+_SHORT_NAME_WORD = 7
+
+
+def _uniform_letter_case(word: str) -> str | None:
+    """``upper`` or ``lower`` for a letter-word. Title case is the other detector."""
+    if word.isupper():
+        return "upper"
+    if word.islower():
+        return "lower"
+    return None
+
+
+def mask_personal_spans(text: str, *, uniform: bool = True) -> str:
+    """Replace multi-word person spans. Same detector the masker already uses.
+
+    Title-Case spans, including a hyphen or apostrophe between the words,
+    go through ``_PERSON_NAME_FIND``. When ``uniform`` is set, a run of two
+    to four letter-words that are all lower or all ALL-CAPS, each at most
+    ``_SHORT_NAME_WORD`` letters, is shown to that same detector after Title
+    case. A longer token stays, so a metric code is not eaten. A hyphen
+    inside one token is not a word break. ``uniform=False`` is the exact
+    catalog value: the question is that value and nothing else, so the
+    lower/ALL-CAPS pass does not run. No word list. Answer prose does not
+    call this.
+    """
+    if not text or is_mask_token(text):
+        return text
+    masker = Masker()
+
+    def _sub(match: re.Match[str]) -> str:
+        return masker.token("name", match.group(0))
+
+    out = _PERSON_NAME_FIND.sub(_sub, text)
+    if not uniform:
+        return out
+    words = list(_NAME_WORD.finditer(out))
+    spans: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(words):
+        taken = 1
+        for width in (4, 3, 2):
+            if index + width > len(words):
+                continue
+            chunk = words[index : index + width]
+            gaps = [
+                out[chunk[pos].end() : chunk[pos + 1].start()] for pos in range(width - 1)
+            ]
+            if any(gap != " " for gap in gaps):
+                continue
+            raws = [item.group(0) for item in chunk]
+            if any(len(word) > _SHORT_NAME_WORD for word in raws):
+                continue
+            # A hyphen or apostrophe glues one token. That token is not a
+            # space-separated name word.
+            if any(
+                (item.start() > 0 and out[item.start() - 1] in "-'")
+                or (item.end() < len(out) and out[item.end()] in "-'")
+                for item in chunk
+            ):
+                continue
+            case = _uniform_letter_case(raws[0])
+            if case is None or any(_uniform_letter_case(word) != case for word in raws):
+                continue
+            titled = " ".join(word.title() for word in raws)
+            if _PERSON_NAME_FIND.fullmatch(titled) is None:
+                continue
+            spans.append((chunk[0].start(), chunk[-1].end(), " ".join(raws)))
+            taken = width
+            break
+        index += taken
+    if not spans:
+        return out
+    chars = list(out)
+    for start, end, raw in reversed(spans):
+        chars[start:end] = list(masker.token("name", raw))
+    return "".join(chars)
+
+
 def drop_pii_encodings(encodings: Mapping[str, Sequence[object]]) -> dict[str, list[str]]:
     """Drop sample lists for flagged columns. Detector errors drop that key."""
     out: dict[str, list[str]] = {}
