@@ -18,20 +18,18 @@ from typing import Any
 
 import duckdb
 import pytest
-import yaml
 from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.envelope import build_answer_envelope
+from dms_executor.manifest import SecurityEvent
 from dms_executor.skills_quarantine import (
-    CONFIG_EMPTY,
-    CONFIG_INVALID,
-    FILE_UNREADABLE,
+    CONFIG_STAMP,
     HASH_FAILED,
     RESULT_UNCOMPUTABLE,
     WRITE_BLOCKED,
-    curated_questions_path,
+    _readonly_rows,
     filter_retrieved_rows,
     item_content_hash,
     item_result_hash,
-    questions_file_hash,
 )
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -162,6 +160,9 @@ def test_item_result_hash_canonical_rows() -> None:
     assert digest != item_result_hash([{"n": 2}])
     assert item_result_hash([{"a": 1, "b": 2}]) != item_result_hash([{"b": 2, "a": 1}])
     assert item_result_hash([{"n": True}]) != item_result_hash([{"n": 1}])
+    assert item_result_hash([{"n": True}]) != item_result_hash([{"n": "true"}])
+    assert item_result_hash([{"n": None}]) != item_result_hash([{"n": ""}])
+    assert item_result_hash([{"n": False}]) != item_result_hash([{"n": ""}])
     assert len(item_result_hash([])) == 64
 
 
@@ -401,7 +402,7 @@ def test_config_hash_list_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
         {"question": "third steward item"},
     ]
     assert [row["question"] for row in filter_retrieved_rows(rows)] == ["third steward item"]
-    monkeypatch.setenv("DMS_SCORED_PACK_HASHES", "")
+    monkeypatch.delenv("DMS_SCORED_PACK_HASHES", raising=False)
     assert [row["question"] for row in filter_retrieved_rows(rows)] == [
         KEEPER,
         "second steward item",
@@ -409,28 +410,61 @@ def test_config_hash_list_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
-def test_empty_or_malformed_config_excludes_nothing_extra(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def _abstain_envelope() -> dict[str, Any]:
+    return build_answer_envelope(
+        answer_id="ans_quarantine_cfg",
+        text="No stored skill was used.",
+        badge="ABSTAIN",
+        abstained=True,
+        rows=[],
+        values=[],
+    )
+
+
+def test_unset_config_keeps_rows(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No quarantine configured: retrieval and the envelope stay as they are."""
     _clear_hash_env(monkeypatch)
-    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", "")
-    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", "not-a-hash")
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_oracles_path",
-        lambda: Path("/tmp/quarantine-missing-oracles.yaml"),
-    )
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_questions_path",
-        lambda: Path("/tmp/quarantine-missing-questions.yaml"),
-    )
-    rows = [{"question": KEEPER, "sql": "SELECT 9 AS n FROM t_plain"}]
+    rows = [{"question": KEEPER, "sql": "SELECT 4 AS n"}]
+    assert [row["question"] for row in filter_retrieved_rows(rows)] == [KEEPER]
+    env = _abstain_envelope()
+    assert "skills_quarantine" not in env
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+
+
+def test_bad_config_returns_no_rows_and_stamps_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Set but empty, malformed, or unreadable: no retrieved rows, ask still envelopes."""
+    _clear_hash_env(monkeypatch)
+    rows = [
+        {"question": KEEPER, "sql": "SELECT 9 AS n FROM t_plain"},
+        {"question": SCORED_Q, "sql": "SELECT 8 AS n FROM t_plain"},
+    ]
+    cases = ["", "not-a-hash", "   ,  "]
+    for raw in cases:
+        monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", raw)
+        monkeypatch.delenv("DMS_SCORED_RESULT_HASHES", raising=False)
+        with caplog.at_level("WARNING"):
+            assert filter_retrieved_rows(rows) == []
+        assert CONFIG_STAMP in caplog.text
+        caplog.clear()
+        env = _abstain_envelope()
+        assert env["skills_quarantine"] == CONFIG_STAMP
+        assert env["abstained"] is True
+        assert env["badge"] == "ABSTAIN"
+
+    monkeypatch.delenv("DMS_SCORED_ITEM_HASHES", raising=False)
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(tmp_path / "absent.txt"))
     with caplog.at_level("WARNING"):
-        assert [row["question"] for row in filter_retrieved_rows(rows)] == [KEEPER]
-    assert CONFIG_EMPTY in caplog.text
-    assert CONFIG_INVALID in caplog.text
+        assert filter_retrieved_rows(rows) == []
+    assert CONFIG_STAMP in caplog.text
+    assert "absent.txt" not in caplog.text
 
 
-def test_operator_hash_file_and_missing_file(
+def test_operator_hash_file_lists_only_its_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     _clear_hash_env(monkeypatch)
@@ -438,10 +472,6 @@ def test_operator_hash_file_and_missing_file(
     path = tmp_path / "hashes.txt"
     path.write_text(item_content_hash(sql) + "\n", encoding="utf-8")
     monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(path))
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_oracles_path",
-        lambda: tmp_path / "missing-oracles.yaml",
-    )
     kept = filter_retrieved_rows(
         [
             {"question": SCORED_Q, "sql": sql},
@@ -450,56 +480,18 @@ def test_operator_hash_file_and_missing_file(
     )
     assert [row["question"] for row in kept] == [KEEPER]
 
-    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(tmp_path / "absent.txt"))
+    empty = tmp_path / "empty.txt"
+    empty.write_text("\n", encoding="utf-8")
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(empty))
     with caplog.at_level("WARNING"):
-        again = filter_retrieved_rows([{"question": KEEPER, "sql": sql}])
-    assert [row["question"] for row in again] == [KEEPER]
-    assert FILE_UNREADABLE in caplog.text
-
-
-def test_fixture_sql_hash_excludes_matching_sql(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_hash_env(monkeypatch)
-    sql = "SELECT a FROM t_fixture_only"
-    ora = tmp_path / "oracles.yaml"
-    ora.write_text(yaml.safe_dump({"oracles": {"x": {"sql": sql}}}), encoding="utf-8")
-    monkeypatch.setattr("dms_executor.skills_quarantine.curated_oracles_path", lambda: ora)
-    kept = filter_retrieved_rows(
-        [
-            {"question": "reworded fixture item", "sql": "select A from t_fixture_only"},
-            {"question": KEEPER, "sql": "SELECT a FROM t_kept"},
-        ]
-    )
-    assert [row["question"] for row in kept] == [KEEPER]
-
-
-def test_missing_fixture_is_silent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    _clear_hash_env(monkeypatch)
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_oracles_path",
-        lambda: tmp_path / "no-oracles.yaml",
-    )
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_questions_path",
-        lambda: tmp_path / "no-questions.yaml",
-    )
-    with caplog.at_level("WARNING"):
-        kept = filter_retrieved_rows([{"question": KEEPER, "sql": "SELECT 4 AS n"}])
-    assert [row["question"] for row in kept] == [KEEPER]
-    assert caplog.text == ""
+        assert filter_retrieved_rows([{"question": KEEPER, "sql": sql}]) == []
+    assert CONFIG_STAMP in caplog.text
 
 
 def test_hash_exception_excludes_only_that_row(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     _clear_hash_env(monkeypatch)
-    monkeypatch.setattr(
-        "dms_executor.skills_quarantine.curated_oracles_path",
-        lambda: Path("/tmp/quarantine-missing-oracles.yaml"),
-    )
     real = item_content_hash
 
     def boom(sql: str) -> str:
@@ -559,25 +551,6 @@ def test_result_hash_timeout_excludes_row(
     assert elapsed < 8
 
 
-def test_in_repo_questions_file_hash_is_listed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_hash_env(monkeypatch)
-    digest = questions_file_hash(curated_questions_path())
-    path = tmp_path / "repo.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
-    _insert(path, asset_id="vq_repo", question="file hash carrier", pack_hash=digest)
-    questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
-    assert questions == {KEEPER}
-
-
-def test_pack_name_is_not_an_exclusion_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_hash_env(monkeypatch)
-    monkeypatch.setenv("DMS_SCORED_PACK_HASHES", "curated_ceo")
-    rows = [{"question": KEEPER, "source": "curated_ceo", "pack_hash": "curated_ceo"}]
-    assert [row["question"] for row in filter_retrieved_rows(rows)] == [KEEPER]
-
-
 def test_old_table_without_provenance_column(tmp_path: Path) -> None:
     path = tmp_path / "old.duckdb"
     ensure_demo_warehouse(path)
@@ -626,3 +599,57 @@ def test_malformed_result_rows_excluded(
         )
     assert kept == []
     assert RESULT_UNCOMPUTABLE in caplog.text
+
+
+_HOSTILE = [
+    ("copy_to", "COPY t_probe TO '{dest}'"),
+    ("read_csv_auto", "SELECT * FROM read_csv_auto('/etc/passwd')"),
+    ("attach", "ATTACH '{dest}' AS other_db"),
+    ("install", "INSTALL httpfs"),
+    ("load", "LOAD httpfs"),
+    ("pragma", "PRAGMA version"),
+    ("insert", "INSERT INTO t_probe VALUES (1)"),
+    ("update", "UPDATE t_probe SET i = 2"),
+]
+
+
+@pytest.mark.parametrize(("label", "template"), _HOSTILE, ids=[item[0] for item in _HOSTILE])
+def test_result_probe_refuses_hostile_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    template: str,
+) -> None:
+    """Must-fail: hostile probe SQL is refused, writes nothing, returns no rows."""
+    del label
+    _clear_hash_env(monkeypatch)
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
+    path = tmp_path / "probe.duckdb"
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE t_probe(i INTEGER)")
+        con.execute("INSERT INTO t_probe VALUES (1)")
+    finally:
+        con.close()
+    dest = tmp_path / "leak.csv"
+    sql = template.format(dest=dest)
+    with pytest.raises(SecurityEvent) as caught:
+        _readonly_rows(path, sql)
+    assert caught.value.code in {"statement_not_allowed", "path_not_allowed"}
+    assert not dest.exists()
+    assert list(tmp_path.glob("*.csv")) == []
+    kept = filter_retrieved_rows(
+        [{"question": "hostile", "sql": sql, "asset_id": "vq_hostile"}],
+        warehouse=path,
+    )
+    assert kept == []
+    blob = repr(kept)
+    assert "root:" not in blob
+    assert "/etc/passwd" not in blob
+
+
+def test_result_probe_disables_external_access(tmp_path: Path) -> None:
+    path = tmp_path / "ext.duckdb"
+    duckdb.connect(str(path)).close()
+    rows = _readonly_rows(path, "SELECT current_setting('enable_external_access') AS flag")
+    assert rows == [{"flag": False}]

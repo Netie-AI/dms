@@ -1,26 +1,28 @@
-"""Exclude scored-pack rows from the verified-question store.
+"""Exclude scored rows from the verified-question store.
 
-A row is excluded when any one of these is listed:
+Hashes come only from operator environment (or a file path the environment
+names). Real values are set through prove config by DevOps. This module
+does not read a pack file of its own.
 
-- its provenance pack hash (``DMS_SCORED_PACK_HASHES``, plus the sha256 of
-  ``tests/fixtures/curated_ceo/questions.yaml`` when that file is on disk)
-- ``item_content_hash`` of its SQL (``DMS_SCORED_ITEM_HASHES``, an optional
-  hash file, plus SQL strings in ``oracles.yaml`` when that file is on disk)
+A row is excluded when any listed key matches:
+
+- provenance pack hash (``DMS_SCORED_PACK_HASHES``)
+- ``item_content_hash`` of its SQL (``DMS_SCORED_ITEM_HASHES`` or
+  ``DMS_SCORED_ITEM_HASHES_FILE``)
 - ``item_result_hash`` of its result rows (``DMS_SCORED_RESULT_HASHES``)
 
-Question text is not an input. A missing fixture adds nothing and logs
-nothing, so an image without ``tests/`` still imports. Unset env vars log
-nothing. An empty or malformed value logs a named warning and adds nothing.
+Question text is not an input. Unset variables mean no quarantine: retrieval
+is unchanged. A variable that is set but empty, malformed, or unreadable
+fails closed: retrieval returns no rows, and answer envelopes carry
+``skills_quarantine_config_invalid``. The ask still runs.
 
 When result hashes are configured, a row with no stored ``result_rows`` is
-executed read-only against the Space warehouse. Error or timeout excludes
-that row (``scored_result_hash_uncomputable``). A hashing exception on one
-row excludes that row (``scored_item_hash_failed``) and the rest are still
-filtered.
+executed read-only on the Space warehouse after the chat SQL guard, with
+external access off. Error or timeout excludes that row
+(``scored_result_hash_uncomputable``). A hashing exception on one row
+excludes that row (``scored_item_hash_failed``).
 
 Limits (ponytail):
-- File hashes are cached by resolved path for the process. A replaced file
-  is picked up on restart.
 - Result hashes are cached by warehouse path, row id, and SQL, including
   failures, so a bad statement is not retried on every list.
 - The read-only probe runs in a daemon thread. On timeout the connection is
@@ -41,12 +43,13 @@ import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import duckdb
 from sqlglot import exp, parse_one
+
+from dms_executor.manifest import reject_hostile_chat_sql
 
 logger = logging.getLogger(__name__)
 
@@ -55,36 +58,13 @@ SCORED_ITEM_HASHES_ENV = "DMS_SCORED_ITEM_HASHES"
 SCORED_ITEM_HASHES_FILE_ENV = "DMS_SCORED_ITEM_HASHES_FILE"
 SCORED_RESULT_HASHES_ENV = "DMS_SCORED_RESULT_HASHES"
 WRITE_BLOCKED = "scored_pack_write_blocked"
-CONFIG_EMPTY = "scored_item_hash_config_empty"
-CONFIG_INVALID = "scored_item_hash_config_invalid"
-FILE_UNREADABLE = "scored_item_hash_file_unreadable"
+CONFIG_STAMP = "skills_quarantine_config_invalid"
 HASH_FAILED = "scored_item_hash_failed"
 RESULT_UNCOMPUTABLE = "scored_result_hash_uncomputable"
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _RESULT_TIMEOUT_S = 2.0
 _RESULT_CACHE: dict[tuple[str, str, str], str | BaseException] = {}
-
-
-def curated_questions_path() -> Path:
-    """In-repo scored pack file. Not read at import."""
-    return _fixture("questions.yaml")
-
-
-def curated_oracles_path() -> Path:
-    """In-repo scored SQL file. Not read at import."""
-    return _fixture("oracles.yaml")
-
-
-def _fixture(name: str) -> Path:
-    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "curated_ceo" / name
-
-
-def pack_files() -> tuple[Path, ...]:
-    path = curated_questions_path()
-    if path.is_file():
-        return (path,)
-    return ()
 
 
 def canonical_pack_hash(value: object) -> str | None:
@@ -134,9 +114,9 @@ def _parse_sql(sql: str) -> Any | None:
 def item_result_hash(rows: Iterable[Any]) -> str:
     """sha256 of result rows.
 
-    Each value becomes a stable string (numbers at 10 decimal places, None
-    as ``null``). Row strings are sorted. Values stay in returned column
-    order; column names are not part of the hash.
+    Each value is type-tagged, then rendered as a stable string (numbers at
+    10 decimal places, None as ``null``). Row strings are sorted. Values stay
+    in returned column order; column names are not part of the hash.
     """
     lines = [
         "\x1f".join(_escape(_stable_value(value)) for value in _row_values(row))
@@ -162,15 +142,17 @@ def _stable_value(value: Any) -> str:
     if value is None:
         return "null"
     if isinstance(value, bool):
-        return "true" if value else "false"
+        return "bool:true" if value else "bool:false"
     if isinstance(value, (int, float, Decimal)):
-        return _stable_number(value)
-    if not isinstance(value, str) and hasattr(value, "isoformat"):
+        return "num:" + _stable_number(value)
+    if isinstance(value, str):
+        return "str:" + value
+    if hasattr(value, "isoformat"):
         try:
-            return str(value.isoformat())
+            return "time:" + str(value.isoformat())
         except Exception:
-            return str(value)
-    return str(value)
+            return "other:" + str(value)
+    return "other:" + str(value)
 
 
 def _stable_number(value: int | float | Decimal) -> str:
@@ -197,87 +179,38 @@ def _digest_tokens(raw: str) -> tuple[set[str], bool]:
     return found, invalid
 
 
-def _env_hashes(name: str, warnings: list[str]) -> set[str]:
-    if name not in os.environ:
-        return set()
-    raw = os.environ.get(name) or ""
+def _parse_hash_text(raw: str) -> tuple[set[str], bool]:
+    """Hashes from one configured source. Empty or any bad token is invalid."""
     if not raw.strip():
-        warnings.append(CONFIG_EMPTY)
-        return set()
+        return set(), True
     found, invalid = _digest_tokens(raw)
-    if invalid:
-        warnings.append(CONFIG_INVALID)
-    if not found and not invalid:
-        warnings.append(CONFIG_EMPTY)
-    return found
+    if invalid or not found:
+        return set(), True
+    return found, False
 
 
-def _file_env_hashes(warnings: list[str]) -> set[str]:
+def _env_hashes(name: str) -> tuple[set[str], bool]:
+    """``(hashes, invalid)``. Unset is valid and empty."""
+    if name not in os.environ:
+        return set(), False
+    return _parse_hash_text(os.environ.get(name) or "")
+
+
+def _file_hashes() -> tuple[set[str], bool]:
+    """``(hashes, invalid)``. Unset is valid and empty."""
     if SCORED_ITEM_HASHES_FILE_ENV not in os.environ:
-        return set()
+        return set(), False
     raw = (os.environ.get(SCORED_ITEM_HASHES_FILE_ENV) or "").strip()
-    path = Path(raw) if raw else None
-    if path is None or not path.is_file():
-        warnings.append(FILE_UNREADABLE)
-        return set()
+    if not raw:
+        return set(), True
+    path = Path(raw)
+    if not path.is_file():
+        return set(), True
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        warnings.append(FILE_UNREADABLE)
-        return set()
-    if not text.strip():
-        warnings.append(CONFIG_EMPTY)
-        return set()
-    found, invalid = _digest_tokens(text)
-    if invalid:
-        warnings.append(CONFIG_INVALID)
-    return found
-
-
-@lru_cache(maxsize=4)
-def _file_hash(key: str) -> str:
-    return hashlib.sha256(Path(key).read_bytes()).hexdigest()
-
-
-def questions_file_hash(path: Path) -> str:
-    return _file_hash(str(path.resolve()))
-
-
-def _sql_strings(node: object) -> list[str]:
-    found: list[str] = []
-
-    def walk(value: object) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key == "sql" and isinstance(child, str) and child.strip():
-                    found.append(child)
-                else:
-                    walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    walk(node)
-    return found
-
-
-@lru_cache(maxsize=4)
-def _cached_fixture_hashes(key: str) -> frozenset[str]:
-    import yaml
-
-    data = yaml.safe_load(Path(key).read_text(encoding="utf-8"))
-    return frozenset(item_content_hash(sql) for sql in _sql_strings(data))
-
-
-def _fixture_item_hashes(warnings: list[str]) -> set[str]:
-    path = curated_oracles_path()
-    if not path.is_file():
-        return set()
-    try:
-        return set(_cached_fixture_hashes(str(path.resolve())))
-    except Exception:
-        warnings.append(FILE_UNREADABLE)
-        return set()
+        return set(), True
+    return _parse_hash_text(text)
 
 
 @dataclass(frozen=True)
@@ -285,32 +218,28 @@ class _Config:
     pack: frozenset[str]
     item: frozenset[str]
     result: frozenset[str]
-    warnings: tuple[str, ...]
+    invalid: bool
 
 
 def _load_config() -> _Config:
-    warnings: list[str] = []
-    pack = _env_hashes(SCORED_PACK_HASHES_ENV, warnings)
-    for path in pack_files():
-        try:
-            pack.add(questions_file_hash(path))
-        except OSError:
-            warnings.append(FILE_UNREADABLE)
-    item = _env_hashes(SCORED_ITEM_HASHES_ENV, warnings)
-    item.update(_file_env_hashes(warnings))
-    item.update(_fixture_item_hashes(warnings))
-    result = _env_hashes(SCORED_RESULT_HASHES_ENV, warnings)
-    return _Config(
-        frozenset(pack),
-        frozenset(item),
-        frozenset(result),
-        tuple(dict.fromkeys(warnings)),
-    )
+    invalid = False
+    pack, bad = _env_hashes(SCORED_PACK_HASHES_ENV)
+    invalid = invalid or bad
+    item, bad = _env_hashes(SCORED_ITEM_HASHES_ENV)
+    invalid = invalid or bad
+    from_file, bad = _file_hashes()
+    invalid = invalid or bad
+    item.update(from_file)
+    result, bad = _env_hashes(SCORED_RESULT_HASHES_ENV)
+    invalid = invalid or bad
+    return _Config(frozenset(pack), frozenset(item), frozenset(result), invalid)
 
 
-def _warn(cfg: _Config) -> None:
-    for code in cfg.warnings:
-        logger.warning(code)
+def config_stamp() -> str | None:
+    """Envelope stamp when quarantine config is set but unusable. Else None."""
+    if _load_config().invalid:
+        return CONFIG_STAMP
+    return None
 
 
 def provenance_pack_hash(row: Mapping[str, Any]) -> str | None:
@@ -372,7 +301,13 @@ def _cached_result_hash(warehouse: Path, asset_id: str, sql: str) -> str:
 
 
 def _readonly_rows(warehouse: Path, sql: str) -> list[Any]:
-    con = duckdb.connect(str(warehouse), read_only=True)
+    """Read-only probe. Chat SQL guard first, then external access off."""
+    reject_hostile_chat_sql(sql)
+    con = duckdb.connect(
+        str(warehouse),
+        read_only=True,
+        config={"enable_external_access": False},
+    )
     box: dict[str, Any] = {}
 
     def work() -> None:
@@ -432,9 +367,15 @@ def filter_retrieved_rows(
     *,
     warehouse: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """The only retrieval filter. Every store reader calls this."""
+    """The only retrieval filter. Every store reader calls this.
+
+    A set-but-unusable hash source returns no rows. Unset config returns the
+    rows the hash lists do not exclude.
+    """
     cfg = _load_config()
-    _warn(cfg)
+    if cfg.invalid:
+        logger.warning(CONFIG_STAMP)
+        return []
     kept: list[dict[str, Any]] = []
     for row in rows:
         try:
@@ -454,7 +395,9 @@ def reject_scored_write(
 ) -> None:
     """Block a write of a listed scored row. Logs no question text."""
     cfg = _load_config()
-    _warn(cfg)
+    if cfg.invalid:
+        logger.warning(CONFIG_STAMP)
+        return
     try:
         blocked = _excluded(row, cfg, warehouse)
     except Exception:
