@@ -40,6 +40,96 @@ _FOR_FILTER = re.compile(
     re.I,
 )
 _TOTAL = re.compile(r"\btotal\b", re.I)
+_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+# live_ask prepends this. It is scope the grant already checked, not the ask.
+_SCOPE_PREFIX = re.compile(r"^Using only [^:]+:\s*", re.I)
+
+# Grammar, plus the ranking and measure words the certified sheet shapes
+# execute. A content word in neither this list nor the matched shape is an
+# ungrounded qualifier. This is not a block list.
+_CERTIFIED_NO_GROUND = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "of",
+        "by",
+        "in",
+        "on",
+        "for",
+        "to",
+        "from",
+        "with",
+        "and",
+        "or",
+        "what",
+        "are",
+        "is",
+        "show",
+        "me",
+        "please",
+        "our",
+        "this",
+        "that",
+        "at",
+        "using",
+        "only",
+        "sheet",
+        "top",
+        "teratas",
+        "sales_value_myr",
+        "stock_value_myr",
+    }
+)
+# ponytail: "fail" is Malay for file on the certified Malay top-n question.
+# Grounded only when another Malay frame word is present, so English "fail"
+# stays a content word. Upgrade path: a locale tag on the ask.
+_MALAY_FUNCTION = frozenset({"dalam", "fail", "helaian", "apakah", "mengikut"})
+_MALAY_FRAME = frozenset({"dalam", "helaian", "apakah", "mengikut"})
+
+
+def _tokens(text: str) -> list[str]:
+    return [m.group(0).lower() for m in _TOKEN.finditer(text or "")]
+
+
+def _grounding_text(question: str) -> str:
+    return _SCOPE_PREFIX.sub("", question or "", count=1)
+
+
+def _first_ungrounded(question: str, grounded: set[str]) -> str | None:
+    toks = _tokens(_grounding_text(question))
+    if _MALAY_FRAME.intersection(toks):
+        grounded = grounded | _MALAY_FUNCTION
+    for tok in toks:
+        if tok in grounded or tok in _CERTIFIED_NO_GROUND:
+            continue
+        return tok
+    return None
+
+
+def _topn_grounded(question: str, workbook: str, sheet: str, n: int) -> set[str]:
+    text = _grounding_text(question)
+    grounded = set(_tokens(workbook))
+    grounded.update(_tokens(sheet))
+    grounded.add(str(n))
+    for rx in (_TOP_N, _CATEGORY, _MEASURE):
+        for match in rx.finditer(text):
+            grounded.update(_tokens(match.group(0)))
+    return grounded
+
+
+def _filter_grounded(
+    question: str, workbook: str, sheet: str, col: str, value: str
+) -> set[str]:
+    text = _grounding_text(question)
+    grounded = set(_tokens(workbook))
+    grounded.update(_tokens(sheet))
+    grounded.update(_tokens(col))
+    grounded.update(_tokens(value))
+    grounded.add("total")
+    for match in _MEASURE.finditer(text):
+        grounded.update(_tokens(match.group(0)))
+    return grounded
 
 
 def sheet_lane() -> str:
@@ -142,6 +232,14 @@ def maybe_bronze_sheet_ask(
         n = int(n_m.group(1) or n_m.group(2))
         if n < 1 or n > 50:
             return None
+        word = _first_ungrounded(question, _topn_grounded(question, workbook, sheet, n))
+        if word:
+            return bronze_grant_abstain(
+                question,
+                reason=f"ungrounded_qualifier:{word}",
+                space_id=space_id,
+                session_id=session_id,
+            )
         measure_m = _MEASURE.search(question or "")
         raw_measure = (measure_m.group(1) if measure_m else "sales_value_myr").lower()
         measure = "sales_value_myr" if raw_measure == "myr sales" else raw_measure
@@ -167,6 +265,16 @@ def maybe_bronze_sheet_ask(
         value = filt.group(2).strip().strip("'\"")
         if not value or not _IDENT.match(col):
             return None
+        word = _first_ungrounded(
+            question, _filter_grounded(question, workbook, sheet, col, value)
+        )
+        if word:
+            return bronze_grant_abstain(
+                question,
+                reason=f"ungrounded_qualifier:{word}",
+                space_id=space_id,
+                session_id=session_id,
+            )
         return _eq_filter_total(
             ident,
             col=col,

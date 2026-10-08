@@ -198,16 +198,6 @@ WRONG: dict[str, tuple[str, str]] = {
         "Served COUNT(*) of RAW inventory rows (3); question asks warehouses, "
         "i.e. COUNT(DISTINCT location_id) = 2 (WH-",
     ),
-    "E-067": (
-        "DROPPED_FILTER",
-        "Served top 3 categories including Electronics; the excluding Electronics "
-        "filter was dropped (Sports missing fr",
-    ),
-    "E-069": (
-        "WRONG_FILTER_POLARITY",
-        "Served ORDER BY sum DESC (highest 3) for a question asking the lowest 3; "
-        "Sports is missing from served rows.",
-    ),
     "E-077": (
         "OTHER",
         "Served country <> 'Malaysia' but the column stores ISO codes (MY/SG/TH), "
@@ -289,6 +279,28 @@ def test_gate_does_not_serve_confident_wrong_answer(
         f"served badge={env.get('badge')} route={env.get('route')}: "
         f"{rec['mechanical']['reasons'][:2]}"
     )
+
+
+# SHEET-CERT-FILTER-01: were strict xfails. The sheet lane now abstains
+# instead of stamping L0_CERTIFIED over a filter it does not apply.
+_SHEET_FILTER_FIXED = ("E-067", "E-069")
+
+
+@pytest.mark.parametrize(
+    "cid",
+    _SHEET_FILTER_FIXED,
+    ids=["E-067-DROPPED_FILTER", "E-069-WRONG_FILTER_POLARITY"],
+)
+def test_sheet_filter_is_not_a_confident_wrong(
+    cid: str, served: dict[str, dict[str, Any]]
+) -> None:
+    test_gate_does_not_serve_confident_wrong_answer(cid, served)
+    env = served[cid].get("envelope") or {}
+    named = " ".join(str(a) for a in (env.get("assumptions") or []))
+    named = f"{named} {env.get('text') or ''}"
+    assert env.get("badge") == "ABSTAIN" and env.get("abstained") is True
+    assert "ungrounded_qualifier:" in named
+    assert not env.get("rows")
 
 
 @pytest.mark.parametrize("cid", CONTROLS)

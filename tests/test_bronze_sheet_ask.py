@@ -156,17 +156,28 @@ def test_malay_and_synonym_and_sales_only_scope(tmp_path: Path) -> None:
     )
     syn = maybe_bronze_sheet_ask(
         "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, top 3 product families "
+        "by MYR sales?",
+        warehouse=db,
+    )
+    for env in (malay, syn):
+        assert env is not None
+        assert env["badge"] == "L0_CERTIFIED"
+        assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
+    noisy = maybe_bronze_sheet_ask(
+        "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, top 3 product families "
         "by MYR sales (cat / product line synonym for category)?",
         warehouse=db,
     )
-    only = maybe_bronze_sheet_ask(
+    scoped = maybe_bronze_sheet_ask(
         "Using cf98e431_p50_01_sales_messy.xlsx, on the Sales sheet only "
         "(ignore Wide_Fill), what are the top 3 categories by sales_value_myr?",
         warehouse=db,
     )
-    for env in (malay, syn, only):
+    for env, word in ((noisy, "cat"), (scoped, "ignore")):
         assert env is not None
-        assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
+        assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+        assert f"ungrounded_qualifier:{word}" in (env["text"] or "")
+        assert not env["rows"]
 
 
 def test_multi_table_first_band_ingest_answers_hostile_sales(tmp_path: Path) -> None:
