@@ -101,6 +101,19 @@ def _clear_hash_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+def _grant_names(monkeypatch: pytest.MonkeyPatch, *tables: str) -> None:
+    """The allow-list only serves a table the Space grant names."""
+    import dms_executor.verified_queries as vq
+
+    extra = set(tables)
+    real = vq._grantable
+
+    def _wrapped(space_id: str | None, warehouse: Path | None) -> set[str]:
+        return set(real(space_id, warehouse)) | extra
+
+    monkeypatch.setattr(vq, "_grantable", _wrapped)
+
+
 class _Submit:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -219,6 +232,7 @@ def test_reworded_question_same_sql_is_excluded(
 ) -> None:
     """Must-pass: different question text, same SQL, is excluded."""
     _clear_hash_env(monkeypatch)
+    _grant_names(monkeypatch, "t_kept")
     scored_sql = "SELECT a FROM t_scored"
     monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(scored_sql))
     path = tmp_path / "reword.duckdb"
@@ -311,6 +325,7 @@ def test_every_reader_returns_no_scored_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _clear_hash_env(monkeypatch)
+    _grant_names(monkeypatch, "t_normal")
     scored = [(f"scored question {i}", f"SELECT {i} AS n FROM t_scored") for i in range(3)]
     normal = [(f"normal question {i}", f"SELECT {i} AS n FROM t_normal") for i in range(2)]
     monkeypatch.setenv(

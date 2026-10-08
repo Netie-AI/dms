@@ -535,7 +535,13 @@ def lookup_pack_metric(
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
         return None
-    gap = serve_gap(hit.sql, grantable=allowed, dialect="duckdb")
+    # serve_gap compares exact keys. ``_grant_covers`` already decided the
+    # Cortex ``warehouse_<table>`` alias. Hand the checker that bare name.
+    covered = set(allowed)
+    for table in hit.tables:
+        if _grant_covers(table, allowed):
+            covered.add(table)
+    gap = serve_gap(hit.sql, grantable=covered, dialect="duckdb")
     if gap:
         return None
     return hit
