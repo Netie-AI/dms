@@ -437,6 +437,134 @@ def test_extra_phrasings_predicate_or_named_abstain(tmp_path: Path, question: st
         assert "RS622XK" not in {s for s, _v in _skus(env)}
 
 
+# Spelled-out limits, non-digit ids, and stray digits. Same allow-list as the
+# generate_empty gate: a word that is not a known measure, grain, or category
+# value abstains. On 72df50d8 the first, third, fourth, and fifth served a
+# ranking that dropped the qualifier.
+_BLIND = (
+    ("top five raw skus by stock value except SKU-GAMMA", ("ungrounded_qualifier:five",)),
+    ("top 3 by sales in 2025", ("unhonored_qualifier:time_filter=year=2025",)),
+    ("next three after that", ("ungrounded_qualifier:next",)),
+    ("top 5 skus by revenue at WH-B except BETA", ("ungrounded_qualifier:beta",)),
+    (
+        "top 4 skus by sales excluding packaging and sku 10023",
+        ("ungrounded_qualifier:10023",),
+    ),
+    (
+        "top three chemicals by sales last month",
+        (
+            "ungrounded_qualifier:three",
+            "unhonored_qualifier:time_filter=last_1_month",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(("question", "needles"), _BLIND)
+def test_blind_spot_named_abstain_or_not_served(
+    tmp_path: Path, question: str, needles: tuple[str, ...]
+) -> None:
+    env = _ask(_executor(tmp_path), question, session_id="blind")
+    blob = _blob(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env.get("sql_used") in (None, "")
+    assert any(needle in blob for needle in needles), blob
+    assert "25654" not in blob
+
+
+# Written here from the demo tables. Not the compiler's SQL.
+_WH_B_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+JOIN locations l ON t.location_id = l.location_id
+WHERE t.txn_type = 'outbound' AND l.location_code = 'WH-B'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+"""
+_RAW_SQL = """
+SELECT sku AS product_sku,
+       ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr
+FROM inventory
+WHERE category = 'RAW'
+GROUP BY sku
+ORDER BY stock_value_myr DESC
+"""
+_EXCL_PACK_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+WHERE t.txn_type = 'outbound' AND c.category <> 'PACKAGING'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+LIMIT 4
+"""
+_CHEM_SALES_SQL = """
+SELECT t.sku AS product_sku,
+       ROUND(SUM(t.quantity_kg * t.unit_cost_myr), 2) AS outbound_value_myr
+FROM transactions t
+JOIN (SELECT DISTINCT sku, category FROM inventory) c ON t.sku = c.sku
+WHERE t.txn_type = 'outbound' AND c.category = 'CHEMICALS'
+GROUP BY t.sku
+ORDER BY outbound_value_myr DESC
+"""
+
+
+def _lake_rows(db: Path, sql: str) -> list[dict[str, Any]]:
+    con = connect_file(db)
+    try:
+        rel = con.execute(sql)
+        cols = [d[0] for d in rel.description] if rel.description else []
+        out = []
+        for row in rel.fetchall():
+            item: dict[str, Any] = {}
+            for col, val in zip(cols, row, strict=True):
+                if isinstance(val, bool):
+                    item[col] = val
+                elif isinstance(val, (int, float)):
+                    item[col] = float(val)
+                else:
+                    item[col] = val
+            out.append(item)
+        return out
+    finally:
+        con.close()
+
+
+def _as_float_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        item: dict[str, Any] = {}
+        for col, val in row.items():
+            if isinstance(val, bool):
+                item[col] = val
+            elif isinstance(val, (int, float)):
+                item[col] = float(val)
+            else:
+                item[col] = val
+        out.append(item)
+    return out
+
+
+def test_new_served_rows_match_independent_sql(tmp_path: Path) -> None:
+    db = tmp_path / "empty_ranked.duckdb"
+    exe = _executor(tmp_path)
+    checks = (
+        ("top 5 skus by revenue at WH-B", _WH_B_SQL),
+        ("top 3 RAW skus by stock value", _RAW_SQL),
+        ("top 4 skus by sales excluding packaging", _EXCL_PACK_SQL),
+        ("top 5 chemicals SKUs by sales", _CHEM_SALES_SQL),
+    )
+    for question, sql in checks:
+        env = _ask(exe, question, session_id="indep")
+        _assert_served(env)
+        assert env.get("plan_origin") == "ontology_ranking"
+        assert _as_float_rows(env["rows"]) == _lake_rows(db, sql)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _dump_envelopes() -> Any:
     yield

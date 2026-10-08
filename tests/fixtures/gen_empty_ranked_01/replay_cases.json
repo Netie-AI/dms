@@ -1,0 +1,421 @@
+{
+  "source_run_id": "mr-20261008-1931-38afd6bd",
+  "served_at": "38afd6bd",
+  "oracles_sha256": "008f5bb1b8ac775a677501937a9cd8c444682986cf8008a04beb9fd27a162a12",
+  "score_run_id": "d119f2d04039409681ac88b974c829fb",
+  "score_commit": "38afd6bdd28255c296cb909ab42a2739b994a39a",
+  "set_compare_case_ids": [
+    "cq_sku_count_by_category_per"
+  ],
+  "set_compare_why": "how many SKUs per category ties at sku_count 2 for RAW, PARTS and PACKAGING",
+  "cases": [
+    {
+      "case_id": "cq_sales_top5_value",
+      "question": "Top 5 selling SKUs by revenue",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": false,
+      "group": "ontology_extra",
+      "ontology_ranking_correct": false,
+      "compare": "row",
+      "rows": [
+        {
+          "product_sku": "SKU-BETA",
+          "outbound_value_myr": 8312.5
+        },
+        {
+          "product_sku": "SKU-ALPHA",
+          "outbound_value_myr": 5670.0
+        },
+        {
+          "product_sku": "RS622XK",
+          "outbound_value_myr": 3915.0
+        },
+        {
+          "product_sku": "SKU-EPSILON",
+          "outbound_value_myr": 2925.0
+        },
+        {
+          "product_sku": "SKU-GAMMA",
+          "outbound_value_myr": 2640.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_sku_count_syn_short",
+      "question": "How many SKUs in inventory?",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "generate_sql",
+      "counted_correct": true,
+      "group": "generate_sql",
+      "ontology_ranking_correct": false,
+      "compare": "values",
+      "rows": [
+        {
+          "sku_count": 7
+        }
+      ]
+    },
+    {
+      "case_id": "cq_sku_count_syn_label",
+      "question": "SKU count in inventory",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "generate_sql",
+      "counted_correct": true,
+      "group": "generate_sql",
+      "ontology_ranking_correct": false,
+      "compare": "values",
+      "rows": [
+        {
+          "sku_count": 7
+        }
+      ]
+    },
+    {
+      "case_id": "cq_sales_top5_syn_skus",
+      "question": "Top 5 SKUs by revenue",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "binder",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "product_sku": "SKU-BETA",
+          "outbound_value_myr": 8312.5
+        },
+        {
+          "product_sku": "SKU-ALPHA",
+          "outbound_value_myr": 5670.0
+        },
+        {
+          "product_sku": "RS622XK",
+          "outbound_value_myr": 3915.0
+        },
+        {
+          "product_sku": "SKU-EPSILON",
+          "outbound_value_myr": 2925.0
+        },
+        {
+          "product_sku": "SKU-GAMMA",
+          "outbound_value_myr": 2640.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_top3_category_syn_value",
+      "question": "top 3 categories by sales value",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "binder",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "product_category": "PACKAGING",
+          "outbound_value_myr": 13982.5
+        },
+        {
+          "product_category": "RAW",
+          "outbound_value_myr": 4955.0
+        },
+        {
+          "product_category": "PARTS",
+          "outbound_value_myr": 4077.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_sales_top5_syn_sales",
+      "question": "Top 5 selling SKUs by sales",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "empty",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "product_sku": "SKU-BETA",
+          "outbound_value_myr": 8312.5
+        },
+        {
+          "product_sku": "SKU-ALPHA",
+          "outbound_value_myr": 5670.0
+        },
+        {
+          "product_sku": "RS622XK",
+          "outbound_value_myr": 3915.0
+        },
+        {
+          "product_sku": "SKU-EPSILON",
+          "outbound_value_myr": 2925.0
+        },
+        {
+          "product_sku": "SKU-GAMMA",
+          "outbound_value_myr": 2640.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_top3_category_syn_show",
+      "question": "show top 3 category sales",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": false,
+      "group": "ontology_extra",
+      "ontology_ranking_correct": false,
+      "compare": "row",
+      "rows": [
+        {
+          "product_category": "PACKAGING",
+          "outbound_value_myr": 13982.5
+        },
+        {
+          "product_category": "RAW",
+          "outbound_value_myr": 4955.0
+        },
+        {
+          "product_category": "PARTS",
+          "outbound_value_myr": 4077.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_top3_category_syn_plain",
+      "question": "top 3 category sales",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "binder",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "product_category": "PACKAGING",
+          "outbound_value_myr": 13982.5
+        },
+        {
+          "product_category": "RAW",
+          "outbound_value_myr": 4955.0
+        },
+        {
+          "product_category": "PARTS",
+          "outbound_value_myr": 4077.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_top3_category_syn_typo",
+      "question": "top 3 categoty sales",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "empty",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "product_category": "PACKAGING",
+          "outbound_value_myr": 13982.5
+        },
+        {
+          "product_category": "RAW",
+          "outbound_value_myr": 4955.0
+        },
+        {
+          "product_category": "PARTS",
+          "outbound_value_myr": 4077.0
+        }
+      ]
+    },
+    {
+      "case_id": "ops_sku_count_syn_short",
+      "question": "How many SKUs in inventory?",
+      "space": "ops",
+      "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "empty",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "sku_count": 7
+        }
+      ]
+    },
+    {
+      "case_id": "ops_sku_count_syn_label",
+      "question": "SKU count in inventory",
+      "space": "ops",
+      "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "plan_origin": "generate_sql",
+      "counted_correct": true,
+      "group": "generate_sql",
+      "ontology_ranking_correct": false,
+      "compare": "values",
+      "rows": [
+        {
+          "sku_count": 7
+        }
+      ]
+    },
+    {
+      "case_id": "ops_sku_count_by_category_syn",
+      "question": "SKU count by category",
+      "space": "ops",
+      "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "plan_origin": "generate_sql",
+      "counted_correct": false,
+      "group": "generate_sql",
+      "ontology_ranking_correct": false,
+      "compare": "values",
+      "rows": [
+        {
+          "category": "RAW",
+          "sku_count": 2
+        },
+        {
+          "category": "PACKAGING",
+          "sku_count": 2
+        },
+        {
+          "category": "PARTS",
+          "sku_count": 2
+        },
+        {
+          "category": "CHEMICALS",
+          "sku_count": 1
+        }
+      ]
+    },
+    {
+      "case_id": "ops_stock_value_syn",
+      "question": "stock value by category",
+      "space": "ops",
+      "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "plan_origin": "generate_sql",
+      "counted_correct": true,
+      "group": "generate_sql",
+      "ontology_ranking_correct": false,
+      "compare": "values",
+      "rows": [
+        {
+          "category": "PACKAGING",
+          "total_stock_value_myr": 15015.0
+        },
+        {
+          "category": "PARTS",
+          "total_stock_value_myr": 7209.0
+        },
+        {
+          "category": "RAW",
+          "total_stock_value_myr": 5816.0
+        },
+        {
+          "category": "CHEMICALS",
+          "total_stock_value_myr": 1800.0
+        }
+      ]
+    },
+    {
+      "case_id": "cq_sku_count_by_category_per",
+      "question": "how many SKUs per category",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "empty",
+      "ontology_ranking_correct": true,
+      "compare": "set",
+      "rows": [
+        {
+          "product_category": "RAW",
+          "sku_count": 2
+        },
+        {
+          "product_category": "PARTS",
+          "sku_count": 2
+        },
+        {
+          "product_category": "PACKAGING",
+          "sku_count": 2
+        },
+        {
+          "product_category": "CHEMICALS",
+          "sku_count": 1
+        }
+      ]
+    },
+    {
+      "case_id": "cq_stock_value_worth",
+      "question": "what is our inventory worth per category",
+      "space": "finance",
+      "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "plan_origin": "generate_sql",
+      "counted_correct": true,
+      "group": "generate_sql",
+      "ontology_ranking_correct": false,
+      "compare": "values",
+      "rows": [
+        {
+          "category": "PACKAGING",
+          "inventory_value_myr": 15015.0
+        },
+        {
+          "category": "PARTS",
+          "inventory_value_myr": 7209.0
+        },
+        {
+          "category": "RAW",
+          "inventory_value_myr": 5816.0
+        },
+        {
+          "category": "CHEMICALS",
+          "inventory_value_myr": 1800.0
+        }
+      ]
+    },
+    {
+      "case_id": "ops_freight_spend_destination",
+      "question": "freight spend per destination",
+      "space": "ops",
+      "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "plan_origin": "ontology_ranking",
+      "counted_correct": true,
+      "group": "empty",
+      "ontology_ranking_correct": true,
+      "compare": "row",
+      "rows": [
+        {
+          "location_location_code": "WH-B",
+          "shipping_cost_myr": 1130.0
+        },
+        {
+          "location_location_code": "WH-A",
+          "shipping_cost_myr": 540.0
+        },
+        {
+          "location_location_code": "WH-D",
+          "shipping_cost_myr": 460.0
+        },
+        {
+          "location_location_code": "WH-C",
+          "shipping_cost_myr": 190.0
+        }
+      ]
+    }
+  ]
+}
