@@ -39,6 +39,7 @@ from cortex_client.compute import (
     typed_query_plan,
 )
 from cortex_client.qualifiers import (
+    extract_qualifiers,
     parse_rank_window,
     rank_window_group,
     rank_window_measure,
@@ -586,6 +587,397 @@ def parse_compute_plan(payload: dict[str, Any] | None) -> str:
     if query_sql_from_payload(payload):
         return "sql"
     return "miss"
+
+
+# ponytail: closed allow-list, not a blocked-word list. A synonym that is not
+# listed abstains (lost coverage) instead of being swallowed. Ceiling: cities
+# that are not stored values (Singapore vs SG) and unseen measure synonyms
+# abstain. Upgrade: Cortex HTTP qualifier-check.
+_EMPTY_GRAMMAR = frozenset(
+    {
+        "the", "a", "an", "of", "our", "what", "whats", "are", "is", "which",
+        "me", "please", "show", "list", "give", "get", "by", "per", "each",
+        "for", "to", "and", "or", "that", "this", "their", "do", "does", "did",
+        "my", "we", "you", "how", "many", "was", "were", "be", "there", "those",
+        "these", "some", "any", "all", "every", "its", "it", "with", "than",
+        "who", "whom", "just", "also", "only", "s", "top", "most", "best",
+        "highest", "sold", "selling", "total", "value", "spend", "cost",
+        "amount", "count", "score", "unit", "units", "myr", "number", "numbers",
+        "percent", "percentage", "have", "has", "had",
+    }
+)
+# Direction words the compiler does not honor (ORDER BY is always DESC).
+# They are not grammar: "bottom" must abstain, not serve the top.
+_MEASURE_OWNER = {
+    "revenue": "outbound_value_myr",
+    "sales": "outbound_value_myr",
+    "turnover": "outbound_value_myr",
+    "stock": "stock_value_myr",
+    "worth": "stock_value_myr",
+    "carrying": "stock_value_myr",
+    "freight": "shipping_cost_myr",
+    "shipping": "shipping_cost_myr",
+    "shipment": "shipping_cost_myr",
+    "quantity": "outbound_kg",
+    "qty": "outbound_kg",
+    "kg": "outbound_kg",
+    "reorder": "below_reorder_lots",
+    "audit": "audit_overdue",
+    "overdue": "audit_overdue",
+    "utilisation": "utilisation_pct",
+    "utilization": "utilisation_pct",
+    "capacity": "utilisation_pct",
+    "occupancy": "utilisation_pct",
+}
+_ENTITY_OBJECTS = {
+    "sku": frozenset({"sku", "product", "lot"}),
+    "skus": frozenset({"sku", "product", "lot"}),
+    "item": frozenset({"sku", "product", "lot"}),
+    "items": frozenset({"sku", "product", "lot"}),
+    "product": frozenset({"sku", "product", "lot"}),
+    "products": frozenset({"sku", "product", "lot"}),
+    "supplier": frozenset({"supplier"}),
+    "suppliers": frozenset({"supplier"}),
+    "category": frozenset({"category"}),
+    "categories": frozenset({"category"}),
+    "categoty": frozenset({"category"}),
+    "warehouse": frozenset({"location"}),
+    "warehouses": frozenset({"location"}),
+    "location": frozenset({"location"}),
+    "locations": frozenset({"location"}),
+    "destination": frozenset({"location"}),
+    "destinations": frozenset({"location"}),
+    "plant": frozenset({"location"}),
+    "plants": frozenset({"location"}),
+}
+_INTRODUCERS = frozenset(
+    {"in", "at", "on", "from", "excluding", "except", "without"}
+)
+_EXCLUDE_WORDS = frozenset({"excluding", "except", "without"})
+_WH_WORDS = frozenset({"warehouse", "location", "wh"})
+_TOKEN_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.I)
+
+
+def _question_tokens(question: str) -> list[str]:
+    return [m.group(0).lower() for m in _TOKEN_RE.finditer(question or "")]
+
+
+def _qual_guard_tokens(question: str) -> set[str]:
+    """Tokens QUAL-GUARD already names. Leave those for unhonored_qualifier."""
+    skip: set[str] = set()
+    for _kind, value in extract_qualifiers(question):
+        skip.update(re.findall(r"[a-z0-9]+", value.lower()))
+    return skip
+
+
+def _norm_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def _value_index(warehouse: Path | None) -> dict[str, list[tuple[str, str, str]]]:
+    """Lake encodings a question token can become a predicate for."""
+    out: dict[str, list[tuple[str, str, str]]] = {}
+    if warehouse is None or not Path(warehouse).is_file():
+        return out
+    con = connect_file(Path(warehouse))
+    try:
+        locs = con.execute(
+            "SELECT CAST(location_code AS VARCHAR) FROM locations"
+        ).fetchall()
+        cats = con.execute(
+            "SELECT DISTINCT CAST(category AS VARCHAR) FROM inventory"
+        ).fetchall()
+        countries = con.execute(
+            "SELECT DISTINCT CAST(country AS VARCHAR) FROM suppliers"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 -- empty index, caller abstains the token
+        return out
+    finally:
+        con.close()
+
+    def add(key: str, obj: str, col: str, val: str) -> None:
+        if not key or key in _EMPTY_GRAMMAR or len(key) < 2:
+            return
+        bucket = out.setdefault(key, [])
+        hit = (obj, col, val)
+        if hit not in bucket:
+            bucket.append(hit)
+
+    for (code,) in locs:
+        if not code:
+            continue
+        raw = str(code)
+        add(raw.lower(), "location", "location_code", raw)
+        add(_norm_key(raw), "location", "location_code", raw)
+    for (cat,) in cats:
+        if not cat:
+            continue
+        raw = str(cat)
+        low = raw.lower()
+        add(low, "category", "category", raw)
+        if len(low) > 4 and low.endswith("s"):
+            add(low[:-1], "category", "category", raw)
+    for (country,) in countries:
+        if not country:
+            continue
+        raw = str(country)
+        add(raw.lower(), "supplier", "country", raw)
+        add(_norm_key(raw), "supplier", "country", raw)
+    return out
+
+
+def _blob_tokens(onto: Ontology, plan: dict[str, Any]) -> set[str]:
+    measure = str(plan.get("measure") or "")
+    spec = onto.measures.get(measure)
+    parts = [measure, str(plan.get("ranked_id") or "")]
+    if spec is not None:
+        parts.append(spec.description or "")
+        parts.append(spec.grain)
+    for group in plan.get("group_by") or []:
+        if isinstance(group, (list, tuple)):
+            parts.extend(str(x) for x in group)
+    for filt in plan.get("filters") or []:
+        if isinstance(filt, (list, tuple)):
+            parts.extend(str(x) for x in filt)
+    cols = onto.__dict__.get("_column_cache") or {}
+    if spec is not None:
+        parts.extend(str(c) for c in (cols.get(spec.grain) or ()))
+    blob = set(re.findall(r"[a-z0-9]+", " ".join(parts).lower().replace("_", " ")))
+    return blob
+
+
+def _in_blob(tok: str, blob: set[str]) -> bool:
+    if tok in blob or (tok == "categoty" and "category" in blob):
+        return True
+    if len(tok) > 4 and tok.endswith("s") and tok[:-1] in blob:
+        return True
+    if len(tok) >= 5:
+        pref = tok[:5]
+        return any(len(item) >= 5 and item[:5] == pref for item in blob)
+    return False
+
+
+def _entity_grounded(tok: str, plan: dict[str, Any], grain: str) -> bool:
+    targets = _ENTITY_OBJECTS.get(tok)
+    if not targets:
+        return False
+    have = {grain}
+    for group in plan.get("group_by") or []:
+        if isinstance(group, (list, tuple)):
+            have.update(str(x) for x in group)
+    for filt in plan.get("filters") or []:
+        if isinstance(filt, (list, tuple)) and filt:
+            have.add(str(filt[0]))
+            have.add(str(filt[1]))
+    return bool(targets & have)
+
+
+def _category_obj(onto: Ontology, measure: str) -> str:
+    spec = onto.measures.get(measure)
+    grain = spec.grain if spec is not None else ""
+    cols = (onto.__dict__.get("_column_cache") or {}).get(grain) or set()
+    if "category" in cols:
+        return grain
+    return "product"
+
+
+def _append_filter(
+    plan: dict[str, Any],
+    onto: Ontology,
+    obj: str,
+    col: str,
+    op: str,
+    val: str,
+) -> None:
+    if col == "category" or obj == "category":
+        obj, col = _category_obj(onto, str(plan.get("measure") or "")), "category"
+    filters = plan.setdefault("filters", [])
+    if not isinstance(filters, list):
+        filters = list(filters)
+        plan["filters"] = filters
+    if op == "<>":
+        # "chemical" inside "chemicals" already bound an equality. Exclusion wins.
+        filters[:] = [
+            f
+            for f in filters
+            if not (
+                isinstance(f, (list, tuple))
+                and len(f) >= 4
+                and str(f[1]) == col
+                and str(f[2]) == "="
+                and str(f[3]).lower() == str(val).lower()
+            )
+        ]
+    item = [obj, col, op, val]
+    if any(list(f)[:4] == item for f in filters if isinstance(f, (list, tuple))):
+        return
+    filters.append(item)
+
+
+def _rewrite_category_filters(plan: dict[str, Any], onto: Ontology) -> None:
+    measure = str(plan.get("measure") or "")
+    obj = _category_obj(onto, measure)
+    rewritten: list[Any] = []
+    for filt in plan.get("filters") or []:
+        if isinstance(filt, (list, tuple)) and len(filt) == 4 and filt[1] == "category":
+            rewritten.append([obj, "category", filt[2], filt[3]])
+        else:
+            rewritten.append(list(filt) if isinstance(filt, tuple) else filt)
+    plan["filters"] = rewritten
+
+
+def _retarget_measure(
+    question: str,
+    plan: dict[str, Any],
+    onto: Ontology,
+    ctx: dict[str, Any],
+) -> None:
+    """One question word owns a different measure than the ranked plan."""
+    served = str(plan.get("measure") or "")
+    foreign: list[str] = []
+    for tok in _question_tokens(question):
+        owner = _MEASURE_OWNER.get(tok)
+        if owner and owner != served and owner not in foreign:
+            foreign.append(owner)
+    if len(foreign) != 1 or foreign[0] not in onto.measures:
+        return
+    new = foreign[0]
+    spec = onto.measures[new]
+    locked = dict(ctx)
+    measures = dict(ctx.get("measures") or {})
+    measures[new] = {"grain": spec.grain, "description": spec.description or ""}
+    locked["measures"] = measures
+    ranked_id = str(plan.get("ranked_id") or "") or None
+    got = slots_for_measure(question, locked, new, ranked_id=ranked_id)
+    raw = got.get("query_plan") if isinstance(got, dict) else None
+    if not isinstance(raw, dict) or str(raw.get("measure") or "") != new:
+        return
+    plan.clear()
+    plan.update(raw)
+    if ranked_id:
+        plan["ranked_id"] = ranked_id
+
+
+def _bind_hits(
+    tok: str, index: dict[str, list[tuple[str, str, str]]]
+) -> list[tuple[str, str, str]]:
+    hits = index.get(tok) or index.get(_norm_key(tok)) or []
+    return hits
+
+
+def _warehouse_code(
+    index: dict[str, list[tuple[str, str, str]]], letter: str
+) -> str | None:
+    low = letter.lower()
+    if low.startswith("wh-") or low.startswith("wh"):
+        hits = _bind_hits(low, index)
+    else:
+        hits = _bind_hits(f"wh-{low}", index) or _bind_hits(f"wh{low}", index)
+    for _obj, col, val in hits:
+        if col == "location_code":
+            return val
+    return None
+
+
+def _is_wh_letter(tok: str) -> bool:
+    return (len(tok) == 1 and tok.isalpha()) or bool(
+        re.fullmatch(r"wh-?[a-z]", tok)
+    )
+
+
+def _guard_generate_empty_ranked(
+    question: str,
+    payload: dict[str, Any],
+    *,
+    onto: Ontology | None,
+    warehouse: Path | None,
+    ctx: dict[str, Any],
+) -> str | None:
+    """Predicate or named abstain for every ungrounded word on generate_empty.
+
+    Runs only after fallback:generate_empty has built a ranked plan. A word
+    the measure does not ground must become a SQL predicate or
+    ``ungrounded_qualifier:<word>``. QUAL-GUARD tokens are left for the
+    existing unhonored check.
+    """
+    if onto is None or not onto.measures:
+        return None
+    plan = payload.get("query_plan")
+    if not isinstance(plan, dict) or not str(plan.get("measure") or "").strip():
+        return None
+    _retarget_measure(question, plan, onto, ctx)
+    if str(plan.get("measure") or "") not in onto.measures:
+        return None
+    _rewrite_category_filters(plan, onto)
+    index = _value_index(warehouse)
+    skip = _qual_guard_tokens(question)
+    tokens = _question_tokens(question)
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        nxt2 = tokens[i + 2] if i + 2 < len(tokens) else ""
+        if tok in skip or tok in _EMPTY_GRAMMAR:
+            i += 1
+            continue
+        if tok.isdigit() and len(tok) <= 2:
+            i += 1
+            continue
+        owner = _MEASURE_OWNER.get(tok)
+        if owner:
+            if owner != str(plan.get("measure") or ""):
+                return f"ungrounded_qualifier:{tok}"
+            i += 1
+            continue
+        if tok in {"above", "over"} and plan.get("keep_gt") is not None:
+            i += 1
+            continue
+        if tok in _WH_WORDS and nxt and _is_wh_letter(nxt):
+            code = _warehouse_code(index, nxt)
+            if not code:
+                return f"ungrounded_qualifier:{nxt}"
+            _append_filter(plan, onto, "location", "location_code", "=", code)
+            i += 2
+            continue
+        if tok in _INTRODUCERS and nxt:
+            if nxt in _WH_WORDS and nxt2 and _is_wh_letter(nxt2):
+                code = _warehouse_code(index, nxt2)
+                if not code:
+                    return f"ungrounded_qualifier:{nxt2}"
+                _append_filter(plan, onto, "location", "location_code", "=", code)
+                i += 3
+                continue
+            blob = _blob_tokens(onto, plan)
+            grain = onto.measures[str(plan["measure"])].grain
+            hits = _bind_hits(nxt, index)
+            if hits:
+                op = "<>" if tok in _EXCLUDE_WORDS else "="
+                obj, col, val = hits[0]
+                _append_filter(plan, onto, obj, col, op, val)
+                i += 2
+                continue
+            if nxt in skip or _entity_grounded(nxt, plan, grain) or _in_blob(nxt, blob):
+                i += 2
+                continue
+            # "in inventory" names the product/lot grain. On a transaction
+            # measure it stays ungrounded so it is not dropped.
+            if nxt == "inventory" and grain in {"product", "lot"}:
+                i += 2
+                continue
+            return f"ungrounded_qualifier:{nxt}"
+        hits = _bind_hits(tok, index)
+        if hits:
+            obj, col, val = hits[0]
+            _append_filter(plan, onto, obj, col, "=", val)
+            i += 1
+            continue
+        blob = _blob_tokens(onto, plan)
+        grain = onto.measures[str(plan["measure"])].grain
+        if _entity_grounded(tok, plan, grain) or _in_blob(tok, blob):
+            i += 1
+            continue
+        return f"ungrounded_qualifier:{tok}"
+    return None
 
 
 def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
@@ -1477,6 +1869,21 @@ def maybe_generative_ask(
         trail_notes = [fallback_note]
 
     assert isinstance(payload, dict)
+    if NOTE_FALLBACK_GENERATE_EMPTY in trail_notes:
+        gap = _guard_generate_empty_ranked(
+            q, payload, onto=onto, warehouse=lake, ctx=ctx
+        )
+        if gap:
+            return _stamp(
+                _abstain(
+                    q,
+                    gap,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
     plan = plan_from_payload(payload)
     if plan is None:
         return _stamp(
