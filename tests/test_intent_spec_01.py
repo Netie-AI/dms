@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -382,17 +383,58 @@ def test_flag_off_does_not_stamp_a_spec_attempt(
     assert harness.submits == [_DESC3]
 
 
-def test_contradiction_is_not_served_when_the_flag_is_off(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+def _mask_clock(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            key: ("<as_of>" if key == "as_of" else _mask_clock(val))
+            for key, val in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_mask_clock(val) for val in obj]
+    return obj
+
+
+_WHERE_FALSE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "ask_guide"
+    / "flag_off_where_false_ce08153.json"
+)
+_FALSE_SQL = "SELECT category, amount FROM facts WHERE 1 = 2"
+
+
+def test_flag_off_where_false_matches_main_empty_rows(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Flag off executes ``WHERE 1 = 2`` and withholds the empty rows, like main.
+
+    The stub runs the SQL. Main's envelope is the ce08153 capture. No
+    pipeline-failure ticket is written.
+    """
     monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
-    harness.writer_sql = "SELECT category, amount FROM facts WHERE 1 = 2"
+    harness.writer_sql = _FALSE_SQL
+    with caplog.at_level(logging.WARNING, logger="dms_executor.intent_spec"):
+        env = harness.ask("show every row")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert harness.submits == [_FALSE_SQL]
+    main = json.loads(_WHERE_FALSE.read_text(encoding="utf-8"))
+    assert _mask_clock(env) == _mask_clock(main)
+    assert "pipeline_failure" not in caplog.text
+
+
+def test_flag_on_where_false_abstains_as_contradiction(harness: _Harness) -> None:
+    """Flag on still refuses always-false SQL. The spec cites the question."""
+    harness.spec = _cited(direction="none", direction_span="show every row")
+    harness.writer_sql = _FALSE_SQL
+    harness.retry_sql = _FALSE_SQL
     env = harness.ask("show every row")
     assert env is not None
     assert_envelope_valid(env)
     assert env["abstained"] is True
     assert env["rows"] == []
-    assert "gap: contradiction" in env["text"]
+    assert "contradiction" in env["text"]
     assert harness.submits == []
 
 
@@ -460,6 +502,91 @@ def test_partial_literal_does_not_cover_a_span() -> None:
     )
     assert stitched_reason is not None
     assert "not fully covered" in stitched_reason
+
+
+def _tickets(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for rec in caplog.records:
+        message = rec.getMessage()
+        if not message.startswith("pipeline_failure "):
+            continue
+        body = message.split(" ", 1)[1]
+        if not body.startswith("{"):
+            continue
+        found.append(json.loads(body))
+    return found
+
+
+def test_flag_on_mismatch_writes_pipeline_failure_ticket(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A mismatch ticket names the question, the rejected SQL, and the retry count.
+
+    Literals go through the masker. A bearer value does not survive.
+    """
+    email = "ada@example.com"
+    bearer = "sk-abcdefghij1234"
+    question = f"lowest 3 {email}"
+    sql = (
+        "SELECT category, SUM(amount) AS total FROM facts "
+        f"WHERE category <> '{bearer}' "
+        "GROUP BY category ORDER BY total DESC LIMIT 3"
+    )
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    with caplog.at_level(logging.WARNING, logger="dms_executor.intent_spec"):
+        env = harness.ask(question)
+    assert env is not None
+    assert env["abstained"] is True
+    assert "intent_spec_mismatch" in env["text"]
+    tickets = _tickets(caplog)
+    assert len(tickets) == 1
+    ticket = tickets[0]
+    assert set(ticket) >= {"question", "rejected_sql", "retry_count"}
+    assert ticket["retry_count"] == 2
+    blob = json.dumps(ticket)
+    assert email not in blob
+    assert bearer not in blob
+    assert "DMSMASK_email" in ticket["question"]
+    assert "[redacted]" in ticket["rejected_sql"]
+
+
+def test_flag_on_unverified_writes_pipeline_failure_ticket(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness.spec = {}
+    harness.writer_sql = _ASC3
+    with caplog.at_level(logging.WARNING, logger="dms_executor.intent_spec"):
+        env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert "intent_spec_unverified" in env["text"]
+    tickets = _tickets(caplog)
+    assert len(tickets) == 1
+    assert tickets[0]["retry_count"] == 0
+    assert tickets[0]["question"] == "lowest 3 categories by stock value"
+    assert "ORDER BY total ASC" in tickets[0]["rejected_sql"]
+
+
+def test_ticket_writing_does_not_change_the_abstain_body(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller envelope is the same when the ticket writer raises."""
+    import dms_executor.intent_spec as spec
+
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = _DESC3
+    harness.retry_sql = _DESC3
+    question = "lowest 3 categories by stock value"
+    first = harness.ask(question)
+
+    def _boom(**_kwargs: Any) -> None:
+        raise RuntimeError("ticket writer down")
+
+    monkeypatch.setattr(spec, "log_pipeline_failure_ticket", _boom)
+    second = harness.ask(question)
+    assert first is not None and second is not None
+    assert _mask_clock(first) == _mask_clock(second)
 
 
 def test_direction_mismatch_names_the_order() -> None:

@@ -780,8 +780,16 @@ def sql_grounds(sql: str, *, dialect: str | None = None) -> SqlGrounds:
     )
 
 
-def served_check_shadow(sql: str) -> dict[str, Any]:
-    """Structured shadow. An unexpected failure is ``error``, never a raise."""
+def served_check_shadow(sql: str, *, extended: bool | None = None) -> dict[str, Any]:
+    """Structured shadow. An unexpected failure is ``error``, never a raise.
+
+    ``extended=False`` is the flag-off shape: the checker file from before
+    this branch, so the keys and ``checker_version`` stay those bytes.
+    """
+    if extended is False:
+        from dms_executor.sql_grounds_flag_off import served_check_shadow as _flag_off
+
+        return _flag_off(sql)
     try:
         return sql_grounds(sql).as_dict()
     except Exception as exc:  # noqa: BLE001 — shadow must not change the serve

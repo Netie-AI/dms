@@ -792,7 +792,9 @@ def _l2_envelope(
     try:
         from dms_executor.sql_grounds import served_check_shadow
 
-        env["served_check_shadow"] = served_check_shadow(sql)
+        env["served_check_shadow"] = served_check_shadow(
+            sql, extended=intent_spec_enabled()
+        )
     except Exception as exc:  # noqa: BLE001 — shadow never changes the serve
         version = ""
         try:
@@ -864,8 +866,9 @@ def _submit_validated(
             route="generated",
             question=question,
         )
-    # Always-false SQL returns zero rows and must not be served as a clean answer.
-    if sql_grounds(sql).contradiction:
+    # Always-false SQL is a named abstain only when the spec flag is on.
+    # Flag off executes and withholds empty rows, the same as main.
+    if intent_spec_enabled() and sql_grounds(sql).contradiction:
         return _abstain(
             question,
             "contradiction",

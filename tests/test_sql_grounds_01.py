@@ -232,7 +232,7 @@ def test_shadow_records_error(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_l2_serve_keeps_rows_when_the_check_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     import dms_executor.generative_ask as ga
 
-    def boom(_sql: str):
+    def boom(_sql: str, **_kwargs: object) -> None:
         raise RuntimeError("nope")
 
     monkeypatch.setattr("dms_executor.sql_grounds.served_check_shadow", boom)

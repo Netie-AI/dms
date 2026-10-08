@@ -1,0 +1,61 @@
+{
+  "abstained": true,
+  "answer_id": "ans_gen01",
+  "as_of": "2026-10-08T20:22:19Z",
+  "ask_mode": "live",
+  "assumptions": [
+    "GEN-01 ontology compile",
+    "executed via Cortex submit after validate",
+    "GEN-01 Cortex ontology_plan SQL",
+    "empty result after executed SQL: withheld (hard rule 12)"
+  ],
+  "audit_id": "led_spec",
+  "audit_receipt": {
+    "exclude": {
+      "reasons": [],
+      "status": "na",
+      "why": "N/A: abstained; no exclude receipt"
+    },
+    "include": {
+      "row_count": 0,
+      "rows": [],
+      "status": "na",
+      "why": "N/A: abstained; no include set"
+    },
+    "unsure": {
+      "abstained": true,
+      "badge": "ABSTAIN",
+      "status": "abstain",
+      "why": "GEN-01 ontology compile"
+    }
+  },
+  "badge": "ABSTAIN",
+  "chart": null,
+  "contributing_sources": [],
+  "demo_fallback_used": false,
+  "drillthrough_token": null,
+  "generate_legs": {
+    "count": 1,
+    "legs": [
+      {
+        "returned": "sql"
+      }
+    ]
+  },
+  "grounded_tables": [
+    "facts"
+  ],
+  "plan_origin": "generate_sql",
+  "plan_source": "ontology_plan",
+  "route": "generated",
+  "rows": [],
+  "served_attribution": "reported",
+  "served_model": "writer-route",
+  "served_provider": "writer-provider",
+  "session_id": null,
+  "space_id": null,
+  "sql_used": "SELECT category, amount FROM facts WHERE 1 = 2",
+  "suggestions": [],
+  "text": "No matching rows for that filter. Stored encodings may differ (e.g. BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value from the data, or ask without that filter.",
+  "values": []
+}

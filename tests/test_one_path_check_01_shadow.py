@@ -21,6 +21,8 @@ _SHADOW = "served_check_shadow"
 # minus 90 days was 2026-07-10 on this day.
 _CAPTURE_DAY = (2026, 10, 8)
 GOLDEN = HERE / "flag_off_52_f9ffc3e1.json"
+# Full envelopes from ce08153, shadow included. as_of is the only clock field.
+CE08153 = HERE / "flag_off_52_ce08153.json"
 
 
 def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,6 +46,18 @@ def _stable(env: dict[str, Any]) -> dict[str, Any]:
 
 def _stable_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": row["id"], "env": _stable(row["env"])} for row in rows]
+
+
+def _mask_clock(obj: Any) -> Any:
+    """Mask clock fields only. ``served_check_shadow`` stays in the compare."""
+    if isinstance(obj, dict):
+        return {
+            key: ("<as_of>" if key == "as_of" else _mask_clock(val))
+            for key, val in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_mask_clock(val) for val in obj]
+    return obj
 
 
 def _diff_paths(left: Any, right: Any, path: str = "") -> list[str]:
@@ -101,6 +115,30 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
         else:
             assert shadow is None, row["id"]
     assert served > 0
+
+
+def test_flag_off_envelopes_match_ce08153_including_shadow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag-off full envelopes, shadow included, equal the ce08153 capture.
+
+    Only clock fields are masked. A new shadow key or a different
+    ``checker_version`` fails this. The test above still pops the shadow.
+    """
+    monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
+    _pin_capture_day(monkeypatch)
+    live = replay_pack()
+    assert len(live) == 52
+    golden = json.loads(CE08153.read_text(encoding="utf-8"))
+    assert [row["id"] for row in live] == [row["id"] for row in golden]
+    main_rows = {row["id"]: row["env"] for row in golden}
+    problems: list[str] = []
+    for row in live:
+        paths = _diff_paths(_mask_clock(row["env"]), _mask_clock(main_rows[row["id"]]))
+        if paths:
+            problems.append(f"{row['id']}: {paths}")
+    if problems:
+        pytest.fail("flag-off envelopes differ from ce08153:\n" + "\n".join(problems))
 
 
 def test_capture_day_pin_does_not_replace_datetime_date(

@@ -589,6 +589,34 @@ def _sql_of(payload: Mapping[str, Any] | None) -> str | None:
     return None
 
 
+def log_pipeline_failure_ticket(
+    *,
+    question: str,
+    rejected_sql: str,
+    retry_count: int,
+    reason: str,
+) -> None:
+    """Log one pipeline-failure ticket on the existing intent_spec logger.
+
+    Not a second store. Question and SQL literals go through
+    ``fail_closed_mask_payload``, then bearer redaction. A failure here
+    is swallowed so the caller envelope does not change.
+    """
+    try:
+        masked = fail_closed_mask_payload(text=question, sql_used=rejected_sql or "")
+        from cortex_client.insights import redact_secrets
+
+        ticket = {
+            "question": redact_secrets(str(masked.get("text") or "")),
+            "rejected_sql": redact_secrets(str(masked.get("sql_used") or "")),
+            "retry_count": int(retry_count),
+            "reason": redact_secrets(str(reason or "")),
+        }
+        _log.warning("pipeline_failure %s", json.dumps(ticket, sort_keys=True))
+    except Exception:
+        return
+
+
 def feedback_prompt(question: str, previous_sql: str, reason: str) -> str:
     """Retry text: the question, the SQL, and the checker reason."""
     return f"{question}\n\nprevious_sql:\n{previous_sql}\n\nfeedback:\n{reason}"
@@ -619,7 +647,15 @@ def apply_intent_spec(
     reason: str | None
     if parsed.unverified:
         reason = f"intent_spec_unverified:{parsed.unverified}"
-        _log.warning("pipeline_failure reason=%s", reason)
+        try:
+            log_pipeline_failure_ticket(
+                question=question,
+                rejected_sql=sql,
+                retry_count=0,
+                reason=reason,
+            )
+        except Exception:
+            pass
         return IntentDecision(None, None, reason, _attempt(parsed, reason), False)
     reason = check_sql_against_spec(sql, parsed.spec, dialect=dialect)
     current_sql = sql
@@ -640,7 +676,15 @@ def apply_intent_spec(
         reason = check_sql_against_spec(current_sql, parsed.spec, dialect=dialect)
     if reason:
         named = f"intent_spec_mismatch:{reason}"
-        _log.warning("pipeline_failure reason=%s", named)
+        try:
+            log_pipeline_failure_ticket(
+                question=question,
+                rejected_sql=current_sql,
+                retry_count=retries,
+                reason=named,
+            )
+        except Exception:
+            pass
         return IntentDecision(
             None, dict(current_payload or {}), named, _attempt(parsed, named), False
         )
