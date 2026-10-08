@@ -72,7 +72,7 @@ def _crm_schema() -> dict[str, Any]:
                         "samples": ["1"],
                     },
                     {
-                        "name": "segment",
+                        "name": "status",
                         "type": "varchar",
                         "description": "market segment",
                         "distinct": 1,
@@ -284,7 +284,7 @@ def test_crm_empty_ontology_masks_pii_and_keeps_cleared_samples() -> None:
             assert raw not in prompt
         assert "RESTRICTEDTOKEN" not in prompt
         assert "restricted_note" not in prompt
-        assert "account.segment = midmarket" in prompt
+        assert "account.status = midmarket" in prompt
         assert _SEGMENT not in prompt
         assert f"samples={_SEGMENT}" not in prompt
         assert "account_self" not in prompt
@@ -467,7 +467,7 @@ def test_prompt_stays_on_the_request_and_off_disk(
 
     monkeypatch.setattr(pathlib.Path, "write_text", _no_write)
     ctx = prepare_generate_context(
-        {"schema": [{"table": "account", "columns": ["segment"]}]},
+        {"schema": [{"table": "account", "columns": ["status"]}]},
         question="which accounts are midmarket",
         schema=_crm_schema(),
         ontology={},
@@ -480,7 +480,7 @@ def test_prompt_stays_on_the_request_and_off_disk(
     for raw in _PII:
         assert raw not in stored
     assert _EMAIL not in stored
-    assert "account.segment = midmarket" in stored
+    assert "account.status = midmarket" in stored
     assert _SEGMENT not in stored
     assert "DIALECT: mysql" in stored
 
@@ -489,7 +489,7 @@ def test_schema_context_field_is_behind_the_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = {
-        "schema": [{"table": "account", "columns": ["segment"]}],
+        "schema": [{"table": "account", "columns": ["status"]}],
         "schema_context": "PROMPT_TEXT",
     }
     monkeypatch.delenv("DMS_SCHEMA_CONTEXT", raising=False)
@@ -559,7 +559,7 @@ def _seed_crm(path: Path) -> None:
     con = duckdb.connect(str(path))
     try:
         con.execute(
-            "CREATE TABLE account (account_id INTEGER PRIMARY KEY, segment VARCHAR)"
+            "CREATE TABLE account (account_id INTEGER PRIMARY KEY, status VARCHAR)"
         )
         con.execute(f"INSERT INTO account VALUES (1, '{_SEGMENT}')")
         con.execute(
@@ -613,7 +613,7 @@ def test_generative_ask_attaches_reflected_context_when_flagged(
     assert "DMSHINT_" in env["schema_context"]
     assert _SEGMENT not in json.dumps(env)
     assert "midmarket" not in json.dumps(env)
-    assert "account.segment = midmarket" in prompt
+    assert "account.status = midmarket" in prompt
     assert _SEGMENT not in prompt
     assert f"samples={_SEGMENT}" not in prompt
     for raw in _PII:
@@ -788,7 +788,7 @@ def test_two_asks_on_different_spaces_do_not_cross(
     def _seed(path: Path, token: str) -> None:
         con = duckdb.connect(str(path))
         try:
-            con.execute("CREATE TABLE person (rep VARCHAR)")
+            con.execute("CREATE TABLE person (status VARCHAR)")
             con.execute("INSERT INTO person VALUES (?)", [token])
         finally:
             con.close()
@@ -840,9 +840,9 @@ def test_two_asks_on_different_spaces_do_not_cross(
     left.join()
     right.join()
     assert errors == []
-    assert "person.rep = ONLYSPACEA" in prompts["space-left"]
+    assert "person.status = ONLYSPACEA" in prompts["space-left"]
     assert "ONLYSPACEB" not in prompts["space-left"]
-    assert "person.rep = ONLYSPACEB" in prompts["space-right"]
+    assert "person.status = ONLYSPACEB" in prompts["space-right"]
     assert "ONLYSPACEA" not in prompts["space-right"]
     left_copy = envelopes["space-left"]["schema_context"]
     right_copy = envelopes["space-right"]["schema_context"]
@@ -854,10 +854,10 @@ def test_two_asks_on_different_spaces_do_not_cross(
     assert "ONLYSPACEA" not in right_copy
     assert "ONLYSPACEB" not in json.dumps(envelopes["space-left"])
     assert "ONLYSPACEA" not in json.dumps(envelopes["space-right"])
-    assert "ONLYSPACEA" in cached_value_index("space-left")["person.rep"]
-    assert "ONLYSPACEB" not in cached_value_index("space-left")["person.rep"]
-    assert "ONLYSPACEB" in cached_value_index("space-right")["person.rep"]
-    assert "ONLYSPACEA" not in cached_value_index("space-right").get("person.rep", ())
+    assert "ONLYSPACEA" in cached_value_index("space-left")["person.status"]
+    assert "ONLYSPACEB" not in cached_value_index("space-left")["person.status"]
+    assert "ONLYSPACEB" in cached_value_index("space-right")["person.status"]
+    assert "ONLYSPACEA" not in cached_value_index("space-right").get("person.status", ())
 
 
 def test_flag_off_calls_no_schema_function(
@@ -1071,6 +1071,102 @@ def test_generic_column_name_casings_send_no_hint(
     assert value not in json.dumps(rest)
 
 
+_UNCLEARED_LEAKS = (
+    "SITI",
+    "NORA",
+    "AHMAD",
+    "ALI",
+    "ALI!",
+    "FATIMAH",
+    "LEE",
+    "WEIMING",
+    "Zoë",
+    "José",
+    "j.smith",
+    "muthu a/l raju",
+    "o'connor",
+    "nora99",
+    "Ali123",
+)
+
+
+def _assert_absent_from_prompt_and_insights(
+    question: str,
+    prompt: str,
+    value: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert "FILTER HINTS" not in prompt
+    assert value not in prompt
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    body = _insights_body(
+        question,
+        session_id="sess-uncleared",
+        space_id="space-uncleared",
+        ontology={"schema_context": prompt},
+    )
+    catalog = str(body.get("schema_context") or "")
+    assert "FILTER HINTS" not in catalog
+    assert value not in catalog
+    assert "FILTER HINTS" not in json.dumps(body)
+    rest = {
+        key: item
+        for key, item in body.items()
+        if key not in {"question", "intent"}
+    }
+    assert value not in json.dumps(rest)
+
+
+@pytest.mark.parametrize("column", ("col1", "attr_8"))
+@pytest.mark.parametrize("value", _UNCLEARED_LEAKS)
+def test_uncleared_column_sends_no_personal_value(
+    column: str, value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generic column is not cleared, so the cell never becomes a hint."""
+    question = f"show {value}"
+    prompt = build_schema_context(
+        question,
+        {
+            "dialect": "duckdb",
+            "datasets": [
+                {"name": "t", "columns": [_text_column(column, [value], distinct=1)]}
+            ],
+        },
+    ).prompt
+    _assert_absent_from_prompt_and_insights(question, prompt, value, monkeypatch)
+
+
+def test_uncleared_column_sends_nothing_when_value_probe_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The column gate holds when the value probe is stubbed to never flag."""
+    monkeypatch.setattr(
+        "dms_executor.schema_context._mask_would_flag",
+        lambda *_args, **_kwargs: False,
+    )
+    cases = (
+        ("col1", "SITI"),
+        ("col1", "Zoë"),
+        ("attr_8", "muthu a/l raju"),
+        ("attr_8", "j.smith"),
+    )
+    for column, value in cases:
+        question = f"show {value}"
+        prompt = build_schema_context(
+            question,
+            {
+                "dialect": "duckdb",
+                "datasets": [
+                    {
+                        "name": "t",
+                        "columns": [_text_column(column, [value], distinct=1)],
+                    }
+                ],
+            },
+        ).prompt
+        _assert_absent_from_prompt_and_insights(question, prompt, value, monkeypatch)
+
+
 def test_title_case_category_is_not_hinted() -> None:
     """Known over-block: a Title-Case category looks like a one-word name."""
     prompt = build_schema_context(
@@ -1105,6 +1201,50 @@ def test_list_chemicals_in_stock_sends_the_typed_span() -> None:
     assert "item.category = chemicals" in prompt
     assert "CHEMICALS" not in prompt
     assert "samples=" not in prompt
+
+
+def test_cleared_category_keeps_lowercase_chemicals_and_sku_code() -> None:
+    """A positively cleared category keeps the codes the value probe over-blocked."""
+    chemicals = build_schema_context(
+        "list chemicals in stock",
+        {
+            "dialect": "mysql",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("category", ["chemicals"], distinct=1)],
+                }
+            ],
+        },
+    ).prompt
+    assert "item.category = chemicals" in chemicals
+    sku = build_schema_context(
+        "list SKU-BETA",
+        {
+            "dialect": "mysql",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("category", ["SKU-BETA"], distinct=1)],
+                }
+            ],
+        },
+    ).prompt
+    assert "item.category = SKU-BETA" in sku
+    folded = build_schema_context(
+        "list sku-beta",
+        {
+            "dialect": "mysql",
+            "datasets": [
+                {
+                    "name": "item",
+                    "columns": [_text_column("category", ["SKU-BETA"], distinct=1)],
+                }
+            ],
+        },
+    ).prompt
+    assert "item.category = sku-beta" in folded
+    assert "SKU-BETA" not in folded
 
 
 def test_longer_granted_value_blocks_the_short_span() -> None:
@@ -1499,20 +1639,20 @@ def test_index_total_cap_drops_the_overflow_column(
                 {
                     "name": "person",
                     "columns": [
-                        _text_column("rep", ["ALPHA"], distinct=1),
-                        _text_column("other", ["BETA", "GAMMA"], distinct=2),
+                        _text_column("status", ["ALPHA"], distinct=1),
+                        _text_column("category", ["BETA", "GAMMA"], distinct=2),
                     ],
                 }
             ]
         },
         space_id="space-total-cap",
     ).prompt
-    assert "person.rep = ALPHA" in prompt
+    assert "person.status = ALPHA" in prompt
     assert "BETA" not in prompt
     assert "schema_index_cap" in caplog.text
     cached = cached_value_index("space-total-cap")
-    assert cached["person.rep"] == ("ALPHA",)
-    assert "person.other" not in cached
+    assert cached["person.status"] == ("ALPHA",)
+    assert "person.category" not in cached
 
 
 def test_foreign_key_drops_when_the_target_column_is_omitted() -> None:

@@ -22,13 +22,16 @@ granted values. Only the longest matching span is kept. If that span is a
 strict prefix or substring of any other granted value in the column, no
 hint is sent. The model prompt shows the question's own characters for
 that span, not the stored casing. A model span is never consulted.
-A hint is emitted only when the value and the column both clear the mask
-under every casing that is tried: as typed, lower, Title, upper, and with
-separators folded to spaces. A one-word value that contains a lowercase
-letter is also shown to the detector as a repeated Title-Case pair, because
-that detector needs two words. An all-caps code is not repeated. If any
-variant flags, or the detector raises, nothing is sent. Doubt or a mask
-failure sends nothing and the ask continues. Fuzzy hints stay on a tagged
+A hint is emitted only from a column that is positively cleared: an
+ontology ``non_personal`` tag with source and field, or a column name the
+mask's own metric skip treats as non-personal. An unknown column such as
+``col1`` is not cleared, so it sends no hint even when the value probe
+would leave the cell raw. On a cleared column the value probe is the
+second layer. It flags a cell the detector already flags, including a
+repeated Title-Case word. It does not re-title a one-word or hyphenated
+code, because that drop removes a cleared metric code. If any check
+flags, or the detector raises, nothing is sent. Doubt or a mask failure
+sends nothing and the ask continues. Fuzzy hints stay on a tagged
 column; that tag does not re-title a multi-word phrase into a name.
 Fuzzy or partial hints exist only for a tagged column, and those
 candidates are capped. Hints and the columns they cite
@@ -64,7 +67,20 @@ from pathlib import Path
 from typing import Any
 
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
-from dms_core.pii import classify_column, fail_closed_mask_payload, is_mask_token
+from dms_core.pii import (
+    _ACCOUNT_COL,
+    _ADDRESS_COL,
+    _DOB_COL,
+    _EMAIL_COL,
+    _METRIC_SKIP,
+    _NAME_COL,
+    _NRIC_COL,
+    _PERSON_TABLE,
+    _PHONE_COL,
+    classify_column,
+    fail_closed_mask_payload,
+    is_mask_token,
+)
 
 from dms_executor.ontology import Ontology, relation_tables, table_is_granted
 
@@ -602,54 +618,61 @@ def _hint_blocked(folded: str, others: Sequence[str]) -> bool:
     return any(folded != other and folded in other for other in others)
 
 
-def _separator_norm(text: str) -> str:
-    """Fold hyphen, underscore, and slash into spaces. Not a name pattern."""
-    chars = [" " if ch in "-_/" else ch for ch in text]
-    return " ".join("".join(chars).split())
+def _column_positively_cleared(table: str, column: str, *, tagged: bool) -> bool:
+    """True only when the column itself has been cleared, not merely unflagged.
 
-
-def _casing_variants(text: str) -> list[str]:
-    """As typed, lower, Title, upper, plus the same after separators fold."""
-    seeds: list[str] = []
-    for seed in (text, _separator_norm(text)):
-        if seed and seed not in seeds:
-            seeds.append(seed)
-    out: list[str] = []
-    seen: set[str] = set()
-    for seed in seeds:
-        for variant in (seed, seed.lower(), seed.upper(), seed.title()):
-            if variant not in seen:
-                seen.add(variant)
-                out.append(variant)
-    return out
+    An ontology ``non_personal`` tag with source and field is one clear.
+    The other is the mask's metric-skip name, its own non-personal pattern.
+    ``classify_column`` returns None for both that name and an unknown
+    column, so None is not a clear. A
+    birth, contact, or name pattern is never a clear. Doubt sends nothing.
+    """
+    if tagged:
+        return True
+    col = str(column or "").strip()
+    if not col:
+        return False
+    try:
+        if _DOB_COL.search(col):
+            return False
+        if _METRIC_SKIP.search(col) is None:
+            return False
+        if (
+            _EMAIL_COL.search(col)
+            or _NRIC_COL.search(col)
+            or _PHONE_COL.search(col)
+            or _ACCOUNT_COL.search(col)
+            or _ADDRESS_COL.search(col)
+            or _NAME_COL.search(col)
+        ):
+            return False
+        if _PERSON_TABLE.search(str(table or "")) and re.fullmatch(
+            "name", col, re.I
+        ):
+            return False
+        return True
+    except Exception:  # noqa: BLE001 -- doubt: the column is not cleared
+        return False
 
 
 def _mask_would_flag(value: str, *, variants: bool) -> bool:
     """True when the mask would not leave ``value`` raw.
 
-    ``variants`` also runs lower, Title, upper, and separator-folded
-    forms through the same detector. A one-word value that contains a
-    lowercase letter is repeated after Title case, because the detector
-    needs two words. An all-caps code is not repeated. An exception is
-    doubt. This is not a name list.
+    Second layer, after :func:`_column_positively_cleared`. A repeated
+    copy catches a Title-Case word the detector needs two words to see.
+    The cell is not re-titled and separators are not folded into spaces:
+    that drop is what removed a cleared metric code. ``variants`` is
+    kept so a tagged phrase and an untagged code share this probe; the
+    column gate is what closes an unknown column. An exception is doubt.
     """
+    del variants
     text = " ".join(str(value).split())
     if not text or is_mask_token(text):
         return False
     try:
-        probed = _casing_variants(text) if variants else [text]
-        for variant in probed:
-            if classify_column("note", [variant]) is not None:
-                return True
-        # Untagged only. A tagged phrase such as a multi-word code is not
-        # re-titled. One lowercase word is the detector's miss, so it is
-        # repeated. An all-caps code has no lowercase letter and is not.
-        if variants and any(ch.islower() for ch in text):
-            titled = _separator_norm(text).title()
-            if titled and " " not in titled:
-                if classify_column("note", [f"{titled} {titled}"]) is not None:
-                    return True
-        return False
+        if classify_column("note", [text]) is not None:
+            return True
+        return classify_column("note", [f"{text} {text}"]) is not None
     except Exception:  # noqa: BLE001 -- doubt: send no hint
         return True
 
@@ -663,6 +686,8 @@ def _hint_column_blocked(
     tagged: bool,
 ) -> bool:
     """True when this column must not contribute a filter hint."""
+    if not _column_positively_cleared(table, column, tagged=tagged):
+        return True
     try:
         if classify_column(column, list(values), table=table) is not None:
             return True
@@ -670,8 +695,7 @@ def _hint_column_blocked(
             return True
     except Exception:  # noqa: BLE001 -- doubt: send no hint
         return True
-    # A non_personal tag does not re-title a multi-word phrase. Untagged
-    # columns still see every casing. One-word lowercase is always probed.
+    # A non_personal tag does not re-title a multi-word phrase.
     return any(_mask_would_flag(value, variants=not tagged) for value in values)
 
 
@@ -732,9 +756,12 @@ def _hint_values(
 
     Untagged: exact fold only, longest span only, and nothing when that
     span sits inside another granted value. Tagged: capped fuzzy, stored
-    text. A model span is not an input. A value the mask would flag, or
-    a column it classifies, is not a hint.
+    text. A model span is not an input. An uncleared column sends nothing
+    before the value probe runs. A value the mask would flag is not a hint.
     """
+    # Column clearance is the control. A stubbed value probe cannot open it.
+    if not _column_positively_cleared(table, column, tagged=tagged):
+        return []
     if _hint_column_blocked(table, column, values, description, tagged=tagged):
         return []
     groups: dict[str, list[str]] = {}
