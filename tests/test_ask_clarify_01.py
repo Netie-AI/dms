@@ -1189,3 +1189,142 @@ def test_live_scorers_leave_unanswered_clarify_unanswered() -> None:
     folded = without_replaced_clarifies([clarify, reask_ok])
     assert folded == [reask_ok]
     assert curated_judge(case, folded[0]) in {"OK", "LAYER"}
+
+
+def test_ten_thousand_minted_ids_are_unchanged_by_the_masker() -> None:
+    """Real masker, 10_000 fresh ids. A hex id still changes, so this goes red
+    if minting is swapped back to ``clr_`` plus digits.
+    """
+    from dms_core.pii import mask_unknown_keys
+    from dms_executor.ask_clarify import mint_clarify_id
+
+    hex_id = "clr_8812403473c94ce2"
+    hex_out = mask_unknown_keys({"clarify_id": hex_id})["clarify_id"]
+    assert hex_out != hex_id
+    assert "DMSMASK" in str(hex_out)
+    for _ in range(10_000):
+        cid = mint_clarify_id()
+        assert cid.startswith("clr") and cid.isalpha()
+        assert "@" not in cid and "_" not in cid
+        out = mask_unknown_keys({"clarify_id": cid, "question": "show qx"})
+        assert out["clarify_id"] == cid
+
+
+def test_thousand_ids_round_trip_from_envelope_to_pick(wh: Path) -> None:
+    from dms_core.pii import mask_unknown_keys
+    from dms_executor.ask_clarify import mint_clarify_id, resolve_clarify
+
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+    )
+    try:
+        attempt = exe._clarify_attempts[env["clarify_id"]]
+        live_id = ""
+        for n in range(1000):
+            cid = mint_clarify_id()
+            outgoing = mask_unknown_keys({**env, "clarify_id": cid})
+            assert outgoing["clarify_id"] == cid
+            exe._clarify_attempts[cid] = {**attempt, "clarify_id": cid}
+            resolved = resolve_clarify(
+                exe._clarify_attempts,
+                clarify_id=str(outgoing["clarify_id"]),
+                option_id="opt_a",
+                clarify_text=None,
+                space_id=FINANCE,
+                session_id="ses_clarify",
+                fallback_question="show qxalpha771 and qxbeta771",
+                warehouse=wh,
+                grantable=set(_GRANTED),
+            )
+            assert isinstance(resolved, str)
+            assert "qxalpha771" in resolved
+            if n == 0:
+                live_id = cid
+                exe._clarify_attempts[cid] = {**attempt, "clarify_id": cid}
+        picked = exe.live_ask(
+            "show qxalpha771 and qxbeta771",
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=["qxalpha_fact", "qxbeta_fact"],
+            clarify_id=live_id,
+            option_id="opt_a",
+        )
+        assert picked.get("status") != "clarify"
+        assert picked["rows"] == [{"n": 4}]
+        assert not picked.get("abstain_reason")
+    finally:
+        exe.close()
+
+
+def test_clarify_question_and_label_pii_stay_masked(wh: Path) -> None:
+    phone = "202-555-0147"
+    email = "ada@example.com"
+    payload = {
+        "question": f"which measure {phone} {email}",
+        "prompt_tokens": 6,
+        "completion_tokens": 4,
+        "options": [
+            _opt("opt_a", f"alpha {phone} {email}", _measure("qxalpha771", "qxalpha_fact")),
+            _opt("opt_b", f"beta {phone} {email}", _measure("qxbeta771", "qxbeta_fact")),
+        ],
+    }
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(payload),
+        flag=True,
+    )
+    try:
+        blob = json.dumps(env)
+        assert phone not in blob
+        assert email not in blob
+        assert "DMSMASK_phone_" in blob
+        assert "DMSMASK_email_" in blob
+        assert_envelope_valid(env)
+    finally:
+        exe.close()
+
+
+def test_phone_or_nric_id_is_masked_and_the_pick_abstains(wh: Path) -> None:
+    from dms_core.pii import mask_unknown_keys
+
+    phone = "2025550147"
+    nric = "900101011234"
+    cortex = _Cortex()
+    env, _held, exe = _ask(
+        wh,
+        "show qxalpha771 and qxbeta771",
+        ["qxalpha_fact", "qxbeta_fact"],
+        writer=_Writer(_two_measures()),
+        flag=True,
+        cortex=cortex,
+    )
+    try:
+        attempt = exe._clarify_attempts.pop(env["clarify_id"])
+        for bad in (phone, nric):
+            outgoing = mask_unknown_keys({**env, "clarify_id": bad})
+            assert outgoing["clarify_id"] != bad
+            assert "DMSMASK" in str(outgoing["clarify_id"])
+            exe._clarify_attempts[bad] = {**attempt, "clarify_id": bad}
+            for sent in (bad, str(outgoing["clarify_id"])):
+                picked = exe.live_ask(
+                    "show qxalpha771 and qxbeta771",
+                    space_id=FINANCE,
+                    session_id="ses_clarify",
+                    tables=["qxalpha_fact", "qxbeta_fact"],
+                    clarify_id=sent,
+                    option_id="opt_a",
+                )
+                assert picked["abstain_reason"] == "clarify_unknown"
+                assert picked["abstained"] is True
+                assert picked["rows"] == []
+            assert bad in exe._clarify_attempts
+        assert cortex.submits == []
+        assert cortex.asks == []
+    finally:
+        exe.close()

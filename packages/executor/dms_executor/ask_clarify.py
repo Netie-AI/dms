@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -78,6 +78,38 @@ _NUMERIC = frozenset(
 )
 
 _EXTRA_CALLS = 0
+
+# One id format. The store and the envelope both use ``mint_clarify_id``.
+# Lowercase letters only: no digits, no ``@``, no separator a mask pattern
+# catches. 28 letters is log2(26)*28 = 131.6 bits, above 128.
+_CLARIFY_ID_PREFIX = "clr"
+_CLARIFY_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+_CLARIFY_ID_BODY = 28
+
+
+def mint_clarify_id() -> str:
+    """Mint one clarify id. This is the only place the format is defined."""
+    body = "".join(secrets.choice(_CLARIFY_ID_ALPHABET) for _ in range(_CLARIFY_ID_BODY))
+    return _CLARIFY_ID_PREFIX + body
+
+
+def minted_clarify_id(value: object) -> bool:
+    """True only for an id this module minted. Anything else is not trusted."""
+    if not isinstance(value, str):
+        return False
+    prefix = _CLARIFY_ID_PREFIX
+    if len(value) != len(prefix) + _CLARIFY_ID_BODY or not value.startswith(prefix):
+        return False
+    alphabet = _CLARIFY_ID_ALPHABET
+    return all(ch in alphabet for ch in value[len(prefix) :])
+
+
+def _mask_user_text(text: str) -> str:
+    """Run user-facing clarify text through the existing masker once."""
+    got = fail_closed_mask_payload(text=text, rows=[])
+    if not isinstance(got, dict):
+        return ""
+    return str(got.get("text") or "")
 
 
 def clarify_enabled() -> bool:
@@ -615,9 +647,10 @@ def _envelope(
     prompt_tokens: int,
     completion_tokens: int,
 ) -> dict[str, Any]:
+    shown = _mask_user_text(clarify_question)
     env = build_answer_envelope(
         answer_id=f"ans_{clarify_id}",
-        text=clarify_question,
+        text=shown,
         badge="ABSTAIN",
         abstained=True,
         values=[],
@@ -632,7 +665,7 @@ def _envelope(
     )
     env["status"] = "clarify"
     env["clarify_id"] = clarify_id
-    env["question"] = clarify_question
+    env["question"] = shown
     env["original_question"] = original
     env["options"] = options
     env["rows"] = []
@@ -691,7 +724,7 @@ def _finish(
     options = _mask_stored_options(options, cols)
     if not options:
         return None
-    clarify_id = "clr_" + uuid.uuid4().hex[:16]
+    clarify_id = mint_clarify_id()
     _store_attempt(
         store,
         clarify_id=clarify_id,
@@ -1072,9 +1105,18 @@ def resolve_clarify(
     """Return a bound question, a free-text re-ask, or a named abstain.
 
     An option id binds only after the grant and mask re-check. Free text
-    never binds. It is a new question (``Reask``). Unknown and expired ids
-    abstain. They do not raise.
+    never binds. It is a new question (``Reask``). An id that was not minted
+    here is not trusted, even if a store entry uses it. Unknown and expired
+    ids abstain. They do not raise.
     """
+    if not minted_clarify_id(clarify_id):
+        return named_abstain(
+            "clarify_unknown",
+            "That clarifying question is not known. Ask the question again.",
+            space_id=space_id,
+            session_id=session_id,
+            question=fallback_question,
+        )
     attempt = store.get(clarify_id)
     if not isinstance(attempt, dict) or not _scope_ok(attempt, space_id, session_id):
         return named_abstain(
