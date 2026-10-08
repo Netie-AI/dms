@@ -285,6 +285,23 @@ def with_served_attribution(
     return env
 
 
+def _clear_discarded_model_credit(env: dict[str, Any]) -> None:
+    """Grammar list is not the model's SQL. Credit is none, not that model."""
+    env["served_attribution"] = SERVED_ATTR_NONE
+    for key in ("served_model", "served_provider"):
+        if key in env:
+            env[key] = SERVED_ATTR_NONE
+    legs = env.get("generate_legs")
+    if not isinstance(legs, dict):
+        return
+    for leg in legs.get("legs") or []:
+        if not isinstance(leg, dict):
+            continue
+        for key in ("served_model", "served_provider"):
+            if key in leg:
+                leg[key] = SERVED_ATTR_NONE
+
+
 def where_paths_for_envelope(paths: Sequence[WherePath]) -> list[dict[str, Any]]:
     """JSON-ready where-paths for the ask envelope. Empty if none."""
     return [
@@ -1154,7 +1171,13 @@ def maybe_generative_ask(
         env["generate_legs"] = generate_legs_view(
             setup_src, validate_reason=validate_why
         )
-        return with_served_attribution(env, setup_src)
+        stamped = with_served_attribution(env, setup_src)
+        if isinstance(stamped, dict):
+            notes = " ".join(str(a) for a in (stamped.get("assumptions") or []))
+            # The distinct list replaced the model SQL. Do not credit that model.
+            if "grammar list:" in notes:
+                _clear_discarded_model_credit(stamped)
+        return stamped
 
     def _serve_grammar_list() -> dict[str, Any] | None:
         """Validated distinct-key list. Not the ranking fallback and not a skill row."""

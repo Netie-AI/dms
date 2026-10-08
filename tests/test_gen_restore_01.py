@@ -40,7 +40,7 @@ from dms_executor.generative_ask import (
     maybe_generative_ask,
 )
 from dms_executor.manifest import ManifestMinter, SessionAcl
-from dms_executor.ontology import Ontology
+from dms_executor.ontology import Ontology, sql_is_aggregate
 
 _PREDICT_Q = "Predict how much revenue we will make"
 _REVENUE_2099_Q = "What was revenue in 2099?"
@@ -492,6 +492,10 @@ def test_answered_envelope_has_no_chart_when_rows_do_not_fit(
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
+    # List question, non-aggregate model SELECT, granted table: still served.
+    assert env.get("sql_used") == "SELECT sku FROM lots"
+    assert not sql_is_aggregate(str(env.get("sql_used")))
+    assert "executed via Cortex submit after validate" in _notes(env)
     assert env.get("chart") is None
     assert chart_from_rows(rows) is None
     assert_envelope_valid(env)

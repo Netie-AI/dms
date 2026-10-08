@@ -558,47 +558,84 @@ def retrieve_short_context(
     return summarize_context(parts)
 
 
+def measure_lock(question: str) -> tuple[str, str] | None:
+    """(token, measure) for the first lock arm, or None.
+
+    The token is the word in the question that selected the measure.
+    ``categoty`` is an entity-word typo. Not a certified-pack lookup.
+    """
+    qn = (question or "").lower()
+    if "quantity sold" in qn:
+        return ("quantity sold", "outbound_kg")
+    if "qty sold" in qn:
+        return ("qty sold", "outbound_kg")
+    if "sku count" in qn:
+        return ("sku count", "sku_count")
+    if "how many unique sku" in qn:
+        return ("how many unique sku", "sku_count")
+    if "how many sku" in qn:
+        return ("how many", "sku_count")
+    if "shipment cost" in qn:
+        return ("shipment cost", "shipping_cost_myr")
+    if "shipping cost" in qn:
+        return ("shipping cost", "shipping_cost_myr")
+    if "freight" in qn:
+        return ("freight", "shipping_cost_myr")
+    if "capacity utilisation" in qn:
+        return ("capacity utilisation", "utilisation_pct")
+    if "capacity utilization" in qn:
+        return ("capacity utilization", "utilisation_pct")
+    if _COLD.search(question or ""):
+        return ("cold", "utilisation_pct")
+    if _ABOVE_PCT.search(question or "") or "90 percent" in qn:
+        return ("90 percent", "utilisation_pct")
+    if "cctv" in qn:
+        return ("cctv", "utilisation_pct")
+    if "camera" in qn:
+        return ("camera", "utilisation_pct")
+    if "reorder" in qn:
+        return ("reorder", "below_reorder_lots")
+    if re.search(r"\brank(?:ing)?\b", qn) and "supplier" in qn:
+        return ("rank", "supplier_rank_score")
+    if "audit" in qn and "overdue" in qn:
+        return ("audit", "audit_overdue")
+    if "expir" in qn:
+        return ("expir", "stock_value_myr")
+    if "chemical" in qn:
+        return ("chemical", "stock_value_myr")
+    if "stock value" in qn:
+        return ("stock value", "stock_value_myr")
+    if "inventory worth" in qn:
+        return ("inventory worth", "stock_value_myr")
+    if "value of stock" in qn:
+        return ("value of stock", "stock_value_myr")
+    if "worth per category" in qn:
+        return ("worth per category", "stock_value_myr")
+    if "total spend" in qn:
+        return ("total spend", "stock_value_myr")
+    if "spend by" in qn:
+        return ("spend by", "stock_value_myr")
+    if "revenue" in qn:
+        return ("revenue", "outbound_value_myr")
+    if "selling sku" in qn:
+        return ("selling", "outbound_value_myr")
+    if "categoty" in qn:
+        return ("categoty", "outbound_value_myr")
+    if "sales" in qn and ("category" in qn or "categories" in qn):
+        return ("sales", "outbound_value_myr")
+    return None
+
+
+def measure_lock_token(question: str) -> str | None:
+    """The question word that locked the measure, or None."""
+    found = measure_lock(question)
+    return None if found is None else found[0]
+
+
 def _locked_measure(question: str) -> str | None:
     """One measure the question names, or None. Not a certified-pack lookup."""
-    qn = (question or "").lower()
-    if "quantity sold" in qn or "qty sold" in qn:
-        return "outbound_kg"
-    if "sku count" in qn or "how many sku" in qn or "how many unique sku" in qn:
-        return "sku_count"
-    if "shipment cost" in qn or "shipping cost" in qn or "freight" in qn:
-        return "shipping_cost_myr"
-    if "capacity utilisation" in qn or "capacity utilization" in qn:
-        return "utilisation_pct"
-    if _COLD.search(question or ""):
-        return "utilisation_pct"
-    if _ABOVE_PCT.search(question or "") or "90 percent" in qn:
-        return "utilisation_pct"
-    if "cctv" in qn or "camera" in qn:
-        return "utilisation_pct"
-    if "reorder" in qn:
-        return "below_reorder_lots"
-    if re.search(r"\brank(?:ing)?\b", qn) and "supplier" in qn:
-        return "supplier_rank_score"
-    if "audit" in qn and "overdue" in qn:
-        return "audit_overdue"
-    if "expir" in qn or "chemical" in qn:
-        return "stock_value_myr"
-    if (
-        "stock value" in qn
-        or "inventory worth" in qn
-        or "value of stock" in qn
-        or "worth per category" in qn
-    ):
-        return "stock_value_myr"
-    if "total spend" in qn or "spend by" in qn:
-        return "stock_value_myr"
-    if "revenue" in qn or "selling sku" in qn:
-        return "outbound_value_myr"
-    if "categoty" in qn or (
-        "sales" in qn and ("category" in qn or "categories" in qn)
-    ):
-        return "outbound_value_myr"
-    return None
+    found = measure_lock(question)
+    return None if found is None else found[1]
 
 
 def _group_from_hints(question: str) -> list[list[str]] | None:
@@ -791,6 +828,8 @@ __all__ = [
     "MAX_CONTEXT_CHARS",
     "bind_plan",
     "intent_slots",
+    "measure_lock",
+    "measure_lock_token",
     "load_measure_aliases",
     "load_ontology_spine",
     "question_tokens",

@@ -1,0 +1,14 @@
+{
+  "source_sha256": "008f5bb1b8ac775a677501937a9cd8c444682986cf8008a04beb9fd27a162a12",
+  "source": "run-2 oracles.json. Not byte-identical to tests/fixtures/curated_ceo/oracles.yaml. This file holds only the two chemicals-list SQLs.",
+  "cases": {
+    "cq_chemicals_list": {
+      "sql": "SELECT sku FROM inventory WHERE category = 'CHEMICALS' ORDER BY sku",
+      "values": ["SKU-GAMMA"]
+    },
+    "ops_chemicals_list": {
+      "sql": "SELECT sku FROM inventory WHERE category = 'CHEMICALS' ORDER BY sku",
+      "values": ["SKU-GAMMA"]
+    }
+  }
+}

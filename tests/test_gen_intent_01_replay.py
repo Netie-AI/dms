@@ -19,7 +19,11 @@ from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.ontology import demo_ontology, is_list_intent
-from dms_executor.semantic_retrieve import intent_slots
+from dms_executor.semantic_retrieve import intent_slots, measure_lock_token
+
+# Entity-word lock that still answers. Not an abstain.
+# ambiguous_measure:none owns any change to this lock.
+NAMED_LEFTOVER_ENTITY_LOCKS = frozenset({"cq_top3_category_syn_typo"})
 
 _FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 _OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -35,8 +39,8 @@ _TOP3 = [
     {"product_category": "RAW", "outbound_value_myr": 4955.0},
     {"product_category": "PARTS", "outbound_value_myr": 4077.0},
 ]
-# shape, case id, space, ranked metric id, question, locked measure, rows
-_CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = (
+# shape, id, space, metric, question, measure, lock token, kind, rows
+_CASES: tuple[tuple[str, str, str, str, str, str, str, str, list[dict[str, Any]]], ...] = (
     (
         "binder",
         "cq_sales_top5_syn_skus",
@@ -44,6 +48,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_sales_top5_value",
         "Top 5 SKUs by revenue",
         "outbound_value_myr",
+        "revenue",
+        "measure",
         _TOP5,
     ),
     (
@@ -53,6 +59,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_top3_category_sales",
         "top 3 categories by sales value",
         "outbound_value_myr",
+        "sales",
+        "measure",
         _TOP3,
     ),
     (
@@ -62,6 +70,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_top3_category_sales",
         "top 3 category sales",
         "outbound_value_myr",
+        "sales",
+        "measure",
         _TOP3,
     ),
     (
@@ -71,6 +81,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_sales_top5_value",
         "Top 5 selling SKUs by sales",
         "outbound_value_myr",
+        "selling",
+        "measure",
         _TOP5,
     ),
     (
@@ -80,6 +92,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_top3_category_sales",
         "top 3 categoty sales",
         "outbound_value_myr",
+        "categoty",
+        "entity",
         _TOP3,
     ),
     (
@@ -89,6 +103,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_sku_count",
         "How many SKUs in inventory?",
         "sku_count",
+        "how many",
+        "measure",
         [{"sku_count": 7}],
     ),
     (
@@ -98,6 +114,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_sku_count_by_category",
         "how many SKUs per category",
         "sku_count",
+        "how many",
+        "measure",
         [
             {"product_category": "PACKAGING", "sku_count": 2},
             {"product_category": "RAW", "sku_count": 2},
@@ -112,6 +130,8 @@ _CASES: tuple[tuple[str, str, str, str, str, str, list[dict[str, Any]]], ...] = 
         "cq_cost_by_destination",
         "freight spend per destination",
         "shipping_cost_myr",
+        "freight",
+        "measure",
         [
             {"location_location_code": "WH-B", "shipping_cost_myr": 1130.0},
             {"location_location_code": "WH-A", "shipping_cost_myr": 540.0},
@@ -194,9 +214,17 @@ def test_ranking_fallback_rows_stay(tmp_path: Path) -> None:
         "finance": set(DEMO_SPACE_GRANTS[_FINANCE][1]),
         "ops": set(DEMO_SPACE_GRANTS[_OPS][1]),
     }
-    for shape, case_id, space, metric_id, question, measure, want in _CASES:
+    for (
+        shape, case_id, space, metric_id, question, measure, word, kind, want,
+    ) in _CASES:
         assert not is_list_intent(question), case_id
+        assert measure_lock_token(question) == word, case_id
         assert intent_slots(question, onto).get("measure") == measure, case_id
+        if case_id in NAMED_LEFTOVER_ENTITY_LOCKS:
+            assert kind == "entity", case_id
+            assert word == "categoty", case_id
+        else:
+            assert kind == "measure", case_id
         payload = _binder(metric_id) if shape == "binder" else _empty(metric_id)
         env = maybe_generative_ask(
             question,
@@ -215,7 +243,11 @@ def test_ranking_fallback_rows_stay(tmp_path: Path) -> None:
         assert env.get("abstained") is not True, case_id
         assert env.get("plan_origin") == "ontology_ranking", case_id
         notes = " ".join(str(item) for item in (env.get("assumptions") or []))
+        if case_id in NAMED_LEFTOVER_ENTITY_LOCKS:
+            assert env["badge"] == "L2_VALIDATED", case_id
+            assert env.get("abstained") is not True, case_id
         if shape == "binder":
+            # CI check: explain:BinderException is not the ungranted no-climb.
             assert "fallback:validate:explain:BinderException" in notes, case_id
             assert "ungranted:" not in notes, case_id
         else:
