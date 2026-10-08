@@ -431,6 +431,17 @@ def gold_sign_metric(
     return signed.to_dict()
 
 
+def health_pack_name() -> str:
+    """``curated_ceo`` when the fixture files exist, otherwise ``absent``.
+
+    /health must not advertise a pack the image does not have.
+    """
+    try:
+        return "curated_ceo" if dms_executor.curated_pack_present() else "absent"
+    except Exception:  # noqa: BLE001 - health must stay up
+        return "absent"
+
+
 def engine_clock_fields() -> dict[str, str]:
     """Best-effort engine date for /health. Omitted when the warehouse is down."""
     try:

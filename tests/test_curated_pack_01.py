@@ -16,9 +16,9 @@ from dms_executor.demo_grants import DEMO_SPACE_GRANTS
 from dms_executor.demo_pack import (
     PACK_METRICS,
     SCORE_PACK_EXACT_IDS,
-    SCORE_PACK_EXACT_METRICS,
     load_score_pack_metrics,
     lookup_pack_metric,
+    score_pack_exact_metrics,
 )
 
 _FIXTURE = (
@@ -91,7 +91,7 @@ def test_allowlist_is_required_for_the_hit() -> None:
     assert load_score_pack_metrics(ids=frozenset()) == ()
     base_only = {m.metric_id for m in PACK_METRICS}
     assert "cq_sku_count" not in base_only
-    assert {m.metric_id for m in SCORE_PACK_EXACT_METRICS} == set(SCORE_PACK_EXACT_IDS)
+    assert {m.metric_id for m in score_pack_exact_metrics()} == set(SCORE_PACK_EXACT_IDS)
 
 
 def test_allowlist_hits_and_rise_ids_miss() -> None:
@@ -121,4 +121,4 @@ def test_refuse_and_abstain_stay_misses() -> None:
 
 def test_pack_metrics_stay_the_climb_snapshot() -> None:
     assert {m.metric_id for m in PACK_METRICS} == _BASE_IDS
-    assert "cq_sku_count_syn_short" not in {m.metric_id for m in SCORE_PACK_EXACT_METRICS}
+    assert "cq_sku_count_syn_short" not in {m.metric_id for m in score_pack_exact_metrics()}
