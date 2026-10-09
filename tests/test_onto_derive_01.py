@@ -694,20 +694,21 @@ def test_join_rule_units(
     )
 
 
-# --- store: migration 0005 and the snapshot rules (CI has no Postgres) -----------
+# --- store: migration 0006 and the snapshot rules (CI has no Postgres) -----------
 
 
-def test_migration_0005_is_append_only_and_tenant_scoped() -> None:
+def test_migration_0006_is_append_only_and_tenant_scoped() -> None:
     import importlib.util
 
     import alembic.op  # noqa: F401 - the revision imports it
 
-    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0005_onto_snapshot.py"
-    spec = importlib.util.spec_from_file_location("rev0005", path)
+    path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0006_onto_snapshot.py"
+    spec = importlib.util.spec_from_file_location("rev0006", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.down_revision == "0004_ontology_store"
+    assert mod.revision == "0006_onto_snapshot"
+    assert mod.down_revision == "0005_ask_audit"
 
     class _Rec:
         def __init__(self) -> None:
