@@ -2,8 +2,8 @@
 
 The seven buckets are disjoint and add up to 52. Gold-broken sits inside
 the non-trap 44. A submit-stub pack is not a score. The exec-SQL stub is
-labelled stub-exec. The 23/0/20 fixture below is synthetic gold-as-served,
-not the captured flag-off file.
+labelled stub-exec. ``test_grade52_synthetic_gold_as_served`` copies gold
+rows into envelopes. That test is not a capture and not main's score.
 """
 
 from __future__ import annotations
@@ -43,13 +43,15 @@ _GOLD_SERVED = [
     "trap_categoty",
 ]
 _MAIN_SHA = "57d85c529aa363825aaa566f12b8822fd76a4215"
-_CHECK_INCLUDED = (
-    "sha=57d85c529aa363825aaa566f12b8822fd76a4215 pack_gold_served=included "
+# Not a product commit. Stamping main's sha here would quote this fixture as main.
+_SYNTHETIC_SHA = "c" * 40
+_SYNTHETIC_INCLUDED = (
+    f"sha={_SYNTHETIC_SHA} pack_gold_served=included "
     "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
-_CHECK_EXCLUDED = (
-    "sha=57d85c529aa363825aaa566f12b8822fd76a4215 pack_gold_served=excluded "
+_SYNTHETIC_EXCLUDED = (
+    f"sha={_SYNTHETIC_SHA} pack_gold_served=excluded "
     "45: correct=16 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
@@ -156,8 +158,12 @@ def test_grade52_serve_path_stamps() -> None:
     assert path_group(serve_path(compile_empty)) == "rule"
 
 
-def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
-    """Synthetic gold-as-served: 23/0/20 plus 1 gold-broken, traps 8/0."""
+def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
+    """Synthetic gold-as-served. Not a POST /v1/chat/ask capture. Not main's score.
+
+    Certified gold SQL is executed here and those rows are copied into
+    ``env.rows``. The sha on the file is not the product commit.
+    """
     import grade52
 
     grade52._bootstrap()
@@ -204,13 +210,14 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
     for qid in traps:
         records.append({"id": qid, "env": _abstain()})
     path = tmp_path / "envelopes.jsonl"
-    _write_jsonl(path, records, _MAIN_SHA)
+    _write_jsonl(path, records, _SYNTHETIC_SHA)
     report = grade_envelopes_path(path)
-    assert summary_line(report) == _CHECK_INCLUDED
+    assert summary_line(report) == _SYNTHETIC_INCLUDED
+    assert _MAIN_SHA not in summary_line(report)
     assert paths_line(path_counts(report["cases"])) == (
         "paths correct ai=0 rule=23 unattributed=0 served ai=0 rule=23 unattributed=0"
     )
-    assert report["dms_sha"] == _MAIN_SHA
+    assert report["dms_sha"] == _SYNTHETIC_SHA
     assert report["mode"] == "served"
     assert _buckets(report) == 52
     non_trap = (
@@ -229,7 +236,8 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
         assert by_case[qid]["bucket"] == "CORRECT"
     assert by_case["ops_spend_boundary"]["bucket"] == "GOLD_BROKEN"
     without = report["without_pack_gold_served"]
-    assert summary_line(without) == _CHECK_EXCLUDED
+    assert summary_line(without) == _SYNTHETIC_EXCLUDED
+    assert _MAIN_SHA not in summary_line(without)
     assert _buckets(without) == 45
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
     served_broken: list[dict[str, Any]] = []
@@ -239,7 +247,7 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
         else:
             served_broken.append(row)
     broken_path = tmp_path / "served_broken.jsonl"
-    _write_jsonl(broken_path, served_broken, _MAIN_SHA)
+    _write_jsonl(broken_path, served_broken, _SYNTHETIC_SHA)
     failed = grade_envelopes_path(broken_path)
     assert failed["gold_broken"] == 0
     assert failed["wrong"] == 1
@@ -253,9 +261,9 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
             json.dumps(row["env"]),
             encoding="utf-8",
         )
-    (folder_out / "dms_sha").write_text(_MAIN_SHA + "\n", encoding="utf-8")
+    (folder_out / "dms_sha").write_text(_SYNTHETIC_SHA + "\n", encoding="utf-8")
     loaded, sha = load_envelopes(folder_out)
-    assert sha == _MAIN_SHA
+    assert sha == _SYNTHETIC_SHA
     assert {item["id"] for item in loaded} == {row["id"] for row in records}
 
 

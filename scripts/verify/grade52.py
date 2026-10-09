@@ -1109,52 +1109,58 @@ def _prepare_flag_off() -> None:
     _scrub_credentials()
 
 
+def _git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+
 def _merge_base_sha() -> str | None:
-    try:
-        out = subprocess.check_output(
-            ["git", "merge-base", "HEAD", "origin/main"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
-    except (OSError, subprocess.CalledProcessError):
+    proc = _git(["merge-base", "HEAD", "origin/main"])
+    if proc.returncode != 0:
         return None
-    text = out.strip()
+    text = proc.stdout.strip()
     if len(text) != 40 or any(char not in "0123456789abcdef" for char in text):
         return None
     return text
 
 
-def _fetch_product_base() -> None:
-    """Shallow CI (checkout depth 1) has no origin/main. Fetch the base once.
+def _fetch_product_base() -> str:
+    """Shallow CI (checkout depth 1) has no origin/main.
 
-    ponytail: a full unshallow. Upgrade is a deepen capped at the fork point
-    if this fetch ever dominates the job.
+    Unshallow this branch so the fork point is in the object store, then
+    point origin/main at refs/heads/main. ponytail: a full unshallow.
+    Upgrade is a deepen capped at the fork point if this fetch dominates.
     """
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    for args in (
-        ["git", "fetch", "--unshallow", "origin"],
-        ["git", "fetch", "--no-tags", "origin", "main"],
-    ):
-        subprocess.run(
-            args,
-            cwd=ROOT,
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-        )
+    notes: list[str] = []
+    shallow = _git(["rev-parse", "--is-shallow-repository"])
+    if shallow.stdout.strip() == "true":
+        uns = _git(["fetch", "--no-tags", "--unshallow", "origin"])
+        if uns.returncode != 0 and uns.stderr.strip():
+            notes.append(uns.stderr.strip())
+    fetched = _git(
+        ["fetch", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main"]
+    )
+    if fetched.returncode != 0 and fetched.stderr.strip():
+        notes.append(fetched.stderr.strip())
+    return " ".join(notes)[-300:]
 
 
 def _product_sha() -> str:
     """Product commit the stub-exec harness runs. Not this grader's HEAD."""
     sha = _merge_base_sha()
     if sha is None:
-        _fetch_product_base()
+        detail = _fetch_product_base()
         sha = _merge_base_sha()
-    if sha is None:
-        raise SystemExit("grade52: dms sha unavailable")
+        if sha is None:
+            extra = f": {detail}" if detail else ""
+            raise SystemExit(f"grade52: dms sha unavailable{extra}")
     return sha
 
 
@@ -1661,7 +1667,7 @@ def self_test() -> dict[str, str]:
         "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=served"
     ):
-        raise SystemExit("self-test: check-shaped line drifted")
+        raise SystemExit("self-test: summary shape drifted")
     try:
         summary_line(
             {
