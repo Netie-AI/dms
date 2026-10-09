@@ -1087,9 +1087,27 @@ def test_scalar_functions_serve_and_readers_refuse() -> None:
     no_table = (
         "SELECT printf('%d items', 3)",
         "SELECT CAST(1 AS INTEGER)",
+        "SELECT CAST(42 AS INTEGER)",
+        "SELECT 5 UNION ALL SELECT 6",
         "SELECT date_trunc('day', DATE '2020-01-01')",
         "SELECT * FROM generate_series(1, 3)",
         "SELECT * FROM unnest([1, 2, 3])",
+    )
+    assert (
+        serve_gap(
+            "SELECT CAST(n AS INTEGER) FROM orders",
+            grantable=grants,
+            dialect="duckdb",
+        )
+        is None
+    )
+    assert (
+        serve_gap(
+            "SELECT 1 FROM orders UNION ALL SELECT 5",
+            grantable=grants,
+            dialect="duckdb",
+        )
+        is None
     )
     for sql in no_table:
         assert serve_gap(sql, grantable=grants, dialect="duckdb") == "ungranted", sql
@@ -1201,6 +1219,8 @@ def test_ungranted_name_stays_out_of_both_envelopes(
 _NO_TABLE = (
     "SELECT 1",
     "SELECT 'literal'",
+    "SELECT CAST(42 AS INTEGER)",
+    "SELECT 5 UNION ALL SELECT 6",
     "VALUES (1), (2)",
     "SELECT * FROM generate_series(1, 3)",
     "SELECT * FROM range(3)",
@@ -1212,7 +1232,11 @@ _NO_TABLE = (
 def test_no_granted_base_table_is_a_direct_http_refusal(
     sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each no-table shape is bare ungranted, before EXPLAIN, over HTTP."""
+    """Each no-source shape is bare ungranted, before EXPLAIN, over HTTP.
+
+    A cast around a literal and a union of literal selects are the same
+    outcome. The parsed tree cites no base table.
+    """
     from dms_api.app import create_app
     from dms_api.settings import Settings, get_settings
     from fastapi.testclient import TestClient

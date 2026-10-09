@@ -98,8 +98,10 @@ def serve_gap(
     ``sql_relation_unresolved``. A reader the parser types as a table or
     external-read function, in any position, is ``sql_relation_not_granted``.
     A missing name in the default schema is bare ``ungranted``. The
-    relation is not part of that code. A statement whose only source is a
-    generator or a literal is the same code. A file or external reader is
+    relation is not part of that code.     A statement whose only source is a
+    generator, a literal, a literal wrapped in a cast, or a union of
+    those selects is the same code. That is the parsed tree: no granted
+    base table on either side. A file or external reader is
     ``sql_relation_not_granted`` even beside a granted table. A pure
     generator is served only when the statement also reads a granted base
     table. sqlglot's node type decides. An unclassified function is
