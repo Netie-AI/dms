@@ -221,6 +221,8 @@ class Executor:
         self._clarify_attempts: dict[str, Any] = {}
         self._clarify_reask_parent: str | None = None
         self._clarify_skipped: str | None = None
+        self._reconfirm_attempts: dict[str, Any] = {}
+        self._reconfirm_locked = False
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
@@ -515,6 +517,48 @@ class Executor:
             )
         )
 
+    def _finish_reconfirm(
+        self,
+        env: dict[str, Any],
+        *,
+        question: str,
+        space_id: str | None,
+        session_id: str | None,
+    ) -> dict[str, Any]:
+        """Suggest after a recoverable abstain. Direct refusals stay abstains."""
+        from dms_executor.ask_reconfirm import (
+            offer_reconfirm,
+            scrub_ungranted,
+        )
+
+        try:
+            granted = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001 -- no names to scrub, keep the envelope
+            granted = set()
+        warehouse = self._warehouse
+        if self._reconfirm_locked:
+            self._reconfirm_locked = False
+            return scrub_ungranted(env, warehouse=warehouse, grantable=granted)
+        if str(env.get("abstain_reason") or "") in {
+            "not_found",
+            "confirm_unknown",
+            "confirm_expired",
+        }:
+            return scrub_ungranted(env, warehouse=warehouse, grantable=granted)
+        offered = offer_reconfirm(
+            env,
+            store=self._reconfirm_attempts,
+            model=self._clarify_model,
+            warehouse=warehouse,
+            grantable=granted,
+            space_id=space_id,
+            session_id=session_id,
+            original=question,
+        )
+        if offered is not None:
+            return offered
+        return scrub_ungranted(env, warehouse=warehouse, grantable=granted)
+
     def live_ask(
         self,
         question: str,
@@ -526,6 +570,8 @@ class Executor:
         clarify_id: str | None = None,
         option_id: str | None = None,
         clarify_text: str | None = None,
+        confirm_id: str | None = None,
+        confirm_choice: str | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
 
@@ -539,18 +585,35 @@ class Executor:
         seen: list[dict[str, Any] | None] = []
         self._clarify_reask_parent = None
         self._clarify_skipped = None
+        self._reconfirm_locked = False
         try:
-            env = self._live_ask(
-                question,
-                space_id=space_id,
-                session_id=session_id,
-                tables=tables,
-                ask_path=ask_path,
-                seen=seen,
-                clarify_id=clarify_id,
-                option_id=option_id,
-                clarify_text=clarify_text,
-            )
+            from dms_executor.ask_reconfirm import dialect_abstain, dialect_known, reconfirm_enabled
+
+            if reconfirm_enabled() and not dialect_known(self._warehouse):
+                env = dialect_abstain(
+                    question, space_id=space_id, session_id=session_id
+                )
+            else:
+                env = self._live_ask(
+                    question,
+                    space_id=space_id,
+                    session_id=session_id,
+                    tables=tables,
+                    ask_path=ask_path,
+                    seen=seen,
+                    clarify_id=clarify_id,
+                    option_id=option_id,
+                    clarify_text=clarify_text,
+                    confirm_id=confirm_id,
+                    confirm_choice=confirm_choice,
+                )
+            if reconfirm_enabled() and isinstance(env, dict):
+                env = self._finish_reconfirm(
+                    env,
+                    question=question,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
         except OpenVaultTokenError as exc:
             # Every lane needs the signing key; no lane may relabel its absence.
             env = build_abstain(
@@ -587,7 +650,7 @@ class Executor:
                 env["clarify_skipped"] = skipped
                 state_chosen_reading(env)
         stamp_engine_clock(env)
-        is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
+        is_clarify = isinstance(env, dict) and env.get("status") in {"clarify", "confirm"}
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         if is_clarify:
             out = env
@@ -655,6 +718,8 @@ class Executor:
         clarify_id: str | None = None,
         option_id: str | None = None,
         clarify_text: str | None = None,
+        confirm_id: str | None = None,
+        confirm_choice: str | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -677,6 +742,23 @@ class Executor:
             raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
         clarify_locked = False
+        if confirm_id:
+            from dms_executor.ask_reconfirm import reconfirm_enabled, resolve_reconfirm
+
+            if reconfirm_enabled():
+                resolved = resolve_reconfirm(
+                    self._reconfirm_attempts,
+                    confirm_id=confirm_id,
+                    choice=confirm_choice,
+                    space_id=space_id,
+                    session_id=session_id,
+                    fallback_question=question,
+                )
+                if isinstance(resolved, dict):
+                    return resolved
+                question = normalize_ask_question(str(resolved))
+                self._reconfirm_locked = True
+                clarify_locked = True
         if clarify_id:
             from dms_executor.ask_clarify import clarify_enabled, resolve_clarify
 

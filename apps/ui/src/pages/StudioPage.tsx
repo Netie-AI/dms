@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
+import { ConfirmPrompt } from "@/components/ConfirmPrompt";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { useApp } from "@/context/AppContext";
 import {
@@ -63,7 +64,7 @@ function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
 }
 
 export function StudioPage() {
-  const { setActivity, activeSpaceId } = useApp();
+  const { setActivity, activeSpaceId, latestAnswer, replyConfirm } = useApp();
   const navigate = useNavigate();
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -413,6 +414,24 @@ export function StudioPage() {
           </button>
         </div>
       </section>
+
+      {latestAnswer?.status === "confirm" &&
+      latestAnswer.confirm_reason &&
+      latestAnswer.suggested_question &&
+      latestAnswer.confirm_id ? (
+        <div
+          className="mt-6 max-w-xl border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-3"
+          data-testid="studio-confirm"
+        >
+          <ConfirmPrompt
+            reason={latestAnswer.confirm_reason}
+            suggestion={latestAnswer.suggested_question}
+            onChoice={(choice) => {
+              void replyConfirm(latestAnswer, choice);
+            }}
+          />
+        </div>
+      ) : null}
 
       <input
         ref={fileInput}

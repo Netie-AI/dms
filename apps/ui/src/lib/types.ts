@@ -98,6 +98,11 @@ export type AnswerEnvelope = {
   options?: { id: string; label: string; binding?: Record<string, unknown> }[];
   clarify_prompt_tokens?: number;
   clarify_completion_tokens?: number;
+  /** ASK-RECONFIRM-01. `confirm` is not a served answer. */
+  confirm_id?: string;
+  confirm_reason?: string;
+  suggested_question?: string;
+  confirm_code?: string;
 };
 
 export type SpaceSummary = {
