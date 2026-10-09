@@ -111,6 +111,7 @@ _CODES = frozenset(
         "submit_failed",
         "ticket_missing",
         "ungranted",
+        "ungranted_table",
         "value_exists_pending",
         "warehouse_missing",
         "writer_unavailable",
@@ -125,6 +126,7 @@ _CLOSED = frozenset(
         "intent_spec_mismatch",
         "intent_spec_unverified",
         "ungranted",
+        "ungranted_table",
     }
 )
 

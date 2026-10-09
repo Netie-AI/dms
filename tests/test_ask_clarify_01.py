@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import secrets
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -627,8 +632,8 @@ def test_free_text_outside_options_abstains(wh: Path) -> None:
             clarify_id=cid,
             clarify_text="use qxhidden_fact ungranted-token-552",
         )
-        assert str(picked["abstain_reason"]).startswith("ungranted_table:")
-        assert "qxhidden_fact" in picked["abstain_reason"]
+        assert picked["abstain_reason"] == "ungranted_table"
+        assert "qxhidden_fact" not in json.dumps(picked)
         assert picked["abstained"] is True
         assert picked["rows"] == []
         assert picked["values"] == []
@@ -647,6 +652,356 @@ def test_free_text_outside_options_abstains(wh: Path) -> None:
         assert_envelope_valid(picked)
     finally:
         exe.close()
+
+
+_MAIN_SHA = "57d85c529aa363825aaa566f12b8822fd76a4215"
+_REPO = Path(__file__).resolve().parents[1]
+_MAIN_TREE = Path("/tmp/dms-57d85c52")
+
+
+def _letter_name() -> str:
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    return "qx" + "".join(secrets.choice(alphabet) for _ in range(24))
+
+
+def _hide_table(path: Path, name: str) -> None:
+    con = connect_file(path)
+    try:
+        con.execute(f"CREATE TABLE {name} (c VARCHAR)")
+        con.execute(f"INSERT INTO {name} VALUES ('z')")
+    finally:
+        con.close()
+
+
+def _pin_as_of(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "<as_of>" if key == "as_of" else _pin_as_of(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_pin_as_of(item) for item in value]
+    return value
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(
+        _pin_as_of(value), sort_keys=True, separators=(",", ":"), default=str
+    ).encode()
+
+
+def _stream_body(
+    client: TestClient, payload: dict[str, Any]
+) -> tuple[int, list[bytes], list[tuple[str, str]]]:
+    # No `with TestClient`: lifespan would replace the injected executor.
+    with client.stream("POST", "/v1/chat/ask", json=payload) as response:
+        chunks = list(response.iter_bytes())
+        headers = list(response.headers.items())
+        return response.status_code, chunks, headers
+
+
+def _name_leaked(name: str, chunks: list[bytes], headers: list[tuple[str, str]]) -> str:
+    folded = name.casefold()
+    for index, chunk in enumerate(chunks):
+        if folded in chunk.decode("utf-8", "replace").casefold():
+            return f"chunk {index}"
+    if folded in b"".join(chunks).decode("utf-8", "replace").casefold():
+        return "joined body"
+    for key, value in headers:
+        if folded in f"{key}: {value}".casefold():
+            return f"header {key}"
+    return ""
+
+
+def _bind_client(path: Path, writer: _Writer) -> tuple[TestClient, Executor]:
+    import dms_executor
+    from dms_api.app import create_app
+    from dms_api.deps import get_settings
+    from dms_api.settings import Settings
+
+    cortex = _Cortex()
+    previous = getattr(dms_executor, "probe_openvault", None)
+    dms_executor.probe_openvault = lambda **_k: (None, "off")  # type: ignore[method-assign]
+    try:
+        app = create_app()
+    finally:
+        if previous is not None:
+            dms_executor.probe_openvault = previous  # type: ignore[method-assign]
+    exe = _executor(path, writer, cortex)
+    app.state.ask_service = exe
+    app.state.cortex = cortex
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+        dms_harness_ask_paths=False,
+        dms_mcp=False,
+    )
+    return TestClient(app), exe
+
+
+def _ticket_name_only(caplog: pytest.LogCaptureFixture, name: str) -> None:
+    folded = name.casefold()
+    for rec in caplog.records:
+        blob = rec.getMessage()
+        if rec.args:
+            blob = f"{blob} {rec.args!r}"
+        if folded not in blob.casefold():
+            continue
+        assert rec.name == "dms_executor.pipeline_failure", rec.name
+        assert rec.levelno == logging.WARNING
+        assert rec.getMessage().startswith("pipeline_failure ")
+
+
+def _main_tree() -> Path:
+    if _MAIN_TREE.exists():
+        probe = subprocess.run(
+            ["git", "-C", str(_MAIN_TREE), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.stdout.strip() == _MAIN_SHA:
+            return _MAIN_TREE
+        subprocess.run(
+            ["git", "-C", str(_REPO), "worktree", "remove", "--force", str(_MAIN_TREE)],
+            check=False,
+        )
+    cat = subprocess.run(
+        ["git", "-C", str(_REPO), "cat-file", "-e", f"{_MAIN_SHA}^{{commit}}"],
+        check=False,
+    )
+    if cat.returncode != 0:
+        subprocess.run(
+            ["git", "-C", str(_REPO), "fetch", "--depth=1", "origin", _MAIN_SHA],
+            check=True,
+        )
+    subprocess.run(
+        ["git", "-C", str(_REPO), "worktree", "add", "--detach", str(_MAIN_TREE), _MAIN_SHA],
+        check=True,
+    )
+    return _MAIN_TREE
+
+
+_FLAG_OFF_MAIN = r"""
+import json, os, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+payload = json.loads(sys.argv[2])
+warehouse = sys.argv[3]
+sys.meta_path[:] = [
+    item for item in sys.meta_path
+    if "editable" not in getattr(item, "__module__", "")
+]
+sys.path[:] = [item for item in sys.path if not str(item).startswith(str(Path.cwd()))]
+for rel in (
+    "apps/api",
+    "packages/core",
+    "packages/cortex_client",
+    "packages/executor",
+    "packages/ledger",
+):
+    sys.path.insert(0, str(root / rel))
+os.environ.pop("DMS_ASK_CLARIFY", None)
+os.environ.pop("DMS_CLOOP_B", None)
+os.environ["DMS_DEMO_FALLBACK"] = "0"
+
+import dms_executor
+import dms_executor.envelope as envelope
+from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
+from cortex_contract.execution import Manifest, QueryResult
+from dms_api.app import create_app
+from dms_api.deps import get_settings
+from dms_api.settings import Settings
+from dms_executor.demo_grants import DemoSessionStore
+from dms_executor.manifest import ManifestMinter
+from fastapi.testclient import TestClient
+
+CLOCK = "2026-10-08T00:00:00Z"
+envelope._now = lambda: CLOCK
+dms_executor.datetime_now = lambda: CLOCK
+sys.stderr.write(str(dms_executor.__file__) + "\n")
+
+class _Cortex:
+    def compute_insights(self, question, **_kwargs):
+        return {}
+    def submit(self, req):
+        return QueryResult(ok=True, status="bound", run_id="run_clarify")
+    def ledger_append(self, req):
+        return LedgerAppendResponse(entry_id="led_clarify", hash="hash_clarify")
+    def ask(self, req):
+        return AskResponse(
+            answer="qx synthetic total is 4.",
+            badge="certified",
+            sql_used="SELECT 4",
+            rows=[{"n": 4}],
+            assumptions="fixture",
+            audit_id="aud_clarify",
+            route="sql",
+        )
+
+minter = ManifestMinter()
+
+def _mint(acl):
+    return Manifest(
+        session_id=acl.session_id,
+        org_id=acl.org_id,
+        space_id=acl.space_id,
+        pool_id=acl.pool_id,
+        issuer_key_id="test-kid",
+        allowed_paths=list(acl.allowed_paths),
+        row_predicates=dict(acl.row_predicates),
+        issued_at=CLOCK,
+        expires_at="2026-10-08T01:00:00+00:00",
+        signature="dGVzdA",
+    )
+
+minter.mint_manifest = _mint
+minter.fetch_intermediate = lambda: None
+minter.close = lambda: None
+minter.invalidate = lambda *_a, **_k: None
+granted = (
+    "qxalpha_fact", "qxbeta_fact", "qxgamma_fact",
+    "qxdelta_fact", "qxepsilon_fact", "qxleak_fact",
+)
+previous = getattr(dms_executor, "probe_openvault", None)
+dms_executor.probe_openvault = lambda **_k: (None, "off")
+try:
+    app = create_app()
+finally:
+    if previous is not None:
+        dms_executor.probe_openvault = previous
+exe = dms_executor.Executor(
+    cortex=_Cortex(),
+    minter=minter,
+    warehouse_path=warehouse,
+    session_store=DemoSessionStore(
+        extra_grants=granted,
+        uploads=lambda: (),
+        warehouse=Path(warehouse),
+    ),
+)
+app.state.ask_service = exe
+app.state.cortex = exe._cortex
+app.dependency_overrides[get_settings] = lambda: Settings(
+    _env_file=None,
+    dms_ask_mode="live",
+    dms_demo_fallback=False,
+    dms_harness_ask_paths=False,
+    dms_mcp=False,
+)
+client = TestClient(app)
+try:
+    response = client.post("/v1/chat/ask", json=payload)
+finally:
+    exe.close()
+if response.status_code != 200:
+    sys.stderr.write(response.text[:800])
+    raise SystemExit(response.status_code)
+json.dump(response.json(), sys.stdout)
+"""
+
+
+def _main_flag_off(payload: dict[str, Any], warehouse: Path) -> dict[str, Any]:
+    tree = _main_tree()
+    script = warehouse.parent / "flag_off_main.py"
+    script.write_text(_FLAG_OFF_MAIN, encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("DMS_ASK_CLARIFY", None)
+    env.pop("DMS_CLOOP_B", None)
+    env["DMS_DEMO_FALLBACK"] = "0"
+    # Drop the checkout's PYTHONPATH so the worktree wins after the finder strip.
+    env["PYTHONPATH"] = ""
+    got = subprocess.run(
+        [sys.executable, str(script), str(tree), json.dumps(payload), str(warehouse)],
+        cwd=str(_REPO),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert got.returncode == 0, got.stderr[-800:]
+    assert str(tree) in got.stderr, got.stderr
+    body = json.loads(got.stdout)
+    assert isinstance(body, dict)
+    return body
+
+
+def test_ungranted_name_absent_from_ask_http(
+    wh: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Re-ask of a random ungranted table. The name is not in the HTTP body.
+
+    Flag on: it may show up only on the WARNING pipeline_failure line.
+    Flag off: the ask body matches main 57d85c52 once as_of is masked.
+    """
+    name = _letter_name()
+    _hide_table(wh, name)
+    reply = f'use "{name.upper()}" from main.{name}'
+    question = "show qxalpha771 and qxbeta771"
+    tables = ["qxalpha_fact", "qxbeta_fact"]
+    monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
+    _arm_tickets(caplog, monkeypatch)
+    client, exe = _bind_client(wh, _Writer(_two_measures()))
+    try:
+        status, chunks, _headers = _stream_body(
+            client,
+            {
+                "question": question,
+                "space_id": FINANCE,
+                "session_id": "ses_http_name",
+                "grounded_tables": tables,
+            },
+        )
+        assert status == 200, chunks
+        opened = json.loads(b"".join(chunks))
+        assert opened["status"] == "clarify"
+        caplog.clear()
+        status, chunks, headers = _stream_body(
+            client,
+            {
+                "question": question,
+                "space_id": FINANCE,
+                "session_id": "ses_http_name",
+                "grounded_tables": tables,
+                "clarify_id": opened["clarify_id"],
+                "clarify_text": reply,
+            },
+        )
+        assert status == 200, chunks
+        # Name scan first, so a leak fails before the flag-off compare.
+        leaked = _name_leaked(name, chunks, headers)
+        assert leaked == "", leaked
+        body = json.loads(b"".join(chunks))
+        assert body["abstain_reason"] == "ungranted_table"
+        assert name.casefold() not in json.dumps(body["assumptions"]).casefold()
+        _ticket_name_only(caplog, name)
+    finally:
+        exe.close()
+
+    monkeypatch.delenv("DMS_ASK_CLARIFY", raising=False)
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+    flag_payload = {
+        "question": question,
+        "space_id": FINANCE,
+        "session_id": "ses_flag_off_name",
+        "grounded_tables": tables,
+        "clarify_id": "clrnotused",
+        "clarify_text": reply,
+    }
+    client, exe = _bind_client(wh, _Writer(_two_measures()))
+    try:
+        status, chunks, headers = _stream_body(client, flag_payload)
+        assert status == 200, chunks
+        leaked = _name_leaked(name, chunks, headers)
+        assert leaked == "", leaked
+        head_env = json.loads(b"".join(chunks))
+    finally:
+        exe.close()
+    assert not any(str(key).startswith("clarify_") for key in head_env)
+    main_env = _main_flag_off(flag_payload, wh)
+    assert _canonical(head_env) == _canonical(main_env)
 
 
 def test_free_text_exact_label_serves(wh: Path) -> None:
@@ -1494,12 +1849,12 @@ def test_one_ticket_per_clarify_exit(
             clarify_id=env["clarify_id"],
             clarify_text=reask,
         )
-        assert str(picked["abstain_reason"]).startswith("ungranted_table:")
-        assert "qxhidden_fact" in picked["abstain_reason"]
+        assert picked["abstain_reason"] == "ungranted_table"
+        assert "qxhidden_fact" not in json.dumps(picked)
         assert cortex.submits == []
         _one_ticket(
             caplog,
-            reason="ungranted",
+            reason="ungranted_table",
             question=reask,
             hidden=hidden + (reask, "qxhidden_fact", "ungranted-token-552"),
         )

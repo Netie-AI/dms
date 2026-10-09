@@ -999,13 +999,6 @@ def clarify_from_planner(
     return planned
 
 
-def _ticket_reason(reason: str) -> str:
-    """Ticket code. A table name after ``ungranted_table`` stays off the line."""
-    if reason.startswith("ungranted_table:"):
-        return "ungranted"
-    return reason
-
-
 def named_abstain(
     reason: str,
     text: str,
@@ -1015,13 +1008,13 @@ def named_abstain(
     question: str,
 ) -> dict[str, Any]:
     env = build_abstain(
-        reason=_ticket_reason(reason),
+        reason=reason,
         question=question,
         sql=None,
         retries=0,
         stage="clarify",
         abstain_reason=reason,
-        answer_id=f"ans_{_ticket_reason(reason)}",
+        answer_id=f"ans_{reason}",
         text=text,
         values=[],
         rows=[],
