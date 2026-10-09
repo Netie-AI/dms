@@ -28,6 +28,7 @@ from dms_api.routes import (
     runs,
     spaces,
     studio,
+    studio_chat,
     trust,
 )
 from dms_api.settings import get_settings
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(spaces.router)
     app.include_router(chat.router)
     app.include_router(studio.router)
+    app.include_router(studio_chat.router)
     app.include_router(pipelines.router)
     app.include_router(amend.router)
     app.include_router(audit.router)
