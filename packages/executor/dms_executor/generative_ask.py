@@ -29,6 +29,7 @@ from typing import Any, cast
 import sqlglot
 from cortex_client.compute import (
     INSIGHTS_FAIL_AI_ERROR,
+    INSIGHTS_FAIL_UNAUTHORIZED,
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_COMPILE,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
@@ -2349,6 +2350,22 @@ def maybe_generative_ask(
             _abstain(
                 q,
                 INSIGHTS_FAIL_AI_ERROR,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                stage="ai_call",
+            )
+        )
+    if (
+        isinstance(payload, dict)
+        and insights_fail_reason(payload) == INSIGHTS_FAIL_UNAUTHORIZED
+        and not gen01_rules_enabled()
+    ):
+        # Auth failure is not a model miss. Do not compile the rule builder.
+        return _stamp(
+            _abstain(
+                q,
+                INSIGHTS_FAIL_UNAUTHORIZED,
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,

@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from oracle_row_match import run_oracle_select  # noqa: E402
+
 from cortex_client.client import CortexClient
 from cortex_client.compute import gen01_rules_enabled, ranked_measure_tokens
 from cortex_client.models import (
@@ -34,9 +34,10 @@ from cortex_client.models import (
 )
 from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
-from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
+from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse, sql_has_reserved_as_of
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.semantic_retrieve import load_measure_aliases
+from oracle_row_match import run_oracle_select  # noqa: E402
 
 _FIXTURE = Path(__file__).resolve().parents[0] / "fixtures" / "curated_ceo"
 _ORACLE_AS_OF = "2026-10-09"
@@ -46,10 +47,11 @@ _KEY = "ov_test_gen01_ladder"
 
 def _pack() -> tuple[dict[str, str], list[dict[str, Any]], dict[str, Any]]:
     questions = yaml.safe_load((_FIXTURE / "questions.yaml").read_text(encoding="utf-8"))
-    oracles = yaml.safe_load((_FIXTURE / "oracles.yaml").read_text(encoding="utf-8"))
+    doc = yaml.safe_load((_FIXTURE / "oracles.yaml").read_text(encoding="utf-8"))
     spaces = {str(k): str(v) for k, v in (questions.get("spaces") or {}).items()}
     rows = [row for row in questions["questions"] if isinstance(row, dict)]
-    specs = oracles if isinstance(oracles, dict) else {}
+    raw = doc.get("oracles") if isinstance(doc, dict) else None
+    specs = raw if isinstance(raw, dict) else {}
     return spaces, rows, specs
 
 
@@ -104,8 +106,15 @@ def _flat(rows: Any) -> list[str]:
     return cells
 
 
+def _oracle_params(sql: str) -> dict[str, str] | None:
+    """Bind the pinned date only when the oracle names $as_of."""
+    if sql_has_reserved_as_of(sql):
+        return {"as_of": _ORACLE_AS_OF}
+    return None
+
+
 def _gold(db: Path, sql: str) -> list[dict[str, Any]]:
-    rows, err = run_oracle_select(db, sql, params={"as_of": _ORACLE_AS_OF})
+    rows, err = run_oracle_select(db, sql, params=_oracle_params(sql))
     assert err is None, err
     assert rows is not None
     return rows
@@ -193,7 +202,7 @@ def _client_cls(box: _Box) -> type:
             params: dict[str, Any] | None = None,
             headers: dict[str, str] | None = None,
         ) -> _Resp:
-            del url, headers
+            box.posts.append({"url": url, "json": params or {}, "headers": headers or {}})
             question = str((params or {}).get("q") or "")
             return _Resp(
                 200,
@@ -471,7 +480,7 @@ def test_curated_52_ai_error_has_no_wrong_l2(
         sql = str(spec.get("sql") or "")
         gold: list[dict[str, Any]] | None
         if sql and str(spec.get("expect") or "") != "refuse":
-            got, err = run_oracle_select(db, sql, params={"as_of": _ORACLE_AS_OF})
+            got, err = run_oracle_select(db, sql, params=_oracle_params(sql))
             gold = got if err is None else None
         else:
             gold = None
