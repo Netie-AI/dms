@@ -16,7 +16,9 @@ DMS never holds or routes provider keys. Routing lives in OpenVault.
 
 ## 52 pack
 
-Flag-off AI-off run: 23 correct and 0 wrong of 43 answerable, graded with column names ignored. Strictly as graded that was 21 correct plus 2 column-alias matches.
+flag-off, no model key, main 57d85c52: 23 correct / 0 wrong of 43 answerable (21 plus 2 column-alias matches).
+
+On current mains with a model configured, every AI call was rejected by Cortex with 422 (DMS sent model/strict fields), so DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. The fixes are DROP-ROUTE-FIELDS-01 and GEN01-WRONG-TO-LADDER-01 (P0).
 
 AI answers are 0 until #426 lands. The live-model number is pending.
 
