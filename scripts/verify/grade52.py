@@ -17,6 +17,11 @@ and only when that case abstains. A served answer there is wrong.
 ``--envelopes`` prints the commit declared on the envelopes. ``--main``
 prints the product commit (``git merge-base HEAD origin/main``).
 
+Each case records ``serve_path`` from that envelope's own ``badge``,
+``plan_origin``, ``ladder_rung``, and ``served_model``. The paths line
+counts AI model SQL, rule-served (L0, L1, compile, oracle), and
+unattributed, once for correct answers and once for every served answer.
+
 Usage:
     python scripts/verify/grade52.py --self-test
     python scripts/verify/grade52.py --main
@@ -71,6 +76,17 @@ _BUCKET_KEYS = (
 )
 _REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
 _CREDENTIAL_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+# Path claims the envelope may stamp. Anything else is not a path.
+_RULE_STAMPS = {
+    "l0": "L0",
+    "l0_certified": "L0",
+    "l1": "L1",
+    "l1_governed_metric": "L1",
+    "compile": "compile",
+    "oracle": "oracle",
+}
+_AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai"})
+_RULE_PATHS = frozenset({"L0", "L1", "compile", "oracle"})
 
 
 class _Unmappable(Exception):
@@ -523,6 +539,65 @@ def _is_trap(question: Mapping[str, Any], oracle: Mapping[str, Any] | None = Non
     return _declared_trap(question) or _declared_trap(oracle)
 
 
+def _stamp_text(env: Mapping[str, Any], key: str) -> str:
+    if key not in env:
+        return ""
+    raw = env.get(key)
+    if raw is None:
+        return ""
+    return str(raw).strip()
+
+
+def serve_path(env: Mapping[str, Any]) -> str:
+    """Path that served the answer. Only the envelope's own stamps.
+
+    ``L0``, ``L1``, ``compile``, and ``oracle`` are rule-served. AI model
+    SQL needs a model-SQL stamp and a non-empty ``served_model`` that do
+    not disagree with a rule stamp. Missing or contradictory stamps are
+    unattributed, and a model name alone is never AI.
+    """
+    if not isinstance(env, Mapping):
+        return "unattributed"
+    claims: list[str] = []
+    badge = _stamp_text(env, "badge").lower()
+    if badge in _RULE_STAMPS:
+        claims.append(_RULE_STAMPS[badge])
+    origin = _stamp_text(env, "plan_origin").lower()
+    if origin in _RULE_STAMPS:
+        claims.append(_RULE_STAMPS[origin])
+    elif origin in _AI_STAMPS:
+        claims.append("ai")
+    elif origin:
+        claims.append("unknown")
+    rung = _stamp_text(env, "ladder_rung").lower()
+    if rung in _RULE_STAMPS:
+        claims.append(_RULE_STAMPS[rung])
+    elif rung in _AI_STAMPS:
+        claims.append("ai")
+    elif rung:
+        claims.append("unknown")
+    model = _stamp_text(env, "served_model")
+    if model:
+        claims.append("ai")
+    kinds = set(claims)
+    if kinds == {"ai"} and model and (origin in _AI_STAMPS or rung in _AI_STAMPS):
+        return "ai"
+    if len(kinds) == 1:
+        only = next(iter(kinds))
+        if only in _RULE_PATHS:
+            return only
+    return "unattributed"
+
+
+def path_group(path: str) -> str:
+    """Roll a case path into ai, rule, or unattributed."""
+    if path == "ai":
+        return "ai"
+    if path in _RULE_PATHS:
+        return "rule"
+    return "unattributed"
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -545,6 +620,8 @@ def grade_case(
     base = {
         "route": route,
         "badge": badge,
+        "serve_path": serve_path(env),
+        "answered": not _is_abstain(env),
         "abstain_code": code,
         "as_of": as_of,
         "served_n": served_n,
@@ -893,6 +970,7 @@ def write_report(report: dict[str, Any]) -> Path:
                 "bucket": item["bucket"],
                 "reason": item["reason"],
                 "route": item["route"],
+                "serve_path": item.get("serve_path"),
                 "badge": item["badge"],
                 "abstain_code": item["abstain_code"],
                 "as_of": item["as_of"],
@@ -916,6 +994,8 @@ def write_report(report: dict[str, Any]) -> Path:
         "refusal_wrong": report["refusal_wrong"],
         "empty_gold": report["empty_gold"],
         "gold_broken": report["gold_broken"],
+        "paths_correct": report.get("paths_correct"),
+        "paths_served": report.get("paths_served"),
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
@@ -962,6 +1042,48 @@ def summary_line(report: Mapping[str, Any]) -> str:
         f"abstain={report['abstain']} refusal_ok={report['refusal_ok']} "
         f"refusal_wrong={report['refusal_wrong']} empty_gold={report['empty_gold']} "
         f"gold_broken={report['gold_broken']} mode={report['mode']}"
+    )
+
+
+def _zero_paths() -> dict[str, int]:
+    return {"ai": 0, "rule": 0, "unattributed": 0}
+
+
+def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """AI vs rule-served vs unattributed, for correct answers and served answers."""
+    correct = _zero_paths()
+    served = _zero_paths()
+    for item in cases:
+        group = path_group(str(item.get("serve_path") or "unattributed"))
+        if item.get("bucket") == BUCKET_CORRECT:
+            correct[group] += 1
+        if item.get("answered") is True:
+            served[group] += 1
+    return {"correct": correct, "served": served}
+
+
+def paths_line(counts: Mapping[str, Mapping[str, int]]) -> str:
+    correct = counts["correct"]
+    served = counts["served"]
+    return (
+        f"paths correct ai={correct['ai']} rule={correct['rule']} "
+        f"unattributed={correct['unattributed']} "
+        f"served ai={served['ai']} rule={served['rule']} "
+        f"unattributed={served['unattributed']}"
+    )
+
+
+def served_paths_line(envelopes: Sequence[Mapping[str, Any]]) -> str:
+    """Served-answer paths when the pack is not a value score."""
+    counts = _zero_paths()
+    for item in envelopes:
+        env = item.get("env") if isinstance(item, Mapping) else None
+        if not isinstance(env, Mapping) or _is_abstain(env):
+            continue
+        counts[path_group(serve_path(env))] += 1
+    return (
+        f"paths served ai={counts['ai']} rule={counts['rule']} "
+        f"unattributed={counts['unattributed']}"
     )
 
 
@@ -1173,9 +1295,13 @@ def _finish(report: dict[str, Any], mode: str, dms_sha: str) -> dict[str, Any]:
         }
     )
     report["without_pack_gold_served"] = without
+    rolls = path_counts(report["cases"])
+    report["paths_correct"] = rolls["correct"]
+    report["paths_served"] = rolls["served"]
     path = write_report(report)
     print(summary_line(report))
     print(summary_line(without))
+    print(paths_line(rolls))
     print(f"artifact: {path}")
     return report
 
@@ -1189,6 +1315,7 @@ def grade_loaded(
     """Grade served rows. A submit-stub pack is labelled stub and is not a score."""
     if _is_submit_stub(envelopes):
         print("mode=stub not a score")
+        print(served_paths_line(envelopes))
         raise SystemExit("grade52: stub not a score")
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
@@ -1538,6 +1665,19 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: signature-narrowed wide answer was rejected")
     if wide_ambiguous[1] != "unmappable":
         raise SystemExit(f"self-test: wide ambiguous map did not cap ({wide_ambiguous})")
+    contradictory = {
+        "badge": "L1_GOVERNED_METRIC",
+        "plan_origin": "generate_sql",
+        "ladder_rung": "compile",
+        "served_model": "some-model",
+    }
+    compile_empty = {"ladder_rung": "compile", "served_model": ""}
+    if serve_path(contradictory) != "unattributed":
+        raise SystemExit("self-test: contradictory stamps were called AI")
+    if serve_path({"served_model": "some-model"}) != "unattributed":
+        raise SystemExit("self-test: a model name alone was called AI")
+    if serve_path(compile_empty) != "compile" or path_group(serve_path(compile_empty)) != "rule":
+        raise SystemExit("self-test: compile with an empty model was not rule-served")
 
     print("self-test ok")
     print(

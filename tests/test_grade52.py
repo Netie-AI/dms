@@ -2,7 +2,8 @@
 
 The seven buckets are disjoint and add up to 52. Gold-broken sits inside
 the non-trap 44. A submit-stub pack is not a score. The exec-SQL stub is
-labelled stub-exec.
+labelled stub-exec. The 23/0/20 fixture below is synthetic gold-as-served,
+not the captured flag-off file.
 """
 
 from __future__ import annotations
@@ -24,7 +25,11 @@ from grade52 import (  # noqa: E402
     grade_envelopes_path,
     grade_main,
     load_envelopes,
+    path_counts,
+    path_group,
+    paths_line,
     self_test,
+    serve_path,
     summary_line,
 )
 
@@ -136,8 +141,23 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]], sha: str) -> None:
     path.write_text(header + "\n" + body, encoding="utf-8")
 
 
+def test_grade52_serve_path_stamps() -> None:
+    """Contradictory stamps are unattributed. Compile with an empty model is rule."""
+    contradictory = {
+        "badge": "L1_GOVERNED_METRIC",
+        "plan_origin": "generate_sql",
+        "ladder_rung": "compile",
+        "served_model": "some-model",
+    }
+    assert serve_path(contradictory) == "unattributed"
+    assert serve_path({"served_model": "some-model"}) == "unattributed"
+    compile_empty = {"ladder_rung": "compile", "served_model": ""}
+    assert serve_path(compile_empty) == "compile"
+    assert path_group(serve_path(compile_empty)) == "rule"
+
+
 def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
-    """23/0/20 plus 1 gold-broken, traps 8/0. Without the 7: 16/0/20 plus 1."""
+    """Synthetic gold-as-served: 23/0/20 plus 1 gold-broken, traps 8/0."""
     import grade52
 
     grade52._bootstrap()
@@ -187,6 +207,9 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
     _write_jsonl(path, records, _MAIN_SHA)
     report = grade_envelopes_path(path)
     assert summary_line(report) == _CHECK_INCLUDED
+    assert paths_line(path_counts(report["cases"])) == (
+        "paths correct ai=0 rule=23 unattributed=0 served ai=0 rule=23 unattributed=0"
+    )
     assert report["dms_sha"] == _MAIN_SHA
     assert report["mode"] == "served"
     assert _buckets(report) == 52
@@ -273,6 +296,7 @@ def test_grade52_submit_stub_is_not_a_score(capsys: pytest.CaptureFixture[str]) 
     out = capsys.readouterr().out
     assert "mode=stub not a score" in out
     assert "correct=" not in out
+    assert "paths served ai=0 rule=24 unattributed=20" in out
 
 
 def test_grade52_stub_exec_main() -> None:
@@ -296,6 +320,10 @@ def test_grade52_stub_exec_main() -> None:
         "empty_gold=0 gold_broken=1 mode=stub-exec"
     )
     assert "not a score" not in line
+    assert paths_line(path_counts(report["cases"])) == (
+        "paths correct ai=0 rule=23 unattributed=20 "
+        "served ai=0 rule=25 unattributed=20"
+    )
     without = report["without_pack_gold_served"]
     assert without["pack_gold_served"] == "excluded"
     assert without["n"] == 45
