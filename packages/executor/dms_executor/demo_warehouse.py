@@ -248,6 +248,10 @@ class _LockedConnection:
         self.close()
 
 
+# The serving file is DuckDB. Schema context copies this string; it does not invent one.
+SERVING_DIALECT = "duckdb"
+
+
 def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
     """Write-mode attach. Caller must close(); one live attach per file until then."""
     db = Path(path)

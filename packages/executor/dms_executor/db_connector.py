@@ -719,6 +719,13 @@ def ingest_source_database(
             for t, claim in zip(wanted, claims, strict=True)
         ]
     source = cfg.describe()
+    if space_id and path is not None:
+        try:
+            from dms_executor.schema_context import note_serving_source
+
+            note_serving_source(path, space_id)
+        except Exception:  # noqa: BLE001 -- connect must not fail the pull
+            pass
     return SourceExtract(
         source=source,
         pulls=pulls,

@@ -3,6 +3,8 @@
 One row per derive: the derived body (names, keys, types; never rows, never
 credentials) and what ``Ontology.verify`` found. Append-only; the latest row
 for a version is what the ask path reads.
+
+Chains after ``0005_ask_audit`` (PR #342). That revision merges first.
 """
 
 from __future__ import annotations
@@ -11,8 +13,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0005_onto_snapshot"
-down_revision: str | None = "0004_ontology_store"
+revision: str = "0006_onto_snapshot"
+down_revision: str | None = "0005_ask_audit"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

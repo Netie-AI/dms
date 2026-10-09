@@ -416,13 +416,15 @@ def cascade_abstain_envelope(
     grounded_tables: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """The answer a blocked cascade returns. No values, no SQL, no green badge."""
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_executor.abstain import build_abstain
+    from dms_executor.envelope import assert_envelope_valid
 
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="cascade",
         answer_id=f"cca_{abs(hash((question, outcome.blocked_at))) % 10**10}",
         text=outcome.abstain_text(),
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         sql_used=None,
         assumptions=[
@@ -431,7 +433,6 @@ def cascade_abstain_envelope(
         ],
         space_id=space_id,
         session_id=session_id,
-        question=question,
         grounded_tables=list(grounded_tables or []),
         constraint_trace=list(outcome.trace),
         cascade_path=True,
@@ -451,15 +452,15 @@ def attach_cascade(env: dict[str, Any], outcome: CascadeOutcome) -> dict[str, An
     try:
         env["constraint_trace"] = parse_trace(list(outcome.trace))
     except ConstraintSchemaError as exc:
-        env["constraint_trace"] = []
-        env["badge"] = "ABSTAIN"
-        env["abstained"] = True
-        env["values"] = []
-        env["rows"] = []
-        env["sql_used"] = None
-        env["text"] = f"Constraint cascade trace did not parse: {exc}. No answer is certified."
-        env.setdefault("assumptions", []).append(f"CCA-05: {exc}")
-        return env
+        from dms_executor.abstain import build_abstain
+
+        return build_abstain(
+            reason="envelope_demoted",
+            stage="cascade",
+            demote=env,
+            text=f"Constraint cascade trace did not parse: {exc}. No answer is certified.",
+            demote_note=f"CCA-05: {exc}",
+        )
     notes = outcome.coverage_notes()
     if notes:
         env.setdefault("assumptions", []).extend(notes)

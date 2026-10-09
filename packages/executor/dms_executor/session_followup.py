@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_warehouse import execute_sql, sql_has_reserved_as_of, stamp_engine_clock
 from dms_executor.envelope import (
     assert_envelope_valid,
@@ -56,23 +57,32 @@ def turn_key(session_id: str | None, space_id: str | None) -> tuple[str, str] | 
 
 
 def snapshot_turn(env: dict[str, Any]) -> dict[str, Any] | None:
+    stamp = env.get("index_stamp")
+    stamp_s = stamp if isinstance(stamp, str) and stamp else ""
     if env.get("abstained") is True:
+        if stamp_s:
+            return {"index_stamp": stamp_s}
         return None
     nums = numeric_values(env)
     if not nums:
+        if stamp_s:
+            return {"index_stamp": stamp_s}
         return None
-    return {"values": nums, "sql_used": env.get("sql_used")}
+    out: dict[str, Any] = {"values": nums, "sql_used": env.get("sql_used")}
+    if stamp_s:
+        out["index_stamp"] = stamp_s
+    return out
 
 
 def _abstain(*, space_id: str | None, session_id: str | None, why: str) -> dict[str, Any]:
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        stage="followup",
         answer_id="ans_followup_abstain",
         text=(
             "I cannot compute that follow-up without a prior numeric answer in "
             "this session. Ask the parent question first."
         ),
-        badge="ABSTAIN",
-        abstained=True,
         assumptions=["session follow-up abstained — no invent", why],
         as_of=_as_of(),
         space_id=space_id,

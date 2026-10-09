@@ -19,6 +19,7 @@ from typing import Any
 import duckdb
 from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
 
+from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
@@ -111,11 +112,12 @@ def bronze_grant_abstain(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. No rows, no SQL, no figure from the table."""
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason=reason,
+        question=question,
+        stage="bronze",
         answer_id="ans_bronze_grant",
         text=f"ABSTAIN {reason}",
-        badge="ABSTAIN",
-        abstained=True,
         rows=[],
         values=[],
         sql_used=None,
@@ -124,7 +126,6 @@ def bronze_grant_abstain(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
     )
     env["lane"] = sheet_lane()
     assert_envelope_valid(env)

@@ -529,6 +529,13 @@ def ingest_csv_bytes(
         con.close()
         tmp.unlink(missing_ok=True)
 
+    if space_id:
+        try:
+            from dms_executor.schema_context import note_serving_source
+
+            note_serving_source(db, space_id)
+        except Exception:  # noqa: BLE001 -- ingest must not fail closed on the index
+            pass
     return IngestReceipt(
         files_seen=files_seen,
         ingested=n,
