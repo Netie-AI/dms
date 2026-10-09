@@ -5,15 +5,18 @@ executed read-only on a fresh ``ensure_demo_warehouse`` file. ``$as_of`` binds
 the connection's current date. A refuse oracle, or a question with no SQL, has
 empty gold. Gold is never read from an envelope or a canned stub.
 
-The default mode ``served`` grades the envelope rows and abstain flag. It does
-not execute ``sql_used``. ``replay-only`` re-executes ``sql_used`` and is not
-a score. A trap is a refusal: abstain is a correct refusal, a served answer
-is a wrong refusal.
+``--envelopes`` grades those served rows (point 4, then the order rule). It
+does not execute ``sql_used``. A submit-stub pack (every confident row is the
+one-cell ``n=1`` stub) is labelled stub and is not a score. ``--main`` builds
+envelopes with the exec-SQL stub, flags off, and labels that score stub-exec.
+
+A trap is a refusal. Gold-broken is the non-trap case with no certified
+oracle, so it sits inside the non-trap 44.
 
 Usage:
     python scripts/verify/grade52.py --self-test
     python scripts/verify/grade52.py --main
-    python scripts/verify/grade52.py --main --mode replay-only
+    python scripts/verify/grade52.py --envelopes PATH
 """
 
 from __future__ import annotations
@@ -41,12 +44,10 @@ ABS_TOL = 0.005
 # value signature can narrow.
 MAP_CAP = 1024
 MODE_SERVED = "served"
-MODE_REPLAY = "replay-only"
+MODE_STUB_EXEC = "stub-exec"
 MODES = (
     MODE_SERVED,
-    MODE_REPLAY,
-    "executing-stub",
-    "live-model",
+    MODE_STUB_EXEC,
 )
 BUCKET_CORRECT = "CORRECT"
 BUCKET_WRONG = "WRONG"
@@ -507,20 +508,81 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def served_rows_for(
-    con: Any,
-    env: Mapping[str, Any],
-    as_of: str,
-    *,
-    mode: str,
-) -> list[dict[str, Any]]:
-    """``served`` uses envelope rows. Only ``replay-only`` executes ``sql_used``."""
-    if mode != MODE_REPLAY or _is_abstain(env):
-        return _rows_of(env.get("rows"))
-    sql = env.get("sql_used")
-    if isinstance(sql, str) and sql.strip():
-        return _execute(con, sql, as_of)
-    return _rows_of(env.get("rows"))
+def _is_stub_row(rows: Sequence[Mapping[str, Any]]) -> bool:
+    """The canned submit stub: one cell, column ``n``, value 1."""
+    if len(rows) != 1:
+        return False
+    row = rows[0]
+    if set(row) != {"n"}:
+        return False
+    value = row.get("n")
+    return value == 1 or value == 1.0
+
+
+def _is_submit_stub(envelopes: Sequence[Mapping[str, Any]]) -> bool:
+    """True when every confident envelope is the one-cell submit stub."""
+    confident = 0
+    for item in envelopes:
+        env = item.get("env")
+        if not isinstance(env, Mapping) or _is_abstain(env):
+            continue
+        confident += 1
+        if not _is_stub_row(_rows_of(env.get("rows"))):
+            return False
+    return confident > 0
+
+
+def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise SystemExit("grade52: envelope record is not an object")
+    if isinstance(data.get("env"), dict):
+        qid = str(data.get("id") or default_id or "")
+        return {"id": qid, "env": data["env"]}
+    if "rows" in data or "badge" in data:
+        qid = str(data.get("id") or default_id or "")
+        env = {key: value for key, value in data.items() if key != "id"}
+        return {"id": qid, "env": env}
+    raise SystemExit("grade52: envelope record has no env")
+
+
+def load_envelopes(path: Path) -> list[dict[str, Any]]:
+    """A directory of ``<id>.json`` files, or a JSONL file of ``{id, env}``."""
+    if path.is_dir():
+        files = sorted(item for item in path.iterdir() if item.suffix == ".json" and item.is_file())
+        if not files:
+            raise SystemExit("grade52: envelope directory is empty")
+        rows: list[dict[str, Any]] = []
+        for item in files:
+            try:
+                data = json.loads(item.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise SystemExit("grade52: envelope file is not json") from exc
+            rows.append(_record(data, default_id=item.stem))
+        return rows
+    if not path.is_file():
+        raise SystemExit("grade52: envelopes path is missing")
+    text = path.read_text(encoding="utf-8")
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise SystemExit("grade52: envelope file is not json") from exc
+        if not isinstance(data, list):
+            raise SystemExit("grade52: envelope file is not json")
+        return [_record(item) for item in data]
+    rows = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit("grade52: envelope file is not json") from exc
+        rows.append(_record(data))
+    if not rows:
+        raise SystemExit("grade52: envelope file is empty")
+    return rows
 
 
 def _sql_same(left: str, right: str) -> bool:
@@ -630,9 +692,7 @@ def grade_envelopes(
                 gold: list[dict[str, Any]] | None = None
             else:
                 gold = _execute(con, sql, as_of)
-            served = _rows_of(env.get("rows")) if trap else served_rows_for(
-                con, env, as_of, mode=mode
-            )
+            served = _rows_of(env.get("rows"))
             row = grade_case(
                 gold=gold,
                 gold_sql=sql,
@@ -703,7 +763,7 @@ def write_report(report: dict[str, Any]) -> Path:
         "gold_broken": report["gold_broken"],
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
-        "score": report["mode"] != MODE_REPLAY,
+        "score": True,
         "without_pack_gold_served": without,
         "cases": slim_cases,
     }
@@ -734,23 +794,20 @@ def _accounted(report: Mapping[str, Any]) -> int:
 
 
 def summary_line(report: Mapping[str, Any]) -> str:
-    """One line. Buckets add up to n. Replay-only says it is not a score."""
+    """One score line. The seven buckets are disjoint and add up to n."""
     _require_label(report)
     for key in _BUCKET_KEYS:
         if key not in report:
             raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
     if _accounted(report) != int(report["n"]):
         raise SystemExit("grade52: buckets do not add up to n")
-    text = (
+    return (
         f"sha={report['dms_sha']} pack_gold_served={report['pack_gold_served']} "
         f"{report['n']}: correct={report['correct']} wrong={report['wrong']} "
         f"abstain={report['abstain']} refusal_ok={report['refusal_ok']} "
         f"refusal_wrong={report['refusal_wrong']} empty_gold={report['empty_gold']} "
         f"gold_broken={report['gold_broken']} mode={report['mode']}"
     )
-    if report["mode"] == MODE_REPLAY:
-        return text + " not a score"
-    return text
 
 
 def _scrub_credentials() -> None:
@@ -792,23 +849,12 @@ def _dms_sha() -> str:
 
 
 def _resolve_mode(mode: str | None) -> str:
-    """Served rows are the default score. Replay-only is opt-in and not a score."""
+    """External envelopes are ``served``. The in-repo proof is ``stub-exec``."""
     if mode is None:
         return MODE_SERVED
     if mode not in MODES:
         raise SystemExit("grade52: --mode is required: " + ", ".join(MODES))
     return str(mode)
-
-
-def replay_flag_off() -> list[dict[str, Any]]:
-    """Captured flag-off envelopes. Submit does not execute SQL."""
-    _prepare_flag_off()
-    from tests.fixtures.ask_guide.capture_flag_off_52 import replay_pack
-
-    rows = replay_pack()
-    if len(rows) != 52:
-        raise SystemExit(f"replay size {len(rows)} != 52")
-    return rows
 
 
 def replay_executing() -> list[dict[str, Any]]:
@@ -953,20 +999,15 @@ def _labelled(report: dict[str, Any], *, mode: str, included: str) -> dict[str, 
     return report
 
 
-def grade_main(mode: str | None) -> dict[str, Any]:
-    chosen = _resolve_mode(mode)
-    if chosen == "live-model":
-        raise SystemExit("grade52: live-model refuses a captured replay")
-    envelopes = replay_executing() if chosen == "executing-stub" else replay_flag_off()
-    report = grade_envelopes(envelopes, mode=chosen)
-    _labelled(report, mode=chosen, included="included")
+def _finish(report: dict[str, Any], mode: str) -> dict[str, Any]:
+    _labelled(report, mode=mode, included="included")
     rest = [item for item in report["cases"] if not item.get("pack_gold_served")]
     without = tally(rest)
     without.update(
         {
             "n": len(rest),
             "as_of": report["as_of"],
-            "mode": chosen,
+            "mode": mode,
             "dms_sha": report["dms_sha"],
             "pack_gold_served": "excluded",
             "pack_gold_served_ids": report["pack_gold_served_ids"],
@@ -978,6 +1019,27 @@ def grade_main(mode: str | None) -> dict[str, Any]:
     print(summary_line(without))
     print(f"artifact: {path}")
     return report
+
+
+def grade_loaded(envelopes: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
+    """Grade served rows. A submit-stub pack is labelled stub and is not a score."""
+    if _is_submit_stub(envelopes):
+        print("mode=stub not a score")
+        raise SystemExit("grade52: stub not a score")
+    report = grade_envelopes(envelopes, mode=mode)
+    return _finish(report, mode)
+
+
+def grade_main(mode: str | None = None) -> dict[str, Any]:
+    """In-repo proof: exec-SQL stub, flags off. Same product as main 57d85c5."""
+    chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
+    if chosen != MODE_STUB_EXEC:
+        raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
+    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC)
+
+
+def grade_envelopes_path(path: Path) -> dict[str, Any]:
+    return grade_loaded(load_envelopes(path), mode=MODE_SERVED)
 
 
 def self_test() -> dict[str, str]:
@@ -1148,31 +1210,47 @@ def self_test() -> dict[str, str]:
     else:
         raise SystemExit("self-test: unlabelled summary was accepted")
     if _resolve_mode(None) != MODE_SERVED:
-        raise SystemExit("self-test: served is not the default mode")
+        raise SystemExit("self-test: served is not the envelope mode")
+    stub_only = [
+        {
+            "id": f"s{i}",
+            "env": {"badge": "L1_GOVERNED_METRIC", "abstained": False, "rows": [{"n": 1}]},
+        }
+        for i in range(10)
+    ]
+    mixed = [
+        *stub_only,
+        {"id": "real", "env": {"badge": "L1_GOVERNED_METRIC", "abstained": False, "rows": [{"sku": "A"}]}},
+    ]
+    if not _is_submit_stub(stub_only) or _is_submit_stub(mixed):
+        raise SystemExit("self-test: submit stub detector drifted")
     try:
-        _resolve_mode("replay-of-captured-envelopes")
+        grade_loaded(stub_only, mode=MODE_SERVED)
     except SystemExit as exc:
-        if "mode" not in str(exc):
+        if "stub" not in str(exc):
             raise
     else:
-        raise SystemExit("self-test: retired mode name was accepted")
-    replay_line = summary_line(
+        raise SystemExit("self-test: submit stub was printed as a score")
+    check_line = summary_line(
         {
-            "mode": MODE_REPLAY,
+            "mode": MODE_SERVED,
             "dms_sha": "0" * 40,
             "pack_gold_served": "included",
-            "n": 1,
-            "correct": 0,
+            "n": 52,
+            "correct": 23,
             "wrong": 0,
-            "abstain": 0,
-            "refusal_ok": 0,
-            "refusal_wrong": 0,
+            "abstain": 20,
+            "refusal_ok": 6,
+            "refusal_wrong": 2,
             "empty_gold": 0,
             "gold_broken": 1,
         }
     )
-    if "not a score" not in replay_line or "mode=replay-only" not in replay_line:
-        raise SystemExit("self-test: replay-only was presented as a score")
+    if not check_line.endswith(
+        "52: correct=23 wrong=0 abstain=20 refusal_ok=6 refusal_wrong=2 "
+        "empty_gold=0 gold_broken=1 mode=served"
+    ):
+        raise SystemExit("self-test: check-shaped line drifted")
     try:
         summary_line(
             {
@@ -1227,14 +1305,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--main", action="store_true")
-    parser.add_argument("--mode", choices=MODES)
+    parser.add_argument("--envelopes", type=Path)
     args = parser.parse_args(argv)
-    run_main = args.main
-    run_self = args.self_test or not run_main
-    if run_self:
+    if args.main and args.envelopes is not None:
+        raise SystemExit("grade52: pass --envelopes or --main")
+    run_score = args.main or args.envelopes is not None
+    if args.self_test or not run_score:
         self_test()
-    if run_main:
-        grade_main(args.mode)
+    if args.envelopes is not None:
+        grade_envelopes_path(args.envelopes)
+    elif args.main:
+        grade_main()
     return 0
 
 
