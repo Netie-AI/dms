@@ -55,6 +55,7 @@ from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    SERVING_DIALECT,
     connect_file,
     sql_has_reserved_as_of,
     warehouse_path,
@@ -671,6 +672,43 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
+def _serving_relation_names(sql: str) -> set[str] | None:
+    """Bare table names sqlglot sees in the serving dialect.
+
+    A schema-qualified name contributes its table identifier. A CTE
+    reference is not a table. None means the SQL did not parse, so the
+    grant check cannot see the tables.
+    """
+    from sqlglot import exp, parse
+    from sqlglot.optimizer.scope import traverse_scope
+
+    try:
+        trees = [tree for tree in parse(sql or "", read=SERVING_DIALECT) if tree is not None]
+    except Exception:
+        return None
+    names: set[str] = set()
+    for tree in trees:
+        try:
+            scopes = list(traverse_scope(tree))
+        except Exception:
+            return None
+        sources: list[Any] = []
+        if scopes:
+            for scope in scopes:
+                sources.extend(scope.sources.values())
+        else:
+            sources.extend(tree.find_all(exp.Table))
+        for source in sources:
+            if not isinstance(source, exp.Table):
+                continue
+            if not isinstance(source.this, exp.Identifier):
+                continue
+            bare = str(source.name or "").strip().lower()
+            if bare:
+                names.add(bare)
+    return names
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -684,7 +722,9 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
+    named = _serving_relation_names(sql)
+    if named is None:
+        return "ungranted"
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
