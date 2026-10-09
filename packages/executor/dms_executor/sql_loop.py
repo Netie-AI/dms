@@ -5,8 +5,9 @@ SQL normalisation use that dialect, supplied by the caller. This module
 names no warehouse table or column.
 
 Retry only on a database execution error or a checker flag. Hostile SQL,
-multi-statement SQL, file reads, ungranted tables, a missing extract, and
-a reply with no SQL abstain at once and are not pasted into a retry prompt.
+multi-statement SQL, file reads, ungranted tables, and a missing extract
+abstain at once and are not pasted into a retry prompt. A timeout, a
+provider error, or a reply with no SQL does not compile.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from cortex_client.compute import (
     cloop_b_enabled,
     generate_model_called,
     insights_call_cap,
+    insights_fail_reason,
     insights_timeout_s,
     note_model_call,
     recorded_model_calls,
@@ -404,7 +406,15 @@ def _explain_code(why: str) -> str | None:
 
 
 class CompileDefer(Exception):
-    """The model loop stopped. The caller compiles before it abstains."""
+    """Model SQL ran and failed its check. The caller may compile."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ServeHold(Exception):
+    """Timeout, provider error, or empty reply. The caller must not compile."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -608,16 +618,21 @@ def run_model_loop(
         prompt = feedback_prompt(question, previous_sql=prev_sql, reason=reason)
         sql = model_sql(current)
         if not sql:
+            # No statement ran, so this is not a failed check. Do not compile.
+            named = (
+                insights_fail_reason(current) if isinstance(current, dict) else None
+            )
+            hold = "provider_error" if current is None or named else "empty_reply"
             attempts.append(
                 loop_entry(
                     prompt=prompt,
                     payload=current,
                     sql=None,
-                    outcome="no_sql",
+                    outcome=hold,
                     dialect=dialect,
                 )
             )
-            return abstain("no_sql", attempts, sql=None, retries=retries)
+            raise ServeHold(hold)
 
         if protected_sql:
             dropped = dropped_conjuncts(protected_sql, sql, dialect)
@@ -811,10 +826,10 @@ def _call(
     nxt["sql_loop_feedback"] = feedback
     try:
         got = compute(nxt)
-    except CompileDefer:
+    except (CompileDefer, ServeHold):
         raise
     except Exception:
-        return None
+        raise ServeHold("provider_error") from None
     if is_deadline(got if isinstance(got, dict) else None):
         if attempts is not None:
             attempts.append(
@@ -827,8 +842,10 @@ def _call(
                     model_calls=0,
                 )
             )
-        raise CompileDefer("insights_timeout:generate")
-    return got if isinstance(got, dict) else None
+        raise ServeHold("insights_timeout:generate")
+    if not isinstance(got, dict):
+        raise ServeHold("provider_error")
+    return got
 
 
 def _clear_credit(env: dict[str, Any]) -> None:

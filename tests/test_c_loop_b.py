@@ -369,13 +369,14 @@ def test_lowest_categories_do_not_fall_back_to_ontology(
         )
 
     env = _assert_abstain(_ask(tmp_path, question, compute))
-    assert calls["n"] == 1
-    assert "no_sql" in env["text"]
+    assert calls["n"] >= 1
+    assert "empty_reply" in env["text"]
+    assert "reconfirm" in env["text"]
     assert env.get("plan_origin") != "ontology_ranking"
     assert env["sql_used"] is None
     assert env["rows"] == []
     assert env["served_attribution"] == "missing"
-    assert env["loop"][0]["outcome"] == "no_sql"
+    assert env["loop"][0]["outcome"] == "empty_reply"
     assert env["loop"][0]["outcome"] != "served"
 
 

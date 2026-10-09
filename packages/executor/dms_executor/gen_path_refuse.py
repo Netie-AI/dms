@@ -53,6 +53,8 @@ GAP_REASONS = frozenset(
         "loop_exhausted",
         "empty_result_unverified",
         "no_sql",
+        "empty_reply",
+        "provider_error",
         "multi_statement",
         "warehouse_missing",
         "reconfirm",

@@ -107,6 +107,7 @@ from dms_executor.sql_loop import (
     EMPTY_NOTE,
     EXTRACT_DIALECT,
     CompileDefer,
+    ServeHold,
     apply_sql_credit,
     bound_model_compute,
     extract_dialect,
@@ -1390,9 +1391,9 @@ def _run_extract_loop(
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry.
 
-    When the loop is exhausted or the serving deadline hits, raise
-    ``CompileDefer`` so the caller can run the ranking compile before
-    any abstain.
+    A failed check raises ``CompileDefer`` so the caller may compile.
+    A timeout, provider error, or empty reply raises ``ServeHold``.
+    That path does not compile.
     """
 
     def model_sql(body: dict[str, Any] | None) -> str | None:
@@ -1646,8 +1647,8 @@ def maybe_generative_ask(
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
     # Model calls share one serving deadline. Each call gets one slice.
-    # The last share stays for the ranking compile. Flag off does not
-    # wrap, so its timeout and envelopes stay the pre-loop path.
+    # A cancelled call is not counted. That spare share is not a licence
+    # to serve the ranking compile. Flag off does not wrap.
     loop_on = cloop_b_enabled() and not ontology_ranked_lane_enabled()
     if loop_on:
         compute = bound_model_compute(compute)
@@ -1685,6 +1686,66 @@ def maybe_generative_ask(
             stamped = mask_unknown_keys(stamped)
         return stamped
 
+    def _model_hold(reason: str) -> dict[str, Any]:
+        """Ladder, then reconfirm. The ranking compile does not run.
+
+        A timeout, a provider error, and an empty reply land here. Model
+        SQL that ran and failed its check does not.
+        """
+        previous = ""
+        if loop_attempts:
+            raw_sql = loop_attempts[-1].get("sql")
+            if isinstance(raw_sql, str):
+                previous = raw_sql
+
+        def _sql_only(body: dict[str, Any]) -> dict[str, Any] | None:
+            try:
+                got = compute(body) if compute is not None else None
+            except Exception:  # noqa: BLE001 — a rung that raises is not a serve
+                return None
+            if not isinstance(got, dict) or is_deadline(got):
+                return None
+            if insights_fail_reason(got) and not query_sql_from_payload(got):
+                return None
+            if not query_sql_from_payload(got):
+                return None
+            return got
+
+        served = None
+        if compute is not None and submit is not None and ledger_append is not None:
+            served = _ladder_retry(
+                previous,
+                reason,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=(),
+                plan_source=PLAN_SOURCE_ONTOLOGY,
+                keep_gt=None,
+                measure=None,
+                coverage=None,
+                where_paths=(),
+                warehouse=lake,
+                plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+                lead="",
+                compute=_sql_only,
+                ctx=ctx,
+                ontology=onto,
+                grantable=allowed,
+            )
+        if served is not None:
+            return served
+        return _abstain(
+            q,
+            f"reconfirm:{reason}",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=PLAN_SOURCE_ONTOLOGY,
+            stage="extract_loop",
+        )
+
     if verify_cache_missing:
         return _stamp(
             _abstain(
@@ -1699,18 +1760,16 @@ def maybe_generative_ask(
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
-    # A timeout on the model lane still compiles from ranking already in
-    # hand. Flag off keeps the pre-loop abstain.
+    # A timeout never serves the ranking compile. Flag off keeps its abstain.
     deadline_first = bool(budget_stop) and loop_on and (
         is_deadline(payload if isinstance(payload, dict) else None)
         or str(budget_stop).startswith("insights_timeout")
     )
-    # Compile only when ranking is already in hand. A timeout or cap with
-    # nothing to compile keeps the pre-loop abstain.
-    compile_on_deadline = deadline_first and ontology_plan_from_ranking(
-        q, payload if isinstance(payload, dict) else None, onto=onto, ctx=ctx
-    ) is not None
-    if budget_stop and not compile_on_deadline:
+    if loop_on and payload is None:
+        return _stamp(_model_hold("provider_error"))
+    if deadline_first:
+        return _stamp(_model_hold(str(budget_stop or "insights_timeout:generate")))
+    if budget_stop:
         return _stamp(
             _abstain(
                 q,
@@ -1721,26 +1780,13 @@ def maybe_generative_ask(
                 stage="insights_budget",
             )
         )
-    if compile_on_deadline and isinstance(payload, dict):
-        payload = dict(payload)
-        payload.pop("query_sql", None)
-        payload.pop("insights_fail", None)
-        gen = payload.get("generative")
-        if isinstance(gen, dict):
-            gen = dict(gen)
-            gen.pop("sql", None)
-            payload["generative"] = gen
-        setup_src = payload
-        kind = parse_compute_plan(payload)
-        source = plan_source_from_payload(payload)
-        origin = plan_origin_from_payload(payload)
     if (
-        not deadline_first
-        and cloop_b_enabled()
+        cloop_b_enabled()
         and not ontology_ranked_lane_enabled()
         and isinstance(payload, dict)
     ):
-        # Model SQL runs on the extract. Compile runs only after the loop stops.
+        # Model SQL runs on the extract. The ranking compile runs only when
+        # that SQL failed its check.
         sql_in = query_sql_from_payload(payload)
         would_rank = kind == "miss" and ontology_plan_from_ranking(
             q, payload, onto=onto, ctx=ctx
@@ -1776,11 +1822,14 @@ def maybe_generative_ask(
                         attempts=loop_attempts,
                     )
                 )
+            except ServeHold as held:
+                # Timeout, provider error, or empty reply. Ladder or
+                # reconfirm. The ranking compile does not run.
+                return _stamp(_model_hold(held.reason))
             except CompileDefer as deferred:
-                # Exhausted or out of time. Ranking that can compile uses
-                # the flag-off compile below, before any abstain. No
-                # ranking: abstain with the loop reason. The failed
-                # statement is not an answer.
+                # The model SQL ran and failed its check. That is the only
+                # way into the ranking compile, which still waits on the
+                # founder's call. No ranking: abstain with the loop reason.
                 body = payload if isinstance(payload, dict) else None
                 if ontology_plan_from_ranking(q, body, onto=onto, ctx=ctx) is None:
                     last_sql = None

@@ -189,7 +189,24 @@ def test_exhausted_loop_serves_the_compile(
     assert all(item.get("model_calls") == 1 for item in env["loop"])
 
 
-def test_deadline_serves_the_compile_inside_the_budget(
+def _hold_blob(env: dict[str, Any]) -> str:
+    notes = " ".join(str(item) for item in (env.get("assumptions") or []))
+    return f"{notes} {env.get('text') or ''}"
+
+
+def _assert_no_compile(env: dict[str, Any]) -> None:
+    """Ladder or reconfirm, and the ranking compile served no rows."""
+    assert_envelope_valid(env)
+    assert env.get("abstained") is True
+    assert env.get("badge") != "L2_VALIDATED"
+    assert env.get("rows") in (None, [])
+    assert "WH-C" not in _rows_blob(env)
+    assert env.get("plan_origin") != "ontology_ranking"
+    blob = _hold_blob(env)
+    assert "reconfirm" in blob or "self_correct" in blob
+
+
+def test_deadline_does_not_serve_the_compile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _flags(monkeypatch, cloop=True)
@@ -203,12 +220,12 @@ def test_deadline_serves_the_compile_inside_the_budget(
         _COLD_Q, session_id="ses_keep", ask_path="generative"
     )
     elapsed = time.monotonic() - started
-    assert cortex.calls == 2
-    assert elapsed < deadline
     assert cortex.running is False
     assert cortex.sleep_finished is False
-    _assert_compile(env)
-    # The slow call was cancelled. It did not take a second cap slot.
+    assert elapsed < deadline + 1.0
+    _assert_no_compile(env)
+    assert "insights_timeout" in _hold_blob(env)
+    # The slow call was cancelled. It did not take a cap slot.
     assert env.get("model_calls") == 1
     counted = [item for item in env["loop"] if item.get("model_calls") == 1]
     discarded = [item for item in env["loop"] if item.get("model_calls") == 0]
@@ -341,6 +358,58 @@ def test_binder_exception_retries_once_then_serves(
     assert "Referenced column" not in json.dumps(env)
     assert env.get("model_calls") == 2
     assert all(item.get("model_calls") == 1 for item in env["loop"])
+
+
+class _Raise(_Cortex):
+    """The provider call raises. Ranking on the class is unused."""
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        raise RuntimeError("provider down")
+
+
+class _Empty(_Cortex):
+    """A finished call with ranking and no statement."""
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        return {
+            "phase": "generate",
+            "query_sql": "",
+            "served_model": _MODEL,
+            "served_provider": _PROVIDER,
+            "ov_key_id": "ovk-stub",
+            "ontology": {"metrics": [{"id": _RANK}]},
+            "generative": {"sql": "", "ok": True, "stamp": {"impl": "stub"}},
+        }
+
+
+def test_provider_error_does_not_serve_the_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    env = _executor(db, _Raise(db)).live_ask(
+        _COLD_Q, session_id="ses_keep", ask_path="generative"
+    )
+    _assert_no_compile(env)
+    blob = _hold_blob(env)
+    assert "provider_error" in blob
+    assert "provider down" not in json.dumps(env)
+
+
+def test_empty_reply_does_not_serve_the_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    env = _executor(db, _Empty(db)).live_ask(
+        _COLD_Q, session_id="ses_keep", ask_path="generative"
+    )
+    _assert_no_compile(env)
+    assert "empty_reply" in _hold_blob(env)
 
 
 def test_compile_lot_fanout_is_never_l2(
