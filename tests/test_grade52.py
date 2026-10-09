@@ -78,6 +78,9 @@ def test_grade52_self_test() -> None:
     assert plants["unordered_shuffle"] == "CORRECT"
     assert plants["extra_column"] == "CORRECT"
     assert plants["duplicated_row"] == "WRONG"
+    assert plants["tie_swap"] == "CORRECT"
+    assert plants["tie_break"] == "WRONG"
+    assert plants["limit_tie"] == "CORRECT"
 
 
 def test_grade52_served_is_default() -> None:

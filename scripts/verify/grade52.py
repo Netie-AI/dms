@@ -89,17 +89,69 @@ def _bootstrap() -> None:
         sys.path.insert(0, root)
 
 
-def oracle_orders(sql: str) -> bool:
-    """True when the parsed statement has a top-level ORDER BY.
+def _output_names(tree: Any) -> list[str]:
+    """Select-list output names from the AST. Empty when the shape is unknown."""
+    from sqlglot import exp
 
-    A nested ORDER BY (subquery or CTE) does not count. Question wording is
-    not consulted.
+    node = tree
+    if isinstance(node, exp.Union):
+        node = node.this
+    if not isinstance(node, exp.Select):
+        return []
+    names: list[str] = []
+    for proj in node.expressions:
+        if isinstance(proj, exp.Alias):
+            names.append(proj.alias)
+        elif isinstance(proj, exp.Column):
+            names.append(proj.name)
+        else:
+            names.append(str(proj.alias_or_name))
+    return names
+
+
+def _order_name(node: Any, outputs: Sequence[str]) -> str | None:
+    """Map one ORDER BY expression to an output column. AST only."""
+    from sqlglot import exp
+
+    if isinstance(node, exp.Literal) and node.is_int:
+        index = int(node.this) - 1
+        if 0 <= index < len(outputs):
+            return outputs[index]
+        return None
+    if isinstance(node, exp.Column):
+        if node.name in outputs:
+            return node.name
+        folded = {name.casefold(): name for name in outputs}
+        return folded.get(node.name.casefold())
+    return None
+
+
+def order_keys(sql: str) -> list[str] | None:
+    """Top-level ORDER BY output columns, or None when the statement is unordered.
+
+    Nested ORDER BY (subquery, CTE, window) does not count. Keys are read from
+    the sqlglot AST, including ordinals. An expression that is not an output
+    column yields an empty list, which compares rows positionally.
     """
     from sqlglot import parse_one
 
     tree = parse_one(sql, read="duckdb")
     order = tree.args.get("order") if hasattr(tree, "args") else None
-    return order is not None
+    if order is None:
+        return None
+    outputs = _output_names(tree)
+    keys: list[str] = []
+    for ordered in order.expressions:
+        name = _order_name(ordered.this, outputs)
+        if name is None:
+            return []
+        keys.append(name)
+    return keys
+
+
+def oracle_orders(sql: str) -> bool:
+    """True when the parsed statement has a top-level ORDER BY."""
+    return order_keys(sql) is not None
 
 
 def _is_bool(value: Any) -> bool:
@@ -325,6 +377,34 @@ def _positional(gold: Sequence[Mapping[str, Any]], served: Sequence[Mapping[str,
     return all(_row_agrees(grow, srow, mapping) for grow, srow in zip(gold, served, strict=True))
 
 
+def _keys_equal(left: Sequence[Any], right: Sequence[Any]) -> bool:
+    return all(cells_equal(a, b) for a, b in zip(left, right, strict=True))
+
+
+def _tie_ordered(
+    gold: Sequence[Mapping[str, Any]],
+    served: Sequence[Mapping[str, Any]],
+    mapping: Mapping[str, str],
+    keys: Sequence[str],
+) -> bool:
+    """Sort-key sequence exact. Rows that tie on that key match as a multiset."""
+    if not keys or any(key not in gold[0] or key not in served[0] for key in keys):
+        return _positional(gold, served, mapping)
+    gold_keys = [[row[key] for key in keys] for row in gold]
+    served_keys = [[row[key] for key in keys] for row in served]
+    if any(not _keys_equal(left, right) for left, right in zip(gold_keys, served_keys, strict=True)):
+        return False
+    start = 0
+    while start < len(gold):
+        end = start + 1
+        while end < len(gold) and _keys_equal(gold_keys[start], gold_keys[end]):
+            end += 1
+        if not _multiset(gold[start:end], served[start:end], mapping):
+            return False
+        start = end
+    return True
+
+
 def _project(
     served: Sequence[Mapping[str, Any]],
     gold_cols: Sequence[str],
@@ -339,12 +419,14 @@ def compare_rows(
     served: Sequence[Mapping[str, Any]],
     *,
     ordered: bool,
+    order_keys: Sequence[str] | None = None,
 ) -> tuple[str, str]:
     """Map each gold column to its own answer column, project, then multiset.
 
     Try exact names, then case-insensitive, then a permutation of the rest.
     Extra answer columns are ignored. Duplicate projected rows are kept, so a
-    fan-out does not collapse into a match.
+    fan-out does not collapse into a match. When ``order_keys`` is set, the
+    sort-key sequence must match and tied rows compare as a multiset.
     """
     if len(gold) != len(served):
         return BUCKET_WRONG, f"rowcount {len(served)} vs {len(gold)}"
@@ -366,7 +448,8 @@ def compare_rows(
         if _multiset(gold, projected, ident):
             projected_hits.append(projected)
     if ordered:
-        if any(_positional(gold, item, ident) for item in projected_hits):
+        keys = list(order_keys or [])
+        if any(_tie_ordered(gold, item, ident, keys) for item in projected_hits):
             return BUCKET_CORRECT, "match"
         if projected_hits:
             return BUCKET_WRONG, "order mismatch"
@@ -462,8 +545,13 @@ def grade_case(
         }
     if _is_abstain(env):
         return {**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"}
-    ordered = bool(gold_sql) and oracle_orders(str(gold_sql))
-    bucket, reason = compare_rows(gold, served_rows, ordered=ordered)
+    keys = order_keys(str(gold_sql)) if gold_sql else None
+    bucket, reason = compare_rows(
+        gold,
+        served_rows,
+        ordered=keys is not None,
+        order_keys=keys,
+    )
     return {**base, "bucket": bucket, "reason": reason}
 
 
@@ -1053,14 +1141,51 @@ def self_test() -> dict[str, str]:
     ordered_sql = "SELECT sku, qty FROM src ORDER BY qty"
     plain_sql = "SELECT sku, qty FROM src"
     nested_sql = "SELECT sku FROM (SELECT sku, qty FROM src ORDER BY qty) s"
-    if not oracle_orders(ordered_sql):
-        raise SystemExit("self-test: top-level ORDER BY was not seen")
-    if oracle_orders(plain_sql) or oracle_orders(nested_sql):
+    window_sql = "SELECT sku, ROW_NUMBER() OVER (ORDER BY qty) AS n FROM src"
+    ordinal_sql = "SELECT k, name FROM src ORDER BY 1"
+    limit_sql = "SELECT k, name FROM src ORDER BY k LIMIT 2"
+    if order_keys(ordered_sql) != ["qty"]:
+        raise SystemExit("self-test: ORDER BY key was not the AST output column")
+    if order_keys(ordinal_sql) != ["k"]:
+        raise SystemExit("self-test: ORDER BY ordinal was read as text")
+    if order_keys(limit_sql) != ["k"]:
+        raise SystemExit("self-test: LIMIT hid the ORDER BY key")
+    if order_keys(plain_sql) or order_keys(nested_sql) or order_keys(window_sql):
         raise SystemExit("self-test: non-top-level ORDER BY counted")
     swapped_gold = [{"sku": "A", "qty": 1}, {"sku": "B", "qty": 2}]
     swapped_served = [{"sku": "B", "qty": 2}, {"sku": "A", "qty": 1}]
-    swapped = compare_rows(swapped_gold, swapped_served, ordered=oracle_orders(ordered_sql))
-    shuffled = compare_rows(swapped_gold, swapped_served, ordered=oracle_orders(plain_sql))
+    swapped = compare_rows(
+        swapped_gold,
+        swapped_served,
+        ordered=True,
+        order_keys=order_keys(ordered_sql),
+    )
+    shuffled = compare_rows(swapped_gold, swapped_served, ordered=False)
+    tie_gold = [{"k": 1, "name": "A"}, {"k": 1, "name": "B"}, {"k": 2, "name": "C"}]
+    tie_swap = compare_rows(
+        tie_gold,
+        [{"k": 1, "name": "B"}, {"k": 1, "name": "A"}, {"k": 2, "name": "C"}],
+        ordered=True,
+        order_keys=order_keys("SELECT k, name FROM src ORDER BY k"),
+    )
+    tie_break = compare_rows(
+        tie_gold,
+        [{"k": 2, "name": "C"}, {"k": 1, "name": "A"}, {"k": 1, "name": "B"}],
+        ordered=True,
+        order_keys=["k"],
+    )
+    limit_tie = compare_rows(
+        [{"k": 1, "name": "A"}, {"k": 1, "name": "B"}],
+        [{"k": 1, "name": "B"}, {"k": 1, "name": "A"}],
+        ordered=True,
+        order_keys=order_keys(limit_sql),
+    )
+    limit_cut = compare_rows(
+        [{"k": 1, "name": "A"}, {"k": 1, "name": "B"}],
+        [{"k": 1, "name": "A"}, {"k": 2, "name": "C"}],
+        ordered=True,
+        order_keys=order_keys(limit_sql),
+    )
 
     rounded = compare_rows([{"n": 1.2}], [{"n": 1.23}], ordered=False)
     loose = compare_rows([{"n": 1.0}], [{"n": "1.004"}], ordered=False)
@@ -1094,6 +1219,9 @@ def self_test() -> dict[str, str]:
         "unordered_shuffle": shuffled[0],
         "extra_column": extra[0],
         "duplicated_row": duplicated[0],
+        "tie_swap": tie_swap[0],
+        "tie_break": tie_break[0],
+        "limit_tie": limit_tie[0],
     }
     expect = {
         "renamed_column": BUCKET_CORRECT,
@@ -1103,6 +1231,9 @@ def self_test() -> dict[str, str]:
         "unordered_shuffle": BUCKET_CORRECT,
         "extra_column": BUCKET_CORRECT,
         "duplicated_row": BUCKET_WRONG,
+        "tie_swap": BUCKET_CORRECT,
+        "tie_break": BUCKET_WRONG,
+        "limit_tie": BUCKET_CORRECT,
     }
     for name, bucket in expect.items():
         if plants[name] != bucket:
@@ -1111,6 +1242,12 @@ def self_test() -> dict[str, str]:
         raise SystemExit(f"self-test dropped reason: {dropped[1]}")
     if swapped[1] != "order mismatch":
         raise SystemExit(f"self-test order reason: {swapped[1]}")
+    if tie_swap[1] != "match":
+        raise SystemExit(f"self-test tie swap: {tie_swap}")
+    if tie_break[1] != "order mismatch":
+        raise SystemExit(f"self-test tie break: {tie_break}")
+    if limit_tie[1] != "match" or limit_cut[0] != BUCKET_WRONG:
+        raise SystemExit(f"self-test limit tie: {limit_tie} cut {limit_cut}")
     if shuffled[1] != "match":
         raise SystemExit(f"self-test shuffle reason: {shuffled[1]}")
     if rounded[0] != BUCKET_CORRECT:
@@ -1295,6 +1432,7 @@ def self_test() -> dict[str, str]:
         "plants: renamed_column=CORRECT dropped_row=WRONG "
         "swapped_order=WRONG ordered_shuffle=WRONG unordered_shuffle=CORRECT "
         "extra_column=CORRECT duplicated_row=WRONG "
+        "tie_swap=CORRECT tie_break=WRONG limit_tie=CORRECT "
         "empty_gold_served=EMPTY_GOLD refusal_wrong=REFUSAL_WRONG "
         "unlabelled=refused wide_ambiguous=unmappable"
     )
