@@ -11,20 +11,27 @@ suite runs (R-0002: a skipped test is a failing test).
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 import uuid
+from collections.abc import Iterator
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import psycopg
 import psycopg.errors
 import pytest
+from cortex_client.models import LedgerAppendResponse
 from dms_core.control_plane.onto_store import (
     MEASURE_TRANSITIONS,
     MeasureDraft,
     MeasureNameTaken,
     MeasureNotFound,
     MeasureTransitionError,
+    OntologyStore,
     OntoMeasure,
     PostgresOntologyStore,
     SourceIdentity,
@@ -32,6 +39,14 @@ from dms_core.control_plane.onto_store import (
     measure_transition_ok,
 )
 from dms_core.control_plane.session import set_tenant_context
+from dms_executor import measure_confirm as mc
+from dms_executor.measure_confirm import MeasureRefusal
+from dms_executor.space_ontology import set_ontology_store
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from test_ingest_fixes_277 import _Rig  # noqa: E402
+from test_onto_derive_01 import make_minter  # noqa: E402
 
 STATES = ("proposed", "confirmed", "rejected")
 GRAIN = "bronze.public_schools"
@@ -587,3 +602,222 @@ def test_measures_for_space_filters_and_orders(world: _World) -> None:
     assert [m.name for m in conf] == ["b_second"]
     assert conf[0].version_status == "active" and conf[0].version_fingerprint
     assert b.id != a.id
+
+
+# ------------------------------------------------- the steward service on Postgres
+#
+# measure_confirm is store-agnostic. These run it on PostgresOntologyStore under RLS with
+# a real lake (the typed schools rig): what the in-memory rig cannot show is the JSONB
+# evidence round trip, the ledger pointer row, the trigger agreeing with the service,
+# tenant isolation, and the row lock under a race.
+
+
+class _PgLedger:
+    def __init__(self) -> None:
+        self.appended: list[dict[str, Any]] = []
+        self.append_error: Exception | None = None
+
+    def append(self, *, event_type: str, payload: dict[str, Any], actor: str | None = None) -> Any:
+        if self.append_error is not None:
+            raise self.append_error
+        self.appended.append({"event_type": event_type, "payload": payload, "actor": actor})
+        n = len(self.appended)
+        return LedgerAppendResponse(entry_id=f"pg_led_{uuid.uuid4().hex[:8]}_{n}", hash=f"h{n}x")
+
+    def verify(self) -> Any:
+        return SimpleNamespace(ok=True)
+
+
+class _Svc:
+    def __init__(self, world: _World, rig: _Rig, ledger: _PgLedger) -> None:
+        self.world = world
+        self.rig = rig
+        self.ledger = ledger
+        self.space = str(world.space)
+
+    def propose(self) -> dict[str, dict[str, Any]]:
+        out = mc.propose_measures(
+            self.space, actor=self.world.actor, warehouse=self.rig.lake, store=self.world.alpha
+        )
+        return {m["name"]: m for m in out["created"]}
+
+    def confirm(self, view: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        return mc.confirm_measure(
+            self.space,
+            uuid.UUID(view["id"]),
+            definition_hash=kw.pop("definition_hash", view["definition_hash"]),
+            actor=kw.pop("actor", self.world.actor),
+            warehouse=self.rig.lake,
+            store=kw.pop("store", self.world.alpha),
+            ledger_append=self.ledger.append,
+            ledger_verify=self.ledger.verify,
+            **kw,
+        )
+
+    def reject(self, view: dict[str, Any], reason: str = "no") -> dict[str, Any]:
+        return mc.reject_measure(
+            self.space,
+            uuid.UUID(view["id"]),
+            reason=reason,
+            actor=self.world.actor,
+            store=self.world.alpha,
+            ledger_append=self.ledger.append,
+            ledger_verify=self.ledger.verify,
+        )
+
+    def audit(self, action: str) -> int:
+        return self.world.count(
+            "SELECT count(*) FROM dms.onto_audit WHERE action_type = %s "
+            "AND version_id = %s",
+            (action, str(self.world.version_id)),
+        )
+
+    def state(self, view: dict[str, Any]) -> str:
+        got = self.world.alpha.get_measure(self.world.space, uuid.UUID(view["id"]))
+        assert got is not None
+        return got.state
+
+
+@pytest.fixture()
+def svc(
+    world: _World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[_Svc]:
+    mem = OntologyStore()
+    prev = set_ontology_store(mem)
+    try:
+        rig = _Rig(tmp_path, monkeypatch, make_minter(monkeypatch))
+        mem_space = rig.space("pg service")
+        rig.ingest(mem_space)  # lands the tables in the lake and derives into the memory store
+        v = mem.active_for_space(uuid.UUID(mem_space))[0]
+        snap = mem.latest_snapshot(v.id)
+        assert snap is not None and snap.verified
+        # The same measurement, stored under RLS for tenant alpha's Space.
+        world.alpha.record_snapshot(
+            world.version_id, body=snap.body, violations=[], verified=True, actor=world.actor
+        )
+        yield _Svc(world, rig, _PgLedger())
+    finally:
+        set_ontology_store(prev)
+
+
+def test_service_propose_confirm_withdraw_and_reconfirm_on_postgres(svc: _Svc) -> None:
+    views = svc.propose()
+    assert set(views) == {"schools_budget_sum", "schools_count", "districts_count"}
+    ev = views["schools_budget_sum"]["evidence"]
+    assert Decimal(ev["probe_value"]) == Decimal("360.75")  # the JSONB round trip kept the figure
+    assert svc.audit("measure.propose") == 1 and svc.ledger.appended == []
+
+    out = svc.confirm(views["schools_budget_sum"], name="school_budget_total")
+    m = out["measure"]
+    assert m["state"] == "confirmed" and m["name"] == "school_budget_total"
+    assert m["definition_hash"] == measure_definition_hash(
+        "school_budget_total", GRAIN, "sum", "budget", m["description"]
+    )
+    assert m["decided_by"] == str(svc.world.actor) and m["answers_certified"] is True
+    (call,) = svc.ledger.appended
+    assert call["payload"]["name"] == "school_budget_total"
+    entry = m["ledger_entry_id"]
+    assert (
+        svc.world.count(
+            "SELECT count(*) FROM dms.ledger_ref WHERE cortex_entry_id = %s", (entry,)
+        )
+        == 1
+    )
+    assert svc.audit("measure.confirm") == 1
+
+    # the list reads it back from the database, with the persisted flag
+    listed = mc.measures_view(svc.space, role="steward", can_decide=True, store=svc.world.alpha)
+    assert listed["persisted"] is True and listed["counts"]["confirmed"] == 1
+
+    # withdraw, then confirm again: rejected -> confirmed is allowed by the trigger
+    withdrawn = svc.reject(m, "wrong definition")["measure"]
+    assert withdrawn["state"] == "rejected" and withdrawn["decision_reason"] == "wrong definition"
+    back = svc.confirm(withdrawn)["measure"]
+    assert back["state"] == "confirmed" and back["decision_reason"] is None
+    assert [e["event_type"] for e in svc.ledger.appended] == [
+        "ontology.measure.confirmed",
+        "ontology.measure.rejected",
+        "ontology.measure.confirmed",
+    ]
+
+
+def test_service_ledger_failure_rolls_back_everything_on_postgres(svc: _Svc) -> None:
+    view = svc.propose()["schools_count"]
+    svc.ledger.append_error = RuntimeError("cortex down")
+    with pytest.raises(MeasureRefusal) as exc:
+        svc.confirm(view)
+    assert (exc.value.status, exc.value.code) == (503, "ledger_append_failed")
+    assert svc.state(view) == "proposed"
+    assert svc.audit("measure.confirm") == 0
+    assert svc.world.count("SELECT count(*) FROM dms.ledger_ref", ()) == 0
+    svc.ledger.append_error = None
+    assert svc.confirm(view)["measure"]["state"] == "confirmed"
+
+
+def test_service_refusal_is_audited_and_changes_nothing_on_postgres(svc: _Svc) -> None:
+    view = svc.propose()["schools_count"]
+    with pytest.raises(MeasureRefusal) as exc:
+        svc.confirm(view, definition_hash="0" * 64)
+    assert (exc.value.status, exc.value.code) == (409, "stale_definition")
+    assert svc.state(view) == "proposed" and svc.ledger.appended == []
+    assert svc.audit("measure.confirm_refused") == 1
+
+
+def test_service_actor_without_a_user_row_leaves_the_measure_proposed(svc: _Svc) -> None:
+    """dms.users has no row for this actor: the foreign key on decided_by refuses the UPDATE.
+    The API layer maps this to 503 actor_not_provisioned; here it is the raw database error,
+    and nothing about the measure changed."""
+    view = svc.propose()["schools_count"]
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        svc.confirm(view, actor=uuid.uuid4())
+    assert svc.state(view) == "proposed" and svc.audit("measure.confirm") == 0
+    assert svc.world.count("SELECT count(*) FROM dms.ledger_ref", ()) == 0
+
+
+def test_service_cannot_see_or_decide_another_tenants_measures(svc: _Svc) -> None:
+    view = svc.propose()["schools_count"]
+    beta = svc.world.beta
+    listed = mc.measures_view(svc.space, role="steward", can_decide=True, store=beta)
+    assert listed["measures"] == [] and listed["versions"] == []
+    with pytest.raises(MeasureRefusal) as exc:
+        svc.confirm(view, store=beta)
+    assert (exc.value.status, exc.value.code) == (404, "measure_not_found")
+    with pytest.raises(MeasureRefusal) as exc2:
+        mc.reject_measure(
+            svc.space, uuid.UUID(view["id"]), reason="x", actor=svc.world.actor, store=beta,
+            ledger_append=svc.ledger.append, ledger_verify=svc.ledger.verify,
+        )  # fmt: skip
+    assert exc2.value.code == "measure_not_found"
+    assert svc.state(view) == "proposed" and svc.ledger.appended == []
+
+
+def test_service_two_confirms_racing_on_postgres_make_one_transition(
+    svc: _Svc, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = svc.propose()["schools_count"]
+    gate = threading.Barrier(2)
+    real = mc.measure_evidence
+
+    def synced(*a: Any, **k: Any) -> Any:
+        out = real(*a, **k)
+        gate.wait(timeout=30)  # both pass every check before either decides
+        return out
+
+    monkeypatch.setattr(mc, "measure_evidence", synced)
+    results: list[dict[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            results.append(svc.confirm(view))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert sorted(r["already"] for r in results) == [False, True]
+    assert len(svc.ledger.appended) == 1 and svc.audit("measure.confirm") == 1

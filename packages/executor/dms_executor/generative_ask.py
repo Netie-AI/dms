@@ -1263,6 +1263,17 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
     )
 
 
+def compile_plan_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
+    """Public name for ``_compile_maybe_unverified``: the one compile the ask path uses.
+
+    ``measure_confirm`` calls this to dry-compile a candidate measure, so the SQL a
+    steward sees at confirm time is the SQL the ask later runs. It must stay a plain
+    delegate (no behaviour of its own), and ``generative_ask`` must never import
+    ``measure_confirm`` (that would close a cycle).
+    """
+    return _compile_maybe_unverified(onto, plan)
+
+
 _SPACE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 

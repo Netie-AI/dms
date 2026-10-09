@@ -104,6 +104,15 @@ from dms_executor.manifest import (
     reject_hostile_chat_sql,
     should_rement,
 )
+from dms_executor.measure_confirm import (
+    MEASURE_REFUSAL_COPY,
+    MeasureRefusal,
+    confirm_measure,
+    create_measure,
+    measures_view,
+    propose_measures,
+    reject_measure,
+)
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
@@ -1297,6 +1306,13 @@ __all__ = [
     "verify_source_links",
     "bronze_catalog",
     "derive_and_store",
+    "MEASURE_REFUSAL_COPY",
+    "MeasureRefusal",
+    "confirm_measure",
+    "create_measure",
+    "measures_view",
+    "propose_measures",
+    "reject_measure",
     "load_space_ontology",
     "ontology_store",
     "set_ontology_store",
