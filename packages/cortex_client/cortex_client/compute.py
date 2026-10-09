@@ -91,6 +91,12 @@ INSIGHTS_FAIL_UNAUTHORIZED = "insights_unauthorized"
 INSIGHTS_FAIL_TIMEOUT = "insights_timeout"
 INSIGHTS_FAIL_CALL_CAP = "insights_call_cap"
 INSIGHTS_FAIL_EMPTY = "insights_no_sql_no_ranking"
+#: Generate HTTP 4xx/5xx or a validation body. Not a missing model key.
+#: The ontology rule builder must not compile a served answer from this.
+INSIGHTS_FAIL_AI_ERROR = "insights_ai_error"
+#: GEN-01 ontology rule builder after an AI-call error. Default off.
+#: Slated for retirement: leave it off once the ladder covers those shapes.
+GEN01_RULES_ENV = "DMS_GEN01_RULES"
 #: ``insights_timeout:<leg>`` names the call that timed out.
 INSIGHTS_TIMEOUT_LEGS = ("generate", "ontology", "retry")
 #: Budget stops: ``insights_timeout:<leg>`` and ``insights_call_cap:<n>``.
@@ -102,6 +108,7 @@ INSIGHTS_FAIL_REASONS = frozenset(
         INSIGHTS_FAIL_UNAUTHORIZED,
         INSIGHTS_FAIL_TIMEOUT,
         INSIGHTS_FAIL_EMPTY,
+        INSIGHTS_FAIL_AI_ERROR,
         INSIGHTS_FAIL_BEARER_MISSING,
         INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
     }
@@ -158,6 +165,16 @@ def ontology_ranked_lane_enabled(env: Mapping[str, str] | None = None) -> bool:
     off, the pre-loop ranking path still runs.
     """
     return _flag_on(env, LANE_ONTOLOGY_RANKED_ENV)
+
+
+def gen01_rules_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_GEN01_RULES``: off unless set to a true token.
+
+    Off, an AI-call error is not compiled by the GEN-01 rule builder.
+    The builder is slated for retirement. Turn it on only until the
+    ladder covers the shapes it used to serve.
+    """
+    return _flag_on(env, GEN01_RULES_ENV)
 
 
 def cloop_b_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -791,6 +808,20 @@ def _read_dict(res: httpx.Response) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def ai_call_error_payload(status: int) -> dict[str, Any]:
+    """Named generate failure. No ranked plan. Not ``model_key_missing``."""
+    return {
+        "ok": False,
+        "status": "ABSTAIN",
+        "values": [],
+        "insights_fail": INSIGHTS_FAIL_AI_ERROR,
+        "ai_call_status": int(status),
+        _HTTP_STATUS_KEY: int(status),
+        INSIGHTS_REACHED: True,
+        "live_5000_ci": False,
+    }
+
+
 def _insights_envelope(res: httpx.Response | None) -> dict[str, Any] | None:
     """Insights JSON on 200, or 401/403 A-0009 REFUSE body. None if unreachable."""
     if res is None:
@@ -894,13 +925,18 @@ def _insights_generate_post(
         payload = res.json()
     except ValueError:
         payload = None
+    status = int(getattr(res, "status_code", 0) or 0)
     shot = interpret(
-        int(getattr(res, "status_code", 0) or 0),
+        status,
         payload,
         getattr(res, "headers", None),
     )
     if shot.kind == "unavailable":
         return abstain_payload(shot)
+    # 4xx/5xx and a validation body are an AI-call error. Do not look like
+    # a quiet miss: a quiet miss is what the ontology GET used to compile.
+    if status >= 400:
+        return ai_call_error_payload(status)
     return _insights_envelope(res)
 
 
@@ -1263,6 +1299,20 @@ def compute_query(
                 return None
             if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
                 return insights_payload
+            if (
+                not dms_query
+                and isinstance(insights_payload, dict)
+                and insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
+                and not gen01_rules_enabled()
+            ):
+                # Ask lane: drop any ontology ranking merged after the error.
+                # That ranking is the GEN-01 rule builder. Legacy compute_query
+                # still posts /dms/query.
+                out = {
+                    k: v for k, v in insights_payload.items() if k != "ontology"
+                }
+                out["insights_fail"] = INSIGHTS_FAIL_AI_ERROR
+                return out
             ranked_plan = typed_ranked_retry_plan(
                 insights_payload, ontology=ontology, question=question
             )
@@ -1331,6 +1381,13 @@ def compute_query(
     # Insights answered (unarmed REFUSE / 401 / no SQL). Do not look like a
     # transport miss — isolated gen must not bind_plan over that.
     if insights_payload is not None:
+        # A 4xx/5xx with no ranking used to look like a transport miss (None)
+        # on the legacy /dms/query path. Keep that. Ranked 401 stays attached.
+        if (
+            insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
+            and not _has_ranked_metrics(insights_payload)
+        ):
+            return None
         return insights_miss_payload(insights_payload)
     return None
 
@@ -1377,7 +1434,10 @@ __all__ = [
     "INSIGHTS_CALL_CAP_ENV",
     "CLOOP_B_ENV",
     "LANE_ONTOLOGY_RANKED_ENV",
+    "ai_call_error_payload",
     "cloop_b_enabled",
+    "gen01_rules_enabled",
+    "INSIGHTS_FAIL_AI_ERROR",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
     "INSIGHTS_FAIL_CALL_CAP",
