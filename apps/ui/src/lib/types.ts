@@ -86,6 +86,10 @@ export type AnswerEnvelope = {
   constraint_trace?: ConstraintStage[];
   /** ONTOLOGY-AUDIT-01 include / exclude / unsure receipt. Never COMPLETE. */
   audit_receipt?: AuditReceipt;
+  /** Insights copy-through. Absent, null, or blank is not a model name. */
+  served_model?: string | null;
+  /** Named abstain when the writer set it. Other names live in assumptions. */
+  abstain_reason?: string | null;
 };
 
 export type SpaceSummary = {

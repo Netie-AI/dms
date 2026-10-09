@@ -19,6 +19,7 @@ from typing import Any
 import duckdb
 from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
 
+from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
@@ -54,6 +55,19 @@ def sheet_lane() -> str:
     if name in NO_MODEL_LANES:
         return name
     return name
+
+
+def bronze_sheet_lane_enabled() -> bool:
+    """Hand-coded workbook lane. Off unless ``DMS_LANE_BRONZE_SHEET`` is set.
+
+    Only ``1``, ``true``, ``yes``, and ``on`` (any case) turn it on. Swap: a
+    host that still wants this lane sets the env. Default off, so the ask
+    continues down the generative path. Read per call.
+    """
+    import os
+
+    raw = os.environ.get("DMS_LANE_BRONZE_SHEET", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def bronze_lane_table(question: str) -> str | None:
@@ -98,11 +112,12 @@ def bronze_grant_abstain(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. No rows, no SQL, no figure from the table."""
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason=reason,
+        question=question,
+        stage="bronze",
         answer_id="ans_bronze_grant",
         text=f"ABSTAIN {reason}",
-        badge="ABSTAIN",
-        abstained=True,
         rows=[],
         values=[],
         sql_used=None,
@@ -111,7 +126,6 @@ def bronze_grant_abstain(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
     )
     env["lane"] = sheet_lane()
     assert_envelope_valid(env)
@@ -125,6 +139,8 @@ def maybe_bronze_sheet_ask(
     session_id: str | None = None,
     warehouse: Path | None = None,
 ) -> dict[str, Any] | None:
+    if not bronze_sheet_lane_enabled():
+        return None
     if bronze_lane_table(question) is None:
         return None
     scoped = _SCOPED.search(question or "")
@@ -145,17 +161,19 @@ def maybe_bronze_sheet_ask(
         measure_m = _MEASURE.search(question or "")
         raw_measure = (measure_m.group(1) if measure_m else "sales_value_myr").lower()
         measure = "sales_value_myr" if raw_measure == "myr sales" else raw_measure
-        return _grouped_top_n(
-            ident,
-            measure=measure,
-            n=n,
-            workbook=workbook,
-            sheet=sheet,
-            warehouse=warehouse,
-            space_id=space_id,
-            session_id=session_id,
-            question=question,
-            table=table,
+        return _bronze_origin(
+            _grouped_top_n(
+                ident,
+                measure=measure,
+                n=n,
+                workbook=workbook,
+                sheet=sheet,
+                warehouse=warehouse,
+                space_id=space_id,
+                session_id=session_id,
+                question=question,
+                table=table,
+            )
         )
 
     filt = _FOR_FILTER.search(question or "")
@@ -167,20 +185,30 @@ def maybe_bronze_sheet_ask(
         value = filt.group(2).strip().strip("'\"")
         if not value or not _IDENT.match(col):
             return None
-        return _eq_filter_total(
-            ident,
-            col=col,
-            value=value,
-            measure=measure,
-            workbook=workbook,
-            sheet=sheet,
-            warehouse=warehouse,
-            space_id=space_id,
-            session_id=session_id,
-            question=question,
-            table=table,
+        return _bronze_origin(
+            _eq_filter_total(
+                ident,
+                col=col,
+                value=value,
+                measure=measure,
+                workbook=workbook,
+                sheet=sheet,
+                warehouse=warehouse,
+                space_id=space_id,
+                session_id=session_id,
+                question=question,
+                table=table,
+            )
         )
     return None
+
+
+def _bronze_origin(env: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Attribution for a sheet-lane envelope. ``served_attribution`` stays ``none``."""
+    if not isinstance(env, dict):
+        return None
+    env["plan_origin"] = "bronze_sheet"
+    return env
 
 
 def _grouped_top_n(

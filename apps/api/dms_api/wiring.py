@@ -441,6 +441,27 @@ def gold_sign_metric(
     return signed.to_dict()
 
 
+def health_pack_fields() -> dict[str, str]:
+    """Pack identity for /health.
+
+    ``curated_ceo`` when both files load. ``absent`` when a file is not on disk.
+    ``unreadable`` when a file is on disk but cannot be used, with ``pack_error``
+    set to the exception class. The class only: a parser message quotes the file.
+    """
+    try:
+        status = dms_executor.curated_pack_status()
+    except Exception:  # noqa: BLE001 - health must stay up
+        return {"pack": "absent"}
+    if status.name == "unreadable" and status.error_class:
+        return {"pack": "unreadable", "pack_error": status.error_class}
+    return {"pack": status.name}
+
+
+def health_pack_name() -> str:
+    """``curated_ceo``, ``absent``, or ``unreadable``. See ``health_pack_fields``."""
+    return health_pack_fields()["pack"]
+
+
 def engine_clock_fields() -> dict[str, str]:
     """Best-effort engine date for /health. Omitted when the warehouse is down."""
     try:

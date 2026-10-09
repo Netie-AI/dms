@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter
 
 from dms_api.deps import SettingsDep, StoreBindingDep
-from dms_api.wiring import engine_clock_fields
+from dms_api.wiring import engine_clock_fields, health_pack_fields
 
 router = APIRouter()
 
@@ -225,7 +225,7 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
         "contract": settings.cortex_contract_version,
         "ask_mode": settings.dms_ask_mode,
         "demo_fallback": settings.dms_demo_fallback,
-        "gen_path_climb": dict(GEN_PATH_CLIMB),
+        "gen_path_climb": {**GEN_PATH_CLIMB, **health_pack_fields()},
         "backend": binding.backend,
         # The control plane is "configured" when it is actually serving, not when
         # a URL is present. A DATABASE_URL pointing at a Postgres that is down

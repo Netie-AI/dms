@@ -13,13 +13,13 @@ from cortex_contract.execution import QueryResult as ContractQueryResult
 from cortex_contract.execution import SubmitRequest as ContractSubmitRequest
 
 from cortex_client.compute import (
-    INSIGHTS_ASK_TIMEOUT_SECONDS,
-)
-from cortex_client.compute import (
     compute_insights as post_compute_insights,
 )
 from cortex_client.compute import (
     compute_query as post_compute_query,
+)
+from cortex_client.compute import (
+    insights_timeout_s,
 )
 from cortex_client.generated import Client as GeneratedClient
 from cortex_client.generated.api.contract import (
@@ -218,22 +218,34 @@ class CortexClient:
         session_id: str | None = None,
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
+        sql_feedback: dict[str, Any] | None = None,
+        schema_context: str | None = None,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
-        Timeout is min(INSIGHTS_ASK_TIMEOUT_SECONDS, this client's timeout) so
-        the product lane cannot stall on a 45s leftover /dms/query or the 120s
+        Timeout is min(insights_timeout_s(), this client's timeout) so the
+        product lane cannot stall on a 45s leftover /dms/query or the 120s
         contract timeout. OpenVault keys stay in Cortex.
+
+        ``schema_context`` is the granted-schema prompt. It is sent only when
+        ``DMS_SCHEMA_CONTEXT`` is on (Cortex pin 279cbd85 does not read it).
         """
-        bound = min(INSIGHTS_ASK_TIMEOUT_SECONDS, float(self.timeout))
+        from cortex_client.insights import SCHEMA_CONTEXT_FIELD
+
+        onto = ontology
+        if schema_context:
+            onto = dict(ontology or {})
+            onto[SCHEMA_CONTEXT_FIELD] = schema_context
+        bound = min(insights_timeout_s(), float(self.timeout))
         return post_compute_insights(
             self.base_url,
             question=question,
             session_id=session_id,
             space_id=space_id,
-            ontology=ontology,
+            ontology=onto,
             api_key=self.api_key,
             timeout=bound,
+            sql_feedback=sql_feedback,
         )
 
     def insights_law(self) -> dict[str, Any]:
@@ -255,7 +267,7 @@ class CortexClient:
             "/ontology",
             api_key=self.api_key,
             params={"q": q},
-            timeout=min(8.0, self.timeout),
+            timeout=min(insights_timeout_s(), self.timeout),
         )
 
     def insights_ask(
@@ -268,8 +280,12 @@ class CortexClient:
         session_id: str = "demo",
         space_id: str | None = None,
         consumer: str = "dms",
+        schema_context: str | None = None,
     ) -> dict[str, Any]:
-        """Off-contract POST /v1/insights. Fail closed — no invented values."""
+        """Off-contract POST /v1/insights. Fail closed — no invented values.
+
+        ``schema_context`` is attached only when ``DMS_SCHEMA_CONTEXT`` is on.
+        """
         return insights_post(
             self.base_url,
             intent=intent,
@@ -281,6 +297,7 @@ class CortexClient:
             consumer=consumer,
             api_key=self.api_key,
             timeout=self.timeout,
+            schema_context=schema_context,
         )
 
     def drillthrough(self, req: DrillthroughRequest) -> DrillthroughResponse:

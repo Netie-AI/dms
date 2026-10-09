@@ -11,11 +11,11 @@ dms_admin) only. The table owner and a superuser can still UPDATE, DELETE or
 TRUNCATE it, and compose currently runs the API as POSTGRES_USER=dms, which is a
 superuser. That is a BANK-04 item; nothing here changes compose.
 
-Merge order: PR #316 also descends from ``0004_ontology_store`` and adds
-0005_onto_snapshot and 0006_onto_measure_confirm, so with both there are two heads.
-Whichever merges second must chain after the other's LAST revision and renumber;
-CI skips the control-plane tests (DMS_SKIP_CONTROL_PLANE_TESTS=1), so it will not
-catch two heads.
+Chain: this revision stays ``0005_ask_audit`` on ``0004_ontology_store``.
+PR #316 (0005_onto_snapshot, 0006_onto_measure_confirm) depends on this PR
+and must chain after ``0005_ask_audit``, renumbering so alembic has one head.
+CI skips the control-plane tests (DMS_SKIP_CONTROL_PLANE_TESTS=1), so it will
+not catch two heads.
 """
 
 from __future__ import annotations

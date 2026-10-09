@@ -11,12 +11,14 @@ from typing import Any
 from uuid import uuid4
 
 from cortex_client import CortexClient
+from cortex_client.compute import insights_budget_stop
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest
 from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
 from dms_executor import executed_trace
+from dms_executor.abstain import backstop_missing_ticket, build_abstain
 from dms_executor.acl import (
     SessionContext,
     SourceGrant,
@@ -34,6 +36,7 @@ from dms_executor.bronze import (
 from dms_executor.bronze_sheet_ask import (
     bronze_grant_abstain,
     bronze_lane_table,
+    bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
 from dms_executor.contract_infer import infer_contract
@@ -52,6 +55,8 @@ from dms_executor.demo_ask import (
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
 from dms_executor.demo_pack import (
     curated_pack_metric_miss,
+    curated_pack_present,  # noqa: F401 - re-exported; files-on-disk check
+    curated_pack_status,  # noqa: F401 - re-exported; wiring health reads it
     is_curated_l0_without_pack_metric,
     is_uncertified_paraphrase,
     maybe_pack_ask,
@@ -59,6 +64,7 @@ from dms_executor.demo_pack import (
 )
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    SERVING_DIALECT,
     ReservedParamError,
     ensure_demo_warehouse,
     execute_sql,
@@ -82,6 +88,7 @@ from dms_executor.generative_ask import (
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
+    OpenVaultTokenError,
     SessionAcl,
     SubmitError,
     classify_submit_error,
@@ -110,6 +117,7 @@ from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_ke
 from dms_executor.source_links import verify_source_links
 from dms_executor.sql_currency import tables_read as tables_read_by_sql
 from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
+from dms_executor.sql_loop import apply_sql_credit, extract_dialect
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -158,13 +166,31 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
+    onto = ontology
+    feedback = None
+    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
+        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
+        raw = ontology.get("sql_loop_feedback")
+        feedback = raw if isinstance(raw, dict) else None
     try:
-        return fn(
-            question,
-            session_id=session_id,
-            space_id=space_id,
-            ontology=ontology,
-        )
+        kwargs: dict[str, Any] = {
+            "session_id": session_id,
+            "space_id": space_id,
+            "ontology": onto,
+        }
+        if feedback is not None:
+            kwargs["sql_feedback"] = feedback
+        return fn(question, **kwargs)
+    except TypeError:
+        try:
+            return fn(
+                question,
+                session_id=session_id,
+                space_id=space_id,
+                ontology=onto,
+            )
+        except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
+            return None
     except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
         return None
 
@@ -235,6 +261,9 @@ class Executor:
         )
 
     def close(self) -> None:
+        from dms_executor.schema_context import stop_index_builds
+
+        stop_index_builds()
         self._minter.close()
         self._bound_sessions.clear()
         self._turns.clear()
@@ -510,18 +539,48 @@ class Executor:
         # take_executed() right after this returns or raises.
         executed_trace.begin()
         seen: list[dict[str, Any] | None] = []
-        env = self._live_ask(
-            question,
-            space_id=space_id,
-            session_id=session_id,
-            tables=tables,
-            ask_path=ask_path,
-            seen=seen,
-        )
+        try:
+            env = self._live_ask(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+                ask_path=ask_path,
+                seen=seen,
+            )
+        except OpenVaultTokenError as exc:
+            # Every lane needs the signing key; no lane may relabel its absence.
+            env = build_abstain(
+                reason="openvault_mint",
+                question=question,
+                stage="openvault",
+                answer_id="ans_ov_mint",
+                text=(
+                    "I can't answer this: DMS could not get its OpenVault "
+                    f"signing key ({exc.code}). No fallback answer was used."
+                ),
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[exc.code, "no generative fallback", "no demo fallback"],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
         out = stamped if stamped is not None else env
+        if isinstance(out, dict):
+            raw_loop = out.get("loop")
+            apply_sql_credit(
+                out,
+                payload if isinstance(payload, dict) else None,
+                raw_loop if isinstance(raw_loop, list) else None,
+                dialect=extract_dialect(getattr(self, "_warehouse", None)),
+            )
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 
@@ -532,7 +591,9 @@ class Executor:
             out["lane"] = mapped
         else:
             out.pop("lane", None)
-        return mask_unknown_keys(out)
+        masked = mask_unknown_keys(out)
+        backstop_missing_ticket(masked, question=question)
+        return masked
 
     def _live_ask(
         self,
@@ -743,11 +804,19 @@ class Executor:
                 )
                 bronze_readable = active.intersection(granted)
                 if table_is_granted(target, bronze_readable):
-                    bronze_env = maybe_bronze_sheet_ask(
-                        question,
-                        space_id=space_id,
-                        session_id=session_id,
-                        warehouse=self._warehouse,
+                    # Flag off: do not call the sheet lane. Grant abstains above
+                    # and below stay. They return no rows. An ungranted table
+                    # or a missing Space is a refusal, and a later lane must
+                    # not answer it from some other table.
+                    bronze_env = (
+                        maybe_bronze_sheet_ask(
+                            question,
+                            space_id=space_id,
+                            session_id=session_id,
+                            warehouse=self._warehouse,
+                        )
+                        if bronze_sheet_lane_enabled()
+                        else None
                     )
                 else:
                     bronze_env = bronze_grant_abstain(
@@ -791,15 +860,24 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                dialect=SERVING_DIALECT,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
                 # generative answer is left as-is. None still reaches Cortex ask.
-                if gen_env.get("abstained") and is_curated_l0_without_pack_metric(asked):
+                # A budget stop keeps its named reason (insights_timeout:<leg>).
+                if (
+                    gen_env.get("abstained")
+                    and not insights_budget_stop(gen_env)
+                    and is_curated_l0_without_pack_metric(asked)
+                ):
+                    kept_loop = gen_env.get("loop")
                     gen_env = curated_pack_metric_miss(
                         asked, space_id=space_id, session_id=session_id
                     )
+                    if kept_loop:
+                        gen_env["loop"] = kept_loop
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
@@ -1078,30 +1156,36 @@ def map_ask_response_to_envelope(
         )
         if refused_env is not None:
             return refused_env
-    env = build_answer_envelope(
-        answer_id=resp.receipt_id or f"ans_live_{session_id or 'x'}",
-        text=text,
-        values=values,
-        badge=badge,
-        abstained=abstained,
-        sql_used=None if abstained else sql_out,
-        assumptions=assumptions,
-        as_of=datetime_now(),
-        space_id=space_id,
-        ask_mode="live",
-        session_id=session_id,
-        contributing_sources=sources,
-        rows=[] if abstained else rows,
-        chart=None if abstained else chart,
-        suggestions=list(resp.suggestions or []),
-        audit_id=resp.receipt_id or resp.audit_id,
-        route=resp.route,
-        drillthrough_token=None if abstained else token,
-        grounded_tables=grounded_tables,
-        question=question,
-        competing_scopes=competing_scopes,
-        exclude_reasons=list(resp.exclude_reasons) if resp.exclude_reasons else None,
-    )
+    fields: dict[str, Any] = {
+        "answer_id": resp.receipt_id or f"ans_live_{session_id or 'x'}",
+        "text": text,
+        "values": values,
+        "sql_used": None if abstained else sql_out,
+        "assumptions": assumptions,
+        "as_of": datetime_now(),
+        "space_id": space_id,
+        "ask_mode": "live",
+        "session_id": session_id,
+        "contributing_sources": sources,
+        "rows": [] if abstained else rows,
+        "chart": None if abstained else chart,
+        "suggestions": list(resp.suggestions or []),
+        "audit_id": resp.receipt_id or resp.audit_id,
+        "route": resp.route,
+        "drillthrough_token": None if abstained else token,
+        "grounded_tables": grounded_tables,
+        "competing_scopes": competing_scopes,
+        "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
+    }
+    if abstained:
+        env = build_abstain(
+            reason="abstain",
+            question=question or "",
+            stage="cortex_ask",
+            **fields,
+        )
+    else:
+        env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
     return env
 
