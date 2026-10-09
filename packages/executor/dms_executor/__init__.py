@@ -583,7 +583,11 @@ class Executor:
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 
-        out["model_calls"] = recorded_model_calls()
+        ladder = out.get("ladder_calls")
+        if isinstance(ladder, list) and ladder:
+            out["model_calls"] = len(ladder)
+        else:
+            out["model_calls"] = recorded_model_calls()
         # Lane is the route this path produced. A payload lane is not kept.
         mapped = lane_for_route(out.get("route"))
         if mapped is not None:

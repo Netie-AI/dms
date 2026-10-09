@@ -1499,6 +1499,11 @@ def maybe_generative_ask(
             stamped["loop"] = list(loop_attempts)
         if cloop_b_enabled() and ladder_calls:
             stamped["ladder_calls"] = [dict(item) for item in ladder_calls]
+            last = ladder_calls[-1]
+            step = last.get("step") if isinstance(last, dict) else None
+            if isinstance(step, str) and step:
+                stamped["ladder_rung"] = step
+            stamped["model_calls"] = len(ladder_calls)
         apply_sql_credit(stamped, setup_src, loop_attempts, dialect=dialect)
         if envelope_prompt or index_stamp:
             if envelope_prompt:

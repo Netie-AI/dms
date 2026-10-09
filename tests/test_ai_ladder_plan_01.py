@@ -133,6 +133,8 @@ def test_plan_is_in_the_sql_prompt_and_uses_schema_context(
     assert sql_calls
     assert _PLAN in str(sql_calls[0].get("sql_prompt") or "")
     assert env["badge"] == "L2_VALIDATED"
+    assert env["ladder_rung"] == "sql"
+    assert env["model_calls"] == len(env["ladder_calls"]) == 2
 
 
 def test_stronger_tier_retry_converts_a_first_model_miss(
@@ -169,6 +171,8 @@ def test_stronger_tier_retry_converts_a_first_model_miss(
     assert by_step["sql"]["model"] == _M_FIRST
     assert by_step["escalate"]["provider"] == _P_STRONG
     assert by_step["escalate"]["model"] == _M_STRONG
+    assert env["ladder_rung"] == "escalate"
+    assert env["model_calls"] == len(calls)
 
 
 def test_exhausted_ladder_reconfirms(
@@ -193,6 +197,8 @@ def test_exhausted_ladder_reconfirms(
     assert _CLOSEST in env["text"]
     assert env["rows"] == []
     assert "loop_exhausted" not in env["text"]
+    assert env["ladder_rung"] == "reconfirm"
+    assert env["model_calls"] == len(env["ladder_calls"])
 
 
 def test_ungranted_name_is_not_in_the_answer(
@@ -216,6 +222,8 @@ def test_ungranted_name_is_not_in_the_answer(
     )
     assert _NAME not in visible
     assert env["route"] != "confirm"
+    assert env["ladder_rung"] == "sql"
+    assert env["model_calls"] == len(env["ladder_calls"])
 
 
 def test_openvault_tier_request_has_no_model_provider_or_key(
