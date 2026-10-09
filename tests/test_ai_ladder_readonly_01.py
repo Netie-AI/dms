@@ -300,7 +300,7 @@ def test_lock_wait_ticket_is_serving_lock_wait(
         def __getattr__(self, name: str) -> Any:
             return getattr(self._inner, name)
 
-    def _connect(path: Path) -> _Conn:
+    def _connect(path: Path, **_kwargs: Any) -> _Conn:
         return _Conn(connect_file(path))
 
     monkeypatch.setattr("dms_executor.generative_ask.connect_file", _connect)
@@ -324,6 +324,63 @@ def test_lock_wait_ticket_is_serving_lock_wait(
     assert payload["reason"] == "serving_lock_wait"
     assert payload["ticket_id"] == env["ticket_id"]
     assert isinstance(payload["ticket_id"], str) and payload["ticket_id"]
+    blob = lines[0]
+    assert "Count the location rows" not in blob
+    assert "SELECT" not in blob
+    assert "TimeoutError" not in blob
+    assert "serving lock" not in blob
+
+
+def test_checker_lock_wait_is_serving_lock_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A writer held before the ask must abstain, not hang in the checker."""
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    monkeypatch.setattr(
+        "cortex_client.compute.insights_timeout_s", lambda env=None: 0.25
+    )
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    db = ensure_demo_warehouse(tmp_path / "checker-wait.duckdb")
+    onto = load_verified_ontology(db, demo_ontology(db))
+    release = threading.Event()
+    ready = threading.Event()
+
+    def _hold() -> None:
+        con = connect_file(db)
+        ready.set()
+        assert release.wait(5)
+        con.close()
+
+    holder = threading.Thread(target=_hold, daemon=True)
+    holder.start()
+    assert ready.wait(5)
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        box["env"] = _ask(db, onto)
+
+    ask = threading.Thread(target=_run, daemon=True)
+    ask.start()
+    ask.join(3)
+    release.set()
+    holder.join(5)
+    assert not ask.is_alive()
+    env = box["env"]
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "dms_executor.pipeline_failure"
+        and rec.getMessage().startswith("pipeline_failure ")
+    ]
+    assert len(lines) == 1
+    payload = json.loads(lines[0].split(" ", 1)[1])
+    assert payload["reason"] == "serving_lock_wait"
+    assert payload["ticket_id"] == env["ticket_id"]
     blob = lines[0]
     assert "Count the location rows" not in blob
     assert "SELECT" not in blob

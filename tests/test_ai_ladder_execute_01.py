@@ -200,7 +200,7 @@ def test_model_sql_executes_on_the_serving_file(
     hold = _Hold(db)
     model = _Model(db, hold)
 
-    def _connect(path: Path) -> _Conn:
+    def _connect(path: Path, **_kwargs: Any) -> _Conn:
         return _Conn(connect_file(path), hold)
 
     monkeypatch.setattr("dms_executor.generative_ask.connect_file", _connect)

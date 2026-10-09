@@ -252,11 +252,20 @@ class _LockedConnection:
 SERVING_DIALECT = "duckdb"
 
 
-def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
-    """Write-mode attach. Caller must close(); one live attach per file until then."""
+def connect_file(
+    path: Path, *, timeout: float | None = None
+) -> duckdb.DuckDBPyConnection:
+    """Write-mode attach. Caller must close(); one live attach per file until then.
+
+    ``timeout`` None waits until the lock is free. A number is the serving
+    deadline: a miss raises ``TimeoutError`` and does not open the file.
+    """
     db = Path(path)
     lock = _lock_for(db)
-    lock.acquire()
+    if timeout is None:
+        lock.acquire()
+    elif not lock.acquire(timeout=timeout):
+        raise TimeoutError("serving lock")
     try:
         con = duckdb.connect(str(db))
     except BaseException:

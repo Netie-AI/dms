@@ -690,7 +690,14 @@ def validate_compiled_sql(
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
-    con = connect_file(Path(warehouse))
+    # EXPLAIN is a read, but it shares the writer attach. A missed deadline
+    # is the named lock abstain, not an explain error and not a hang.
+    from cortex_client.compute import insights_timeout_s
+
+    try:
+        con = connect_file(Path(warehouse), timeout=insights_timeout_s())
+    except TimeoutError:
+        return "serving_lock_wait"
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
@@ -1049,6 +1056,12 @@ def _try_multi_grain_envelope(
             question=q,
         )
     why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    if why == "serving_lock_wait":
+        return _abstain(
+            q, "serving_lock_wait",
+            space_id=space_id, session_id=session_id, plan_source=source,
+            sql=multi.sql,
+        )
     if why == RESERVED_PARAM_AS_OF:
         return reserved_as_of_abstain(
             space_id=space_id,
@@ -1130,6 +1143,8 @@ def rank_window_ask(
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
     bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    if bad == "serving_lock_wait":
+        return _no("serving_lock_wait")
     if bad:
         return _no(f"validate:{bad}")
     noun = _ENTITY_NOUN.get(str(win.entity), str(win.entity))
@@ -1414,9 +1429,17 @@ def maybe_generative_ask(
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
-    ctx = retrieve_short_context(
-        q, warehouse=lake, grantable=allowed, ontology=onto
-    )
+    try:
+        ctx = retrieve_short_context(
+            q, warehouse=lake, grantable=allowed, ontology=onto
+        )
+    except TimeoutError as exc:
+        if str(exc) != "serving lock":
+            raise
+        return _abstain(
+            q, "serving_lock_wait",
+            space_id=space_id, session_id=session_id, stage="extract_loop",
+        )
     envelope_prompt = ""
     index_stamp = ""
     if schema_context_enabled():
@@ -1612,6 +1635,14 @@ def maybe_generative_ask(
                 )
             )
         why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        if why == "serving_lock_wait":
+            return _stamp(
+                _abstain(
+                    q, "serving_lock_wait",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                    sql=sql, stage="extract_loop",
+                )
+            )
         broken = (
             violations_cited_by_sql(sql, declared, declared_violations)
             if declared is not None and not why
@@ -1817,6 +1848,14 @@ def maybe_generative_ask(
         )
 
     why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    if why == "serving_lock_wait":
+        return _stamp(
+            _abstain(
+                q, "serving_lock_wait",
+                space_id=space_id, session_id=session_id, plan_source=source,
+                sql=compiled.sql,
+            )
+        )
     if why == RESERVED_PARAM_AS_OF:
         return _stamp(
             reserved_as_of_abstain(

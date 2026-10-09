@@ -543,6 +543,18 @@ def run_model_loop(
                 continue
 
         why = check(sql)
+        if why == "serving_lock_wait":
+            # The checker waited out the serving deadline. No retry, no engine text.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome="serving_lock_wait",
+                    dialect=dialect,
+                )
+            )
+            return abstain("serving_lock_wait", attempts, sql=sql, retries=retries)
         if why:
             safe_why = mask_feedback_text(why)
             outcome = f"checker:{safe_why}"
