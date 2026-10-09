@@ -53,12 +53,24 @@ DEFAULT_SERVING_LEASE_QUEUE_MAX = 32
 #: from the first serving grant on that ask to ``live_ask`` returning.
 #: n=16, p50=0.498s, p95=0.547s. 0.55 is that p95 rounded up to 0.01s.
 DEFAULT_SERVING_LEASE_RESERVE_S = 0.55
+#: How long before the ask deadline a running query is interrupted.
+#: ``DMS_LAKE_SERVING_DEADLINE_DELIVER_S``. The client timeout stays 8s.
+#: Lead's bar is client p95 <= 7.5s. The watcher polls every 0.05s.
+#: Under (c) load, 20 sequential deadline probes, this margin: client
+#: p50=7.185s, p95=7.256s, max=7.262s, 0 bare timeouts. The interrupt is
+#: scheduled at 8.0-0.90=7.10s, so receipt lags that schedule by p95=0.156s.
+#: 0.90 = 0.50s (8.0 down to 7.5) + 0.16s overhead + 0.05s poll + 0.19s so
+#: a slower runner still clears 7.5, rounded up to 0.01s. Threshold 7.10s,
+#: so the interrupt fires by about 7.15s, before 7.3s. The same probes with
+#: the margin put back to 0.2s: p50=7.867s p95=7.917s max=7.973s, over 7.5s.
+DEFAULT_SERVING_DEADLINE_DELIVER_S = 0.90
 
 _INGEST_WAIT_ENV = "DMS_LAKE_INGEST_WAIT_S"
 _LEASE_CAP_ENV = "DMS_LAKE_SERVING_LEASE_CAP"
 _LEASE_WAIT_ENV = "DMS_LAKE_SERVING_LEASE_WAIT_S"
 _LEASE_QUEUE_ENV = "DMS_LAKE_SERVING_LEASE_QUEUE_MAX"
 _LEASE_RESERVE_ENV = "DMS_LAKE_SERVING_LEASE_RESERVE_S"
+_DEADLINE_DELIVER_ENV = "DMS_LAKE_SERVING_DEADLINE_DELIVER_S"
 _serving_block: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dms_serving_lease_block",
     default=None,
@@ -72,10 +84,9 @@ _leases_this_ask: contextvars.ContextVar[int] = contextvars.ContextVar(
     default=0,
 )
 # How often a queued waiter looks for a dropped client. Under the 0.5s bar.
+# The deadline watcher uses the same slice, so an interrupt can lag the
+# deliver threshold by this much.
 _DISCONNECT_POLL_S = 0.05
-# Interrupt a running query this long before the ask deadline so the named
-# abstain is sent before a client that gives up at that same deadline.
-_DEADLINE_DELIVER_S = 0.2
 
 
 class IngestWaitTimeout(Exception):
@@ -136,6 +147,16 @@ def serving_lease_queue_max() -> int:
 def serving_lease_reserve_s() -> float:
     """Time left for model, SQL, and the check after a lease is granted."""
     return _env_float(_LEASE_RESERVE_ENV, DEFAULT_SERVING_LEASE_RESERVE_S)
+
+
+def serving_deadline_deliver_s() -> float:
+    """Interrupt a running query this long before the ask deadline.
+
+    This is not the lease reserve. The reserve decides whether a slot may be
+    taken. This margin is how early ``interrupt()`` runs so the named abstain
+    reaches a client whose timeout is still 8s, with p95 at or under 7.5s.
+    """
+    return _env_float(_DEADLINE_DELIVER_ENV, DEFAULT_SERVING_DEADLINE_DELIVER_S)
 
 
 def serving_lease_wait_s() -> float:
@@ -243,7 +264,7 @@ class AskControl:
         deadline = self.deadline
         if deadline is None:
             return False
-        return time.monotonic() >= deadline - _DEADLINE_DELIVER_S
+        return time.monotonic() >= deadline - serving_deadline_deliver_s()
 
     def close(self) -> None:
         self.stop.set()

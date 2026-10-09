@@ -34,6 +34,7 @@ from dms_executor.demo_warehouse import (
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.lake_registry import (
     DEFAULT_INGEST_WAIT_S,
+    DEFAULT_SERVING_DEADLINE_DELIVER_S,
     DEFAULT_SERVING_LEASE_QUEUE_MAX,
     DEFAULT_SERVING_LEASE_RESERVE_S,
     SERVING_DEADLINE_EXCEEDED_REASON,
@@ -48,6 +49,7 @@ from dms_executor.lake_registry import (
     lease_refs,
     reader_pause_s,
     reset_ask_deadline,
+    serving_deadline_deliver_s,
     serving_lease_queue_max,
     serving_lease_wait_s,
     serving_max_readers,
@@ -71,8 +73,11 @@ class _Cortex:
         lake = getattr(self, "lake", None)
         limit = int(getattr(self, "hold_limit", 0))
         used = int(getattr(self, "_holds", 0))
-        if sql and lake is not None and used < limit:
-            self._holds = used + 1
+        mark = getattr(self, "probe_mark", None)
+        probe = bool(mark) and str(mark) in question
+        if sql and lake is not None and (probe or used < limit):
+            if not probe:
+                self._holds = used + 1
             started = getattr(self, "query_started", None)
             con = connect_serving(lake)
             try:
@@ -836,6 +841,31 @@ def test_serving_lease_wait_follows_the_ask_deadline(
         reset_ask_deadline(tokens)
 
 
+def test_ask_inside_the_reserve_abstains_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ask with less than the reserve left abstains at once, named."""
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "0.40")
+    monkeypatch.delenv("DMS_LAKE_SERVING_LEASE_RESERVE_S", raising=False)
+    lake = tmp_path / "reserve-ask.duckdb"
+    _lake(lake)
+    server, thread, port, exe = _boot(lake, monkeypatch)
+    ensure_demo_warehouse(lake)
+    try:
+        started = time.monotonic()
+        resp = _ask(port, 1, grounded=False)
+        elapsed = time.monotonic() - started
+        print(f"MEASURE reserve_under_elapsed_s={elapsed:.3f}")
+        assert resp.status_code == 200, resp.text[:500]
+        body = resp.json()
+        assert_envelope_valid(body)
+        assert SERVING_LEASE_CAP_REASON in _reasons(body), _reasons(body)
+        assert elapsed < 0.5
+        assert lease_refs(lake) == 0
+    finally:
+        _stop(server, thread, exe)
+
+
 def test_waiter_queue_is_bounded_and_does_not_hold_the_read_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1436,6 +1466,161 @@ def test_late_grant_is_a_named_abstain_not_a_bare_timeout(
         holder.close()
         releaser.join(8.0)
         _stop(server, thread, exe)
+
+
+_PROBE_N = 20
+_PROBE_MARK = "deadline-probe"
+
+
+def test_deadline_probes_under_load_are_named_by_seven_five(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail if the deliver margin is put back to 0.2s.
+
+    That margin interrupts at 7.8s. Under this load the client then sees
+    p95 above 7.5s. The test does not set the margin: it uses the default.
+    Each probe is a served answer or a named abstain on HTTP 200. A 503, a
+    bare timeout, or an abstain with no reason fails. These probes run the
+    long query, so the named reason is ``serving_deadline_exceeded``.
+    """
+    monkeypatch.delenv("DMS_LAKE_SERVING_DEADLINE_DELIVER_S", raising=False)
+    monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+    assert serving_deadline_deliver_s() == DEFAULT_SERVING_DEADLINE_DELIVER_S
+    lake = tmp_path / "deadline-load.duckdb"
+    _lake(lake)
+    server, thread, port, exe = _boot(lake, monkeypatch)
+    ensure_demo_warehouse(lake)
+    cortex = exe._cortex
+    assert isinstance(cortex, _Cortex)
+    cortex.lake = lake
+    cortex.hold_sql = _LONG_SQL
+    cortex.probe_mark = _PROBE_MARK
+    askers_n = 8
+    each = 200
+    started = threading.Event()
+    probes_done = threading.Event()
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    probes: list[dict[str, Any]] = []
+    asked = [0] * askers_n
+
+    def _one(slot: int) -> None:
+        i = 0
+        while i < each or not probes_done.is_set():
+            started.set()
+            try:
+                response = _ask(port, slot * each + i, grounded=i % 2 == 0)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                return
+            if response.status_code >= 500:
+                errors.append(RuntimeError(f"load status {response.status_code}"))
+                return
+            i += 1
+            asked[slot] = i
+
+    def _ingest() -> None:
+        n = 0
+        while not probes_done.is_set():
+            try:
+                with connect_file(lake, write=True) as con:
+                    con.execute(
+                        "INSERT INTO tide_reads VALUES (?, 'B-09', 3.5)",
+                        [f"P-{n}"],
+                    )
+            except IngestWaitTimeout:
+                continue
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+                return
+            n += 1
+
+    def _probe(index: int) -> None:
+        t0 = time.monotonic()
+        try:
+            with httpx.Client(timeout=INSIGHTS_ASK_TIMEOUT_SECONDS) as client:
+                resp = client.post(
+                    f"http://127.0.0.1:{port}/v1/chat/ask",
+                    json={
+                        "question": f"how many dock berths {_PROBE_MARK} ({index})",
+                        "session_id": f"ses_probe_{index}",
+                    },
+                )
+            elapsed = time.monotonic() - t0
+            kind = resp.headers.get("content-type", "")
+            body = resp.json() if kind.startswith("application/json") else {}
+            if not isinstance(body, dict):
+                body = {}
+            reasons = _reasons(body)
+            row = {
+                "i": index,
+                "elapsed": elapsed,
+                "status": resp.status_code,
+                "reason": reasons[0] if reasons else "",
+                "abstained": body.get("abstained"),
+            }
+        except BaseException as exc:  # noqa: BLE001
+            elapsed = time.monotonic() - t0
+            row = {
+                "i": index,
+                "elapsed": elapsed,
+                "status": None,
+                "reason": type(exc).__name__,
+                "abstained": None,
+            }
+        with lock:
+            probes.append(row)
+        print(
+            f"PROBE i={row['i']} elapsed={row['elapsed']:.3f} "
+            f"status={row['status']} reason={row['reason']}"
+        )
+
+    askers = [
+        threading.Thread(target=_one, args=(slot,), name=f"ask-{slot}")
+        for slot in range(askers_n)
+    ]
+    ingest = threading.Thread(target=_ingest, name="continuous-ingest")
+    for worker in askers:
+        worker.start()
+    ingest.start()
+    assert started.wait(30), "load did not start"
+    warm = time.monotonic() + 10.0
+    while sum(asked) < 32 and time.monotonic() < warm:
+        time.sleep(0.05)
+    # One probe at a time. A second long read, with ingest waiting, cannot
+    # take the read lock and abstains on the cap instead of the deadline.
+    try:
+        for index in range(_PROBE_N):
+            _probe(index)
+    finally:
+        probes_done.set()
+        for worker in askers:
+            worker.join()
+        ingest.join(DEFAULT_INGEST_WAIT_S + 5.0)
+        _stop(server, thread, exe)
+    assert sum(asked) >= askers_n * each
+    assert not errors, errors[0]
+    assert len(probes) == _PROBE_N
+    ordered = sorted(probes, key=lambda row: int(row["i"]))
+    for row in ordered:
+        assert row["status"] == 200, row
+        assert row["reason"] != "ReadTimeout", row
+        assert row["reason"] != "TimeoutException", row
+        assert float(row["elapsed"]) < INSIGHTS_ASK_TIMEOUT_SECONDS, row
+        if row["abstained"] is True:
+            assert row["reason"], row
+        assert row["reason"] == SERVING_DEADLINE_EXCEEDED_REASON, row
+    latencies = [float(row["elapsed"]) for row in ordered]
+    p50 = _percentile(latencies, 0.50)
+    p95 = _percentile(latencies, 0.95)
+    slowest = max(latencies)
+    report = (
+        f"n={len(latencies)} p50={p50:.3f} p95={p95:.3f} max={slowest:.3f} "
+        f"margin={serving_deadline_deliver_s():.2f}"
+    )
+    print(f"MEASURE deadline_probes {report}")
+    assert p95 <= 7.5, report
+    assert slowest < INSIGHTS_ASK_TIMEOUT_SECONDS, report
 
 
 def _ticket_rows(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
