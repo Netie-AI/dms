@@ -968,7 +968,11 @@ def test_each_live_entry_preflight_aborts(
 def test_live_generate_posts_send_strict_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Generate posts stamp the pin. A 503 stops that leg. No second post, no GET."""
+    """Insights generate does not send model or strict. A 503 stops that leg.
+
+    No second post, no GET. The OpenVault chat preflight is a different
+    request and still pins.
+    """
     import score_curated
     from cortex_client.compute import (
         _insights_body,
@@ -1068,12 +1072,9 @@ def test_live_generate_posts_send_strict_once(
     gen_headers = seen.get("gen_headers") or {}
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert report["cases"][0]["verdict"] == "WRONG"
-    assert (
-        body.get("strict") is True
-        and body.get("model") == _PIN
-        and gen_json.get("strict") is True
-        and gen_headers.get("X-OpenVault-Strict") == "true"
-    )
+    assert "model" not in body and "strict" not in body
+    assert "model" not in gen_json and "strict" not in gen_json
+    assert gen_headers.get("X-OpenVault-Strict") == "true"
     name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
     out = seen.get("out") or {}
     assert out.get("insights_fail") == name and out.get("pin_reason") == "quota_exhausted"
@@ -1089,7 +1090,7 @@ def test_live_generate_posts_send_strict_once(
     assert hosted.get("insights_fail") == name and hosted.get("pin_reason") == "quota_exhausted"
     assert script.requests
     sent = script.requests[0]
-    assert sent["json"].get("strict") is True and sent["json"].get("model") == _PIN
+    assert "model" not in sent["json"] and "strict" not in sent["json"]
     assert sent["headers"].get("X-OpenVault-Strict") == "true"
     assert "ov_test_pin_key" not in json.dumps(sent["json"])
     assert seen.get("preference") == "free+normal"
