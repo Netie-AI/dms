@@ -115,7 +115,7 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
-from dms_executor.sql_loop import apply_sql_credit, extract_dialect
+from dms_executor.sql_loop import ATTEMPT_TIMEOUT_KEY, apply_sql_credit, extract_dialect
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -166,10 +166,20 @@ def _insights_compute_seam(
         return None
     onto = ontology
     feedback = None
-    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
-        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
+    timeout = None
+    if isinstance(ontology, dict) and (
+        "sql_loop_feedback" in ontology or ATTEMPT_TIMEOUT_KEY in ontology
+    ):
+        onto = {
+            k: v
+            for k, v in ontology.items()
+            if k not in {"sql_loop_feedback", ATTEMPT_TIMEOUT_KEY}
+        }
         raw = ontology.get("sql_loop_feedback")
         feedback = raw if isinstance(raw, dict) else None
+        raw_t = ontology.get(ATTEMPT_TIMEOUT_KEY)
+        if isinstance(raw_t, (int, float)) and not isinstance(raw_t, bool) and raw_t > 0:
+            timeout = float(raw_t)
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -178,6 +188,8 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         return fn(question, **kwargs)
     except TypeError:
         try:

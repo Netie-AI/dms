@@ -106,8 +106,11 @@ from dms_executor.sql_currency import currency_mismatch_reason, is_multi_stateme
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
     EXTRACT_DIALECT,
+    CompileDefer,
     apply_sql_credit,
+    bound_model_compute,
     extract_dialect,
+    is_deadline,
     loop_entry,
     mask_feedback_text,
     run_model_loop,
@@ -1385,7 +1388,12 @@ def _run_extract_loop(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
+    """Read-only extract loop. Empty rows do not retry.
+
+    When the loop is exhausted or the serving deadline hits, raise
+    ``CompileDefer`` so the caller can run the ranking compile before
+    any abstain.
+    """
 
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
@@ -1637,6 +1645,12 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    # Model calls share one serving deadline. Each call gets one slice.
+    # The last share stays for the ranking compile. Flag off does not
+    # wrap, so its timeout and envelopes stay the pre-loop path.
+    loop_on = cloop_b_enabled() and not ontology_ranked_lane_enabled()
+    if loop_on:
+        compute = bound_model_compute(compute)
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1685,7 +1699,13 @@ def maybe_generative_ask(
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
-    if budget_stop:
+    # A timeout on the model lane still compiles from ranking already in
+    # hand. Flag off keeps the pre-loop abstain.
+    deadline_first = bool(budget_stop) and loop_on and (
+        is_deadline(payload if isinstance(payload, dict) else None)
+        or str(budget_stop).startswith("insights_timeout")
+    )
+    if budget_stop and not deadline_first:
         # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
         return _stamp(
             _abstain(
@@ -1698,11 +1718,12 @@ def maybe_generative_ask(
             )
         )
     if (
-        cloop_b_enabled()
+        not deadline_first
+        and cloop_b_enabled()
         and not ontology_ranked_lane_enabled()
         and isinstance(payload, dict)
     ):
-        # Ranking compile stays off this path. Model SQL runs on the extract.
+        # Model SQL runs on the extract. Compile runs only after the loop stops.
         sql_in = query_sql_from_payload(payload)
         would_rank = kind == "miss" and ontology_plan_from_ranking(
             q, payload, onto=onto, ctx=ctx
@@ -1719,24 +1740,58 @@ def maybe_generative_ask(
                         stage="extract_loop",
                     )
                 )
-            return _stamp(
-                _run_extract_loop(
-                    question=q,
-                    ctx=ctx,
-                    payload=payload,
-                    compute=compute,
-                    warehouse=given_warehouse if given_warehouse is not None else lake,
-                    dialect=dialect,
-                    grantable=allowed,
-                    declared=declared,
-                    declared_violations=declared_violations,
-                    space_id=space_id,
-                    session_id=session_id,
-                    submit=submit,
-                    ledger_append=ledger_append,
-                    attempts=loop_attempts,
+            try:
+                return _stamp(
+                    _run_extract_loop(
+                        question=q,
+                        ctx=ctx,
+                        payload=payload,
+                        compute=compute,
+                        warehouse=given_warehouse if given_warehouse is not None else lake,
+                        dialect=dialect,
+                        grantable=allowed,
+                        declared=declared,
+                        declared_violations=declared_violations,
+                        space_id=space_id,
+                        session_id=session_id,
+                        submit=submit,
+                        ledger_append=ledger_append,
+                        attempts=loop_attempts,
+                    )
                 )
-            )
+            except CompileDefer as deferred:
+                # Exhausted or out of time. Ranking that can compile uses
+                # the flag-off compile below, before any abstain. No
+                # ranking: abstain with the loop reason. The failed
+                # statement is not an answer.
+                body = payload if isinstance(payload, dict) else None
+                if ontology_plan_from_ranking(q, body, onto=onto, ctx=ctx) is None:
+                    last_sql = None
+                    if loop_attempts:
+                        raw_sql = loop_attempts[-1].get("sql")
+                        last_sql = raw_sql if isinstance(raw_sql, str) else None
+                    return _stamp(
+                        _abstain(
+                            q,
+                            deferred.reason,
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=PLAN_SOURCE_ONTOLOGY,
+                            sql=last_sql,
+                            retries=max(0, len(loop_attempts) - 1),
+                            stage="extract_loop",
+                        )
+                    )
+                payload = dict(body or {})
+                payload.pop("query_sql", None)
+                gen = payload.get("generative")
+                if isinstance(gen, dict):
+                    gen = dict(gen)
+                    gen.pop("sql", None)
+                    payload["generative"] = gen
+                kind = parse_compute_plan(payload)
+                source = plan_source_from_payload(payload)
+                origin = plan_origin_from_payload(payload)
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)

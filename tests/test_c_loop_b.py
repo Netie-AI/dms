@@ -375,9 +375,12 @@ def test_lowest_categories_do_not_fall_back_to_ontology(
     assert env["loop"][0]["outcome"] != "served"
 
 
-def test_chemicals_list_shapes_are_not_served_by_ranking(
+def test_chemicals_list_ungranted_abstains_and_exhaustion_compiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Ungranted SQL abstains at once. A checker miss that exhausts the loop
+    serves the ranking compile, the same climb the flag-off path already uses.
+    """
     _loop(monkeypatch)
     question = "List chemicals in inventory"
     shapes = (
@@ -394,18 +397,26 @@ def test_chemicals_list_shapes_are_not_served_by_ranking(
                 ontology={"metrics": [{"id": "stock_value_by_category"}]},
             )
 
-        env = _assert_abstain(_ask(tmp_path, question, compute))
-        assert env.get("plan_origin") != "ontology_ranking"
-        assert env["rows"] == []
-        assert env["served_attribution"] == "missing"
+        env = _ask(tmp_path, question, compute)
+        assert env is not None
+        assert_envelope_valid(env)
         assert env["loop"]
         assert all(item.get("outcome") != "served" for item in env["loop"])
         if "not_granted" in sql:
+            assert env["badge"] == "ABSTAIN"
+            assert env["rows"] == []
+            assert env.get("plan_origin") != "ontology_ranking"
+            assert env["served_attribution"] == "missing"
             assert calls["n"] == 1
             assert env["loop"][0]["outcome"].startswith("checker:ungranted:")
         else:
             assert calls["n"] == 2
-            assert "loop_exhausted:" in env["text"]
+            assert env["plan_origin"] == "ontology_ranking"
+            assert env["abstained"] is False
+            assert env["rows"]
+            assert env["served_attribution"] != "reported"
+            assert "served_provider" not in env
+            assert "served_model" not in env
 
 
 def test_cte_drop_inner_and_subquery_drop_inner() -> None:
