@@ -138,7 +138,7 @@ def run_readonly(
 
     Takes the serving lock, then opens ``read_only``. The lock is what keeps
     a writer and this connect from mixing access modes. A lock wait past the
-    serving deadline returns ``TimeoutError: ...`` and does not open the file.
+    serving deadline returns ``serving_lock_wait`` and does not open the file.
     One SELECT runs. A single other statement is executed so the read-only
     engine refuses it. Anything else, including a parse failure, is refused
     without executing.
@@ -147,8 +147,8 @@ def run_readonly(
 
     try:
         con = connect_locked_readonly(Path(warehouse))
-    except TimeoutError as exc:
-        return None, f"TimeoutError: {exc}"
+    except TimeoutError:
+        return None, "serving_lock_wait"
     except Exception as exc:  # noqa: BLE001
         return None, f"{type(exc).__name__}: {exc}"
     try:
@@ -584,6 +584,18 @@ def run_model_loop(
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
+        if exec_err == "serving_lock_wait":
+            # Named abstain. No engine text, and no second wait.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome="serving_lock_wait",
+                    dialect=dialect,
+                )
+            )
+            return abstain("serving_lock_wait", attempts, sql=sql, retries=retries)
         if exec_err:
             safe_err = mask_feedback_text(exec_err)
             outcome = f"db_error:{safe_err}"
@@ -592,10 +604,6 @@ def run_model_loop(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
-            # A missed lock deadline abstains once. Retrying would wait the
-            # deadline again.
-            if exec_err.startswith("TimeoutError:"):
-                return abstain(outcome, attempts, sql=sql, retries=retries)
             protected_sql = sql
             if not _can_retry(retries=retries, used=used, cap=cap):
                 head = f"loop_exhausted:{outcome}"

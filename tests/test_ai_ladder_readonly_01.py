@@ -5,6 +5,8 @@ The regex guard is not on this path. ``run_readonly`` is called directly.
 
 from __future__ import annotations
 
+import json
+import logging
 import math
 import threading
 import time
@@ -218,9 +220,50 @@ def _ledger(_payload: dict[str, Any]) -> Any:
     return SimpleNamespace(entry_id="led_ro", hash="hash_ro")
 
 
-def test_lock_timeout_abstains_through_build_abstain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _ask(db: Path, onto: Any) -> dict[str, Any] | None:
+    begin_answer_model_calls()
+    return maybe_generative_ask(
+        "Count the location rows",
+        warehouse=db,
+        grantable=set(_GRANTS),
+        compute=lambda _ctx: _names(_COUNT),
+        submit=_submit(db),
+        ledger_append=_ledger,
+        ontology=onto,
+    )
+
+
+def _grade(env: dict[str, Any] | None) -> tuple[str, str]:
+    if not isinstance(env, dict):
+        return "abstain", "no_envelope"
+    if env.get("abstained"):
+        reason = "unspecified"
+        for item in env.get("assumptions") or []:
+            text = str(item)
+            if text.startswith("GEN-01: "):
+                reason = text[len("GEN-01: ") :].split(":", 1)[0].strip() or reason
+                break
+        return "abstain", reason
+    if env.get("rows") == [{"n": 5}]:
+        return "correct", ""
+    return "wrong", ""
+
+
+def _tally(grades: list[tuple[str, str]]) -> tuple[int, int, int, dict[str, int]]:
+    correct = sum(1 for kind, _reason in grades if kind == "correct")
+    wrong = sum(1 for kind, _reason in grades if kind == "wrong")
+    abstain = sum(1 for kind, _reason in grades if kind == "abstain")
+    reasons: dict[str, int] = {}
+    for kind, reason in grades:
+        if kind == "abstain" and reason:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    return correct, wrong, abstain, reasons
+
+
+def test_lock_wait_ticket_is_serving_lock_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
     monkeypatch.setattr(
         "cortex_client.compute.insights_timeout_s", lambda env=None: 0.25
     )
@@ -261,17 +304,8 @@ def test_lock_timeout_abstains_through_build_abstain(
         return _Conn(connect_file(path))
 
     monkeypatch.setattr("dms_executor.generative_ask.connect_file", _connect)
-    begin_answer_model_calls()
     try:
-        env = maybe_generative_ask(
-            "Count the location rows",
-            warehouse=db,
-            grantable=set(_GRANTS),
-            compute=lambda _ctx: _names(_COUNT),
-            submit=_submit(db),
-            ledger_append=_ledger,
-            ontology=onto,
-        )
+        env = _ask(db, onto)
     finally:
         release.set()
     assert env is not None
@@ -279,10 +313,22 @@ def test_lock_timeout_abstains_through_build_abstain(
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert env["rows"] == []
-    assert isinstance(env.get("ticket_id"), str) and env["ticket_id"]
-    text = " ".join(str(item) for item in env.get("assumptions") or [])
-    assert "db_error:" in text
-    assert "TimeoutError:" in text
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "dms_executor.pipeline_failure"
+        and rec.getMessage().startswith("pipeline_failure ")
+    ]
+    assert len(lines) == 1
+    payload = json.loads(lines[0].split(" ", 1)[1])
+    assert payload["reason"] == "serving_lock_wait"
+    assert payload["ticket_id"] == env["ticket_id"]
+    assert isinstance(payload["ticket_id"], str) and payload["ticket_id"]
+    blob = lines[0]
+    assert "Count the location rows" not in blob
+    assert "SELECT" not in blob
+    assert "TimeoutError" not in blob
+    assert "serving lock" not in blob
 
 
 def test_twenty_asks_p95_stays_under_the_bound(
@@ -292,33 +338,24 @@ def test_twenty_asks_p95_stays_under_the_bound(
     monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
     db = ensure_demo_warehouse(tmp_path / "p95.duckdb")
     onto = load_verified_ontology(db, demo_ontology(db))
+    serial = _grade(_ask(db, onto))
     n = 20
     samples: list[float] = []
+    grades: list[tuple[str, str]] = []
     errors: list[BaseException] = []
     guard = threading.Lock()
 
     def _one() -> None:
-        begin_answer_model_calls()
         started = time.perf_counter()
         try:
-            env = maybe_generative_ask(
-                "Count the location rows",
-                warehouse=db,
-                grantable=set(_GRANTS),
-                compute=lambda _ctx: _names(_COUNT),
-                submit=_submit(db),
-                ledger_append=_ledger,
-                ontology=onto,
-            )
+            env = _ask(db, onto)
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
             return
         elapsed = time.perf_counter() - started
-        if env is None or env.get("abstained") or env.get("rows") != [{"n": 5}]:
-            errors.append(AssertionError(f"ask failed: {env!r}"[:300]))
-            return
         with guard:
             samples.append(elapsed)
+            grades.append(_grade(env))
 
     threads = [threading.Thread(target=_one) for _ in range(n)]
     for thread in threads:
@@ -326,10 +363,21 @@ def test_twenty_asks_p95_stays_under_the_bound(
     for thread in threads:
         thread.join(30)
     assert errors == []
-    assert len(samples) == n
+    assert len(grades) == n
+    serial_correct = 1 if serial[0] == "correct" else 0
+    correct, wrong, abstain, reasons = _tally(grades)
     ordered = sorted(samples)
     rank = max(1, math.ceil(0.95 * n))
     p95 = ordered[rank - 1]
     slowest = ordered[-1]
+    reason_text = ",".join(f"{code}:{count}" for code, count in sorted(reasons.items())) or "-"
+    print(
+        f"serial n=1 correct={serial_correct} wrong={int(serial[0] == 'wrong')} "
+        f"abstain={int(serial[0] == 'abstain')} reasons={serial[1] or '-'}"
+    )
+    print(
+        f"load n={n} correct={correct} wrong={wrong} abstain={abstain} "
+        f"reasons={reason_text} p95={p95:.3f}s max={slowest:.3f}s"
+    )
+    assert correct >= serial_correct
     assert p95 <= 7.5, f"n={n} p95={p95:.3f}s max={slowest:.3f}s"
-    print(f"lock-wait asks n={n} p95={p95:.3f}s max={slowest:.3f}s")

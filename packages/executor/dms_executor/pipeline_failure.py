@@ -89,6 +89,7 @@ _CODES = frozenset(
         "path_not_allowed",
         "reserved_param",
         "retry",
+        "serving_lock_wait",
         "sql_not_analyzable",
         "statement_not_allowed",
         "submit_failed",
