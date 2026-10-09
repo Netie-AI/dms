@@ -1840,12 +1840,13 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     path = Path(warehouse)
     if not path.is_file():
         return {}
-    # Same attach as the schema index. A read_only connect beside that
-    # index raises ConnectionException and the ontology then sees no columns.
-    from dms_executor.demo_warehouse import connect_file
+    # Same lock as the schema index, then a read-only connect. A read-only
+    # connect beside an open writer raises ConnectionException; the lock
+    # waits that writer out. A missed deadline sees no columns.
+    from dms_executor.demo_warehouse import connect_locked_readonly
 
     try:
-        con = connect_file(path)
+        con = connect_locked_readonly(path)
     except Exception:  # noqa: BLE001
         return {}
     try:

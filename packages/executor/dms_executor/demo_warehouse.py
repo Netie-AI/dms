@@ -265,6 +265,47 @@ def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
     return _LockedConnection(con, lock)  # type: ignore[return-value]
 
 
+def acquire_serving_lock(
+    path: Path, *, timeout: float | None = None
+) -> threading.RLock | None:
+    """Take the per-file serving lock, or None if the deadline passes.
+
+    ``timeout`` defaults to the serving deadline (``insights_timeout_s``).
+    The caller must ``release()`` on the same thread. None means the lock
+    was not taken.
+    """
+    if timeout is None:
+        from cortex_client.compute import insights_timeout_s
+
+        timeout = insights_timeout_s()
+    lock = _lock_for(Path(path))
+    if not lock.acquire(timeout=timeout):
+        return None
+    return lock
+
+
+def connect_locked_readonly(
+    path: Path, *, timeout: float | None = None
+) -> duckdb.DuckDBPyConnection:
+    """Read-only attach under the same per-file lock as ``connect_file``.
+
+    The lock is taken first and held until ``close()``. DuckDB 1.5 rejects a
+    read-only connect while a write attach of that file is open, so a waiter
+    blocks instead of raising a mixed-mode error. A missed deadline raises
+    ``TimeoutError`` and does not open the file.
+    """
+    db = Path(path)
+    lock = acquire_serving_lock(db, timeout=timeout)
+    if lock is None:
+        raise TimeoutError("serving lock")
+    try:
+        con = duckdb.connect(str(db), read_only=True)
+    except BaseException:
+        lock.release()
+        raise
+    return _LockedConnection(con, lock)  # type: ignore[return-value]
+
+
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
     """Thin-reseed the DMS local demo file. Idempotent within one process.
 
