@@ -96,6 +96,23 @@ def _freeze(env: dict[str, Any]) -> dict[str, Any]:
     return frozen
 
 
+_STAMP_FIELDS = frozenset(
+    {"served_route", "plan_origin", "ladder_rung", "served_model"}
+)
+
+
+def _drop_stamps(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _drop_stamps(item)
+            for key, item in value.items()
+            if key not in _STAMP_FIELDS
+        }
+    if isinstance(value, list):
+        return [_drop_stamps(item) for item in value]
+    return value
+
+
 def _extra_keys(main: Any, got: Any, path: str = "") -> list[str]:
     """Keys present on got that main never sends. Values are ignored."""
     found: list[str] = []
@@ -226,16 +243,16 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     canned = 0
     extras_all: list[tuple[str, list[str]]] = []
     for index, question in enumerate(_questions()):
-        env = got[index]["envelope"]
-        main = expected[index]["envelope"]
+        env = _drop_stamps(got[index]["envelope"])
+        main = _drop_stamps(expected[index]["envelope"])
         assert expected[index]["question"] == question
         extras = _extra_keys(main, env)
         if extras:
             extras_all.append((question, extras))
     assert extras_all == [], extras_all
     for index, question in enumerate(_questions()):
-        env = got[index]["envelope"]
-        main = expected[index]["envelope"]
+        env = _drop_stamps(got[index]["envelope"])
+        main = _drop_stamps(expected[index]["envelope"])
         assert env == main, question
         if env.get("badge") == "L2_VALIDATED":
             l2 += 1

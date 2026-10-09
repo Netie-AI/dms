@@ -25,7 +25,6 @@ from cortex_client.compute import (
     INSIGHTS_FAIL_UNAUTHORIZED,
     INSIGHTS_PATH,
     PLAN_ORIGIN_GENERATE_SQL,
-    PLAN_ORIGIN_ONTOLOGY_RANKING,
     compute_insights,
     compute_query,
     insights_fail_payload,
@@ -410,7 +409,10 @@ def test_generate_sql_stamps_plan_origin(
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert env.get("plan_source") == "ontology_plan"
-    assert env.get("plan_origin") == PLAN_ORIGIN_GENERATE_SQL
+    # No served_model: this executed SQL is the L2 stub, not the model route.
+    assert env.get("served_route") == "exec_stub_l2"
+    assert env.get("plan_origin") == "oracle"
+    assert env.get("ladder_rung") == "oracle"
     assert binds == []
 
 
@@ -442,7 +444,9 @@ def test_ranking_stamps_plan_origin_ontology_ranking(
     assert_envelope_valid(env)
     assert env["badge"] == "L2_VALIDATED"
     assert env.get("plan_source") == "ontology_plan"
-    assert env.get("plan_origin") == PLAN_ORIGIN_ONTOLOGY_RANKING
+    assert env.get("served_route") == "ontology_compile"
+    assert env.get("plan_origin") == "compile"
+    assert env.get("ladder_rung") == "compile"
     assert binds == []
     assert not any("bind_plan" in str(a) for a in (env.get("assumptions") or []))
 

@@ -557,6 +557,9 @@ class Executor:
                 route="abstain",
             )
             assert_envelope_valid(env)
+            from dms_executor.route_stamp import ROUTE_LADDER, stamp_route
+
+            stamp_route(env, ROUTE_LADDER)
         stamp_engine_clock(env)
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
         stamped = with_served_attribution(env, payload)
@@ -579,6 +582,9 @@ class Executor:
             out["lane"] = mapped
         else:
             out.pop("lane", None)
+        from dms_executor.route_stamp import freeze_route
+
+        freeze_route(out)
         masked = mask_unknown_keys(out)
         backstop_missing_ticket(masked, question=question)
         return masked
@@ -1158,6 +1164,29 @@ def map_ask_response_to_envelope(
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
+    from dms_executor.route_stamp import (
+        ROUTE_EXEC,
+        ROUTE_L1,
+        ROUTE_LADDER,
+        ROUTE_MODEL,
+        ROUTE_VERIFIED,
+        stamp_route,
+    )
+
+    model = str(getattr(resp, "served_model", None) or "").strip()
+    if abstained:
+        route = ROUTE_LADDER
+    elif badge == "L0_CERTIFIED":
+        route = ROUTE_VERIFIED
+    elif badge == "L1_GOVERNED_METRIC":
+        route = ROUTE_L1
+    elif badge == "L2_VALIDATED" and model:
+        route = ROUTE_MODEL
+    elif badge == "L2_VALIDATED":
+        route = ROUTE_EXEC
+    else:
+        route = ROUTE_LADDER
+    stamp_route(env, route, served_model=model or None)
     return env
 
 

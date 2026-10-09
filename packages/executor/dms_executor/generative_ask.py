@@ -89,6 +89,14 @@ from dms_executor.ontology import (
     missing_join_for_ungranted,
     try_compile_multi_grain,
 )
+from dms_executor.route_stamp import (
+    ROUTE_COMPILE,
+    ROUTE_EXEC,
+    ROUTE_LADDER,
+    ROUTE_MODEL,
+    freeze_route,
+    stamp_route,
+)
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_ENVELOPE_KEY,
     SCHEMA_INDEX_STAMP_KEY,
@@ -719,6 +727,15 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _sql_route(payload: dict[str, Any] | None) -> tuple[str, str | None]:
+    """Model SQL names the model. Executed SQL with no model is the L2 stub."""
+    raw = payload.get("served_model") if isinstance(payload, dict) else None
+    name = str(raw).strip() if isinstance(raw, str) else ""
+    if name:
+        return ROUTE_MODEL, name
+    return ROUTE_EXEC, None
+
+
 def _abstain(
     question: str,
     reason: str,
@@ -749,7 +766,9 @@ def _abstain(
         route="generated",
     )
     assert_envelope_valid(env)
-    return with_plan_source(env, plan_source)
+    # Every generative abstain is this path's rung. Successes stamp their own.
+    stamp_route(with_plan_source(env, plan_source), ROUTE_LADDER)
+    return env
 
 
 def _l2_envelope(
@@ -766,6 +785,8 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
+    served_model: str | None = None,
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -800,7 +821,10 @@ def _l2_envelope(
     )
     if env.get("abstained"):
         assert_envelope_valid(env)
-        return with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        if served_route:
+            stamp_route(env, served_route, served_model=served_model)
+        return env
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -836,6 +860,8 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if served_route:
+        stamp_route(env, served_route, served_model=served_model)
     return env
 
 
@@ -856,6 +882,8 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
+    served_model: str | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -952,6 +980,8 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        served_route=served_route,
+        served_model=served_model,
     )
 
 
@@ -1075,6 +1105,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        served_route=ROUTE_COMPILE,
     )
 
 
@@ -1150,6 +1181,7 @@ def rank_window_ask(
         coverage=compiled.coverage,
         warehouse=lake,
         lead=lead,
+        served_route=ROUTE_LADDER,
     )
 
 
@@ -1214,6 +1246,7 @@ def _run_extract_loop(
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        route, model = _sql_route(payload)
         return _submit_validated(
             sql,
             question=question,
@@ -1226,6 +1259,8 @@ def _run_extract_loop(
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            served_route=route,
+            served_model=model,
         )
 
     def abstain(
@@ -1275,10 +1310,17 @@ def _run_extract_loop(
             grounded_tables=sorted(cited_relations(sql)),
         )
         assert_envelope_valid(env)
-        return with_plan_origin(
-            with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
-            PLAN_ORIGIN_GENERATE_SQL,
+        route, model = _sql_route(payload)
+        stamped = stamp_route(
+            with_plan_origin(
+                with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
+                PLAN_ORIGIN_GENERATE_SQL,
+            ),
+            route,
+            served_model=model,
         )
+        assert stamped is not None
+        return stamped
 
     return run_model_loop(
         question=question,
@@ -1469,7 +1511,7 @@ def maybe_generative_ask(
                 stamped["index_stamp"] = index_stamp
             # Through PII-01, not after it. Hint values are already tokens.
             stamped = mask_unknown_keys(stamped)
-        return stamped
+        return freeze_route(stamped)
 
     if verify_cache_missing:
         return _stamp(
@@ -1669,6 +1711,9 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            sql_route, sql_model = _sql_route(
+                payload if isinstance(payload, dict) else None
+            )
             return _stamp(
                 _submit_validated(
                     sql,
@@ -1682,6 +1727,8 @@ def maybe_generative_ask(
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
                     plan_origin=origin,
+                    served_route=sql_route,
+                    served_model=sql_model,
                 )
             )
     if kind != "plan":
@@ -1855,5 +1902,6 @@ def maybe_generative_ask(
             where_paths=compiled.where_paths,
             warehouse=lake,
             plan_origin=origin,
+            served_route=ROUTE_COMPILE,
         )
     )
