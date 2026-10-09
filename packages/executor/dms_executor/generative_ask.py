@@ -61,6 +61,7 @@ from dms_executor.demo_warehouse import (
 )
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
+    _is_demo_lake_relation,
     _relation_bare,
     _sql_cited_labels,
     asked_calendar_years,
@@ -87,6 +88,7 @@ from dms_executor.ontology import (
     demo_ontology,
     detect_supply_chain_grains,
     missing_join_for_ungranted,
+    table_is_granted,
     try_compile_multi_grain,
 )
 from dms_executor.schema_context import (
@@ -687,7 +689,9 @@ def validate_compiled_sql(
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
     named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    # Qualified grants (bronze.sheet) match the bare cited name. Exact set
+    # membership treated a granted upload as ungranted.
+    missing = {t for t in named if not table_is_granted(t, grantable)}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     # No cited relation. A literal select is the same grant outcome, bare
@@ -994,6 +998,21 @@ def _richer_schema_prompt(
     return prompt
 
 
+def _cited_ungranted(why: str | None) -> bool:
+    """True for bare ``ungranted`` and for ``ungranted:<demo-lake names>``.
+
+    A bronze sheet name is not this refusal. Scope conflict still owns that
+    SQL, and a qualified upload grant is not a demo-lake miss.
+    """
+    if not isinstance(why, str) or why.split(":", 1)[0] != "ungranted":
+        return False
+    rest = why.split(":", 1)[1] if ":" in why else ""
+    names = [n.strip() for n in rest.split(",") if n.strip()]
+    if not names:
+        return True
+    return any(_is_demo_lake_relation(n) for n in names)
+
+
 def hold_ungrounded_sql(
     sql: str,
     *,
@@ -1003,15 +1022,16 @@ def hold_ungrounded_sql(
     warehouse: Path | None,
     grantable: set[str],
 ) -> dict[str, Any] | None:
-    """Direct refusal for every ungranted outcome of the one grant check.
+    """Direct refusal for an ungranted outcome of the one grant check.
 
-    ``validate_compiled_sql`` returns bare ``ungranted`` or ``ungranted:<names>``.
-    Both abstain here. The names stay in that function and are not copied onto
-    the reply. None means the SQL may keep its badge. #421 replaces that call.
+    Bare ``ungranted`` and ``ungranted:<names>`` both abstain when a missing
+    name is a demo-lake table. The names stay in the grant function and are
+    not copied onto the reply. A bronze sheet label is not this refusal.
+    None means the SQL may keep its badge. #421 replaces that call.
     This is not a reconfirm and not a second grant check.
     """
     why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
-    if not isinstance(why, str) or why.split(":", 1)[0] != "ungranted":
+    if not _cited_ungranted(why):
         return None
     return _abstain(
         question,
