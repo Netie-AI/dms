@@ -229,10 +229,13 @@ def test_live_cortex_lane_missing_stamps_is_invalid(
 
 
 @pytest.mark.parametrize("lane", ["rules", "curated"])
-def test_live_cortex_lane_mismatched_stamps_is_invalid(
+def test_live_cortex_lane_reported_stamps_are_judged(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Zero calls on a Cortex lane whose stamps are not the pin is pin_mismatch."""
+    """Zero calls on a Cortex lane with a reported pair are judged on values.
+
+    DMS does not compare the pair to a catalog. A missing stamp stays invalid.
+    """
     body = _envelope(
         model_calls=0,
         route=_ROUTE[lane],
@@ -246,10 +249,10 @@ def test_live_cortex_lane_mismatched_stamps_is_invalid(
         assert len(sent) == n_pack
         assert report["cases"][1]["verdict"] == "WRONG"
         row = report["cases"][0]
-        assert row["verdict"] == "INVALID", row
-        assert row["reason"] == f"pin_mismatch:together/{_PIN}", row
+        assert row["verdict"] == "WRONG", row
+        assert not str(row.get("reason") or "").startswith("pin_"), row
         assert report["n"] == n_pack
-        assert int(report["invalid"]) >= 1
+        assert int(report["invalid"]) == 0
     finally:
         _wipe(tmp_path)
 
