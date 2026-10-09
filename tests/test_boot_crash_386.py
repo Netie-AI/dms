@@ -451,12 +451,13 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
 
 
 # Envelopes that differ from the canned capture. Grade the served envelope.
-# cq_supplier_ranking (and the same phrase on ops) is an E10 ABSTAIN with 0
-# rows on canned main: the stub returns one row, the governed SQL has no
-# GROUP BY, envelope.py:510 demotes at envelope.py:1548, and envelope.py:1712
-# clears the rows.
+# cq_supplier_ranking is an E10 ABSTAIN with 0 rows on canned main: the stub
+# returns one row, the governed SQL has no GROUP BY, envelope.py:510 demotes
+# at envelope.py:1560, and envelope.py:1716 clears the rows.
 # That is not a value that differed from gold. Exec-SQL returns the real
 # rows and E10 does not fire.
+# ops_supplier_rank_boundary grants-fails before submit on both sides, so
+# that envelope still matches the capture and is not listed here.
 _FIXTURE_FED = frozenset(
     {
         "cq_sku_count",
@@ -466,7 +467,6 @@ _FIXTURE_FED = frozenset(
         "trap_categoty",
         "ops_sku_count",
         "ops_sku_count_by_category",
-        "ops_supplier_rank_boundary",
     }
 )
 
