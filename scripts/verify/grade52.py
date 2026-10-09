@@ -10,8 +10,12 @@ does not execute ``sql_used``. A submit-stub pack (every confident row is the
 one-cell ``n=1`` stub) is labelled stub and is not a score. ``--main`` builds
 envelopes with the exec-SQL stub, flags off, and labels that score stub-exec.
 
-A trap is a refusal. Gold-broken is the non-trap case with no certified
-oracle, so it sits inside the non-trap 44.
+A trap is a declared ``trap`` or ``refusal_expected`` field on the question
+or the oracle. Gold-broken is the non-trap case with no certified oracle,
+and only when that case abstains. A served answer there is wrong.
+
+``--envelopes`` prints the commit declared on the envelopes. ``--main``
+prints the product commit (``git merge-base HEAD origin/main``).
 
 Usage:
     python scripts/verify/grade52.py --self-test
@@ -30,7 +34,7 @@ import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -202,6 +206,18 @@ def _iso(value: Any) -> str | None:
     return None
 
 
+def _whole_number(value: Any) -> bool:
+    """True when gold declares no fractional scale. Those values are not rounded."""
+    places = _decimal_places(value)
+    return places == 0
+
+
+def _round_half_away(value: float, places: int) -> float:
+    """DuckDB ROUND: half away from zero. Not Python round()."""
+    quant = Decimal(1).scaleb(-places)
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
+
+
 def cells_equal(gold: Any, served: Any) -> bool:
     """Numbers within 0.005. Gold's decimal count wins when it is shorter."""
     if gold is None and served is None:
@@ -221,8 +237,13 @@ def cells_equal(gold: Any, served: Any) -> bool:
     if gold_num is not None and served_num is not None:
         gold_dp = _decimal_places(gold)
         served_dp = _decimal_places(served)
-        if gold_dp is not None and served_dp is not None and gold_dp < served_dp:
-            served_num = round(served_num, gold_dp)
+        if (
+            gold_dp is not None
+            and served_dp is not None
+            and gold_dp < served_dp
+            and not _whole_number(gold)
+        ):
+            served_num = _round_half_away(served_num, gold_dp)
         return abs(gold_num - served_num) <= ABS_TOL
     if isinstance(gold, str) or isinstance(served, str):
         return str(gold).strip() == str(served).strip()
@@ -481,8 +502,9 @@ def abstain_code(env: Mapping[str, Any]) -> str | None:
 
 
 def _rows_of(value: Any) -> list[dict[str, Any]]:
+    """Envelope rows. A missing key is an error, not zero rows."""
     if not isinstance(value, list):
-        return []
+        raise SystemExit("grade52: envelope has no rows")
     out: list[dict[str, Any]] = []
     for item in value:
         if isinstance(item, dict):
@@ -490,12 +512,15 @@ def _rows_of(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _is_trap(question: Mapping[str, Any]) -> bool:
-    """A refusal case. Not an id list: refuse, or an abstain expectation on a trap id."""
-    expect = str(question.get("expect") or "").strip().lower()
-    if expect == "refuse":
-        return True
-    return expect == "abstain" and str(question.get("id") or "").startswith("trap_")
+def _declared_trap(node: Mapping[str, Any] | None) -> bool:
+    if not isinstance(node, Mapping):
+        return False
+    return node.get("trap") is True or node.get("refusal_expected") is True
+
+
+def _is_trap(question: Mapping[str, Any], oracle: Mapping[str, Any] | None = None) -> bool:
+    """A refusal case from a declared yaml field, not from the id."""
+    return _declared_trap(question) or _declared_trap(oracle)
 
 
 def grade_case(
@@ -508,9 +533,10 @@ def grade_case(
     trap: bool = False,
     gold_broken: bool = False,
 ) -> dict[str, Any]:
-    """One case. Traps are refusals. Missing gold on a non-trap is gold-broken.
+    """One case. Traps are refusals. Gold-broken is an abstain with no oracle.
 
-    ``gold is None`` without ``gold_broken`` is empty gold (no certified rows).
+    A served answer on a gold-broken case is wrong. ``gold is None`` without
+    ``gold_broken`` is empty gold (no certified rows).
     """
     badge = env.get("badge")
     route = env.get("route")
@@ -533,7 +559,9 @@ def grade_case(
             "reason": f"served with {served_n} {unit}",
         }
     if gold_broken:
-        return {**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"}
+        if _is_abstain(env):
+            return {**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"}
+        return {**base, "bucket": BUCKET_WRONG, "reason": "served on gold-broken"}
     if gold is None or gold == []:
         if _is_abstain(env):
             return {**base, "bucket": BUCKET_EMPTY, "reason": "abstain"}
@@ -615,26 +643,55 @@ def _is_submit_stub(envelopes: Sequence[Mapping[str, Any]]) -> bool:
         if not isinstance(env, Mapping) or _is_abstain(env):
             continue
         confident += 1
-        if not _is_stub_row(_rows_of(env.get("rows"))):
+        rows = env.get("rows")
+        if not isinstance(rows, list) or not _is_stub_row(rows):
             return False
     return confident > 0
+
+
+def _commit_sha(raw: Any) -> str:
+    if not isinstance(raw, str):
+        raise SystemExit("grade52: envelopes commit missing")
+    text = raw.strip()
+    if len(text) != 40 or any(char not in "0123456789abcdef" for char in text):
+        raise SystemExit("grade52: envelopes commit missing")
+    return text
+
+
+def _header_sha(data: Any) -> str | None:
+    """A JSONL header is ``{"dms_sha": "<40 hex>"}`` and is not a case."""
+    if not isinstance(data, dict):
+        return None
+    if any(key in data for key in ("env", "rows", "badge", "id")):
+        return None
+    if "dms_sha" not in data:
+        return None
+    return _commit_sha(data.get("dms_sha"))
 
 
 def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise SystemExit("grade52: envelope record is not an object")
     if isinstance(data.get("env"), dict):
+        if "rows" not in data["env"]:
+            raise SystemExit("grade52: envelope has no rows")
         qid = str(data.get("id") or default_id or "")
         return {"id": qid, "env": data["env"]}
     if "rows" in data or "badge" in data:
+        if "rows" not in data:
+            raise SystemExit("grade52: envelope has no rows")
         qid = str(data.get("id") or default_id or "")
         env = {key: value for key, value in data.items() if key != "id"}
         return {"id": qid, "env": env}
     raise SystemExit("grade52: envelope record has no env")
 
 
-def load_envelopes(path: Path) -> list[dict[str, Any]]:
-    """A directory of ``<id>.json`` files, or a JSONL file of ``{id, env}``."""
+def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None]:
+    """Directory of ``<id>.json``, or JSONL of ``{id, env}``.
+
+    The commit is a JSONL header ``{"dms_sha": "<40 hex>"}`` or a ``dms_sha``
+    file in the directory. A JSON array carries no commit.
+    """
     if path.is_dir():
         files = sorted(item for item in path.iterdir() if item.suffix == ".json" and item.is_file())
         if not files:
@@ -646,7 +703,9 @@ def load_envelopes(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise SystemExit("grade52: envelope file is not json") from exc
             rows.append(_record(data, default_id=item.stem))
-        return rows
+        sha_path = path / "dms_sha"
+        sha = _commit_sha(sha_path.read_text(encoding="utf-8")) if sha_path.is_file() else None
+        return rows, sha
     if not path.is_file():
         raise SystemExit("grade52: envelopes path is missing")
     text = path.read_text(encoding="utf-8")
@@ -658,8 +717,9 @@ def load_envelopes(path: Path) -> list[dict[str, Any]]:
             raise SystemExit("grade52: envelope file is not json") from exc
         if not isinstance(data, list):
             raise SystemExit("grade52: envelope file is not json")
-        return [_record(item) for item in data]
+        return [_record(item) for item in data], None
     rows = []
+    sha: str | None = None
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -667,10 +727,16 @@ def load_envelopes(path: Path) -> list[dict[str, Any]]:
             data = json.loads(line)
         except json.JSONDecodeError as exc:
             raise SystemExit("grade52: envelope file is not json") from exc
+        header = _header_sha(data)
+        if header is not None:
+            if sha is not None:
+                raise SystemExit("grade52: envelopes commit missing")
+            sha = header
+            continue
         rows.append(_record(data))
     if not rows:
         raise SystemExit("grade52: envelope file is empty")
-    return rows
+    return rows, sha
 
 
 def _sql_same(left: str, right: str) -> bool:
@@ -773,8 +839,9 @@ def grade_envelopes(
             env = by_id.get(qid)
             if not isinstance(env, Mapping):
                 raise SystemExit(f"missing envelope for {qid}")
-            trap = _is_trap(question)
-            sql = None if trap else _certified_sql(oracles.get(qid))
+            oracle = oracles.get(qid)
+            trap = _is_trap(question, oracle if isinstance(oracle, Mapping) else None)
+            sql = None if trap else _certified_sql(oracle if isinstance(oracle, Mapping) else None)
             broken = sql is None and not trap
             if sql is None:
                 gold: list[dict[str, Any]] | None = None
@@ -920,20 +987,18 @@ def _prepare_flag_off() -> None:
     _scrub_credentials()
 
 
-def _dms_sha() -> str:
+def _product_sha() -> str:
+    """Product commit the stub-exec harness runs. Not this grader's HEAD."""
     try:
         out = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "merge-base", "HEAD", "origin/main"],
             cwd=ROOT,
             text=True,
             stderr=subprocess.DEVNULL,
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise SystemExit("grade52: dms sha unavailable") from exc
-    sha = out.strip()
-    if len(sha) < 40:
-        raise SystemExit("grade52: dms sha unavailable")
-    return sha
+    return _commit_sha(out)
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -1080,15 +1145,21 @@ def replay_executing() -> list[dict[str, Any]]:
     return rows
 
 
-def _labelled(report: dict[str, Any], *, mode: str, included: str) -> dict[str, Any]:
+def _labelled(
+    report: dict[str, Any],
+    *,
+    mode: str,
+    included: str,
+    dms_sha: str,
+) -> dict[str, Any]:
     report["mode"] = mode
-    report["dms_sha"] = _dms_sha()
+    report["dms_sha"] = dms_sha
     report["pack_gold_served"] = included
     return report
 
 
-def _finish(report: dict[str, Any], mode: str) -> dict[str, Any]:
-    _labelled(report, mode=mode, included="included")
+def _finish(report: dict[str, Any], mode: str, dms_sha: str) -> dict[str, Any]:
+    _labelled(report, mode=mode, included="included", dms_sha=dms_sha)
     rest = [item for item in report["cases"] if not item.get("pack_gold_served")]
     without = tally(rest)
     without.update(
@@ -1109,13 +1180,20 @@ def _finish(report: dict[str, Any], mode: str) -> dict[str, Any]:
     return report
 
 
-def grade_loaded(envelopes: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
+def grade_loaded(
+    envelopes: Sequence[Mapping[str, Any]],
+    *,
+    mode: str,
+    dms_sha: str | None = None,
+) -> dict[str, Any]:
     """Grade served rows. A submit-stub pack is labelled stub and is not a score."""
     if _is_submit_stub(envelopes):
         print("mode=stub not a score")
         raise SystemExit("grade52: stub not a score")
+    if not isinstance(dms_sha, str):
+        raise SystemExit("grade52: envelopes commit missing")
     report = grade_envelopes(envelopes, mode=mode)
-    return _finish(report, mode)
+    return _finish(report, mode, _commit_sha(dms_sha))
 
 
 def grade_main(mode: str | None = None) -> dict[str, Any]:
@@ -1123,11 +1201,12 @@ def grade_main(mode: str | None = None) -> dict[str, Any]:
     chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
     if chosen != MODE_STUB_EXEC:
         raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
-    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC)
+    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=_product_sha())
 
 
 def grade_envelopes_path(path: Path) -> dict[str, Any]:
-    return grade_loaded(load_envelopes(path), mode=MODE_SERVED)
+    rows, sha = load_envelopes(path)
+    return grade_loaded(rows, mode=MODE_SERVED, dms_sha=sha)
 
 
 def self_test() -> dict[str, str]:
@@ -1188,6 +1267,8 @@ def self_test() -> dict[str, str]:
     )
 
     rounded = compare_rows([{"n": 1.2}], [{"n": 1.23}], ordered=False)
+    half_up = compare_rows([{"n": 56.3}], [{"n": 56.25}], ordered=False)
+    whole_gold = compare_rows([{"n": 100}], [{"n": 100.49}], ordered=False)
     loose = compare_rows([{"n": 1.0}], [{"n": "1.004"}], ordered=False)
     bool_cell = compare_rows([{"flag": True}], [{"flag": 1}], ordered=False)
     null_cell = compare_rows([{"v": None}], [{"v": 0}], ordered=False)
@@ -1252,6 +1333,10 @@ def self_test() -> dict[str, str]:
         raise SystemExit(f"self-test shuffle reason: {shuffled[1]}")
     if rounded[0] != BUCKET_CORRECT:
         raise SystemExit("self-test: gold decimals did not round the served value")
+    if half_up[0] != BUCKET_CORRECT:
+        raise SystemExit("self-test: 56.25 vs 56.3 was not half away from zero")
+    if whole_gold[0] != BUCKET_WRONG:
+        raise SystemExit("self-test: 100.49 vs 100 was rounded")
     if loose[0] != BUCKET_CORRECT:
         raise SystemExit("self-test: abs_tol 0.005 rejected a numeric string")
     if bool_cell[0] != BUCKET_WRONG or null_cell[0] != BUCKET_WRONG:
@@ -1334,10 +1419,37 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: served trap was not a wrong refusal")
     if trap_abstain["bucket"] != BUCKET_REFUSAL_OK:
         raise SystemExit("self-test: abstained trap was not a correct refusal")
+    broken_served = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "L1_GOVERNED_METRIC", "route": "governed_metric", "abstained": False},
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+        gold_broken=True,
+    )
     if broken["bucket"] != BUCKET_GOLD_BROKEN:
         raise SystemExit("self-test: missing gold was not gold-broken")
+    if broken_served["bucket"] != BUCKET_WRONG or broken_served["reason"] != "served on gold-broken":
+        raise SystemExit("self-test: a served gold-broken answer was not wrong")
     if trap_served["bucket"] == BUCKET_EMPTY or trap_abstain["bucket"] == BUCKET_EMPTY:
         raise SystemExit("self-test: a trap landed in empty gold")
+    if _is_trap({"id": "trap_categoty", "expect": "l0"}):
+        raise SystemExit("self-test: trap id prefix counted")
+    if _is_trap({"id": "plain", "expect": "refuse"}):
+        raise SystemExit("self-test: expect refuse counted without a declared field")
+    if not _is_trap({"id": "plain", "expect": "l0", "trap": True}):
+        raise SystemExit("self-test: trap field was ignored")
+    if not _is_trap({"id": "plain", "expect": "abstain"}, {"refusal_expected": True}):
+        raise SystemExit("self-test: refusal_expected was ignored")
+    try:
+        _rows_of(None)
+    except SystemExit as exc:
+        if "rows" not in str(exc):
+            raise
+    else:
+        raise SystemExit("self-test: a missing rows key loaded as zero rows")
+    if _rows_of([]) != []:
+        raise SystemExit("self-test: an empty rows list was not zero rows")
 
     try:
         summary_line({"n": 52, "correct": 0, "wrong": 0, "abstain": 0})
@@ -1377,14 +1489,14 @@ def self_test() -> dict[str, str]:
             "correct": 23,
             "wrong": 0,
             "abstain": 20,
-            "refusal_ok": 6,
-            "refusal_wrong": 2,
+            "refusal_ok": 8,
+            "refusal_wrong": 0,
             "empty_gold": 0,
             "gold_broken": 1,
         }
     )
     if not check_line.endswith(
-        "52: correct=23 wrong=0 abstain=20 refusal_ok=6 refusal_wrong=2 "
+        "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=served"
     ):
         raise SystemExit("self-test: check-shaped line drifted")

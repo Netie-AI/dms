@@ -37,8 +37,15 @@ _GOLD_SERVED = [
     "ops_sku_count_by_category",
     "trap_categoty",
 ]
-_CHECK_LINE = (
-    "52: correct=23 wrong=0 abstain=20 refusal_ok=6 refusal_wrong=2 "
+_MAIN_SHA = "57d85c529aa363825aaa566f12b8822fd76a4215"
+_CHECK_INCLUDED = (
+    "sha=57d85c529aa363825aaa566f12b8822fd76a4215 pack_gold_served=included "
+    "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+    "empty_gold=0 gold_broken=1 mode=served"
+)
+_CHECK_EXCLUDED = (
+    "sha=57d85c529aa363825aaa566f12b8822fd76a4215 pack_gold_served=excluded "
+    "45: correct=16 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
 
@@ -105,8 +112,32 @@ def test_grade52_served_is_default() -> None:
         )
 
 
+def _abstain() -> dict[str, Any]:
+    return {
+        "badge": "ABSTAIN",
+        "route": "abstain",
+        "abstained": True,
+        "rows": [],
+    }
+
+
+def _served(rows: Any) -> dict[str, Any]:
+    return {
+        "badge": "L1_GOVERNED_METRIC",
+        "route": "governed_metric",
+        "abstained": False,
+        "rows": rows,
+    }
+
+
+def _write_jsonl(path: Path, records: list[dict[str, Any]], sha: str) -> None:
+    header = json.dumps({"dms_sha": sha})
+    body = "".join(json.dumps(row) + "\n" for row in records)
+    path.write_text(header + "\n" + body, encoding="utf-8")
+
+
 def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
-    """23 correct, 20 abstain, 1 gold-broken, 6 ok refusals, 2 wrong refusals."""
+    """23/0/20 plus 1 gold-broken, traps 8/0. Without the 7: 16/0/20 plus 1."""
     import grade52
 
     grade52._bootstrap()
@@ -121,10 +152,12 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
     try:
         for question in pack["questions"]:
             qid = str(question["id"])
-            if grade52._is_trap(question):
+            oracle = oracles.get(qid)
+            oracle_map = oracle if isinstance(oracle, dict) else None
+            if grade52._is_trap(question, oracle_map):
                 traps.append(qid)
                 continue
-            sql = grade52._certified_sql(oracles.get(qid))
+            sql = grade52._certified_sql(oracle_map)
             if sql is None:
                 broken.append(qid)
                 continue
@@ -133,73 +166,28 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
         con.close()
     assert len(certified) == 43
     assert len(traps) == 8
-    assert len(broken) == 1
-    certified.sort(key=lambda item: item[0])
-    traps.sort()
+    assert broken == ["ops_spend_boundary"]
+    assert "trap_categoty" not in traps
+    by_gold = {qid: rows for qid, rows in certified}
+    assert set(_GOLD_SERVED) <= set(by_gold)
+    rest = sorted(qid for qid in by_gold if qid not in set(_GOLD_SERVED))
+    correct_ids = list(_GOLD_SERVED) + rest[:16]
+    abstain_ids = rest[16:]
+    assert len(correct_ids) == 23
+    assert len(abstain_ids) == 20
     records: list[dict[str, Any]] = []
-    for qid, gold in certified[:23]:
-        records.append(
-            {
-                "id": qid,
-                "env": {
-                    "badge": "L1_GOVERNED_METRIC",
-                    "route": "governed_metric",
-                    "abstained": False,
-                    "rows": _jsonable(gold),
-                },
-            }
-        )
-    for qid, _gold in certified[23:]:
-        records.append(
-            {
-                "id": qid,
-                "env": {
-                    "badge": "ABSTAIN",
-                    "route": "abstain",
-                    "abstained": True,
-                    "rows": [],
-                },
-            }
-        )
-    records.append(
-        {
-            "id": broken[0],
-            "env": {
-                "badge": "ABSTAIN",
-                "route": "abstain",
-                "abstained": True,
-                "rows": [],
-            },
-        }
-    )
-    for qid in traps[:6]:
-        records.append(
-            {
-                "id": qid,
-                "env": {
-                    "badge": "ABSTAIN",
-                    "route": "abstain",
-                    "abstained": True,
-                    "rows": [],
-                },
-            }
-        )
-    for qid in traps[6:]:
-        records.append(
-            {
-                "id": qid,
-                "env": {
-                    "badge": "L0_CERTIFIED",
-                    "route": "sql",
-                    "abstained": False,
-                    "rows": [{"answered": 1}],
-                },
-            }
-        )
+    for qid in correct_ids:
+        records.append({"id": qid, "env": _served(_jsonable(by_gold[qid]))})
+    for qid in abstain_ids:
+        records.append({"id": qid, "env": _abstain()})
+    records.append({"id": broken[0], "env": _abstain()})
+    for qid in traps:
+        records.append({"id": qid, "env": _abstain()})
     path = tmp_path / "envelopes.jsonl"
-    path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+    _write_jsonl(path, records, _MAIN_SHA)
     report = grade_envelopes_path(path)
-    assert summary_line(report).endswith(_CHECK_LINE)
+    assert summary_line(report) == _CHECK_INCLUDED
+    assert report["dms_sha"] == _MAIN_SHA
     assert report["mode"] == "served"
     assert _buckets(report) == 52
     non_trap = (
@@ -211,12 +199,30 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
     )
     assert non_trap == 44
     assert report["gold_broken"] == 1
-    assert report["refusal_ok"] + report["refusal_wrong"] == 8
+    assert report["refusal_ok"] == 8
+    assert report["refusal_wrong"] == 0
+    by_case = {item["id"]: item for item in report["cases"]}
+    for qid in _GOLD_SERVED:
+        assert by_case[qid]["bucket"] == "CORRECT"
+    assert by_case["ops_spend_boundary"]["bucket"] == "GOLD_BROKEN"
     without = report["without_pack_gold_served"]
-    assert without["pack_gold_served"] == "excluded"
-    assert without["n"] == 45
+    assert summary_line(without) == _CHECK_EXCLUDED
     assert _buckets(without) == 45
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
+    served_broken: list[dict[str, Any]] = []
+    for row in records:
+        if row["id"] == "ops_spend_boundary":
+            served_broken.append({"id": row["id"], "env": _served([{"n": 1}])})
+        else:
+            served_broken.append(row)
+    broken_path = tmp_path / "served_broken.jsonl"
+    _write_jsonl(broken_path, served_broken, _MAIN_SHA)
+    failed = grade_envelopes_path(broken_path)
+    assert failed["gold_broken"] == 0
+    assert failed["wrong"] == 1
+    failed_case = {item["id"]: item for item in failed["cases"]}
+    assert failed_case["ops_spend_boundary"]["bucket"] == "WRONG"
+    assert failed_case["ops_spend_boundary"]["reason"] == "served on gold-broken"
     folder_out = tmp_path / "dir"
     folder_out.mkdir()
     for row in records:
@@ -224,8 +230,40 @@ def test_grade52_check_shaped_envelopes(tmp_path: Path) -> None:
             json.dumps(row["env"]),
             encoding="utf-8",
         )
-    loaded = load_envelopes(folder_out)
+    (folder_out / "dms_sha").write_text(_MAIN_SHA + "\n", encoding="utf-8")
+    loaded, sha = load_envelopes(folder_out)
+    assert sha == _MAIN_SHA
     assert {item["id"] for item in loaded} == {row["id"] for row in records}
+
+
+def test_grade52_sha_is_the_envelopes_commit(tmp_path: Path) -> None:
+    body = json.dumps({"id": "x", "env": {"badge": "ABSTAIN", "abstained": True, "rows": []}})
+    path = tmp_path / "env.jsonl"
+    path.write_text(json.dumps({"dms_sha": "b" * 40}) + "\n" + body + "\n", encoding="utf-8")
+    rows, sha = load_envelopes(path)
+    assert sha == "b" * 40
+    assert rows[0]["id"] == "x"
+    bare = tmp_path / "bare.jsonl"
+    bare.write_text(body + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="commit missing"):
+        grade_envelopes_path(bare)
+
+
+def test_grade52_missing_rows_raises(tmp_path: Path) -> None:
+    path = tmp_path / "env.jsonl"
+    path.write_text(
+        json.dumps({"id": "x", "env": {"badge": "L0_CERTIFIED"}}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="rows"):
+        load_envelopes(path)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text(
+        json.dumps({"id": "x", "env": {"badge": "ABSTAIN", "rows": []}}) + "\n",
+        encoding="utf-8",
+    )
+    rows, _sha = load_envelopes(empty)
+    assert rows[0]["env"]["rows"] == []
 
 
 def test_grade52_submit_stub_is_not_a_score(capsys: pytest.CaptureFixture[str]) -> None:
@@ -241,7 +279,7 @@ def test_grade52_stub_exec_main() -> None:
     """Exec-SQL stub, flags off. Real served rows, not the one-cell submit stub."""
     report = grade_main()
     assert report["mode"] == "stub-exec"
-    assert len(report["dms_sha"]) == 40
+    assert report["dms_sha"] == _MAIN_SHA
     assert report["n"] == 52
     assert _buckets(report) == 52
     assert report["correct"] == 43
