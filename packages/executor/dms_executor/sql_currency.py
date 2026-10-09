@@ -960,11 +960,143 @@ def served_column_sources(
     return out
 
 
+def normalize_sql(sql: str, dialect: str) -> str | None:
+    """Canonical SQL text for one connector dialect. None if it does not parse.
+
+    The caller passes the dialect. This does not assume a warehouse or a source.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    return tree.sql(dialect=dialect)
+
+
+def sql_byte_equal(left: str | None, right: str | None, dialect: str) -> bool:
+    """True when both statements normalise to the same bytes in ``dialect``."""
+    if not left or not right:
+        return False
+    a = normalize_sql(left, dialect)
+    b = normalize_sql(right, dialect)
+    return a is not None and a == b
+
+
+def _predicate(node: exp.Expression | None) -> exp.Expression | None:
+    if node is None:
+        return None
+    if isinstance(node, (exp.Where, exp.Having)):
+        return node.this
+    return node
+
+
+def _conjuncts(node: exp.Expression | None) -> list[exp.Expression]:
+    """AND-split only. OR stays one conjunct. No identifier list."""
+    pred = _predicate(node)
+    if pred is None:
+        return []
+    if isinstance(pred, exp.And):
+        return _conjuncts(pred.left) + _conjuncts(pred.right)
+    return [pred]
+
+
+def _root_selects(tree: exp.Expression) -> list[exp.Select]:
+    """Outermost selects. CTE bodies and nested subqueries stay closed."""
+    if isinstance(tree, exp.Select):
+        return [tree]
+    if isinstance(tree, exp.With):
+        inner = tree.this
+        return _root_selects(inner) if isinstance(inner, exp.Expression) else []
+    if isinstance(tree, (exp.Union, exp.Except, exp.Intersect)):
+        out: list[exp.Select] = []
+        for side in (tree.this, tree.expression):
+            if isinstance(side, exp.Expression):
+                out.extend(_root_selects(side))
+        return out
+    if type(tree).__name__ == "Paren":
+        inner = tree.this
+        return _root_selects(inner) if isinstance(inner, exp.Expression) else []
+    return []
+
+
+def _select_conjuncts(select: exp.Select, dialect: str) -> set[str]:
+    nodes: list[exp.Expression | None] = [
+        select.args.get("where"),
+        select.args.get("having"),
+    ]
+    for join in select.args.get("joins") or []:
+        if hasattr(join, "args"):
+            nodes.append(join.args.get("on"))
+    return {expr.sql(dialect=dialect) for node in nodes for expr in _conjuncts(node)}
+
+
+def top_level_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
+    """Normalised top-level WHERE, HAVING, and JOIN ON conjuncts.
+
+    None if ``sql`` does not parse in ``dialect``. An empty set is a
+    statement with no such predicate. Subquery predicates are not pulled out.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    found: set[str] = set()
+    for select in _root_selects(tree):
+        found |= _select_conjuncts(select, dialect)
+    return frozenset(found)
+
+
+def scoped_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
+    """WHERE, HAVING, and JOIN ON conjuncts in every select scope.
+
+    CTEs, subqueries, and derived tables are included. None if ``sql`` does
+    not parse in ``dialect``. An empty set is a statement with no predicate.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    found: set[str] = set()
+    for select in tree.find_all(exp.Select):
+        found |= _select_conjuncts(select, dialect)
+    return frozenset(found)
+
+
+def is_multi_statement(sql: str, dialect: str) -> bool:
+    """True when ``sql`` parses as more than one statement in ``dialect``."""
+    from sqlglot import parse
+
+    try:
+        trees = parse(sql or "", read=dialect)
+    except Exception:
+        return False
+    return len([tree for tree in trees if tree is not None]) > 1
+
+
+def dropped_conjuncts(
+    previous: str, nxt: str, dialect: str
+) -> frozenset[str] | None:
+    """Conjuncts in ``previous`` missing from ``nxt``, every select scope.
+
+    None if either statement fails to parse. Callers treat None as fail-closed.
+    """
+    prev = scoped_conjuncts(previous, dialect)
+    cur = scoped_conjuncts(nxt, dialect)
+    if prev is None or cur is None:
+        return None
+    return frozenset(prev - cur)
+
+
 __all__ = [
     "SourceColumn",
     "asked_currencies",
     "asked_currency",
     "currency_mismatch_reason",
+    "dropped_conjuncts",
     "is_currency_column",
+    "is_multi_statement",
+    "scoped_conjuncts",
+    "normalize_sql",
     "served_column_sources",
+    "sql_byte_equal",
+    "top_level_conjuncts",
 ]
