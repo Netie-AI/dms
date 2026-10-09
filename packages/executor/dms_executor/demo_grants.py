@@ -112,6 +112,7 @@ def ingested_bronze_tables(
     from dms_executor.bronze import list_bronze_tables
     from dms_executor.lake_registry import (
         ServingDeadlineExceeded,
+        ServingDeadlineReserve,
         ServingLeaseCap,
         ServingLeaseQueueFull,
         ServingWaitCancelled,
@@ -126,6 +127,7 @@ def ingested_bronze_tables(
         ServingLeaseQueueFull,
         ServingWaitCancelled,
         ServingDeadlineExceeded,
+        ServingDeadlineReserve,
     ):
         raise
     except Exception as exc:  # noqa: BLE001

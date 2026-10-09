@@ -87,8 +87,10 @@ from dms_executor.generative_ask import (
 )
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
+    SERVING_DEADLINE_RESERVE_REASON,
     AskControl,
     ServingDeadlineExceeded,
+    ServingDeadlineReserve,
     ServingLeaseCap,
     ServingLeaseQueueFull,
     ServingWaitCancelled,
@@ -211,6 +213,7 @@ def _insights_compute_seam(
         ServingLeaseQueueFull,
         ServingWaitCancelled,
         ServingDeadlineExceeded,
+        ServingDeadlineReserve,
     ):
         raise
     except Exception as exc:  # noqa: BLE001 — miss into contract ask, do not 503
@@ -641,6 +644,7 @@ class Executor:
                 ServingLeaseCap,
                 ServingLeaseQueueFull,
                 ServingDeadlineExceeded,
+                ServingDeadlineReserve,
             ) as exc:
                 # build_abstain writes the ticket when DMS_CLOOP_B is on.
                 # This exit does not log. While the envelope is built, another
@@ -660,6 +664,12 @@ class Executor:
                             "No figure was returned."
                         )
                         answer_id = "ans_serving_deadline_exceeded"
+                    elif exc.code == SERVING_DEADLINE_RESERVE_REASON:
+                        text = (
+                            "I can't answer this right now: there is not enough "
+                            f"time left to start ({exc.code}). No figure was returned."
+                        )
+                        answer_id = "ans_serving_deadline_reserve"
                     else:
                         text = (
                             "I can't answer this right now: serving connections are "
@@ -880,6 +890,7 @@ class Executor:
             ServingLeaseQueueFull,
             ServingWaitCancelled,
             ServingDeadlineExceeded,
+            ServingDeadlineReserve,
         ):
             raise
         except Exception:  # noqa: BLE001 -- empty context, never the whole space
@@ -1041,6 +1052,7 @@ class Executor:
             ServingLeaseQueueFull,
             ServingWaitCancelled,
             ServingDeadlineExceeded,
+            ServingDeadlineReserve,
         ):
             raise
         except Exception as exc:  # noqa: BLE001

@@ -41,6 +41,7 @@ from dms_executor.lake_registry import (
     SERVING_LEASE_CAP_REASON,
     SERVING_LEASE_QUEUE_FULL_REASON,
     IngestWaitTimeout,
+    ServingDeadlineReserve,
     ServingLeaseCap,
     ServingLeaseQueueFull,
     ServingWaitCancelled,
@@ -832,9 +833,9 @@ def test_serving_lease_wait_follows_the_ask_deadline(
     _lake(lake)
     tokens = bind_ask_deadline(time.monotonic() + 0.1)
     try:
-        with pytest.raises(ServingLeaseCap) as raised:
+        with pytest.raises(ServingDeadlineReserve) as raised:
             connect_serving(lake)
-        assert raised.value.code == SERVING_LEASE_CAP_REASON
+        assert raised.value.code == "serving_deadline_reserve"
         assert lease_refs(lake) == 0
         assert serving_read_holds(lake) == 0
     finally:
@@ -859,11 +860,83 @@ def test_ask_inside_the_reserve_abstains_at_once(
         assert resp.status_code == 200, resp.text[:500]
         body = resp.json()
         assert_envelope_valid(body)
-        assert SERVING_LEASE_CAP_REASON in _reasons(body), _reasons(body)
+        assert "serving_deadline_reserve" in _reasons(body), _reasons(body)
         assert elapsed < 0.5
         assert lease_refs(lake) == 0
     finally:
         _stop(server, thread, exe)
+
+
+_TABLE_NAMES = (
+    "dock_berths",
+    "tide_reads",
+    "locations",
+    "transactions",
+    "inventory",
+    "suppliers",
+    "shipments",
+    "alerts",
+)
+
+
+def _assert_named_without_tables(response: httpx.Response, code: str) -> dict[str, Any]:
+    assert response.status_code == 200, response.text[:500]
+    body = response.json()
+    assert_envelope_valid(body)
+    assert body.get("abstained") is True
+    assert body.get("badge") == "ABSTAIN"
+    assert code in _reasons(body), _reasons(body)
+    blob = response.text.casefold()
+    for name in _TABLE_NAMES:
+        assert name not in blob, name
+    assert not body.get("rows")
+    assert not body.get("values")
+    assert body.get("sql_used") in (None, "")
+    return body
+
+
+def test_reserve_under_and_lease_cap_are_different_codes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail when a late arrival is labelled ``serving_lease_cap``.
+
+    Under the reserve the code is ``serving_deadline_reserve``. A full cap
+    stays ``serving_lease_cap``. Both are named abstains with no table name
+    in the response. Both route as retry-later, not as a refusal.
+    """
+    lake = tmp_path / "split.duckdb"
+    _lake(lake)
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "0.40")
+    monkeypatch.delenv("DMS_LAKE_SERVING_LEASE_RESERVE_S", raising=False)
+    server, thread, port, exe = _boot(lake, monkeypatch)
+    ensure_demo_warehouse(lake)
+    holder = None
+    try:
+        started = time.monotonic()
+        late = _ask(port, 1, grounded=False)
+        elapsed = time.monotonic() - started
+        print(f"MEASURE reserve_split_elapsed_s={elapsed:.3f}")
+        late_body = _assert_named_without_tables(late, "serving_deadline_reserve")
+        assert "serving_lease_cap" not in _reasons(late_body)
+        assert elapsed < 0.5
+        assert lease_refs(lake) == 0
+        monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+        monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
+        monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "0.2")
+        holder = connect_serving(lake)
+        capped = _ask(port, 2, grounded=False)
+        cap_body = _assert_named_without_tables(capped, "serving_lease_cap")
+        assert "serving_deadline_reserve" not in _reasons(cap_body)
+        assert lease_refs(lake) == 1
+    finally:
+        if holder is not None:
+            holder.close()
+        _stop(server, thread, exe)
+    from dms_executor.pipeline_failure import reconfirm_disposition
+
+    assert reconfirm_disposition("serving_deadline_reserve") == "retry_later"
+    assert reconfirm_disposition("serving_lease_cap") == "retry_later"
+    assert reconfirm_disposition("ungranted") != "retry_later"
 
 
 def test_waiter_queue_is_bounded_and_does_not_hold_the_read_lock(

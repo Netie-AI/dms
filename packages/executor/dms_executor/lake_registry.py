@@ -34,6 +34,9 @@ import duckdb
 
 #: Named reason when a queued serving lease waits out its budget.
 SERVING_LEASE_CAP_REASON = "serving_lease_cap"
+#: Named reason when the ask arrives with less time left than the reserve.
+#: Not a capacity hit: no slot is taken.
+SERVING_DEADLINE_RESERVE_REASON = "serving_deadline_reserve"
 #: Named reason when an ask arrives and the waiter queue is already full.
 SERVING_LEASE_QUEUE_FULL_REASON = "serving_lease_queue_full"
 #: Named reason when the lease was granted and the ask deadline still passed.
@@ -110,6 +113,18 @@ class ServingLeaseCap(Exception):
         super().__init__(f"serving_lease_cap cap={cap} waited_s={waited_s:.3f}")
 
 
+class ServingDeadlineReserve(Exception):
+    """The ask arrived too late to start. The reserve was already gone.
+
+    No slot is taken. This is not ``serving_lease_cap``.
+    """
+
+    code = SERVING_DEADLINE_RESERVE_REASON
+
+    def __init__(self) -> None:
+        super().__init__(SERVING_DEADLINE_RESERVE_REASON)
+
+
 class ServingLeaseQueueFull(Exception):
     """The ask arrived when the waiter queue was already at its bound."""
 
@@ -166,7 +181,7 @@ def serving_lease_wait_s() -> float:
     There is no fixed ceiling. With an ask clock, the wait is the time left
     before that ask times out, minus ``DMS_LAKE_SERVING_LEASE_RESERVE_S``.
     If that budget is already gone, the wait is 0 and the acquire abstains
-    with ``serving_lease_cap`` without taking a slot.
+    with ``serving_deadline_reserve`` without taking a slot.
     """
     configured = _env_float(_LEASE_WAIT_ENV, DEFAULT_SERVING_LEASE_WAIT_S)
     deadline = _ask_deadline.get()
@@ -654,12 +669,14 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
     blocked = serving_lease_blocked()
     if blocked == SERVING_LEASE_QUEUE_FULL_REASON:
         raise ServingLeaseQueueFull(serving_lease_queue_max())
+    if blocked == SERVING_DEADLINE_RESERVE_REASON:
+        raise ServingDeadlineReserve()
     if blocked:
         raise ServingLeaseCap(serving_lease_cap(), 0.0)
     cap = serving_lease_cap()
     wait_s = serving_lease_wait_s()
     if _ask_deadline.get() is not None and wait_s <= 0:
-        raise ServingLeaseCap(cap, 0.0)
+        raise ServingDeadlineReserve()
     qmax = serving_lease_queue_max()
     in_queue = False
     ticket = -1
@@ -681,7 +698,7 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
                 if ticket in lake.cancelled or ask_disconnected():
                     raise ServingWaitCancelled()
                 if _ask_deadline.get() is not None and serving_lease_wait_s() <= 0:
-                    raise ServingLeaseCap(cap, time.monotonic() - started)
+                    raise ServingDeadlineReserve()
                 if lake.rw.note_serving_wait(ticket):
                     saw_writer = True
                 head = bool(lake.queue) and lake.queue[0] == ticket

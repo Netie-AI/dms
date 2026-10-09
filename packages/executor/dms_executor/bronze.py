@@ -265,6 +265,7 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
         return {}
     from dms_executor.lake_registry import (
         ServingDeadlineExceeded,
+        ServingDeadlineReserve,
         ServingLeaseCap,
         ServingLeaseQueueFull,
         ServingWaitCancelled,
@@ -276,7 +277,12 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
         return {}
     try:
         con = connect_serving(db)
-    except (ServingLeaseCap, ServingLeaseQueueFull, ServingWaitCancelled):
+    except (
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+        ServingDeadlineReserve,
+    ):
         return {}
     try:
         rows = con.execute(

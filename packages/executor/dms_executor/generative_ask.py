@@ -1442,6 +1442,7 @@ def maybe_generative_ask(
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
         from dms_executor.lake_registry import (
             ServingDeadlineExceeded,
+            ServingDeadlineReserve,
             ServingLeaseCap,
             ServingLeaseQueueFull,
             ServingWaitCancelled,
@@ -1454,6 +1455,7 @@ def maybe_generative_ask(
                 ServingLeaseQueueFull,
                 ServingWaitCancelled,
                 ServingDeadlineExceeded,
+                ServingDeadlineReserve,
             ),
         ):
             raise
