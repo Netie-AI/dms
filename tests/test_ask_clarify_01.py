@@ -1328,3 +1328,225 @@ def test_phone_or_nric_id_is_masked_and_the_pick_abstains(wh: Path) -> None:
         assert cortex.asks == []
     finally:
         exe.close()
+
+
+def _ticket_rows(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    import logging
+
+    rows: list[dict[str, Any]] = []
+    for rec in caplog.records:
+        if rec.name != "dms_executor.pipeline_failure":
+            continue
+        text = rec.getMessage()
+        if not text.startswith("pipeline_failure "):
+            continue
+        assert rec.levelno == logging.WARNING, rec.levelname
+        got = json.loads(text[len("pipeline_failure ") :])
+        assert isinstance(got, dict)
+        rows.append(got)
+    return rows
+
+
+def _one_ticket(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    reason: str,
+    question: str,
+    hidden: tuple[str, ...],
+) -> dict[str, Any]:
+    import hashlib
+
+    import dms_executor.pipeline_failure as tickets
+
+    rows = _ticket_rows(caplog)
+    assert len(rows) == 1, rows
+    payload = rows[0]
+    assert payload["reason"] == reason
+    assert payload["stage"] == "clarify"
+    assert payload["count"] == 1
+    assert payload["retries"] == 0
+    assert "sql" not in payload
+    assert "question" not in payload
+    assert "mask_failed" not in payload
+    masked, failed = tickets._masked(question)
+    assert failed is False
+    digest = hashlib.sha256(tickets._normalise(masked or "").encode()).hexdigest()
+    assert payload["question_hash"] == digest
+    blob = "\n".join(
+        rec.getMessage()
+        for rec in caplog.records
+        if rec.name == "dms_executor.pipeline_failure"
+    )
+    for item in hidden:
+        assert item not in blob, item
+    ticket_id = str(payload["ticket_id"])
+    assert ticket_id.startswith("tkt") and ticket_id.isalpha()
+    return payload
+
+
+def _arm_tickets(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    import logging
+
+    import dms_executor.pipeline_failure as tickets
+
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    tickets._reset_pipeline_failures()
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    caplog.clear()
+
+
+class _Down:
+    def __call__(self, prompt: str) -> dict[str, Any]:
+        from dms_executor.ask_clarify import ClarifyWriterUnavailable
+
+        raise ClarifyWriterUnavailable("down")
+
+
+def test_one_ticket_per_clarify_exit(
+    wh: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Flag on, real masker. One WARNING ticket per exit, no question or SQL text."""
+    import dms_executor.ask_clarify as ask_clarify
+
+    source = Path(ask_clarify.__file__ or "").read_text(encoding="utf-8")
+    assert "log_pipeline_failure_ticket" not in source
+    assert "except: pass" not in source
+    question = "show qxalpha771 and qxbeta771 call 202-555-0147"
+    hidden = (question, "202-555-0147", "SELECT 4", "SELECT")
+    tables = ["qxalpha_fact", "qxbeta_fact"]
+
+    _arm_tickets(caplog, monkeypatch)
+    env, cortex, exe = _ask(wh, question, tables, writer=_Writer(_two_measures()), flag=True)
+    try:
+        cid = env["clarify_id"]
+        exe._clarify_attempts[cid]["options"][0]["binding"] = {
+            "kind": "table",
+            "name": "qxhidden_fact",
+        }
+        _arm_tickets(caplog, monkeypatch)
+        picked = exe.live_ask(
+            question,
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=tables,
+            clarify_id=cid,
+            option_id="opt_a",
+        )
+        assert picked["abstain_reason"] == "clarify_binding_ungranted"
+        _one_ticket(caplog, reason="clarify_binding_ungranted", question=question, hidden=hidden)
+        assert cortex.submits == []
+    finally:
+        exe.close()
+
+    _arm_tickets(caplog, monkeypatch)
+    env, _held, exe = _ask(wh, question, tables, writer=_Writer(_two_measures()), flag=True)
+    try:
+        cid = env["clarify_id"]
+        exe._clarify_attempts[cid]["created"] = 0
+        _arm_tickets(caplog, monkeypatch)
+        picked = exe.live_ask(
+            question,
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=tables,
+            clarify_id=cid,
+            option_id="opt_a",
+        )
+        assert picked["abstain_reason"] == "clarify_expired"
+        _one_ticket(caplog, reason="clarify_expired", question=question, hidden=hidden)
+    finally:
+        exe.close()
+
+    _arm_tickets(caplog, monkeypatch)
+    env, cortex, exe = _ask(
+        wh, question, tables, writer=_Writer(_two_measures()), flag=True, cortex=_Cortex()
+    )
+    try:
+        _arm_tickets(caplog, monkeypatch)
+        picked = exe.live_ask(
+            question,
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=tables,
+            clarify_id=env["clarify_id"],
+            option_id="none_fits",
+        )
+        assert picked["abstain_reason"] == "none_fits"
+        assert picked["rows"] == []
+        assert cortex.submits == []
+        assert cortex.asks == []
+        _one_ticket(caplog, reason="none_fits", question=question, hidden=hidden)
+    finally:
+        exe.close()
+
+    reask = "use qxhidden_fact ungranted-token-552"
+    _arm_tickets(caplog, monkeypatch)
+    env, cortex, exe = _ask(
+        wh, question, tables, writer=_Writer(_two_measures()), flag=True, cortex=_Cortex()
+    )
+    try:
+        _arm_tickets(caplog, monkeypatch)
+        picked = exe.live_ask(
+            question,
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=tables,
+            clarify_id=env["clarify_id"],
+            clarify_text=reask,
+        )
+        assert str(picked["abstain_reason"]).startswith("ungranted_table:")
+        assert "qxhidden_fact" in picked["abstain_reason"]
+        assert cortex.submits == []
+        _one_ticket(
+            caplog,
+            reason="ungranted",
+            question=reask,
+            hidden=hidden + (reask, "qxhidden_fact", "ungranted-token-552"),
+        )
+    finally:
+        exe.close()
+
+    _arm_tickets(caplog, monkeypatch)
+    env, _held, exe = _ask(wh, question, tables, writer=_Down(), flag=True)
+    try:
+        assert env.get("clarify_skipped") == "writer_unavailable"
+        assert env.get("abstain_reason") != "clarify_writer_unavailable"
+        assert env.get("status") != "clarify"
+        assert env.get("ticket_id") is None
+        if env.get("abstained"):
+            raise AssertionError(env.get("abstain_reason"))
+        assert "Reading used:" in str(env.get("text") or "")
+        _one_ticket(caplog, reason="writer_unavailable", question=question, hidden=hidden)
+    finally:
+        exe.close()
+
+
+def test_flag_off_writes_no_clarify_ticket(
+    wh: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Clarify flag off: the same asks write zero tickets, even with the loop flag on."""
+    question = "show qxalpha771 and qxbeta771 call 202-555-0147"
+    tables = ["qxalpha_fact", "qxbeta_fact"]
+    _arm_tickets(caplog, monkeypatch)
+    env, cortex, exe = _ask(wh, question, tables, writer=_Writer(_two_measures()), flag=False)
+    try:
+        assert env.get("status") != "clarify"
+        assert env.get("clarify_skipped") is None
+        assert env.get("ticket_id") is None
+        assert "clarify_id" not in env
+        picked = exe.live_ask(
+            question,
+            space_id=FINANCE,
+            session_id="ses_clarify",
+            tables=tables,
+            clarify_id="clraaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            option_id="none_fits",
+            clarify_text="use qxhidden_fact ungranted-token-552",
+        )
+        assert picked.get("abstain_reason") != "none_fits"
+        assert picked.get("clarify_skipped") is None
+        assert picked.get("ticket_id") is None
+        assert _ticket_rows(caplog) == []
+        assert cortex.asks
+    finally:
+        exe.close()

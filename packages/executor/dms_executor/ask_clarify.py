@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -31,9 +30,11 @@ from pathlib import Path
 from typing import Any
 
 from dms_core.clarify_stats import record_clarify_tokens
+from dms_core.ids import mint_id
 from dms_core.pii import column_is_pii, fail_closed_mask_payload
 
-from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.abstain import build_abstain
+from dms_executor.envelope import assert_envelope_valid
 from dms_executor.semantic_retrieve import _safe_ident, _score, question_tokens
 
 #: Same lifetime as ``SessionContext.ttl_seconds``. One store, one TTL.
@@ -79,29 +80,22 @@ _NUMERIC = frozenset(
 
 _EXTRA_CALLS = 0
 
-# One id format. The store and the envelope both use ``mint_clarify_id``.
-# Lowercase letters only: no digits, no ``@``, no separator a mask pattern
-# catches. 28 letters is log2(26)*28 = 131.6 bits, above 128.
-_CLARIFY_ID_PREFIX = "clr"
-_CLARIFY_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
-_CLARIFY_ID_BODY = 28
+# ``mint_id`` is the only minter. Clarify ids use the prefix ``clr``.
+_CLARIFY_PREFIX = "clr"
+_CLARIFY_BODY = len(mint_id(_CLARIFY_PREFIX)) - len(_CLARIFY_PREFIX)
 
 
 def mint_clarify_id() -> str:
-    """Mint one clarify id. This is the only place the format is defined."""
-    body = "".join(secrets.choice(_CLARIFY_ID_ALPHABET) for _ in range(_CLARIFY_ID_BODY))
-    return _CLARIFY_ID_PREFIX + body
+    """Mint one clarify id via ``mint_id``."""
+    return mint_id(_CLARIFY_PREFIX)
 
 
 def minted_clarify_id(value: object) -> bool:
-    """True only for an id this module minted. Anything else is not trusted."""
-    if not isinstance(value, str):
+    """True only for an id ``mint_id('clr')`` would emit. Anything else is not trusted."""
+    if not isinstance(value, str) or not value.startswith(_CLARIFY_PREFIX):
         return False
-    prefix = _CLARIFY_ID_PREFIX
-    if len(value) != len(prefix) + _CLARIFY_ID_BODY or not value.startswith(prefix):
-        return False
-    alphabet = _CLARIFY_ID_ALPHABET
-    return all(ch in alphabet for ch in value[len(prefix) :])
+    body = value[len(_CLARIFY_PREFIX) :]
+    return len(body) == _CLARIFY_BODY and body.isalpha() and body.islower()
 
 
 def _mask_user_text(text: str) -> str:
@@ -648,11 +642,14 @@ def _envelope(
     completion_tokens: int,
 ) -> dict[str, Any]:
     shown = _mask_user_text(clarify_question)
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="clarify",
+        question=original,
+        sql=None,
+        retries=0,
+        stage="clarify",
         answer_id=f"ans_{clarify_id}",
         text=shown,
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -661,7 +658,6 @@ def _envelope(
         session_id=session_id,
         ask_mode="live",
         route="clarify",
-        question=original,
     )
     env["status"] = "clarify"
     env["clarify_id"] = clarify_id
@@ -831,24 +827,22 @@ def consider_clarify(
         try:
             raw = model(prompt)
         except ClarifyWriterUnavailable:
-            # TODO(#405): one ticket, grouped like every other ticket. Call
-            # log_pipeline_failure_ticket from dms_executor.pipeline_failure.
-            # No local logger. Do not wrap that call in `except: pass`. The
-            # caller body stays the same if the writer raises. No ticket with
-            # the flag off (this branch runs only when the flag is on).
-            #
-            # log_pipeline_failure_ticket(
-            #     reason="writer_unavailable",
-            #     question=original,
-            #     sql=None,
-            #     retries=0,
-            #     stage="clarify",
-            #     ask_id="",
-            # )
             if pii_failed:
                 return _column_unreadable(
                     space_id=space_id, session_id=session_id, question=original
                 )
+            # One ticket, through the abstain constructor. A raise from the
+            # ticket writer is already contained there, so this ask still
+            # continues. The flag off never enters this branch.
+            build_abstain(
+                reason="writer_unavailable",
+                question=original,
+                sql=None,
+                retries=0,
+                stage="clarify",
+                ask_id="",
+                demote={},
+            )
             return Gate(skipped="writer_unavailable")
         except Exception:  # noqa: BLE001
             if pii_failed:
@@ -1005,6 +999,13 @@ def clarify_from_planner(
     return planned
 
 
+def _ticket_reason(reason: str) -> str:
+    """Ticket code. A table name after ``ungranted_table`` stays off the line."""
+    if reason.startswith("ungranted_table:"):
+        return "ungranted"
+    return reason
+
+
 def named_abstain(
     reason: str,
     text: str,
@@ -1013,21 +1014,24 @@ def named_abstain(
     session_id: str | None,
     question: str,
 ) -> dict[str, Any]:
-    env = build_answer_envelope(
-        answer_id=f"ans_{reason}",
+    env = build_abstain(
+        reason=_ticket_reason(reason),
+        question=question,
+        sql=None,
+        retries=0,
+        stage="clarify",
+        abstain_reason=reason,
+        answer_id=f"ans_{_ticket_reason(reason)}",
         text=text,
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
+        sql_used=None,
         assumptions=[reason],
         space_id=space_id,
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
     )
-    env["abstain_reason"] = reason
     assert_envelope_valid(env)
     return env
 
@@ -1136,6 +1140,14 @@ def resolve_clarify(
             question=fallback_question,
         )
     original = str(attempt.get("question") or fallback_question)
+    if option_id == "none_fits":
+        return named_abstain(
+            "none_fits",
+            "None of those options fit. Ask the question again.",
+            space_id=space_id,
+            session_id=session_id,
+            question=original,
+        )
     raw_options = attempt.get("options")
     options = raw_options if isinstance(raw_options, list) else []
     cols, secrets, _pii_failed = _granted_columns(warehouse, set(grantable or ()))

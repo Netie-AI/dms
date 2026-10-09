@@ -69,6 +69,12 @@ _CODES = frozenset(
         "abstain",
         "as_of",
         "checker",
+        "clarify",
+        "clarify_binding_ungranted",
+        "clarify_column_unreadable",
+        "clarify_expired",
+        "clarify_option_unknown",
+        "clarify_unknown",
         "db_error",
         "empty_result_unverified",
         "envelope_demoted",
@@ -84,6 +90,7 @@ _CODES = frozenset(
         "loop_exhausted",
         "multi_statement",
         "no_sql",
+        "none_fits",
         "ontology",
         "openvault_mint",
         "path_not_allowed",
@@ -96,6 +103,7 @@ _CODES = frozenset(
         "ungranted",
         "value_exists_pending",
         "warehouse_missing",
+        "writer_unavailable",
     }
 )
 # The tail after these codes is an error message or a list of names.
