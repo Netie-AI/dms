@@ -47,6 +47,10 @@ GAP_REASONS = frozenset(
         # ONTO-DERIVE-01 (dms#277): a SQL-source Space's own ontology.
         "unverified_join",
         "no_declared_measure",
+        # dms#284: the second named abstain, and the two ask-time rule 12 / empty heads.
+        "no_declared_link",
+        "unmatched_filter_value",
+        "empty_aggregate",
         "ontology_store_unavailable",
         "untyped_numeric",
         "ambiguous_measure",
@@ -68,8 +72,26 @@ _GENERIC_ABSTAIN = (
     "so I am not executing one."
 )
 
-#: The customer sentence shows the head only. The measure name stays in assumptions.
-_HEAD_ONLY_GAPS = frozenset({"no_declared_measure"})
+#: The customer sentence shows the head only. The measure name, the relation names and the
+#: filter value (all of them chosen by the model or typed by the asker) stay in assumptions.
+_HEAD_ONLY_GAPS = frozenset(
+    {"no_declared_measure", "no_declared_link", "unmatched_filter_value", "empty_aggregate"}
+)
+
+#: One plain sentence per head, said first, in the words a customer uses. It names nothing
+#: the model chose. The ``(gap: <head>)`` clause after it is unchanged, so every existing
+#: substring assertion on the head keeps holding.
+_PLAIN_SENTENCE = {
+    "no_declared_measure": "No steward has confirmed a measure that answers this question.",
+    "no_declared_link": (
+        "The data does not declare a link between these tables, so I will not join them."
+    ),
+    "unmatched_filter_value": "That value does not appear in the data exactly as written.",
+    "empty_aggregate": "The measure has no values for this question.",
+}
+
+#: Abstains that offer the Space's usable confirmed measures as what to ask instead.
+SUGGESTING_GAPS = frozenset({"no_declared_measure", "no_declared_link"})
 
 
 def gap_reason_name(reason: str) -> str | None:
@@ -88,8 +110,10 @@ def customer_abstain_text(reason: str) -> str:
     if head is None:
         return _GENERIC_ABSTAIN
     shown = head if head in _HEAD_ONLY_GAPS else gap
+    plain = _PLAIN_SENTENCE.get(head)
     return (
-        "I cannot certify an ontology-grounded query for that question "
+        (f"{plain} " if plain else "")
+        + "I cannot certify an ontology-grounded query for that question "
         f"(gap: {shown}), so I am not executing one."
     )
 
@@ -157,6 +181,7 @@ def ranking_missing_metric_gap(
 
 __all__ = [
     "GAP_REASONS",
+    "SUGGESTING_GAPS",
     "customer_abstain_text",
     "gap_reason_name",
     "ranking_missing_metric_gap",

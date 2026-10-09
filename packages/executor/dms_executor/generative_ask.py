@@ -73,11 +73,17 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.gen_path_refuse import (
+    SUGGESTING_GAPS,
     customer_abstain_text,
+    gap_reason_name,
     ranking_missing_metric_gap,
 )
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
-from dms_executor.measure_use import prune_unusable_measures
+from dms_executor.measure_use import (
+    confirmed_measure_suggestions,
+    measure_exclusions,
+    prune_unusable_measures,
+)
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -107,9 +113,11 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.space_ontology import (
+    REASON_NO_DECLARED_LINK,
     REASON_NO_DECLARED_MEASURE,
     REASON_UNVERIFIED_JOIN,
     budget_space_block,
+    relabel_join_gap,
     relation_columns,
     space_catalog,
     unverified_join_reason,
@@ -811,7 +819,16 @@ def _abstain(
     sql: str | None = None,
     retries: int = 0,
     stage: str = "generative",
+    suggest_from: Ontology | None = None,
 ) -> dict[str, Any]:
+    # A Space's ``no_declared_measure`` / ``no_declared_link`` offers what it CAN answer: the
+    # steward-confirmed measures that were checked against the lake this ask (name and the
+    # steward's description, never anything the model chose). Nothing else suggests.
+    suggestions = (
+        confirmed_measure_suggestions(suggest_from)
+        if suggest_from is not None and gap_reason_name(reason) in SUGGESTING_GAPS
+        else []
+    )
     env = build_abstain(
         reason=reason,
         question=question,
@@ -828,6 +845,7 @@ def _abstain(
         session_id=session_id,
         ask_mode="live",
         route="generated",
+        suggestions=suggestions,
     )
     assert_envelope_valid(env)
     return with_plan_source(env, plan_source)
@@ -1094,6 +1112,7 @@ def path_miss_envelope(
     *,
     space_id: str | None,
     session_id: str | None,
+    suggest_from: Ontology | None = None,
 ) -> dict[str, Any]:
     """Isolated A/B miss: ABSTAIN, do not mix Cortex/pack into the other lane."""
     return _abstain(
@@ -1102,6 +1121,7 @@ def path_miss_envelope(
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,
+        suggest_from=suggest_from,
     )
 
 
@@ -1278,6 +1298,48 @@ def compile_plan_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQu
     ``measure_confirm`` (that would close a cycle).
     """
     return _compile_maybe_unverified(onto, plan)
+
+
+def _exclusion_reason(measure: str, *ontologies: Ontology | None) -> str | None:
+    """Why a CONFIRMED measure of this name did not reach (or left) this ask, or None.
+
+    The load and the prune record on the ontology object they touch; the verified copy the
+    ask compiles against can be another object than the loaded one, so every one in use is
+    asked. A name nobody confirmed has no entry.
+    """
+    for onto in ontologies:
+        why = measure_exclusions(onto).get(measure)
+        if why:
+            return why
+    return None
+
+
+def _typed_refusal_reason(
+    refusal: Refusal, plan: QueryPlan, onto: Ontology, space_onto: Ontology | None
+) -> str:
+    """``<reason>: <detail>`` for a typed-plan compile refusal.
+
+    On a Space ontology only, a ``no_path`` whose destination has NO declared link chain from
+    the measure's grain is ``no_declared_link``: the source never declared the relationship,
+    which is a different thing to say to a customer than "no path". A destination with a
+    declared chain that compile still refused (many-to-many, ambiguous, unverified) keeps the
+    compile's own reason, as does the demo ontology (``space_onto`` is None there). A chain
+    declared only the OTHER way (the plan groups a parent by its child) is declared too: the
+    sentence "the data does not declare a link" would be false, so ``no_path`` stays.
+    """
+    reason = refusal.reason
+    if reason == "no_path" and space_onto is not None:
+        measure = onto.measures.get(plan.measure)
+        if measure is not None:
+            for dest in sorted(_plan_dests(plan, onto)):
+                if (
+                    dest != measure.grain
+                    and not _declared_paths(onto, measure.grain, dest)
+                    and not _declared_paths(onto, dest, measure.grain)
+                ):
+                    reason = REASON_NO_DECLARED_LINK
+                    break
+    return f"{reason}: {refusal.detail}"
 
 
 _SPACE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1827,8 +1889,10 @@ def maybe_generative_ask(
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
                 join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
             else:
-                join_why = unverified_join_reason(
-                    sql, space_onto, declared_violations, columns_of=cols
+                # A join over two relations the source never linked is named for what it
+                # is (``no_declared_link``); every other refusal keeps ``unverified_join``.
+                join_why = relabel_join_gap(
+                    unverified_join_reason(sql, space_onto, declared_violations, columns_of=cols)
                 )
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
@@ -1842,6 +1906,7 @@ def maybe_generative_ask(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
+                    suggest_from=space_onto,
                 )
             )
         if why:
@@ -1982,16 +2047,24 @@ def maybe_generative_ask(
         and plan.measure not in space_onto.measures
     ):
         # Measures are never derived for a SQL-source Space (NEEDS_FOUNDER):
-        # a plan that needs one the Space has not declared is a named gap.
+        # a plan that needs one the Space has not declared is a named gap. When a
+        # steward DID confirm that name but it cannot be used now, the tail says why
+        # (the customer still reads the head only).
+        unusable = _exclusion_reason(plan.measure, ontology, onto, declared, space_onto)
+        tail = (
+            f"is not usable now: {unusable}"
+            if unusable
+            else "is not a measure this Space declares"
+        )
         return _stamp(
             _abstain(
                 q,
-                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not a measure this "
-                "Space declares",
+                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} {tail}",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,
                 notes=trail_notes,
+                suggest_from=space_onto,
             )
         )
     if onto is None and not demo_ontology_allowed and declared is None:
@@ -2033,8 +2106,9 @@ def maybe_generative_ask(
     if isinstance(compiled, Refusal):
         return _stamp(
             _abstain(
-                q, f"{compiled.reason}: {compiled.detail}",
+                q, _typed_refusal_reason(compiled, plan, onto, space_onto),
                 space_id=space_id, session_id=session_id, plan_source=source,
+                suggest_from=space_onto,
             )
         )
     if not isinstance(compiled, CompiledQuery):

@@ -65,6 +65,7 @@ _DIALECT = "duckdb"
 
 REASON_UNVERIFIED_JOIN = "unverified_join"
 REASON_NO_DECLARED_MEASURE = "no_declared_measure"
+REASON_NO_DECLARED_LINK = "no_declared_link"
 REASON_STORE_UNAVAILABLE = "ontology_store_unavailable"
 
 
@@ -1371,6 +1372,33 @@ def unverified_join_reason(
     return None
 
 
+#: The one tail of ``unverified_join_reason`` that means "the source declares no link between
+#: these relations" (``_JoinRule.link_for``), as opposed to a link that exists but is
+#: unverified, a join on columns it does not name, a fan trap, a cross product, or a
+#: predicate that is not a link. Only this tail is relabelled.
+_NO_LINK_TAIL = " has no declared link"
+
+
+def relabel_join_gap(why: str | None) -> str | None:
+    """Name a join refusal for what it is. Pure; the join rule itself is not touched.
+
+    ``unverified_join:<a> x <b> has no declared link`` becomes
+    ``no_declared_link: unverified_join:<a> x <b> has no declared link``: the head the customer
+    reads is the missing declaration, and the original string stays whole behind it (in the
+    assumptions) so nothing is lost. Every other ``unverified_join`` reason (``link X is not
+    verified``, ``joined on columns no declared link names``, ``fan_trap``, ``cross_product``,
+    ``non_link_predicate``, the analysis failures) and every non-join reason is returned as it
+    came.
+    """
+    if (
+        why
+        and why.startswith(f"{REASON_UNVERIFIED_JOIN}:")
+        and why.endswith(_NO_LINK_TAIL)
+    ):
+        return f"{REASON_NO_DECLARED_LINK}: {why}"
+    return why
+
+
 def check_sql_against_space(
     sql: str, onto: Ontology, warehouse: Path | None, extra: Sequence[str] = ()
 ) -> str | None:
@@ -1386,4 +1414,4 @@ def check_sql_against_space(
         cols = relation_columns(onto, warehouse, extra)
     except Exception:  # noqa: BLE001
         return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-    return unverified_join_reason(sql, onto, violations, columns_of=cols)
+    return relabel_join_gap(unverified_join_reason(sql, onto, violations, columns_of=cols))

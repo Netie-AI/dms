@@ -1,6 +1,7 @@
 """CONNECT-ASK-02 (dms#284) at the customer envelope: confirmed measures on the ask path.
 
-Step 6 of the measure lane (load, prune, wire budget). Every case posts ``POST /v1/chat/ask``,
+Steps 6 and 7 of the measure lane (load, prune, wire budget; the two named abstains and their
+plain sentences). Every case posts ``POST /v1/chat/ask``,
 runs ``assert_envelope_valid`` and asserts the badge, ``abstained``, the rendered text and the
 returned rows against an independent oracle query on the lake, never the SQL alone
 (CLAUDE.md rules 10, 10a). The Space is the typed schools data of tests/test_ingest_fixes_277.py
@@ -23,12 +24,15 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+import test_ingest_fixes_277 as ingest277
+from cortex_client.models import AskResponse
 from dms_core.control_plane.onto_store import OntologyStore, measure_definition_hash
+from dms_executor.gen_path_refuse import GAP_REASONS, customer_abstain_text, gap_reason_name
 from dms_executor.measure_basis import CONFIRMED_MEASURE_BADGE
-from dms_executor.space_ontology import set_ontology_store
+from dms_executor.space_ontology import relabel_join_gap, set_ontology_store
 from test_ingest_fixes_277 import _oracle, _Rig, _types
 from test_onto_confirm_01 import SCHOOLS, _Env, _lake_exec, _Ledger
-from test_onto_derive_01 import _assert_abstain, _Space, make_minter
+from test_onto_derive_01 import _assert_abstain, _reasons, _Space, _space, make_minter
 
 DISTRICTS = "bronze.public_districts"
 TOTAL_Q = "What is the total budget of all schools?"
@@ -408,3 +412,388 @@ def test_a_failing_measures_read_is_a_named_abstain_never_a_silent_drop(
     assert rigged.executed == []
     assert len(rigged.rig.cortex.insights) == asked_before, "Cortex was asked anyway"
     assert rigged.rig.cortex.asks == []
+
+
+# ================================================================ step 7: the named abstains
+#
+# ``no_declared_link`` (the source never linked these tables) and ``no_declared_measure`` (no
+# steward-confirmed measure answers) each say one plain sentence, name nothing the model chose,
+# and offer the Space's usable confirmed measures. ``unverified_join`` keeps every OTHER join
+# refusal; ``no_path`` stays on the demo ontology.
+
+GRANTS = "bronze.public_grants"
+GRANT_TABLE = ("public", "grants")
+GRANT_DATA = {
+    '"public"."grants"': (
+        ["grant_id", "title", "amount"],
+        [[1, "Lunch", Decimal("5.00")], [2, "Books", Decimal("7.50")]],
+    )
+}
+GRANT_TYPES = {
+    "public.grants": [
+        ("grant_id", "integer", 32, 0),
+        ("title", "text", None, None),
+        ("amount", "numeric", 10, 2),
+    ]
+}
+SCHOOLS_GRANTS_SQL = (
+    "SELECT SUM(s.budget) AS total_budget FROM bronze.public_schools s "
+    "JOIN bronze.public_grants g ON s.school_id = g.grant_id"
+)
+PLAIN_LINK = "The data does not declare a link between these tables, so I will not join them."
+PLAIN_MEASURE = "No steward has confirmed a measure that answers this question."
+
+
+@pytest.fixture()
+def linkless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: Any, store: OntologyStore
+) -> _Rigged:
+    """The schools Space plus a ``grants`` table that has a key and NO foreign key at all."""
+    monkeypatch.setattr(ingest277, "PKS", [*ingest277.PKS, ("public", "grants", "grant_id", 1)])
+    rig = _Rig(tmp_path, monkeypatch, minter)
+    space = rig.space("Linkless")
+    rig.ingest(
+        space,
+        tables=[*ingest277.TABLES, GRANT_TABLE],
+        data={**ingest277.DATA, **GRANT_DATA},
+        types={**ingest277.TYPES, **GRANT_TYPES},
+    )
+    env = _Env(rig=rig, space=space, sid=UUID(space), store=store, ledger=_Ledger())
+    return _Rigged(env)
+
+
+def _suggestions(rigged: _Rigged, *names: str) -> list[str]:
+    return [f"{n}: {rigged.env.row(rigged.row_id(n)).description}" for n in sorted(names)]
+
+
+# ---------------------------------------------------------------- pure: heads, sentences, relabel
+
+
+OLD_HEADS = {
+    "unknown_measure", "no_path", "unknown_object", "unknown_column", "ontology_unverified",
+    "missing_metric", "missing_ontology", "missing_join", "fanout_refused", "ambiguous_path",
+    "unknown_link", "coverage_invalid", "insights_unarmed", "insights_refused",
+    "insights_unauthorized", "insights_timeout", "insights_call_cap",
+    "insights_no_sql_no_ranking", "insights_bearer_missing",
+    "insights_bearer_insecure_transport", "unhonored_qualifier", "unverified_join",
+    "no_declared_measure", "ontology_store_unavailable", "untyped_numeric", "ambiguous_measure",
+    "rank_window_unhandled_terms", "ungrounded_qualifier", "rank_window_entity_mismatch",
+    "rank_window_open_ended", "unrequested_offset", "loop_exhausted", "empty_result_unverified",
+    "no_sql", "multi_statement", "warehouse_missing",
+}  # fmt: skip
+
+
+def test_every_existing_head_stays_and_the_three_new_ones_are_named() -> None:
+    assert OLD_HEADS <= GAP_REASONS
+    for head in ("no_declared_link", "unmatched_filter_value", "empty_aggregate"):
+        assert head in GAP_REASONS and gap_reason_name(f"{head}: anything") == head
+
+
+@pytest.mark.parametrize(
+    ("reason", "sentence"),
+    [
+        ("no_declared_measure: m1 is not a measure this Space declares", PLAIN_MEASURE),
+        (
+            "no_declared_link: unverified_join:bronze.a x bronze.b has no declared link",
+            PLAIN_LINK,
+        ),
+        (
+            "unmatched_filter_value: bronze.public_districts.name = 'north'",
+            "That value does not appear in the data exactly as written.",
+        ),
+        ("empty_aggregate: schools_budget_sum", "The measure has no values for this question."),
+    ],
+)
+def test_each_new_head_says_one_plain_sentence_then_the_gap_and_names_nothing_else(
+    reason: str, sentence: str
+) -> None:
+    text = customer_abstain_text(reason)
+    head = gap_reason_name(reason)
+    assert text.startswith(sentence + " I cannot certify"), text
+    assert f"(gap: {head})" in text, text
+    # The tail is the model's or the asker's: relation names, measure ids and values stay in
+    # the assumptions, never the sentence.
+    for leaked in ("bronze", "m1", "north", "schools_budget_sum", "unverified_join"):
+        assert leaked not in text, (leaked, text)
+
+
+def test_heads_with_no_plain_sentence_render_exactly_as_before() -> None:
+    assert customer_abstain_text("no_path: no chain from sale to orphan") == (
+        "I cannot certify an ontology-grounded query for that question "
+        "(gap: no_path: no chain from sale to orphan), so I am not executing one."
+    )
+    assert "gap:" not in customer_abstain_text("submit_failed")
+
+
+@pytest.mark.parametrize(
+    ("why", "relabelled"),
+    [
+        (
+            "unverified_join:bronze.public_districts x bronze.public_enrollments "
+            "has no declared link",
+            True,
+        ),
+        ("unverified_join:bronze.a x bronze.b joined on columns no declared link names", False),
+        ("unverified_join:link enrollments_school_id_fkey is not verified", False),
+        ("unverified_join:fan_trap", False),
+        ("unverified_join:cross_product", False),
+        ("unverified_join:non_link_predicate", False),
+        ("unverified_join:check_unavailable", False),
+        ("unverified_join:parse", False),
+        # only a join refusal is ever relabelled, whatever else ends the same way
+        ("no_path: bronze.a x bronze.b has no declared link", False),
+        ("validate:explain: has no declared link", False),
+    ],
+)
+def test_relabel_join_gap_only_names_a_missing_declaration(why: str, relabelled: bool) -> None:
+    got = relabel_join_gap(why)
+    assert got == (f"no_declared_link: {why}" if relabelled else why)
+    assert relabel_join_gap(None) is None and relabel_join_gap("") == ""
+
+
+# ---------------------------------------------------------------- the SQL branch (E10)
+
+
+def test_sql_over_tables_the_source_never_linked_is_no_declared_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: Any, store: OntologyStore
+) -> None:
+    """E10, SQL branch. Enrollments to districts: the source declares no link at all."""
+    from test_onto_derive_01 import BROKEN_Q, BROKEN_SQL, VERIFIED_Q, WRONG_JOIN_SQL
+
+    rig = _space(tmp_path, monkeypatch, minter)
+    sql = (
+        "SELECT COUNT(*) AS n FROM bronze.public_enrollments e "
+        "JOIN bronze.public_districts d ON e.school_id = d.district_id"
+    )
+    # It would execute and answer (2, a number about a join nobody declared): the refusal is
+    # the rule, not a failing statement.
+    assert _oracle(rig.lake, sql) == [{"n": 2}]
+    env = rig.ask("How many enrollments are there per district?", {"query_sql": sql})
+    text = _assert_abstain(env, "no_declared_link")
+    assert PLAIN_LINK in text
+    assert "bronze.public_enrollments" not in text and "unverified_join" not in text, text
+    # The original refusal is whole in the assumptions, behind the new head.
+    assert (
+        "no_declared_link: unverified_join:bronze.public_districts x bronze.public_enrollments "
+        "has no declared link" in _reasons(env)
+    ), env.get("assumptions")
+    assert rig.cortex.executed == []
+    assert env["suggestions"] == [], "nothing is confirmed on this Space, so nothing is offered"
+
+    # The other join refusals keep their head: a join on the wrong columns, and a link that
+    # failed verification.
+    wrong = rig.ask(VERIFIED_Q, {"query_sql": WRONG_JOIN_SQL, "plan_source": "ontology_plan"})
+    _assert_abstain(wrong, "unverified_join")
+    assert "no_declared_link" not in str(wrong["text"]) + _reasons(wrong)
+    broken = rig.ask(BROKEN_Q, {"query_sql": BROKEN_SQL, "plan_source": "ontology_plan"})
+    _assert_abstain(broken, "ontology_unverified")
+    assert rig.cortex.executed == []
+
+
+def test_the_contract_ask_sql_over_unlinked_tables_is_no_declared_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: Any, store: OntologyStore
+) -> None:
+    """E10, check_sql_against_space: the contract ask's own SQL gets the same name."""
+    from test_onto_derive_01 import VERIFIED_Q, WRONG_JOIN_SQL
+
+    rig = _space(tmp_path, monkeypatch, minter)
+    sql = (
+        "SELECT COUNT(*) AS n FROM bronze.public_enrollments e "
+        "JOIN bronze.public_districts d ON e.school_id = d.district_id"
+    )
+
+    def _ask(sql_used: str) -> Any:
+        def ask(req: Any) -> AskResponse:
+            rig.cortex.asks.append(req)
+            return AskResponse(
+                answer="There are 2.",
+                abstained=False,
+                badge="generated",
+                route="generated",
+                sql_used=sql_used,
+                rows=[{"n": 2}],
+            )
+
+        return ask
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask(sql))
+    env = rig.ask(VERIFIED_Q, {})
+    assert rig.cortex.asks, "the contract ask was not reached"
+    text = _assert_abstain(env, "no_declared_link")
+    assert PLAIN_LINK in text and "bronze.public_enrollments" not in text
+    assert "has no declared link" in _reasons(env)
+    assert rig.cortex.executed == []
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask(WRONG_JOIN_SQL))
+    _assert_abstain(rig.ask(VERIFIED_Q, {}), "unverified_join")
+
+
+def test_sql_over_unlinked_tables_offers_what_a_steward_confirmed(linkless: _Rigged) -> None:
+    linkless.confirm(BUDGET, COUNT)
+    linkless.env.propose()  # proposing again confirms nothing and offers nothing
+    env = linkless.sql(TOTAL_Q, SCHOOLS_GRANTS_SQL)
+    text = _assert_abstain(env, "no_declared_link")
+    assert PLAIN_LINK in text and GRANTS not in text
+    assert env["suggestions"] == _suggestions(linkless, BUDGET, COUNT)
+    assert env["values"] == [] and env["rows"] == [] and not env.get("drillthrough_token")
+    assert linkless.executed == []
+    assert linkless.rig.cortex.asks == []
+
+
+# ---------------------------------------------------------------- the typed branch (E10, E06 shape)
+
+
+def test_a_typed_plan_grouped_by_an_unlinked_object_is_no_declared_link(
+    linkless: _Rigged,
+) -> None:
+    linkless.confirm(BUDGET)
+    env = linkless.plan(
+        "What is the total budget of all schools by grant title?",
+        BUDGET,
+        group_by=((GRANTS, "title"),),
+        query_sql=SUM_SQL,
+    )
+    text = _assert_abstain(env, "no_declared_link")
+    assert PLAIN_LINK in text and GRANTS not in text and BUDGET not in text, text
+    assert f"no_declared_link: no chain of verified many-to-one links from '{SCHOOLS}'" in (
+        _reasons(env)
+    ), env.get("assumptions")
+    assert env["suggestions"] == _suggestions(linkless, BUDGET)
+    # No fallback: Cortex's SQL (valid, and it would answer) never ran.
+    assert linkless.executed == [] and linkless.rig.cortex.asks == []
+
+
+def test_a_typed_filter_on_an_unlinked_object_is_no_declared_link(linkless: _Rigged) -> None:
+    linkless.confirm(BUDGET)
+    env = linkless.plan(
+        "What is the total budget of schools with a Lunch grant?",
+        BUDGET,
+        filters=((GRANTS, "title", "=", "Lunch"),),
+    )
+    text = _assert_abstain(env, "no_declared_link")
+    assert PLAIN_LINK in text and "Lunch" not in text
+    assert "so it cannot be filtered on" in _reasons(env)
+    assert linkless.executed == []
+
+
+def test_a_declared_link_the_plan_cannot_use_keeps_its_own_reason(linkless: _Rigged) -> None:
+    """districts <- schools is declared (many-to-one the other way). Grouping a DISTRICT count
+    by school is not "no declared link": the sentence would be false, so ``no_path`` stays."""
+    linkless.confirm("districts_count")
+    env = linkless.plan(
+        "How many districts are there by school?",
+        "districts_count",
+        group_by=((SCHOOLS, "name"),),
+    )
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    text = str(env["text"])
+    assert "gap: no_path" in text, text
+    assert "no_declared_link" not in text + _reasons(env)
+    assert linkless.executed == []
+
+
+def test_a_declared_verified_link_still_answers_with_oracle_rows(linkless: _Rigged) -> None:
+    """The relabel is for a missing declaration only: next to an unlinked table, the declared
+    and verified schools-to-districts link still answers, rows against the oracle."""
+    linkless.confirm(BUDGET)
+    env = linkless.plan(
+        "What is the total budget of schools in the North district?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "=", "North"),),
+    )
+    oracle = _oracle(
+        linkless.rig.lake,
+        "SELECT SUM(s.budget) AS v FROM bronze.public_schools s "
+        "JOIN bronze.public_districts d ON s.district_id = d.district_id WHERE d.name = 'North'",
+    )
+    assert oracle == [{"v": Decimal("310.75")}]
+    _assert_answer(env, oracle, "310.75")
+    assert env["suggestions"] == []
+
+
+# ---------------------------------------------------------------- no_declared_measure (E02, E11)
+
+
+def test_an_undeclared_measure_says_so_plainly_and_offers_the_confirmed_ones(
+    linkless: _Rigged,
+) -> None:
+    linkless.confirm(BUDGET, COUNT)
+    env = linkless.plan(TOTAL_Q, "total_students")
+    text = _assert_abstain(env, "no_declared_measure")
+    assert PLAIN_MEASURE in text and "total_students" not in text, text
+    assert "no_declared_measure: total_students is not a measure this Space declares" in _reasons(
+        env
+    ), env.get("assumptions")
+    assert env["suggestions"] == _suggestions(linkless, BUDGET, COUNT)
+    assert linkless.executed == []
+
+
+def test_a_proposed_only_space_has_nothing_to_offer(rigged: _Rigged) -> None:
+    env = rigged.plan(TOTAL_Q, BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert PLAIN_MEASURE in text and BUDGET not in text
+    assert env["suggestions"] == [], "a proposal is not an answer anyone may be pointed at"
+    assert "is not a measure this Space declares" in _reasons(env)
+
+
+@pytest.mark.parametrize(
+    ("ddl", "why"),
+    [
+        ("ALTER TABLE bronze.public_schools DROP COLUMN budget", "column_missing"),
+        ("ALTER TABLE bronze.public_schools ALTER budget TYPE VARCHAR", "column_type_changed"),
+        (
+            "INSERT INTO bronze.public_schools SELECT * FROM bronze.public_schools "
+            "WHERE school_id = 1",
+            "grain_unverified",
+        ),
+    ],
+)
+def test_a_measure_that_cannot_be_used_now_says_why_behind_the_head(
+    rigged: _Rigged, ddl: str, why: str
+) -> None:
+    rigged.confirm(BUDGET, "districts_count")
+    _lake_exec(rigged.rig.lake, ddl)
+    env = rigged.plan(TOTAL_Q, BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert PLAIN_MEASURE in text
+    assert why not in text and BUDGET not in text, "the reason is for the assumptions"
+    assert f"no_declared_measure: {BUDGET} is not usable now: {why}" in _reasons(env), env[
+        "assumptions"
+    ]
+    assert rigged.executed == []
+    # What can still answer is offered; what just failed is not.
+    assert env["suggestions"] == _suggestions(rigged, "districts_count")
+
+
+def test_a_tampered_row_is_unusable_with_its_reason_and_never_offered(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    _tamper(rigged, BUDGET, description="Edited by hand.")
+    env = rigged.plan(TOTAL_Q, BUDGET)
+    _assert_abstain(env, "no_declared_measure")
+    assert f"{BUDGET} is not usable now: integrity" in _reasons(env)
+    assert env["suggestions"] == [] and rigged.executed == []
+
+
+def test_the_contract_ask_over_unlinked_tables_offers_what_a_steward_confirmed(
+    linkless: _Rigged, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    linkless.confirm(BUDGET)
+
+    def ask(req: Any) -> AskResponse:
+        linkless.rig.cortex.asks.append(req)
+        return AskResponse(
+            answer="Total budget is 360.75.",
+            abstained=False,
+            badge="generated",
+            route="generated",
+            sql_used=SCHOOLS_GRANTS_SQL,
+            rows=[{"total_budget": Decimal("360.75")}],
+        )
+
+    monkeypatch.setattr(linkless.rig.cortex, "ask", ask)
+    env = linkless.space.ask(TOTAL_Q, {})
+    assert linkless.rig.cortex.asks, "the contract ask was not reached"
+    text = _assert_abstain(env, "no_declared_link")
+    assert PLAIN_LINK in text and "360.75" not in text and GRANTS not in text
+    assert env["suggestions"] == _suggestions(linkless, BUDGET)
+    assert linkless.executed == []
