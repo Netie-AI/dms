@@ -1705,8 +1705,12 @@ def maybe_generative_ask(
         is_deadline(payload if isinstance(payload, dict) else None)
         or str(budget_stop).startswith("insights_timeout")
     )
-    if budget_stop and not deadline_first:
-        # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
+    # Compile only when ranking is already in hand. A timeout or cap with
+    # nothing to compile keeps the pre-loop abstain.
+    compile_on_deadline = deadline_first and ontology_plan_from_ranking(
+        q, payload if isinstance(payload, dict) else None, onto=onto, ctx=ctx
+    ) is not None
+    if budget_stop and not compile_on_deadline:
         return _stamp(
             _abstain(
                 q,
@@ -1717,6 +1721,19 @@ def maybe_generative_ask(
                 stage="insights_budget",
             )
         )
+    if compile_on_deadline and isinstance(payload, dict):
+        payload = dict(payload)
+        payload.pop("query_sql", None)
+        payload.pop("insights_fail", None)
+        gen = payload.get("generative")
+        if isinstance(gen, dict):
+            gen = dict(gen)
+            gen.pop("sql", None)
+            payload["generative"] = gen
+        setup_src = payload
+        kind = parse_compute_plan(payload)
+        source = plan_source_from_payload(payload)
+        origin = plan_origin_from_payload(payload)
     if (
         not deadline_first
         and cloop_b_enabled()
