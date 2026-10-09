@@ -103,6 +103,17 @@ def _norm(obj: Any) -> Any:
     return obj
 
 
+def _top_level_order_by(sql: str) -> bool:
+    """True when the sqlglot AST has an ORDER BY on the outer SELECT."""
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(sql, read="duckdb")
+    except Exception:  # noqa: BLE001 - unparsable SQL keeps the stable sort
+        return False
+    return isinstance(tree, exp.Select) and tree.args.get("order") is not None
+
+
 def _freeze(env: dict[str, Any]) -> dict[str, Any]:
     frozen = json.loads(json.dumps(_norm(env), sort_keys=True, default=str))
     assert isinstance(frozen, dict)
@@ -152,7 +163,10 @@ class _Cortex:
             cur = con.execute(sql)
             cols = [str(c[0]) for c in (cur.description or [])]
             rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
-            rows.sort(key=lambda row: json.dumps(row, sort_keys=True, default=str))
+            # A top-level ORDER BY is the engine's order. Sorting it reverses
+            # a ranking. Unordered results stay sorted so the capture is stable.
+            if not _top_level_order_by(sql):
+                rows.sort(key=lambda row: json.dumps(row, sort_keys=True, default=str))
         finally:
             con.close()
         return QueryResult(ok=True, status="ok", run_id="run_flag", output={"rows": rows})
@@ -264,6 +278,39 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     assert l2 >= 5, l2
     assert abstain >= 1, abstain
     assert canned >= 3, canned
+
+
+def test_ordered_sql_keeps_engine_row_order(tmp_path: Path) -> None:
+    """Top-level ORDER BY is the engine's order. The stub must not sort it."""
+    db = tmp_path / "order.duckdb"
+    ensure_demo_warehouse(db)
+    cortex = _Cortex(db)
+    ordered = "SELECT supplier_id FROM suppliers ORDER BY lead_time_days DESC, supplier_id ASC"
+    plain = "SELECT supplier_id FROM suppliers"
+
+    class _Req:
+        def __init__(self, sql: str) -> None:
+            self.plan = {"kind": "sql"}
+            self.body = {"sql": sql}
+
+    def _engine(sql: str) -> list[dict[str, Any]]:
+        con = connect_file(db)
+        try:
+            cur = con.execute(sql)
+            cols = [str(c[0]) for c in (cur.description or [])]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            con.close()
+
+    got = cortex.submit(_Req(ordered)).output["rows"]
+    engine = _engine(ordered)
+    assert got == engine
+    stable = sorted(got, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+    assert got != stable
+    plain_rows = cortex.submit(_Req(plain)).output["rows"]
+    assert plain_rows == sorted(
+        plain_rows, key=lambda row: json.dumps(row, sort_keys=True, default=str)
+    )
 
 
 def _capture(dest: Path) -> None:

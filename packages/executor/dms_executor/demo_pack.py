@@ -35,6 +35,7 @@ COLD_STORAGE_Q = "Which locations are cold storage?"
 CAPACITY_ABOVE_90_Q = "Which locations are above 90 percent capacity?"
 EXPIRED_ITEMS_Q = "Which items are expired?"
 CCTV_WH_A_Q = "Show the CCTV camera for warehouse A"
+SUPPLIER_RANK_Q = "Rank suppliers by combined risk and lead time score"
 HOW_FULL_TRAP_Q = "how full is each warehouse"
 DELAYED_COUNT_TRAP_Q = "How many delayed incoming shipments per warehouse?"
 STOCK_BY_BIN_TRAP_Q = "Show stock by storage bin"
@@ -563,6 +564,43 @@ def empty_confident_answer(env: dict[str, Any] | None) -> bool:
     return not list(env.get("rows") or [])
 
 
+def _compiled_supplier_rank_sql(warehouse: Path) -> str | None:
+    """Verified ontology SQL for the supplier rank measure. Not a scoring file."""
+    import duckdb
+
+    from dms_executor.ontology import CompiledQuery, demo_ontology
+
+    onto = demo_ontology(warehouse)
+    con = duckdb.connect(str(warehouse), read_only=True)
+    try:
+        if onto.verify(con):
+            return None
+    finally:
+        con.close()
+    compiled = onto.compile(
+        "supplier_rank_score",
+        group_by=[("supplier", "supplier_id")],
+        limit=10,
+    )
+    if not isinstance(compiled, CompiledQuery):
+        return None
+    return compiled.sql
+
+
+def _supplier_rank_metric(question: str, warehouse: Path | None) -> PackMetric | None:
+    if warehouse is None or _norm(question) != _norm(SUPPLIER_RANK_Q):
+        return None
+    sql = _compiled_supplier_rank_sql(warehouse)
+    if not sql:
+        return None
+    return PackMetric(
+        metric_id="supplier_rank_score",
+        question=question,
+        sql=sql,
+        tables=("suppliers",),
+    )
+
+
 def maybe_pack_ask(
     question: str,
     *,
@@ -595,6 +633,7 @@ def run_pack_ask(
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+    warehouse: Path | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """L1 envelope, and whether governed SQL ran and returned no rows.
 
@@ -602,7 +641,68 @@ def run_pack_ask(
     match whose grants, Cortex SQL, or ledger step fails is a named ABSTAIN.
     ``(None, False)`` is a phrase miss or hostile SQL. ``(None, True)`` means
     the governed execution returned no rows, so the caller runs the ladder.
+
+    The supplier-rank phrase compiles ``supplier_rank_score`` from the
+    verified ontology. A 0-row result is ``(None, True)`` so the ladder runs.
+    It is not a bare abstain, and it does not read the scoring file.
     """
+    rank = _supplier_rank_metric(question, warehouse)
+    if rank is not None:
+        if tables:
+            return None, False
+        allowed = grantable if grantable is not None else set()
+        if any(not _grant_covers(t, allowed) for t in rank.tables):
+            return _curated_step_refusal(
+                question, "grants fail", space_id=space_id, session_id=session_id
+            ), False
+        try:
+            reject_hostile_chat_sql(rank.sql)
+        except SecurityEvent:
+            return None, False
+        if submit is None or ledger_append is None:
+            return _curated_step_refusal(
+                question, "Cortex SQL fail", space_id=space_id, session_id=session_id
+            ), False
+        try:
+            result = submit(rank.sql)
+        except OpenVaultTokenError:
+            raise
+        except Exception:  # noqa: BLE001
+            return _curated_step_refusal(
+                question, "Cortex SQL fail", space_id=space_id, session_id=session_id
+            ), False
+        ok = getattr(result, "ok", None)
+        if ok is False or getattr(result, "output", None) is None:
+            return _curated_step_refusal(
+                question, "Cortex SQL fail", space_id=space_id, session_id=session_id
+            ), False
+        run_id = str(getattr(result, "run_id", None) or "")
+        try:
+            led = ledger_append({"sql": rank.sql, "run_id": run_id})
+        except Exception:  # noqa: BLE001
+            return _curated_step_refusal(
+                question, "ledger fail", space_id=space_id, session_id=session_id
+            ), False
+        entry_id = getattr(led, "entry_id", None) if led is not None else None
+        if not (isinstance(entry_id, str) and entry_id.strip()):
+            return _curated_step_refusal(
+                question, "ledger fail", space_id=space_id, session_id=session_id
+            ), False
+        led_hash = getattr(led, "hash", None)
+        if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
+            return _curated_step_refusal(
+                question, "ledger fail", space_id=space_id, session_id=session_id
+            ), False
+        if not rows_from_submit_result(result):
+            return None, True
+        return envelope_from_pack_submit(
+            metric=rank,
+            result=result,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            audit_id=entry_id.strip(),
+        ), False
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
         return None, False

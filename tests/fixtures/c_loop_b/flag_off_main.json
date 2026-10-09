@@ -116,10 +116,6 @@
             "row_count": 4,
             "rows": [
               {
-                "category": "CHEMICALS",
-                "stock_value_myr": 1800.0
-              },
-              {
                 "category": "PACKAGING",
                 "stock_value_myr": 15015.0
               },
@@ -130,6 +126,10 @@
               {
                 "category": "RAW",
                 "stock_value_myr": 5816.0
+              },
+              {
+                "category": "CHEMICALS",
+                "stock_value_myr": 1800.0
               }
             ],
             "status": "rows",
@@ -155,10 +155,6 @@
         "route": "governed_metric",
         "rows": [
           {
-            "category": "CHEMICALS",
-            "stock_value_myr": 1800.0
-          },
-          {
             "category": "PACKAGING",
             "stock_value_myr": 15015.0
           },
@@ -169,6 +165,10 @@
           {
             "category": "RAW",
             "stock_value_myr": 5816.0
+          },
+          {
+            "category": "CHEMICALS",
+            "stock_value_myr": 1800.0
           }
         ],
         "served_attribution": "none",
@@ -176,27 +176,27 @@
         "space_id": null,
         "sql_used": "SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr FROM inventory GROUP BY category ORDER BY stock_value_myr DESC, category ASC",
         "suggestions": [],
-        "text": "Found 4 row(s).\n  - category=CHEMICALS, stock_value_myr=1800.0\n  - category=PACKAGING, stock_value_myr=15015.0\n  - category=PARTS, stock_value_myr=7209.0\n  - category=RAW, stock_value_myr=5816.0",
+        "text": "Found 4 row(s).\n  - category=PACKAGING, stock_value_myr=15015.0\n  - category=PARTS, stock_value_myr=7209.0\n  - category=RAW, stock_value_myr=5816.0\n  - category=CHEMICALS, stock_value_myr=1800.0",
         "values": [
           {
             "id": "v0",
             "label": "stock_value_myr",
-            "value": 1800.0
+            "value": 15015.0
           },
           {
             "id": "v1",
             "label": "stock_value_myr",
-            "value": 15015.0
+            "value": 7209.0
           },
           {
             "id": "v2",
             "label": "stock_value_myr",
-            "value": 7209.0
+            "value": 5816.0
           },
           {
             "id": "v3",
             "label": "stock_value_myr",
-            "value": 5816.0
+            "value": 1800.0
           }
         ]
       },
@@ -738,10 +738,6 @@
             "row_count": 4,
             "rows": [
               {
-                "category": "CHEMICALS",
-                "stock_value_myr": 1800.0
-              },
-              {
                 "category": "PACKAGING",
                 "stock_value_myr": 15015.0
               },
@@ -752,6 +748,10 @@
               {
                 "category": "RAW",
                 "stock_value_myr": 5816.0
+              },
+              {
+                "category": "CHEMICALS",
+                "stock_value_myr": 1800.0
               }
             ],
             "status": "rows",
@@ -777,10 +777,6 @@
         "route": "governed_metric",
         "rows": [
           {
-            "category": "CHEMICALS",
-            "stock_value_myr": 1800.0
-          },
-          {
             "category": "PACKAGING",
             "stock_value_myr": 15015.0
           },
@@ -791,6 +787,10 @@
           {
             "category": "RAW",
             "stock_value_myr": 5816.0
+          },
+          {
+            "category": "CHEMICALS",
+            "stock_value_myr": 1800.0
           }
         ],
         "served_attribution": "none",
@@ -798,27 +798,27 @@
         "space_id": null,
         "sql_used": "SELECT category, ROUND(SUM(quantity_kg * unit_cost_myr), 2) AS stock_value_myr FROM inventory GROUP BY category ORDER BY stock_value_myr DESC, category ASC",
         "suggestions": [],
-        "text": "Found 4 row(s).\n  - category=CHEMICALS, stock_value_myr=1800.0\n  - category=PACKAGING, stock_value_myr=15015.0\n  - category=PARTS, stock_value_myr=7209.0\n  - category=RAW, stock_value_myr=5816.0",
+        "text": "Found 4 row(s).\n  - category=PACKAGING, stock_value_myr=15015.0\n  - category=PARTS, stock_value_myr=7209.0\n  - category=RAW, stock_value_myr=5816.0\n  - category=CHEMICALS, stock_value_myr=1800.0",
         "values": [
           {
             "id": "v0",
             "label": "stock_value_myr",
-            "value": 1800.0
+            "value": 15015.0
           },
           {
             "id": "v1",
             "label": "stock_value_myr",
-            "value": 15015.0
+            "value": 7209.0
           },
           {
             "id": "v2",
             "label": "stock_value_myr",
-            "value": 7209.0
+            "value": 5816.0
           },
           {
             "id": "v3",
             "label": "stock_value_myr",
-            "value": 5816.0
+            "value": 1800.0
           }
         ]
       },

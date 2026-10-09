@@ -172,22 +172,6 @@ def _report(envelopes: dict[str, Any], db: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _flag_off_served(qid: str) -> dict[str, Any]:
-    """Envelope rows captured from main under the flags-off exec stub."""
-    raw = json.loads(
-        (ROOT / "tests" / "fixtures" / "c_loop_b" / "flag_off_main.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    want = f"ans_{qid}"
-    for ask in raw["asks"]:
-        env = ask["envelope"]
-        if env.get("answer_id") == want:
-            assert isinstance(env, dict)
-            return env
-    raise AssertionError(qid)
-
-
 def test_planted_gold_does_not_change_the_seven_answers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -261,9 +245,14 @@ def test_seven_ids_when_scoring_tree_is_unreadable(
     blocked = _serve(tmp_path / "blocked.duckdb", rows, monkeypatch)
     for qid in _LEAK_IDS:
         for side in (readable, blocked):
+            assert "oracles.yaml" not in str(side[qid])
+            if qid == "cq_supplier_ranking":
+                assert side[qid]["abstained"] is False, qid
+                assert side[qid].get("rows"), qid
+                assert side[qid]["badge"] != "ABSTAIN", qid
+                continue
             assert side[qid]["badge"] != "L1_GOVERNED_METRIC", qid
             assert not side[qid].get("rows"), qid
-            assert "oracles.yaml" not in str(side[qid])
 
 
 def _path_opens_tests(tree: ast.AST) -> bool:
@@ -537,42 +526,39 @@ def test_l1_with_rows_makes_zero_extra_calls(
     assert body["model_calls"] == 0
 
 
+def _id_order(rows: list[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for row in rows:
+        text = next(v for v in row.values() if isinstance(v, str))
+        out.append(text)
+    return out
+
+
 def test_cq_supplier_ranking_grades_the_served_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """This id's flags-off exec envelope grades WRONG from its own rows.
+    """The served rows are the ontology result, in engine order.
 
-    The scoring copy's row multiset matches. That match is not the grade.
-    This head serves no rows for the id, so it is an abstain, not that copy.
+    A bare abstain is a pipeline failure. demo_pack copies submit rows
+    through without sorting them.
     """
     live_rows = [row for row in _questions() if row["id"] == "cq_supplier_ranking"]
     assert len(live_rows) == 1
-    live = _serve(tmp_path / "live.duckdb", live_rows, monkeypatch)["cq_supplier_ranking"]
-    assert list(live.get("rows") or []) == []
-    assert live["abstained"] is True
-    db = tmp_path / "grade.duckdb"
-    ensure_demo_warehouse(db)
-    judge_detailed = _judge()
-    live_grade = judge_detailed(
-        _case("cq_supplier_ranking"), live, oracle_db=db, oracles=_oracles()
-    )
-    assert live_grade.verdict == "ABSTAIN"
-
-    served = _flag_off_served("cq_supplier_ranking")
-    served_rows = list(served.get("rows") or [])
-    assert [row["supplier_id"] for row in served_rows] == [
-        "SUP-03",
-        "SUP-01",
-        "SUP-02",
-        "SUP-04",
-    ]
-    graded = judge_detailed(_case("cq_supplier_ranking"), served, oracle_db=db, oracles=_oracles())
-    assert graded.verdict == "WRONG"
-    assert graded.reason == "rows_mismatch:values"
-    copy_sql = " ".join(str(_oracles()["cq_supplier_ranking"]["sql"]).split())
-    copy_rows = execute_sql(copy_sql, path=db)
-    assert _rows_key(served_rows) == _rows_key(copy_rows)
-    assert [row["supplier_id"] for row in copy_rows] != [row["supplier_id"] for row in served_rows]
+    db = tmp_path / "live.duckdb"
+    live = _serve(db, live_rows, monkeypatch)["cq_supplier_ranking"]
+    assert live["abstained"] is False
+    assert live["badge"] != "ABSTAIN"
+    assert "pack-metric miss" not in str(live.get("assumptions"))
+    served = list(live.get("rows") or [])
+    assert served
+    sql = str(live.get("sql_used") or "")
+    engine = execute_sql(sql, path=db, product=True)
+    assert _id_order(served) == _id_order(engine)
+    assert _id_order(served) == ["SUP-04", "SUP-02", "SUP-01", "SUP-03"]
+    graded = _judge()(_case("cq_supplier_ranking"), live, oracle_db=db, oracles=_oracles())
+    assert graded.verdict != "WRONG"
+    assert graded.verdict != "ABSTAIN"
+    assert live.get("model_calls") == 0
 
 
 def test_runtime_modules_do_not_reference_scoring_files() -> None:
