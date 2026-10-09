@@ -19,6 +19,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,10 @@ def _connect(path: Path | None) -> duckdb.DuckDBPyConnection:
 
 
 def _cell(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        # DuckDB DECIMAL. A string here is invisible to E4, so a true SUM
+        # reads as an uncited figure.
+        return float(value)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if hasattr(value, "isoformat"):
