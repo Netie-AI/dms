@@ -5,14 +5,15 @@ executed read-only on a fresh ``ensure_demo_warehouse`` file. ``$as_of`` binds
 the connection's current date. A refuse oracle, or a question with no SQL, has
 empty gold. Gold is never read from an envelope or a canned stub.
 
-Served rows are the envelope's ``sql_used`` executed on that same warehouse.
-The flag-off replay stub returns ``{n: 1}`` for every submit and does not run
-SQL; grading those cells would grade the stub. Abstain envelopes have no SQL,
-so their served rows are the envelope rows.
+The default mode ``served`` grades the envelope rows and abstain flag. It does
+not execute ``sql_used``. ``replay-only`` re-executes ``sql_used`` and is not
+a score. A trap is a refusal: abstain is a correct refusal, a served answer
+is a wrong refusal.
 
 Usage:
     python scripts/verify/grade52.py --self-test
-    python scripts/verify/grade52.py --main --mode replay-of-captured-envelopes
+    python scripts/verify/grade52.py --main
+    python scripts/verify/grade52.py --main --mode replay-only
 """
 
 from __future__ import annotations
@@ -39,8 +40,11 @@ ABS_TOL = 0.005
 # unmappable. Upgrade is branch-and-bound if a real answer is wider than the
 # value signature can narrow.
 MAP_CAP = 1024
+MODE_SERVED = "served"
+MODE_REPLAY = "replay-only"
 MODES = (
-    "replay-of-captured-envelopes",
+    MODE_SERVED,
+    MODE_REPLAY,
     "executing-stub",
     "live-model",
 )
@@ -48,6 +52,18 @@ BUCKET_CORRECT = "CORRECT"
 BUCKET_WRONG = "WRONG"
 BUCKET_ABSTAIN = "ABSTAIN"
 BUCKET_EMPTY = "EMPTY_GOLD"
+BUCKET_REFUSAL_OK = "REFUSAL_OK"
+BUCKET_REFUSAL_WRONG = "REFUSAL_WRONG"
+BUCKET_GOLD_BROKEN = "GOLD_BROKEN"
+_BUCKET_KEYS = (
+    "correct",
+    "wrong",
+    "abstain",
+    "refusal_ok",
+    "refusal_wrong",
+    "empty_gold",
+    "gold_broken",
+)
 _REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
 _CREDENTIAL_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
 
@@ -390,6 +406,14 @@ def _rows_of(value: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _is_trap(question: Mapping[str, Any]) -> bool:
+    """A refusal case. Not an id list: refuse, or an abstain expectation on a trap id."""
+    expect = str(question.get("expect") or "").strip().lower()
+    if expect == "refuse":
+        return True
+    return expect == "abstain" and str(question.get("id") or "").startswith("trap_")
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -397,32 +421,43 @@ def grade_case(
     env: Mapping[str, Any],
     served_rows: list[dict[str, Any]],
     as_of: str,
+    trap: bool = False,
+    gold_broken: bool = False,
 ) -> dict[str, Any]:
-    """One case. ``gold is None`` means empty gold (no certified rows)."""
+    """One case. Traps are refusals. Missing gold on a non-trap is gold-broken.
+
+    ``gold is None`` without ``gold_broken`` is empty gold (no certified rows).
+    """
     badge = env.get("badge")
     route = env.get("route")
     code = abstain_code(env)
+    served_n = len(served_rows)
     base = {
         "route": route,
         "badge": badge,
         "abstain_code": code,
         "as_of": as_of,
+        "served_n": served_n,
     }
-    if gold is None:
-        served_n = len(served_rows)
+    if trap:
         if _is_abstain(env):
-            return {
-                **base,
-                "bucket": BUCKET_EMPTY,
-                "reason": "abstain",
-                "served_n": served_n,
-            }
+            return {**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"}
+        unit = "row" if served_n == 1 else "rows"
+        return {
+            **base,
+            "bucket": BUCKET_REFUSAL_WRONG,
+            "reason": f"served with {served_n} {unit}",
+        }
+    if gold_broken:
+        return {**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"}
+    if gold is None or gold == []:
+        if _is_abstain(env):
+            return {**base, "bucket": BUCKET_EMPTY, "reason": "abstain"}
         unit = "row" if served_n == 1 else "rows"
         return {
             **base,
             "bucket": BUCKET_EMPTY,
             "reason": f"served with {served_n} {unit}",
-            "served_n": served_n,
         }
     if _is_abstain(env):
         return {**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"}
@@ -479,8 +514,8 @@ def served_rows_for(
     *,
     mode: str,
 ) -> list[dict[str, Any]]:
-    """Replay re-executes ``sql_used``. An executing stub already ran it."""
-    if mode == "executing-stub" or _is_abstain(env):
+    """``served`` uses envelope rows. Only ``replay-only`` executes ``sql_used``."""
+    if mode != MODE_REPLAY or _is_abstain(env):
         return _rows_of(env.get("rows"))
     sql = env.get("sql_used")
     if isinstance(sql, str) and sql.strip():
@@ -528,34 +563,36 @@ def pack_gold_served_ids(
 
 
 def tally(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Correct, wrong, and abstain count non-empty gold only."""
-    correct = wrong = abstain = empty = abstained = 0
+    """Every case lands in one bucket. The seven buckets add up to the case count."""
+    counts = {key: 0 for key in _BUCKET_KEYS}
+    abstained = 0
     served: dict[str, int] = {}
+    bucket_of = {
+        BUCKET_CORRECT: "correct",
+        BUCKET_WRONG: "wrong",
+        BUCKET_ABSTAIN: "abstain",
+        BUCKET_REFUSAL_OK: "refusal_ok",
+        BUCKET_REFUSAL_WRONG: "refusal_wrong",
+        BUCKET_EMPTY: "empty_gold",
+        BUCKET_GOLD_BROKEN: "gold_broken",
+    }
     for item in cases:
-        bucket = item["bucket"]
-        if bucket == BUCKET_CORRECT:
-            correct += 1
-        elif bucket == BUCKET_WRONG:
-            wrong += 1
-        elif bucket == BUCKET_ABSTAIN:
-            abstain += 1
-        elif bucket == BUCKET_EMPTY:
-            empty += 1
-            if item.get("reason") == "abstain":
-                abstained += 1
-            else:
-                key = str(item.get("served_n", 0))
-                served[key] = served.get(key, 0) + 1
+        key = bucket_of.get(str(item["bucket"]))
+        if key is None:
+            raise SystemExit(f"unknown bucket {item['bucket']}")
+        counts[key] += 1
+        if key != "empty_gold":
+            continue
+        if item.get("reason") == "abstain":
+            abstained += 1
         else:
-            raise SystemExit(f"unknown bucket {bucket}")
+            cell = str(item.get("served_n", 0))
+            served[cell] = served.get(cell, 0) + 1
     return {
-        "correct": correct,
-        "wrong": wrong,
-        "abstain": abstain,
-        "empty_gold": empty,
+        **counts,
         "empty_gold_abstained": abstained,
         "empty_gold_served": served,
-        "graded": correct + wrong + abstain,
+        "graded": counts["correct"] + counts["wrong"] + counts["abstain"],
     }
 
 
@@ -586,19 +623,33 @@ def grade_envelopes(
             env = by_id.get(qid)
             if not isinstance(env, Mapping):
                 raise SystemExit(f"missing envelope for {qid}")
-            sql = _certified_sql(oracles.get(qid))
+            trap = _is_trap(question)
+            sql = None if trap else _certified_sql(oracles.get(qid))
+            broken = sql is None and not trap
             if sql is None:
                 gold: list[dict[str, Any]] | None = None
             else:
                 gold = _execute(con, sql, as_of)
-            served = served_rows_for(con, env, as_of, mode=mode)
-            row = grade_case(gold=gold, gold_sql=sql, env=env, served_rows=served, as_of=as_of)
+            served = _rows_of(env.get("rows")) if trap else served_rows_for(
+                con, env, as_of, mode=mode
+            )
+            row = grade_case(
+                gold=gold,
+                gold_sql=sql,
+                env=env,
+                served_rows=served,
+                as_of=as_of,
+                trap=trap,
+                gold_broken=broken,
+            )
             row["id"] = qid
             row["pack_gold_served"] = qid in flagged
             cases.append(row)
     finally:
         con.close()
     counts = tally(cases)
+    if _accounted(counts) != len(cases):
+        raise SystemExit("grade52: buckets do not add up to n")
     return {
         "as_of": as_of,
         "n": len(cases),
@@ -646,9 +697,13 @@ def write_report(report: dict[str, Any]) -> Path:
         "correct": report["correct"],
         "wrong": report["wrong"],
         "abstain": report["abstain"],
+        "refusal_ok": report["refusal_ok"],
+        "refusal_wrong": report["refusal_wrong"],
         "empty_gold": report["empty_gold"],
+        "gold_broken": report["gold_broken"],
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
+        "score": report["mode"] != MODE_REPLAY,
         "without_pack_gold_served": without,
         "cases": slim_cases,
     }
@@ -674,18 +729,28 @@ def _require_label(report: Mapping[str, Any]) -> None:
         raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
 
 
+def _accounted(report: Mapping[str, Any]) -> int:
+    return sum(int(report[key]) for key in _BUCKET_KEYS)
+
+
 def summary_line(report: Mapping[str, Any]) -> str:
-    """One score line. Refuses a line that could be quoted without its mode."""
+    """One line. Buckets add up to n. Replay-only says it is not a score."""
     _require_label(report)
-    return (
-        f"mode={report['mode']} sha={report['dms_sha']} "
-        f"pack_gold_served={report['pack_gold_served']} "
+    for key in _BUCKET_KEYS:
+        if key not in report:
+            raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
+    if _accounted(report) != int(report["n"]):
+        raise SystemExit("grade52: buckets do not add up to n")
+    text = (
+        f"sha={report['dms_sha']} pack_gold_served={report['pack_gold_served']} "
         f"{report['n']}: correct={report['correct']} wrong={report['wrong']} "
-        f"abstain={report['abstain']} empty_gold={report['empty_gold']} "
-        f"empty_gold_abstained={report['empty_gold_abstained']} "
-        f"empty_gold_served={_served_label(report['empty_gold_served'])} "
-        f"graded={report['graded']} as_of={report['as_of']}"
+        f"abstain={report['abstain']} refusal_ok={report['refusal_ok']} "
+        f"refusal_wrong={report['refusal_wrong']} empty_gold={report['empty_gold']} "
+        f"gold_broken={report['gold_broken']} mode={report['mode']}"
     )
+    if report["mode"] == MODE_REPLAY:
+        return text + " not a score"
+    return text
 
 
 def _scrub_credentials() -> None:
@@ -726,7 +791,10 @@ def _dms_sha() -> str:
     return sha
 
 
-def _require_mode(mode: str | None) -> str:
+def _resolve_mode(mode: str | None) -> str:
+    """Served rows are the default score. Replay-only is opt-in and not a score."""
+    if mode is None:
+        return MODE_SERVED
     if mode not in MODES:
         raise SystemExit("grade52: --mode is required: " + ", ".join(MODES))
     return str(mode)
@@ -886,7 +954,7 @@ def _labelled(report: dict[str, Any], *, mode: str, included: str) -> dict[str, 
 
 
 def grade_main(mode: str | None) -> dict[str, Any]:
-    chosen = _require_mode(mode)
+    chosen = _resolve_mode(mode)
     if chosen == "live-model":
         raise SystemExit("grade52: live-model refuses a captured replay")
     envelopes = replay_executing() if chosen == "executing-stub" else replay_flag_off()
@@ -1036,6 +1104,41 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: empty-gold sub-counts drifted")
     if counts["empty_gold_served"] != {"0": 1, "1": 1}:
         raise SystemExit(f"self-test: served sub-count {counts['empty_gold_served']}")
+    if _accounted(counts) != 3:
+        raise SystemExit("self-test: empty-gold buckets did not add up")
+
+    trap_served = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "L0_CERTIFIED", "route": "sql", "abstained": False},
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+        trap=True,
+    )
+    trap_abstain = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "ABSTAIN", "route": "abstain", "abstained": True},
+        served_rows=[],
+        as_of="2026-10-09",
+        trap=True,
+    )
+    broken = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "ABSTAIN", "route": "abstain", "abstained": True},
+        served_rows=[],
+        as_of="2026-10-09",
+        gold_broken=True,
+    )
+    if trap_served["bucket"] != BUCKET_REFUSAL_WRONG:
+        raise SystemExit("self-test: served trap was not a wrong refusal")
+    if trap_abstain["bucket"] != BUCKET_REFUSAL_OK:
+        raise SystemExit("self-test: abstained trap was not a correct refusal")
+    if broken["bucket"] != BUCKET_GOLD_BROKEN:
+        raise SystemExit("self-test: missing gold was not gold-broken")
+    if trap_served["bucket"] == BUCKET_EMPTY or trap_abstain["bucket"] == BUCKET_EMPTY:
+        raise SystemExit("self-test: a trap landed in empty gold")
 
     try:
         summary_line({"n": 52, "correct": 0, "wrong": 0, "abstain": 0})
@@ -1044,14 +1147,53 @@ def self_test() -> dict[str, str]:
             raise
     else:
         raise SystemExit("self-test: unlabelled summary was accepted")
+    if _resolve_mode(None) != MODE_SERVED:
+        raise SystemExit("self-test: served is not the default mode")
     try:
-        code = main(["--main"])
+        _resolve_mode("replay-of-captured-envelopes")
     except SystemExit as exc:
-        if exc.code in (0, None):
-            raise SystemExit("self-test: missing mode returned success") from exc
+        if "mode" not in str(exc):
+            raise
     else:
-        if code == 0:
-            raise SystemExit("self-test: missing mode returned success")
+        raise SystemExit("self-test: retired mode name was accepted")
+    replay_line = summary_line(
+        {
+            "mode": MODE_REPLAY,
+            "dms_sha": "0" * 40,
+            "pack_gold_served": "included",
+            "n": 1,
+            "correct": 0,
+            "wrong": 0,
+            "abstain": 0,
+            "refusal_ok": 0,
+            "refusal_wrong": 0,
+            "empty_gold": 0,
+            "gold_broken": 1,
+        }
+    )
+    if "not a score" not in replay_line or "mode=replay-only" not in replay_line:
+        raise SystemExit("self-test: replay-only was presented as a score")
+    try:
+        summary_line(
+            {
+                "mode": MODE_SERVED,
+                "dms_sha": "0" * 40,
+                "pack_gold_served": "included",
+                "n": 52,
+                "correct": 23,
+                "wrong": 0,
+                "abstain": 21,
+                "refusal_ok": 6,
+                "refusal_wrong": 2,
+                "empty_gold": 0,
+                "gold_broken": 1,
+            }
+        )
+    except SystemExit as exc:
+        if "add up" not in str(exc):
+            raise
+    else:
+        raise SystemExit("self-test: 23+21+8+1 was accepted as 52")
 
     gold_wide = [{f"g{i}": i for i in range(8)}]
     served_unique = [{**{f"s{i}": i for i in range(8)}, **{f"x{i}": 100 + i for i in range(12)}}]
@@ -1075,7 +1217,8 @@ def self_test() -> dict[str, str]:
         "plants: renamed_column=CORRECT dropped_row=WRONG "
         "swapped_order=WRONG ordered_shuffle=WRONG unordered_shuffle=CORRECT "
         "extra_column=CORRECT duplicated_row=WRONG "
-        "empty_gold_served=EMPTY_GOLD unlabelled=refused wide_ambiguous=unmappable"
+        "empty_gold_served=EMPTY_GOLD refusal_wrong=REFUSAL_WRONG "
+        "unlabelled=refused wide_ambiguous=unmappable"
     )
     return plants
 

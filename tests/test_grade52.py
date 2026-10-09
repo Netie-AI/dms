@@ -1,9 +1,9 @@
-"""GRADER-VALUES-01. Self-test plants and the labelled flag-off line.
+"""GRADER-VALUES-01. Self-test plants and the labelled flag-off lines.
 
 ORDER BY is wrong only for a top-level ORDER BY. An extra answer column
 passes. The same row duplicated on the answer side is wrong. A served
-answer on empty gold stays in that bucket. A score line without a mode
-is refused. A 20-wide ambiguous map is unmappable.
+answer on empty gold stays in that bucket. A trap is a refusal, never
+empty gold. Served is the default score. Replay-only is not a score.
 """
 
 from __future__ import annotations
@@ -17,9 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "verify"))
 
 from grade52 import (  # noqa: E402
+    _resolve_mode,
     grade_main,
-    main,
     self_test,
+    summary_line,
 )
 
 _GOLD_SERVED = [
@@ -44,35 +45,96 @@ def test_grade52_self_test() -> None:
     assert plants["duplicated_row"] == "WRONG"
 
 
-def test_grade52_mode_required() -> None:
+def _buckets(report: dict) -> int:
+    return (
+        report["correct"]
+        + report["wrong"]
+        + report["abstain"]
+        + report["refusal_ok"]
+        + report["refusal_wrong"]
+        + report["empty_gold"]
+        + report["gold_broken"]
+    )
+
+
+def test_grade52_served_is_default() -> None:
+    assert _resolve_mode(None) == "served"
     with pytest.raises(SystemExit, match="mode"):
-        main(["--main"])
+        _resolve_mode("replay-of-captured-envelopes")
+    with pytest.raises(SystemExit, match="add up"):
+        summary_line(
+            {
+                "mode": "served",
+                "dms_sha": "a" * 40,
+                "pack_gold_served": "included",
+                "n": 52,
+                "correct": 23,
+                "wrong": 0,
+                "abstain": 21,
+                "refusal_ok": 6,
+                "refusal_wrong": 2,
+                "empty_gold": 0,
+                "gold_broken": 1,
+            }
+        )
 
 
-def test_grade52_main_reproduction() -> None:
-    report = grade_main("replay-of-captured-envelopes")
-    assert report["mode"] == "replay-of-captured-envelopes"
+def test_grade52_served_main_flag_off() -> None:
+    """Envelope rows, no sql_used re-exec. Stub cells do not match gold."""
+    report = grade_main(None)
+    assert report["mode"] == "served"
     assert len(report["dms_sha"]) == 40
     assert report["pack_gold_served"] == "included"
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
     assert report["n"] == 52
-    assert report["graded"] == 43
+    assert _buckets(report) == 52
+    assert report["correct"] == 0
+    assert report["wrong"] == 42
+    assert report["abstain"] == 1
+    assert report["refusal_ok"] == 6
+    assert report["refusal_wrong"] == 2
+    assert report["empty_gold"] == 0
+    assert report["gold_broken"] == 1
+    line = summary_line(report)
+    assert line.endswith("mode=served")
+    assert "not a score" not in line
+    without = report["without_pack_gold_served"]
+    assert without["pack_gold_served"] == "excluded"
+    assert without["mode"] == "served"
+    assert without["n"] == 45
+    assert _buckets(without) == 45
+    assert without["correct"] == 0
+    assert without["wrong"] == 36
+    assert without["abstain"] == 0
+    assert without["refusal_ok"] == 6
+    assert without["refusal_wrong"] == 2
+    assert without["empty_gold"] == 0
+    assert without["gold_broken"] == 1
+
+
+def test_grade52_replay_only_is_not_a_score() -> None:
+    report = grade_main("replay-only")
+    assert report["mode"] == "replay-only"
+    assert report["n"] == 52
+    assert _buckets(report) == 52
     assert report["correct"] == 42
     assert report["wrong"] == 0
     assert report["abstain"] == 1
-    assert report["empty_gold"] == 9
-    assert report["empty_gold_abstained"] == 7
-    assert report["empty_gold_served"] == {"1": 2}
+    assert report["refusal_ok"] == 6
+    assert report["refusal_wrong"] == 2
+    assert report["empty_gold"] == 0
+    assert report["gold_broken"] == 1
+    assert report["pack_gold_served_ids"] == _GOLD_SERVED
+    line = summary_line(report)
+    assert "mode=replay-only" in line
+    assert line.endswith("not a score")
     without = report["without_pack_gold_served"]
-    assert without["pack_gold_served"] == "excluded"
-    assert without["mode"] == report["mode"]
-    assert without["dms_sha"] == report["dms_sha"]
     assert without["n"] == 45
-    assert without["graded"] == 36
+    assert _buckets(without) == 45
     assert without["correct"] == 36
     assert without["wrong"] == 0
     assert without["abstain"] == 0
-    assert without["empty_gold"] == 9
+    assert without["pack_gold_served"] == "excluded"
 
 
 def test_grade52_source_has_no_provider_names() -> None:
