@@ -1013,10 +1013,14 @@ def _insights_body(
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
     if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
-        body["sql_feedback"] = {
+        feedback_body = {
             "previous_sql": str(sql_feedback.get("previous_sql") or ""),
             "reason": str(sql_feedback.get("reason") or ""),
         }
+        step = str(sql_feedback.get("step") or "")
+        if step in {"self_correct", "richer_context", "stronger_tier"}:
+            feedback_body["step"] = step
+        body["sql_feedback"] = feedback_body
     apply_schema_context(body, schema_context)
     from cortex_client.strict_pin import stamp_generate_body
 

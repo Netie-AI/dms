@@ -61,6 +61,7 @@ from dms_executor.demo_warehouse import (
 )
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
+    _is_demo_lake_relation,
     _relation_bare,
     _sql_cited_labels,
     asked_calendar_years,
@@ -87,6 +88,7 @@ from dms_executor.ontology import (
     demo_ontology,
     detect_supply_chain_grains,
     missing_join_for_ungranted,
+    table_is_granted,
     try_compile_multi_grain,
 )
 from dms_executor.schema_context import (
@@ -101,6 +103,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.served_gate import served_result_reason
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
@@ -108,6 +111,7 @@ from dms_executor.sql_loop import (
     apply_sql_credit,
     extract_dialect,
     loop_entry,
+    mask_feedback_text,
     run_model_loop,
 )
 from dms_executor.verified_queries import rows_from_submit_result
@@ -685,9 +689,28 @@ def validate_compiled_sql(
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
     named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    # Qualified grants (bronze.sheet) match the bare cited name. Exact set
+    # membership treated a granted upload as ungranted.
+    missing = {t for t in named if not table_is_granted(t, grantable)}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
+    # No cited relation. A literal select is the same grant outcome, bare
+    # code. A missing warehouse file stays warehouse_missing. A function
+    # call is not this outcome.
+    if not named and (warehouse is None or Path(warehouse).is_file()):
+        from sqlglot import exp, parse_one
+
+        try:
+            tree = parse_one(sql, read="duckdb")
+        except Exception:  # noqa: BLE001
+            tree = None
+        tables = tree.find_all(exp.Table) if tree is not None else ()
+        funcs = tree.find_all(exp.Func) if tree is not None else ()
+        no_table = isinstance(tree, exp.Select) and not any(
+            isinstance(node, exp.Table) and node.name for node in tables
+        )
+        if no_table and not any(isinstance(node, exp.Func) for node in funcs):
+            return "ungranted"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     con = connect_file(Path(warehouse))
@@ -766,6 +789,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    ladder_rung: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -836,7 +860,187 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if ladder_rung:
+        env["ladder_rung"] = ladder_rung
     return env
+
+
+_LADDER_STEPS = ("self_correct", "richer_context", "stronger_tier")
+
+
+def _sql_from_payload(payload: dict[str, Any] | None, onto: Ontology | None) -> str | None:
+    """Retry SQL from a ladder compute payload. Plan compile or query_sql."""
+    if not isinstance(payload, dict):
+        return None
+    sql = query_sql_from_payload(payload)
+    if sql:
+        return sql
+    plan = plan_from_payload(payload)
+    if plan is None or onto is None:
+        return None
+    compiled = _compile_maybe_unverified(onto, plan)
+    if isinstance(compiled, CompiledQuery):
+        return compiled.sql
+    return None
+
+
+def _ladder_retry(
+    sql: str,
+    finding: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    notes: Sequence[str],
+    plan_source: str,
+    keep_gt: float | None,
+    measure: str | None,
+    coverage: Coverage | None,
+    where_paths: Sequence[WherePath],
+    warehouse: Path | None,
+    plan_origin: str,
+    lead: str,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    ctx: dict[str, Any] | None,
+    ontology: Ontology | None,
+    grantable: set[str] | None,
+) -> dict[str, Any] | None:
+    """Self-correct, richer context, stronger tier. A passing retry may serve."""
+    for step in _LADDER_STEPS:
+        if compute is None:
+            continue
+        nxt = dict(ctx or {})
+        nxt["sql_loop_feedback"] = {
+            "previous_sql": mask_feedback_text(sql),
+            "reason": finding,
+            "step": step,
+        }
+        if step == "richer_context" and not nxt.get("schema_context"):
+            richer = _richer_schema_prompt(
+                question,
+                warehouse=warehouse,
+                ontology=ontology,
+                grantable=grantable,
+            )
+            if richer:
+                nxt["schema_context"] = richer
+        try:
+            payload = compute(nxt)
+        except Exception:  # noqa: BLE001 - one rung failing is not a serve
+            payload = None
+        new_sql = _sql_from_payload(payload if isinstance(payload, dict) else None, ontology)
+        if not new_sql or new_sql.strip() == sql.strip():
+            continue
+        if grantable is not None:
+            why = validate_compiled_sql(
+                new_sql, grantable=grantable, warehouse=warehouse
+            )
+            if why:
+                continue
+        if served_result_reason(
+            new_sql,
+            warehouse=warehouse,
+            as_of=_as_of(),
+            ontology=ontology,
+        ):
+            continue
+        return _submit_validated(
+            new_sql,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=notes,
+            plan_source=plan_source,
+            keep_gt=keep_gt,
+            measure=measure,
+            coverage=coverage_from_sql_path(sql=new_sql),
+            where_paths=where_paths,
+            warehouse=warehouse,
+            plan_origin=plan_origin,
+            lead=lead,
+            compute=None,
+            ctx=ctx,
+            ontology=ontology,
+            grantable=grantable,
+            ladder_rung=step,
+            _from_ladder=True,
+        )
+    return None
+
+
+def _richer_schema_prompt(
+    question: str,
+    *,
+    warehouse: Path | None,
+    ontology: Ontology | None,
+    grantable: set[str] | None,
+) -> str:
+    """Catalog prompt for the richer-context rung. Never the placeholder token."""
+    try:
+        from dms_executor.schema_context import build_schema_context, read_catalog
+
+        _fingerprint, schema = read_catalog(warehouse, grantable, "duckdb")
+        built = build_schema_context(
+            question,
+            schema,
+            ontology=ontology,
+            grantable=grantable,
+        )
+        prompt = str(getattr(built, "prompt", "") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing prompt is not the placeholder
+        return ""
+    if not prompt or prompt == "richer_context":
+        return ""
+    return prompt
+
+
+def _cited_ungranted(why: str | None) -> bool:
+    """True for bare ``ungranted`` and for ``ungranted:<demo-lake names>``.
+
+    A bronze sheet name is not this refusal. Scope conflict still owns that
+    SQL, and a qualified upload grant is not a demo-lake miss.
+    """
+    if not isinstance(why, str) or why.split(":", 1)[0] != "ungranted":
+        return False
+    rest = why.split(":", 1)[1] if ":" in why else ""
+    names = [n.strip() for n in rest.split(",") if n.strip()]
+    if not names:
+        return True
+    return any(_is_demo_lake_relation(n) for n in names)
+
+
+def hold_ungrounded_sql(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+) -> dict[str, Any] | None:
+    """Direct refusal for an ungranted outcome of the one grant check.
+
+    Bare ``ungranted`` and ``ungranted:<names>`` both abstain when a missing
+    name is a demo-lake table. The names stay in the grant function and are
+    not copied onto the reply. A bronze sheet label is not this refusal.
+    None means the SQL may keep its badge. #421 replaces that call.
+    This is not a reconfirm and not a second grant check.
+    """
+    why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+    if not _cited_ungranted(why):
+        return None
+    return _abstain(
+        question,
+        "ungranted",
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_OTHER,
+        stage="grant",
+    )
 
 
 def _submit_validated(
@@ -856,7 +1060,54 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    ctx: dict[str, Any] | None = None,
+    ontology: Ontology | None = None,
+    grantable: set[str] | None = None,
+    ladder_rung: str = "",
+    _from_ladder: bool = False,
 ) -> dict[str, Any]:
+    finding = served_result_reason(
+        sql,
+        warehouse=warehouse,
+        as_of=_as_of(),
+        ontology=ontology,
+    )
+    if finding:
+        served = None
+        if not _from_ladder:
+            served = _ladder_retry(
+                sql,
+                finding,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=notes,
+                plan_source=plan_source,
+                keep_gt=keep_gt,
+                measure=measure,
+                coverage=coverage,
+                where_paths=where_paths,
+                warehouse=warehouse,
+                plan_origin=plan_origin,
+                lead=lead,
+                compute=compute,
+                ctx=ctx,
+                ontology=ontology,
+                grantable=grantable,
+            )
+        if served is not None:
+            return served
+        return _abstain(
+            question,
+            f"reconfirm:{finding}",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     if not coverage_valid(coverage):
         return _abstain(
             question,
@@ -952,6 +1203,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        ladder_rung=ladder_rung,
     )
 
 
@@ -1075,6 +1327,8 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        ontology=onto,
+        grantable=allowed,
     )
 
 
@@ -1150,6 +1404,8 @@ def rank_window_ask(
         coverage=compiled.coverage,
         warehouse=lake,
         lead=lead,
+        ontology=onto,
+        grantable=allowed,
     )
 
 
@@ -1183,6 +1439,7 @@ def _run_extract_loop(
     dialect: str,
     grantable: set[str],
     declared: Ontology | None,
+    ontology: Ontology | None,
     declared_violations: list[Violation],
     space_id: str | None,
     session_id: str | None,
@@ -1214,6 +1471,17 @@ def _run_extract_loop(
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        # Product path. declared is None once verify passes; the loaded
+        # ontology is the one the grain check can use. None does not pass.
+        if ontology is None:
+            return _abstain(
+                question,
+                "ontology_unavailable",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=PLAN_SOURCE_ONTOLOGY,
+                stage="extract_loop",
+            )
         return _submit_validated(
             sql,
             question=question,
@@ -1226,6 +1494,10 @@ def _run_extract_loop(
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            compute=compute,
+            ctx=ctx,
+            ontology=ontology,
+            grantable=grantable,
         )
 
     def abstain(
@@ -1367,6 +1639,7 @@ def maybe_generative_ask(
         )
 
     lake: Path | None
+    given_warehouse = Path(warehouse) if warehouse is not None else None
     if warehouse is not None:
         lake = Path(warehouse)
     else:
@@ -1525,10 +1798,11 @@ def maybe_generative_ask(
                     ctx=ctx,
                     payload=payload,
                     compute=compute,
-                    warehouse=lake,
+                    warehouse=given_warehouse if given_warehouse is not None else lake,
                     dialect=dialect,
                     grantable=allowed,
                     declared=declared,
+                    ontology=onto,
                     declared_violations=declared_violations,
                     space_id=space_id,
                     session_id=session_id,
@@ -1682,6 +1956,10 @@ def maybe_generative_ask(
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
                     plan_origin=origin,
+                    compute=compute,
+                    ctx=ctx,
+                    ontology=onto,
+                    grantable=allowed,
                 )
             )
     if kind != "plan":
@@ -1855,5 +2133,9 @@ def maybe_generative_ask(
             where_paths=compiled.where_paths,
             warehouse=lake,
             plan_origin=origin,
+            compute=compute,
+            ctx=ctx,
+            ontology=onto,
+            grantable=allowed,
         )
     )

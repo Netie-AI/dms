@@ -80,6 +80,8 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    hold_ungrounded_sql,
+    load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -855,8 +857,14 @@ class Executor:
                 # hides that exact-match / pack-metric miss. A confident
                 # generative answer is left as-is. None still reaches Cortex ask.
                 # A budget stop keeps its named reason (insights_timeout:<leg>).
+                notes = gen_env.get("assumptions") or []
+                gate_hold = any(
+                    isinstance(note, str) and note.startswith("GEN-01: reconfirm:")
+                    for note in notes
+                )
                 if (
                     gen_env.get("abstained")
+                    and not gate_hold
                     and not insights_budget_stop(gen_env)
                     and is_curated_l0_without_pack_metric(asked)
                 ):
@@ -906,6 +914,22 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        grant_set = set(self.grantable_tables(space_id=space_id))
+        held = None
+        if not resp.abstained:
+            held = hold_ungrounded_sql(
+                str(resp.sql_used or ""),
+                question=question,
+                space_id=space_id,
+                session_id=acl.session_id,
+                warehouse=self._warehouse,
+                grantable=grant_set,
+            )
+        if held is not None:
+            env = attach_cascade(held, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
+        gate_warehouse, gate_ontology = _served_check_inputs(self._warehouse)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -915,6 +939,9 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                warehouse=gate_warehouse,
+                ontology=gate_ontology,
+                as_of=datetime_now(),
             ),
             cascade,
         )
@@ -999,6 +1026,13 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
 _chart_from_rows = chart_from_rows
 
 
+def _served_check_inputs(warehouse: Path | None) -> tuple[Path | None, Any]:
+    """Warehouse file and its verified ontology. Missing either does not pass."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return None, None
+    return warehouse, load_verified_ontology(warehouse)
+
+
 def map_ask_response_to_envelope(
     resp: AskResponse,
     *,
@@ -1007,6 +1041,9 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    warehouse: Path | None = None,
+    ontology: Any | None = None,
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import (
@@ -1051,8 +1088,31 @@ def map_ask_response_to_envelope(
     # Go through envelope.py rather than this module's own _BADGE_MAP copy.
     # Two maps for one vocabulary is a drift waiting to happen, and the drift
     # would be invisible: both sides would still produce a legal badge.
+    # Route "generated" does not grant L2. The served-result gate has to pass.
+    gate_passed = False
+    gate_finding: str | None = None
+    if not refused and not engine_unsure and not resp.abstained:
+        raw_name = (badge_raw or "").strip().lower()
+        if raw_name == "generated":
+            from dms_executor.served_gate import served_result_reason
+
+            # Missing warehouse, ontology, or as_of is not a pass and not L2.
+            if warehouse is None or ontology is None or not as_of:
+                gate_finding = "inputs_missing"
+            else:
+                gate_finding = served_result_reason(
+                    str(resp.sql_used or ""),
+                    warehouse=warehouse,
+                    ontology=ontology,
+                    as_of=as_of,
+                )
+            gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))
-    badge = normalize_badge(badge_raw, abstained=bool(resp.abstained))
+    badge = normalize_badge(
+        badge_raw,
+        abstained=bool(resp.abstained),
+        gate_passed=gate_passed,
+    )
     abstained = bool(resp.abstained) or badge == "ABSTAIN"
     if abstained:
         badge = "ABSTAIN"
@@ -1067,6 +1127,10 @@ def map_ask_response_to_envelope(
             f"Rather than show you a number under a badge I cannot stand behind, "
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
+    elif gate_finding:
+        from dms_executor.gen_path_refuse import customer_abstain_text
+
+        text = customer_abstain_text(f"reconfirm:{gate_finding}")
     values = list(resp.values or [])
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
@@ -1104,6 +1168,8 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
+    if gate_finding:
+        assumptions.append(f"GEN-01: reconfirm:{gate_finding}")
     sources = normalize_contributing_sources(
         resp.contributing_sources, space_id=space_id
     )
@@ -1150,9 +1216,9 @@ def map_ask_response_to_envelope(
     }
     if abstained:
         env = build_abstain(
-            reason="abstain",
+            reason=f"reconfirm:{gate_finding}" if gate_finding else "abstain",
             question=question or "",
-            stage="cortex_ask",
+            stage="served_gate" if gate_finding else "cortex_ask",
             **fields,
         )
     else:
