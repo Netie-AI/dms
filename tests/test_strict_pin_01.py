@@ -28,6 +28,7 @@ _ENGINE_DAY = "2024-06-15"
 _TZ = "UTC"
 _PIN = "openai/gpt-oss-120b"
 _PROVIDER = "groq"
+_TIER = "strict"
 # One served row. Empty gold is WRONG. The same row as gold is CORRECT (OK).
 _ANSWER_ROWS = [{"country": "MY", "spend": 1}]
 _OTHER = "openai/gpt-oss-20b"
@@ -38,7 +39,7 @@ _VAULT_REASONS = (
     "no_hop",
     "not_in_catalog",
 )
-_CALLER_ERRORS = ("auto", "default", "", "gpt-oss-120b")
+_CALLER_ERRORS = ("auto", "default", "")
 
 
 def _questions() -> list[dict[str, Any]]:
@@ -277,6 +278,7 @@ def _arm(
     *,
     model: str | None = _PIN,
     provider: str | None = _PROVIDER,
+    tier: str | None = _TIER,
     shots: list[dict[str, Any]] | None = None,
     repeat: dict[str, Any] | None = None,
     pinned: bool = True,
@@ -295,6 +297,10 @@ def _arm(
         monkeypatch.delenv("DMS_STRICT_PROVIDER", raising=False)
     else:
         monkeypatch.setenv("DMS_STRICT_PROVIDER", provider)
+    if tier is None:
+        monkeypatch.delenv("DMS_STRICT_TIER", raising=False)
+    else:
+        monkeypatch.setenv("DMS_STRICT_TIER", tier)
     asks = _install_ask(monkeypatch, tmp_path)
     # Empty gold against the L0 row is a row mismatch, so the judge returns WRONG.
     monkeypatch.setattr("score_curated.run_oracle_select", lambda *_a, **_k: ([], None))
@@ -334,10 +340,11 @@ def _wire(script: _Script) -> tuple[dict[str, Any], dict[str, Any]]:
     return dict(call.get("json") or {}), dict(call.get("headers") or {})
 
 
-def _assert_strict_call(call: dict[str, Any], model: str) -> None:
+def _assert_strict_call(call: dict[str, Any], tier: str = _TIER) -> None:
     assert call["url"].endswith("/v1/chat/completions")
     assert call["json"]["strict"] is True
-    assert call["json"]["model"] == model
+    assert call["json"]["tier"] == tier
+    assert "model" not in call["json"]
     assert call["json"]["max_tokens"] >= 512
     assert call["headers"].get("X-OpenVault-Strict") == "true"
     blob = json.dumps(call["json"])
@@ -373,7 +380,7 @@ def test_live_preflight_pin_unavailable_is_invalid_n0(
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert report.get("n_planned") == 52 and report["n"] == 0
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     assert (
         report["reason"] == name
         and report["round_label"] == "INVALID"
@@ -383,7 +390,7 @@ def test_live_preflight_pin_unavailable_is_invalid_n0(
     assert code != 0
     assert asks == []
     assert len(script.calls) == 1
-    _assert_strict_call(script.calls[0], _PIN)
+    _assert_strict_call(script.calls[0])
     assert report["total"] == 0
     assert report["cases"] == []
     assert report["passed"] is False
@@ -393,30 +400,29 @@ def test_live_preflight_pin_unavailable_is_invalid_n0(
     assert int(report["wrong"]) == 0
 
 
-def test_live_reads_model_from_config(
+def test_live_reads_tier_from_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The wire model is the env pin, not a literal at the call site."""
+    """The wire tier is the env pin. The call site does not name a model."""
     db = _oracle_db(tmp_path)
     _asks, script = _arm(
         monkeypatch,
         tmp_path,
-        model=_OTHER,
-        provider="groq",
-        repeat=_down("parked", _OTHER),
+        tier="raised",
+        repeat=_down("parked", _PIN),
     )
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     wire, hdr = _wire(script)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert wire.get("strict") is True and wire.get("model") == _OTHER
+    assert wire.get("strict") is True and wire.get("tier") == "raised"
+    assert "model" not in wire
     assert hdr.get("X-OpenVault-Strict") == "true"
-    assert wire.get("model") != _PIN
-    _assert_strict_call(script.calls[0], _OTHER)
-    assert report["reason"] == f"pin_unavailable:groq/{_OTHER}"
+    _assert_strict_call(script.calls[0], "raised")
+    assert report["reason"] == "pin_unavailable:raised"
 
 
-def test_live_default_pin_is_groq_catalog_id(
+def test_live_default_pin_is_strict_tier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = _oracle_db(tmp_path)
@@ -425,6 +431,7 @@ def test_live_default_pin_is_groq_catalog_id(
         tmp_path,
         model=None,
         provider=None,
+        tier=None,
         repeat=_down("parked", _PIN),
     )
     live("http://score.test", 1.0, db)
@@ -433,12 +440,12 @@ def test_live_default_pin_is_groq_catalog_id(
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert (
         wire.get("strict") is True
-        and wire.get("model") == _PIN
-        and wire.get("model") != "gpt-oss-120b"
+        and wire.get("tier") == _TIER
+        and "model" not in wire
         and hdr.get("X-OpenVault-Strict") == "true"
     )
-    _assert_strict_call(script.calls[0], _PIN)
-    assert report["reason"] == f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    _assert_strict_call(script.calls[0])
+    assert report["reason"] == f"pin_unavailable:{_TIER}"
 
 
 @pytest.mark.parametrize("reason", _VAULT_REASONS)
@@ -454,7 +461,7 @@ def test_live_case_pin_unavailable_stays_in_n(
     live("http://score.test", 1.0, db)
     elapsed = time.monotonic() - started
     report = _report(tmp_path)
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert report["cases"][1]["verdict"] == "WRONG"
     first = report["cases"][0]
@@ -474,8 +481,9 @@ def test_live_case_pin_unavailable_stays_in_n(
     assert report["wrong"] == n_pack - 1
     assert len(asks) == n_pack - 1
     assert len(script.calls) == n_pack + 1
-    models = {call["json"]["model"] for call in script.calls}
-    assert models == {_PIN}
+    tiers = {call["json"]["tier"] for call in script.calls}
+    assert tiers == {_TIER}
+    assert all("model" not in call["json"] for call in script.calls)
     assert all(call["json"]["strict"] is True for call in script.calls)
     assert report["cases"][1]["verdict"] != "RATE_LIMIT"
     assert int(report.get("rate_limit") or 0) == 0
@@ -493,7 +501,7 @@ def test_live_quota_exhausted_is_pin_abstain_not_rate_limit(
     _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert report["cases"][1]["verdict"] == "WRONG"
     first = report["cases"][0]
@@ -508,9 +516,10 @@ def test_live_quota_exhausted_is_pin_abstain_not_rate_limit(
     assert report["n"] == n_pack
 
 
-def test_live_body_pin_mismatch_is_invalid(
+def test_live_reported_pair_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """An agreeing served pair is OpenVault's choice. Values still judge."""
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
     bad = _ok("gemini-3.5-flash", "google")
@@ -519,18 +528,15 @@ def test_live_body_pin_mismatch_is_invalid(
     code = live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "WRONG"
     row = report["cases"][0]
-    assert row["verdict"] == "INVALID" and row["reason"] == "pin_mismatch:google/gemini-3.5-flash"
+    assert row["verdict"] == "WRONG"
+    assert not str(row.get("reason") or "").startswith("pin_")
     assert code != 0
-    assert row["verdict"] != "WRONG"
     assert report["n"] == n_pack
-    assert report["invalid"] == 1
-    assert report["n_without_invalid"] == n_pack - 1
-    assert report["wrong"] == n_pack - 1
-    assert len(asks) == n_pack - 1
+    assert report["invalid"] == 0
+    assert report["wrong"] == n_pack
+    assert len(asks) == n_pack
     assert len(script.calls) == n_pack + 1
-    assert all(item["verdict"] != "INVALID" for item in report["cases"][1:])
 
 
 def test_live_missing_served_model_is_invalid(
@@ -575,10 +581,10 @@ def _nvidia(where: str) -> dict[str, Any]:
     return _other("nvidia", where)
 
 
-def test_live_nvidia_same_model_is_invalid(
+def test_live_nvidia_same_model_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same model from nvidia, headers plus body, is not the groq pin. Stays in n."""
+    """A reported pair, headers plus body, is accepted. Values still judge."""
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
     bad = _nvidia("both")
@@ -587,35 +593,17 @@ def test_live_nvidia_same_model_is_invalid(
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "WRONG"
     row = report["cases"][0]
-    assert row["verdict"] == "INVALID" and row["reason"] == (
-        f"pin_mismatch:nvidia/{_PIN}"
-    )
+    assert row["verdict"] == "WRONG"
+    assert not str(row.get("reason") or "").startswith("pin_")
     assert report["n"] == n_pack
-    assert report["invalid"] == 1
-    assert row["served_provider_body"] == "nvidia"
-    assert row["served_model_body"] == _PIN
-    assert row["served_provider_header"] == "nvidia"
-    assert row["served_model_header"] == _PIN
-    rec = _record_line(report, "cq_spend_by_country")
-    assert rec["outcome"] == "INVALID"
-    assert rec["served_provider"] == "unknown"
-    assert rec["served_model"] == "unknown"
-    assert rec["served_provider_body"] == "nvidia"
-    assert rec["served_model_body"] == _PIN
-    assert rec["served_provider_header"] == "nvidia"
-    assert rec["served_model_header"] == _PIN
+    assert report["invalid"] == 0
 
 
-def test_live_together_same_model_is_invalid(
+def test_live_together_same_model_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """together serving openai/gpt-oss-120b is not the groq pin.
-
-    providers.py line 287 is id="together". Not an allowed pin.
-    Headers plus body. INVALID pin_mismatch, stays in n. Values stay exact.
-    """
+    """A reported pair is accepted. DMS does not keep a provider catalog."""
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
     bad = _other("together", "both")
@@ -625,24 +613,10 @@ def test_live_together_same_model_is_invalid(
     report = _report(tmp_path)
     row = report["cases"][0]
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "WRONG"
-    assert row["verdict"] == "INVALID" and row["reason"] == (
-        f"pin_mismatch:together/{_PIN}"
-    )
+    assert row["verdict"] == "WRONG"
+    assert not str(row.get("reason") or "").startswith("pin_")
     assert report["n"] == n_pack
-    assert report["invalid"] == 1
-    assert row["served_provider_body"] == "together"
-    assert row["served_model_body"] == _PIN
-    assert row["served_provider_header"] == "together"
-    assert row["served_model_header"] == _PIN
-    rec = _record_line(report, "cq_spend_by_country")
-    assert rec["outcome"] == "INVALID"
-    assert rec["served_provider_body"] == "together"
-    assert rec["served_model_body"] == _PIN
-    assert rec["served_provider_header"] == "together"
-    assert rec["served_model_header"] == _PIN
-    assert rec["served_provider"] == "unknown"
-    assert rec["served_model"] == "unknown"
+    assert report["invalid"] == 0
 
 
 def test_live_missing_served_provider_is_invalid(
@@ -680,21 +654,22 @@ def test_live_missing_served_provider_is_invalid(
     assert rec["served_model_header"] == _PIN
 
 
-def test_live_preflight_other_provider_is_invalid(
+def test_live_preflight_reported_pair_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Preflight rejects nvidia headers plus body even when the model is the pin."""
+    """Preflight accepts a reported pair. The round is not refused at setup."""
     db = _oracle_db(tmp_path)
     asks, script = _arm(monkeypatch, tmp_path, repeat=_nvidia("both"))
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
+    wire, _hdr = _wire(script)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["reason"] == f"pin_mismatch:nvidia/{_PIN}"
-    assert report["round_label"] == "INVALID"
-    assert report.get("n_planned") == 52 and report["n"] == 0
-    assert asks == []
-    assert len(script.calls) == 1
-    assert report["cases"] == []
+    assert not str(report.get("reason") or "").startswith("pin_")
+    assert report["n"] == len(_questions())
+    assert asks
+    assert len(script.calls) > 1
+    assert wire.get("tier") == _TIER
+    assert "model" not in wire
 
 
 def test_live_header_mismatch_is_invalid(
@@ -847,7 +822,7 @@ def test_live_pin_preflight_unavailable_blocks_baseline(
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     reasons = report["baseline_ineligible_reasons"]
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert (
         "pin_preflight_unavailable" in reasons
@@ -864,12 +839,10 @@ def test_live_caller_error_sends_nothing(
     model: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = _oracle_db(tmp_path)
-    asks, script = _arm(monkeypatch, tmp_path, model=model, repeat=_ok(_PIN))
+    asks, script = _arm(monkeypatch, tmp_path, tier=model, repeat=_ok(_PIN))
     code = live("http://score.test", 1.0, db)
     report = _report(tmp_path)
     shown = model.strip().lower() or "empty"
-    if model == "gpt-oss-120b":
-        shown = model
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert (
         report["reason"] == f"pin_caller_error:{shown}"
@@ -882,10 +855,10 @@ def test_live_caller_error_sends_nothing(
     assert report["cases"] == []
 
 
-def test_live_nvidia_pin_refused_at_setup(
+def test_live_reported_provider_is_not_refused_at_setup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """nvidia is not an allowed pin. Setup refuses. No vault call, no case call."""
+    """DMS does not refuse a provider name at setup. OpenVault picks the hop."""
     db = _oracle_db(tmp_path)
     asks, script = _arm(
         monkeypatch,
@@ -894,16 +867,17 @@ def test_live_nvidia_pin_refused_at_setup(
         model=_PIN,
         repeat=_nvidia("both"),
     )
-    code = live("http://score.test", 1.0, db)
+    live("http://score.test", 1.0, db)
     report = _report(tmp_path)
+    wire, _hdr = _wire(script)
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["reason"] == "pin_caller_error:nvidia"
-    assert report["round_label"] == "INVALID"
-    assert report.get("n_planned") == 52 and report["n"] == 0
-    assert asks == []
-    assert script.calls == []
-    assert report["cases"] == []
-    assert code != 0
+    assert report.get("reason") != "pin_caller_error:nvidia"
+    assert not str(report.get("reason") or "").startswith("pin_caller_error")
+    assert report["n"] == len(_questions())
+    assert asks
+    assert script.calls
+    assert wire.get("tier") == _TIER
+    assert "model" not in wire
 
 
 @pytest.mark.parametrize(
@@ -921,7 +895,7 @@ def test_each_live_entry_preflight_aborts(
     _patch_probe(monkeypatch)
     fn = getattr(score_curated, entry)
     result = fn("http://score.test", 1.0, db)
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     if entry == "grid_score_hook":
         assert (
             result.get("reason") == name
@@ -932,7 +906,8 @@ def test_each_live_entry_preflight_aborts(
         assert asks == []
         assert script.calls
         assert all(call["json"]["strict"] is True for call in script.calls)
-        assert all(call["json"]["model"] == _PIN for call in script.calls)
+        assert all(call["json"].get("tier") == _TIER for call in script.calls)
+        assert all("model" not in call["json"] for call in script.calls)
         assert result.get("n_planned") == 52
         assert result["cases"] == []
         assert result["passed"] is False
@@ -1070,11 +1045,12 @@ def test_live_generate_posts_send_strict_once(
     assert report["cases"][0]["verdict"] == "WRONG"
     assert (
         body.get("strict") is True
-        and body.get("model") == _PIN
+        and body.get("tier") == _TIER
+        and "model" not in body
         and gen_json.get("strict") is True
         and gen_headers.get("X-OpenVault-Strict") == "true"
     )
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     out = seen.get("out") or {}
     assert out.get("insights_fail") == name and out.get("pin_reason") == "quota_exhausted"
     assert out.get("pin_stop") is True
@@ -1089,7 +1065,8 @@ def test_live_generate_posts_send_strict_once(
     assert hosted.get("insights_fail") == name and hosted.get("pin_reason") == "quota_exhausted"
     assert script.requests
     sent = script.requests[0]
-    assert sent["json"].get("strict") is True and sent["json"].get("model") == _PIN
+    assert sent["json"].get("strict") is True and sent["json"].get("tier") == _TIER
+    assert "model" not in sent["json"]
     assert sent["headers"].get("X-OpenVault-Strict") == "true"
     assert "ov_test_pin_key" not in json.dumps(sent["json"])
     assert seen.get("preference") == "free+normal"
@@ -1175,7 +1152,8 @@ def test_live_fa01_pin_match_is_correct(
         assert shot["headers"] == _served_headers(provider, model)
         assert shot["body"]["served_provider"] == provider
         assert shot["body"]["served_model"] == model
-        assert script.calls[0]["json"]["model"] == model
+        assert script.calls[0]["json"]["tier"] == _TIER
+        assert "model" not in script.calls[0]["json"]
         assert row["id"] == "cq_spend_by_country" and row["verdict"] == "OK"
         assert not str(row.get("reason") or "").startswith("pin_")
         assert not str(report.get("reason") or "").startswith("pin_")
@@ -1233,10 +1211,10 @@ def test_live_served_header_name_case_is_correct(
         _wipe_records(outside)
 
 
-def test_live_groq_value_case_is_invalid(
+def test_live_reported_provider_case_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Served provider Groq is not the groq pin. Values are not case-folded."""
+    """Agreeing served ids are accepted as reported. DMS does not fold case."""
     db = _oracle_db(tmp_path)
     n_pack = len(_questions())
     bad = _ok(_PIN, "Groq", headers=True)
@@ -1246,20 +1224,10 @@ def test_live_groq_value_case_is_invalid(
     report = _report(tmp_path)
     row = report["cases"][0]
     assert report["oracle_as_of"] == _ENGINE_DAY
-    assert report["cases"][1]["verdict"] == "WRONG"
-    assert row["verdict"] == "INVALID" and row["reason"] == (
-        f"pin_mismatch:Groq/{_PIN}"
-    )
+    assert row["verdict"] == "WRONG"
+    assert not str(row.get("reason") or "").startswith("pin_")
     assert report["n"] == n_pack
-    assert report["invalid"] == 1
-    assert row["served_provider_body"] == "Groq"
-    assert row["served_model_body"] == _PIN
-    assert row["served_provider_header"] == "Groq"
-    assert row["served_model_header"] == _PIN
-    rec = _record_line(report, "cq_spend_by_country")
-    assert rec["served_provider_body"] == "Groq"
-    assert rec["served_model_body"] == _PIN
-    assert rec["outcome"] == "INVALID"
+    assert report["invalid"] == 0
 
 
 def test_live_pin_unavailable_without_served_ids_is_abstain(
@@ -1287,7 +1255,7 @@ def test_live_pin_unavailable_without_served_ids_is_abstain(
     _asks, _script = _arm(monkeypatch, tmp_path, shots=shots)
     live("http://score.test", 1.0, db)
     report = _report(tmp_path)
-    name = f"pin_unavailable:{_PROVIDER}/{_PIN}"
+    name = f"pin_unavailable:{_TIER}"
     row = report["cases"][0]
     assert report["oracle_as_of"] == _ENGINE_DAY
     assert report["cases"][1]["verdict"] == "WRONG"

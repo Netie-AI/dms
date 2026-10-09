@@ -1,17 +1,17 @@
-"""Strict model pin for the generate path (dms#317 Part A).
+"""Strict tier for the generate path (dms#317 Part A).
 
 Contract: OpenVault #81 at ``0d0ef3f0``. ``pop_strict`` accepts only JSON
 boolean true. ``X-OpenVault-Strict`` is on for ``1`` / ``true`` / ``yes``.
 A 503 body is ``error.type=pin_unavailable``, ``error.reason``, ``error.model``
-(the pin that failed), ``served_provider`` null, ``served_model`` null,
+(the hop that failed), ``served_provider`` null, ``served_model`` null,
 ``served_local`` false. A 200 stamps ``served_provider``, ``served_model``,
 and ``served_local`` in the JSON body, and sends
 ``X-OpenVault-Served-Provider``, ``X-OpenVault-Served-Model``, and
 ``X-OpenVault-Served-Local``.
 
-The pin is config (``DMS_STRICT_MODEL`` / ``DMS_STRICT_PROVIDER``). Call sites
-stamp that pair onto the request. They do not name a model. OpenVault keeps
-the provider key. This module never reads a vault file and never retries.
+The pin is a tier (``DMS_STRICT_TIER``). Call sites stamp that tier onto the
+request. OpenVault maps the tier to a route and keeps the key. This module
+never names a provider or a model, never reads a vault file, and never retries.
 A 503 ``pin_unavailable`` is not a 429, so it is not RATE_LIMIT.
 Retry-After is recorded and not slept on.
 """
@@ -30,34 +30,22 @@ from dms_core.ask import MODEL_LANES, NO_MODEL_LANES, lane_for_route
 STRICT_HEADER = "X-OpenVault-Strict"
 SERVED_MODEL_HEADER = "X-OpenVault-Served-Model"
 SERVED_PROVIDER_HEADER = "X-OpenVault-Served-Provider"
-DEFAULT_STRICT_MODEL = "openai/gpt-oss-120b"
-DEFAULT_STRICT_PROVIDER = "groq"
-# Exact ids from OpenVault #81 0d0ef3f0
-# OpenMW/openmw/openvault/vault/providers.py
-#   131: id="openrouter",
-#   160: id="groq",
-#   188: id="google",
-# nvidia is providers.py line 247. Not an allowed pin.
-# Compared with ==. No case fold and no rewrite.
-PROVIDER_IDS = frozenset({"groq", "google", "openrouter"})
+DEFAULT_STRICT_TIER = "strict"
 PIN_UNAVAILABLE = "pin_unavailable"
 # OpenVault #81. quota_exhausted stays here. It is not a 429.
 PIN_VAULT_REASONS = frozenset(
     {"parked", "quota_exhausted", "circuit_open", "no_hop", "not_in_catalog"}
 )
-_BAD_MODELS = frozenset({"", "auto", "default"})
-# Cerebras catalogs the bare id. It is not the Groq pin.
-_BARE_SUBSTITUTE = "gpt-oss-120b"
+_BAD_TIERS = frozenset({"", "auto", "default"})
 _CHAT_PATH = "/v1/chat/completions"
-# One completion. At least 512, per the Groq-pinned budget. No second call.
+# One completion. At least 512. No second call.
 _MAX_TOKENS = 512
 _DEMO_VIEWER_KEY = "dms-demo-viewer-key"
 
 
 @dataclass(frozen=True)
 class PinConfig:
-    provider: str
-    model: str
+    tier: str
     refusal: str | None
 
 
@@ -89,26 +77,20 @@ class PinRound:
 
 
 def pin_config() -> PinConfig:
-    """The pin. Env overrides the default. Empty, auto, default, and the bare
-    Cerebras id are caller errors: nothing is sent. A provider outside the
-    allowed set is refused here, before any vault call.
+    """The tier OpenVault maps to a route. Empty, auto, and default send nothing.
+
+    Unset uses the default tier. A set empty value is a caller error.
     """
-    model = os.environ.get("DMS_STRICT_MODEL", DEFAULT_STRICT_MODEL).strip()
-    provider = os.environ.get("DMS_STRICT_PROVIDER", DEFAULT_STRICT_PROVIDER).strip()
-    if not provider:
-        provider = DEFAULT_STRICT_PROVIDER
-    return PinConfig(provider=provider, model=model, refusal=_refusal(model, provider))
+    raw = os.environ.get("DMS_STRICT_TIER")
+    tier = DEFAULT_STRICT_TIER if raw is None else raw.strip()
+    return PinConfig(tier=tier, refusal=_refusal(tier))
 
 
-def _refusal(model: str, provider: str) -> str | None:
-    if provider not in PROVIDER_IDS:
-        return f"pin_caller_error:{provider}"
-    token = model.strip()
-    if token.lower() in _BAD_MODELS:
+def _refusal(tier: str) -> str | None:
+    token = tier.strip()
+    if token.lower() in _BAD_TIERS:
         shown = token.lower() or "empty"
         return f"pin_caller_error:{shown}"
-    if token == _BARE_SUBSTITUTE:
-        return f"pin_caller_error:{token}"
     return None
 
 
@@ -118,13 +100,13 @@ def _base_url() -> str | None:
 
 
 def stamp_generate_body(body: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy ``body`` and, when the pin is sendable, set model + JSON true strict."""
+    """Copy ``body`` and, when the tier is sendable, set tier + JSON true strict."""
     out = dict(body)
     cfg = pin_config()
     if cfg.refusal:
         out["pin_refusal"] = cfg.refusal
         return out
-    out["model"] = cfg.model
+    out["tier"] = cfg.tier
     out["strict"] = True
     return out
 
@@ -221,18 +203,15 @@ def matches_pin(
     model: str | None,
     cfg: PinConfig | None = None,
 ) -> bool:
-    """Exact provider and exact model. No strip. No case fold.
+    """Both served ids present. OpenVault chose them. No catalog compare.
 
     Preflight and the scored envelope both call this. A missing side is not
-    the pin.
+    a report. A refused tier matches nothing.
     """
     pin = cfg or pin_config()
-    return (
-        provider in PROVIDER_IDS
-        and pin.provider in PROVIDER_IDS
-        and provider == pin.provider
-        and model == pin.model
-    )
+    if pin.refusal:
+        return False
+    return bool(provider) and bool(model)
 
 
 def interpret(
@@ -267,7 +246,7 @@ def interpret(
         vault_reason = str(err_d.get("reason") or "").strip()
         return PinShot(
             kind="unavailable",
-            name=f"pin_unavailable:{pin.provider}/{pin.model}",
+            name=f"pin_unavailable:{pin.tier}",
             vault_reason=vault_reason,
         )
     if _disagree(body_provider, body_model, header_provider, header_model):
@@ -381,7 +360,7 @@ def post_once(base_url: str) -> PinShot:
     except httpx.HTTPError:
         return PinShot(
             kind="unavailable",
-            name=f"pin_unavailable:{cfg.provider}/{cfg.model}",
+            name=f"pin_unavailable:{cfg.tier}",
             vault_reason="vault_unreachable",
         )
     try:
@@ -500,9 +479,9 @@ def envelope_mismatch(env: Mapping[str, Any] | None) -> str | None:
     """INVALID name when the scored envelope is not the pin.
 
     The pin rule applies only when the answer called a model. No recorded
-    counter, or a count other than zero, is that path: exact provider and
-    exact model, no strip and no case fold. A missing served field is not
-    the pin, including when ``served_attribution`` is ``none`` or absent.
+    counter, or a count other than zero, is that path: both served ids
+    present. A missing served field is not a report, including when
+    ``served_attribution`` is ``none`` or absent.
 
     A recorded zero uses the lane from the executor ``route``. A payload
     ``lane`` or ``plan_source`` is not that lane. No route is ``lane_unknown``.

@@ -2,8 +2,7 @@
 
 The fake model is deterministic. It is not a live provider. DMS source
 (apps and packages, not tests or fixtures) must not name a provider or a
-model. The two pre-existing OpenVault contract modules are the only
-exceptions: the pin defaults and the FreeRoute catalog order.
+model. There is no allowlist.
 """
 
 from __future__ import annotations
@@ -68,13 +67,6 @@ _NAME_RE = (
     "nvidia",
     "google",
 )
-# Closed. A new file that names a provider or a model fails the scan.
-_OV_CONTRACT = {
-    "packages/cortex_client/cortex_client/strict_pin.py",
-    "packages/core/dms_core/freeroute.py",
-}
-
-
 def _loop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_CLOOP_B", "1")
     monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
@@ -308,17 +300,31 @@ def _source_files() -> list[Path]:
     return out
 
 
-def test_dms_source_names_no_model_or_provider() -> None:
-    """Fails when a provider or model name appears outside the OV contract files."""
+def _scan_hits() -> list[str]:
     hits: list[str] = []
     for path in _source_files():
         rel = path.relative_to(_ROOT).as_posix()
-        if rel in _OV_CONTRACT:
-            continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        # File name and the ask-mode label are not model ids.
-        text = text.replace("claude.md", "").replace("claude-white", "")
         for token in _NAME_RE:
             if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", text):
                 hits.append(f"{rel}:{token}")
-    assert hits == []
+    return hits
+
+
+def test_dms_source_names_no_model_or_provider() -> None:
+    """Fails when a provider or model name appears anywhere under apps or packages."""
+    assert _scan_hits() == []
+
+
+def test_planted_model_name_in_strict_pin_goes_red() -> None:
+    """A model name planted in the pin file is a hit. No path is exempt."""
+    pin = _ROOT / "packages/cortex_client/cortex_client/strict_pin.py"
+    original = pin.read_text(encoding="utf-8")
+    try:
+        pin.write_text(original + "\n_PLANTED = \"openai\"\n", encoding="utf-8")
+        hits = _scan_hits()
+        planted = "packages/cortex_client/cortex_client/strict_pin.py:openai"
+        assert any(hit.startswith(planted) for hit in hits)
+    finally:
+        pin.write_text(original, encoding="utf-8")
+        assert _scan_hits() == []

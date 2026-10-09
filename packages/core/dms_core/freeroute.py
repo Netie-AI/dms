@@ -1,8 +1,9 @@
 """SCALE-FREE-AI-01 — FreeRoute consumption plan from OpenVault API metadata.
 
-Prove/ask stay on ``free+normal``. This module names which free providers that
-preference would attempt vs skip. It never holds provider tokens, never POSTs
-chat completions, and never reads a local vault directory.
+Prove/ask stay on the ``free+normal`` tier. OpenVault maps that tier to hops.
+This module asks for the tier and records which catalog rows the tier would
+attempt vs skip. It never holds tokens, never names a hop, never POSTs chat
+completions, and never reads a local vault directory.
 
 Platform/Free Keys owns mint. LIVE_KEY_ID is not rotated here.
 """
@@ -16,20 +17,9 @@ from typing import Any
 FREEROUTE_PREFERENCE = "free+normal"
 WRONG_DISCIPLINE = "WRONG=0"
 
-# Groq-first, matching OpenVault onboard order. Not a second catalog.
-_GROQ_FIRST: tuple[str, ...] = (
-    "groq",
-    "google",
-    "openrouter",
-    "cerebras",
-    "mistral",
-    "huggingface",
-    "cloudflare",
-)
 _FREE_ROLES = frozenset({"free", "cheap"})
 _FREE_TIERS = frozenset({"free", "freemium", "local"})
 _PAID_TIERS = frozenset({"paid"})
-_RETIRED_IDS = frozenset({"github_models"})
 _SECRET_KEYS = frozenset(
     {
         "secret",
@@ -126,12 +116,11 @@ def public_row(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _eligible_free_normal(row: Mapping[str, Any]) -> str | None:
     """None = attempt. Else skip reason under free+normal."""
-    provider = _first_str(row, "provider", "id").casefold()
-    if provider in _RETIRED_IDS:
+    if row.get("retired") is True:
         return "retired"
     if not normalize_label(_first_str(row, "label", "name", "id", "provider")):
         return "empty_label"
-    if row.get("spendable") is False or row.get("openai_compatible") is False:
+    if row.get("spendable") is False:
         return "not_spendable"
     tier = _first_str(row, "tier").casefold()
     role = _first_str(row, "role", "default_role").casefold()
@@ -144,11 +133,8 @@ def _eligible_free_normal(row: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _sort_key(row: Mapping[str, Any]) -> tuple[int, int, str]:
-    pid = _first_str(row, "provider", "id").casefold()
-    if pid in _GROQ_FIRST:
-        return (0, _GROQ_FIRST.index(pid), pid)
-    return (1, 50, pid)
+def _sort_key(row: Mapping[str, Any]) -> str:
+    return normalize_label(_first_str(row, "label", "name", "id", "provider"))
 
 
 def _iter_maps(raw: Any) -> list[Mapping[str, Any]]:
@@ -205,9 +191,9 @@ def plan_free_providers(
 ) -> dict[str, Any]:
     """Attempt unique free+normal labels; skip duplicates and paid/retired.
 
-    First matching label wins (Groq-first). A second row with the same label is
-    skipped so climb/ask does not burn extra keys for the same hop name.
-    WRONG=0 is unchanged: this does not add providers to generate retries.
+    First matching label wins, in label order. A second row with the same
+    label is skipped so climb/ask does not burn extra keys for the same hop
+    name. WRONG=0 is unchanged: this does not add hops to generate retries.
     """
     pref = (preference or FREEROUTE_PREFERENCE).strip() or FREEROUTE_PREFERENCE
     attempted: list[dict[str, Any]] = []
@@ -225,9 +211,6 @@ def plan_free_providers(
             "role": _first_str(row, "role", "default_role"),
             "source": str(row.get("_source") or ""),
         }
-        models = _str_list(row.get("chat_models"))
-        if models:
-            entry["chat_models"] = models
         if reason:
             entry["reason"] = reason
             skipped.append(entry)
@@ -323,22 +306,6 @@ def render_harness_md(plan: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def candidate_models(plan: Mapping[str, Any]) -> list[str]:
-    """Chat model ids from attempted providers. Empty if the vault named none."""
-    out: list[str] = []
-    seen: set[str] = set()
-    raw_rows = plan.get("attempted")
-    rows: list[Any] = list(raw_rows) if isinstance(raw_rows, list) else []
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        for model in _str_list(row.get("chat_models")):
-            if model not in seen:
-                seen.add(model)
-                out.append(model)
-    return out
-
-
 def catalog_paths() -> tuple[str, ...]:
     return _CATALOG_PATHS
 
@@ -346,7 +313,6 @@ def catalog_paths() -> tuple[str, ...]:
 __all__ = [
     "FREEROUTE_PREFERENCE",
     "WRONG_DISCIPLINE",
-    "candidate_models",
     "catalog_paths",
     "empty_plan",
     "normalize_label",

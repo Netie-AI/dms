@@ -156,8 +156,8 @@ export function TopBar() {
         }
         title={
           productMode === "cream"
-            ? "Ask mode (Claude-white). Switch to operator chrome."
-            : "Operator mode. Switch to ask / Claude-white."
+            ? "Ask mode. Switch to operator chrome."
+            : "Operator mode. Switch to ask mode."
         }
       >
         {productMode === "cream" ? (

@@ -123,10 +123,10 @@ def _scored_row(report: dict[str, Any]) -> dict[str, Any]:
     return report["cases"][0]
 
 
-def test_live_ask_together_provider_is_invalid(
+def test_live_ask_reported_provider_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Provider together with the pinned model is not the groq pin."""
+    """A reported provider plus model is accepted. Values still judge."""
     try:
         report, script, sent = _score(
             monkeypatch,
@@ -136,8 +136,8 @@ def test_live_ask_together_provider_is_invalid(
         assert len(sent) == len(harness._questions())
         assert len(script.calls) == len(harness._questions()) + 1
         row = _scored_row(report)
-        assert row["reason"] == f"pin_mismatch:together/{_PIN}"
-        assert row["verdict"] == "INVALID"
+        assert row["verdict"] == "WRONG"
+        assert not str(row.get("reason") or "").startswith("pin_")
     finally:
         _wipe(tmp_path)
 
@@ -161,10 +161,10 @@ def test_live_ask_missing_provider_is_invalid(
         _wipe(tmp_path)
 
 
-def test_live_ask_padded_model_is_invalid(
+def test_live_ask_padded_model_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spaces around the model id are not stripped into a match."""
+    """DMS does not strip or catalog-compare a reported model id."""
     padded = f" {_PIN} "
     try:
         report, _script, _sent = _score(
@@ -173,16 +173,16 @@ def test_live_ask_padded_model_is_invalid(
             _envelope(served_provider=_PROVIDER, served_model=padded),
         )
         row = _scored_row(report)
-        assert row["reason"] == f"pin_mismatch:{_PROVIDER}/{padded}"
-        assert row["verdict"] == "INVALID"
+        assert row["verdict"] == "WRONG"
+        assert not str(row.get("reason") or "").startswith("pin_")
     finally:
         _wipe(tmp_path)
 
 
-def test_live_ask_case_changed_model_is_invalid(
+def test_live_ask_case_changed_model_is_judged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Model case is compared exactly. OpenAI/GPT-OSS-120B is not the pin."""
+    """A reported id is accepted as sent. DMS does not fold case against a catalog."""
     cased = "OpenAI/GPT-OSS-120B"
     try:
         report, _script, _sent = _score(
@@ -191,8 +191,8 @@ def test_live_ask_case_changed_model_is_invalid(
             _envelope(served_provider=_PROVIDER, served_model=cased),
         )
         row = _scored_row(report)
-        assert row["reason"] == f"pin_mismatch:{_PROVIDER}/{cased}"
-        assert row["verdict"] == "INVALID"
+        assert row["verdict"] == "WRONG"
+        assert not str(row.get("reason") or "").startswith("pin_")
     finally:
         _wipe(tmp_path)
 
@@ -287,12 +287,13 @@ def test_live_default_ask_mock_together_is_invalid(
         live("http://score.test", 1.0, db)
         report = harness._report(tmp_path)
         row = report["cases"][0]
-        assert script.calls[0]["json"]["model"] == _PIN
+        assert script.calls[0]["json"]["tier"] == harness._TIER
+        assert "model" not in script.calls[0]["json"]
         assert row["id"] == "cq_spend_by_country"
-        assert row["verdict"] == "INVALID"
-        assert row["reason"] == f"pin_mismatch:together/{_PIN}"
+        assert row["verdict"] == "WRONG"
+        assert not str(row.get("reason") or "").startswith("pin_")
         assert report["n"] == n_pack
-        assert report["invalid"] == n_pack
+        assert report["invalid"] == 0
         assert int(report["abstained"]) != n_pack
         assert len(asks) == n_pack
         assert len(script.calls) == n_pack + 1

@@ -38,7 +38,7 @@ _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
 # ``transactions`` (or inventory / locations / suppliers / shipments / alerts / meta —
 # names real schemas are full of) was dropped by the sync while the receipt still
 # reported ``copied`` and Studio still listed it. Chat then answered from the 15-row
-# synthetic demo table under a green badge: CLAUDE.md rule 12, exactly.
+# synthetic demo table under a green badge: the value-normalization rule, exactly.
 # Locked by test_a_customer_table_named_like_a_demo_table_is_not_silently_dropped.
 _WIN_ENGINE = Path(r"D:\Cortex") / "data" / "dms_demo.duckdb"
 
