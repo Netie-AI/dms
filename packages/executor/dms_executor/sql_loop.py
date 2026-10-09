@@ -103,11 +103,16 @@ def empty_result_reason(sql: str) -> str | None:
 def run_readonly(
     sql: str, warehouse: Path
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Execute on a read-only extract connection. ``(rows, None)`` or ``(None, error)``."""
-    import duckdb
+    """Execute on the extract. ``(rows, None)`` or ``(None, error)``.
+
+    Uses the serving attach, not a second ``read_only`` connect. DuckDB 1.5
+    rejects mixed access modes on one file, which dropped the schema index
+    and this execution together. The file lock serializes callers.
+    """
+    from dms_executor.demo_warehouse import connect_file
 
     try:
-        con = duckdb.connect(str(warehouse), read_only=True)
+        con = connect_file(Path(warehouse))
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
     try:

@@ -1840,10 +1840,12 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     path = Path(warehouse)
     if not path.is_file():
         return {}
-    import duckdb
+    # Same attach as the schema index. A read_only connect beside that
+    # index raises ConnectionException and the ontology then sees no columns.
+    from dms_executor.demo_warehouse import connect_file
 
     try:
-        con = duckdb.connect(str(path), read_only=True)
+        con = connect_file(path)
     except Exception:  # noqa: BLE001
         return {}
     try:
