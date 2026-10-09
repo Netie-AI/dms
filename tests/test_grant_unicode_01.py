@@ -103,12 +103,28 @@ class _Cortex:
         )
 
 
+# A row only this table holds. Main serves it. Head must not.
+_PLANTED = 8675309
+_EXISTING_SQL = "SELECT n FROM 人员"
+
+
+def _plant_ungranted_unicode(db: Path) -> None:
+    """Create 人员 in the warehouse. It is not added to the grant set."""
+    con = connect_file(db)
+    try:
+        con.execute('CREATE TABLE "人员" (n INTEGER)')
+        con.execute("INSERT INTO 人员 VALUES (?)", [_PLANTED])
+    finally:
+        con.close()
+
+
 def _ask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     sql: str,
     *,
     cloop: bool,
+    prepare: Any = None,
 ) -> tuple[dict[str, Any], _Cortex]:
     monkeypatch.setenv("DMS_ASK_MODE", "live")
     monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
@@ -120,6 +136,8 @@ def _ask(
     get_settings.cache_clear()
     db = tmp_path / "unicode.duckdb"
     ensure_demo_warehouse(db)
+    if prepare is not None:
+        prepare(db)
     cortex = _Cortex(db, sql)
     app = create_app()
     try:
@@ -178,6 +196,24 @@ def test_unicode_table_is_a_direct_refusal(
     del name
     body, cortex = _ask(tmp_path, monkeypatch, sql, cloop=cloop)
     _assert_direct_refusal(body, cortex, table)
+
+
+@pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
+def test_existing_ungranted_unicode_table_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloop: bool,
+) -> None:
+    """The table exists. It is ungranted. Main serves the row. Head refuses."""
+    body, cortex = _ask(
+        tmp_path,
+        monkeypatch,
+        _EXISTING_SQL,
+        cloop=cloop,
+        prepare=_plant_ungranted_unicode,
+    )
+    _assert_direct_refusal(body, cortex, "人员")
+    assert str(_PLANTED) not in json.dumps(body)
 
 
 @pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
