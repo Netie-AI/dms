@@ -24,9 +24,9 @@ from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
-from dms_executor.demo_warehouse import connect_file
+from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file
 
-_DIALECT = "duckdb"
+_DIALECT = SERVING_DIALECT
 
 # Unambiguous ISO 4217 tokens. Skip codes that are common English words (TRY, ALL, TOP).
 _ISO = frozenset(

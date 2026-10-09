@@ -21,21 +21,18 @@ from dms_executor.manifest import SecurityEvent
 from dms_executor.ontology import ObjectType, Ontology, WherePath
 
 ROOT = Path(__file__).resolve().parents[1]
+_PACKAGE = ROOT / "packages" / "executor" / "dms_executor"
 
-# Modules that choose a dialect for the checker, plus the connector that
-# declares one. The registry in grant_struct.py is not a caller.
-_SERVE = (
-    "packages/executor/dms_executor/__init__.py",
-    "packages/executor/dms_executor/ontology.py",
-    "packages/executor/dms_executor/demo_pack.py",
-    "packages/executor/dms_executor/generative_ask.py",
-    "packages/executor/dms_executor/session_followup.py",
-    "packages/executor/dms_executor/verified_queries.py",
-    "packages/executor/dms_executor/demo_warehouse.py",
-    "packages/executor/dms_executor/schema_context.py",
-    "packages/executor/dms_executor/bronze_sheet_ask.py",
-    "apps/api/dms_api/wiring.py",
-)
+# Legal shape: the declaration, plus a dialect lookup table. No file list.
+_CLEAN = """
+SERVING_DIALECT = "duckdb"
+_DIALECTS = {"duckdb": "duckdb", "postgres": "postgres"}
+_DEFAULT_SCHEMA = {"duckdb": "main"}
+"""
+_PLANT = _CLEAN + """
+def read(sql):
+    return parse(sql, read="duckdb")
+"""
 
 
 def _quoted_orders_path() -> tuple[Ontology, WherePath]:
@@ -180,35 +177,93 @@ def test_missing_dialect_refuses_the_sheet_path(
     assert "1545366.4" not in env["text"]
 
 
-def test_serve_code_declares_duckdb_once() -> None:
-    """One ``SERVING_DIALECT`` assignment. Callers do not write the literal.
+def _assigned_name(node: ast.AST) -> tuple[str | None, ast.AST | None]:
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target = node.targets[0]
+        if isinstance(target, ast.Name):
+            return target.id, node.value
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return node.target.id, node.value
+    return None, None
 
-    The allow-list is that symbol in the connector module, not a line number.
-    """
-    extras: list[str] = []
-    declarations = 0
-    for rel in _SERVE:
-        tree = ast.parse((ROOT / rel).read_text())
-        allowed: set[int] = set()
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "SERVING_DIALECT"
-                and isinstance(node.value, ast.Constant)
-                and node.value.value == "duckdb"
-                and rel.endswith("demo_warehouse.py")
-            ):
-                allowed.add(id(node.value))
-                declarations += 1
+
+def _lookup_ids(tree: ast.AST) -> set[int]:
+    """``"duckdb"`` keys, and a value only when its key is the same name."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        _name, value = _assigned_name(node)
+        if not isinstance(value, ast.Dict):
+            continue
+        for key, val in zip(value.keys, value.values, strict=False):
+            key_is = isinstance(key, ast.Constant) and key.value == "duckdb"
+            if key_is:
+                found.add(id(key))
+            if key_is and isinstance(val, ast.Constant) and val.value == "duckdb":
+                found.add(id(val))
+    return found
+
+
+def _declarations(tree: ast.AST) -> list[ast.Constant]:
+    found: list[ast.Constant] = []
+    for node in ast.walk(tree):
+        name, value = _assigned_name(node)
+        if (
+            name == "SERVING_DIALECT"
+            and isinstance(value, ast.Constant)
+            and value.value == "duckdb"
+        ):
+            found.append(value)
+    return found
+
+
+def duckdb_literal_hits(src: str) -> list[int]:
+    """Line numbers of ``"duckdb"`` that are not the declaration or a lookup entry."""
+    tree = ast.parse(src)
+    allowed = _lookup_ids(tree)
+    declarations = _declarations(tree)
+    if len(declarations) == 1:
+        allowed.add(id(declarations[0]))
+    hits: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == "duckdb" and id(node) not in allowed:
+            hits.append(node.lineno)
+    return hits
+
+
+def serve_package_duckdb_hits(root: Path) -> list[str]:
+    """Every ``"duckdb"`` literal under ``root``. One declaration across the tree."""
+    parsed: list[tuple[Path, ast.AST]] = []
+    declarations: list[tuple[Path, ast.Constant]] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parsed.append((path, tree))
+        declarations.extend((path, node) for node in _declarations(tree))
+    allowed: set[int] = set()
+    if len(declarations) == 1:
+        allowed.add(id(declarations[0][1]))
+    hits: list[str] = []
+    if len(declarations) != 1:
+        rendered = ", ".join(f"{path}:{node.lineno}" for path, node in declarations) or "none"
+        hits.append(f"declarations:{len(declarations)}:{rendered}")
+    for path, tree in parsed:
+        allowed_here = _lookup_ids(tree) | allowed
+        rel = path.relative_to(root.parents[2])
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Constant)
                 and node.value == "duckdb"
-                and id(node) not in allowed
+                and id(node) not in allowed_here
             ):
-                extras.append(f"{rel}:{node.lineno}")
-    assert declarations == 1
-    assert extras == []
+                hits.append(f"{rel}:{node.lineno}")
+    return hits
+
+
+def test_planted_duckdb_literal_is_red_and_the_package_is_green() -> None:
+    """A second literal is red. The declaration and lookup tables are not a file list."""
+    assert duckdb_literal_hits(_CLEAN) == []
+    planted = duckdb_literal_hits(_PLANT)
+    assert planted, "a planted read=\"duckdb\" in serve code must fail the scan"
+    assert duckdb_literal_hits(_PLANT.replace('read="duckdb"', "read=SERVING_DIALECT")) == []
+    package = serve_package_duckdb_hits(_PACKAGE)
+    assert package == [], package
     assert SERVING_DIALECT == "duckdb"

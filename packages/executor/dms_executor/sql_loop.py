@@ -23,6 +23,7 @@ from cortex_client.compute import (
     recorded_model_calls,
 )
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
@@ -36,7 +37,7 @@ _CONNECTOR_DIALECT: dict[str, str] = {
     "duckdb": "duckdb",
 }
 #: Read-only extract engine. SQL that runs here is compared in this dialect.
-EXTRACT_DIALECT = "duckdb"
+EXTRACT_DIALECT = SERVING_DIALECT
 MAX_SQL_RETRIES = 2
 EMPTY_NOTE = "no rows match"
 #: VALUE-EXISTS-01 later returns None from ``empty_result_reason`` so the
