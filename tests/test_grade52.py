@@ -180,7 +180,11 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]], sha: str) -> None:
 
 
 def test_grade52_serve_path_stamps() -> None:
-    """Contradictory stamps are unattributed. Compile with an empty model is rule."""
+    """Contradictory stamps are unattributed. Compile with an empty model is rule.
+
+    ``ontology_ranking`` and any ontology compile stamp are rule/compile,
+    including when ``served_model`` is set.
+    """
     contradictory = {
         "badge": "L1_GOVERNED_METRIC",
         "plan_origin": "generate_sql",
@@ -192,6 +196,28 @@ def test_grade52_serve_path_stamps() -> None:
     compile_empty = {"ladder_rung": "compile", "served_model": ""}
     assert serve_path(compile_empty) == "compile"
     assert path_group(serve_path(compile_empty)) == "rule"
+    ranking = {
+        "badge": "L2_VALIDATED",
+        "plan_origin": "ontology_ranking",
+        "plan_source": "ontology_plan",
+        "served_model": "some-model",
+    }
+    assert serve_path(ranking) == "compile"
+    assert path_group(serve_path(ranking)) == "rule"
+    assert serve_path({"plan_origin": "ontology_ranking"}) == "compile"
+    assert (
+        serve_path({"ladder_rung": "ontology_compile:where", "served_model": "some-model"})
+        == "compile"
+    )
+    assert serve_path({"plan_source": "ontology_plan", "served_model": "some-model"}) == "compile"
+    assert path_group("compile") == "rule"
+    assert serve_path(
+        {
+            "plan_origin": "ontology_ranking",
+            "ladder_rung": "generate_sql",
+            "served_model": "some-model",
+        }
+    ) == "unattributed"
 
 
 def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
@@ -343,7 +369,7 @@ def test_grade52_submit_stub_is_not_a_score(capsys: pytest.CaptureFixture[str]) 
     out = capsys.readouterr().out
     assert "mode=stub not a score" in out
     assert "correct=" not in out
-    assert "paths served ai=0 rule=24 unattributed=20" in out
+    assert "paths served ai=0 rule=44 unattributed=0" in out
 
 
 def test_grade52_stub_exec_main() -> None:
@@ -368,8 +394,8 @@ def test_grade52_stub_exec_main() -> None:
     )
     assert "not a score" not in line
     assert paths_line(path_counts(report["cases"])) == (
-        "paths correct ai=0 rule=23 L1=23 unattributed=20 "
-        "served ai=0 rule=25 L0=2 L1=23 unattributed=20"
+        "paths correct ai=0 rule=43 L1=23 compile=20 unattributed=0 "
+        "served ai=0 rule=45 L0=2 L1=23 compile=20 unattributed=0"
     )
     without = report["without_pack_gold_served"]
     assert without["pack_gold_served"] == "excluded"

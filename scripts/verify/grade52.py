@@ -18,7 +18,9 @@ and only when that case abstains. A served answer there is wrong.
 prints the product commit (``git merge-base HEAD origin/main``).
 
 Each case records ``serve_path`` from that envelope's own ``badge``,
-``plan_origin``, ``ladder_rung``, and ``served_model``. The paths line
+``plan_origin``, ``ladder_rung``, ``plan_source``, and ``served_model``.
+``ontology_ranking``, ``ontology_plan``, and an ``ontology_compile`` stamp
+are rule/compile, including when ``served_model`` is set. The paths line
 counts AI model SQL, rule-served (L0, L1, compile, oracle), and
 unattributed, once for correct answers and once for every served answer.
 
@@ -87,6 +89,9 @@ _RULE_STAMPS = {
 }
 _AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai"})
 _RULE_PATHS = frozenset({"L0", "L1", "compile", "oracle"})
+# Ontology compile is a rule path. A model name on the same envelope does not
+# overturn it. ``ontology_compile:*`` notes use the same prefix.
+_ONTOLOGY_COMPILE = frozenset({"ontology_ranking", "ontology_plan", "ontology_compile"})
 
 
 class _Unmappable(Exception):
@@ -548,36 +553,54 @@ def _stamp_text(env: Mapping[str, Any], key: str) -> str:
     return str(raw).strip()
 
 
+def _ontology_compile(text: str) -> bool:
+    return text in _ONTOLOGY_COMPILE or text.startswith("ontology_compile")
+
+
+def _field_claim(text: str, *, unknown_if_other: bool) -> str | None:
+    if not text:
+        return None
+    if _ontology_compile(text):
+        return "compile"
+    if text in _RULE_STAMPS:
+        return _RULE_STAMPS[text]
+    if text in _AI_STAMPS:
+        return "ai"
+    if unknown_if_other:
+        return "unknown"
+    return None
+
+
 def serve_path(env: Mapping[str, Any]) -> str:
     """Path that served the answer. Only the envelope's own stamps.
 
-    ``L0``, ``L1``, ``compile``, and ``oracle`` are rule-served. AI model
-    SQL needs a model-SQL stamp and a non-empty ``served_model`` that do
-    not disagree with a rule stamp. Missing or contradictory stamps are
+    ``L0``, ``L1``, ``compile``, and ``oracle`` are rule-served. An ontology
+    compile stamp (``ontology_ranking``, ``ontology_plan``, ``ontology_compile``)
+    is rule/compile, and a ``served_model`` beside it does not change that.
+    AI model SQL needs a model-SQL stamp and a non-empty ``served_model`` that
+    do not disagree with a rule stamp. Missing or contradictory stamps are
     unattributed, and a model name alone is never AI.
     """
     if not isinstance(env, Mapping):
         return "unattributed"
-    claims: list[str] = []
     badge = _stamp_text(env, "badge").lower()
-    if badge in _RULE_STAMPS:
-        claims.append(_RULE_STAMPS[badge])
     origin = _stamp_text(env, "plan_origin").lower()
-    if origin in _RULE_STAMPS:
-        claims.append(_RULE_STAMPS[origin])
-    elif origin in _AI_STAMPS:
-        claims.append("ai")
-    elif origin:
-        claims.append("unknown")
     rung = _stamp_text(env, "ladder_rung").lower()
-    if rung in _RULE_STAMPS:
-        claims.append(_RULE_STAMPS[rung])
-    elif rung in _AI_STAMPS:
-        claims.append("ai")
-    elif rung:
-        claims.append("unknown")
+    source = _stamp_text(env, "plan_source").lower()
+    claims: list[str] = []
+    for text, unknown_if_other in (
+        (badge, False),
+        (origin, True),
+        (rung, True),
+    ):
+        claim = _field_claim(text, unknown_if_other=unknown_if_other)
+        if claim:
+            claims.append(claim)
+    if _ontology_compile(source):
+        claims.append("compile")
+    ontology = any(_ontology_compile(text) for text in (badge, origin, rung, source))
     model = _stamp_text(env, "served_model")
-    if model:
+    if model and not ontology:
         claims.append("ai")
     kinds = set(claims)
     if kinds == {"ai"} and model and (origin in _AI_STAMPS or rung in _AI_STAMPS):
@@ -1777,6 +1800,16 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: a model name alone was called AI")
     if serve_path(compile_empty) != "compile" or path_group(serve_path(compile_empty)) != "rule":
         raise SystemExit("self-test: compile with an empty model was not rule-served")
+    ranking = {
+        "badge": "L2_VALIDATED",
+        "plan_origin": "ontology_ranking",
+        "plan_source": "ontology_plan",
+        "served_model": "some-model",
+    }
+    if serve_path(ranking) != "compile" or path_group(serve_path(ranking)) != "rule":
+        raise SystemExit("self-test: ontology_ranking with a model was not rule/compile")
+    if serve_path({"ladder_rung": "ontology_compile", "served_model": "some-model"}) != "compile":
+        raise SystemExit("self-test: ontology_compile with a model was not compile")
 
     print("self-test ok")
     print(
