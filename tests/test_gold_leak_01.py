@@ -561,6 +561,58 @@ def test_cq_supplier_ranking_grades_the_served_rows(
     assert live.get("model_calls") == 0
 
 
+def _assert_supplier_rank(env: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = list(env.get("rows") or [])
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert len(rows) == 4
+    assert _id_order(rows) == ["SUP-04", "SUP-02", "SUP-01", "SUP-03"]
+    return rows
+
+
+def test_supplier_rank_survives_blank_or_removed_oracle_and_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blanking or removing the oracle and the scored pack does not change L1.
+
+    The four rows and their order come from the declared measure, not from
+    either file.
+    """
+    live_rows = [row for row in _questions() if row["id"] == "cq_supplier_ranking"]
+    assert len(live_rows) == 1
+    intact = _serve(tmp_path / "intact.duckdb", live_rows, monkeypatch)["cq_supplier_ranking"]
+    expected = _assert_supplier_rank(intact)
+
+    oracle = _ORACLES
+    pack = _PACK / "questions.yaml"
+    saved = {
+        oracle: oracle.read_text(encoding="utf-8"),
+        pack: pack.read_text(encoding="utf-8"),
+    }
+    import dms_executor.demo_pack as demo_pack
+
+    try:
+        oracle.write_text("", encoding="utf-8")
+        pack.write_text("", encoding="utf-8")
+        demo_pack.curated_l0_question_norms.cache_clear()
+        blanked = _serve(tmp_path / "blanked.duckdb", live_rows, monkeypatch)[
+            "cq_supplier_ranking"
+        ]
+        assert _assert_supplier_rank(blanked) == expected
+
+        oracle.unlink()
+        pack.unlink()
+        demo_pack.curated_l0_question_norms.cache_clear()
+        removed = _serve(tmp_path / "removed.duckdb", live_rows, monkeypatch)[
+            "cq_supplier_ranking"
+        ]
+        assert _assert_supplier_rank(removed) == expected
+    finally:
+        for path, text in saved.items():
+            path.write_text(text, encoding="utf-8")
+        demo_pack.curated_l0_question_norms.cache_clear()
+
+
 def test_runtime_modules_do_not_reference_scoring_files() -> None:
     hits: list[str] = []
     for root in _RUNTIME:
