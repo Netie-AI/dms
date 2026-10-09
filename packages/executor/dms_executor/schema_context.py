@@ -27,8 +27,12 @@ ontology ``non_personal`` tag with source and field, or a column name the
 mask's own metric skip treats as non-personal. An unknown column such as
 ``col1`` is not cleared, so it sends no hint even when the value probe
 would leave the cell raw. Value hints are looked up on the masker's
-output for the question, never on the raw question. A span the masker
-replaced cannot seed a hint. On a cleared column the value probe is the
+output for the question, never on the raw question. That output is
+``fail_closed_mask_payload``: a stored value from a person-like or
+unclassified column is masked there, and the Cortex question is that
+same text. A cleared-column value hints only when it covers the whole
+span it was matched in. A fragment of a multi-word span whose other
+words match nothing does not hint. On a cleared column the value probe is the
 second layer. It flags a cell the detector already flags, including a
 repeated Title-Case word. It does not re-title a one-word or hyphenated
 code, because that drop removes a cleared metric code. If any check
@@ -79,10 +83,10 @@ from dms_core.pii import (
     _NRIC_COL,
     _PERSON_TABLE,
     _PHONE_COL,
+    NAME_MASK_KEY,
     classify_column,
     fail_closed_mask_payload,
     is_mask_token,
-    mask_personal_spans,
 )
 
 from dms_executor.ontology import Ontology, relation_tables, table_is_granted
@@ -259,6 +263,8 @@ class SchemaContext:
     samples_included: bool
     dialect: str
     envelope_prompt: str
+    # Evidence for the one masker. Not a prompt and not a wire field.
+    name_mask: dict[str, list[str]] | None = None
 
 
 # Popped off the compute catalog before Insights sees it. Not a wire field.
@@ -583,8 +589,8 @@ def _normalize(text: str) -> str:
     return " ".join("".join(chars).split())
 
 
-def _question_spans(question: str) -> list[tuple[int, str, str]]:
-    """Word n-grams as ``(width, folded, original slice)``.
+def _question_spans(question: str) -> list[tuple[int, str, str, int]]:
+    """Word n-grams as ``(width, folded, original slice, word index)``.
 
     The original slice is the question's own characters, punctuation
     included. Folding is only for the lookup.
@@ -604,7 +610,7 @@ def _question_spans(question: str) -> list[tuple[int, str, str]]:
         folded = _normalize(text[start:i])
         if folded:
             parts.append((folded, start, i))
-    out: list[tuple[int, str, str]] = []
+    out: list[tuple[int, str, str, int]] = []
     width_max = min(_SPAN_WIDTH, len(parts))
     for width in range(1, width_max + 1):
         for start_i in range(len(parts) - width + 1):
@@ -612,7 +618,7 @@ def _question_spans(question: str) -> list[tuple[int, str, str]]:
             folded = " ".join(item[0] for item in chunk)
             original = text[chunk[0][1] : chunk[-1][2]]
             if folded:
-                out.append((width, folded, original))
+                out.append((width, folded, original, start_i))
     return out
 
 
@@ -746,14 +752,184 @@ def _hint_value_cleared(
     return isinstance(vals, list) and len(vals) == 1 and vals[0] == emitted
 
 
+def _question_words(question: str) -> list[str]:
+    return (question or "").split()
+
+
+def _word_fold(word: str) -> str:
+    return "".join(ch.lower() for ch in word if ch.isalnum())
+
+
+def _pure_letters(word: str) -> str:
+    """Letters when the token is a name-shaped word. A digit or hyphen is not."""
+    letters: list[str] = []
+    for ch in word:
+        if ch.isalpha():
+            letters.append(ch)
+        elif ch.isdigit() or ch in "-_'’":
+            return ""
+    return "".join(letters)
+
+
+def _letter_case(word: str) -> str:
+    letters = _pure_letters(word)
+    if not letters:
+        return ""
+    if letters.isupper():
+        return "upper"
+    if letters.islower():
+        return "lower"
+    return "mixed"
+
+
+def _phrase_key(value: str) -> tuple[str, ...]:
+    return tuple(part for part in (_word_fold(raw) for raw in str(value).split()) if part)
+
+
+def _starts_phrase(words: Sequence[str], index: int, phrases: set[tuple[str, ...]]) -> bool:
+    got: list[str] = []
+    last = min(len(words), index + 4)
+    for pos in range(index, last):
+        fold = _word_fold(words[pos])
+        if not fold:
+            break
+        got.append(fold)
+        if tuple(got) in phrases:
+            return True
+    return False
+
+
+def _short_same(word: str, case: str) -> bool:
+    letters = _pure_letters(word)
+    return bool(letters) and len(letters) <= 3 and _letter_case(word) == case
+
+
+def _extend_right_short(
+    words: Sequence[str],
+    end: int,
+    case: str,
+    granted: set[str],
+    schema: set[str],
+    phrases: set[tuple[str, ...]],
+) -> int:
+    """Trailing short tokens of a multi-word name. A separator before a value stops."""
+    pos = end
+    while pos < len(words):
+        word = words[pos]
+        if not _short_same(word, case):
+            break
+        fold = _word_fold(word)
+        if fold in granted or fold in schema:
+            break
+        if _starts_phrase(words, pos + 1, phrases):
+            break
+        if pos + 1 < len(words) and not _short_same(words[pos + 1], case):
+            break
+        pos += 1
+    return pos
+
+
+def _extend_left_short(
+    words: Sequence[str],
+    start: int,
+    case: str,
+    granted: set[str],
+    schema: set[str],
+) -> int:
+    pos = start
+    while pos > 0 and _short_same(words[pos - 1], case):
+        fold = _word_fold(words[pos - 1])
+        if fold in granted or fold in schema:
+            break
+        pos -= 1
+    return pos
+
+
+def _span_is_fragment(
+    words: Sequence[str],
+    start: int,
+    width: int,
+    granted: set[str],
+    schema: set[str],
+    phrases: set[tuple[str, ...]],
+) -> bool:
+    """True when the match is a piece of a multi-word span whose other words match nothing.
+
+    A cleared value hints only when it covers the whole span. A short token
+    inside a longer multi-word span does not. A leading frame word is not
+    that span, and a short separator before another stored value is not either.
+    """
+    if width < 1 or start < 0 or start + width > len(words):
+        return False
+    case = _letter_case(words[start])
+    if not case:
+        return False
+    end = start + width
+    right = _extend_right_short(words, end, case, granted, schema, phrases)
+    if right > end:
+        return True
+    left = _extend_left_short(words, start, case, granted, schema)
+    # Only a run of short tokens is a multi-part name (``ali bin abu``).
+    # A short separator in front of a longer value is not.
+    if right - left >= 3 and left < start and all(
+        0 < len(_pure_letters(words[pos])) <= 3 for pos in range(left, right)
+    ):
+        return True
+    if width != 1 or not case:
+        return False
+    match_len = len(_pure_letters(words[start]))
+    pos = start
+    # A longer same-case neighbor is part of the span. The first word of the
+    # question is the frame, not that neighbor. A short word in front of that
+    # neighbor (``how many east``) is a frame too when the value ends the ask.
+    while pos > 1:
+        word = words[pos - 1]
+        letters = _pure_letters(word)
+        if len(letters) < 4 or len(letters) < match_len or _letter_case(word) != case:
+            break
+        if start + width == len(words) and pos >= 2:
+            before = _pure_letters(words[pos - 2])
+            if 0 < len(before) <= 3:
+                break
+        fold = _word_fold(word)
+        if fold in granted or fold in schema:
+            break
+        pos -= 1
+    if pos < start:
+        return True
+    # Mixed case: a short upper token after a longer lower token that is
+    # not itself a stored value. When that lower token is the second word,
+    # a 1-3 letter first word is a frame (the metric question stays a hint).
+    # Any later position is a name span, including a short separator in front.
+    if start >= 2 and case == "upper" and match_len <= 4:
+        left_word = words[start - 1]
+        left_letters = _pure_letters(left_word)
+        before = _pure_letters(words[start - 2])
+        frame = start == 2 and 0 < len(before) <= 3
+        if (
+            len(left_letters) >= 4
+            and len(left_letters) >= match_len
+            and _letter_case(left_word) == "lower"
+            and not frame
+            and _word_fold(left_word) not in granted
+            and _word_fold(left_word) not in schema
+        ):
+            return True
+    return False
+
+
 def _hint_values(
-    spans: Sequence[tuple[int, str, str]],
+    spans: Sequence[tuple[int, str, str, int]],
     values: Sequence[str],
     *,
     tagged: bool,
     table: str,
     column: str,
     description: str = "",
+    words: Sequence[str] = (),
+    granted: set[str] | None = None,
+    schema: set[str] | None = None,
+    phrases: set[tuple[str, ...]] | None = None,
 ) -> list[tuple[str, bool, str]]:
     """Prompt text for each hint. Untagged text is the question's own slice.
 
@@ -772,23 +948,30 @@ def _hint_values(
         folded = _normalize(raw)
         if folded:
             groups.setdefault(folded, []).append(raw)
+    token_granted = granted or set()
+    token_schema = schema or set()
+    token_phrases = phrases or set()
     if not tagged:
-        matches: list[tuple[int, str, str, int]] = []
-        for idx, (width, folded, original) in enumerate(spans):
+        matches: list[tuple[int, str, str, int, int]] = []
+        for idx, (width, folded, original, word_at) in enumerate(spans):
             stored = groups.get(folded) or []
             if len(stored) != 1:
                 continue
-            matches.append((width, folded, original, idx))
+            matches.append((width, folded, original, idx, word_at))
         if not matches:
             return []
         longest = max(item[0] for item in matches)
         chosen: list[tuple[str, bool, str]] = []
         seen: set[str] = set()
         folds = list(groups)
-        for width, folded, original, idx in matches:
+        for width, folded, original, idx, word_at in matches:
             if width != longest or folded in seen:
                 continue
             if _hint_blocked(folded, folds):
+                continue
+            if words and _span_is_fragment(
+                words, word_at, width, token_granted, token_schema, token_phrases
+            ):
                 continue
             held = groups.get(folded) or []
             if len(held) != 1 or not _hint_value_cleared(
@@ -800,7 +983,11 @@ def _hint_values(
         return chosen
     chosen = []
     seen = set()
-    for idx, (_width, span, _original) in enumerate(spans):
+    for idx, (width, span, _original, word_at) in enumerate(spans):
+        if words and _span_is_fragment(
+            words, word_at, width, token_granted, token_schema, token_phrases
+        ):
+            continue
         fuzzy_matches: list[tuple[str, bool]] = []
         for folded, originals in groups.items():
             exact = folded == span
@@ -911,29 +1098,33 @@ def _word_hit(haystack: str, needle: str) -> bool:
     )
 
 
-def _masked_question(question: str, keep_exact: set[str] | None = None) -> str:
-    """Question text the value-hint matcher is allowed to see.
+def _model_question(
+    question: str,
+    evidence: Mapping[str, Sequence[str]],
+) -> tuple[str, bool]:
+    """Masker output for the question. ``failed`` means no samples and no hints.
 
-    Personal spans are replaced first, then the rest of the masker runs.
-    A question that is exactly one granted value skips the lower/ALL-CAPS
-    pass so a multi-word metric code still hints. A failure sends no spans,
-    so no value hint. The raw question is not the lookup text.
+    The hinter reads this text. ``_insights_body`` calls the same masker with
+    the same evidence. A masker failure is a blank question here: the ask
+    still runs, with no samples.
     """
     try:
-        folded = _normalize(question or "")
-        named = mask_personal_spans(
-            question or "",
-            uniform=not (keep_exact and folded in keep_exact),
+        masked = fail_closed_mask_payload(
+            text=question or "",
+            name_values=list(evidence.get("name_values") or ()),
+            exempt_values=list(evidence.get("exempt_values") or ()),
+            schema_terms=list(evidence.get("schema_terms") or ()),
         )
-        masked = fail_closed_mask_payload(text=named)
-    except Exception:  # noqa: BLE001 -- doubt: no value hint
-        return ""
+    except Exception:  # noqa: BLE001 -- doubt: no value hint, no samples
+        return "", True
     if not isinstance(masked, dict):
-        return ""
+        return "", True
     text = masked.get("text")
-    if not isinstance(text, str) or is_mask_token(text):
-        return ""
-    return text
+    if not isinstance(text, str) or text == "DMSMASK_unknown_00":
+        return "", True
+    if text and is_mask_token(text) and text.startswith("DMSMASK_unknown"):
+        return "", True
+    return text, False
 
 
 def _fk_if_present(col: ColumnFact, chosen_ids: set[tuple[str, str]]) -> ColumnFact:
@@ -1258,6 +1449,80 @@ def _declared_columns(datasets: Sequence[Mapping[str, Any]]) -> dict[str, set[st
     return out
 
 
+def _term_folds(terms: Sequence[str]) -> set[str]:
+    out: set[str] = set()
+    for term in terms:
+        out.update(_phrase_key(term))
+    return out
+
+
+def _granted_folds(
+    values: Sequence[str],
+) -> tuple[set[str], set[tuple[str, ...]]]:
+    tokens: set[str] = set()
+    phrases: set[tuple[str, ...]] = set()
+    for value in values:
+        phrase = _phrase_key(value)
+        if not phrase:
+            continue
+        phrases.add(phrase)
+        if len(phrase) == 1:
+            tokens.add(phrase[0])
+    return tokens, phrases
+
+
+def _label_terms(
+    ontology: Ontology | Mapping[str, Any] | None,
+    onto: Mapping[str, Any],
+) -> list[str]:
+    terms: list[str] = []
+    if isinstance(ontology, Ontology):
+        terms.extend(ontology.objects)
+        terms.extend(ontology.measures)
+    elif isinstance(ontology, Mapping):
+        for key in ("objects", "measures"):
+            block = ontology.get(key)
+            if isinstance(block, Mapping):
+                terms.extend(str(name) for name in block)
+    for item in onto.get("measures") or []:
+        if isinstance(item, Mapping) and item.get("name"):
+            terms.append(str(item["name"]))
+            for alias in item.get("aliases") or ():
+                terms.append(str(alias))
+    return terms
+
+
+def _name_evidence(
+    prepared: Sequence[Mapping[str, Any]],
+    index: Mapping[str, Sequence[str]],
+    ontology: Ontology | Mapping[str, Any] | None,
+    onto: Mapping[str, Any],
+) -> dict[str, list[str]]:
+    """Runtime source evidence. Cleared non-person values are the only exemption."""
+    roles: dict[str, str] = {}
+    terms: list[str] = []
+    seen_tables: set[str] = set()
+    for item in prepared:
+        table = str(item["table"])
+        name = str(item["name"])
+        if table not in seen_tables:
+            seen_tables.add(table)
+            terms.append(table)
+        terms.append(name)
+        roles[f"{table}.{name}"] = "exempt" if item.get("cleared") else "name"
+    terms.extend(_label_terms(ontology, onto))
+    names: list[str] = []
+    exempt: list[str] = []
+    for key, values in index.items():
+        target = exempt if roles.get(key) == "exempt" else names
+        target.extend(str(value) for value in values)
+    return {
+        "name_values": names,
+        "exempt_values": exempt,
+        "schema_terms": terms,
+    }
+
+
 def _fallback_prompt(dialect: str) -> str:
     if dialect:
         return f"DIALECT: {dialect}\nSCHEMA"
@@ -1335,6 +1600,7 @@ def build_schema_context(
                 loaded_values.extend(values)
                 index_rows.append((f"{table}.{name}", tuple(values)))
             samples = _sample_values(column, family, tagged)
+            cleared = _column_positively_cleared(table, name, tagged=tagged)
             prepared.append(
                 {
                     "table": table,
@@ -1346,18 +1612,18 @@ def build_schema_context(
                     "distinct": _distinct_count(column, values or samples),
                     "table_desc": table_desc,
                     "tagged": tagged,
+                    "cleared": cleared,
                 }
             )
     index, capped = _limit_index(index_rows)
     if capped:
         _LOG.warning("schema_index_cap")
-    keep_exact = {
-        fold
-        for values in index.values()
-        for fold in (_normalize(value) for value in values)
-        if fold
-    }
-    spans = _question_spans(_masked_question(question or "", keep_exact))
+    evidence = _name_evidence(prepared, index, ontology, onto)
+    model_text, mask_failed = _model_question(question or "", evidence)
+    words = _question_words(model_text)
+    spans = [] if mask_failed else _question_spans(model_text)
+    granted_tokens, granted_phrases = _granted_folds(evidence["exempt_values"])
+    schema_folds = _term_folds(evidence["schema_terms"])
     known = _value_token_pairs(loaded_values)
     slots: list[tuple[str, str]] = []
     slot_meta: list[tuple[str, str]] = []
@@ -1372,13 +1638,17 @@ def build_schema_context(
             slots.append((f"{table}.__table__", table_desc))
             slot_meta.append(("table", table))
         description = _mask_known(str(item["description"]), known)
-        hints = _hint_values(
+        hints = [] if mask_failed else _hint_values(
             spans,
             index.get(key, ()),
             tagged=bool(item["tagged"]),
             table=table,
             column=name,
             description=str(item["description"]),
+            words=words,
+            granted=granted_tokens,
+            schema=schema_folds,
+            phrases=granted_phrases,
         )
         item["hints"] = hints
         if description:
@@ -1401,7 +1671,7 @@ def build_schema_context(
             slots.append((str(item["name"]), description))
             slot_meta.append(("measure", str(item["name"])))
 
-    masked = _mask_slots(slots)
+    masked = None if mask_failed else _mask_slots(slots)
     table_desc_out: dict[str, str] = {}
     column_desc_out: dict[str, str] = {}
     sample_groups: dict[str, list[tuple[str, str]]] = {}
@@ -1509,6 +1779,7 @@ def build_schema_context(
         samples_included=any(col.samples for col in chosen),
         dialect=dialect,
         envelope_prompt=envelope_prompt,
+        name_mask=evidence,
     )
 
 
@@ -2008,6 +2279,8 @@ def prepare_generate_context(
     out = dict(ctx)
     out[SCHEMA_CONTEXT_FIELD] = built.prompt
     out[SCHEMA_CONTEXT_ENVELOPE_KEY] = built.envelope_prompt
+    if built.name_mask is not None:
+        out[NAME_MASK_KEY] = built.name_mask
     if stamp:
         out[SCHEMA_INDEX_STAMP_KEY] = stamp
     return out

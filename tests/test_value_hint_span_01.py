@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from dms_core.pii import mask_payload, mask_personal_spans
+from cortex_client.compute import _insights_body
+from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload, mask_payload
 from dms_executor.schema_context import build_schema_context
 
 # Human questions. Each stored list is the name and its pieces, so the
@@ -86,13 +87,48 @@ def test_name_questions_are_at_least_thirty() -> None:
     assert len(_NAME_QUESTIONS) >= 30
 
 
+def _built(question: str, datasets: list[dict[str, Any]]):
+    return build_schema_context(
+        question, {"dialect": "mysql", "datasets": datasets}
+    )
+
+
+def _body(question: str, datasets: list[dict[str, Any]]) -> dict[str, Any]:
+    built = _built(question, datasets)
+    return _insights_body(
+        question,
+        session_id="sess-span",
+        space_id="space-span",
+        ontology={
+            "schema_context": built.prompt,
+            NAME_MASK_KEY: built.name_mask,
+        },
+    )
+
+
 def test_mask_cleared_column_does_not_hint_a_person_span() -> None:
+    """A stored name is masked, so none of its parts can hint."""
     for question, parts in _NAME_QUESTIONS:
-        prompt = _prompt(question, [_column("category", list(parts))])
+        full = parts[0]
+        datasets = [
+            {
+                "name": "person",
+                "columns": [_column("rep", [full])],
+            },
+            {
+                "name": "item",
+                "columns": [_column("category", list(parts))],
+            },
+        ]
+        prompt = _built(question, datasets).prompt
         emitted = _emitted_hints(prompt)
         for part in parts:
             assert part not in emitted, (question, part, emitted)
-            assert all(part not in hint for hint in emitted), (question, part, emitted)
+            assert all(part.casefold() not in hint.casefold() for hint in emitted), (
+                question,
+                part,
+                emitted,
+            )
 
 
 def test_compare_chemicals_and_solvents_still_hints() -> None:
@@ -201,14 +237,50 @@ def test_category_hints_hold_for_one_value_questions() -> None:
     assert hits == 33
 
 
+def test_category_hints_hold_inside_a_sentence() -> None:
+    hits = _hint_count(
+        _CATEGORY_VALUES, "category", lambda value: f"list {value}"
+    )
+    assert hits == 33
+
+
 def test_sku_hints_are_twenty_of_twenty() -> None:
-    values = tuple(f"SKU-{number:02d}" for number in range(1, 21))
+    values = tuple(f"SKU-{number:02d}" for number in range(1, 18)) + (
+        "resin",
+        "pigment",
+        "wax",
+    )
     hits = _hint_count(
         values,
         "sku",
         lambda value: f"stock for {value} last month",
     )
     assert hits == 20
+
+
+_OVERMASK = (
+    ("how many shipments are delayed", "status", "delayed"),
+    ("list spare parts", "category", "spare parts"),
+    ("stock in KUALA LUMPUR", "region", "KUALA LUMPUR"),
+    ("total quantity of inbound transactions", "type", "inbound"),
+    ("list raw material", "category", "raw material"),
+    ("list export", "category", "export"),
+    ("list import", "category", "import"),
+    ("list urgent", "category", "urgent"),
+    ("stock in JOHOR BAHRU", "region", "JOHOR BAHRU"),
+    ("stock in shah alam", "region", "shah alam"),
+    ("list IBC TOTE", "category", "IBC TOTE"),
+    ("list HOT ROLLED COIL", "category", "HOT ROLLED COIL"),
+    ("list cold room", "category", "cold room"),
+    ("list in transit", "status", "in transit"),
+    ("list on hold", "status", "on hold"),
+)
+
+
+def test_in_sentence_values_still_hint() -> None:
+    for question, column, value in _OVERMASK:
+        prompt = _prompt(question, [_column(column, [value])])
+        assert f"{column} = {value}" in prompt, (question, prompt)
 
 
 def test_answer_prose_is_not_run_through_the_name_span_pass() -> None:
@@ -219,12 +291,12 @@ def test_answer_prose_is_not_run_through_the_name_span_pass() -> None:
 
 
 def test_show_ali_bin_on_cleared_columns_sends_no_hint() -> None:
-    """Extra question tokens on a metric column must not keep the short name."""
+    """A short cell does not hint when the question span is a longer name."""
     for column in ("category", "status", "sku", "code", "type", "flag", "id"):
         for question, value in (
             ("show ali bin", "ALI"),
-            ("show ali", "ali"),
             ("show ALI BIN", "ALI"),
+            ("sales by ali bin abu", "abu"),
         ):
             prompt = _prompt(question, [_column(column, [value])])
             assert "FILTER HINTS" not in prompt, (column, question, prompt)
@@ -232,16 +304,138 @@ def test_show_ali_bin_on_cleared_columns_sends_no_hint() -> None:
             assert value.lower() not in prompt.lower()
 
 
-def test_personal_span_pass_keeps_codes_and_drops_names() -> None:
-    compared = mask_personal_spans("compare CHEMICALS and SOLVENTS")
-    assert "CHEMICALS" in compared
-    assert "SOLVENTS" in compared
-    assert "DMSMASK_name_" not in compared
-    sku = mask_personal_spans("stock for SKU-BETA last month")
-    assert "SKU-BETA" in sku
-    assert "last month" not in sku
-    assert "stock for" not in sku
-    named = mask_personal_spans("how many orders did nora voss place")
-    assert "nora" not in named
-    assert "voss" not in named
+def test_stored_name_is_masked_in_the_cortex_body() -> None:
+    datasets = [
+        {"name": "person", "columns": [_column("rep", ["nora voss"])]},
+        {"name": "item", "columns": [_column("category", ["voss"])]},
+    ]
+    for question in (
+        "what did nora voss buy",
+        "what did NORA VOSS buy",
+        "what did Nora Voss buy",
+    ):
+        body = _body(question, datasets)
+        assert "voss" not in body["question"].casefold()
+        assert "voss" not in body["intent"].casefold()
+        assert "DMSMASK_name_" in body["question"]
+        assert "FILTER HINTS" not in str(body.get("schema_context") or "")
+
+
+def test_unstored_name_reaches_cortex_as_typed() -> None:
+    datasets = [
+        {"name": "item", "columns": [_column("category", ["CHEMICALS"])]},
+    ]
+    question = "what did nora voss buy"
+    body = _body(question, datasets)
+    assert body["question"] == question
+    assert body["intent"] == question
+    assert "FILTER HINTS" not in str(body.get("schema_context") or "")
+
+
+def test_how_many_open_still_hints_and_a_later_mixed_fragment_does_not() -> None:
+    """A short first word is a frame. A later short separator is a name span."""
+    metric = _prompt("how many OPEN", [_column("category", ["OPEN"])])
+    assert "category = OPEN" in metric
+    east = _prompt("how many east", [_column("category", ["east"])])
+    assert "category = east" in east
+    leaked = _prompt(
+        "sales by nora VOSS today",
+        [_column("category", ["VOSS"])],
+    )
+    assert "FILTER HINTS" not in leaked
+
+
+def test_source_mask_keeps_metric_text_and_drops_a_stored_name() -> None:
+    kept = fail_closed_mask_payload(
+        text="compare CHEMICALS and SOLVENTS",
+        name_values=["nora voss"],
+        exempt_values=["CHEMICALS", "SOLVENTS"],
+        schema_terms=["item", "category"],
+    )["text"]
+    assert kept == "compare CHEMICALS and SOLVENTS"
+    asked = fail_closed_mask_payload(
+        text="stock for SKU-BETA last month",
+        name_values=["nora voss"],
+        exempt_values=["SKU-BETA"],
+        schema_terms=["item"],
+    )["text"]
+    assert asked == "stock for SKU-BETA last month"
+    named = fail_closed_mask_payload(
+        text="how many orders did nora voss place",
+        name_values=["nora voss"],
+        exempt_values=[],
+        schema_terms=["item"],
+    )["text"]
+    assert "nora" not in named.casefold()
     assert "DMSMASK_name_" in named
+    titled = fail_closed_mask_payload(
+        text="Finished Goods last month",
+        name_values=["Nora Voss"],
+        exempt_values=["Finished Goods"],
+        schema_terms=["Item Category"],
+    )["text"]
+    assert titled == "Finished Goods last month"
+    label = fail_closed_mask_payload(
+        text="Open the Item Category",
+        name_values=[],
+        exempt_values=[],
+        schema_terms=["Item Category"],
+    )["text"]
+    assert label == "Open the Item Category"
+
+
+def _partial_names() -> list[tuple[str, str, str]]:
+    """60 questions: stored and unstored, long, mixed-case, multi-part."""
+    names = (
+        ("nora voss", "voss"),
+        ("NORA VOSS", "VOSS"),
+        ("Nora Voss", "Voss"),
+        ("nora VOSS", "VOSS"),
+        ("muhammad hafiz", "hafiz"),
+        ("MUHAMMAD HAFIZ", "HAFIZ"),
+        ("priyadarshini rajan", "rajan"),
+        ("PRIYADARSHINI RAJAN", "RAJAN"),
+        ("RAJESWARI MUNIANDY", "MUNIANDY"),
+        ("ali bin abu", "abu"),
+        ("ALI BIN ABU", "ABU"),
+        ("mina cole", "cole"),
+    )
+    frames = (
+        "lookup {name} in the ledger",
+        "sales by {name} today",
+        "meet {name} after the count",
+        "call {name} back",
+        "page {name} now",
+    )
+    out: list[tuple[str, str, str]] = []
+    for name, fragment in names:
+        for frame in frames:
+            if len(out) >= 60:
+                return out
+            question = frame.format(name=name)
+            stored = name if len(out) % 2 == 0 else ""
+            out.append((question, stored, fragment))
+    return out
+
+
+def test_partial_names_hint_nothing() -> None:
+    rows = _partial_names()
+    assert len(rows) == 60
+    leaks = 0
+    for question, stored, fragment in rows:
+        datasets = [
+            {"name": "item", "columns": [_column("category", [fragment])]},
+        ]
+        if stored:
+            datasets.insert(
+                0, {"name": "person", "columns": [_column("rep", [stored])]}
+            )
+        built = _built(question, datasets)
+        emitted = _emitted_hints(built.prompt)
+        if emitted:
+            leaks += 1
+        assert not emitted, (question, stored, fragment, emitted)
+        if stored:
+            body = _body(question, datasets)
+            assert fragment.casefold() not in body["question"].casefold(), question
+    assert leaks == 0

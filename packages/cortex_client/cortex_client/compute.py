@@ -27,6 +27,7 @@ from contextvars import ContextVar
 from typing import Any
 
 import httpx
+from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload
 
 from cortex_client.insights import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
@@ -950,6 +951,27 @@ def _split_schema_context(
     return (onto or None), text
 
 
+def _masked_model_question(question: str, evidence: Mapping[str, Any] | None) -> str:
+    """Same masker the hinter reads. Failure blanks the question; the ask continues."""
+    if not isinstance(evidence, Mapping):
+        return question
+    try:
+        masked = fail_closed_mask_payload(
+            text=question or "",
+            name_values=list(evidence.get("name_values") or ()),
+            exempt_values=list(evidence.get("exempt_values") or ()),
+            schema_terms=list(evidence.get("schema_terms") or ()),
+        )
+    except Exception:  # noqa: BLE001 -- fail closed, the generate call still goes
+        return "DMSMASK_unknown_00" if question else ""
+    if not isinstance(masked, dict):
+        return "DMSMASK_unknown_00" if question else ""
+    text = masked.get("text")
+    if not isinstance(text, str):
+        return "DMSMASK_unknown_00" if question else ""
+    return text
+
+
 def _insights_body(
     question: str,
     *,
@@ -958,9 +980,14 @@ def _insights_body(
     ontology: dict[str, Any] | None,
 ) -> dict[str, Any]:
     onto, schema_context = _split_schema_context(ontology)
+    evidence = None
+    if isinstance(onto, dict) and NAME_MASK_KEY in onto:
+        onto = dict(onto)
+        evidence = onto.pop(NAME_MASK_KEY, None)
+    asked = _masked_model_question(question, evidence if isinstance(evidence, Mapping) else None)
     body: dict[str, Any] = {
-        "intent": question,
-        "question": question,
+        "intent": asked,
+        "question": asked,
         "ask": False,
         "generate": True,
         "session_id": session_id or "demo",

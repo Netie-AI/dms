@@ -639,87 +639,104 @@ class Masker:
         return token
 
 
-_NAME_WORD = re.compile(r"[A-Za-z]{2,25}")
-# ponytail: a lower or ALL-CAPS run is a name only when every word is at most
-# this long. A cleared metric token of 8 or more letters shares the Title-Case
-# shape once it is cased for the detector, so it is not a candidate. Ceiling:
-# a given name longer than 7 letters is not removed. Upgrade: Cortex NER.
-_SHORT_NAME_WORD = 7
+# Popped off the compute catalog before Insights sees it. Not a wire field.
+# The hinter and ``_insights_body`` both pass this evidence into
+# ``fail_closed_mask_payload``. Nothing else masks a name.
+NAME_MASK_KEY = "_dms_name_mask"
 
 
-def _uniform_letter_case(word: str) -> str | None:
-    """``upper`` or ``lower`` for a letter-word. Title case is the other detector."""
-    if word.isupper():
-        return "upper"
-    if word.islower():
-        return "lower"
-    return None
+def _alnum_fold(token: str) -> str:
+    """Letters and digits, folded. Punctuation is not a token boundary."""
+    return "".join(ch.lower() for ch in token if ch.isalnum())
 
 
-def mask_personal_spans(text: str, *, uniform: bool = True) -> str:
-    """Replace multi-word person spans. Same detector the masker already uses.
+def _phrase_folds(value: str) -> tuple[str, ...]:
+    parts = tuple(_alnum_fold(raw) for raw in str(value).split())
+    return tuple(part for part in parts if part)
 
-    Title-Case spans, including a hyphen or apostrophe between the words,
-    go through ``_PERSON_NAME_FIND``. When ``uniform`` is set, a run of two
-    to four letter-words that are all lower or all ALL-CAPS, each at most
-    ``_SHORT_NAME_WORD`` letters, is shown to that same detector after Title
-    case. A longer token stays, so a metric code is not eaten. A hyphen
-    inside one token is not a word break. ``uniform=False`` is the exact
-    catalog value: the question is that value and nothing else, so the
-    lower/ALL-CAPS pass does not run. No word list. Answer prose does not
-    call this.
+
+def _text_tokens(text: str) -> list[tuple[int, int, str]]:
+    """Whitespace tokens as ``(start, end, fold)``. Empty folds are kept out."""
+    out: list[tuple[int, int, str]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        while i < n and not text[i].isspace():
+            i += 1
+        fold = _alnum_fold(text[start:i])
+        if fold:
+            out.append((start, i, fold))
+    return out
+
+
+def _mask_source_names(
+    text: str,
+    masker: Masker,
+    name_values: Sequence[str],
+    exempt_values: Sequence[str],
+    schema_terms: Sequence[str],
+) -> str:
+    """Mask stored person or unclassified values. Leave everything else.
+
+    A span is masked when its tokens match a stored value from a person-like
+    or unclassified column, case-insensitively, token by token. Longest
+    value wins. A typed name stored nowhere is not a value, so it stays.
+    Title-Case ``_PERSON_NAME_FIND`` is only a backstop for a span that
+    already matches one of those stored values. It never masks a schema
+    term or a value from a column the column gate cleared as non-person.
+    No word list. The lists are the source's own cells and labels.
     """
     if not text or is_mask_token(text):
         return text
-    masker = Masker()
-
-    def _sub(match: re.Match[str]) -> str:
-        return masker.token("name", match.group(0))
-
-    out = _PERSON_NAME_FIND.sub(_sub, text)
-    if not uniform:
-        return out
-    words = list(_NAME_WORD.finditer(out))
-    spans: list[tuple[int, int, str]] = []
+    phrases: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in name_values:
+        phrase = _phrase_folds(raw)
+        if phrase and phrase not in seen:
+            seen.add(phrase)
+            phrases.append(phrase)
+    phrases.sort(key=len, reverse=True)
+    exempt = {_phrase_folds(raw) for raw in exempt_values}
+    exempt.discard(())
+    terms = {_phrase_folds(raw) for raw in schema_terms}
+    terms.discard(())
+    tokens = _text_tokens(text)
+    spans: list[tuple[int, int]] = []
     index = 0
-    while index < len(words):
+    while index < len(tokens):
         taken = 1
-        for width in (4, 3, 2):
-            if index + width > len(words):
+        for phrase in phrases:
+            width = len(phrase)
+            if index + width > len(tokens):
                 continue
-            chunk = words[index : index + width]
-            gaps = [
-                out[chunk[pos].end() : chunk[pos + 1].start()] for pos in range(width - 1)
-            ]
-            if any(gap != " " for gap in gaps):
+            if any(tokens[index + pos][2] != phrase[pos] for pos in range(width)):
                 continue
-            raws = [item.group(0) for item in chunk]
-            if any(len(word) > _SHORT_NAME_WORD for word in raws):
-                continue
-            # A hyphen or apostrophe glues one token. That token is not a
-            # space-separated name word.
-            if any(
-                (item.start() > 0 and out[item.start() - 1] in "-'")
-                or (item.end() < len(out) and out[item.end()] in "-'")
-                for item in chunk
-            ):
-                continue
-            case = _uniform_letter_case(raws[0])
-            if case is None or any(_uniform_letter_case(word) != case for word in raws):
-                continue
-            titled = " ".join(word.title() for word in raws)
-            if _PERSON_NAME_FIND.fullmatch(titled) is None:
-                continue
-            spans.append((chunk[0].start(), chunk[-1].end(), " ".join(raws)))
+            spans.append((tokens[index][0], tokens[index + width - 1][1]))
             taken = width
             break
         index += taken
-    if not spans:
-        return out
-    chars = list(out)
-    for start, end, raw in reversed(spans):
-        chars[start:end] = list(masker.token("name", raw))
-    return "".join(chars)
+
+    def _title_sub(match: re.Match[str]) -> str:
+        phrase = _phrase_folds(match.group(0))
+        # Cleared metric values and schema labels are not names. A Title-Case
+        # span stored nowhere stays as typed.
+        if not phrase or phrase in exempt or phrase in terms or phrase not in seen:
+            return match.group(0)
+        return masker.token("name", match.group(0))
+
+    # Evidence spans first. Person and unclassified values are never exempt.
+    # The Title-Case backstop then only replaces a stored name the token
+    # walk missed, and it skips cleared values and labels.
+    chars = list(text)
+    for start, end in reversed(spans):
+        chars[start:end] = list(masker.token("name", text[start:end]))
+    out = "".join(chars)
+    return _PERSON_NAME_FIND.sub(_title_sub, out)
 
 
 def drop_pii_encodings(encodings: Mapping[str, Sequence[object]]) -> dict[str, list[str]]:
@@ -969,6 +986,9 @@ def mask_payload(
     chart: Any = None,
     sql_used: str | None = None,
     column_sources: Mapping[str, frozenset[str]] | None = None,
+    name_values: Sequence[str] | None = None,
+    exempt_values: Sequence[str] | None = None,
+    schema_terms: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Mask PII in customer-visible fields. Numeric aggregates stay numbers.
 
@@ -1002,6 +1022,17 @@ def mask_payload(
         return _scan_text(mapped, masker)
 
     masked_text = _mask_str(text or "")
+    # Name evidence is model text only. Answer prose and SQL keep the scan
+    # above and do not take this walk. ``None`` means the caller is not
+    # building text for the model.
+    if name_values is not None or exempt_values is not None or schema_terms is not None:
+        masked_text = _mask_source_names(
+            masked_text,
+            masker,
+            name_values or (),
+            exempt_values or (),
+            schema_terms or (),
+        )
     masked_sql = None if sql_used is None else _mask_str(str(sql_used))
     # Whole-value dates in values are DOB. Rows keep the lineage rule.
     masked_values = _mask_bare_dates(
