@@ -104,6 +104,7 @@ _CODES = frozenset(
         "reconfirm",
         "retry",
         "serving_deadline_exceeded",
+        "serving_deadline_reserve",
         "serving_lease_cap",
         "sql_dialect_unknown",
         "sql_not_analyzable",
@@ -125,6 +126,7 @@ _CLOSED = frozenset(
         "insights_call_cap",
         "intent_spec_mismatch",
         "intent_spec_unverified",
+        "serving_deadline_reserve",
         "ungranted",
         "ungranted_table",
     }

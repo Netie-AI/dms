@@ -41,6 +41,7 @@ GAP_REASONS = frozenset(
         "insights_timeout",
         "insights_call_cap",
         "serving_deadline_exceeded",
+        "serving_deadline_reserve",
         "serving_lease_cap",
         "insights_no_sql_no_ranking",
         "insights_bearer_missing",

@@ -9,8 +9,10 @@ Flag ``DMS_ASK_RECONFIRM`` defaults off. Off means this module is not called.
 Direct refusal, and only these, skip the suggestion: an ungranted table, a
 person or PII or private column, a destructive or write statement, and
 ``sql_dialect_unknown``. Those come from the grant, mask, and gate results
-already on the attempt. ``serving_deadline_exceeded`` and ``serving_lease_cap``
-are capacity stops. They get the same confirm step as any other stuck ask.
+already on the attempt. ``serving_deadline_exceeded``, ``serving_lease_cap``,
+and ``serving_deadline_reserve`` get the same confirm step as any other
+stuck ask. Lease cap is a real capacity hit. The reserve means the ask
+arrived too late to finish in time. Those two do not share a sentence.
 """
 
 from __future__ import annotations
@@ -55,13 +57,35 @@ _HARD = frozenset(
         "destructive",
     }
 )
-_CAPACITY = frozenset({"serving_deadline_exceeded", "serving_lease_cap"})
+_CAPACITY = frozenset(
+    {
+        "serving_deadline_exceeded",
+        "serving_deadline_reserve",
+        "serving_lease_cap",
+    }
+)
 _CAPACITY_TEXT = {
     "serving_deadline_exceeded": (
         "This took too long on our side, so I stopped before answering."
     ),
+    # Real capacity hit. Not the late-arrival reserve.
     "serving_lease_cap": (
-        "We hit our serving limit, so I stopped before answering."
+        "The server is at capacity right now, so I stopped before answering."
+    ),
+    # Arrived too late to start. Not a capacity sentence. #420 owns the raise.
+    "serving_deadline_reserve": (
+        "This ask came in too late to finish in time, so I stopped before answering."
+    ),
+}
+_CAPACITY_SAY = {
+    "serving_deadline_exceeded": (
+        "This stop took too long on our side. Say that in the reason."
+    ),
+    "serving_lease_cap": (
+        "The server is at capacity right now. Say that in the reason."
+    ),
+    "serving_deadline_reserve": (
+        "This ask arrived too late to finish in time. Say that in the reason."
     ),
 }
 _NOT_FOUND = "Not found in the database."
@@ -90,10 +114,11 @@ def dialect_known(warehouse: Path | None) -> bool:
 
 
 def serving_capacity_reason(payload: dict[str, Any] | None) -> str | None:
-    """Capacity stop carried on a generate payload, or None.
+    """Serving stop carried on a generate payload, or None.
 
-    These are our limit, not a user refusal. The caller abstains with the
-    code, and the confirm step explains it.
+    Deadline, reserve, and lease cap are our limit, not a user refusal.
+    The caller abstains with the code, and the confirm step explains it.
+    The reserve is a late arrival. It is not the lease-cap sentence.
     """
     if not isinstance(payload, dict):
         return None
@@ -492,10 +517,8 @@ def _prompt(
         "Use only the granted columns listed below.",
     ]
     if code in _CAPACITY:
-        lines.append(
-            "This stop is a capacity limit on our side. Say that in the reason. "
-            "Suggest either retrying the ask or one narrower question."
-        )
+        lines.append(_CAPACITY_SAY[code])
+        lines.append("Suggest either retrying the ask or one narrower question.")
     lines.append(f"Ask: {shown}")
     lines.extend(_schema_lines(warehouse, grantable))
     return "\n".join(lines)

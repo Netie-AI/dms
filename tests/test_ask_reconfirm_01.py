@@ -37,7 +37,8 @@ PASSPORT_VALUE = "QXPASS441771"
 TEXT_VALUE = "qxtextsample441"
 AMOUNT_SAMPLE = "441771"
 DEADLINE = "This took too long on our side, so I stopped before answering."
-LEASE = "We hit our serving limit, so I stopped before answering."
+LEASE = "The server is at capacity right now, so I stopped before answering."
+RESERVE = "This ask came in too late to finish in time, so I stopped before answering."
 NOT_FOUND = "Not found in the database."
 SUGGESTION_52 = "Show the marker figure"
 SQL_52 = "SELECT 1 AS n"
@@ -306,6 +307,7 @@ def test_confirm_then_yes_matches_executed_rows(wh: Path) -> None:
     [
         ("serving_deadline_exceeded", DEADLINE),
         ("serving_lease_cap", LEASE),
+        ("serving_deadline_reserve", RESERVE),
     ],
 )
 def test_capacity_confirms_and_yes_reruns(wh: Path, code: str, plain: str) -> None:
@@ -321,6 +323,18 @@ def test_capacity_confirms_and_yes_reruns(wh: Path, code: str, plain: str) -> No
         assert first["status"] == "confirm"
         assert first["confirm_code"] == code
         assert first["confirm_reason"] == plain
+        assert plain != LEASE or code == "serving_lease_cap"
+        assert "capacity" not in RESERVE
+        assert RESERVE != LEASE
+        assert writer.prompts
+        prompt = writer.prompts[0].lower()
+        if code == "serving_deadline_reserve":
+            assert "too late" in prompt
+            assert "at capacity" not in prompt
+            assert LEASE.lower() not in prompt
+        if code == "serving_lease_cap":
+            assert "at capacity" in prompt
+            assert "too late" not in prompt
         assert first["suggested_question"] == Q_STUCK
         assert minted_clarify_id(first["confirm_id"])
         assert "suggested_question" in first
