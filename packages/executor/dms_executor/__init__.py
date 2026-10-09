@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -85,10 +86,23 @@ from dms_executor.generative_ask import (
     with_served_attribution,
 )
 from dms_executor.lake_registry import (
+    SERVING_DEADLINE_EXCEEDED_REASON,
+    AskControl,
+    ServingDeadlineExceeded,
     ServingLeaseCap,
     ServingLeaseQueueFull,
+    ServingWaitCancelled,
+    ask_disconnected,
+    ask_took_serving_lease,
+    bind_ask_control,
+    bind_ask_deadline,
     block_serving_lease,
+    current_ask_control,
+    raise_if_ask_stopped,
+    reset_ask_control,
+    reset_ask_deadline,
     reset_serving_lease_block,
+    serving_deadline_missed,
 )
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -183,19 +197,43 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
-        return fn(question, **kwargs)
-    except TypeError:
         try:
+            return fn(question, **kwargs)
+        except TypeError:
             return fn(
                 question,
                 session_id=session_id,
                 space_id=space_id,
                 ontology=onto,
             )
-        except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
-            return None
-    except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
+    except (
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+        ServingDeadlineExceeded,
+    ):
+        raise
+    except Exception as exc:  # noqa: BLE001 — miss into contract ask, do not 503
+        if ask_disconnected():
+            raise ServingWaitCancelled() from exc
+        interrupted = type(exc).__name__ == "InterruptException"
+        if interrupted or serving_deadline_missed():
+            raise ServingDeadlineExceeded() from exc
+        if ask_took_serving_lease() and _is_timeout_exc(exc):
+            raise ServingDeadlineExceeded() from exc
         return None
+
+
+def _is_timeout_exc(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    return name in {
+        "TimeoutError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+    }
 
 
 def _seen(
@@ -273,6 +311,14 @@ class Executor:
         from dms_executor.lake_registry import close_lakes
 
         close_lakes()
+
+    def begin_client_watch(self) -> tuple[Any, AskControl]:
+        """Bind the ask-thread cancel flag. The route sets ``disconnected``."""
+        ctrl = AskControl()
+        return bind_ask_control(ctrl), ctrl
+
+    def end_client_watch(self, token: Any) -> None:
+        reset_ask_control(token)
 
     def _store_turn(
         self, session_id: str | None, space_id: str | None, env: dict[str, Any]
@@ -532,101 +578,141 @@ class Executor:
         generate seam ran, its setup fields reach the envelope on every path,
         including the contract-ask fallback after a generative miss.
         """
-        from cortex_client.compute import begin_answer_model_calls, recorded_model_calls
+        import httpx
+        from cortex_client.compute import (
+            begin_answer_model_calls,
+            insights_timeout_s,
+            recorded_model_calls,
+        )
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
+        deadline = time.monotonic() + insights_timeout_s()
+        deadline_tokens = bind_ask_deadline(deadline)
+        own_control = current_ask_control() is None
+        control_token: Any = None
+        ctrl = current_ask_control()
+        if ctrl is None:
+            ctrl = AskControl()
+            control_token = bind_ask_control(ctrl)
+        ctrl.deadline = deadline
+        ctrl.start()
         try:
-            env = self._live_ask(
-                question,
-                space_id=space_id,
-                session_id=session_id,
-                tables=tables,
-                ask_path=ask_path,
-                seen=seen,
-            )
-        except OpenVaultTokenError as exc:
-            # Every lane needs the signing key; no lane may relabel its absence.
-            env = build_abstain(
-                reason="openvault_mint",
-                question=question,
-                stage="openvault",
-                answer_id="ans_ov_mint",
-                text=(
-                    "I can't answer this: DMS could not get its OpenVault "
-                    f"signing key ({exc.code}). No fallback answer was used."
-                ),
-                values=[],
-                rows=[],
-                sql_used=None,
-                assumptions=[exc.code, "no generative fallback", "no demo fallback"],
-                space_id=space_id,
-                session_id=session_id,
-                ask_mode="live",
-                route="abstain",
-            )
-            assert_envelope_valid(env)
-        except (ServingLeaseCap, ServingLeaseQueueFull) as exc:
-            # Same abstain exit as a missing signing key. The reason code is
-            # the assumption. No log line and no ticket write here. While the
-            # envelope is built, another serving open must not wait again.
-            token = block_serving_lease(exc.code)
             try:
-                if exc.code == ServingLeaseQueueFull.code:
-                    text = (
-                        "I can't answer this right now: the serving wait "
-                        f"queue is full ({exc.code}). No figure was returned."
+                try:
+                    env = self._live_ask(
+                        question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        tables=tables,
+                        ask_path=ask_path,
+                        seen=seen,
                     )
-                    answer_id = "ans_serving_lease_queue_full"
-                else:
-                    text = (
-                        "I can't answer this right now: serving connections are "
-                        f"at the cap ({exc.code}). No figure was returned."
-                    )
-                    answer_id = "ans_serving_lease_cap"
-                env = build_answer_envelope(
-                    answer_id=answer_id,
-                    text=text,
-                    badge="ABSTAIN",
-                    abstained=True,
+                    if serving_deadline_missed():
+                        raise ServingDeadlineExceeded()
+                except (TimeoutError, httpx.TimeoutException) as exc:
+                    if ask_disconnected():
+                        raise ServingWaitCancelled() from exc
+                    if ask_took_serving_lease():
+                        raise ServingDeadlineExceeded() from exc
+                    raise
+            except OpenVaultTokenError as exc:
+                # Every lane needs the signing key; no lane may relabel its absence.
+                env = build_abstain(
+                    reason="openvault_mint",
+                    question=question,
+                    stage="openvault",
+                    answer_id="ans_ov_mint",
+                    text=(
+                        "I can't answer this: DMS could not get its OpenVault "
+                        f"signing key ({exc.code}). No fallback answer was used."
+                    ),
                     values=[],
                     rows=[],
                     sql_used=None,
-                    assumptions=[exc.code],
+                    assumptions=[exc.code, "no generative fallback", "no demo fallback"],
                     space_id=space_id,
                     session_id=session_id,
                     ask_mode="live",
                     route="abstain",
-                    question=question,
                 )
                 assert_envelope_valid(env)
-            finally:
-                reset_serving_lease_block(token)
-        stamp_engine_clock(env)
-        payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
-        stamped = with_served_attribution(env, payload)
-        out = stamped if stamped is not None else env
-        if isinstance(out, dict):
-            raw_loop = out.get("loop")
-            apply_sql_credit(
-                out,
-                payload if isinstance(payload, dict) else None,
-                raw_loop if isinstance(raw_loop, list) else None,
-                dialect=extract_dialect(getattr(self, "_warehouse", None)),
-            )
-        from dms_core.ask import lane_for_route
-        from dms_core.pii import mask_unknown_keys
+            except (
+                ServingLeaseCap,
+                ServingLeaseQueueFull,
+                ServingDeadlineExceeded,
+            ) as exc:
+                # build_abstain writes the ticket when DMS_CLOOP_B is on.
+                # This exit does not log. While the envelope is built, another
+                # serving open must not wait again.
+                token = block_serving_lease(exc.code)
+                try:
+                    if exc.code == ServingLeaseQueueFull.code:
+                        text = (
+                            "I can't answer this right now: the serving wait "
+                            f"queue is full ({exc.code}). No figure was returned."
+                        )
+                        answer_id = "ans_serving_lease_queue_full"
+                    elif exc.code == SERVING_DEADLINE_EXCEEDED_REASON:
+                        text = (
+                            "I can't answer this right now: the ask ran out of "
+                            f"time after a serving connection was granted ({exc.code}). "
+                            "No figure was returned."
+                        )
+                        answer_id = "ans_serving_deadline_exceeded"
+                    else:
+                        text = (
+                            "I can't answer this right now: serving connections are "
+                            f"at the cap ({exc.code}). No figure was returned."
+                        )
+                        answer_id = "ans_serving_lease_cap"
+                    env = build_abstain(
+                        reason=exc.code,
+                        question=question,
+                        stage="serving_lease",
+                        answer_id=answer_id,
+                        text=text,
+                        values=[],
+                        rows=[],
+                        sql_used=None,
+                        assumptions=[exc.code],
+                        space_id=space_id,
+                        session_id=session_id,
+                        ask_mode="live",
+                        route="abstain",
+                    )
+                    assert_envelope_valid(env)
+                finally:
+                    reset_serving_lease_block(token)
+            stamp_engine_clock(env)
+            payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
+            stamped = with_served_attribution(env, payload)
+            out = stamped if stamped is not None else env
+            if isinstance(out, dict):
+                raw_loop = out.get("loop")
+                apply_sql_credit(
+                    out,
+                    payload if isinstance(payload, dict) else None,
+                    raw_loop if isinstance(raw_loop, list) else None,
+                    dialect=extract_dialect(getattr(self, "_warehouse", None)),
+                )
+            from dms_core.ask import lane_for_route
+            from dms_core.pii import mask_unknown_keys
 
-        out["model_calls"] = recorded_model_calls()
-        # Lane is the route this path produced. A payload lane is not kept.
-        mapped = lane_for_route(out.get("route"))
-        if mapped is not None:
-            out["lane"] = mapped
-        else:
-            out.pop("lane", None)
-        masked = mask_unknown_keys(out)
-        backstop_missing_ticket(masked, question=question)
-        return masked
+            out["model_calls"] = recorded_model_calls()
+            # Lane is the route this path produced. A payload lane is not kept.
+            mapped = lane_for_route(out.get("route"))
+            if mapped is not None:
+                out["lane"] = mapped
+            else:
+                out.pop("lane", None)
+            masked = mask_unknown_keys(out)
+            backstop_missing_ticket(masked, question=question)
+            return masked
+        finally:
+            if own_control and control_token is not None:
+                reset_ask_control(control_token)
+            reset_ask_deadline(deadline_tokens)
 
     def _live_ask(
         self,
@@ -657,6 +743,7 @@ class Executor:
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
+        raise_if_ask_stopped()
         question = normalize_ask_question(question)
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
@@ -709,6 +796,7 @@ class Executor:
                 return follow
 
         if certified_first:
+            raise_if_ask_stopped()
             verified_env = maybe_verified_ask(
                 question,
                 space_id=space_id,
@@ -732,6 +820,7 @@ class Executor:
 
             # Phrase match + a failed later step is a named refusal (not None).
             # None means the phrase missed, so generative / contract ask may run.
+            raise_if_ask_stopped()
             pack_env = maybe_pack_ask(
                 question,
                 space_id=space_id,
@@ -786,12 +875,20 @@ class Executor:
         # never falls back to the whole space.
         try:
             granted = self.grantable_tables(space_id=space_id)
+        except (
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+            ServingDeadlineExceeded,
+        ):
+            raise
         except Exception:  # noqa: BLE001 -- empty context, never the whole space
             granted = []
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
         default_readable = [t for t in granted if t in DEMO_TABLES]
         readable = requested or default_readable
+        raise_if_ask_stopped()
         cascade = (
             run_cascade(
                 question,
@@ -865,6 +962,7 @@ class Executor:
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
+            raise_if_ask_stopped()
             gen_env = maybe_generative_ask(
                 question,
                 space_id=space_id,
@@ -930,6 +1028,7 @@ class Executor:
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
         try:
+            raise_if_ask_stopped()
             resp = self._cortex.ask(
                 AskRequest(
                     question=question,
@@ -937,11 +1036,19 @@ class Executor:
                     space_id=space_id,
                 )
             )
+        except (
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+            ServingDeadlineExceeded,
+        ):
+            raise
         except Exception as exc:  # noqa: BLE001
             err = classify_submit_error(exc)
             if err.code in {"session_unbound", "session_expired"}:
                 self._bound_sessions.discard(acl.session_id)
                 self.bind_session(acl)
+                raise_if_ask_stopped()
                 resp = self._cortex.ask(
                     AskRequest(
                         question=question,

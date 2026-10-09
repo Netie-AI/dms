@@ -264,8 +264,10 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
     if not Path(db).is_file():
         return {}
     from dms_executor.lake_registry import (
+        ServingDeadlineExceeded,
         ServingLeaseCap,
         ServingLeaseQueueFull,
+        ServingWaitCancelled,
         serving_lease_blocked,
     )
 
@@ -274,13 +276,15 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
         return {}
     try:
         con = connect_serving(db)
-    except (ServingLeaseCap, ServingLeaseQueueFull):
+    except (ServingLeaseCap, ServingLeaseQueueFull, ServingWaitCancelled):
         return {}
     try:
         rows = con.execute(
             f"SELECT table_name, filename, extracted_at, truncated, source_kind "
             f"FROM {_REGISTRY}"
         ).fetchall()
+    except (ServingDeadlineExceeded, ServingWaitCancelled):
+        raise
     except Exception:  # noqa: BLE001 - registry or columns may not exist yet
         return {}
     finally:

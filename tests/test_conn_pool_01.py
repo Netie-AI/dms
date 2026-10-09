@@ -6,6 +6,7 @@ Nothing is read from tests/ traps or held-out fixtures.
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -34,19 +35,24 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.lake_registry import (
     DEFAULT_INGEST_WAIT_S,
     DEFAULT_SERVING_LEASE_QUEUE_MAX,
+    DEFAULT_SERVING_LEASE_RESERVE_S,
+    SERVING_DEADLINE_EXCEEDED_REASON,
     SERVING_LEASE_CAP_REASON,
     SERVING_LEASE_QUEUE_FULL_REASON,
     IngestWaitTimeout,
     ServingLeaseCap,
     ServingLeaseQueueFull,
     ServingWaitCancelled,
+    bind_ask_deadline,
     cancel_serving_waiters,
     lease_refs,
     reader_pause_s,
+    reset_ask_deadline,
     serving_lease_queue_max,
     serving_lease_wait_s,
     serving_max_readers,
     serving_max_waiters,
+    serving_read_holds,
     serving_waiter_count,
 )
 from dms_executor.manifest import ManifestMinter, SessionAcl
@@ -61,6 +67,20 @@ class _Cortex:
     asks: list[Any] = field(default_factory=list)
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        sql = getattr(self, "hold_sql", None)
+        lake = getattr(self, "lake", None)
+        limit = int(getattr(self, "hold_limit", 0))
+        used = int(getattr(self, "_holds", 0))
+        if sql and lake is not None and used < limit:
+            self._holds = used + 1
+            started = getattr(self, "query_started", None)
+            con = connect_serving(lake)
+            try:
+                if started is not None:
+                    started.set()
+                con.execute(sql)
+            finally:
+                con.close()
         return {"unsure": True}
 
     def submit(self, req: Any) -> QueryResult:
@@ -781,13 +801,39 @@ def test_queue_default_holds_the_short_burst(monkeypatch: pytest.MonkeyPatch) ->
     assert serving_lease_queue_max() >= 16
 
 
-def test_serving_lease_wait_is_clamped_under_the_ask_timeout(
-    monkeypatch: pytest.MonkeyPatch,
+def test_serving_lease_wait_follows_the_ask_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """No fixed 7s ceiling. With an ask clock the wait is time left minus reserve.
+
+    A configured 30s wait stays 30s until an ask deadline is bound. Under that
+    deadline the wait is above 7s, so putting ``min(configured, 7)`` back fails.
+    When the time left is already under the reserve, the acquire abstains
+    without taking the free slot.
+    """
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
-    assert serving_lease_wait_s() == INSIGHTS_ASK_TIMEOUT_SECONDS - 1
+    assert serving_lease_wait_s() == 30.0
+    tokens = bind_ask_deadline(time.monotonic() + INSIGHTS_ASK_TIMEOUT_SECONDS)
+    try:
+        wait = serving_lease_wait_s()
+        expect = INSIGHTS_ASK_TIMEOUT_SECONDS - DEFAULT_SERVING_LEASE_RESERVE_S
+        assert wait == pytest.approx(expect, abs=0.05)
+        assert wait > 7.0
+    finally:
+        reset_ask_deadline(tokens)
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "2")
     assert serving_lease_wait_s() == 2.0
+    lake = tmp_path / "reserve.duckdb"
+    _lake(lake)
+    tokens = bind_ask_deadline(time.monotonic() + 0.1)
+    try:
+        with pytest.raises(ServingLeaseCap) as raised:
+            connect_serving(lake)
+        assert raised.value.code == SERVING_LEASE_CAP_REASON
+        assert lease_refs(lake) == 0
+        assert serving_read_holds(lake) == 0
+    finally:
+        reset_ask_deadline(tokens)
 
 
 def test_waiter_queue_is_bounded_and_does_not_hold_the_read_lock(
@@ -1112,7 +1158,8 @@ def test_short_burst_over_cap_is_answered(
 def test_abstain_including_watermark_stays_under_ask_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One wait, including the watermark stamp. Default 2s and a raised 30s."""
+    """One wait, including the watermark stamp. Default 2s, and a raised wait
+    still ends before the ask deadline (time left minus the reserve)."""
     lake = tmp_path / "abstain-time.duckdb"
     _lake(lake)
     server, thread, port, exe = _boot(lake, monkeypatch)
@@ -1157,3 +1204,348 @@ def test_abstain_including_watermark_stays_under_ask_timeout(
         holder.close()
         keeper.join(10.0)
         _stop(server, thread, exe)
+
+
+_LONG_SQL = "SELECT SUM(x) FROM range(100000000000) u(x)"
+
+
+def _post(client: httpx.Client, port: int, index: int) -> httpx.Response:
+    return client.post(
+        f"http://127.0.0.1:{port}/v1/chat/ask",
+        json={
+            "question": f"how many dock berths sit at each port ({index})",
+            "session_id": f"ses_pool_{index}",
+        },
+    )
+
+
+def _open_ask(port: int, index: int) -> socket.socket:
+    """HTTP/1.1 ask whose socket this test can close. httpx.Client.close()
+    from another thread leaves the TCP connection up, so the server never
+    sees a disconnect.
+    """
+    body = json.dumps(
+        {
+            "question": f"how many dock berths sit at each port ({index})",
+            "session_id": f"ses_pool_{index}",
+        }
+    ).encode()
+    head = (
+        f"POST /v1/chat/ask HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Connection: keep-alive\r\n"
+        f"\r\n"
+    ).encode()
+    sock = socket.create_connection(("127.0.0.1", port))
+    sock.sendall(head + body)
+    return sock
+
+
+def _drop_socket(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    sock.close()
+
+
+def test_http_disconnect_leaves_the_queue_within_half_a_second(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real dropped HTTP client, not a raise inside ``Condition.wait``."""
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_QUEUE_MAX", "4")
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "5")
+    lake = tmp_path / "http-queue.duckdb"
+    _lake(lake)
+    server, thread, port, exe = _boot(lake, monkeypatch)
+    ensure_demo_warehouse(lake)
+    holder = connect_serving(lake)
+    socks: list[socket.socket] = []
+
+    def _one(index: int) -> None:
+        sock = _open_ask(port, index)
+        socks.append(sock)
+        try:
+            sock.settimeout(30.0)
+            while sock.recv(4096):
+                pass
+        except OSError:
+            pass
+
+    askers = [threading.Thread(target=_one, args=(i,)) for i in range(4)]
+    for asker in askers:
+        asker.start()
+    deadline = time.monotonic() + 5.0
+    while serving_waiter_count(lake) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert serving_waiter_count(lake) == 4
+    started = time.monotonic()
+    for sock in socks:
+        _drop_socket(sock)
+    while serving_waiter_count(lake) > 0 and time.monotonic() - started < 2.0:
+        time.sleep(0.01)
+    release_s = time.monotonic() - started
+    print(f"MEASURE queued_drop_release_s={release_s:.3f}")
+    try:
+        assert release_s <= 0.5
+        assert serving_waiter_count(lake) == 0
+        holder.close()
+        nxt = _ask(port, 9, grounded=False)
+        assert nxt.status_code == 200, nxt.text[:500]
+        assert serving_waiter_count(lake) == 0
+    finally:
+        holder.close()
+        for sock in socks:
+            _drop_socket(sock)
+        for asker in askers:
+            asker.join(5.0)
+        _stop(server, thread, exe)
+
+
+def test_http_disconnect_after_grant_releases_on_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drop after the lease is granted. Interrupt the running query; do not
+    kill the worker. The 0.5s queue bar does not apply here.
+    """
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_QUEUE_MAX", "4")
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
+    lake = tmp_path / "http-grant.duckdb"
+    _lake(lake)
+    server, thread, port, exe = _boot(lake, monkeypatch)
+    ensure_demo_warehouse(lake)
+    cortex = exe._cortex
+    assert isinstance(cortex, _Cortex)
+    cortex.lake = lake
+    cortex.hold_sql = _LONG_SQL
+    cortex.hold_limit = 1
+    cortex.query_started = threading.Event()
+    held: dict[str, socket.socket] = {}
+
+    def _first() -> None:
+        sock = _open_ask(port, 1)
+        held["sock"] = sock
+        try:
+            sock.settimeout(30.0)
+            while sock.recv(4096):
+                pass
+        except OSError:
+            pass
+
+    first = threading.Thread(target=_first)
+    first.start()
+    assert cortex.query_started.wait(8.0)
+    assert lease_refs(lake) >= 1
+    waiter = httpx.Client(timeout=30.0)
+    second_box: dict[str, Any] = {}
+
+    def _second() -> None:
+        try:
+            second_box["resp"] = _post(waiter, port, 2)
+        except BaseException as exc:  # noqa: BLE001
+            second_box["exc"] = exc
+
+    second = threading.Thread(target=_second)
+    second.start()
+    deadline = time.monotonic() + 5.0
+    while serving_waiter_count(lake) < 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert serving_waiter_count(lake) >= 1
+    started = time.monotonic()
+    _drop_socket(held["sock"])
+    while (
+        (lease_refs(lake) > 0 or serving_read_holds(lake) > 0)
+        and time.monotonic() - started < INSIGHTS_ASK_TIMEOUT_SECONDS
+    ):
+        time.sleep(0.01)
+    release_s = time.monotonic() - started
+    print(f"MEASURE post_grant_release_s={release_s:.3f}")
+    try:
+        assert lease_refs(lake) == 0
+        assert serving_read_holds(lake) == 0
+        assert release_s <= INSIGHTS_ASK_TIMEOUT_SECONDS
+        second.join(8.0)
+        served_s = time.monotonic() - started
+        print(f"MEASURE post_grant_next_served_s={served_s:.3f}")
+        assert "exc" not in second_box, second_box.get("exc")
+        resp = second_box["resp"]
+        assert resp.status_code == 200, resp.text[:500]
+        assert serving_read_holds(lake) == 0
+        assert lease_refs(lake) == 0
+        assert serving_waiter_count(lake) == 0
+    finally:
+        if "sock" in held:
+            _drop_socket(held["sock"])
+        waiter.close()
+        first.join(8.0)
+        second.join(2.0)
+        alive = first.is_alive()
+        _stop(server, thread, exe)
+        assert not alive
+
+
+def test_late_grant_is_a_named_abstain_not_a_bare_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Grant at 6.90s of an 8s ask, then a query longer than the time left.
+
+    With the old 7s clamp this client, timeout 8.0s, gets ReadTimeout and no
+    envelope. The deadline interrupt must return a named abstain instead.
+    """
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_QUEUE_MAX", "4")
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
+    monkeypatch.delenv("DMS_LAKE_SERVING_LEASE_RESERVE_S", raising=False)
+    lake = tmp_path / "late-grant.duckdb"
+    _lake(lake)
+    server, thread, port, exe = _boot(lake, monkeypatch)
+    ensure_demo_warehouse(lake)
+    cortex = exe._cortex
+    assert isinstance(cortex, _Cortex)
+    cortex.lake = lake
+    cortex.hold_sql = _LONG_SQL
+    cortex.hold_limit = 1
+    holder = connect_serving(lake)
+
+    def _release() -> None:
+        time.sleep(6.90)
+        holder.close()
+
+    releaser = threading.Thread(target=_release)
+    releaser.start()
+    started = time.monotonic()
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            resp = _post(client, port, 1)
+        elapsed = time.monotonic() - started
+        print(f"MEASURE late_grant_elapsed_s={elapsed:.3f}")
+        assert resp.status_code == 200, resp.text[:500]
+        body = resp.json()
+        assert_envelope_valid(body)
+        reasons = _reasons(body)
+        assert SERVING_DEADLINE_EXCEEDED_REASON in reasons, reasons
+        assert elapsed < 8.0
+    finally:
+        holder.close()
+        releaser.join(8.0)
+        _stop(server, thread, exe)
+
+
+def _ticket_rows(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    import json
+    import logging
+
+    rows: list[dict[str, Any]] = []
+    for rec in caplog.records:
+        if rec.name != "dms_executor.pipeline_failure":
+            continue
+        text = rec.getMessage()
+        if not text.startswith("pipeline_failure "):
+            continue
+        assert rec.levelno == logging.WARNING
+        rows.append(json.loads(text[len("pipeline_failure ") :]))
+    return rows
+
+
+def _serving_executor(lake: Path) -> Executor:
+    ensure_demo_warehouse(lake)
+    return Executor(cortex=_Cortex(), minter=_minter(), warehouse_path=lake)
+
+
+def test_serving_abstain_tickets_follow_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each named serving exit writes one ticket when DMS_CLOOP_B is on, and none when it is off."""
+    import dms_executor.pipeline_failure as tickets
+
+    caplog.set_level("WARNING", logger="dms_executor.pipeline_failure")
+    lake = tmp_path / "tickets.duckdb"
+    _lake(lake)
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(lake))
+    exe = _serving_executor(lake)
+    exits = (
+        ("cap", SERVING_LEASE_CAP_REASON),
+        ("full", SERVING_LEASE_QUEUE_FULL_REASON),
+        ("deadline", SERVING_DEADLINE_EXCEEDED_REASON),
+    )
+
+    def _run(kind: str) -> dict[str, Any]:
+        monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
+        monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_QUEUE_MAX", "4")
+        monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "0.25")
+        monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+        holder = connect_serving(lake)
+        filler: threading.Thread | None = None
+        try:
+            if kind == "full":
+                monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_QUEUE_MAX", "1")
+                monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "2")
+
+                def _fill() -> None:
+                    try:
+                        connect_serving(lake).close()
+                    except (ServingLeaseCap, ServingWaitCancelled):
+                        return
+
+                filler = threading.Thread(target=_fill)
+                filler.start()
+                deadline = time.monotonic() + 2.0
+                while serving_waiter_count(lake) < 1 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                return exe.live_ask("queue is full for this ask", session_id="ses_full")
+            if kind == "deadline":
+                monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
+                monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "1")
+                cortex = exe._cortex
+                assert isinstance(cortex, _Cortex)
+                cortex.lake = lake
+                cortex.hold_sql = _LONG_SQL
+                cortex.hold_limit = 1
+                cortex._holds = 0
+
+                def _release() -> None:
+                    time.sleep(0.15)
+                    holder.close()
+
+                releaser = threading.Thread(target=_release)
+                releaser.start()
+                try:
+                    return exe.live_ask(
+                        "grant then the query outruns the ask", session_id="ses_deadline"
+                    )
+                finally:
+                    releaser.join(3.0)
+                    cortex.hold_limit = 0
+            return exe.live_ask("the serving cap held this ask", session_id="ses_cap")
+        finally:
+            cancel_serving_waiters(lake)
+            holder.close()
+            if filler is not None:
+                filler.join(3.0)
+
+    for flag in ("0", "1"):
+        if flag == "1":
+            monkeypatch.setenv("DMS_CLOOP_B", "1")
+        else:
+            monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+        for kind, reason in exits:
+            tickets._reset_pipeline_failures()
+            caplog.clear()
+            env = _run(kind)
+            assert reason in _reasons(env), (kind, flag, _reasons(env))
+            rows = _ticket_rows(caplog)
+            if flag == "0":
+                assert rows == [], (kind, rows)
+                assert "ticket_id" not in env
+                continue
+            assert len(rows) == 1, (kind, rows)
+            assert rows[0]["reason"] == reason, rows[0]
+            assert rows[0]["count"] == 1
+            assert env.get("ticket_id") == rows[0]["ticket_id"]
+            assert "queue is full" not in caplog.text
+            assert "serving cap held" not in caplog.text
+            assert "outruns the ask" not in caplog.text

@@ -32,10 +32,12 @@ from typing import Any
 
 import duckdb
 
-#: Named reason when a queued serving lease waits out ``DMS_LAKE_SERVING_LEASE_WAIT_S``.
+#: Named reason when a queued serving lease waits out its budget.
 SERVING_LEASE_CAP_REASON = "serving_lease_cap"
 #: Named reason when an ask arrives and the waiter queue is already full.
 SERVING_LEASE_QUEUE_FULL_REASON = "serving_lease_queue_full"
+#: Named reason when the lease was granted and the ask deadline still passed.
+SERVING_DEADLINE_EXCEEDED_REASON = "serving_deadline_exceeded"
 #: How long ingest waits for in-flight reads to finish. ``DMS_LAKE_INGEST_WAIT_S``.
 DEFAULT_INGEST_WAIT_S = 5.0
 #: Concurrent serving cursors on one lake. ``DMS_LAKE_SERVING_LEASE_CAP``.
@@ -46,19 +48,34 @@ DEFAULT_SERVING_LEASE_WAIT_S = 2.0
 #: 32 holds Lead's short burst (cap plus 16 asks) twice over. A larger default
 #: would track every thread the process can start, which is the unbound queue.
 DEFAULT_SERVING_LEASE_QUEUE_MAX = 32
-#: Ask timeout (``INSIGHTS_ASK_TIMEOUT_SECONDS``). One lease wait plus the
-#: envelope must finish inside it. The watermark stamp does not take a second wait.
-_ASK_TIMEOUT_S = 8.0
-_WAIT_SLACK_S = 1.0
+#: Seconds kept for work after the lease is granted (model, SQL, check).
+#: Case 1 (cap 4, four leases held 0.3s, 16 asks): served work is the time
+#: from the first serving grant on that ask to ``live_ask`` returning.
+#: n=16, p50=0.498s, p95=0.547s. 0.55 is that p95 rounded up to 0.01s.
+DEFAULT_SERVING_LEASE_RESERVE_S = 0.55
 
 _INGEST_WAIT_ENV = "DMS_LAKE_INGEST_WAIT_S"
 _LEASE_CAP_ENV = "DMS_LAKE_SERVING_LEASE_CAP"
 _LEASE_WAIT_ENV = "DMS_LAKE_SERVING_LEASE_WAIT_S"
 _LEASE_QUEUE_ENV = "DMS_LAKE_SERVING_LEASE_QUEUE_MAX"
+_LEASE_RESERVE_ENV = "DMS_LAKE_SERVING_LEASE_RESERVE_S"
 _serving_block: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dms_serving_lease_block",
     default=None,
 )
+_ask_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "dms_ask_deadline",
+    default=None,
+)
+_leases_this_ask: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "dms_leases_this_ask",
+    default=0,
+)
+# How often a queued waiter looks for a dropped client. Under the 0.5s bar.
+_DISCONNECT_POLL_S = 0.05
+# Interrupt a running query this long before the ask deadline so the named
+# abstain is sent before a client that gives up at that same deadline.
+_DEADLINE_DELIVER_S = 0.2
 
 
 class IngestWaitTimeout(Exception):
@@ -98,6 +115,12 @@ class ServingWaitCancelled(Exception):
     code = "serving_wait_cancelled"
 
 
+class ServingDeadlineExceeded(Exception):
+    """A serving lease was granted and the ask deadline still passed."""
+
+    code = SERVING_DEADLINE_EXCEEDED_REASON
+
+
 def ingest_wait_s() -> float:
     return _env_float(_INGEST_WAIT_ENV, DEFAULT_INGEST_WAIT_S)
 
@@ -110,15 +133,157 @@ def serving_lease_queue_max() -> int:
     return _env_int(_LEASE_QUEUE_ENV, DEFAULT_SERVING_LEASE_QUEUE_MAX)
 
 
-def serving_lease_wait_s() -> float:
-    """Wait for a queued slot.
+def serving_lease_reserve_s() -> float:
+    """Time left for model, SQL, and the check after a lease is granted."""
+    return _env_float(_LEASE_RESERVE_ENV, DEFAULT_SERVING_LEASE_RESERVE_S)
 
-    Clamped to ``_ASK_TIMEOUT_S - _WAIT_SLACK_S`` (7s). The abstain path waits
-    once; the watermark stamp does not wait again. One second is left so the
-    envelope still finishes under the 8s ask timeout when this env is raised.
+
+def serving_lease_wait_s() -> float:
+    """How long this acquire may block.
+
+    With no ask clock, that is ``DMS_LAKE_SERVING_LEASE_WAIT_S`` (default 2s).
+    There is no fixed ceiling. With an ask clock, the wait is the time left
+    before that ask times out, minus ``DMS_LAKE_SERVING_LEASE_RESERVE_S``.
+    If that budget is already gone, the wait is 0 and the acquire abstains
+    with ``serving_lease_cap`` without taking a slot.
     """
     configured = _env_float(_LEASE_WAIT_ENV, DEFAULT_SERVING_LEASE_WAIT_S)
-    return min(configured, _ASK_TIMEOUT_S - _WAIT_SLACK_S)
+    deadline = _ask_deadline.get()
+    if deadline is None:
+        return configured
+    budget = deadline - time.monotonic() - serving_lease_reserve_s()
+    if budget <= 0:
+        return 0.0
+    return min(configured, budget)
+
+
+def bind_ask_deadline(deadline: float) -> tuple[
+    contextvars.Token[float | None], contextvars.Token[int]
+]:
+    """This ask times out at ``deadline`` (``time.monotonic`` seconds)."""
+    return _ask_deadline.set(deadline), _leases_this_ask.set(0)
+
+
+def reset_ask_deadline(
+    tokens: tuple[contextvars.Token[float | None], contextvars.Token[int]],
+) -> None:
+    _ask_deadline.reset(tokens[0])
+    _leases_this_ask.reset(tokens[1])
+
+
+def note_serving_lease_granted() -> None:
+    if _ask_deadline.get() is None:
+        return
+    _leases_this_ask.set(_leases_this_ask.get() + 1)
+
+
+def serving_deadline_missed() -> bool:
+    """True when this ask took a lease and is now past its deadline."""
+    deadline = _ask_deadline.get()
+    if deadline is None or _leases_this_ask.get() < 1:
+        return False
+    return time.monotonic() > deadline
+
+
+def ask_took_serving_lease() -> bool:
+    return _leases_this_ask.get() >= 1
+
+
+class AskControl:
+    """One ask's cancel flag and the connection a running query can interrupt.
+
+    The worker thread is never killed. A dropped client sets ``disconnected``.
+    A query still inside ``execute`` is stopped with ``interrupt()`` then, or
+    at the ask deadline at the latest. ``finally`` on the lease releases it.
+    """
+
+    def __init__(self) -> None:
+        self.disconnected = threading.Event()
+        self.stop = threading.Event()
+        self.lock = threading.Lock()
+        self.deadline: float | None = None
+        self.con: Any = None
+        self._watcher: threading.Thread | None = None
+
+    def arm(self, con: Any) -> None:
+        with self.lock:
+            self.con = con
+
+    def disarm(self, con: Any) -> None:
+        with self.lock:
+            if self.con is con:
+                self.con = None
+
+    def start(self) -> None:
+        with self.lock:
+            if self._watcher is not None:
+                return
+            self._watcher = threading.Thread(
+                target=self._run, name="dms-ask-deadline", daemon=True
+            )
+            self._watcher.start()
+
+    def _run(self) -> None:
+        # The ask thread keeps running. This daemon only calls interrupt().
+        while not self.stop.wait(_DISCONNECT_POLL_S):
+            if not self._interrupt_due():
+                continue
+            with self.lock:
+                con = self.con
+            if con is None:
+                continue
+            try:
+                con.interrupt()
+            except Exception:  # noqa: BLE001 - interrupt is best-effort
+                pass
+
+    def _interrupt_due(self) -> bool:
+        if self.disconnected.is_set():
+            return True
+        deadline = self.deadline
+        if deadline is None:
+            return False
+        return time.monotonic() >= deadline - _DEADLINE_DELIVER_S
+
+    def close(self) -> None:
+        self.stop.set()
+        watcher = self._watcher
+        if watcher is not None and watcher is not threading.current_thread():
+            watcher.join(0.2)
+
+
+_ask_control: contextvars.ContextVar[AskControl | None] = contextvars.ContextVar(
+    "dms_ask_control",
+    default=None,
+)
+
+
+def bind_ask_control(ctrl: AskControl) -> contextvars.Token[AskControl | None]:
+    return _ask_control.set(ctrl)
+
+
+def reset_ask_control(token: contextvars.Token[AskControl | None]) -> None:
+    ctrl = _ask_control.get()
+    _ask_control.reset(token)
+    if ctrl is not None:
+        ctrl.close()
+
+
+def current_ask_control() -> AskControl | None:
+    return _ask_control.get()
+
+
+def ask_disconnected() -> bool:
+    ctrl = _ask_control.get()
+    return ctrl is not None and ctrl.disconnected.is_set()
+
+
+def raise_if_ask_stopped() -> None:
+    """Step boundary. A running query is not polled here; ``interrupt`` stops it."""
+    if ask_disconnected():
+        raise ServingWaitCancelled()
+    if serving_deadline_missed():
+        raise ServingDeadlineExceeded()
 
 
 def block_serving_lease(reason: str) -> contextvars.Token[str | None]:
@@ -336,13 +501,37 @@ class _Lease:
         self._closed = False
 
     def execute(self, *args: Any, **kwargs: Any) -> Any:
-        result = self._cur.execute(*args, **kwargs)
-        if result is self._cur:
-            return self
-        return result
+        return self._run(self._cur.execute, *args, **kwargs)
 
     def executemany(self, *args: Any, **kwargs: Any) -> Any:
-        result = self._cur.executemany(*args, **kwargs)
+        return self._run(self._cur.executemany, *args, **kwargs)
+
+    def _run(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Step boundary, then the call. A query already inside DuckDB is stopped
+        with ``interrupt()`` (disconnect now, ask deadline at the latest).
+        ``close`` still releases the lease and the read lock.
+        """
+        raise_if_ask_stopped()
+        ctrl = _ask_control.get()
+        if ctrl is not None:
+            ctrl.arm(self._cur)
+        try:
+            result = fn(*args, **kwargs)
+        except ServingWaitCancelled:
+            raise
+        except ServingDeadlineExceeded:
+            raise
+        except Exception as exc:
+            if ask_disconnected():
+                raise ServingWaitCancelled() from exc
+            interrupted = type(exc).__name__ == "InterruptException"
+            if interrupted or serving_deadline_missed():
+                raise ServingDeadlineExceeded() from exc
+            raise
+        finally:
+            if ctrl is not None:
+                ctrl.disarm(self._cur)
+        raise_if_ask_stopped()
         if result is self._cur:
             return self
         return result
@@ -448,6 +637,8 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
         raise ServingLeaseCap(serving_lease_cap(), 0.0)
     cap = serving_lease_cap()
     wait_s = serving_lease_wait_s()
+    if _ask_deadline.get() is not None and wait_s <= 0:
+        raise ServingLeaseCap(cap, 0.0)
     qmax = serving_lease_queue_max()
     in_queue = False
     ticket = -1
@@ -466,8 +657,10 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
                 lake.max_waiters = lake.waiters
             deadline = time.monotonic() + wait_s
             while True:
-                if ticket in lake.cancelled:
+                if ticket in lake.cancelled or ask_disconnected():
                     raise ServingWaitCancelled()
+                if _ask_deadline.get() is not None and serving_lease_wait_s() <= 0:
+                    raise ServingLeaseCap(cap, time.monotonic() - started)
                 if lake.rw.note_serving_wait(ticket):
                     saw_writer = True
                 head = bool(lake.queue) and lake.queue[0] == ticket
@@ -491,7 +684,7 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ServingLeaseCap(cap, wait_s)
-                lake.mu.wait(remaining)
+                lake.mu.wait(min(remaining, _DISCONNECT_POLL_S))
     finally:
         if in_queue:
             with lake.mu:
@@ -542,6 +735,7 @@ def open_lake(path: Path | str, *, write: bool = False) -> _Lease:
             raise
         return _Lease(lake, cur, mode="write")
     cur = _acquire_serving(lake, key)
+    note_serving_lease_granted()
     return _Lease(lake, cur, mode="read")
 
 
@@ -605,6 +799,15 @@ def lease_refs(path: Path | str) -> int:
         return 0
     with lake.mu:
         return lake.refs
+
+
+def serving_read_holds(path: Path | str) -> int:
+    """Read locks currently held. A queued waiter does not count."""
+    lake = _lake_if(path)
+    if lake is None:
+        return 0
+    with lake.rw._cond:
+        return lake.rw._readers
 
 
 def close_lakes() -> None:

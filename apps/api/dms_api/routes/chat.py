@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, Literal
 
+import anyio
 from cortex_client import compliance_gate
 from dms_core.ask import AskServiceError, GroundingRefused
 from dms_core.bi_export import export_envelope_bi
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -210,6 +212,50 @@ def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     )
 
 
+def _arm_client_disconnect(request: Request, ctrl: Any) -> asyncio.Task[None] | None:
+    """Wait for ``http.disconnect`` on the event loop. The ask thread is not killed.
+
+    ``Request.is_disconnected`` cancels its read immediately, so a client that
+    drops while the sync ask is blocked never shows up. This waits on the
+    receive channel instead.
+    """
+
+    async def _watch() -> None:
+        try:
+            while not ctrl.stop.is_set() and not ctrl.disconnected.is_set():
+                message = await request.receive()
+                if message.get("type") == "http.disconnect":
+                    ctrl.disconnected.set()
+                    return
+        except Exception:  # noqa: BLE001 - a dropped watcher must not kill the ask
+            return
+
+    async def _start() -> asyncio.Task[None]:
+        return asyncio.create_task(_watch())
+
+    try:
+        return anyio.from_thread.run(_start)
+    except RuntimeError:
+        return None
+
+
+def _stop_client_disconnect(task: asyncio.Task[None] | None) -> None:
+    if task is None:
+        return
+
+    async def _cancel() -> None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+
+    try:
+        anyio.from_thread.run(_cancel)
+    except RuntimeError:
+        return
+
+
 @router.post("/ask")
 def chat_ask(
     body: AskBody,
@@ -217,6 +263,7 @@ def chat_ask(
     store: SpaceStoreDep,
     cortex: CortexDep,
     ask: AskServiceDep,
+    request: Request,
 ) -> dict[str, Any]:
     # GEN-03 (dms#194). The isolated lanes are a measurement harness, not a
     # product surface: on ask_path=generative a keyword-bound plan answered
@@ -266,92 +313,102 @@ def chat_ask(
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
         )
 
+    begin = getattr(ask, "begin_client_watch", None)
+    watch = begin() if callable(begin) else None
+    task = _arm_client_disconnect(request, watch[1]) if watch is not None else None
     try:
-        return ask.live_ask(
-            body.question,
-            space_id=body.space_id,
-            session_id=body.session_id,
-            tables=body.grounded_tables,
-            ask_path=body.ask_path,
-        )
-    except GroundingRefused as exc:
-        # Refusing is the fix, not the failure: this used to widen the manifest
-        # to the whole demo warehouse while the UI read "Grounded in 1 file".
-        # Demo fallback must not catch this either — answering from demo numbers
-        # after refusing the requested scope is the same lie in a new costume.
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": exc.code,
-                "message": exc.message,
-                "ungrantable_tables": list(exc.ungrantable),
-                "grantable_tables": list(exc.grantable),
-            },
-        ) from exc
-    except AskServiceError as exc:
-        # A grounded question that needs a table the user did not tick is not a
-        # failure — it is the scope working. Saying so beats handing back
-        # "path_not_allowed: table 'alerts' is not named by this manifest",
-        # which reads as a bug rather than as the answer to what was asked.
-        if exc.code == "path_not_allowed" and body.grounded_tables:
-            missing = _missing_table(exc.detail)
-            chosen = ", ".join(body.grounded_tables)
+        try:
+            return ask.live_ask(
+                body.question,
+                space_id=body.space_id,
+                session_id=body.session_id,
+                tables=body.grounded_tables,
+                ask_path=body.ask_path,
+            )
+        except GroundingRefused as exc:
+            # Refusing is the fix, not the failure: this used to widen the manifest
+            # to the whole demo warehouse while the UI read "Grounded in 1 file".
+            # Demo fallback must not catch this either — answering from demo numbers
+            # after refusing the requested scope is the same lie in a new costume.
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "code": "outside_grounded_scope",
-                    "message": (
-                        f"That needs {missing or 'a table'}, which is not in the "
-                        f"{len(body.grounded_tables)} file(s) you grounded this question in "
-                        f"({chosen}). Widen the selection or clear it to use the whole Space."
-                    ),
-                    "grounded_tables": list(body.grounded_tables),
-                    "required_table": missing,
+                    "code": exc.code,
+                    "message": exc.message,
+                    "ungrantable_tables": list(exc.ungrantable),
+                    "grantable_tables": list(exc.grantable),
                 },
             ) from exc
+        except AskServiceError as exc:
+            # A grounded question that needs a table the user did not tick is not a
+            # failure — it is the scope working. Saying so beats handing back
+            # "path_not_allowed: table 'alerts' is not named by this manifest",
+            # which reads as a bug rather than as the answer to what was asked.
+            if exc.code == "path_not_allowed" and body.grounded_tables:
+                missing = _missing_table(exc.detail)
+                chosen = ", ".join(body.grounded_tables)
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "outside_grounded_scope",
+                        "message": (
+                            f"That needs {missing or 'a table'}, which is not in the "
+                            f"{len(body.grounded_tables)} file(s) you grounded this question in "
+                            f"({chosen}). Widen the selection or clear it to use the whole Space."
+                        ),
+                        "grounded_tables": list(body.grounded_tables),
+                        "required_table": missing,
+                    },
+                ) from exc
 
-        # The Space boundary refusing is the control working, and dms#2 requires
-        # it to arrive as an envelope with abstained: true and a reason - not as
-        # a raw "path_not_allowed / Unexpected status code: 403", which reads as
-        # a crash. This is the half of the demo that must look deliberate.
-        if exc.code == "path_not_allowed" and body.space_id:
-            space = store.get(body.space_id)
-            missing = _missing_table(exc.detail)
-            return _space_refusal_envelope(
-                space_id=body.space_id,
-                space_name=getattr(space, "name", None),
-                missing_table=missing,
-                session_id=body.session_id,
-            )
+            # The Space boundary refusing is the control working, and dms#2 requires
+            # it to arrive as an envelope with abstained: true and a reason - not as
+            # a raw "path_not_allowed / Unexpected status code: 403", which reads as
+            # a crash. This is the half of the demo that must look deliberate.
+            if exc.code == "path_not_allowed" and body.space_id:
+                space = store.get(body.space_id)
+                missing = _missing_table(exc.detail)
+                return _space_refusal_envelope(
+                    space_id=body.space_id,
+                    space_name=getattr(space, "name", None),
+                    missing_table=missing,
+                    session_id=body.session_id,
+                )
 
-        # Never mask policy refusals with demo numbers (0 confidently wrong).
-        if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
-            logger.warning("live ask failed (%s); demo fallback", exc.code)
-            env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
-        raise HTTPException(
-            status_code=_status_for(exc.code, exc.detail),
-            detail={"code": exc.code, "message": exc.detail or exc.code},
-        ) from exc
-    except Exception as exc:  # noqa: BLE001
-        if settings.dms_demo_fallback:
-            logger.warning("live ask failed: %s; demo fallback", exc)
-            env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, "fallback — live ask failed")
-        # A slow engine and a broken one are different answers. 504 tells the
-        # caller to try again; 503 says the dependency is out. The launcher
-        # prints "Cortex ok" the moment /health responds, which is before the
-        # first submit can actually complete, so on a cold start this branch is
-        # reached by a timeout more often than by a real outage.
-        timed_out = _looks_like_timeout(str(exc), type(exc).__name__)
-        raise HTTPException(
-            status_code=504 if timed_out else 503,
-            detail={
-                "code": "live_ask_timeout" if timed_out else "live_ask_failed",
-                "message": str(exc)[:400],
-                "retryable": timed_out,
-            },
-        ) from exc
+            # Never mask policy refusals with demo numbers (0 confidently wrong).
+            if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
+                logger.warning("live ask failed (%s); demo fallback", exc.code)
+                env = ask.demo_ask(body.question, space_id=body.space_id)
+                return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
+            raise HTTPException(
+                status_code=_status_for(exc.code, exc.detail),
+                detail={"code": exc.code, "message": exc.detail or exc.code},
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            if settings.dms_demo_fallback:
+                logger.warning("live ask failed: %s; demo fallback", exc)
+                env = ask.demo_ask(body.question, space_id=body.space_id)
+                return _stamp_demo_fallback(env, "fallback — live ask failed")
+            # A slow engine and a broken one are different answers. 504 tells the
+            # caller to try again; 503 says the dependency is out. The launcher
+            # prints "Cortex ok" the moment /health responds, which is before the
+            # first submit can actually complete, so on a cold start this branch is
+            # reached by a timeout more often than by a real outage.
+            timed_out = _looks_like_timeout(str(exc), type(exc).__name__)
+            raise HTTPException(
+                status_code=504 if timed_out else 503,
+                detail={
+                    "code": "live_ask_timeout" if timed_out else "live_ask_failed",
+                    "message": str(exc)[:400],
+                    "retryable": timed_out,
+                },
+            ) from exc
+    finally:
+        _stop_client_disconnect(task)
+        if watch is not None:
+            end = getattr(ask, "end_client_watch", None)
+            if callable(end):
+                end(watch[0])
 
 
 @router.post("/drillthrough")
