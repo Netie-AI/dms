@@ -17,7 +17,8 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_api.settings import get_settings
 from dms_executor import Executor
-from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
+from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text
 from dms_executor.generative_ask import validate_compiled_sql
@@ -118,6 +119,15 @@ def _plant_ungranted_unicode(db: Path) -> None:
         con.close()
 
 
+def _space_store(db: Path, *tables: str) -> DemoSessionStore:
+    """Put these names on the Space grant intersection the ask reads."""
+    return DemoSessionStore(
+        extra_grants=tables,
+        uploads=lambda: ingested_bronze_tables(db),
+        warehouse=db,
+    )
+
+
 def _ask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -125,6 +135,8 @@ def _ask(
     *,
     cloop: bool,
     prepare: Any = None,
+    session_store: Any = None,
+    db_name: str = "unicode.duckdb",
 ) -> tuple[dict[str, Any], _Cortex]:
     monkeypatch.setenv("DMS_ASK_MODE", "live")
     monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
@@ -134,7 +146,7 @@ def _ask(
     else:
         monkeypatch.delenv("DMS_CLOOP_B", raising=False)
     get_settings.cache_clear()
-    db = tmp_path / "unicode.duckdb"
+    db = tmp_path / db_name
     ensure_demo_warehouse(db)
     if prepare is not None:
         prepare(db)
@@ -147,6 +159,7 @@ def _ask(
                 cortex=cortex,  # type: ignore[arg-type]
                 minter=_minter(),
                 warehouse_path=db,
+                session_store=session_store,
             )
             res = client.post(
                 "/v1/chat/ask",
@@ -214,6 +227,61 @@ def test_existing_ungranted_unicode_table_is_refused(
     )
     _assert_direct_refusal(body, cortex, "人员")
     assert str(_PLANTED) not in json.dumps(body)
+
+
+_SERVED_ROWS = [{"n": _PLANTED}]
+
+
+@pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
+def test_granted_unicode_table_serves_same_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloop: bool,
+) -> None:
+    """人员 granted in the Space is served. The same table ungranted is refused.
+
+    A parse that refuses every non-ASCII name fails the granted half.
+    """
+    refused, cortex_no = _ask(
+        tmp_path,
+        monkeypatch,
+        _EXISTING_SQL,
+        cloop=cloop,
+        prepare=_plant_ungranted_unicode,
+        db_name="ungranted.duckdb",
+    )
+    _assert_direct_refusal(refused, cortex_no, "人员")
+    assert str(_PLANTED) not in json.dumps(refused)
+
+    # Default readable is the Space grant intersected with the demo allowlist.
+    # This ask grants 人员 on the Space and allowlists it, so the checker sees it.
+    monkeypatch.setattr("dms_executor.DEMO_TABLES", (*DEMO_TABLES, "人员"))
+    granted_db = tmp_path / "granted.duckdb"
+    store = _space_store(granted_db, "人员")
+    probe = Executor(
+        cortex=_Cortex(granted_db, _EXISTING_SQL),  # type: ignore[arg-type]
+        minter=_minter(),
+        warehouse_path=granted_db,
+        session_store=store,
+    )
+    assert "人员" in probe.grantable_tables(space_id=_SPACE)
+
+    body, cortex = _ask(
+        tmp_path,
+        monkeypatch,
+        _EXISTING_SQL,
+        cloop=cloop,
+        prepare=_plant_ungranted_unicode,
+        session_store=store,
+        db_name="granted.duckdb",
+    )
+    assert_envelope_valid(body)
+    assert body["badge"] == "L2_VALIDATED"
+    assert body["abstained"] is False
+    assert body["rows"] == _SERVED_ROWS
+    assert "Catalog Error" not in json.dumps(body)
+    assert cortex.calls == 1
+    assert cortex.sql_submits == 1
 
 
 @pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
