@@ -558,8 +558,51 @@ _HTTP_PROBES = (
 )
 
 
-def _post_ask(monkeypatch: pytest.MonkeyPatch, question: str, sql: str) -> dict:
-    """POST /v1/chat/ask with the extract loop on and one model SQL."""
+def _allowed_name_hit(path: str) -> bool:
+    """NAME-ECHO-LOOP-01 still owns loop SQL and the raw reply."""
+    if re.fullmatch(r"\$\.loop\[\d+\]\.sql", path):
+        return True
+    return ".raw_reply" in path
+
+
+def _name_hits(body: dict, name: str) -> list[str]:
+    """Paths in the full JSON whose text contains the whole identifier."""
+    pat = re.compile(rf"(?i)(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])")
+    found: list[str] = []
+
+    def walk(obj: object, path: str) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                key_s = str(key)
+                child = f"{path}.{key_s}"
+                if pat.search(key_s) and not _allowed_name_hit(child):
+                    found.append(f"{child}(key)")
+                walk(value, child)
+            return
+        if isinstance(obj, list):
+            for index, value in enumerate(obj):
+                walk(value, f"{path}[{index}]")
+            return
+        if isinstance(obj, str) and pat.search(obj) and not _allowed_name_hit(path):
+            found.append(f"{path}={obj}")
+
+    walk(body, "$")
+    return found
+
+
+def _post_ask(
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    sql: str,
+    *,
+    lane: str = "product",
+) -> dict:
+    """POST /v1/chat/ask with the extract loop on.
+
+    ``product`` and ``generative`` feed one Insights SQL. ``generated``
+    is an Insights transport miss; Cortex ask returns that SQL on the
+    generated route, with no loop.
+    """
     from dataclasses import dataclass, field
     from types import SimpleNamespace
     from unittest.mock import patch
@@ -611,6 +654,8 @@ def _post_ask(monkeypatch: pytest.MonkeyPatch, question: str, sql: str) -> dict:
         asks: list[AskRequest] = field(default_factory=list)
 
         def compute_insights(self, question: str, **kwargs: object) -> dict | None:
+            if lane == "generated":
+                return None
             with patch("cortex_client.compute.httpx.Client", self.fake):
                 return compute_insights(
                     "http://127.0.0.1:8010",
@@ -629,6 +674,16 @@ def _post_ask(monkeypatch: pytest.MonkeyPatch, question: str, sql: str) -> dict:
 
         def ask(self, req: AskRequest) -> AskResponse:
             self.asks.append(req)
+            if lane == "generated":
+                return AskResponse(
+                    answer=sql,
+                    badge="generated",
+                    sql_used=sql,
+                    assumptions=[sql],
+                    rows=[{"n": 1}],
+                    audit_id="aud_name_echo_generated",
+                    route="generated",
+                )
             return AskResponse(
                 answer="There are 5 locations.",
                 badge="certified",
@@ -670,15 +725,20 @@ def _post_ask(monkeypatch: pytest.MonkeyPatch, question: str, sql: str) -> dict:
     monkeypatch.setenv("DMS_CLOOP_B", "1")
     monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
     monkeypatch.setenv("CORTEX_API_KEY", "fake-name-echo-key")
+    if lane == "generative":
+        monkeypatch.setenv("DMS_HARNESS_ASK_PATHS", "1")
     settings_mod.get_settings.cache_clear()
     try:
         app = create_app()
         app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
         app.state.cortex = cortex
-        res = TestClient(app).post(
-            "/v1/chat/ask",
-            json={"question": question, "session_id": "ses_name_echo_http"},
-        )
+        payload: dict[str, object] = {
+            "question": question,
+            "session_id": "ses_name_echo_http",
+        }
+        if lane == "generative":
+            payload["ask_path"] = "generative"
+        res = TestClient(app).post("/v1/chat/ask", json=payload)
     finally:
         settings_mod.get_settings.cache_clear()
     assert res.status_code == 200, res.text
@@ -725,3 +785,33 @@ def test_http_loop_outcome_drops_ungranted_name(
         if rec.getMessage().startswith("pipeline_failure ")
     ]
     assert any(name in (item.get("names") or []) for item in tickets), tickets
+
+
+@pytest.mark.parametrize("lane", ["product", "generative", "generated"])
+def test_p04_full_response_json_hides_hr_payroll(
+    lane: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flag on. The only whole-identifier hits are loop SQL and raw_reply.
+
+    Product and generative attach the extract loop, then the curated
+    re-attach. Generated is the Cortex stub: no loop, the name sits in
+    the answer and in sql_used until the HTTP boundary scrubs it.
+    """
+    question = "List chemicals in inventory"
+    sql = "SELECT 1 FROM hr_payroll"
+    name = "hr_payroll"
+    body = _post_ask(monkeypatch, question, sql, lane=lane)
+    leaked = _name_hits(body, name)
+    assert leaked == [], leaked
+    if lane == "generated":
+        assert body.get("route") == "generated"
+        assert body.get("abstained") is False
+        assert not body.get("loop")
+        return
+    assert body.get("abstained") is True
+    loop = body.get("loop")
+    assert isinstance(loop, list) and loop
+    entry = loop[0]
+    assert isinstance(entry, dict)
+    assert entry.get("sql") == sql
+    assert entry.get("raw_reply") == sql

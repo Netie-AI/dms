@@ -1,4 +1,4 @@
-"""Drop ungranted relation names from user-visible abstain fields.
+"""Drop ungranted relation names from the fields a caller can read.
 
 The ticket keeps the name. ``space_id``, ``session_id``, and the other
 id fields are not rewritten. Matching is the whole identifier, any
@@ -12,6 +12,14 @@ uploaded into the Space. A granted name stays. A name the Space does
 not grant is removed. ``ungranted:file`` and ``ungranted:unparsed`` are
 reason codes. A tail that does not tokenize is fail-closed: the field
 is cleared.
+
+``sql_used`` and ``loop[].sql`` are also parsed once, in the same
+dialect. A table in that SQL that the validator would not grant is
+removed from ``text``, ``assumptions``, ``abstain_reason``,
+``loop[].outcome``, and ``sql_used``. ``loop[].sql`` and ``raw_reply``
+are left for a later change. No Space is the personal context for
+those SQL names (the demo set plus uploads). A prefix tail with no
+Space still grants nothing, so the tail is removed.
 """
 
 from __future__ import annotations
@@ -365,6 +373,59 @@ def _clear_closed(value: Any) -> Any:
     return value
 
 
+def _sql_sources(env: dict[str, Any]) -> list[str]:
+    """Statements to read names from. ``loop[].sql`` is not rewritten."""
+    found: list[str] = []
+    sql_used = env.get("sql_used")
+    if isinstance(sql_used, str) and sql_used.strip() and not sql_used.strip().startswith("--"):
+        found.append(sql_used)
+    loop = env.get("loop")
+    if isinstance(loop, list):
+        for item in loop:
+            if not isinstance(item, dict):
+                continue
+            sql = item.get("sql")
+            if isinstance(sql, str) and sql.strip():
+                found.append(sql)
+    return found
+
+
+def _tables_in_sql(sql: str) -> list[tuple[str, ...]]:
+    """Table identifiers in one statement. One parse, serving dialect."""
+    raw = (sql or "").strip()
+    if not raw or raw.startswith("--"):
+        return []
+    try:
+        tree = parse_one(raw, read=_dialect())
+    except SqlglotError:
+        return []
+    found: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    for table in tree.find_all(exp.Table):
+        parts = tuple(part.name for part in table.parts if part.name)
+        if not parts:
+            continue
+        key = ".".join(parts).casefold()
+        if key in _CODE_TAILS or key in seen:
+            continue
+        seen.add(key)
+        found.append(parts)
+    return found
+
+
+def _merge_parts(*groups: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
+    found: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for parts in group:
+            key = ".".join(parts).casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            found.append(parts)
+    return found
+
+
 def _blobs(reason: str, env: dict[str, Any]) -> list[str]:
     blobs = [reason]
     for key in _NAME_KEYS:
@@ -440,6 +501,50 @@ def _ungranted(
     return out
 
 
+def _sql_grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[str]:
+    """Tables the validator would allow this turn to read.
+
+    No Space is the personal context: the demo set plus uploads. A seeded
+    Space is that seed plus its uploads. An id that is not a Space grants
+    nothing. Prefix tails do not use this set.
+    """
+    from dms_executor.demo_grants import (
+        DEMO_SPACE_GRANTS,
+        canonical_space_id,
+        ingested_bronze_tables,
+    )
+    from dms_executor.demo_warehouse import DEMO_TABLES
+
+    raw = env.get("space_id")
+    if not isinstance(raw, str) or not raw.strip():
+        names = set(DEMO_TABLES)
+        names.update(ingested_bronze_tables(warehouse))
+        return names
+    sid = canonical_space_id(raw.strip())
+    entry = DEMO_SPACE_GRANTS.get(sid)
+    if not entry:
+        return set()
+    names = set(entry[1])
+    names.update(ingested_bronze_tables(warehouse, space_id=sid))
+    return names
+
+
+def _sql_parts(env: dict[str, Any], warehouse: Path | None) -> list[tuple[str, ...]]:
+    sources = _sql_sources(env)
+    if not sources:
+        return []
+    parsed: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    for sql in sources:
+        for parts in _tables_in_sql(sql):
+            key = ".".join(parts).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append(parts)
+    return _ungranted(parsed, _sql_grant_names(env, warehouse))
+
+
 def _scrub_field(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
     cleared = _clear_closed(value)
     if not parts_list:
@@ -453,15 +558,21 @@ def hide_echo(
     *,
     warehouse: Path | None = None,
 ) -> dict[str, Any]:
-    """Scrub name-carrying fields. Id fields and loop SQL are left as they are.
+    """Scrub name-carrying fields. Id fields, loop SQL, and raw replies stay.
 
-    Loop ``outcome`` is included. ``loop[].sql`` and ``raw_reply`` are not.
+    Called at the HTTP boundary, after a loop has been re-attached.
+    ``sql_used`` is included. ``loop[].sql`` and ``raw_reply`` are not.
     """
-    parts_list = _ungranted(_collect_parts(reason, env), _grant_names(env, warehouse))
+    parts_list = _merge_parts(
+        _ungranted(_collect_parts(reason, env), _grant_names(env, warehouse)),
+        _sql_parts(env, warehouse),
+    )
     for key in _NAME_KEYS:
         if key not in env or key in _ID_KEYS:
             continue
         env[key] = _scrub_field(env[key], parts_list)
+    if isinstance(env.get("sql_used"), str):
+        env["sql_used"] = _scrub_field(env["sql_used"], parts_list)
     loop = env.get("loop")
     if isinstance(loop, list):
         for item in loop:
