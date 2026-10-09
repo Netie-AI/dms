@@ -6,8 +6,11 @@ mask-cleared column. Synthetic names only. No word list in the product.
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
+import pytest
 from cortex_client.compute import _insights_body
 from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload, mask_payload
 from dms_executor.schema_context import build_schema_context
@@ -501,3 +504,118 @@ def test_unsure_person_rep_stays_typed_and_sends_no_hint() -> None:
     )
     assert body["question"] == question
     assert "FILTER HINTS" not in str(body.get("schema_context") or "")
+
+
+# One schema build. Unsure columns ticket or log. Cleared and name columns do not.
+_UNSURE_KEYS = ("person.rep", "locations.name", "alerts.severity")
+_QUIET_KEYS = ("person.full_name", "locations.region", "inventory.category")
+_CELL_TEXT = ("nora voss", "Nora Voss", "Warehouse A", "Kuala Lumpur", "PARTS", "high")
+_ASK = "what did nora voss buy"
+
+
+def _mixed_schema() -> dict[str, Any]:
+    return {
+        "dialect": "mysql",
+        "datasets": [
+            {
+                "name": "person",
+                "columns": [
+                    _column("rep", ["nora voss"]),
+                    _column("full_name", ["Nora Voss"]),
+                ],
+            },
+            {
+                "name": "locations",
+                "columns": [
+                    _column("name", ["Warehouse A"]),
+                    _column("region", ["Kuala Lumpur"]),
+                ],
+            },
+            {"name": "alerts", "columns": [_column("severity", ["high"])]},
+            {"name": "inventory", "columns": [_column("category", ["PARTS"])]},
+        ],
+    }
+
+
+def _one_build() -> None:
+    build_schema_context(_ASK, _mixed_schema())
+
+
+def _ticket_rows(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for rec in caplog.records:
+        if rec.name != "dms_executor.pipeline_failure":
+            continue
+        text = rec.getMessage()
+        if not text.startswith("pipeline_failure "):
+            continue
+        got = json.loads(text[len("pipeline_failure ") :])
+        assert isinstance(got, dict)
+        out.append(got)
+    return out
+
+
+def _class_rows(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for rec in caplog.records:
+        if rec.name != "dms_executor.column_class":
+            continue
+        text = rec.getMessage()
+        assert text.startswith("column_class_unsure "), text
+        got = json.loads(text[len("column_class_unsure ") :])
+        assert isinstance(got, dict)
+        out.append(got)
+    return out
+
+
+def _no_cell_text(blob: str) -> None:
+    for needle in _CELL_TEXT:
+        assert needle not in blob
+    assert _ASK not in blob
+    assert "SELECT" not in blob
+
+
+def test_unsure_column_records_follow_the_flag(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Red on 6e4bffe5: unsure columns were silent. One record per column per build."""
+    import dms_executor.pipeline_failure as tickets
+
+    caplog.set_level(logging.WARNING)
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+    tickets._reset_pipeline_failures()
+    _one_build()
+    assert _ticket_rows(caplog) == []
+    off = _class_rows(caplog)
+    assert len(off) == len(_UNSURE_KEYS)
+    assert {(row["table"], row["column"]) for row in off} == {
+        tuple(key.split(".", 1)) for key in _UNSURE_KEYS
+    }
+    for row in off:
+        assert row["state"] == "unsure"
+        assert set(row) == {"column", "state", "table"}
+        assert f"{row['table']}.{row['column']}" not in _QUIET_KEYS
+    _no_cell_text(json.dumps(off))
+    # A second build logs again. The record is per build, not per process.
+    _one_build()
+    assert len(_class_rows(caplog)) == len(_UNSURE_KEYS) * 2
+    assert _ticket_rows(caplog) == []
+
+    caplog.clear()
+    tickets._reset_pipeline_failures()
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    _one_build()
+    assert _class_rows(caplog) == []
+    on = _ticket_rows(caplog)
+    assert len(on) == len(_UNSURE_KEYS)
+    assert {row["ask_id"] for row in on} == set(_UNSURE_KEYS)
+    for row in on:
+        assert row["reason"] == "column_class_unsure"
+        assert row["stage"] == "schema_build"
+        assert row["count"] == 1
+        assert "question" not in row
+        assert "sql" not in row
+        table, column = str(row["ask_id"]).split(".", 1)
+        assert f"{table}.{column}" not in _QUIET_KEYS
+    _no_cell_text(json.dumps(on))
+    assert _ASK not in caplog.text

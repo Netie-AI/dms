@@ -118,6 +118,7 @@ _SHORTLIST = 48
 _SPAN_WIDTH = 6
 _PARTIAL_MIN_CHARS = 3
 _LOG = logging.getLogger("dms_executor.schema_context")
+_COLUMN_CLASS_LOG = logging.getLogger("dms_executor.column_class")
 _BOOL_TYPES = frozenset({"bool", "boolean"})
 _DATE_TYPES = frozenset(
     {"date", "time", "timestamp", "datetime", "timestamptz", "timetz"}
@@ -1525,6 +1526,44 @@ def _column_is_person(table: str, column: str) -> bool:
         return False
 
 
+def _note_unsure_column(table: str, column: str) -> None:
+    """One record for an unsure column, once per schema build.
+
+    ``DMS_CLOOP_B`` on files a ticket through ``build_abstain``. That
+    path still applies the flag check, so off writes no ticket. Off
+    writes one ``column_class_unsure`` line instead. Both carry the
+    table, the column, and the classifier state. The column key is the
+    ticket group only. It is not stored as question text. No cell, no
+    SQL, and no ask question is passed in.
+    """
+    key = f"{table}.{column}"
+    from cortex_client.compute import cloop_b_enabled
+
+    if cloop_b_enabled():
+        try:
+            from dms_executor.abstain import build_abstain
+
+            build_abstain(
+                reason="column_class_unsure",
+                question=key,
+                sql=None,
+                retries=0,
+                stage="schema_build",
+                ask_id=key,
+                demote={},
+            )
+        except Exception:  # noqa: BLE001 -- a ticket miss must not sink the build
+            _LOG.warning("column_class_unsure ticket was not written")
+        return
+    _COLUMN_CLASS_LOG.warning(
+        "column_class_unsure %s",
+        json.dumps(
+            {"column": column, "state": "unsure", "table": table},
+            sort_keys=True,
+        ),
+    )
+
+
 def _name_evidence(
     prepared: Sequence[Mapping[str, Any]],
     index: Mapping[str, Sequence[str]],
@@ -1535,6 +1574,7 @@ def _name_evidence(
     roles: dict[str, str] = {}
     terms: list[str] = []
     seen_tables: set[str] = set()
+    seen_unsure: set[str] = set()
     for item in prepared:
         table = str(item["table"])
         name = str(item["name"])
@@ -1549,6 +1589,9 @@ def _name_evidence(
             roles[key] = "person"
         else:
             roles[key] = "unsure"
+            if key not in seen_unsure:
+                seen_unsure.add(key)
+                _note_unsure_column(table, name)
     terms.extend(_label_terms(ontology, onto))
     names: list[str] = []
     exempt: list[str] = []
