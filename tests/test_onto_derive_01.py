@@ -483,6 +483,51 @@ def test_confident_wrong_join_abstains_as_unverified_join(
     assert rig.cortex.executed == []
 
 
+def test_extract_loop_obeys_the_space_join_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    """C-LOOP-B (main) returns before the SQL branch, so the join rule must run in its check."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    rig = _space(tmp_path, monkeypatch, minter)
+    assert _oracle(rig.lake, WRONG_JOIN_SQL) == [{"school_count": 1}]
+
+    env = rig.ask(VERIFIED_Q, {"query_sql": WRONG_JOIN_SQL, "plan_source": "ontology_plan"})
+    _assert_abstain(env, "loop_exhausted:checker:unverified_join")
+    assert rig.cortex.executed == []
+    # Every retry asked Insights with this Space's ontology, never the demo context.
+    assert len(rig.cortex.insights) > 1
+    assert {c["ontology"]["source"] for c in rig.cortex.insights} == {"space"}
+
+    env = rig.ask(VERIFIED_Q, {"query_sql": VERIFIED_SQL, "plan_source": "ontology_plan"})
+    oracle = _oracle(rig.lake, VERIFIED_SQL)
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    assert "school_count=3" in str(env.get("text") or ""), env.get("text")
+    assert rig.cortex.executed == [VERIFIED_SQL]
+
+
+def test_space_body_carries_the_schema_context_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    """SCHEMA-RETRIEVE (main) builds the prompt; a Space's own body must not drop it."""
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    rig = _space(tmp_path, monkeypatch, minter)
+    rig.ask(VERIFIED_Q, {"query_sql": VERIFIED_SQL, "plan_source": "ontology_plan"})
+    sent = rig.cortex.insights[-1]
+    assert sent["ontology"]["source"] == "space"
+    # Carried, not dropped. What the prompt lists for a Space's bronze tables is
+    # SCHEMA-RETRIEVE's to prove: on this rig it holds the header only.
+    prompt = str(sent["ontology"].get("schema_context") or "")
+    assert prompt.startswith("DIALECT:"), sorted(sent["ontology"])
+
+
 def test_typed_plan_needing_an_undeclared_measure_abstains(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
