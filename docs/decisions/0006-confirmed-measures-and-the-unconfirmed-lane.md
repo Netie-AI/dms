@@ -70,7 +70,7 @@ question about "total budget" with SQL it invented, and the envelope calls that
 
 ## Staged rollout
 
-1. Backend steps 1-7 (migration `0006_onto_measure_confirm`, core types and store API,
+1. Backend steps 1-7 (migration `0007_onto_measure_confirm`, core types and store API,
    `measure_spec` validator, steward routes, proposer and confirm criteria, load/prune/fit,
    typed branch) are inert for asks and can merge freely.
 2. Cursor lands UI parity: `BadgeKind`, `BADGE_COPY` and `LAYER_COPY` with
@@ -100,7 +100,7 @@ ranked_slots is not None` block is at `generative_ask.py:1321`, the spec says ~1
 the new work: `classify_adhoc_shape`, `_require_steward`, `measure_spec`, `measure_use`,
 `measure_confirm`, `measure_basis`, `MeasureProvenance`, `finalize_space_envelope`,
 `REASON_NO_DECLARED_LINK`, `relabel_join_gap`, and the new test files. `alembic/versions`
-ends at `0005_onto_snapshot`, so `0006_onto_measure_confirm` is free. Note that this
+ends at `0006_onto_snapshot` (PR #316, chained after `0005_ask_audit` of PR #342), so `0007_onto_measure_confirm` is free. Note that this
 DR's number (0006) and that migration's number are independent counters.
 
 **Baseline** (`DMS_SKIP_CONTROL_PLANE_TESTS=1`): `tests/test_onto_derive_01.py`,

@@ -11,7 +11,7 @@ onto_audit row.
 ONTO-CONFIRM-01 (dms#283) adds the measure rows: add_measures (proposals and
 manual entries) and decide_measure, the single write path for confirm and reject
 (ledger callable first, then ONE UPDATE, audit and ledger pointer in the same
-transaction). Migration 0006 freezes the definition with a BEFORE UPDATE trigger;
+transaction). Migration 0007 freezes the definition with a BEFORE UPDATE trigger;
 MEASURE_TRANSITIONS below is its Python mirror.
 
 ONTO-DERIVE-01 (dms#277 CONNECT-ASK-01 change 1) adds the measurement: a
@@ -186,7 +186,7 @@ def measure_definition_hash(
 # measures (ONTO-CONFIRM-01)
 # --------------------------------------------------------------------------
 
-#: The four legal moves; the trigger in migration 0006 enforces the same set.
+#: The four legal moves; the trigger in migration 0007 enforces the same set.
 #: Never: confirmed -> proposed, rejected -> proposed, a same-state UPDATE.
 MEASURE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {

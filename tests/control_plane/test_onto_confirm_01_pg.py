@@ -1,4 +1,4 @@
-"""ONTO-CONFIRM-01 / dms#283, step 2 against a real Postgres: migration 0006 and
+"""ONTO-CONFIRM-01 / dms#283, step 2 against a real Postgres: migration 0007 and
 ``PostgresOntologyStore`` measure methods.
 
 What only a real database can prove: the BEFORE UPDATE trigger agrees with the
