@@ -231,10 +231,19 @@ _LADDER_SQL = "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
 _FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
+def _count_model_call(bucket: list[int]) -> None:
+    """Same counter the generate client increments before a model POST."""
+    from cortex_client.compute import note_model_call
+
+    note_model_call()
+    bucket[0] += 1
+
+
 class _Ladder:
     """The first SQL submit is the governed metric and is empty.
 
     Later submits are the ladder. ``fill`` gives those submits rows.
+    ``model_calls`` counts generate/OV calls, not the L1 submit itself.
     """
 
     def __init__(self, db: Path, *, fill: bool) -> None:
@@ -242,8 +251,14 @@ class _Ladder:
         self.fill = fill
         self.insights: list[str] = []
         self.sql_submits = 0
+        self._model_calls = [0]
+
+    @property
+    def model_calls(self) -> int:
+        return self._model_calls[0]
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        _count_model_call(self._model_calls)
         self.insights.append(question)
         return {
             "phase": "generate",
@@ -282,6 +297,7 @@ class _Ladder:
         return LedgerAppendResponse(entry_id="led_ladder", hash="hash_ladder_not_entry")
 
     def ask(self, req: AskRequest) -> AskResponse:
+        _count_model_call(self._model_calls)
         _ = req
         return AskResponse(
             answer="No certified rows.",
@@ -314,6 +330,7 @@ def _ladder_ask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fill: bool) 
         assert isinstance(body, dict)
         assert_envelope_valid(body)
         body["_insights"] = len(cortex.insights)
+        body["_model_calls"] = cortex.model_calls
         return body
     finally:
         exe.close()
@@ -324,6 +341,8 @@ def test_zero_row_l1_ladder_serves_the_rows_it_finds(
 ) -> None:
     earned = _ladder_ask(tmp_path, monkeypatch, fill=True)
     assert earned["_insights"] >= 1
+    assert earned["_model_calls"] == 1, earned["_model_calls"]
+    assert earned["model_calls"] == earned["_model_calls"]
     assert earned["badge"] == "L2_VALIDATED"
     assert earned["abstained"] is False
     served = list(earned.get("rows") or [])
@@ -347,8 +366,14 @@ class _RealSQL:
         self.ladder_sql = ladder_sql
         self.insights: list[str] = []
         self.sqls: list[str] = []
+        self._model_calls = [0]
+
+    @property
+    def model_calls(self) -> int:
+        return self._model_calls[0]
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        _count_model_call(self._model_calls)
         self.insights.append(question)
         return {
             "phase": "generate",
@@ -372,6 +397,7 @@ class _RealSQL:
         return LedgerAppendResponse(entry_id="led_real", hash="hash_real_not_entry")
 
     def ask(self, req: AskRequest) -> AskResponse:
+        _count_model_call(self._model_calls)
         raise AssertionError(f"ladder should have served: {req}")
 
 
@@ -412,6 +438,8 @@ def test_true_empty_nothing_overdue_is_served(
     finally:
         exe.close()
     assert cortex.insights
+    assert cortex.model_calls == 1, cortex.model_calls
+    assert body["model_calls"] == cortex.model_calls
     assert body["abstained"] is False
     assert body["badge"] != "ABSTAIN"
     assert body["badge"] == "L2_VALIDATED"
@@ -421,6 +449,43 @@ def test_true_empty_nothing_overdue_is_served(
     assert PROVENANCE_LADDER_EMPTY in assumptions
     assert " ".join(str(body.get("sql_used") or "").split()) == " ".join(_OVERDUE_SQL.split())
     assert any(_OVERDUE_SQL in sql for sql in cortex.sqls)
+
+
+def test_l1_with_rows_makes_zero_extra_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A governed metric that returned rows does not call the ladder.
+
+    Routing every L1 through generation makes ``model_calls`` non-zero
+    and this test fails.
+    """
+    from dms_executor.demo_pack import COLD_STORAGE_Q
+
+    _flags_off(monkeypatch)
+    db = tmp_path / "l1_rows.duckdb"
+    cortex = _RealSQL(db, _LADDER_SQL)
+    client, exe = _client(cortex, db)
+    try:
+        res = client.post(
+            "/v1/chat/ask",
+            json={
+                "question": COLD_STORAGE_Q,
+                "space_id": _FINANCE,
+                "session_id": "ses_l1_rows",
+            },
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert isinstance(body, dict)
+        assert_envelope_valid(body)
+    finally:
+        exe.close()
+    assert body["badge"] == "L1_GOVERNED_METRIC"
+    assert body["abstained"] is False
+    assert body["rows"]
+    assert cortex.model_calls == 0
+    assert cortex.insights == []
+    assert body["model_calls"] == 0
 
 
 def test_runtime_modules_do_not_reference_scoring_files() -> None:
