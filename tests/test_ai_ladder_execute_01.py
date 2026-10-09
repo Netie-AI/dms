@@ -200,10 +200,12 @@ def test_model_sql_executes_on_the_serving_file(
     hold = _Hold(db)
     model = _Model(db, hold)
 
-    def _connect(path: Path, **_kwargs: Any) -> _Conn:
-        return _Conn(connect_file(path), hold)
+    def _connect(path: Path, **kwargs: Any) -> _Conn:
+        from dms_executor.demo_warehouse import connect_locked_readonly as real
 
-    monkeypatch.setattr("dms_executor.generative_ask.connect_file", _connect)
+        return _Conn(real(path, **kwargs), hold)
+
+    monkeypatch.setattr("dms_executor.generative_ask.connect_locked_readonly", _connect)
     try:
         client = _client(db, model, monkeypatch)
         resp = client.post(
@@ -235,3 +237,115 @@ def test_model_sql_executes_on_the_serving_file(
         from dms_api import settings as settings_mod
 
         settings_mod.get_settings.cache_clear()
+
+
+_ALTER = "SELECT 1 AS n; ALTER TABLE locations RENAME TO locations_gone"
+_RENAME = "SELECT 1 AS n; ALTER TABLE locations RENAME location_code TO loc_gone"
+
+
+def _shape(db: Path) -> tuple[tuple[str, ...], tuple[str, ...], int]:
+    con = connect_file(db)
+    try:
+        tables = tuple(
+            str(row[0])
+            for row in con.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' ORDER BY table_name"
+            ).fetchall()
+        )
+        cols = tuple(
+            str(row[0])
+            for row in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'locations' ORDER BY column_name"
+            ).fetchall()
+        )
+        count = int(con.execute("SELECT COUNT(*) FROM locations").fetchone()[0])
+    finally:
+        con.close()
+    return tables, cols, count
+
+
+def test_alter_and_rename_through_ask_leave_the_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Multi-statement ALTER reaches EXPLAIN only if the engine gate is skipped.
+
+    sqlglot already counts two statements. This patches that count off so the
+    request hits the EXPLAIN attach. The engine must refuse before EXPLAIN.
+    """
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.is_multi_statement", lambda _sql, _dialect: False
+    )
+    for index, sql in enumerate((_ALTER, _RENAME)):
+        db = ensure_demo_warehouse(tmp_path / f"alter-{index}.duckdb")
+        _flags(monkeypatch, db)
+        before = _shape(db)
+
+        class _Model:
+            def __init__(self) -> None:
+                self.sql: list[str] = []
+                self.asks: list[Any] = []
+                self.ontologies: list[Any] = []
+
+            def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+                del question
+                self.ontologies.append(kwargs.get("ontology"))
+                return {
+                    "phase": "generate",
+                    "query_sql": sql,
+                    "served_model": "fake-model",
+                    "served_provider": "fake-provider",
+                    "ov_key_id": "ovk-fake",
+                }
+
+            def submit(self, req: Any) -> QueryResult:
+                plan = getattr(req, "plan", None)
+                kind = plan.get("kind") if isinstance(plan, dict) else None
+                if kind == "session_bind":
+                    return QueryResult(ok=True, status="bound", run_id="run_alter_bind")
+                body = getattr(req, "body", None)
+                text = str(body.get("sql") or "") if isinstance(body, dict) else ""
+                self.sql.append(text)
+                return QueryResult(ok=True, status="ok", run_id="run_alter", output={"rows": []})
+
+            def ledger_append(self, _req: LedgerAppendRequest) -> LedgerAppendResponse:
+                return LedgerAppendResponse(entry_id="led_alter", hash="hash_alter")
+
+            def ask(self, req: AskRequest) -> AskResponse:
+                self.asks.append(req)
+                return AskResponse(
+                    answer="unused",
+                    badge="certified",
+                    sql_used="SELECT 1",
+                    rows=[{"n": 1}],
+                    audit_id="aud_unused",
+                    route="sql",
+                )
+
+        model = _Model()
+        try:
+            client = _client(db, model, monkeypatch)  # type: ignore[arg-type]
+            resp = client.post(
+                "/v1/chat/ask",
+                json={
+                    "question": "Count the location rows",
+                    "space_id": _SPACE,
+                    "session_id": "ses_ai_ladder_alter",
+                    "ask_path": "generative",
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_envelope_valid(body)
+            assert _shape(db) == before
+            assert body["abstained"] is True
+            assert body["badge"] == "ABSTAIN"
+            assert body["rows"] == []
+            assert model.sql == []
+            assert "GEN-01: checker:multi_statement" in body["assumptions"]
+        finally:
+            stop_index_builds(5)
+            from dms_api import settings as settings_mod
+
+            settings_mod.get_settings.cache_clear()

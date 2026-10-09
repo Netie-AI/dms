@@ -300,10 +300,12 @@ def test_lock_wait_ticket_is_serving_lock_wait(
         def __getattr__(self, name: str) -> Any:
             return getattr(self._inner, name)
 
-    def _connect(path: Path, **_kwargs: Any) -> _Conn:
-        return _Conn(connect_file(path))
+    def _connect(path: Path, **kwargs: Any) -> _Conn:
+        from dms_executor.demo_warehouse import connect_locked_readonly as real
 
-    monkeypatch.setattr("dms_executor.generative_ask.connect_file", _connect)
+        return _Conn(real(path, **kwargs))
+
+    monkeypatch.setattr("dms_executor.generative_ask.connect_locked_readonly", _connect)
     try:
         env = _ask(db, onto)
     finally:

@@ -43,7 +43,14 @@ EMPTY_NOTE = "no rows match"
 #: caller can serve this empty answer. Until then the reason is an abstain.
 EMPTY_UNVERIFIED = "empty_result_unverified:value_exists_pending"
 _NO_RETRY_HEADS = frozenset(
-    {"hostile_sql", "ungranted", "multi_statement", "warehouse_missing"}
+    {
+        "hostile_sql",
+        "ungranted",
+        "multi_statement",
+        "warehouse_missing",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+    }
 )
 # Key-name segments after splitting on non-alphanumerics. "token" is a
 # segment, so "prompt_tokens" is not a secret key.

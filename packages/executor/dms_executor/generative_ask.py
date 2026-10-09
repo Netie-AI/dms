@@ -56,6 +56,7 @@ from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     connect_file,
+    connect_locked_readonly,
     sql_has_reserved_as_of,
     warehouse_path,
 )
@@ -690,20 +691,37 @@ def validate_compiled_sql(
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
-    # EXPLAIN is a read, but it shares the writer attach. A missed deadline
-    # is the named lock abstain, not an explain error and not a hang.
-    from cortex_client.compute import insights_timeout_s
-
+    # EXPLAIN shares the serving file. Open it read-only, and refuse anything
+    # that is not one SELECT before EXPLAIN runs. A read-write EXPLAIN applies
+    # a later statement in the same string.
     try:
-        con = connect_file(Path(warehouse), timeout=insights_timeout_s())
+        con = connect_locked_readonly(Path(warehouse))
     except TimeoutError:
         return "serving_lock_wait"
     try:
+        gate = _refusal_before_explain(con, sql)
+        if gate:
+            return gate
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
+    return None
+
+
+def _refusal_before_explain(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT. Otherwise a refusal, and nothing ran."""
+    import duckdb
+
+    try:
+        stmts = con.extract_statements(sql)
+    except Exception:
+        return "sql_not_analyzable"
+    if len(stmts) != 1:
+        return "multi_statement"
+    if stmts[0].type != duckdb.StatementType.SELECT:
+        return "statement_not_allowed"
     return None
 
 
@@ -1069,6 +1087,12 @@ def _try_multi_grain_envelope(
             route="generated",
             question=q,
         )
+    if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _abstain(
+            q, why,
+            space_id=space_id, session_id=session_id, plan_source=source,
+            sql=multi.sql,
+        )
     if why:
         gap = missing_join_for_ungranted(why, detect_supply_chain_grains(q))
         return _abstain(
@@ -1145,6 +1169,8 @@ def rank_window_ask(
     bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
     if bad == "serving_lock_wait":
         return _no("serving_lock_wait")
+    if bad in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _no(bad)
     if bad:
         return _no(f"validate:{bad}")
     noun = _ENTITY_NOUN.get(str(win.entity), str(win.entity))
@@ -1669,6 +1695,14 @@ def maybe_generative_ask(
                     question=q,
                 )
             )
+        if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+            return _stamp(
+                _abstain(
+                    q, why,
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                    sql=sql,
+                )
+            )
         if why:
             if cloop_b_enabled():
                 loop_attempts.append(
@@ -1863,6 +1897,14 @@ def maybe_generative_ask(
                 session_id=session_id,
                 route="generated",
                 question=q,
+            )
+        )
+    if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _stamp(
+            _abstain(
+                q, why,
+                space_id=space_id, session_id=session_id, plan_source=source,
+                sql=compiled.sql,
             )
         )
     if why:
