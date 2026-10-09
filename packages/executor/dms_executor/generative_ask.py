@@ -673,25 +673,6 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
-def _literal_select(sql: str) -> bool:
-    """A select of literals. No relation, and no function call.
-
-    A function call still goes through EXPLAIN and execution. Parse failure
-    is not this case.
-    """
-    from sqlglot import exp, parse_one
-
-    try:
-        tree = parse_one(sql, read="duckdb")
-    except Exception:  # noqa: BLE001
-        return False
-    if not isinstance(tree, exp.Select):
-        return False
-    if any(isinstance(node, exp.Table) and node.name for node in tree.find_all(exp.Table)):
-        return False
-    return not any(isinstance(node, exp.Func) for node in tree.find_all(exp.Func))
-
-
 def validate_compiled_sql(
     sql: str,
     *,
@@ -709,17 +690,25 @@ def validate_compiled_sql(
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
-    # A literal select cites no relation. That is ungranted even when no
-    # warehouse was configured. A missing warehouse file is still
-    # warehouse_missing, so an extract against a path that is not there
-    # keeps that reason.
-    literal = not named and _literal_select(sql)
-    if warehouse is None:
-        return "ungranted" if literal else "warehouse_missing"
-    if not Path(warehouse).is_file():
+    # No cited relation. A literal select is the same grant outcome, bare
+    # code. A missing warehouse file stays warehouse_missing. A function
+    # call is not this outcome.
+    if not named and (warehouse is None or Path(warehouse).is_file()):
+        from sqlglot import exp, parse_one
+
+        try:
+            tree = parse_one(sql, read="duckdb")
+        except Exception:  # noqa: BLE001
+            tree = None
+        tables = tree.find_all(exp.Table) if tree is not None else ()
+        funcs = tree.find_all(exp.Func) if tree is not None else ()
+        no_table = isinstance(tree, exp.Select) and not any(
+            isinstance(node, exp.Table) and node.name for node in tables
+        )
+        if no_table and not any(isinstance(node, exp.Func) for node in funcs):
+            return "ungranted"
+    if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
-    if literal:
-        return "ungranted"
     con = connect_file(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
