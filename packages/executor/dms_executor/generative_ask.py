@@ -26,18 +26,23 @@ from types import SimpleNamespace
 from typing import Any
 
 from cortex_client.compute import (
+    INSIGHTS_FAIL_AI_ERROR,
+    INSIGHTS_FAIL_UNAUTHORIZED,
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
     SERVED_LEG_KEYS,
     cloop_b_enabled,
+    gen01_rules_enabled,
     generate_model_called,
     insights_budget_stop,
+    insights_call_cap,
     insights_fail_reason,
     insights_query_sql,
     insights_was_reached,
     ontology_ranked_lane_enabled,
     query_plan_from_insights_ranking,
+    recorded_model_calls,
     typed_query_plan,
 )
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
@@ -1297,6 +1302,74 @@ def _run_extract_loop(
     )
 
 
+def _ladder_after_ai_error(
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    payload: dict[str, Any],
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    grantable: set[str],
+    declared: Ontology | None,
+    declared_violations: list[Violation],
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Retry generate once, then the extract checker. No rule-builder compile.
+
+    The retry carries the same schema and ontology context as the first
+    call. A second AI-call error, or SQL the checker will not accept,
+    abstains. It does not compile a ranked ontology plan.
+    """
+    current: dict[str, Any] | None = payload
+    if recorded_model_calls() < insights_call_cap():
+        nxt_ctx = dict(ctx)
+        nxt_ctx["sql_loop_feedback"] = {
+            "previous_sql": "",
+            "reason": INSIGHTS_FAIL_AI_ERROR,
+            "prompt": question,
+        }
+        try:
+            got = compute(nxt_ctx)
+        except Exception:  # noqa: BLE001 — retry miss, then abstain
+            got = None
+        if isinstance(got, dict):
+            current = got
+    sql = None
+    if isinstance(current, dict) and insights_fail_reason(current) != INSIGHTS_FAIL_AI_ERROR:
+        sql = query_sql_from_payload(current) or insights_query_sql(current)
+    if sql and isinstance(current, dict):
+        return _run_extract_loop(
+            question=question,
+            ctx=ctx,
+            payload=current,
+            compute=compute,
+            warehouse=warehouse,
+            dialect=dialect,
+            grantable=grantable,
+            declared=declared,
+            declared_violations=declared_violations,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            attempts=attempts,
+        )
+    return _abstain(
+        question,
+        INSIGHTS_FAIL_AI_ERROR,
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_ONTOLOGY,
+        retries=1 if recorded_model_calls() > 1 else 0,
+        stage="extract_loop",
+    )
+
+
 def maybe_generative_ask(
     question: str,
     *,
@@ -1495,6 +1568,59 @@ def maybe_generative_ask(
                 session_id=session_id,
                 plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
                 stage="insights_budget",
+            )
+        )
+    if (
+        isinstance(payload, dict)
+        and insights_fail_reason(payload) == INSIGHTS_FAIL_AI_ERROR
+        and not gen01_rules_enabled()
+    ):
+        # The checker never saw model SQL. Do not compile the rule builder.
+        if cloop_b_enabled():
+            if compute is None or submit is None or ledger_append is None:
+                return None
+            return _stamp(
+                _ladder_after_ai_error(
+                    question=q,
+                    ctx=ctx,
+                    payload=payload,
+                    compute=compute,
+                    warehouse=lake,
+                    dialect=dialect,
+                    grantable=allowed,
+                    declared=declared,
+                    declared_violations=declared_violations,
+                    space_id=space_id,
+                    session_id=session_id,
+                    submit=submit,
+                    ledger_append=ledger_append,
+                    attempts=loop_attempts,
+                )
+            )
+        return _stamp(
+            _abstain(
+                q,
+                INSIGHTS_FAIL_AI_ERROR,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                stage="ai_call",
+            )
+        )
+    if (
+        isinstance(payload, dict)
+        and insights_fail_reason(payload) == INSIGHTS_FAIL_UNAUTHORIZED
+        and not gen01_rules_enabled()
+    ):
+        # Auth failure is not a model miss. Do not compile the rule builder.
+        return _stamp(
+            _abstain(
+                q,
+                INSIGHTS_FAIL_UNAUTHORIZED,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                stage="ai_call",
             )
         )
     if (
