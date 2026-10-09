@@ -100,29 +100,67 @@ def empty_result_reason(sql: str) -> str | None:
     return EMPTY_UNVERIFIED
 
 
-def run_readonly(
-    sql: str, warehouse: Path
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Execute on the extract. ``(rows, None)`` or ``(None, error)``.
+def _one_select(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT. A single non-SELECT returns ``""``.
 
-    Uses the serving attach, not a second ``read_only`` connect. DuckDB 1.5
-    rejects mixed access modes on one file, which dropped the schema index
-    and this execution together. The file lock serializes callers.
+    ``WITH`` that ends in SELECT is a SELECT. Any other count, or a parse
+    error, is a refusal and is not executed. ``""`` means the read-only
+    engine must be the thing that refuses the statement.
     """
-    from dms_executor.demo_warehouse import connect_file
+    import duckdb
 
     try:
-        con = connect_file(Path(warehouse))
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 — parse failure is a refusal
+        return f"{type(exc).__name__}: {exc}"
+    if len(stmts) == 1 and stmts[0].type == duckdb.StatementType.SELECT:
+        return None
+    if len(stmts) == 1:
+        return ""
+    return "multi_statement"
+
+
+def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
         cur = con.execute(sql)
         desc = cur.description or []
         cols = [d[0] for d in desc]
         rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
         return rows, None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — engine error is the extract result
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def run_readonly(
+    sql: str, warehouse: Path
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Execute on a read-only extract. ``(rows, None)`` or ``(None, error)``.
+
+    Takes the serving lock, then opens ``read_only``. The lock is what keeps
+    a writer and this connect from mixing access modes. A lock wait past the
+    serving deadline returns ``TimeoutError: ...`` and does not open the file.
+    One SELECT runs. A single other statement is executed so the read-only
+    engine refuses it. Anything else, including a parse failure, is refused
+    without executing.
+    """
+    from dms_executor.demo_warehouse import connect_locked_readonly
+
+    try:
+        con = connect_locked_readonly(Path(warehouse))
+    except TimeoutError as exc:
+        return None, f"TimeoutError: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        gate = _one_select(con, sql)
+        if gate is None:
+            return _fetch(con, sql)
+        if gate == "":
+            _rows, err = _fetch(con, sql)
+            if err:
+                return None, err
+            return None, "statement_not_select"
+        return None, gate
     finally:
         con.close()
 
@@ -607,6 +645,10 @@ def run_model_loop(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
+            # A missed lock deadline abstains once. Retrying would wait the
+            # deadline again.
+            if exec_err.startswith("TimeoutError:"):
+                return abstain(outcome, attempts, sql=sql, retries=retries)
             protected_sql = sql
             if not _can_retry(retries=retries, used=used, cap=cap):
                 head = f"loop_exhausted:{outcome}"
