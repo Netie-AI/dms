@@ -1109,18 +1109,53 @@ def _prepare_flag_off() -> None:
     _scrub_credentials()
 
 
-def _product_sha() -> str:
-    """Product commit the stub-exec harness runs. Not this grader's HEAD."""
+def _merge_base_sha() -> str | None:
     try:
         out = subprocess.check_output(
             ["git", "merge-base", "HEAD", "origin/main"],
             cwd=ROOT,
             text=True,
             stderr=subprocess.DEVNULL,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise SystemExit("grade52: dms sha unavailable") from exc
-    return _commit_sha(out)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    text = out.strip()
+    if len(text) != 40 or any(char not in "0123456789abcdef" for char in text):
+        return None
+    return text
+
+
+def _fetch_product_base() -> None:
+    """Shallow CI (checkout depth 1) has no origin/main. Fetch the base once.
+
+    ponytail: a full unshallow. Upgrade is a deepen capped at the fork point
+    if this fetch ever dominates the job.
+    """
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    for args in (
+        ["git", "fetch", "--unshallow", "origin"],
+        ["git", "fetch", "--no-tags", "origin", "main"],
+    ):
+        subprocess.run(
+            args,
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+
+
+def _product_sha() -> str:
+    """Product commit the stub-exec harness runs. Not this grader's HEAD."""
+    sha = _merge_base_sha()
+    if sha is None:
+        _fetch_product_base()
+        sha = _merge_base_sha()
+    if sha is None:
+        raise SystemExit("grade52: dms sha unavailable")
+    return sha
 
 
 def _resolve_mode(mode: str | None) -> str:
