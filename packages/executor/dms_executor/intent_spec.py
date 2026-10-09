@@ -6,11 +6,11 @@ Insights generate route with ``role=intent_spec``. Writer calls use
 models. A second route, if one is pinned before that lands, lives in
 OpenVault config, not in this module.
 
-``check_sql_against_spec`` is the C-LOOP-B integration point (#405,
-``run_model_loop(..., check=...)``). That loop is not on this branch.
-``apply_intent_spec`` does the same check, one retry budget, and the
-named abstain until the loop lands. ``DMS_INTENT_SPEC`` defaults off;
-callers skip this module entirely when it is off.
+``check_sql_against_spec`` is the checker ``run_model_loop`` can call.
+``apply_intent_spec`` does that check, one retry budget, and names the
+abstain. The caller builds the envelope with ``build_abstain``. This
+module does not log a ticket and does not mint an id. ``DMS_INTENT_SPEC``
+defaults off; callers skip this module entirely when it is off.
 
 Span check is case and whitespace only. A field whose spans are not
 substrings of the question is dropped and logged. A kept filter span
@@ -113,6 +113,8 @@ class IntentDecision:
     abstain_reason: str | None
     attempt: dict[str, Any]
     offset_approved: bool = False
+    retries: int = 0
+    rejected_sql: str | None = None
 
 
 def _norm(text: str) -> str:
@@ -589,34 +591,6 @@ def _sql_of(payload: Mapping[str, Any] | None) -> str | None:
     return None
 
 
-def log_pipeline_failure_ticket(
-    *,
-    question: str,
-    rejected_sql: str,
-    retry_count: int,
-    reason: str,
-) -> None:
-    """Log one pipeline-failure ticket on the existing intent_spec logger.
-
-    Not a second store. Question and SQL literals go through
-    ``fail_closed_mask_payload``, then bearer redaction. A failure here
-    is swallowed so the caller envelope does not change.
-    """
-    try:
-        masked = fail_closed_mask_payload(text=question, sql_used=rejected_sql or "")
-        from cortex_client.insights import redact_secrets
-
-        ticket = {
-            "question": redact_secrets(str(masked.get("text") or "")),
-            "rejected_sql": redact_secrets(str(masked.get("sql_used") or "")),
-            "retry_count": int(retry_count),
-            "reason": redact_secrets(str(reason or "")),
-        }
-        _log.warning("pipeline_failure %s", json.dumps(ticket, sort_keys=True))
-    except Exception:
-        return
-
-
 def feedback_prompt(question: str, previous_sql: str, reason: str) -> str:
     """Retry text: the question, the SQL, and the checker reason."""
     return f"{question}\n\nprevious_sql:\n{previous_sql}\n\nfeedback:\n{reason}"
@@ -647,16 +621,15 @@ def apply_intent_spec(
     reason: str | None
     if parsed.unverified:
         reason = f"intent_spec_unverified:{parsed.unverified}"
-        try:
-            log_pipeline_failure_ticket(
-                question=question,
-                rejected_sql=sql,
-                retry_count=0,
-                reason=reason,
-            )
-        except Exception:
-            pass
-        return IntentDecision(None, None, reason, _attempt(parsed, reason), False)
+        return IntentDecision(
+            None,
+            None,
+            reason,
+            _attempt(parsed, reason),
+            False,
+            retries=0,
+            rejected_sql=sql,
+        )
     reason = check_sql_against_spec(sql, parsed.spec, dialect=dialect)
     current_sql = sql
     current_payload: Mapping[str, Any] | None = writer_payload
@@ -676,17 +649,14 @@ def apply_intent_spec(
         reason = check_sql_against_spec(current_sql, parsed.spec, dialect=dialect)
     if reason:
         named = f"intent_spec_mismatch:{reason}"
-        try:
-            log_pipeline_failure_ticket(
-                question=question,
-                rejected_sql=current_sql,
-                retry_count=retries,
-                reason=named,
-            )
-        except Exception:
-            pass
         return IntentDecision(
-            None, dict(current_payload or {}), named, _attempt(parsed, named), False
+            None,
+            dict(current_payload or {}),
+            named,
+            _attempt(parsed, named),
+            False,
+            retries=retries,
+            rejected_sql=current_sql,
         )
     payload_out = dict(current_payload) if isinstance(current_payload, Mapping) else None
     return IntentDecision(

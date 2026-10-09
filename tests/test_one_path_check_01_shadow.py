@@ -21,8 +21,9 @@ _SHADOW = "served_check_shadow"
 # minus 90 days was 2026-07-10 on this day.
 _CAPTURE_DAY = (2026, 10, 8)
 GOLDEN = HERE / "flag_off_52_f9ffc3e1.json"
-# Full envelopes from ce08153, shadow included. as_of is the only clock field.
-CE08153 = HERE / "flag_off_52_ce08153.json"
+# Full envelopes from 57d85c52 with the wall clock on the capture day.
+# Shadow included. as_of is the only field that moves. No new key.
+MAIN_57 = HERE / "flag_off_52_57d85c52.json"
 
 
 def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,19 +118,20 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
     assert served > 0
 
 
-def test_flag_off_envelopes_match_ce08153_including_shadow(
+def test_flag_off_envelopes_match_57d85c52_including_shadow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Flag-off full envelopes, shadow included, equal the ce08153 capture.
+    """Flag-off full envelopes, shadow included, equal the 57d85c52 capture.
 
-    Only clock fields are masked. A new shadow key or a different
-    ``checker_version`` fails this. The test above still pops the shadow.
+    Only ``as_of`` is masked. A new key or a different ``checker_version``
+    fails this. The test above still pops the shadow.
     """
     monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
     _pin_capture_day(monkeypatch)
     live = replay_pack()
     assert len(live) == 52
-    golden = json.loads(CE08153.read_text(encoding="utf-8"))
+    golden = json.loads(MAIN_57.read_text(encoding="utf-8"))
     assert [row["id"] for row in live] == [row["id"] for row in golden]
     main_rows = {row["id"]: row["env"] for row in golden}
     problems: list[str] = []
@@ -138,7 +140,7 @@ def test_flag_off_envelopes_match_ce08153_including_shadow(
         if paths:
             problems.append(f"{row['id']}: {paths}")
     if problems:
-        pytest.fail("flag-off envelopes differ from ce08153:\n" + "\n".join(problems))
+        pytest.fail("flag-off envelopes differ from 57d85c52:\n" + "\n".join(problems))
 
 
 def test_capture_day_pin_does_not_replace_datetime_date(

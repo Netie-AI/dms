@@ -914,6 +914,9 @@ def _submit_validated(
             session_id=session_id,
             plan_source=plan_source,
             notes=notes,
+            sql=sql,
+            retries=0,
+            stage="intent_spec",
         )
     try:
         result = submit(sql)
@@ -1544,6 +1547,7 @@ def maybe_generative_ask(
         )
     if (
         cloop_b_enabled()
+        and not intent_spec_enabled()
         and not ontology_ranked_lane_enabled()
         and isinstance(payload, dict)
     ):
@@ -1718,8 +1722,8 @@ def maybe_generative_ask(
             offset_ok = False
             attempt: dict[str, Any] | None = None
             # INTENT-SPEC-01. Off by default: this block does not run, and the
-            # submit below is the pre-spec path. C-LOOP-B (#405) should call
-            # check_sql_against_spec from run_model_loop once that loop lands.
+            # submit below is the pre-spec path. The named abstain is
+            # build_abstain (stage intent_spec), which writes the ticket.
             if intent_spec_enabled():
                 decision = apply_intent_spec(
                     question=q,
@@ -1738,6 +1742,9 @@ def maybe_generative_ask(
                         session_id=session_id,
                         plan_source=source,
                         notes=trail_notes,
+                        sql=decision.rejected_sql or sql,
+                        retries=decision.retries,
+                        stage="intent_spec",
                     )
                     env["intent_spec_attempt"] = attempt
                     return _stamp(env)
@@ -1755,6 +1762,9 @@ def maybe_generative_ask(
                             session_id=session_id,
                             plan_source=source,
                             notes=trail_notes,
+                            sql=serve_sql,
+                            retries=decision.retries,
+                            stage="intent_spec",
                         )
                         env["intent_spec_attempt"] = attempt
                         return _stamp(env)

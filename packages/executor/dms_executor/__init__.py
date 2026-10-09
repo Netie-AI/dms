@@ -175,7 +175,7 @@ def _insights_compute_seam(
             raw = cleaned.pop("sql_loop_feedback")
             feedback = raw if isinstance(raw, dict) else None
             onto = cleaned
-        elif extra:
+        elif extra and isinstance(cleaned, dict):
             onto = cleaned
         if extra:
             role = extra.get("dms_route_role")

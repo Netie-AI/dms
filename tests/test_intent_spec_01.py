@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import dms_executor.pipeline_failure as tickets
 import duckdb
 import pytest
+from dms_core.pii import fail_closed_mask_payload
 from dms_executor.envelope import assert_envelope_valid
-from dms_executor.generative_ask import maybe_generative_ask
+from dms_executor.generative_ask import _submit_validated, maybe_generative_ask
 from dms_executor.intent_spec import (
     ROLE_INTENT_SPEC,
     AnswerSpec,
@@ -21,6 +24,9 @@ from dms_executor.intent_spec import (
     parse_spec_payload,
     spec_prompt,
 )
+from dms_executor.ontology import coverage_from_sql_path
+from dms_executor.pipeline_failure import log_pipeline_failure_ticket
+from dms_executor.sql_loop import _scrub_string
 
 _WRITER = "writer-route"
 _SPEC = "spec-route"
@@ -399,7 +405,7 @@ _WHERE_FALSE = (
     / "tests"
     / "fixtures"
     / "ask_guide"
-    / "flag_off_where_false_ce08153.json"
+    / "flag_off_where_false_57d85c52.json"
 )
 _FALSE_SQL = "SELECT category, amount FROM facts WHERE 1 = 2"
 
@@ -409,18 +415,22 @@ def test_flag_off_where_false_matches_main_empty_rows(
 ) -> None:
     """Flag off executes ``WHERE 1 = 2`` and withholds the empty rows, like main.
 
-    The stub runs the SQL. Main's envelope is the ce08153 capture. No
-    pipeline-failure ticket is written.
+    The stub runs the SQL. Main's envelope is the 57d85c52 capture.
+    Only ``as_of`` is masked. No ticket is written and no new key appears.
     """
     monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+    tickets._reset_pipeline_failures()
     harness.writer_sql = _FALSE_SQL
-    with caplog.at_level(logging.WARNING, logger="dms_executor.intent_spec"):
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
         env = harness.ask("show every row")
     assert env is not None
     assert_envelope_valid(env)
     assert harness.submits == [_FALSE_SQL]
     main = json.loads(_WHERE_FALSE.read_text(encoding="utf-8"))
     assert _mask_clock(env) == _mask_clock(main)
+    assert "ticket_id" not in env
+    assert _tickets(caplog) == []
     assert "pipeline_failure" not in caplog.text
 
 
@@ -507,6 +517,8 @@ def test_partial_literal_does_not_cover_a_span() -> None:
 def _tickets(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for rec in caplog.records:
+        if rec.levelno != logging.WARNING:
+            continue
         message = rec.getMessage()
         if not message.startswith("pipeline_failure "):
             continue
@@ -517,13 +529,56 @@ def _tickets(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
     return found
 
 
+def _question_hash(question: str) -> str:
+    """Same mask then scrub the ticket writer uses. The log stores the hash."""
+    got = fail_closed_mask_payload(text=question)
+    masked = _scrub_string(str(got.get("text") or ""))
+    normal = " ".join(masked.casefold().split())
+    return hashlib.sha256(normal.encode()).hexdigest()
+
+
+def _assert_spec_ticket(
+    caplog: pytest.LogCaptureFixture,
+    env: dict[str, Any],
+    *,
+    reason: str,
+    retries: int,
+    question: str,
+    sql: str,
+    secret: str,
+) -> dict[str, Any]:
+    rows = _tickets(caplog)
+    assert len(rows) == 1
+    ticket = rows[0]
+    assert ticket["reason"] == reason
+    assert ticket["retries"] == retries
+    assert ticket["stage"] == "intent_spec"
+    assert ticket["ask_id"] == env["answer_id"]
+    assert ticket["question_hash"] == _question_hash(question)
+    assert env["ticket_id"] == ticket["ticket_id"]
+    assert str(ticket["ticket_id"]).startswith("tkt")
+    assert str(ticket["ticket_id"]).isalpha()
+    blob = json.dumps(ticket)
+    assert "question" not in ticket
+    assert "sql" not in ticket
+    assert "rejected_sql" not in ticket
+    assert question not in blob
+    assert sql not in blob
+    assert secret not in blob
+    assert question not in caplog.text
+    assert sql not in caplog.text
+    assert secret not in caplog.text
+    return ticket
+
+
 def test_flag_on_mismatch_writes_pipeline_failure_ticket(
     harness: _Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A mismatch ticket names the question, the rejected SQL, and the retry count.
+    """Flag on. One WARNING ticket. The question and the SQL are not in it.
 
-    Literals go through the masker. A bearer value does not survive.
+    The hash is the real masker, then scrub. A bearer value does not survive.
     """
+    tickets._reset_pipeline_failures()
     email = "ada@example.com"
     bearer = "sk-abcdefghij1234"
     question = f"lowest 3 {email}"
@@ -535,58 +590,90 @@ def test_flag_on_mismatch_writes_pipeline_failure_ticket(
     harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
     harness.writer_sql = sql
     harness.retry_sql = sql
-    with caplog.at_level(logging.WARNING, logger="dms_executor.intent_spec"):
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
         env = harness.ask(question)
     assert env is not None
     assert env["abstained"] is True
     assert "intent_spec_mismatch" in env["text"]
-    tickets = _tickets(caplog)
-    assert len(tickets) == 1
-    ticket = tickets[0]
-    assert set(ticket) >= {"question", "rejected_sql", "retry_count"}
-    assert ticket["retry_count"] == 2
-    blob = json.dumps(ticket)
-    assert email not in blob
-    assert bearer not in blob
-    assert "DMSMASK_email" in ticket["question"]
-    assert "[redacted]" in ticket["rejected_sql"]
+    _assert_spec_ticket(
+        caplog, env, reason="intent_spec_mismatch", retries=2,
+        question=question, sql=sql, secret=bearer,
+    )
+    assert email not in caplog.text
 
 
 def test_flag_on_unverified_writes_pipeline_failure_ticket(
     harness: _Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
+    tickets._reset_pipeline_failures()
+    question = "lowest 3 categories by stock value"
     harness.spec = {}
     harness.writer_sql = _ASC3
-    with caplog.at_level(logging.WARNING, logger="dms_executor.intent_spec"):
-        env = harness.ask("lowest 3 categories by stock value")
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = harness.ask(question)
     assert env is not None
     assert "intent_spec_unverified" in env["text"]
-    tickets = _tickets(caplog)
-    assert len(tickets) == 1
-    assert tickets[0]["retry_count"] == 0
-    assert tickets[0]["question"] == "lowest 3 categories by stock value"
-    assert "ORDER BY total ASC" in tickets[0]["rejected_sql"]
+    _assert_spec_ticket(
+        caplog, env, reason="intent_spec_unverified", retries=0,
+        question=question, sql=_ASC3, secret=question,
+    )
 
 
-def test_ticket_writing_does_not_change_the_abstain_body(
+def test_flag_on_contradiction_backstop_writes_a_ticket(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The submit-path contradiction exit tickets through the builder."""
+    tickets._reset_pipeline_failures()
+    question = "show every row"
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = _submit_validated(
+            _FALSE_SQL,
+            question=question,
+            space_id=None,
+            session_id=None,
+            submit=harness.submit,
+            ledger_append=lambda _payload: SimpleNamespace(
+                entry_id="led_spec", hash="hash_spec"
+            ),
+            notes=(),
+            plan_source="ontology_plan",
+            coverage=coverage_from_sql_path(sql=_FALSE_SQL),
+            warehouse=harness.lake,
+        )
+    assert env["abstained"] is True
+    assert "contradiction" in env["text"]
+    assert harness.submits == []
+    _assert_spec_ticket(
+        caplog, env, reason="contradiction", retries=0,
+        question=question, sql=_FALSE_SQL, secret=_FALSE_SQL,
+    )
+
+
+def test_wrong_ticket_signature_raises() -> None:
+    """The old kwargs are not an alias. Nothing swallows the TypeError."""
+    with pytest.raises(TypeError):
+        log_pipeline_failure_ticket(  # type: ignore[call-arg]
+            question="show the total",
+            rejected_sql="SELECT 1",
+            retry_count=2,
+            reason="intent_spec_mismatch",
+        )
+
+
+def test_abstain_exit_does_not_swallow_type_error(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The caller envelope is the same when the ticket writer raises."""
-    import dms_executor.intent_spec as spec
-
+    """A TypeError from the builder reaches the caller."""
     harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
     harness.writer_sql = _DESC3
     harness.retry_sql = _DESC3
-    question = "lowest 3 categories by stock value"
-    first = harness.ask(question)
 
-    def _boom(**_kwargs: Any) -> None:
-        raise RuntimeError("ticket writer down")
+    def _boom(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        raise TypeError("wrong signature")
 
-    monkeypatch.setattr(spec, "log_pipeline_failure_ticket", _boom)
-    second = harness.ask(question)
-    assert first is not None and second is not None
-    assert _mask_clock(first) == _mask_clock(second)
+    monkeypatch.setattr("dms_executor.generative_ask.build_abstain", _boom)
+    with pytest.raises(TypeError, match="wrong signature"):
+        harness.ask("lowest 3 categories by stock value")
 
 
 def test_direction_mismatch_names_the_order() -> None:
