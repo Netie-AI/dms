@@ -735,15 +735,26 @@ def _commit_sha(raw: Any) -> str:
     return text
 
 
-def _header_sha(data: Any) -> str | None:
-    """A JSONL header is ``{"dms_sha": "<40 hex>"}`` and is not a case."""
+def _layout_text(raw: Any) -> str:
+    if not isinstance(raw, str):
+        raise SystemExit("grade52: envelope layout missing")
+    text = raw.strip()
+    if not text or any(char not in "abcdefghijklmnopqrstuvwxyz0123456789-" for char in text):
+        raise SystemExit("grade52: envelope layout missing")
+    return text
+
+
+def _header_meta(data: Any) -> tuple[str | None, str | None] | None:
+    """A JSONL header is commit and layout, not a case. None when it is a case."""
     if not isinstance(data, dict):
         return None
     if any(key in data for key in ("env", "rows", "badge", "id")):
         return None
-    if "dms_sha" not in data:
+    if "dms_sha" not in data and "layout" not in data:
         return None
-    return _commit_sha(data.get("dms_sha"))
+    sha = _commit_sha(data.get("dms_sha")) if "dms_sha" in data else None
+    layout = _layout_text(data.get("layout")) if "layout" in data else None
+    return sha, layout
 
 
 def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
@@ -763,11 +774,12 @@ def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
     raise SystemExit("grade52: envelope record has no env")
 
 
-def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None]:
+def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None, str | None]:
     """Directory of ``<id>.json``, or JSONL of ``{id, env}``.
 
-    The commit is a JSONL header ``{"dms_sha": "<40 hex>"}`` or a ``dms_sha``
-    file in the directory. A JSON array carries no commit.
+    The commit is a JSONL header ``{"dms_sha": "<40 hex>", "layout": "copy-only"}``
+    or ``dms_sha`` and ``layout`` files in the directory. A JSON array carries
+    neither.
     """
     if path.is_dir():
         files = sorted(item for item in path.iterdir() if item.suffix == ".json" and item.is_file())
@@ -782,7 +794,9 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None]:
             rows.append(_record(data, default_id=item.stem))
         sha_path = path / "dms_sha"
         sha = _commit_sha(sha_path.read_text(encoding="utf-8")) if sha_path.is_file() else None
-        return rows, sha
+        layout_path = path / "layout"
+        layout = _layout_text(layout_path.read_text(encoding="utf-8")) if layout_path.is_file() else None
+        return rows, sha, layout
     if not path.is_file():
         raise SystemExit("grade52: envelopes path is missing")
     text = path.read_text(encoding="utf-8")
@@ -794,9 +808,10 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None]:
             raise SystemExit("grade52: envelope file is not json") from exc
         if not isinstance(data, list):
             raise SystemExit("grade52: envelope file is not json")
-        return [_record(item) for item in data], None
+        return [_record(item) for item in data], None, None
     rows = []
     sha: str | None = None
+    layout: str | None = None
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -804,16 +819,16 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None]:
             data = json.loads(line)
         except json.JSONDecodeError as exc:
             raise SystemExit("grade52: envelope file is not json") from exc
-        header = _header_sha(data)
+        header = _header_meta(data)
         if header is not None:
-            if sha is not None:
+            if sha is not None or layout is not None:
                 raise SystemExit("grade52: envelopes commit missing")
-            sha = header
+            sha, layout = header
             continue
         rows.append(_record(data))
     if not rows:
         raise SystemExit("grade52: envelope file is empty")
-    return rows, sha
+    return rows, sha, layout
 
 
 def _sql_same(left: str, right: str) -> bool:
@@ -996,6 +1011,7 @@ def write_report(report: dict[str, Any]) -> Path:
         "gold_broken": report["gold_broken"],
         "paths_correct": report.get("paths_correct"),
         "paths_served": report.get("paths_served"),
+        "layout": report.get("layout"),
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
@@ -1036,8 +1052,12 @@ def summary_line(report: Mapping[str, Any]) -> str:
             raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
     if _accounted(report) != int(report["n"]):
         raise SystemExit("grade52: buckets do not add up to n")
+    layout = report.get("layout")
+    head = f"sha={report['dms_sha']}"
+    if isinstance(layout, str) and layout:
+        head += f" layout={layout}"
     return (
-        f"sha={report['dms_sha']} pack_gold_served={report['pack_gold_served']} "
+        f"{head} pack_gold_served={report['pack_gold_served']} "
         f"{report['n']}: correct={report['correct']} wrong={report['wrong']} "
         f"abstain={report['abstain']} refusal_ok={report['refusal_ok']} "
         f"refusal_wrong={report['refusal_wrong']} empty_gold={report['empty_gold']} "
@@ -1049,27 +1069,55 @@ def _zero_paths() -> dict[str, int]:
     return {"ai": 0, "rule": 0, "unattributed": 0}
 
 
-def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
-    """AI vs rule-served vs unattributed, for correct answers and served answers."""
+def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """AI vs rule-served vs unattributed, for correct answers and served answers.
+
+    Rule counts are also split by path (L0, L1, compile, oracle) so a correct
+    set can be read off the line.
+    """
     correct = _zero_paths()
     served = _zero_paths()
+    detail = {
+        "correct": {key: 0 for key in ("L0", "L1", "compile", "oracle")},
+        "served": {key: 0 for key in ("L0", "L1", "compile", "oracle")},
+    }
     for item in cases:
-        group = path_group(str(item.get("serve_path") or "unattributed"))
+        path = str(item.get("serve_path") or "unattributed")
+        group = path_group(path)
         if item.get("bucket") == BUCKET_CORRECT:
             correct[group] += 1
+            if path in detail["correct"]:
+                detail["correct"][path] += 1
         if item.get("answered") is True:
             served[group] += 1
-    return {"correct": correct, "served": served}
+            if path in detail["served"]:
+                detail["served"][path] += 1
+    return {"correct": correct, "served": served, "detail": detail}
 
 
-def paths_line(counts: Mapping[str, Mapping[str, int]]) -> str:
-    correct = counts["correct"]
-    served = counts["served"]
+def _path_side(block: Mapping[str, int], detail: Mapping[str, int]) -> str:
+    parts = [f"ai={block['ai']}", f"rule={block['rule']}"]
+    for key in ("L0", "L1", "compile", "oracle"):
+        count = int(detail.get(key) or 0)
+        if count:
+            parts.append(f"{key}={count}")
+    parts.append(f"unattributed={block['unattributed']}")
+    return " ".join(parts)
+
+
+def paths_line(counts: Mapping[str, Any]) -> str:
+    detail = counts.get("detail") or {}
+    correct_detail = detail.get("correct") if isinstance(detail, Mapping) else {}
+    served_detail = detail.get("served") if isinstance(detail, Mapping) else {}
+    if not isinstance(correct_detail, Mapping):
+        correct_detail = {}
+    if not isinstance(served_detail, Mapping):
+        served_detail = {}
     return (
-        f"paths correct ai={correct['ai']} rule={correct['rule']} "
-        f"unattributed={correct['unattributed']} "
-        f"served ai={served['ai']} rule={served['rule']} "
-        f"unattributed={served['unattributed']}"
+        "paths correct "
+        + _path_side(counts["correct"], correct_detail)
+        + " served "
+        + _path_side(counts["served"], served_detail)
     )
 
 
@@ -1321,8 +1369,15 @@ def _labelled(
     return report
 
 
-def _finish(report: dict[str, Any], mode: str, dms_sha: str) -> dict[str, Any]:
+def _finish(
+    report: dict[str, Any],
+    mode: str,
+    dms_sha: str,
+    layout: str | None = None,
+) -> dict[str, Any]:
     _labelled(report, mode=mode, included="included", dms_sha=dms_sha)
+    if layout:
+        report["layout"] = layout
     rest = [item for item in report["cases"] if not item.get("pack_gold_served")]
     without = tally(rest)
     without.update(
@@ -1335,6 +1390,8 @@ def _finish(report: dict[str, Any], mode: str, dms_sha: str) -> dict[str, Any]:
             "pack_gold_served_ids": report["pack_gold_served_ids"],
         }
     )
+    if layout:
+        without["layout"] = layout
     report["without_pack_gold_served"] = without
     rolls = path_counts(report["cases"])
     report["paths_correct"] = rolls["correct"]
@@ -1352,6 +1409,7 @@ def grade_loaded(
     *,
     mode: str,
     dms_sha: str | None = None,
+    layout: str | None = None,
 ) -> dict[str, Any]:
     """Grade served rows. A submit-stub pack is labelled stub and is not a score."""
     if _is_submit_stub(envelopes):
@@ -1361,7 +1419,7 @@ def grade_loaded(
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
     report = grade_envelopes(envelopes, mode=mode)
-    return _finish(report, mode, _commit_sha(dms_sha))
+    return _finish(report, mode, _commit_sha(dms_sha), layout)
 
 
 def grade_main(mode: str | None = None) -> dict[str, Any]:
@@ -1373,8 +1431,8 @@ def grade_main(mode: str | None = None) -> dict[str, Any]:
 
 
 def grade_envelopes_path(path: Path) -> dict[str, Any]:
-    rows, sha = load_envelopes(path)
-    return grade_loaded(rows, mode=MODE_SERVED, dms_sha=sha)
+    rows, sha, layout = load_envelopes(path)
+    return grade_loaded(rows, mode=MODE_SERVED, dms_sha=sha, layout=layout)
 
 
 def self_test() -> dict[str, str]:

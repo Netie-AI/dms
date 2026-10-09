@@ -2,8 +2,11 @@
 
 The seven buckets are disjoint and add up to 52. Gold-broken sits inside
 the non-trap 44. A submit-stub pack is not a score. The exec-SQL stub is
-labelled stub-exec. ``test_grade52_synthetic_gold_as_served`` copies gold
-rows into envelopes. That test is not a capture and not main's score.
+labelled stub-exec.
+
+The number of record is ``test_grade52_copy_only_main``: real envelopes
+captured from main on the COPY-only layout. ``test_grade52_synthetic_gold_as_served``
+copies gold rows into envelopes. That plant is not a capture and not a score.
 """
 
 from __future__ import annotations
@@ -55,6 +58,39 @@ _SYNTHETIC_EXCLUDED = (
     "45: correct=16 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
+_COPY_ONLY = ROOT / "tests" / "fixtures" / "ask_guide" / "copy_only_57d85c52.jsonl"
+_COPY_ONLY_INCLUDED = (
+    f"sha={_MAIN_SHA} layout=copy-only pack_gold_served=included "
+    "52: correct=16 wrong=0 abstain=27 refusal_ok=8 refusal_wrong=0 "
+    "empty_gold=0 gold_broken=1 mode=served"
+)
+_COPY_ONLY_EXCLUDED = (
+    f"sha={_MAIN_SHA} layout=copy-only pack_gold_served=excluded "
+    "45: correct=16 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+    "empty_gold=0 gold_broken=1 mode=served"
+)
+_COPY_ONLY_PATHS = (
+    "paths correct ai=0 rule=16 L1=16 unattributed=0 "
+    "served ai=0 rule=16 L1=16 unattributed=0"
+)
+_COPY_ONLY_CORRECT = [
+    "cq_capacity_above_90",
+    "cq_capacity_utilisation",
+    "cq_cctv_wh_a",
+    "cq_cold_storage",
+    "cq_expired_items",
+    "cq_low_stock_wh_a",
+    "cq_spend_by_country",
+    "cq_stock_value_by_category",
+    "ops_capacity_above_90",
+    "ops_capacity_utilisation",
+    "ops_cctv_wh_a",
+    "ops_cold_storage",
+    "ops_expired_items",
+    "ops_low_stock_wh_a",
+    "ops_shipment_cost",
+    "ops_stock_value",
+]
 
 
 def _buckets(report: dict) -> int:
@@ -215,7 +251,8 @@ def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
     assert summary_line(report) == _SYNTHETIC_INCLUDED
     assert _MAIN_SHA not in summary_line(report)
     assert paths_line(path_counts(report["cases"])) == (
-        "paths correct ai=0 rule=23 unattributed=0 served ai=0 rule=23 unattributed=0"
+        "paths correct ai=0 rule=23 L1=23 unattributed=0 "
+        "served ai=0 rule=23 L1=23 unattributed=0"
     )
     assert report["dms_sha"] == _SYNTHETIC_SHA
     assert report["mode"] == "served"
@@ -262,8 +299,9 @@ def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
             encoding="utf-8",
         )
     (folder_out / "dms_sha").write_text(_SYNTHETIC_SHA + "\n", encoding="utf-8")
-    loaded, sha = load_envelopes(folder_out)
+    loaded, sha, layout = load_envelopes(folder_out)
     assert sha == _SYNTHETIC_SHA
+    assert layout is None
     assert {item["id"] for item in loaded} == {row["id"] for row in records}
 
 
@@ -271,8 +309,9 @@ def test_grade52_sha_is_the_envelopes_commit(tmp_path: Path) -> None:
     body = json.dumps({"id": "x", "env": {"badge": "ABSTAIN", "abstained": True, "rows": []}})
     path = tmp_path / "env.jsonl"
     path.write_text(json.dumps({"dms_sha": "b" * 40}) + "\n" + body + "\n", encoding="utf-8")
-    rows, sha = load_envelopes(path)
+    rows, sha, layout = load_envelopes(path)
     assert sha == "b" * 40
+    assert layout is None
     assert rows[0]["id"] == "x"
     bare = tmp_path / "bare.jsonl"
     bare.write_text(body + "\n", encoding="utf-8")
@@ -293,7 +332,7 @@ def test_grade52_missing_rows_raises(tmp_path: Path) -> None:
         json.dumps({"id": "x", "env": {"badge": "ABSTAIN", "rows": []}}) + "\n",
         encoding="utf-8",
     )
-    rows, _sha = load_envelopes(empty)
+    rows, _sha, _layout = load_envelopes(empty)
     assert rows[0]["env"]["rows"] == []
 
 
@@ -329,8 +368,8 @@ def test_grade52_stub_exec_main() -> None:
     )
     assert "not a score" not in line
     assert paths_line(path_counts(report["cases"])) == (
-        "paths correct ai=0 rule=23 unattributed=20 "
-        "served ai=0 rule=25 unattributed=20"
+        "paths correct ai=0 rule=23 L1=23 unattributed=20 "
+        "served ai=0 rule=25 L0=2 L1=23 unattributed=20"
     )
     without = report["without_pack_gold_served"]
     assert without["pack_gold_served"] == "excluded"
@@ -342,6 +381,61 @@ def test_grade52_stub_exec_main() -> None:
     assert without["refusal_ok"] == 6
     assert without["refusal_wrong"] == 2
     assert without["gold_broken"] == 1
+
+
+def test_grade52_copy_only_main() -> None:
+    """Real envelopes from main 57d85c52 on the COPY-only layout.
+
+    The fixture is a POST /v1/chat/ask capture with the pack directory
+    hidden, which is what the image contains. The seven ids that abstain
+    here are SCORE_PACK_EXACT_IDS plus the two ops mirrors. A full-tree
+    tally is not this score.
+    """
+    import grade52
+
+    grade52._bootstrap()
+    from dms_executor.demo_pack import SCORE_PACK_EXACT_IDS
+
+    dropped = set(SCORE_PACK_EXACT_IDS) | {
+        "ops_sku_count",
+        "ops_sku_count_by_category",
+    }
+    assert dropped == set(_GOLD_SERVED)
+    loaded, sha, layout = load_envelopes(_COPY_ONLY)
+    assert sha == _MAIN_SHA
+    assert layout == "copy-only"
+    assert len(loaded) == 52
+    for item in loaded:
+        env = item["env"]
+        assert isinstance(env.get("rows"), list)
+        assert "audit_id" in env
+        assert "text" in env
+    report = grade_envelopes_path(_COPY_ONLY)
+    assert summary_line(report) == _COPY_ONLY_INCLUDED
+    assert report["layout"] == "copy-only"
+    assert report["dms_sha"] == _MAIN_SHA
+    assert report["mode"] == "served"
+    assert _buckets(report) == 52
+    assert paths_line(path_counts(report["cases"])) == _COPY_ONLY_PATHS
+    by_case = {item["id"]: item for item in report["cases"]}
+    correct = sorted(
+        qid for qid, item in by_case.items() if item["bucket"] == "CORRECT"
+    )
+    assert correct == _COPY_ONLY_CORRECT
+    for qid in _COPY_ONLY_CORRECT:
+        assert by_case[qid]["serve_path"] == "L1"
+        assert by_case[qid]["route"] == "governed_metric"
+    for qid in sorted(dropped):
+        case = by_case[qid]
+        assert case["bucket"] == "ABSTAIN"
+        assert case["serve_path"] == "unattributed"
+    assert by_case["ops_spend_boundary"]["bucket"] == "GOLD_BROKEN"
+    without = report["without_pack_gold_served"]
+    assert summary_line(without) == _COPY_ONLY_EXCLUDED
+    assert without["layout"] == "copy-only"
+    assert _buckets(without) == 45
+    assert without["correct"] == 16
+    assert without["abstain"] == 20
 
 
 def test_grade52_source_has_no_provider_names() -> None:
