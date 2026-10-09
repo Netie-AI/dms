@@ -12,7 +12,7 @@ so their served rows are the envelope rows.
 
 Usage:
     python scripts/verify/grade52.py --self-test
-    python scripts/verify/grade52.py --main
+    python scripts/verify/grade52.py --main --mode replay-of-captured-envelopes
 """
 
 from __future__ import annotations
@@ -20,12 +20,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
-from itertools import permutations
 from pathlib import Path
 from typing import Any
 
@@ -34,11 +35,25 @@ PACK_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 ORACLE_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 
 ABS_TOL = 0.005
+# ponytail: product of per-column candidate counts. Above this the grade is
+# unmappable. Upgrade is branch-and-bound if a real answer is wider than the
+# value signature can narrow.
+MAP_CAP = 1024
+MODES = (
+    "replay-of-captured-envelopes",
+    "executing-stub",
+    "live-model",
+)
 BUCKET_CORRECT = "CORRECT"
 BUCKET_WRONG = "WRONG"
 BUCKET_ABSTAIN = "ABSTAIN"
-BUCKET_EMPTY = "ABSTAIN_EMPTY_GOLD"
+BUCKET_EMPTY = "EMPTY_GOLD"
 _REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
+_CREDENTIAL_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+
+
+class _Unmappable(Exception):
+    """Candidate assignments exceed MAP_CAP."""
 
 
 def _bootstrap() -> None:
@@ -167,12 +182,43 @@ def _name_lock(gold_cols: Sequence[str], served_cols: Sequence[str]) -> dict[str
     return mapping
 
 
-def _candidate_maps(gold_cols: Sequence[str], served_cols: Sequence[str]) -> list[dict[str, str]]:
-    """Exact name, then case-insensitive, then permutation of what is left.
+def _column_values(rows: Sequence[Mapping[str, Any]], col: str) -> list[Any]:
+    return [row.get(col) for row in rows]
 
-    A locked column is not reassigned. ponytail: permutations of the unmatched
-    tail only. Ceiling is a handful of curated columns; upgrade is assignment
-    if a result grows wide.
+
+def _column_compatible(
+    gold_vals: Sequence[Any],
+    served_vals: Sequence[Any],
+) -> bool:
+    """Value signature: one gold cell matches one served cell, duplicates kept."""
+    if len(gold_vals) != len(served_vals):
+        return False
+    used = [False] * len(served_vals)
+    for gold in gold_vals:
+        found = False
+        for index, served in enumerate(served_vals):
+            if used[index]:
+                continue
+            if cells_equal(gold, served):
+                used[index] = True
+                found = True
+                break
+        if not found:
+            return False
+    return True
+
+
+def _candidate_maps(
+    gold_cols: Sequence[str],
+    served_cols: Sequence[str],
+    gold: Sequence[Mapping[str, Any]],
+    served: Sequence[Mapping[str, Any]],
+) -> list[dict[str, str]]:
+    """Exact name, then case-insensitive, then a capped signature assignment.
+
+    A locked column is not reassigned. Unmatched columns permute only among
+    served columns whose values are compatible. The product of those candidate
+    counts is the cap. Over the cap this raises ``_Unmappable``.
     """
     if len(served_cols) < len(gold_cols):
         return []
@@ -201,11 +247,40 @@ def _candidate_maps(gold_cols: Sequence[str], served_cols: Sequence[str]) -> lis
     pool = [name for name in served_cols if name in unused]
     if len(pool) < len(still):
         return []
+    gold_vals = {col: _column_values(gold, col) for col in still}
+    served_vals = {col: _column_values(served, col) for col in pool}
+    candidates: dict[str, list[str]] = {}
+    upper = 1
+    for col in still:
+        hits = [
+            name
+            for name in pool
+            if _column_compatible(gold_vals[col], served_vals[name])
+        ]
+        if not hits:
+            return []
+        candidates[col] = hits
+        upper *= len(hits)
+        if upper > MAP_CAP:
+            raise _Unmappable
     maps: list[dict[str, str]] = []
-    for perm in permutations(pool, len(still)):
-        mapping = dict(locked)
-        mapping.update(zip(still, perm, strict=True))
-        maps.append(mapping)
+    used = set(locked.values())
+
+    def walk(index: int, current: dict[str, str]) -> None:
+        if index == len(still):
+            maps.append(dict(current))
+            return
+        col = still[index]
+        for name in candidates[col]:
+            if name in used:
+                continue
+            used.add(name)
+            current[col] = name
+            walk(index + 1, current)
+            del current[col]
+            used.remove(name)
+
+    walk(0, dict(locked))
     return maps
 
 
@@ -260,7 +335,10 @@ def compare_rows(
         return BUCKET_CORRECT, "match"
     gold_cols = list(gold[0].keys())
     served_cols = list(served[0].keys())
-    maps = _candidate_maps(gold_cols, served_cols)
+    try:
+        maps = _candidate_maps(gold_cols, served_cols, gold, served)
+    except _Unmappable:
+        return BUCKET_WRONG, "unmappable"
     if not maps:
         return BUCKET_WRONG, "no column mapping"
     named = _name_lock(gold_cols, served_cols) is not None
@@ -331,14 +409,20 @@ def grade_case(
         "as_of": as_of,
     }
     if gold is None:
+        served_n = len(served_rows)
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_EMPTY, "reason": "abstain"}
-        if len(served_rows) == 0:
-            return {**base, "bucket": BUCKET_CORRECT, "reason": "match"}
+            return {
+                **base,
+                "bucket": BUCKET_EMPTY,
+                "reason": "abstain",
+                "served_n": served_n,
+            }
+        unit = "row" if served_n == 1 else "rows"
         return {
             **base,
-            "bucket": BUCKET_WRONG,
-            "reason": f"rowcount {len(served_rows)} vs 0",
+            "bucket": BUCKET_EMPTY,
+            "reason": f"served with {served_n} {unit}",
+            "served_n": served_n,
         }
     if _is_abstain(env):
         return {**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"}
@@ -388,9 +472,15 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def served_rows_for(con: Any, env: Mapping[str, Any], as_of: str) -> list[dict[str, Any]]:
-    """Rows of ``sql_used`` on this connection. Abstain keeps envelope rows."""
-    if _is_abstain(env):
+def served_rows_for(
+    con: Any,
+    env: Mapping[str, Any],
+    as_of: str,
+    *,
+    mode: str,
+) -> list[dict[str, Any]]:
+    """Replay re-executes ``sql_used``. An executing stub already ran it."""
+    if mode == "executing-stub" or _is_abstain(env):
         return _rows_of(env.get("rows"))
     sql = env.get("sql_used")
     if isinstance(sql, str) and sql.strip():
@@ -398,48 +488,121 @@ def served_rows_for(con: Any, env: Mapping[str, Any], as_of: str) -> list[dict[s
     return _rows_of(env.get("rows"))
 
 
-def grade_envelopes(envelopes: Sequence[Mapping[str, Any]], *, warehouse_dir: Path | None = None) -> dict[str, Any]:
+def _sql_same(left: str, right: str) -> bool:
+    from sqlglot import parse_one
+
+    try:
+        a = parse_one(left, read="duckdb").sql(dialect="duckdb")
+        b = parse_one(right, read="duckdb").sql(dialect="duckdb")
+    except Exception:
+        return False
+    return a == b
+
+
+def pack_gold_served_ids(
+    questions: Sequence[Mapping[str, Any]],
+    oracles: Mapping[str, Any],
+) -> list[str]:
+    """Score-pack exact ids, plus an ops mirror that serves the same gold SQL.
+
+    The mirror is the ``ops_`` rename of a ``cq_`` id. Synonym ids stay out.
+    """
+    from dms_executor.demo_pack import SCORE_PACK_EXACT_IDS
+
+    known = {str(item["id"]) for item in questions}
+    found: set[str] = set()
+    for qid in SCORE_PACK_EXACT_IDS:
+        if qid not in known:
+            continue
+        found.add(qid)
+        if not qid.startswith("cq_"):
+            continue
+        mirror = "ops_" + qid[len("cq_") :]
+        if mirror not in known:
+            continue
+        left = _certified_sql(oracles.get(qid) if isinstance(oracles, Mapping) else None)
+        right = _certified_sql(oracles.get(mirror) if isinstance(oracles, Mapping) else None)
+        if left and right and _sql_same(left, right):
+            found.add(mirror)
+    return sorted(found)
+
+
+def tally(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Correct, wrong, and abstain count non-empty gold only."""
+    correct = wrong = abstain = empty = abstained = 0
+    served: dict[str, int] = {}
+    for item in cases:
+        bucket = item["bucket"]
+        if bucket == BUCKET_CORRECT:
+            correct += 1
+        elif bucket == BUCKET_WRONG:
+            wrong += 1
+        elif bucket == BUCKET_ABSTAIN:
+            abstain += 1
+        elif bucket == BUCKET_EMPTY:
+            empty += 1
+            if item.get("reason") == "abstain":
+                abstained += 1
+            else:
+                key = str(item.get("served_n", 0))
+                served[key] = served.get(key, 0) + 1
+        else:
+            raise SystemExit(f"unknown bucket {bucket}")
+    return {
+        "correct": correct,
+        "wrong": wrong,
+        "abstain": abstain,
+        "empty_gold": empty,
+        "empty_gold_abstained": abstained,
+        "empty_gold_served": served,
+        "graded": correct + wrong + abstain,
+    }
+
+
+def grade_envelopes(
+    envelopes: Sequence[Mapping[str, Any]],
+    *,
+    mode: str,
+    warehouse_dir: Path | None = None,
+) -> dict[str, Any]:
     """Grade pack order against certified oracles. ``envelopes`` are ``{id, env}``."""
+    if mode not in MODES:
+        raise SystemExit("grade52: --mode is required: " + ", ".join(MODES))
     _bootstrap()
     pack = _load_yaml(PACK_PATH)
-    oracles = _load_yaml(ORACLE_PATH).get("oracles") or {}
+    oracle_doc = _load_yaml(ORACLE_PATH).get("oracles") or {}
+    oracles = oracle_doc if isinstance(oracle_doc, dict) else {}
     questions = list(pack["questions"])
     if len(questions) != 52:
         raise SystemExit(f"pack size {len(questions)} != 52")
+    flagged = set(pack_gold_served_ids(questions, oracles))
     by_id = {str(item.get("id")): item.get("env") for item in envelopes}
     folder = warehouse_dir or Path(tempfile.mkdtemp(prefix="grade52-"))
     con, as_of, _path = _open_warehouse(folder)
     cases: list[dict[str, Any]] = []
-    certified = 0
     try:
         for question in questions:
             qid = str(question["id"])
             env = by_id.get(qid)
             if not isinstance(env, Mapping):
                 raise SystemExit(f"missing envelope for {qid}")
-            sql = _certified_sql(oracles.get(qid) if isinstance(oracles, dict) else None)
+            sql = _certified_sql(oracles.get(qid))
             if sql is None:
                 gold: list[dict[str, Any]] | None = None
             else:
                 gold = _execute(con, sql, as_of)
-                certified += 1
-            served = served_rows_for(con, env, as_of)
+            served = served_rows_for(con, env, as_of, mode=mode)
             row = grade_case(gold=gold, gold_sql=sql, env=env, served_rows=served, as_of=as_of)
             row["id"] = qid
+            row["pack_gold_served"] = qid in flagged
             cases.append(row)
     finally:
         con.close()
-    counts = {
-        "correct": sum(1 for item in cases if item["bucket"] == BUCKET_CORRECT),
-        "wrong": sum(1 for item in cases if item["bucket"] == BUCKET_WRONG),
-        "abstain": sum(1 for item in cases if item["bucket"] == BUCKET_ABSTAIN),
-        "empty_gold": sum(1 for item in cases if item["bucket"] == BUCKET_EMPTY),
-    }
-    graded = certified
+    counts = tally(cases)
     return {
         "as_of": as_of,
         "n": len(cases),
-        "graded": graded,
+        "pack_gold_served_ids": sorted(flagged),
         **counts,
         "cases": cases,
     }
@@ -454,6 +617,7 @@ def _artifact_dir() -> Path:
 
 def write_report(report: dict[str, Any]) -> Path:
     """Write the run artifact. Caller prints the path. No SQL, no question text."""
+    _require_label(report)
     dest = _artifact_dir() / "grade52.json"
     slim_cases = []
     for item in report["cases"]:
@@ -466,9 +630,16 @@ def write_report(report: dict[str, Any]) -> Path:
                 "badge": item["badge"],
                 "abstain_code": item["abstain_code"],
                 "as_of": item["as_of"],
+                "pack_gold_served": bool(item.get("pack_gold_served")),
+                "served_n": item.get("served_n"),
             }
         )
+    without = report["without_pack_gold_served"]
     body = {
+        "mode": report["mode"],
+        "dms_sha": report["dms_sha"],
+        "pack_gold_served": report["pack_gold_served"],
+        "pack_gold_served_ids": report["pack_gold_served_ids"],
         "as_of": report["as_of"],
         "n": report["n"],
         "graded": report["graded"],
@@ -476,29 +647,94 @@ def write_report(report: dict[str, Any]) -> Path:
         "wrong": report["wrong"],
         "abstain": report["abstain"],
         "empty_gold": report["empty_gold"],
+        "empty_gold_abstained": report["empty_gold_abstained"],
+        "empty_gold_served": report["empty_gold_served"],
+        "without_pack_gold_served": without,
         "cases": slim_cases,
     }
     dest.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return dest
 
 
+def _served_label(served: Mapping[str, int]) -> str:
+    if not served:
+        return "none"
+    parts = [f"{key}:{served[key]}" for key in sorted(served, key=int)]
+    return ",".join(parts)
+
+
+def _require_label(report: Mapping[str, Any]) -> None:
+    mode = report.get("mode")
+    sha = report.get("dms_sha")
+    flag = report.get("pack_gold_served")
+    if mode not in MODES or not isinstance(sha, str) or len(sha) < 40 or flag not in {
+        "included",
+        "excluded",
+    }:
+        raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
+
+
 def summary_line(report: Mapping[str, Any]) -> str:
+    """One score line. Refuses a line that could be quoted without its mode."""
+    _require_label(report)
     return (
-        f"52: correct={report['correct']} wrong={report['wrong']} "
+        f"mode={report['mode']} sha={report['dms_sha']} "
+        f"pack_gold_served={report['pack_gold_served']} "
+        f"{report['n']}: correct={report['correct']} wrong={report['wrong']} "
         f"abstain={report['abstain']} empty_gold={report['empty_gold']} "
+        f"empty_gold_abstained={report['empty_gold_abstained']} "
+        f"empty_gold_served={_served_label(report['empty_gold_served'])} "
         f"graded={report['graded']} as_of={report['as_of']}"
     )
 
 
-def replay_flag_off() -> list[dict[str, Any]]:
-    """Flag-off product ask path. No model key. Not the one-SQL canned stub."""
+def _scrub_credentials() -> None:
+    """Drop credential-shaped and model-shaped env names. No vendor list."""
+    for name in list(os.environ):
+        upper = name.upper()
+        if (
+            upper == "MODEL"
+            or upper.startswith("MODEL_")
+            or upper.endswith("_MODEL")
+            or "_MODEL_" in upper
+            or any(upper.endswith(suffix) for suffix in _CREDENTIAL_SUFFIXES)
+        ):
+            os.environ.pop(name, None)
+
+
+def _prepare_flag_off() -> None:
     _bootstrap()
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
-    for name in list(os.environ):
-        if name.startswith(("OPENAI", "ANTHROPIC", "AZURE_OPENAI", "MODEL_")):
-            os.environ.pop(name, None)
+    _scrub_credentials()
+
+
+def _dms_sha() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit("grade52: dms sha unavailable") from exc
+    sha = out.strip()
+    if len(sha) < 40:
+        raise SystemExit("grade52: dms sha unavailable")
+    return sha
+
+
+def _require_mode(mode: str | None) -> str:
+    if mode not in MODES:
+        raise SystemExit("grade52: --mode is required: " + ", ".join(MODES))
+    return str(mode)
+
+
+def replay_flag_off() -> list[dict[str, Any]]:
+    """Captured flag-off envelopes. Submit does not execute SQL."""
+    _prepare_flag_off()
     from tests.fixtures.ask_guide.capture_flag_off_52 import replay_pack
 
     rows = replay_pack()
@@ -507,10 +743,171 @@ def replay_flag_off() -> list[dict[str, Any]]:
     return rows
 
 
-def grade_main() -> dict[str, Any]:
-    report = grade_envelopes(replay_flag_off())
+def replay_executing() -> list[dict[str, Any]]:
+    """Same capture, but submit executes the SQL it is given."""
+    _prepare_flag_off()
+    from cortex_client.models import (
+        AskRequest,
+        AskResponse,
+        LedgerAppendRequest,
+        LedgerAppendResponse,
+    )
+    from cortex_contract.execution import Manifest, QueryResult
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
+    from dms_executor.manifest import ManifestMinter
+    from fastapi.testclient import TestClient
+    from tests.fixtures.ask_guide.capture_flag_off_52 import (
+        SESSION_ID,
+        load_responses,
+    )
+
+    recorded = load_responses()
+    by_id = recorded["by_id"]
+    bind = recorded["session_bind"]
+    pack = _load_yaml(PACK_PATH)
+    questions = list(pack["questions"])
+    spaces = dict(pack["spaces"])
+    db = Path(tempfile.mkdtemp(prefix="grade52-exec-")) / "warehouse.duckdb"
+    ensure_demo_warehouse(db)
+
+    class _Stub:
+        def __init__(self) -> None:
+            self.current = ""
+
+        def _row(self) -> dict[str, Any]:
+            return by_id[self.current]
+
+        def submit(self, req: Any) -> QueryResult:
+            plan = getattr(req, "plan", None)
+            kind = plan.get("kind") if isinstance(plan, dict) else None
+            if kind == "session_bind":
+                return QueryResult(
+                    ok=bool(bind["ok"]),
+                    status=str(bind["status"]),
+                    run_id=str(bind["run_id"]),
+                )
+            body = getattr(req, "body", None)
+            sql = str(body.get("sql") or "") if isinstance(body, dict) else ""
+            con = connect_file(db)
+            try:
+                cur = con.execute(sql)
+                cols = [str(item[0]) for item in (cur.description or [])]
+                rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+            finally:
+                con.close()
+            return QueryResult(ok=True, status="ok", run_id="run_exec", output={"rows": rows})
+
+        def ask(self, req: AskRequest) -> AskResponse:
+            body = self._row()["ask"]
+            _ = req
+            return AskResponse(
+                answer=str(body["answer"]),
+                badge=str(body["badge"]),
+                sql_used=str(body["sql_used"]),
+                rows=list(body["rows"]),
+                assumptions=body["assumptions"],
+                audit_id=str(body["audit_id"]),
+                route=str(body["route"]),
+            )
+
+        def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+            _ = req
+            body = self._row()["ledger"]
+            return LedgerAppendResponse(
+                entry_id=str(body["entry_id"]),
+                hash=str(body["hash"]),
+            )
+
+        def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+            _ = question
+            return dict(self._row()["insights"])
+
+    minter = ManifestMinter(openvault_url="http://127.0.0.1:9")
+
+    def _mint(acl: Any) -> Manifest:
+        return Manifest(
+            session_id=acl.session_id,
+            org_id=acl.org_id,
+            space_id=acl.space_id,
+            pool_id=acl.pool_id,
+            issuer_key_id="test-kid",
+            allowed_paths=list(acl.allowed_paths),
+            row_predicates=dict(acl.row_predicates),
+            issued_at="2026-07-30T00:00:00+00:00",
+            expires_at="2026-07-30T01:00:00+00:00",
+            signature="dGVzdHNpZw",
+        )
+
+    minter.mint_manifest = _mint  # type: ignore[method-assign]
+    minter.fetch_intermediate = lambda: None  # type: ignore[method-assign]
+    minter.close = lambda: None  # type: ignore[method-assign]
+    minter.invalidate = lambda *_a, **_k: None  # type: ignore[method-assign]
+    cortex = _Stub()
+    app = create_app()
+    app.state.ask_service = Executor(cortex=cortex, minter=minter, warehouse_path=db)  # type: ignore[arg-type]
+    app.state.cortex = cortex
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = TestClient(app)
+    rows: list[dict[str, Any]] = []
+    for question in questions:
+        cortex.current = str(question["id"])
+        res = client.post(
+            "/v1/chat/ask",
+            json={
+                "question": question["question"],
+                "space_id": spaces[str(question["space"])],
+                "session_id": SESSION_ID,
+            },
+        )
+        if res.status_code != 200:
+            raise SystemExit(f"{question['id']} HTTP {res.status_code}")
+        body = res.json()
+        if not isinstance(body, dict):
+            raise SystemExit(f"{question['id']} envelope is not an object")
+        rows.append({"id": question["id"], "env": body})
+    if len(rows) != 52:
+        raise SystemExit(f"replay size {len(rows)} != 52")
+    return rows
+
+
+def _labelled(report: dict[str, Any], *, mode: str, included: str) -> dict[str, Any]:
+    report["mode"] = mode
+    report["dms_sha"] = _dms_sha()
+    report["pack_gold_served"] = included
+    return report
+
+
+def grade_main(mode: str | None) -> dict[str, Any]:
+    chosen = _require_mode(mode)
+    if chosen == "live-model":
+        raise SystemExit("grade52: live-model refuses a captured replay")
+    envelopes = replay_executing() if chosen == "executing-stub" else replay_flag_off()
+    report = grade_envelopes(envelopes, mode=chosen)
+    _labelled(report, mode=chosen, included="included")
+    rest = [item for item in report["cases"] if not item.get("pack_gold_served")]
+    without = tally(rest)
+    without.update(
+        {
+            "n": len(rest),
+            "as_of": report["as_of"],
+            "mode": chosen,
+            "dms_sha": report["dms_sha"],
+            "pack_gold_served": "excluded",
+            "pack_gold_served_ids": report["pack_gold_served_ids"],
+        }
+    )
+    report["without_pack_gold_served"] = without
     path = write_report(report)
     print(summary_line(report))
+    print(summary_line(without))
     print(f"artifact: {path}")
     return report
 
@@ -604,11 +1001,81 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: case-insensitive column name missed")
     if named_mismatch[0] != BUCKET_WRONG or named_mismatch[1] != "row mismatch":
         raise SystemExit("self-test: exact names were permuted")
+
+    empty_served = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "L0_CERTIFIED", "route": "sql", "abstained": False},
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+    )
+    empty_abstain = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "ABSTAIN", "route": "abstain", "abstained": True},
+        served_rows=[],
+        as_of="2026-10-09",
+    )
+    empty_zero = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "L1_GOVERNED_METRIC", "route": "governed_metric", "abstained": False},
+        served_rows=[],
+        as_of="2026-10-09",
+    )
+    if empty_served["bucket"] != BUCKET_EMPTY or empty_served["reason"] != "served with 1 row":
+        raise SystemExit("self-test: served empty-gold folded out of its bucket")
+    if empty_abstain["bucket"] != BUCKET_EMPTY or empty_abstain["reason"] != "abstain":
+        raise SystemExit("self-test: abstained empty-gold left its bucket")
+    if empty_zero["bucket"] != BUCKET_EMPTY:
+        raise SystemExit("self-test: zero-row empty-gold became a graded answer")
+    counts = tally([empty_served, empty_abstain, empty_zero])
+    if counts["wrong"] or counts["correct"] or counts["graded"]:
+        raise SystemExit("self-test: empty-gold counted inside graded")
+    if counts["empty_gold"] != 3 or counts["empty_gold_abstained"] != 1:
+        raise SystemExit("self-test: empty-gold sub-counts drifted")
+    if counts["empty_gold_served"] != {"0": 1, "1": 1}:
+        raise SystemExit(f"self-test: served sub-count {counts['empty_gold_served']}")
+
+    try:
+        summary_line({"n": 52, "correct": 0, "wrong": 0, "abstain": 0})
+    except SystemExit as exc:
+        if "mode" not in str(exc):
+            raise
+    else:
+        raise SystemExit("self-test: unlabelled summary was accepted")
+    try:
+        code = main(["--main"])
+    except SystemExit as exc:
+        if exc.code in (0, None):
+            raise SystemExit("self-test: missing mode returned success") from exc
+    else:
+        if code == 0:
+            raise SystemExit("self-test: missing mode returned success")
+
+    gold_wide = [{f"g{i}": i for i in range(8)}]
+    served_unique = [{**{f"s{i}": i for i in range(8)}, **{f"x{i}": 100 + i for i in range(12)}}]
+    served_named = [{**{f"g{i}": i for i in range(8)}, **{f"x{i}": 100 + i for i in range(12)}}]
+    served_ambiguous = [{f"s{i}": 1 for i in range(20)}]
+    gold_ambiguous = [{f"g{i}": 1 for i in range(8)}]
+    started = time.monotonic()
+    wide_unique = compare_rows(gold_wide, served_unique, ordered=False)
+    wide_named = compare_rows(gold_wide, served_named, ordered=False)
+    wide_ambiguous = compare_rows(gold_ambiguous, served_ambiguous, ordered=False)
+    elapsed = time.monotonic() - started
+    if elapsed > 0.5:
+        raise SystemExit(f"self-test: 20-wide map took {elapsed:.3f}s")
+    if wide_unique[0] != BUCKET_CORRECT or wide_named[0] != BUCKET_CORRECT:
+        raise SystemExit("self-test: signature-narrowed wide answer was rejected")
+    if wide_ambiguous[1] != "unmappable":
+        raise SystemExit(f"self-test: wide ambiguous map did not cap ({wide_ambiguous})")
+
     print("self-test ok")
     print(
         "plants: renamed_column=CORRECT dropped_row=WRONG "
         "swapped_order=WRONG ordered_shuffle=WRONG unordered_shuffle=CORRECT "
-        "extra_column=CORRECT duplicated_row=WRONG"
+        "extra_column=CORRECT duplicated_row=WRONG "
+        "empty_gold_served=EMPTY_GOLD unlabelled=refused wide_ambiguous=unmappable"
     )
     return plants
 
@@ -617,17 +1084,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--main", action="store_true")
+    parser.add_argument("--mode", choices=MODES)
     args = parser.parse_args(argv)
-    run_self = args.self_test or not args.main
-    run_main = args.main or not args.self_test
-    if args.self_test and not args.main:
-        run_main = False
-    if args.main and not args.self_test:
-        run_self = False
+    run_main = args.main
+    run_self = args.self_test or not run_main
     if run_self:
         self_test()
     if run_main:
-        grade_main()
+        grade_main(args.mode)
     return 0
 
 
