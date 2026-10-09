@@ -135,10 +135,13 @@ class CortexClient:
         if parsed is None:
             raise RuntimeError("ledger_append: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {}
+        raw_seq = data.get("seq")
+        seq = raw_seq if isinstance(raw_seq, int) and not isinstance(raw_seq, bool) else None
         return LedgerAppendResponse.model_validate(
             {
                 "entry_id": data.get("id") or data.get("entry_id") or "",
                 "hash": data.get("hash") or data.get("entry_hash") or "",
+                "seq": seq,
             }
         )
 
@@ -148,11 +151,26 @@ class CortexClient:
         if parsed is None:
             raise RuntimeError("verify_ledger: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {}
+        # Contract 1.2.0 ChainVerification is {ok, broken_at}: no entry count. A count
+        # is read only when Cortex sends one, and its absence stays None ("unknown"),
+        # never 0: an engine that reports nothing has not said it checked nothing.
+        broken = data.get("first_break")
+        if broken is None:
+            broken = data.get("broken_at", data.get("break_at"))
+        count = data.get("checked", data.get("entries_checked"))
+        if not isinstance(count, int) or isinstance(count, bool):
+            count = None
+        # ``ok`` must be a real boolean. A 422 body, an error object or {"ok": "yes"} is
+        # not a verification result: it must not read as a break (it is not one) or as a
+        # pass. The caller reports "unavailable" for a raise.
+        ok = data.get("ok", data.get("valid"))
+        if not isinstance(ok, bool):
+            raise RuntimeError("verify_ledger: not a ChainVerification result")
         return LedgerVerifyResponse.model_validate(
             {
-                "ok": bool(data.get("ok", data.get("valid", False))),
-                "first_break": data.get("first_break") or data.get("break_at"),
-                "checked": data.get("checked") or data.get("entries_checked"),
+                "ok": ok,
+                "first_break": None if broken is None else str(broken),
+                "checked": count,
             }
         )
 

@@ -15,6 +15,7 @@ from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
+from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
 
@@ -1627,6 +1628,9 @@ def build_answer_envelope(
         from dms_executor.sql_currency import served_column_sources
 
         column_sources = served_column_sources(str(sql_used), schema=column_schema)
+    # BANK-02: a path that ran its SQL locally recorded nothing in the audit trace; take
+    # the statement now, before it is masked, so the audit scrub sees the real text.
+    executed_trace.record_unmasked(str(sql_used) if sql_used else None, len(rows_out or []))
     masked = fail_closed_mask_payload(
         text=text or "",
         rows=rows_out,

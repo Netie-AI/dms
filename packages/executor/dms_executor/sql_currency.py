@@ -9,6 +9,8 @@ passes the connection schema. No schema, a schema qualify cannot use,
 or a column that is still untraced: that column stays masked.
 This module does not load a schema and does not read DEMO_TABLES.
 No FX conversion. Mismatch or unresolved currency is ABSTAIN.
+``tables_read`` (BANK-02 / dms#269) also lives here so the parser keeps one swap
+point: it names the tables an executed statement reads, for the audit export.
 """
 
 from __future__ import annotations
@@ -19,10 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 from sqlglot import exp, parse_one
 from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
-from sqlglot.optimizer.scope import Scope, build_scope
+from sqlglot.optimizer.scope import Scope, build_scope, traverse_scope
 
 from dms_executor.demo_warehouse import connect_file
 
@@ -1086,6 +1089,93 @@ def dropped_conjuncts(
     return frozenset(prev - cur)
 
 
+#: ``tables_read`` parses at most this many characters. Beyond it, and on a parse failure,
+#: it scans for names instead. 20,000 characters is a long hand-written or generated
+#: statement; a CTE chain or UNION of that size parses in about a tenth of a second.
+TABLES_PARSE_CAP = 20_000
+#: The scan reads no more than this, and reports no more than ``_MAX_SCANNED_TABLES`` names.
+_SCAN_CAP = 1_000_000
+_MAX_SCANNED_TABLES = 500
+#: Bounded name scan: the identifier after FROM / JOIN / INTO / UPDATE / TABLE. Linear: every
+#: repeat is bounded or possessive.
+_TABLE_SCAN = re.compile(
+    r"(?i)\b(?:from|join|into|update|table)\s{1,16}+(?:only\s{1,16}+)?"
+    r'(?P<n>"[^"\n]{1,128}+"|`[^`\n]{1,128}+`|[A-Za-z_][\w.$]{0,255}+)'
+)
+_NOT_A_TABLE = frozenset({"select", "lateral", "values", "unnest", "table", "only"})
+
+
+def _scan_tables(text: str) -> tuple[str, ...]:
+    """Table names after FROM / JOIN / INTO / UPDATE / TABLE, with no parse. Bounded."""
+    names: dict[str, str] = {}
+    for m in _TABLE_SCAN.finditer(text[:_SCAN_CAP]):
+        name = m.group("n").strip('"`')
+        if name and name.casefold() not in _NOT_A_TABLE:
+            names.setdefault(name.casefold(), name)
+            if len(names) >= _MAX_SCANNED_TABLES:
+                break
+    return tuple(sorted(names.values(), key=str.casefold))
+
+
+def _table_label(node: exp.Table) -> str:
+    """``catalog.db.name`` as written; a table function is ``read_csv()``.
+
+    The function name only. Its arguments (a file path) are in the executed SQL
+    column already and are not a table name.
+    """
+    if isinstance(node.this, exp.Func):
+        return f"{str(node.this.sql_name()).lower()}()"
+    return ".".join(p for p in (node.catalog, node.db, node.name) if p)
+
+
+def tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
+    """``(tables, approximate)``: the tables an executed statement reads, sorted.
+
+    A name is a CTE reference only where sqlglot's scope resolves it to a CTE (or
+    derived table) of an enclosing query. That is scope, not spelling:
+    ``WITH sales AS (SELECT * FROM sales) SELECT * FROM sales`` reads the base
+    table ``sales`` inside the CTE's own body and the CTE outside it, so
+    ``sales`` is reported. Excluding by name dropped it, and an audit row that
+    says "read nothing" for a query that read something is a false record.
+
+    Never parses unbounded input. sqlglot is pure Python and its cost grows faster
+    than the statement (a 400,000 character CTE chain took ten seconds), and the audit
+    record is written on the request path. A statement longer than ``TABLES_PARSE_CAP``,
+    or one sqlglot cannot parse or scope, gets the bounded identifier scan instead
+    (``_scan_tables``): looser (a CTE name, or "from x" inside a string literal, would
+    count) but never empty for SQL that plainly names a table, and ``approximate`` is
+    True so the audit row says so. A comment-only statement, such as the
+    document-retrieval stub, reads none.
+    """
+    text = (sql or "").strip()
+    if not text:
+        return (), False
+    if len(text) > TABLES_PARSE_CAP:
+        return _scan_tables(text), True
+    try:
+        trees = [t for t in sqlglot.parse(text, dialect=_DIALECT) if t is not None]
+        seen: dict[str, str] = {}
+        for tree in trees:
+            for scope in traverse_scope(tree):
+                for node in scope.tables:
+                    # Only an unqualified name can be a CTE: ``main.t`` is the base
+                    # table even when a CTE called ``t`` is in scope.
+                    unqualified = not node.db and not node.catalog
+                    if unqualified and isinstance(scope.sources.get(node.alias_or_name), Scope):
+                        continue  # a CTE or derived table of an enclosing query
+                    label = _table_label(node)
+                    if label:
+                        seen.setdefault(label.casefold(), label)
+    except Exception:  # noqa: BLE001 - any parser or scope failure takes the scan
+        return _scan_tables(text), True
+    return tuple(sorted(seen.values(), key=str.casefold)), False
+
+
+def tables_read(sql: str | None) -> tuple[str, ...]:
+    """The tables an executed statement reads (see ``tables_read_checked``)."""
+    return tables_read_checked(sql)[0]
+
+
 __all__ = [
     "SourceColumn",
     "asked_currencies",
@@ -1098,5 +1188,7 @@ __all__ = [
     "normalize_sql",
     "served_column_sources",
     "sql_byte_equal",
+    "tables_read",
+    "tables_read_checked",
     "top_level_conjuncts",
 ]
