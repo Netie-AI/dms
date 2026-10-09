@@ -388,6 +388,21 @@ def _can_retry(*, retries: int, used: int, cap: int) -> bool:
     return retries < MAX_SQL_RETRIES and used < cap
 
 
+def _explain_code(why: str) -> str | None:
+    """``explain:BinderException`` with the engine sentence removed.
+
+    None when this checker reason is not an explain failure. The sentence
+    stays in the model prompt only.
+    """
+    if not why.startswith("explain:"):
+        return None
+    bits = why.split(":", 2)
+    name = bits[1].strip() if len(bits) > 1 else ""
+    if name.isidentifier():
+        return f"explain:{name}"
+    return "explain"
+
+
 class CompileDefer(Exception):
     """The model loop stopped. The caller compiles before it abstains."""
 
@@ -579,6 +594,8 @@ def run_model_loop(
     """
     cap = insights_call_cap()
     retries = 0
+    # One execute or explain failure may ask the model again. The next one compiles.
+    error_fed = 0
     used = recorded_model_calls()
     if used <= 0:
         used = 1
@@ -648,8 +665,15 @@ def run_model_loop(
 
         why = check(sql)
         if why:
-            safe_why = mask_feedback_text(why)
-            outcome = f"checker:{safe_why}"
+            explain_code = _explain_code(why)
+            if explain_code:
+                # The engine sentence is for the model prompt, not the envelope.
+                outcome = f"checker:{explain_code}"
+                model_reason = f"checker:{why}"
+            else:
+                safe_why = mask_feedback_text(why)
+                outcome = f"checker:{safe_why}"
+                model_reason = outcome
             attempts.append(
                 loop_entry(
                     prompt=prompt,
@@ -662,15 +686,28 @@ def run_model_loop(
             if why in no_retry_reasons or _no_model_retry(why, no_retry_reasons):
                 head = why if why in no_retry_reasons else outcome
                 return abstain(head, attempts, sql=sql, retries=retries)
-            if not _can_retry(retries=retries, used=used, cap=cap):
+            fed_done = explain_code is not None and error_fed >= 1
+            if fed_done or not _can_retry(retries=retries, used=used, cap=cap):
                 raise CompileDefer(f"loop_exhausted:{outcome}")
+            if explain_code is not None:
+                error_fed += 1
             protected_sql = sql
             retries += 1
             used += 1
             prev_sql = sql
             reason = outcome
             current = _call(
-                compute, ctx, prompt, reason, sql, attempts=attempts, dialect=dialect
+                compute,
+                ctx,
+                prompt,
+                reason,
+                sql,
+                attempts=attempts,
+                dialect=dialect,
+                model_reason=model_reason,
+                model_prompt=feedback_prompt(
+                    question, previous_sql=sql, reason=model_reason
+                ),
             )
             continue
 
@@ -685,22 +722,35 @@ def run_model_loop(
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
         if exec_err:
+            # Raw engine text goes to the model prompt only.
             safe_err = mask_feedback_text(exec_err)
-            outcome = f"db_error:{safe_err}"
+            outcome = "db_error"
+            model_reason = f"db_error:{safe_err}" if safe_err else outcome
             attempts.append(
                 loop_entry(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
             protected_sql = sql
-            if not _can_retry(retries=retries, used=used, cap=cap):
+            if error_fed >= 1 or not _can_retry(retries=retries, used=used, cap=cap):
                 raise CompileDefer(f"loop_exhausted:{outcome}")
+            error_fed += 1
             retries += 1
             used += 1
             prev_sql = sql
             reason = outcome
             current = _call(
-                compute, ctx, prompt, reason, sql, attempts=attempts, dialect=dialect
+                compute,
+                ctx,
+                prompt,
+                reason,
+                sql,
+                attempts=attempts,
+                dialect=dialect,
+                model_reason=model_reason,
+                model_prompt=feedback_prompt(
+                    question, previous_sql=sql, reason=model_reason
+                ),
             )
             continue
 
@@ -746,11 +796,16 @@ def _call(
     *,
     attempts: list[dict[str, Any]] | None = None,
     dialect: str = "",
+    model_reason: str | None = None,
+    model_prompt: str | None = None,
 ) -> dict[str, Any] | None:
+    # ``model_prompt`` is what the model reads. The stored attempt keeps ``prompt``.
+    fed_reason = model_reason if model_reason is not None else reason
+    fed_prompt = model_prompt if model_prompt is not None else prompt
     feedback = {
         "previous_sql": mask_feedback_text(previous_sql or ""),
-        "reason": mask_feedback_text(reason),
-        "prompt": prompt,
+        "reason": mask_feedback_text(fed_reason),
+        "prompt": fed_prompt,
     }
     nxt = dict(ctx)
     nxt["sql_loop_feedback"] = feedback

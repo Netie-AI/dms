@@ -187,7 +187,7 @@ def test_db_error_text_stays_out_of_the_ticket(
     assert ticket["ask_id"] == env["audit_id"]
     _no_prose(ticket, marker)
     assert marker not in caplog.text
-    assert marker in json.dumps(env.get("loop"))
+    # The statement literal is stored. The engine sentence is not.
 
 
 def test_flag_off_writes_no_ticket(

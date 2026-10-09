@@ -283,3 +283,96 @@ def test_compile_provenance_names_the_ranking_step(
             _COLD_Q, session_id="ses_keep", ask_path="generative"
         )
         _assert_compile(env)
+        assert "served_model" not in env
+        if cloop:
+            assert env.get("model_calls") == 2
+            assert env.get("loop")
+            assert all(item.get("model_calls") == 1 for item in env["loop"])
+        else:
+            assert env.get("model_calls") == 0
+
+
+_GOOD_SQL = "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
+_BINDER_SQL = "SELECT nope_col FROM inventory"
+_FAN_SQL = (
+    "SELECT f.sku AS sku FROM inventory f "
+    "JOIN (SELECT sku FROM inventory UNION ALL SELECT sku FROM inventory) p "
+    "ON f.sku = p.sku"
+)
+
+
+class _BinderThenServe(_Cortex):
+    """First call is a binder failure. The retry returns SQL that executes."""
+
+    def __init__(self, db: Path) -> None:
+        super().__init__(db)
+        self.feedback: list[Any] = []
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        self.feedback.append(kwargs.get("sql_feedback"))
+        self.calls += 1
+        sql = _BINDER_SQL if self.calls == 1 else _GOOD_SQL
+        return {
+            "phase": "generate",
+            "query_sql": sql,
+            "served_model": _MODEL,
+            "served_provider": _PROVIDER,
+            "ov_key_id": "ovk-stub",
+            "ontology": {"metrics": [{"id": _RANK}]},
+            "generative": {"sql": sql, "ok": True, "stamp": {"impl": "stub"}},
+        }
+
+
+def test_binder_exception_retries_once_then_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    cortex = _BinderThenServe(db)
+    env = _executor(db, cortex).live_ask(
+        _COLD_Q, session_id="ses_keep", ask_path="generative"
+    )
+    assert cortex.calls == 2
+    fed = cortex.feedback[1] or {}
+    assert "Referenced column" in str(fed.get("prompt") or "")
+    assert env.get("badge") == "L2_VALIDATED"
+    assert "WH-C" in _rows_blob(env)
+    assert "Referenced column" not in json.dumps(env)
+    assert env.get("model_calls") == 2
+    assert all(item.get("model_calls") == 1 for item in env["loop"])
+
+
+def test_compile_lot_fanout_is_never_l2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compile that duplicates lot_of_product keys is reconfirm, never L2."""
+    from dms_executor.ontology import NO_SILENT_PAD, CompiledQuery, Coverage, Ontology
+
+    _flags(monkeypatch, cloop=True)
+
+    def _compile(self: Any, *_a: Any, **_k: Any) -> CompiledQuery:
+        return CompiledQuery(
+            sql=_FAN_SQL,
+            measure="sku_count",
+            grain="lot",
+            group_by=("sku",),
+            coverage=Coverage(
+                include=("lots",),
+                exclude=(NO_SILENT_PAD,),
+                unsure=(),
+            ),
+        )
+
+    monkeypatch.setattr(Ontology, "compile", _compile)
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    env = _executor(db, _Cortex(db)).live_ask(
+        _COLD_Q, session_id="ses_keep", ask_path="generative"
+    )
+    assert env.get("badge") != "L2_VALIDATED"
+    assert env.get("abstained") is True
+    blob = " ".join(str(item) for item in (env.get("assumptions") or []))
+    blob = f"{blob} {env.get('text') or ''}"
+    assert "fanout_subject_keys" in blob
+    assert_envelope_valid(env)

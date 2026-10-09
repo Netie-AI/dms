@@ -151,7 +151,9 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     reason = str((seen[1] or {}).get("reason") or "")
     assert reason.startswith("db_error:")
     assert "boom" in reason
-    assert env["loop"][0]["outcome"].startswith("db_error:")
+    assert "boom" in str((seen[1] or {}).get("prompt") or "")
+    assert env["loop"][0]["outcome"] == "db_error"
+    assert "boom" not in str(env.get("text") or "")
     assert env["loop"][1]["outcome"] == "served"
     assert env["served_attribution"] == "reported"
     assert env["served_model"] == _MODEL
@@ -178,7 +180,9 @@ def test_checker_flag_retry_gets_the_reason(
     reason = str((seen[1] or {}).get("reason") or "")
     assert reason.startswith("checker:")
     assert "nope" in reason
-    assert env["loop"][0]["outcome"] == reason
+    assert "nope" in str((seen[1] or {}).get("prompt") or "")
+    assert env["loop"][0]["outcome"] == "checker:explain:BinderException"
+    assert "Referenced column" not in json.dumps(env)
     assert env["loop"][1]["outcome"] == "served"
 
 
