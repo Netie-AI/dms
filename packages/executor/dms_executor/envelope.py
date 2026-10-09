@@ -1340,6 +1340,26 @@ def chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+PROVENANCE_L1_EMPTY = "L1 returned 0 rows"
+PROVENANCE_LADDER_EMPTY = "the ladder's independent SQL also returned 0 rows"
+
+
+def double_empty_provenance(assumptions: Any) -> bool:
+    """True when the envelope names both empty steps.
+
+    A 0-row L1 that the ladder also executed as 0 rows is a served empty
+    answer. Any other empty SQL still demotes.
+    """
+    if isinstance(assumptions, str):
+        items: list[Any] = [assumptions]
+    elif isinstance(assumptions, list):
+        items = assumptions
+    else:
+        return False
+    blob = "\n".join(str(a) for a in items)
+    return PROVENANCE_L1_EMPTY in blob and PROVENANCE_LADDER_EMPTY in blob
+
+
 def build_answer_envelope(
     *,
     answer_id: str,
@@ -1451,7 +1471,14 @@ def build_answer_envelope(
     # Hard rule 12 safety net — executed SQL that matches nothing must not
     # ship a confident green badge (BETA vs SKU-BETA / KL vs Kuala Lumpur).
     # COUNT(*) returning one zero-row is fine; a bare empty result set is not.
-    if not abstained and _executed_query(sql_used) and not rows_out:
+    # The one exception is a 0-row L1 whose ladder SQL also returned 0 rows:
+    # that empty answer is served, and both steps are already in assumptions.
+    if (
+        not abstained
+        and _executed_query(sql_used)
+        and not rows_out
+        and not double_empty_provenance(assumptions_list)
+    ):
         badge_out = "ABSTAIN"
         abstained = True
         text = (
@@ -1982,7 +2009,11 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
     else:
         assert uns.get("status") == "none", "E13: answered unsure.status must be none"
         assert uns.get("abstained") is False, "E13: answered unsure.abstained must be false"
-        if _executed_query(sql_used):
+        if _executed_query(sql_used) and double_empty_provenance(
+            envelope.get("assumptions")
+        ):
+            assert inc.get("row_count") == 0, "E13: double-empty serve has no include rows"
+        elif _executed_query(sql_used):
             assert inc.get("status") == "rows", "E13: SQL answer include.status must be rows"
             assert inc.get("row_count") > 0, "E13: SQL answer must carry include rows"
             extras = invented_totals(

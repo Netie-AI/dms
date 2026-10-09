@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import normalize_ask_question
@@ -158,174 +158,40 @@ _BASE_PACK_METRICS: tuple[PackMetric, ...] = (
 )
 
 
-def _score_fixture_dir() -> Path:
-    """Repo fixture that already copies Cortex certified_queries. Not a second pack.
-
-    Never read at import: the API image does not ship ``tests/``. The pack
-    holds oracle answers, so it must not become package data either.
-    """
-    return Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "curated_ceo"
-
-
 def curated_pack_present() -> bool:
-    """True when both curated_ceo fixture files are on disk.
-
-    A missing file is an empty pack, same as ``curated_l0_question_norms``.
-    It is not an error and it is not read at import. On disk is not readable:
-    ``curated_pack_status`` is the health check.
-    """
-    root = _score_fixture_dir()
-    return (root / "questions.yaml").is_file() and (root / "oracles.yaml").is_file()
+    """False. The product pack is the in-module metrics, not a file on disk."""
+    return False
 
 
-_T = TypeVar("_T")
+class _Memo:
+    """Callable with ``cache_clear``. Nothing is loaded from disk."""
 
-
-_PACK_FILES = ("questions.yaml", "oracles.yaml")
-
-_PackKey = tuple[tuple[int, int] | None, ...]
-
-
-def _pack_file_key() -> _PackKey:
-    """``(mtime_ns, size)`` per pack file, ``None`` for a file not on disk."""
-    root = _score_fixture_dir()
-    key: list[tuple[int, int] | None] = []
-    for name in _PACK_FILES:
-        try:
-            st = (root / name).stat()
-        except OSError:
-            key.append(None)
-            continue
-        key.append((st.st_mtime_ns, st.st_size))
-    return tuple(key)
-
-
-class _HitCache(Generic[_T]):
-    """Remember one successful non-empty load while the pack files are unchanged.
-
-    The slot is keyed on each file's modification time and size, read before
-    the load. A changed time or size, or a file that is gone, drops the slot
-    and loads again. Empty results are not stored.
-    """
-
-    def __init__(self, load: Callable[[], _T]) -> None:
+    def __init__(self, load: Callable[[], Any]) -> None:
         self._load = load
-        self._hit: _T | None = None
-        self._key: _PackKey | None = None
 
     def cache_clear(self) -> None:
-        self._hit = None
-        self._key = None
+        return None
 
-    def __call__(self) -> _T:
-        key = _pack_file_key()
-        if self._hit is not None and self._key == key:
-            return self._hit
-        self.cache_clear()
-        loaded = self._load()
-        if loaded and None not in key:
-            self._hit = loaded
-            self._key = key
-        return loaded
+    def __call__(self) -> Any:
+        return self._load()
 
 
 @dataclass(frozen=True)
 class PackStatus:
-    """``name`` is ``curated_ceo``, ``absent``, or ``unreadable``.
-
-    ``error_class`` is the exception class for ``unreadable`` and nothing else.
-    It is never the message, which can quote the file.
-    """
+    """``name`` is ``absent``. Scoring files are not a pack source."""
 
     name: str
     error_class: str | None = None
 
 
-def _require_question_list(data: dict[str, Any]) -> None:
-    rows = data.get("questions", [])
-    if rows is None:
-        return
-    if not isinstance(rows, list) or any(not isinstance(item, dict) for item in rows):
-        raise ValueError("pack document has the wrong shape")
-
-
-def _require_oracle_map(data: dict[str, Any]) -> None:
-    rows = data.get("oracles", {})
-    if rows is None:
-        return
-    if not isinstance(rows, dict) or any(
-        item is not None and not isinstance(item, dict) for item in rows.values()
-    ):
-        raise ValueError("pack document has the wrong shape")
-
-
-def _read_pack_file(
-    path: Path,
-    require: Callable[[dict[str, Any]], None],
-) -> tuple[dict[str, Any] | None, str | None]:
-    """``(doc, None)`` when the file loads, ``(None, None)`` when it is not on disk.
-
-    ``(None, error_class)`` when it is on disk but cannot be used. The class
-    name only.
-    """
-    if not path.is_file():
-        return None, None
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return None, type(exc).__name__
-    try:
-        import yaml
-
-        data = yaml.safe_load(text)
-    except Exception as exc:  # noqa: BLE001 - invalid YAML is an unreadable pack
-        return None, type(exc).__name__
-    if data is None:
-        data = {}
-    if not isinstance(data, dict):
-        return None, "ValueError"
-    try:
-        require(data)
-    except ValueError:
-        return None, "ValueError"
-    return data, None
-
-
-def _inspect_pack() -> tuple[PackStatus, dict[str, Any], dict[str, Any]]:
-    root = _score_fixture_dir()
-    questions, q_err = _read_pack_file(root / "questions.yaml", _require_question_list)
-    oracles, o_err = _read_pack_file(root / "oracles.yaml", _require_oracle_map)
-    if q_err or o_err:
-        return PackStatus("unreadable", q_err or o_err), {}, {}
-    if questions is None or oracles is None:
-        return PackStatus("absent"), {}, {}
-    return PackStatus("curated_ceo"), questions, oracles
-
-
 def curated_pack_status() -> PackStatus:
-    """Loaded, absent, or unreadable. Does not cache a miss."""
-    return _inspect_pack()[0]
+    """Always absent. A checkout's scoring files are not consulted."""
+    return PackStatus("absent")
 
 
-def _collapse_sql(raw: object) -> str:
-    if not isinstance(raw, str):
-        return ""
-    # The score oracle binds $as_of. The certified query runs CURRENT_DATE.
-    return " ".join(raw.split()).replace("$as_of", "CURRENT_DATE")
-
-
-def _tables_in_sql(sql: str) -> tuple[str, ...]:
-    from dms_executor.verified_queries import _named_warehouse_tables
-
-    return tuple(sorted(_named_warehouse_tables(sql)))
-
-
-# Score-pack exact phrases that are not already one of the ten base metrics.
-# Climb rise and synonym ids stay off this list: those questions are scored
-# as ontology_plan, and climb gates assert they are not PACK_METRICS.
-# cq_sales_top5_value stays off: the product lane contract ask owns that
-# phrase (one session bind, badge L0_CERTIFIED). cq_chemicals_list stays
-# off for the same fall-through. Not every expect:l0 row.
+# Named ids that are not product metrics. Climb rise and synonym ids stay
+# off this list. cq_sales_top5_value and cq_chemicals_list stay off: the
+# contract ask owns those phrases. Not a file load.
 SCORE_PACK_EXACT_IDS: frozenset[str] = frozenset(
     {
         "cq_sku_count",
@@ -341,67 +207,13 @@ def _norm(question: str) -> str:
     return " ".join(normalize_ask_question(question).casefold().split())
 
 
-def load_score_pack_metrics(
-    base: tuple[PackMetric, ...] = _BASE_PACK_METRICS,
-    ids: frozenset[str] = SCORE_PACK_EXACT_IDS,
-) -> tuple[PackMetric, ...]:
-    """Allowlisted score-pack ids whose question text is not already a base metric.
-
-    Reads the curated_ceo fixture (question + oracle SQL). An id not in
-    ``ids`` is not a metric. Same question text keeps the first metric.
-    A missing or unreadable pack is an empty tuple, same as an absent one.
-    """
-    status, questions, oracles = _inspect_pack()
-    if status.name != "curated_ceo":
-        return ()
-    oracle_rows = oracles.get("oracles") or {}
-    taken = {_norm(m.question) for m in base}
-    extra: list[PackMetric] = []
-    for case in questions.get("questions") or []:
-        qid = str(case.get("id") or "")
-        if qid not in ids:
-            continue
-        question = str(case.get("question") or "").strip()
-        qn = _norm(question)
-        if not qn or qn in taken:
-            continue
-        sql = _collapse_sql((oracle_rows.get(qid) or {}).get("sql"))
-        if not sql:
-            continue
-        tables = _tables_in_sql(sql)
-        if not tables:
-            continue
-        extra.append(
-            PackMetric(
-                metric_id=qid,
-                question=question,
-                sql=sql,
-                tables=tables,
-            )
-        )
-        taken.add(qn)
-    return tuple(extra)
-
-
 # Climb 10-13 snapshot this tuple. Do not append here.
 PACK_METRICS: tuple[PackMetric, ...] = _BASE_PACK_METRICS
 
 
-def _load_exact_metrics() -> tuple[PackMetric, ...]:
-    return load_score_pack_metrics()
-
-
-score_pack_exact_metrics = _HitCache(_load_exact_metrics)
-
-
-def __getattr__(name: str) -> Any:
-    if name == "SCORE_PACK_EXACT_METRICS":
-        return score_pack_exact_metrics()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def _exact_pack_metrics() -> tuple[PackMetric, ...]:
-    return PACK_METRICS + score_pack_exact_metrics()
+    """The ten in-module metrics. Scoring files are not a metric source."""
+    return PACK_METRICS
 
 
 # Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
@@ -538,21 +350,42 @@ def lookup_pack_metric(
     return hit
 
 
-def _curated_pack_path() -> Path:
-    return _score_fixture_dir() / "questions.yaml"
+def _l0_questions_path() -> Path:
+    """Curated expect=l0 phrases. Not oracle SQL, and not read at import."""
+    return (
+        Path(__file__).resolve().parents[3]
+        / "tests"
+        / "fixtures"
+        / "curated_ceo"
+        / "questions.yaml"
+    )
 
 
 def _load_l0_norms() -> frozenset[str]:
-    """Normalised curated_ceo questions whose expect is l0.
+    """Normalised curated questions whose expect is l0.
 
-    A missing or unreadable file means this process cannot tell a curated l0
-    ask from any other question. An empty result is not cached.
+    A missing or unreadable file is an empty set. Oracle SQL is not read.
     """
-    doc, err = _read_pack_file(_curated_pack_path(), _require_question_list)
-    if err or doc is None:
+    path = _l0_questions_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    try:
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+    except Exception:  # noqa: BLE001 - a bad file is an empty set
+        return frozenset()
+    if not isinstance(data, dict):
         return frozenset()
     norms: set[str] = set()
-    for row in doc.get("questions") or []:
+    rows = data.get("questions") or []
+    if not isinstance(rows, list):
+        return frozenset()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
         if str(row.get("expect") or "").lower() != "l0":
             continue
         n = _norm(str(row.get("question") or ""))
@@ -561,7 +394,7 @@ def _load_l0_norms() -> frozenset[str]:
     return frozenset(norms)
 
 
-curated_l0_question_norms = _HitCache(_load_l0_norms)
+curated_l0_question_norms = _Memo(_load_l0_norms)
 
 
 def is_curated_l0_without_pack_metric(question: str) -> bool:
@@ -692,6 +525,18 @@ def envelope_from_pack_submit(
     return env
 
 
+def empty_confident_answer(env: dict[str, Any] | None) -> bool:
+    """True when an L1 or L2 badge would ship with no rows.
+
+    Abstain is not this. A count row of zero is not this: there is a row.
+    """
+    if not isinstance(env, dict) or env.get("abstained"):
+        return False
+    if env.get("badge") not in {"L1_GOVERNED_METRIC", "L2_VALIDATED"}:
+        return False
+    return not list(env.get("rows") or [])
+
+
 def maybe_pack_ask(
     question: str,
     *,
@@ -702,19 +547,43 @@ def maybe_pack_ask(
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any] | None:
-    """L1 envelope when the demo pack matches and Cortex executed the SQL.
+    """L1 envelope, or None when the phrase missed or the execution had no rows."""
+    env, _empty = run_pack_ask(
+        question,
+        space_id=space_id,
+        session_id=session_id,
+        grantable=grantable,
+        tables=tables,
+        submit=submit,
+        ledger_append=ledger_append,
+    )
+    return env
+
+
+def run_pack_ask(
+    question: str,
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    grantable: set[str] | None = None,
+    tables: list[str] | None = None,
+    submit: Callable[[str], Any] | None = None,
+    ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """L1 envelope, and whether governed SQL ran and returned no rows.
 
     Missing submit/ledger does not fall back to local DuckDB (F83). A phrase
     match whose grants, Cortex SQL, or ledger step fails is a named ABSTAIN.
-    None means the phrase did not match, so a later lane may run.
+    ``(None, False)`` is a phrase miss or hostile SQL. ``(None, True)`` means
+    the governed execution returned no rows, so the caller runs the ladder.
     """
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
-        return None
+        return None, False
     try:
         reject_hostile_chat_sql(phrase.sql)
     except SecurityEvent:
-        return None
+        return None, False
     hit = lookup_pack_metric(
         question,
         grantable=grantable,
@@ -723,11 +592,11 @@ def maybe_pack_ask(
     if hit is None:
         return _curated_step_refusal(
             question, "grants fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     if submit is None or ledger_append is None:
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     try:
         result = submit(hit.sql)
     except OpenVaultTokenError:
@@ -735,29 +604,32 @@ def maybe_pack_ask(
     except Exception:  # noqa: BLE001
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     ok = getattr(result, "ok", None)
     if ok is False or getattr(result, "output", None) is None:
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     run_id = str(getattr(result, "run_id", None) or "")
     try:
         led = ledger_append({"sql": hit.sql, "run_id": run_id})
     except Exception:  # noqa: BLE001
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     entry_id = getattr(led, "entry_id", None) if led is not None else None
     if not (isinstance(entry_id, str) and entry_id.strip()):
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     led_hash = getattr(led, "hash", None)
     if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
-        )
+        ), False
+    # No rows: the caller runs the ladder before any empty answer is served.
+    if not rows_from_submit_result(result):
+        return None, True
     return envelope_from_pack_submit(
         metric=hit,
         result=result,
@@ -765,4 +637,4 @@ def maybe_pack_ask(
         space_id=space_id,
         session_id=session_id,
         audit_id=entry_id.strip(),
-    )
+    ), False

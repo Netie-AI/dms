@@ -56,10 +56,11 @@ from dms_executor.demo_pack import (
     curated_pack_metric_miss,
     curated_pack_present,  # noqa: F401 - re-exported; files-on-disk check
     curated_pack_status,  # noqa: F401 - re-exported; wiring health reads it
+    empty_confident_answer,
     is_curated_l0_without_pack_metric,
     is_uncertified_paraphrase,
-    maybe_pack_ask,
     maybe_uncertified_refuse_ask,
+    run_pack_ask,
 )
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
@@ -76,10 +77,12 @@ from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
+    double_empty_provenance,
     normalize_contributing_sources,
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    after_empty_l1,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -621,6 +624,7 @@ class Executor:
         allow_cortex = ladder == "product"
         allow_follow = ladder == "product"
         allow_bronze = ladder == "product"
+        l1_empty = False
 
         # CCA-05 - settle the ambiguous filters before anything executes.
         #
@@ -685,9 +689,10 @@ class Executor:
                 self._store_turn(session_id, space_id, verified_env)
                 return verified_env
 
-            # Phrase match + a failed later step is a named refusal (not None).
-            # None means the phrase missed, so generative / contract ask may run.
-            pack_env = maybe_pack_ask(
+            # Phrase match + a failed later step is a named refusal.
+            # l1_empty means governed SQL ran and returned no rows: the ladder
+            # runs before any empty answer is served.
+            pack_env, l1_empty = run_pack_ask(
                 question,
                 space_id=space_id,
                 session_id=session_id,
@@ -820,36 +825,45 @@ class Executor:
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
-            gen_env = maybe_generative_ask(
-                question,
-                space_id=space_id,
-                session_id=session_id,
-                warehouse=self._warehouse,
-                grantable=set(readable),
-                tables=tables,
-                compute=lambda catalog: _seen(
-                    seen,
-                    _insights_compute_seam(
-                        self._cortex,
-                        question,
-                        session_id=session_id,
-                        space_id=space_id,
-                        ontology=catalog,
-                    ),
-                ),
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
-                ledger_append=lambda payload: self._ledger_verified_query(
-                    asset_sql=str(payload.get("sql") or ""),
-                    run_id=str(payload.get("run_id") or ""),
+            with after_empty_l1(l1_empty):
+                gen_env = maybe_generative_ask(
+                    question,
                     space_id=space_id,
                     session_id=session_id,
-                    event_type="ask.generated_ontology",
-                ),
-                bind_on_miss=False,
-                dialect=SERVING_DIALECT,
-            )
+                    warehouse=self._warehouse,
+                    grantable=set(readable),
+                    tables=tables,
+                    compute=lambda catalog: _seen(
+                        seen,
+                        _insights_compute_seam(
+                            self._cortex,
+                            question,
+                            session_id=session_id,
+                            space_id=space_id,
+                            ontology=catalog,
+                        ),
+                    ),
+                    submit=lambda sql: self._submit_verified_sql(
+                        sql, space_id=space_id, session_id=session_id, tables=tables
+                    ),
+                    ledger_append=lambda payload: self._ledger_verified_query(
+                        asset_sql=str(payload.get("sql") or ""),
+                        run_id=str(payload.get("run_id") or ""),
+                        space_id=space_id,
+                        session_id=session_id,
+                        event_type="ask.generated_ontology",
+                    ),
+                    bind_on_miss=False,
+                    dialect=SERVING_DIALECT,
+                )
+            if (
+                gen_env is not None
+                and empty_confident_answer(gen_env)
+                and not double_empty_provenance(gen_env.get("assumptions"))
+            ):
+                # Ladder SQL returned no rows, and this was not the empty-L1
+                # follow-up. Do not serve that badge.
+                gen_env = None
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
@@ -918,6 +932,32 @@ class Executor:
             ),
             cascade,
         )
+        if empty_confident_answer(env):
+            # Governed or generated, zero rows. The ladder already ran above
+            # when this path allows it. Do not serve the empty badge.
+            env = build_abstain(
+                reason="empty_governed_rows",
+                question=question,
+                stage="governed",
+                answer_id="ans_empty_l1",
+                text=(
+                    "The governed query returned no rows, so that result was "
+                    "not served."
+                ),
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[
+                    "governed result had no rows",
+                    "not served as L1 or L2",
+                ],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            env = attach_cascade(env, cascade)
         self._store_turn(session_id, space_id, env)
         return env
 

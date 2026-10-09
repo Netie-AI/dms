@@ -41,9 +41,8 @@ from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
 
 _L0_L1 = frozenset({"L0_CERTIFIED", "L1_GOVERNED_METRIC"})
-# The exact trap phrase is on the score-pack allowlist. A failed pack step
-# names the refusal and does not reach Cortex.ask. These two are synonyms,
-# not that allowlist row, so the contract ask still owns them.
+# These two are Cortex synonyms, not a DMS product metric. The contract ask
+# owns them. The typo phrase is also not a product metric.
 _VQ01_PHRASES = (
     "show top 3 category sales",
     "top 3 category sales",
@@ -263,12 +262,12 @@ def test_chat_ask_post_categoty_certified_oracle_ranks(
     _cleanup_live_env(monkeypatch)
 
 
-def test_exact_categoty_pack_miss_does_not_fall_through_to_query_skill(
+def test_typo_categoty_query_skill_stays_l2(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Allowlisted exact phrase plus a dead submit is a named pack refusal.
+    """The typo phrase is not a product metric. query_skill stays L2.
 
-    query_skill must not run and must not be upgraded to L0/L1.
+    DMS must not upgrade it to L0 or L1, and must not refuse it from a scoring file.
     """
     cortex = _StubCortex(
         _certified_response(
@@ -286,12 +285,11 @@ def test_exact_categoty_pack_miss_does_not_fall_through_to_query_skill(
     ).json()
 
     assert_envelope_valid(body)
-    assert body["badge"] == "ABSTAIN"
-    assert body["abstained"] is True
-    assert "exact match ok" in body["text"]
-    assert "Cortex SQL fail" in body["text"]
+    assert body["badge"] == "L2_VALIDATED"
+    assert body["abstained"] is False
     assert body["badge"] not in _L0_L1
-    assert cortex.asks == []
+    assert len(cortex.asks) == 1
+    assert cortex.asks[0].question == "show top 3 categoty sales"
     _cleanup_live_env(monkeypatch)
 
 

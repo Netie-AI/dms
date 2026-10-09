@@ -36,7 +36,7 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_api.settings import Settings, get_settings
 from dms_executor import Executor
-from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.demo_warehouse import ensure_demo_warehouse, execute_sql
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
@@ -208,13 +208,12 @@ def flag_off_envelopes(warehouse: Path) -> dict[str, Any]:
 
 @pytest.fixture()
 def pack_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Scoring files are not a pack source. The hook is gone; the dir is unused."""
     from dms_executor import demo_pack
 
-    demo_pack.score_pack_exact_metrics.cache_clear()
     demo_pack.curated_l0_question_norms.cache_clear()
-    monkeypatch.setattr(demo_pack, "_score_fixture_dir", lambda: tmp_path / "absent")
+    _ = tmp_path, monkeypatch
     yield
-    demo_pack.score_pack_exact_metrics.cache_clear()
     demo_pack.curated_l0_question_norms.cache_clear()
 
 
@@ -399,28 +398,28 @@ def test_image_layout_health_is_absent_and_ask_is_not_503(tmp_path: Path) -> Non
     assert got["pack"] != "curated_ceo"
 
 
-def test_health_pack_stays_curated_ceo_when_the_fixture_is_present() -> None:
-    from dms_api.routes.health import GEN_PATH_CLIMB
+def test_health_pack_ignores_a_checkout_fixture() -> None:
+    """A scoring file on disk must not flip /health to a loaded pack."""
     from dms_api.wiring import health_pack_name
 
-    assert GEN_PATH_CLIMB["pack"] == "curated_ceo"
-    assert health_pack_name() == "curated_ceo"
+    assert health_pack_name() == "absent"
 
 
 def test_pack_is_not_read_at_import() -> None:
     src = (ROOT / "packages/executor/dms_executor/demo_pack.py").read_text(encoding="utf-8")
     assert not re.search(r"^\w[\w: .,\[\]]*=\s*load_score_pack_metrics\(", src, re.M)
+    assert "def load_score_pack_metrics" not in src
     from dms_executor import demo_pack
 
-    assert demo_pack.SCORE_PACK_EXACT_METRICS == demo_pack.score_pack_exact_metrics()
+    assert not hasattr(demo_pack, "SCORE_PACK_EXACT_METRICS")
+    assert not hasattr(demo_pack, "load_score_pack_metrics")
 
 
 def test_missing_pack_is_empty_and_ask_is_not_503(
     pack_missing: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dms_executor.demo_pack import maybe_pack_ask, score_pack_exact_metrics
+    from dms_executor.demo_pack import maybe_pack_ask
 
-    assert score_pack_exact_metrics() == ()
     assert (
         maybe_pack_ask(
             "How many SKUs do we have in inventory?",
@@ -450,17 +449,79 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
     assert "demo_pack_unavailable" not in r.text
 
 
+# Envelopes that differ from the canned capture. Grade the served envelope.
+# cq_supplier_ranking is an E10 ABSTAIN with 0 rows on canned main: the stub
+# returns one row, the governed SQL has no GROUP BY, envelope.py:510 demotes
+# at envelope.py:1560, and envelope.py:1716 clears the rows.
+# That is not a value that differed from gold. Exec-SQL returns the real
+# rows and E10 does not fire.
+# ops_supplier_rank_boundary is not compared to the capture. The warehouse
+# still has supplier rows; the ops grant set does not include that table.
+_ENGINE_NOT_CAPTURE = frozenset({"ops_supplier_rank_boundary"})
+_FIXTURE_FED = frozenset(
+    {
+        "cq_sku_count",
+        "cq_sales_top3_volume",
+        "cq_sku_count_by_category",
+        "cq_supplier_ranking",
+        "trap_categoty",
+        "ops_sku_count",
+        "ops_sku_count_by_category",
+    }
+)
+
+
 def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every curated_ceo question, flags off, matches the f9ffc3e1 capture."""
+    """Ids the scoring fixture fed differ. Every other id matches the capture."""
     _flags_off(monkeypatch)
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert golden["captured_from"] == BASE
     assert golden["flags_off"] == list(_FLAGS_OFF)
-    got = flag_off_envelopes(tmp_path / "wh.duckdb")
+    db = tmp_path / "wh.duckdb"
+    got = flag_off_envelopes(db)
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
+    assert _FIXTURE_FED <= set(ids)
+    assert _ENGINE_NOT_CAPTURE <= set(ids)
     for qid in ids:
-        assert got["cases"][qid] == golden["cases"][qid], qid
+        if qid in _ENGINE_NOT_CAPTURE:
+            continue
+        if qid in _FIXTURE_FED:
+            assert got["cases"][qid] != golden["cases"][qid], qid
+        else:
+            assert got["cases"][qid] == golden["cases"][qid], qid
+    _assert_ops_rank_boundary_from_engine(got, db)
+
+
+def _assert_ops_rank_boundary_from_engine(got: dict[str, Any], db: Path) -> None:
+    """Ops does not serve supplier rows the engine still holds.
+
+    The capture is not the grade. Grants come from the Space. The warehouse
+    query is the engine's own rows.
+    """
+    case = next(row for row in _cases() if row["id"] == "ops_supplier_rank_boundary")
+    body = got["cases"][case["id"]]["body"]
+    assert isinstance(body, dict)
+    exe = Executor(warehouse_path=db)
+    try:
+        granted = set(exe.grantable_tables(space_id=case["space_id"]))
+    finally:
+        exe.close()
+    assert "suppliers" not in granted
+    engine_rows = execute_sql("SELECT supplier_id FROM suppliers", path=db, product=True)
+    engine_ids = {str(row["supplier_id"]) for row in engine_rows}
+    assert engine_ids
+    assert body["badge"] != "L1_GOVERNED_METRIC"
+    assert body.get("route") != "governed_metric"
+    assert str(body.get("plan_origin") or "") not in {"ontology_ranking", "ontology_compile"}
+    assert body.get("plan_source") != "ontology_plan"
+    served_ids = {
+        str(value)
+        for row in body.get("rows") or []
+        if isinstance(row, dict)
+        for value in row.values()
+    }
+    assert served_ids.isdisjoint(engine_ids)

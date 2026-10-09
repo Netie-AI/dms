@@ -329,7 +329,7 @@ def test_pack_counts_stay_unchanged(
 ) -> None:
     """52-pack through ab_offline. Not a mocked scorer.
 
-    Exact quint is the allowlist registry (0/23/29/0/0). Generative quint unchanged.
+    Exact quint is the ten base metrics (0/16/36/0/0). Generative quint unchanged.
     """
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
     ab_offline()
@@ -337,7 +337,7 @@ def test_pack_counts_stay_unchanged(
     exact = report["exact_match"]
     gen = report["generative"]
     keys = ("ok", "layer", "abstain", "wrong", "oracle_error")
-    assert [exact[key] for key in keys] == [0, 23, 29, 0, 0]
+    assert [exact[key] for key in keys] == [0, 16, 36, 0, 0]
     assert [gen[key] for key in keys] == [0, 26, 11, 15, 0]
     assert exact["invalid"] == 0
     assert gen["invalid"] == 0

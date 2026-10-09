@@ -1,15 +1,16 @@
-"""Flag off is byte-equal to main on the 73-ask set, shadow fields included.
+"""Flag off stays the ce08153 bytes except asks the scoring fixture fed.
 
 The stub binds the session, then runs one canned SELECT. Several asks
 serve L2 from that SQL. Planted and pre-gate asks abstain. The stub
 does not route on question words.
 
-Wall-clock fields are placeholders. Every other key and value is
-compared, including ``served_check_shadow``. A key main does not send
-fails the test.
+Wall-clock fields are placeholders. On an unchanged ask, every other key
+and value is compared, including ``served_check_shadow``. A key main does
+not send fails that ask. Asks the scoring fixture used to answer or
+reword must differ, and may carry generative keys.
 
 The fixture bytes were captured from ce08153. The same bytes match
-beabdc6 (skills quarantine, no stamp on this stub).
+beabdc6 (skills quarantine, no stamp on this stub) except the fixture-fed asks.
 """
 
 from __future__ import annotations
@@ -38,6 +39,18 @@ _CLOCK = {
     "engine_timezone",
     "engine_timezone_after",
 }
+# Phrases the scoring file used to serve. Both spaces, and the same
+# supplier-ranking and categoty phrases when they show up again.
+_FIXTURE_FED = frozenset(
+    {
+        "How many SKUs do we have in inventory?",
+        "Top 3 SKUs by quantity sold",
+        "Show SKU count by category",
+        "Show top 3 categoty sales",
+        "Rank suppliers by combined risk and lead time score",
+        "show top 3 categoty sales",
+    }
+)
 
 
 def _questions() -> list[str]:
@@ -90,6 +103,17 @@ def _norm(obj: Any) -> Any:
     return obj
 
 
+def _top_level_order_by(sql: str) -> bool:
+    """True when the sqlglot AST has an ORDER BY on the outer SELECT."""
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(sql, read="duckdb")
+    except Exception:  # noqa: BLE001 - unparsable SQL keeps the stable sort
+        return False
+    return isinstance(tree, exp.Select) and tree.args.get("order") is not None
+
+
 def _freeze(env: dict[str, Any]) -> dict[str, Any]:
     frozen = json.loads(json.dumps(_norm(env), sort_keys=True, default=str))
     assert isinstance(frozen, dict)
@@ -139,7 +163,10 @@ class _Cortex:
             cur = con.execute(sql)
             cols = [str(c[0]) for c in (cur.description or [])]
             rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
-            rows.sort(key=lambda row: json.dumps(row, sort_keys=True, default=str))
+            # A top-level ORDER BY is the engine's order. Sorting it reverses
+            # a ranking. Unordered results stay sorted so the capture is stable.
+            if not _top_level_order_by(sql):
+                rows.sort(key=lambda row: json.dumps(row, sort_keys=True, default=str))
         finally:
             con.close()
         return QueryResult(ok=True, status="ok", run_id="run_flag", output={"rows": rows})
@@ -224,19 +251,20 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     l2 = 0
     abstain = 0
     canned = 0
+    fed = 0
     extras_all: list[tuple[str, list[str]]] = []
     for index, question in enumerate(_questions()):
         env = got[index]["envelope"]
         main = expected[index]["envelope"]
         assert expected[index]["question"] == question
-        extras = _extra_keys(main, env)
-        if extras:
-            extras_all.append((question, extras))
-    assert extras_all == [], extras_all
-    for index, question in enumerate(_questions()):
-        env = got[index]["envelope"]
-        main = expected[index]["envelope"]
-        assert env == main, question
+        if question in _FIXTURE_FED:
+            fed += 1
+            assert env != main, question
+        else:
+            extras = _extra_keys(main, env)
+            if extras:
+                extras_all.append((question, extras))
+            assert env == main, question
         if env.get("badge") == "L2_VALIDATED":
             l2 += 1
         if env.get("abstained") is True:
@@ -244,10 +272,45 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
         sql_used = str(env.get("sql_used") or "")
         if env.get("badge") == "L2_VALIDATED" and "is_cold_storage" in sql_used:
             canned += 1
+    assert fed == 9
+    assert extras_all == [], extras_all
     assert any("served_check_shadow" in row["envelope"] for row in got)
     assert l2 >= 5, l2
     assert abstain >= 1, abstain
     assert canned >= 3, canned
+
+
+def test_ordered_sql_keeps_engine_row_order(tmp_path: Path) -> None:
+    """Top-level ORDER BY is the engine's order. The stub must not sort it."""
+    db = tmp_path / "order.duckdb"
+    ensure_demo_warehouse(db)
+    cortex = _Cortex(db)
+    ordered = "SELECT supplier_id FROM suppliers ORDER BY lead_time_days DESC, supplier_id ASC"
+    plain = "SELECT supplier_id FROM suppliers"
+
+    class _Req:
+        def __init__(self, sql: str) -> None:
+            self.plan = {"kind": "sql"}
+            self.body = {"sql": sql}
+
+    def _engine(sql: str) -> list[dict[str, Any]]:
+        con = connect_file(db)
+        try:
+            cur = con.execute(sql)
+            cols = [str(c[0]) for c in (cur.description or [])]
+            return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            con.close()
+
+    got = cortex.submit(_Req(ordered)).output["rows"]
+    engine = _engine(ordered)
+    assert got == engine
+    stable = sorted(got, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+    assert got != stable
+    plain_rows = cortex.submit(_Req(plain)).output["rows"]
+    assert plain_rows == sorted(
+        plain_rows, key=lambda row: json.dumps(row, sort_keys=True, default=str)
+    )
 
 
 def _capture(dest: Path) -> None:

@@ -16,9 +16,7 @@ from dms_executor.demo_grants import DEMO_SPACE_GRANTS
 from dms_executor.demo_pack import (
     PACK_METRICS,
     SCORE_PACK_EXACT_IDS,
-    load_score_pack_metrics,
     lookup_pack_metric,
-    score_pack_exact_metrics,
 )
 
 _FIXTURE = (
@@ -76,32 +74,23 @@ def _grants(space: str) -> set[str]:
     return set(entry[1])
 
 
-def test_cq_sku_count_exact_match_on_finance_grants() -> None:
+def test_cq_sku_count_is_not_a_pack_hit() -> None:
     case = next(row for row in _pack() if row["id"] == "cq_sku_count")
     hit = lookup_pack_metric(str(case["question"]), grantable=_grants("finance"))
-    assert hit is not None
-    assert hit.metric_id == "cq_sku_count"
-    assert hit.tables == ("inventory",)
-    assert "FROM inventory" in hit.sql
+    assert hit is None
 
 
-def test_allowlist_is_required_for_the_hit() -> None:
-    """Empty allowlist is the main registry: cq_sku_count misses."""
+def test_allowlist_is_not_loaded() -> None:
+    """The named ids are not metrics."""
     assert "cq_sku_count" in SCORE_PACK_EXACT_IDS
-    assert load_score_pack_metrics(ids=frozenset()) == ()
     base_only = {m.metric_id for m in PACK_METRICS}
     assert "cq_sku_count" not in base_only
-    assert {m.metric_id for m in score_pack_exact_metrics()} == set(SCORE_PACK_EXACT_IDS)
+    assert SCORE_PACK_EXACT_IDS.isdisjoint(base_only)
 
 
-def test_allowlist_hits_and_rise_ids_miss() -> None:
+def test_allowlist_and_rise_ids_miss() -> None:
     by_id = {str(row["id"]): row for row in _pack()}
-    for qid in SCORE_PACK_EXACT_IDS:
-        case = by_id[qid]
-        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
-        assert hit is not None, qid
-        assert hit.metric_id == qid
-    for qid in _NOT_EXACT:
+    for qid in SCORE_PACK_EXACT_IDS | _NOT_EXACT:
         case = by_id[qid]
         hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
         assert hit is None, qid
@@ -121,4 +110,4 @@ def test_refuse_and_abstain_stay_misses() -> None:
 
 def test_pack_metrics_stay_the_climb_snapshot() -> None:
     assert {m.metric_id for m in PACK_METRICS} == _BASE_IDS
-    assert "cq_sku_count_syn_short" not in {m.metric_id for m in score_pack_exact_metrics()}
+    assert "cq_sku_count_syn_short" not in {m.metric_id for m in PACK_METRICS}
