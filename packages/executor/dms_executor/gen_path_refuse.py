@@ -43,6 +43,7 @@ GAP_REASONS = frozenset(
         "serving_deadline_exceeded",
         "serving_deadline_reserve",
         "serving_lease_cap",
+        "serving_lock_wait",
         "insights_no_sql_no_ranking",
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",

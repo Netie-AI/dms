@@ -106,6 +106,7 @@ _CODES = frozenset(
         "serving_deadline_exceeded",
         "serving_deadline_reserve",
         "serving_lease_cap",
+        "serving_lock_wait",
         "sql_dialect_unknown",
         "sql_not_analyzable",
         "statement_not_allowed",

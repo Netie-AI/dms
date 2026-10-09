@@ -39,6 +39,8 @@ AMOUNT_SAMPLE = "441771"
 DEADLINE = "This took too long on our side, so I stopped before answering."
 LEASE = "The server is at capacity right now, so I stopped before answering."
 RESERVE = "This ask came in too late to finish in time, so I stopped before answering."
+LOCK = "The data is briefly locked for an update, so I stopped before answering."
+SQL_LOCK = "SELECT SUM(quantity_kg) AS n FROM inventory"
 NOT_FOUND = "Not found in the database."
 SUGGESTION_52 = "Show the marker figure"
 SQL_52 = "SELECT 1 AS n"
@@ -356,6 +358,75 @@ def test_capacity_confirms_and_yes_reruns(wh: Path, code: str, plain: str) -> No
         assert yes["abstained"] is False
         assert _same_rows(yes["rows"], _rows(wh, SQL_OK))
         assert cortex.asks == []
+    finally:
+        exe.close()
+
+
+def test_lock_wait_yes_matches_serial_after_release(wh: Path) -> None:
+    """Held writer, then release, then one Yes. Same value as a serial read.
+
+    The empty writer is the must-fail: an unmapped code stays a bare abstain.
+    """
+    serial = _rows(wh, SQL_LOCK)
+    assert serial
+    writer = _Writer({})
+    held = connect_file(wh)
+    try:
+        first, cortex, exe = _ask(
+            wh,
+            Q_STUCK,
+            writer=writer,
+            flag=True,
+            script=[{"insights_fail": "serving_lock_wait"}],
+        )
+        assert first["status"] == "confirm"
+        assert first["confirm_code"] == "serving_lock_wait"
+        assert first["confirm_reason"] == LOCK
+        assert first["suggested_question"] == Q_STUCK
+        assert first["abstained"] is True
+        assert first["rows"] == []
+        assert "capacity" not in LOCK.lower()
+        assert "too late" not in LOCK.lower()
+        assert writer.prompts
+        prompt = writer.prompts[0].lower()
+        assert "locked for an update" in prompt
+        assert "at capacity" not in prompt
+        assert "too late" not in prompt
+        assert_envelope_valid(first)
+    finally:
+        held.close()
+    try:
+        cortex.script.append({"query_sql": SQL_LOCK})
+        yes, _, _ = _ask(
+            wh,
+            Q_DECOY,
+            writer=writer,
+            flag=True,
+            script=[],
+            confirm_id=first["confirm_id"],
+            confirm_choice="yes",
+            cortex=cortex,
+            exe=exe,
+        )
+        assert Q_DECOY not in cortex.questions
+        assert yes["abstained"] is False
+        assert yes.get("status") != "confirm"
+        assert _same_rows(yes["rows"], serial)
+        assert _same_rows(yes["rows"], _rows(wh, SQL_LOCK))
+        assert cortex.asks == []
+        again, _, _ = _ask(
+            wh,
+            Q_DECOY,
+            writer=writer,
+            flag=True,
+            script=[],
+            confirm_id=first["confirm_id"],
+            confirm_choice="yes",
+            cortex=cortex,
+            exe=exe,
+        )
+        assert again["abstained"] is True
+        assert again["rows"] == []
     finally:
         exe.close()
 

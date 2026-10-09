@@ -10,9 +10,11 @@ Direct refusal, and only these, skip the suggestion: an ungranted table, a
 person or PII or private column, a destructive or write statement, and
 ``sql_dialect_unknown``. Those come from the grant, mask, and gate results
 already on the attempt. ``serving_deadline_exceeded``, ``serving_lease_cap``,
-and ``serving_deadline_reserve`` get the same confirm step as any other
-stuck ask. Lease cap is a real capacity hit. The reserve means the ask
-arrived too late to finish in time. Those two do not share a sentence.
+``serving_deadline_reserve``, and ``serving_lock_wait`` get the same
+confirm step as any other stuck ask. Lease cap is a real capacity hit.
+The reserve means the ask arrived too late to finish in time. A lock
+wait means the data is briefly locked for an update. Those sentences
+do not stand in for each other. #426 raises the lock code.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ _CAPACITY = frozenset(
         "serving_deadline_exceeded",
         "serving_deadline_reserve",
         "serving_lease_cap",
+        "serving_lock_wait",
     }
 )
 _CAPACITY_TEXT = {
@@ -76,6 +79,11 @@ _CAPACITY_TEXT = {
     "serving_deadline_reserve": (
         "This ask came in too late to finish in time, so I stopped before answering."
     ),
+    # Writer holds the file. Not a capacity sentence and not a late arrival.
+    # #426 raises this. The confirm offers one Yes once the lock is gone.
+    "serving_lock_wait": (
+        "The data is briefly locked for an update, so I stopped before answering."
+    ),
 }
 _CAPACITY_SAY = {
     "serving_deadline_exceeded": (
@@ -86,6 +94,9 @@ _CAPACITY_SAY = {
     ),
     "serving_deadline_reserve": (
         "This ask arrived too late to finish in time. Say that in the reason."
+    ),
+    "serving_lock_wait": (
+        "The data is briefly locked for an update. Say that in the reason."
     ),
 }
 _NOT_FOUND = "Not found in the database."
@@ -116,9 +127,10 @@ def dialect_known(warehouse: Path | None) -> bool:
 def serving_capacity_reason(payload: dict[str, Any] | None) -> str | None:
     """Serving stop carried on a generate payload, or None.
 
-    Deadline, reserve, and lease cap are our limit, not a user refusal.
-    The caller abstains with the code, and the confirm step explains it.
-    The reserve is a late arrival. It is not the lease-cap sentence.
+    Deadline, reserve, lease cap, and lock wait are our limit, not a user
+    refusal. The caller abstains with the code, and the confirm step
+    explains it. Lock wait is a writer holding the file. It is not the
+    lease-cap sentence and not the late-arrival sentence.
     """
     if not isinstance(payload, dict):
         return None
