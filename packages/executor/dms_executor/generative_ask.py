@@ -1216,7 +1216,9 @@ def _run_extract_loop(
     def check(sql: str) -> str | None:
         if is_multi_statement(sql, dialect):
             return "multi_statement"
-        why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+        why = validate_compiled_sql(
+            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+        )
         if why and why.startswith("explain:"):
             detail = _explain_error_text(sql, warehouse)
             if detail:

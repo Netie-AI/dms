@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from cortex_client.compute import begin_answer_model_calls
-from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.demo_warehouse import SERVING_DIALECT, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.ontology import demo_ontology
@@ -93,6 +93,7 @@ def _ask(
         submit=_submit(db),
         ledger_append=_ledger,
         ontology=onto,
+        dialect=SERVING_DIALECT,
     )
 
 
@@ -139,7 +140,7 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         seen.append(ctx.get("sql_loop_feedback"))
         if len(seen) == 1:
-            return _names(query_sql="SELECT error('boom')")
+            return _names(query_sql="SELECT CAST('boom' AS INTEGER) FROM locations")
         return _names(query_sql=_COLD_SQL)
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)
@@ -251,6 +252,7 @@ def test_submit_abstain_is_not_logged_as_served(
             submit=submit,
             ledger_append=_ledger,
             ontology=onto,
+            dialect=SERVING_DIALECT,
         )
     )
     assert calls["n"] == 1
@@ -491,6 +493,7 @@ def test_missing_extract_does_not_retry(
             submit=_submit(tmp_path / "missing.duckdb"),
             ledger_append=_ledger,
             ontology=None,
+            dialect=SERVING_DIALECT,
         )
     )
     assert calls["n"] == 1
