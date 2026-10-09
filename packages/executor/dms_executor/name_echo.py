@@ -39,37 +39,72 @@ _NAME_KEYS = frozenset(
         "text",
     }
 )
-_TAIL = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])ungranted(?:_table)?:("
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-    r"(?:,[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)*"
-    r")"
+# A relation the grant check named. Dots stay inside one identifier.
+_REL = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+# Colon form, ``ungranted table <name>``, or ``(ungranted <name>)``.
+# ``ungranted_table`` is before ``ungranted`` so the suffix is not a name.
+_PREFIX = re.compile(
+    r"(?i)(?:(?<![A-Za-z0-9_])ungranted_table\s*:\s*"
+    r"|(?<![A-Za-z0-9_])ungranted\s+table\s+"
+    r"|(?<![A-Za-z0-9_])ungranted\s*:\s*"
+    r"|\(\s*ungranted\s+)"
 )
+_QUOTED = re.compile(rf"(?i)\s*(?P<q>['\"])(?P<name>{_REL})(?P=q)")
+_BARE = re.compile(rf"(?i)\s*(?P<name>{_REL})")
+_COMMA = re.compile(r"\s*,\s*")
+
+
+def _add_name(found: list[str], name: str) -> None:
+    if not name or name.casefold() in _CODE_TAILS:
+        return
+    if name not in found:
+        found.append(name)
 
 
 def echoed_names(text: str) -> list[str]:
-    """Relation tails after ``ungranted:`` or ``ungranted_table:``."""
+    """Relation tails the grant check wrote, including quotes and spaces."""
     found: list[str] = []
-    for match in _TAIL.finditer(text or ""):
-        for piece in match.group(1).split(","):
-            name = piece.strip()
-            if not name or name.casefold() in _CODE_TAILS:
+    raw = text or ""
+    for match in _PREFIX.finditer(raw):
+        pos = match.end()
+        first = True
+        while pos <= len(raw):
+            if not first:
+                comma = _COMMA.match(raw, pos)
+                if not comma:
+                    break
+                pos = comma.end()
+            first = False
+            quoted = _QUOTED.match(raw, pos)
+            if quoted:
+                _add_name(found, quoted.group("name"))
+                pos = quoted.end()
                 continue
-            if name not in found:
-                found.append(name)
+            bare = _BARE.match(raw, pos)
+            if bare:
+                _add_name(found, bare.group("name"))
+                pos = bare.end()
+                continue
+            break
     return found
 
 
-def _idents(names: list[str]) -> list[str]:
+def _relations(names: list[str]) -> list[str]:
+    """Full relation, then the bare table ``table_is_granted`` compares.
+
+    Leading dotted pieces are schema qualifiers. They are not relations.
+    """
     out: list[str] = []
     seen: set[str] = set()
-    for piece in names:
-        for ident in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", piece):
-            key = ident.casefold()
+    for name in names:
+        parts = [part for part in name.split(".") if part]
+        bare = parts[-1] if parts else name
+        for piece in (name, bare):
+            key = piece.casefold()
             if key in _CODE_TAILS or key in seen:
                 continue
             seen.add(key)
-            out.append(ident)
+            out.append(piece)
     out.sort(key=len, reverse=True)
     return out
 
@@ -78,14 +113,7 @@ def scrub_text(text: str, names: list[str]) -> str:
     """Remove each name as a whole identifier. A longer token stays."""
     if not text or not names:
         return text
-    qualified = sorted((n for n in names if "." in n), key=len, reverse=True)
-    for piece in qualified:
-        text = re.sub(
-            rf"(?i)(?<![A-Za-z0-9_]){re.escape(piece)}(?![A-Za-z0-9_])",
-            "",
-            text,
-        )
-    for ident in _idents(names):
+    for ident in _relations(names):
         text = re.sub(
             rf"(?i)(?<![A-Za-z0-9_]){re.escape(ident)}(?![A-Za-z0-9_])",
             "",

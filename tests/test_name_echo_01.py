@@ -171,6 +171,88 @@ def test_reason_codes_file_and_unparsed_stay() -> None:
         assert code in env["assumptions"][0]
 
 
+def test_missing_join_name_is_ticket_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The grain stays. The ungranted relation is ticket-only."""
+    from dms_executor.generative_ask import _abstain
+    from dms_executor.ontology import missing_join_for_ungranted
+
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    gap = missing_join_for_ungranted("ungranted:shipments", ("sku", "plant"))
+    assert gap is not None
+    question = "shipping cost by SKU and plant"
+    env = _abstain(
+        question,
+        gap,
+        space_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        session_id="ses_mj",
+    )
+    blob = _visible(env)
+    assert "shipments" not in blob
+    assert "plant" in blob
+    assert "missing_join" in blob
+    ticket = _ticket(caplog)
+    assert ticket["reason"] == "missing_join"
+    assert "shipments" in ticket["names"]
+    raw = json.dumps(ticket)
+    assert question not in raw
+    assert "SELECT" not in raw
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ['ungranted: "t"', "ungranted: 'po'", "ungranted table sku"],
+)
+def test_quoted_and_space_tails_stay_off_the_envelope(
+    reason: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    name = {"ungranted: \"t\"": "t", "ungranted: 'po'": "po", "ungranted table sku": "sku"}[reason]
+    env = build_abstain(
+        reason=reason,
+        question="how many pallets moved",
+        text=f"Follow-up cannot use {reason}.",
+        assumptions=[reason, "sku_count stays beside a shorter name"],
+        abstain_reason=reason,
+        answer_id="ans_tail",
+        space_id="space-keep",
+        session_id="ses_keep",
+    )
+    blob = _visible(env)
+    assert re.search(
+        rf"(?i)(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", blob
+    ) is None
+    assert "sku_count" in blob
+    assert env["space_id"] == "space-keep"
+    ticket = _ticket(caplog)
+    assert name in ticket["names"]
+
+
+def test_schema_qualifier_is_not_scrubbed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """bronze.po is the relation. The word bronze in ordinary prose stays."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    env = build_abstain(
+        reason="ungranted_table:bronze.po",
+        question="sheet total",
+        text="The bronze layer still cites bronze.po.",
+        assumptions=["bronze layer note", "validate:ungranted_table:bronze.po"],
+        answer_id="ans_schema",
+    )
+    blob = _visible(env)
+    assert "bronze layer" in blob
+    assert "bronze.po" not in blob
+    assert re.search(r"(?<![A-Za-z0-9_])po(?![A-Za-z0-9_])", blob) is None
+    ticket = _ticket(caplog)
+    assert "bronze.po" in ticket["names"]
+    assert "bronze" not in ticket["names"]
+
+
 def test_db_error_text_stays_out_of_the_ticket(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
