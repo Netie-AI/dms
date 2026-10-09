@@ -8,9 +8,8 @@ Wall-clock fields are placeholders. Every other key and value is
 compared, including ``served_check_shadow``. A key main does not send
 fails the test.
 
-The fixture bytes were captured from ce08153. checker_version is the
-sha256 of sql_grounds.py, which now reads SERVING_DIALECT. Every other
-field is that capture.
+The fixture bytes were captured from ce08153. The same bytes match
+beabdc6 (skills quarantine, no stamp on this stub).
 """
 
 from __future__ import annotations

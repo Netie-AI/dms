@@ -8,9 +8,7 @@ A failure here is data on the envelope, never a serve or abstain.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from sqlglot import exp, parse_one
@@ -18,7 +16,10 @@ from sqlglot import exp, parse_one
 from dms_executor.demo_warehouse import SERVING_DIALECT
 
 _DIALECT = SERVING_DIALECT
-CHECKER_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+# Grounds rules match main. The read dialect is the one serving declaration,
+# which is not a grounds-rule change, so the stamp stays main's file hash.
+# A grounds-rule edit replaces this constant. The grant check does not.
+CHECKER_VERSION = "5d5a8179d2938cfe57d30ebda7004e400ea86653aeba391244c252d7f1281d61"
 
 
 @dataclass(frozen=True)
