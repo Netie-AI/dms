@@ -19,6 +19,7 @@ from dms_executor.ontology import demo_ontology
 from dms_executor.sql_currency import dropped_conjuncts
 from dms_executor.sql_loop import (
     EXTRACT_DIALECT,
+    UnknownConnectorDialect,
     apply_sql_credit,
     dialect_for_connector,
     extract_dialect,
@@ -111,7 +112,33 @@ def test_dialect_for_connector_is_not_pinned_to_one_warehouse() -> None:
     assert dialect_for_connector("postgresql") == "postgres"
     assert dialect_for_connector("mysql") == "mysql"
     assert dialect_for_connector("sqlserver") == "tsql"
-    assert dialect_for_connector("file") == "duckdb"
+    assert dialect_for_connector("duckdb") == "duckdb"
+
+
+def test_unknown_connector_is_sql_dialect_unknown(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unknown kind is not the extract dialect. The ticket is build_abstain's."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level("WARNING", logger="dms_executor.pipeline_failure")
+    with pytest.raises(UnknownConnectorDialect) as caught:
+        dialect_for_connector("file")
+    env = caught.value.envelope
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["sql_used"] is None
+    assert env["rows"] == []
+    assert "validate:sql_dialect_unknown" in env["assumptions"]
+    assert "duckdb" not in json.dumps(env["assumptions"])
+    blob = json.dumps(env)
+    assert "file" not in blob
+    tickets = [
+        json.loads(rec.message.split(" ", 1)[1])
+        for rec in caplog.records
+        if rec.message.startswith("pipeline_failure ")
+    ]
+    assert len(tickets) == 1
+    assert tickets[0]["reason"] == "sql_dialect_unknown"
 
 
 def test_dropped_conjunct_uses_the_connector_dialect() -> None:
@@ -140,7 +167,7 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         seen.append(ctx.get("sql_loop_feedback"))
         if len(seen) == 1:
-            return _names(query_sql="SELECT CAST('boom' AS INTEGER) FROM locations")
+            return _names(query_sql="SELECT error('boom')")
         return _names(query_sql=_COLD_SQL)
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)
@@ -157,6 +184,28 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     assert env["served_attribution"] == "reported"
     assert env["served_model"] == _MODEL
     assert env["ov_key_id"] == _KEY
+
+
+def test_cast_failure_is_also_a_db_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAST is an extra db-error, not a stand-in for ``error()``."""
+    _loop(monkeypatch)
+    seen: list[Any] = []
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        seen.append(ctx.get("sql_loop_feedback"))
+        if len(seen) == 1:
+            return _names(query_sql="SELECT CAST('boom' AS INTEGER) FROM locations")
+        return _names(query_sql=_COLD_SQL)
+
+    env = _ask(tmp_path, "Which locations are cold storage?", compute)
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    reason = str((seen[1] or {}).get("reason") or "")
+    assert reason.startswith("db_error:")
+    assert "boom" in reason
+    assert env["loop"][0]["outcome"].startswith("db_error:")
 
 
 def test_checker_flag_retry_gets_the_reason(
@@ -424,7 +473,9 @@ def test_cte_drop_inner_and_subquery_drop_inner() -> None:
 def test_duckdb_only_syntax_drop_is_checked_and_parse_failure_is_closed() -> None:
     previous = "SELECT #1 FROM t WHERE a = 1 AND b = 2"
     nxt = "SELECT #1 FROM t WHERE a = 1"
-    assert extract_dialect(None) == "duckdb"
+    assert extract_dialect(None) == ""
+    assert extract_dialect("postgres") == "postgres"
+    assert extract_dialect(SERVING_DIALECT) == SERVING_DIALECT
     dropped = dropped_conjuncts(previous, nxt, "duckdb")
     assert dropped
     assert len(dropped) == 1

@@ -434,7 +434,12 @@ def test_cortex_fallback_spend_does_not_f32_demote(
 def test_quoted_warehouse_schema_spend_does_not_f32_demote(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Quoted warehouse.inventory is not the bare inventory grant. Named abstain."""
+    """Quoted database.table is the same relation when the catalog says so."""
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+
+    # The file stem is the catalog database name. No special case for the word.
+    named = ensure_demo_warehouse(warehouse.with_name("warehouse.duckdb"))
+    warehouse = named
     cortex = _LakeSpendAskCortex(
         sql_used=(
             'SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) '
@@ -473,18 +478,11 @@ def test_quoted_warehouse_schema_spend_does_not_f32_demote(
     assert r.status_code == 200, r.text
     env = r.json()
     assert_envelope_valid(env)
-    assert env["abstained"] is True
-    assert env["badge"] == "ABSTAIN"
-    assert env["rows"] == []
-    assert env["sql_used"] is None
-    blob = r.text
-    assert "sql_relation_not_granted" in blob
-    assert "validate:sql_relation_not_granted" in env["assumptions"]
-    assumptions = " ".join(str(item) for item in env["assumptions"])
-    assert "inventory" not in assumptions
-    assert "warehouse_" not in assumptions
-    assert "20,516.00" not in blob
-    assert "20516" not in blob
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["rows"]
+    assert "20,516.00" in env["text"] or "20516" in env["text"]
+    assert "scope conflict" not in env["text"].lower()
     assert len(cortex.asks) == 1
 
 

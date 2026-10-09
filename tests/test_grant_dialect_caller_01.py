@@ -23,13 +23,14 @@ from dms_executor.ontology import ObjectType, Ontology, WherePath
 ROOT = Path(__file__).resolve().parents[1]
 _PACKAGE = ROOT / "packages" / "executor" / "dms_executor"
 
-# Legal shape: the declaration, plus a dialect lookup table. No file list.
+# Legal shape: the declaration, plus lookup tables keyed by that name.
 _CLEAN = """
 SERVING_DIALECT = "duckdb"
-_DIALECTS = {"duckdb": "duckdb", "postgres": "postgres"}
-_DEFAULT_SCHEMA = {"duckdb": "main"}
+_DIALECTS = {SERVING_DIALECT: SERVING_DIALECT, "postgres": "postgres"}
+_DEFAULT_SCHEMA = {SERVING_DIALECT: "main"}
 """
 _PLANT = _CLEAN + """
+LOOKUP = {"duckdb": "other"}
 def read(sql):
     return parse(sql, read="duckdb")
 """
@@ -188,19 +189,13 @@ def _assigned_name(node: ast.AST) -> tuple[str | None, ast.AST | None]:
 
 
 def _lookup_ids(tree: ast.AST) -> set[int]:
-    """``"duckdb"`` keys, and a value only when its key is the same name."""
-    found: set[int] = set()
-    for node in ast.walk(tree):
-        _name, value = _assigned_name(node)
-        if not isinstance(value, ast.Dict):
-            continue
-        for key, val in zip(value.keys, value.values, strict=False):
-            key_is = isinstance(key, ast.Constant) and key.value == "duckdb"
-            if key_is:
-                found.add(id(key))
-            if key_is and isinstance(val, ast.Constant) and val.value == "duckdb":
-                found.add(id(val))
-    return found
+    """No string ``"duckdb"`` is a lookup entry.
+
+    A dict keyed by the imported name ``SERVING_DIALECT`` is not a literal.
+    A planted ``{"duckdb": ...}`` key is a literal and stays a hit.
+    """
+    del tree
+    return set()
 
 
 def _declarations(tree: ast.AST) -> list[ast.Constant]:
@@ -259,11 +254,16 @@ def serve_package_duckdb_hits(root: Path) -> list[str]:
 
 
 def test_planted_duckdb_literal_is_red_and_the_package_is_green() -> None:
-    """A second literal is red. The declaration and lookup tables are not a file list."""
+    """A second literal is red. A string dict key is red. The declaration is not."""
     assert duckdb_literal_hits(_CLEAN) == []
     planted = duckdb_literal_hits(_PLANT)
-    assert planted, "a planted read=\"duckdb\" in serve code must fail the scan"
-    assert duckdb_literal_hits(_PLANT.replace('read="duckdb"', "read=SERVING_DIALECT")) == []
+    assert planted, "a planted {\"duckdb\": ...} key in serve code must fail the scan"
+    assert any(
+        line > 0 for line in planted
+    )
+    cleared = _PLANT.replace('{"duckdb": "other"}', "{SERVING_DIALECT: SERVING_DIALECT}")
+    cleared = cleared.replace('read="duckdb"', "read=SERVING_DIALECT")
+    assert duckdb_literal_hits(cleared) == []
     package = serve_package_duckdb_hits(_PACKAGE)
     assert package == [], package
     assert SERVING_DIALECT == "duckdb"

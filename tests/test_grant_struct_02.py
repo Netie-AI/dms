@@ -460,7 +460,14 @@ def test_fallback_refuses_every_serve_gap(
     user = exe.answer_user_sql(sql, space_id=OPS, session_id="ses_hole_user")
     assert user["abstained"] is True, name
     assert user["sql_used"] is None, name
-    assert reason in _reason(user), name
+    from dms_executor.grant_struct import customer_grant_reason
+
+    shown_user = customer_grant_reason(reason)
+    assert shown_user in _reason(user), name
+    if shown_user == "ungranted":
+        user_blob = json.dumps(user)
+        for part in reason.split(":", 1)[1].split(","):
+            assert part not in user_blob, name
 
     before = len(_sql_submits(model.submits))
     with pytest.raises(SecurityEvent) as ei:
@@ -517,7 +524,12 @@ def test_fallback_refuses_every_serve_gap(
     )
     assert followed["abstained"] is True, name
     assert followed["sql_used"] is None, name
-    assert reason in _reason(followed), name
+    shown_fu = customer_grant_reason(reason)
+    assert shown_fu in _reason(followed), name
+    if shown_fu == "ungranted":
+        fu_blob = json.dumps(followed)
+        for part in reason.split(":", 1)[1].split(","):
+            assert part not in fu_blob, name
 
     fb = _Fallback(sql)
     fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
@@ -537,12 +549,9 @@ def test_fallback_refuses_every_serve_gap(
     assert _sql_submits(fb.submits) == [], name
 
 
+# Unclassified scalars are not relations. A function in the relation slot is.
 _SCALAR_FNS = ("read_text", "read_csv_auto", "read_parquet", "glob")
-_SCALAR_SLOTS = (
-    "SELECT {fn}('/tmp/x') AS v",
-    "SELECT 1 AS n FROM orders WHERE {fn}('/tmp/x') IS NOT NULL",
-    "SELECT * FROM (SELECT {fn}('/tmp/x') AS v) s",
-)
+_SCALAR_SLOTS = ("SELECT * FROM {fn}('/tmp/x')",)
 
 
 @pytest.mark.parametrize("fn", _SCALAR_FNS)
@@ -634,7 +643,9 @@ def test_other_schema_refuses_before_explain(
     fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
     fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_schema_fb")
     assert fb_env["abstained"] is True, sql
-    assert "sql_relation_not_granted" in _reason(fb_env), sql
+    # The schema is not in this file, so the catalog cannot bind it.
+    assert "sql_relation_unresolved" in _reason(fb_env), sql
+    assert "other_schema" not in json.dumps(fb_env), sql
     assert _sql_submits(fb.submits) == [], sql
     assert explained == [], sql
 
@@ -727,7 +738,10 @@ def test_qualified_mismatch_refuses_before_submit(
     fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
     fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_qual_fb")
     assert fb_env["abstained"] is True
-    assert "sql_relation_not_granted" in _reason(fb_env)
+    # No such schema in the file: the qualifier does not resolve.
+    assert "sql_relation_unresolved" in _reason(fb_env)
+    schema = [part.strip().strip('"') for part in relation.split(".")][-2]
+    assert schema not in json.dumps(fb_env)
     assert _sql_submits(fb.submits) == []
 
 
@@ -989,3 +1003,184 @@ def test_postgres_schema_without_dialect_is_unknown() -> None:
     assert serve_gap(
         "SELECT 1 FROM src_a.orders", grantable=granted, dialect="   "
     ) == "sql_dialect_unknown"
+
+
+_DIGIT_STEMS = (
+    "01_clean_sales",
+    "02_title_above_header",
+    "06_malay_headers",
+    "07_thousands_separators",
+    "08_merged_header_sim",
+    "10_type_inconsistent",
+    "12_title_and_trailing",
+    "14_malay_dirty_numbers",
+    "15_q3_sales_export_Q3",
+)
+
+
+def test_digit_leading_relation_is_a_grant_key() -> None:
+    """A digit-leading stem normalises, quoted or not. An ungranted one refuses."""
+    assert len(_DIGIT_STEMS) == 9
+    for stem in _DIGIT_STEMS:
+        grant = f"bronze.{stem}"
+        quoted = f'SELECT * FROM bronze."{stem}"'
+        assert normalize_relation(grant, dialect="duckdb") == normalize_relation(
+            f'bronze."{stem}"', dialect="duckdb"
+        )
+        assert serve_gap(quoted, grantable={grant}, dialect="duckdb") is None, stem
+    refused = serve_gap(
+        'SELECT * FROM bronze."99_not_a_grant"',
+        grantable={"bronze.01_clean_sales"},
+        dialect="duckdb",
+    )
+    assert refused == "sql_relation_not_granted"
+    assert refused is not None and "99_not_a_grant" not in refused
+
+
+def test_digit_leading_uploads_are_askable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nine digit-leading uploads serve end to end when that relation is granted."""
+    db = ensure_demo_warehouse(tmp_path / "digits.duckdb")
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        for stem in _DIGIT_STEMS:
+            con.execute(f'CREATE TABLE bronze."{stem}" (n INTEGER)')
+            con.execute(f'INSERT INTO bronze."{stem}" VALUES (1)')
+    finally:
+        con.close()
+    _grant_names(monkeypatch, tuple(f"bronze.{stem}" for stem in _DIGIT_STEMS))
+    exe = Executor(warehouse_path=db)
+    for stem in _DIGIT_STEMS:
+        env = exe.answer_user_sql(
+            f'SELECT n FROM bronze."{stem}"',
+            space_id=OPS,
+            session_id="ses_digit",
+        )
+        assert_envelope_valid(env)
+        assert env["abstained"] is False, stem
+        assert env["rows"] == [{"n": 1}], stem
+    missing = exe.answer_user_sql(
+        'SELECT n FROM bronze."99_not_a_grant"',
+        space_id=OPS,
+        session_id="ses_digit_no",
+    )
+    assert missing["abstained"] is True
+    assert "99_not_a_grant" not in json.dumps(missing)
+
+
+def test_scalar_functions_serve_and_readers_refuse() -> None:
+    """The grant decision is the relations. Typed readers and scripts still refuse."""
+    grants = {"orders"}
+    serve = (
+        "SELECT CASE WHEN amount < 0 THEN error('neg') ELSE amount END FROM orders",
+        "SELECT printf('%d items', 3)",
+        "SELECT CAST(1 AS INTEGER)",
+        "SELECT date_trunc('day', DATE '2020-01-01')",
+        "SELECT * FROM generate_series(1, 3)",
+        "SELECT * FROM unnest([1, 2, 3])",
+    )
+    for sql in serve:
+        assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
+    refuse = (
+        "SELECT * FROM read_csv('x.csv')",
+        "SELECT * FROM read_parquet('x.parquet')",
+        "ATTACH 'x.duckdb' AS other",
+        "COPY orders TO 'x.csv'",
+    )
+    for sql in refuse:
+        gap = serve_gap(sql, grantable=grants, dialect="duckdb")
+        assert gap, sql
+        assert gap.startswith("hostile_sql:") or gap == "sql_relation_not_granted", gap
+
+
+def test_catalog_binds_a_qualified_name_to_the_same_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Database.table is the granted table when the catalog binds them together."""
+    db = ensure_demo_warehouse(tmp_path / "warehouse.duckdb")
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "warehouse"."inventory"',
+            grantable={"inventory"},
+            dialect="duckdb",
+            warehouse=db,
+        )
+        is None
+    )
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA other_schema")
+        con.execute("CREATE TABLE other_schema.orders (id INTEGER)")
+        con.execute("CREATE TABLE orders (id INTEGER)")
+    finally:
+        con.close()
+    assert (
+        serve_gap(
+            "SELECT 1 FROM other_schema.orders",
+            grantable={"orders"},
+            dialect="duckdb",
+            warehouse=db,
+        )
+        == "sql_relation_not_granted"
+    )
+    gap = serve_gap(
+        'SELECT 1 FROM "zz_missing_qual"."inventory"',
+        grantable={"inventory"},
+        dialect="duckdb",
+        warehouse=db,
+    )
+    assert gap == "sql_relation_unresolved"
+    assert "zz_missing_qual" not in (gap or "")
+    assert "inventory" not in (gap or "")
+    sql = 'SELECT 1 FROM "zz_missing_qual"."zz_no_such_table"'
+    fb = _Fallback(sql)
+    exe = Executor(
+        cortex=fb, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_unresolved")
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["sql_used"] is None
+    assert "validate:sql_relation_unresolved" in _reason(env)
+    blob = json.dumps(env)
+    assert "zz_missing_qual" not in blob
+    assert "zz_no_such_table" not in blob
+
+
+def test_ungranted_name_stays_out_of_both_envelopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """User SQL and follow-up mask the relation. The ticket keeps it."""
+    planted = "zz_planted_secret"
+    sql = f"SELECT 1 FROM {planted}"
+    db = ensure_demo_warehouse(tmp_path / "mask.duckdb")
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level("WARNING", logger="dms_executor.pipeline_failure")
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id="ses_mask_user"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is True
+    assert planted not in json.dumps(user)
+    follow = run_followup_sql(
+        sql,
+        warehouse=db,
+        space_id=OPS,
+        session_id="ses_mask_fu",
+        question="how many",
+        why="mask",
+        text="no",
+        grantable={"orders"},
+        dialect="duckdb",
+    )
+    assert_envelope_valid(follow)
+    assert follow["abstained"] is True
+    assert planted not in json.dumps(follow)
+    reasons = [
+        json.loads(rec.message.split(" ", 1)[1]).get("reason")
+        for rec in caplog.records
+        if rec.message.startswith("pipeline_failure ")
+    ]
+    assert f"ungranted:{planted}" in reasons

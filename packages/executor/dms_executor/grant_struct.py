@@ -14,7 +14,9 @@ on ``;``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import sqlglot
@@ -23,14 +25,15 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 
 from dms_executor.abstain import build_abstain
-from dms_executor.demo_warehouse import clear_engine_clock
+from dms_executor.demo_warehouse import SERVING_DIALECT, clear_engine_clock, connect_file
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 
 # SourceConfig.kind plus the warehouse dialect. Not a block list.
+# Keys are the kind the caller already has. The serving name is the constant.
 _DIALECTS = {
-    "duckdb": "duckdb",
+    SERVING_DIALECT: SERVING_DIALECT,
     "postgres": "postgres",
     "postgresql": "postgres",
     "mysql": "mysql",
@@ -71,19 +74,19 @@ def normalize_relation(name: str, *, dialect: str | None) -> str | None:
     text = str(name or "").strip()
     if not text:
         return None
-    try:
-        tree = sqlglot.parse_one(f"SELECT * FROM {text}", read=dialect_name)
-    except SqlglotError:
-        return None
-    if tree is None:
-        return None
-    table = next(tree.find_all(exp.Table), None)
+    table = _parsed_table(text, dialect_name, engine)
     if table is None:
         return None
     return _table_key(table, dialect_name, engine)
 
 
-def serve_gap(sql: str, *, grantable: set[str], dialect: str | None) -> str | None:
+def serve_gap(
+    sql: str,
+    *,
+    grantable: set[str],
+    dialect: str | None,
+    warehouse: Path | None = None,
+) -> str | None:
     """None when the statement is one granted read.
 
     Order: the dialect has to be one sqlglot knows, then parse, then one
@@ -107,7 +110,8 @@ def serve_gap(sql: str, *, grantable: set[str], dialect: str | None) -> str | No
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    return _allow(trees[0], grantable, dialect)
+    catalog = _catalog_for(trees[0], warehouse, dialect)
+    return _allow(trees[0], grantable, dialect, catalog)
 
 
 def relation_gap(name: str, *, grantable: set[str], dialect: str | None) -> str | None:
@@ -152,18 +156,24 @@ def sql_refusal_envelope(
     session_id: str | None,
     route: str,
     question: str | None,
+    shown: str | None = None,
 ) -> dict[str, Any]:
-    """Named ABSTAIN. The statement did not run. No path in the envelope."""
+    """Named ABSTAIN. The statement did not run. No path in the envelope.
+
+    ``reason`` is the ticket. ``shown`` is the envelope code. Callers that
+    must hide a table name pass ``shown``. Other callers show ``reason``.
+    """
+    visible = reason if shown is None else shown
     env = build_abstain(
         reason=reason,
         question=question or "",
         stage=route or "unspecified",
         answer_id="ans_sql_refused",
-        text=customer_abstain_text(reason),
+        text=customer_abstain_text(visible),
         rows=[],
         values=[],
         sql_used=None,
-        assumptions=[f"validate:{reason}"],
+        assumptions=[f"validate:{visible}"],
         as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         space_id=space_id,
         session_id=session_id,
@@ -234,7 +244,7 @@ def _relations(tree: exp.Expression) -> list[tuple[str, str]]:
 # resolves to public. TSQL's built-in default is dbo. Snowflake's current
 # schema is the session, so a bare name stays unqualified.
 _DEFAULT_SCHEMA = {
-    "duckdb": "main",
+    SERVING_DIALECT: "main",
     "postgres": "public",
     "tsql": "dbo",
 }
@@ -335,20 +345,15 @@ def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
     return keys
 
 
-def _literal_call(node: exp.Expression) -> bool:
-    """Unclassified function of literals only: a path or a query string."""
-    args = list(node.expressions or [])
-    return bool(args) and all(isinstance(arg, exp.Literal) for arg in args)
-
-
 def _external_read(tree: exp.Expression) -> bool:
-    """A table or external-read function in any position, not only FROM."""
-    for node in tree.walk():
-        if isinstance(node, (exp.ReadCSV, exp.ReadParquet)):
-            return True
-        if isinstance(node, exp.Anonymous) and _literal_call(node):
-            return True
-    return False
+    """A parser-typed file reader anywhere in the tree.
+
+    An unclassified scalar (``error``, ``printf``) is not a relation. The
+    grant decision is which relations the statement reads. A function the
+    parser leaves unclassified and places in the relation slot is handled
+    in ``_allow``, because that slot is not a granted name.
+    """
+    return any(isinstance(node, (exp.ReadCSV, exp.ReadParquet)) for node in tree.walk())
 
 
 def _cte_keys(tree: exp.Expression, engine: Dialect) -> set[str]:
@@ -364,7 +369,12 @@ def _cte_keys(tree: exp.Expression, engine: Dialect) -> set[str]:
     return names
 
 
-def _allow(tree: exp.Expression, grantable: set[str], dialect: str | None) -> str | None:
+def _allow(
+    tree: exp.Expression,
+    grantable: set[str],
+    dialect: str | None,
+    catalog: _Catalog | None = None,
+) -> str | None:
     found = _engine(dialect)
     if found is None:
         return "sql_dialect_unknown"
@@ -373,6 +383,7 @@ def _allow(tree: exp.Expression, grantable: set[str], dialect: str | None) -> st
         return "sql_relation_not_granted"
     default = _default_schema(dialect_name, engine)
     keys = _grant_keys(grantable, dialect)
+    granted_rows = _grant_rows(grantable, dialect, catalog)
     ctes = _cte_keys(tree, engine)
     not_relation = False
     qualified_miss = False
@@ -382,10 +393,11 @@ def _allow(tree: exp.Expression, grantable: set[str], dialect: str | None) -> st
         this = table.this
         if not isinstance(this, exp.Identifier):
             # A function in the relation slot is not a granted name.
+            # A typed value generator (generate_series) reads no relation.
             # Placeholder and a deeper dot have no name to settle.
-            if isinstance(this, exp.Func):
+            if isinstance(this, exp.Anonymous):
                 not_relation = True
-            else:
+            elif not isinstance(this, exp.Func):
                 unsettled = True
             continue
         nodes = [
@@ -410,11 +422,25 @@ def _allow(tree: exp.Expression, grantable: set[str], dialect: str | None) -> st
         if len(names) == 1 and names[0] in ctes:
             continue
         had_qualifier = bool(table.args.get("db") or table.args.get("catalog"))
+        cited = list(names)
         if len(names) == 1 and default:
             names = [default, names[0]]
         key = _relation_key(names)
         if key in keys:
             continue
+        if catalog is not None and had_qualifier:
+            # Same catalog row as a grant is granted. A different row is not.
+            # A qualifier that is not a schema and not this database is
+            # unresolved. A known schema with no such table keeps the old miss.
+            bound = _bind(cited, catalog)
+            if bound is not None:
+                if bound in granted_rows:
+                    continue
+                qualified_miss = True
+                continue
+            if not _qualifier_known(cited, catalog):
+                unsettled = True
+                continue
         # One identifier that contains '.' is a path or a stored name
         # (``"usd.book"``). An exact grant key already continued. A miss is
         # not a default-schema table: ``ungranted:`` would echo the name.
@@ -436,3 +462,229 @@ def _allow(tree: exp.Expression, grantable: set[str], dialect: str | None) -> st
     if missing:
         return "ungranted:" + ",".join(sorted(missing))
     return None
+
+
+def _parsed_table(text: str, dialect_name: str, engine: Dialect) -> exp.Table | None:
+    """One table from ``text``. A digit-leading part is quoted so it can parse."""
+    tree = _parse_from(text, dialect_name)
+    if tree is None:
+        quoted = _quote_digit_leading(text, engine)
+        if not quoted:
+            return None
+        tree = _parse_from(quoted, dialect_name)
+    if tree is None:
+        return None
+    table = next(tree.find_all(exp.Table), None)
+    if not isinstance(table, exp.Table):
+        return None
+    return table
+
+
+def _parse_from(text: str, dialect_name: str) -> exp.Expression | None:
+    try:
+        return sqlglot.parse_one(f"SELECT * FROM {text}", read=dialect_name)
+    except SqlglotError:
+        return None
+
+
+def _quote_digit_leading(text: str, engine: Dialect) -> str | None:
+    """Quote bare parts whose first character is a digit. Already-quoted parts stay."""
+    parts = _split_qualified(text)
+    if not parts:
+        return None
+    quote = str(engine.IDENTIFIER_START or '"')
+    end = str(engine.IDENTIFIER_END or quote)
+    changed = False
+    rendered: list[str] = []
+    for part in parts:
+        if not part:
+            return None
+        if part[0] in {'"', "'", "`", "["}:
+            rendered.append(part)
+            continue
+        if part[0].isdigit():
+            changed = True
+            inner = part.replace(end, end + end)
+            rendered.append(f"{quote}{inner}{end}")
+            continue
+        rendered.append(part)
+    if not changed:
+        return None
+    return ".".join(rendered)
+
+
+def _split_qualified(text: str) -> list[str] | None:
+    """Split on dots that are outside identifier quotes."""
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    pairs = {'"': '"', "'": "'", "`": "`", "[": "]"}
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote:
+                if i + 1 < len(text) and text[i + 1] == quote:
+                    buf.append(text[i + 1])
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if ch in pairs:
+            quote = pairs[ch]
+            buf.append(ch)
+        elif ch == ".":
+            parts.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    if quote is not None:
+        return None
+    parts.append("".join(buf).strip())
+    return parts
+
+
+@dataclass(frozen=True)
+class _Catalog:
+    """Relations the executor file actually has. Names are already normalised."""
+
+    database: str
+    default_schema: str
+    schemas: frozenset[str]
+    rows: frozenset[tuple[str, str]]
+
+
+def _catalog_for(
+    tree: exp.Expression, warehouse: Path | None, dialect: str | None
+) -> _Catalog | None:
+    """Read the file only when the statement cites a qualifier."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    if not any(
+        table.args.get("db") or table.args.get("catalog")
+        for table in tree.find_all(exp.Table)
+    ):
+        return None
+    found = _engine(dialect)
+    if found is None:
+        return None
+    _name, engine = found
+    try:
+        con = connect_file(Path(warehouse))
+    except Exception:  # noqa: BLE001 - no catalog, the name check stays on keys
+        return None
+    try:
+        db_row = con.execute("SELECT current_database()").fetchone()
+        schema_row = con.execute("SELECT current_schema()").fetchone()
+        # information_schema and pg_catalog live in the system database.
+        # A qualifier that names one of them is a real schema, not unresolved.
+        schema_listed = con.execute(
+            "SELECT schema_name FROM duckdb_schemas() "
+            "WHERE database_name NOT IN ('temp')"
+        ).fetchall()
+        listed = con.execute(
+            "SELECT schema_name, table_name FROM duckdb_tables() "
+            "WHERE database_name = current_database() "
+            "AND database_name NOT IN ('system', 'temp')"
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        con.close()
+    if not db_row or not schema_row:
+        return None
+    database = _norm_ident(exp.to_identifier(str(db_row[0])), engine)
+    default_schema = _norm_ident(exp.to_identifier(str(schema_row[0])), engine)
+    if not database or not default_schema:
+        return None
+    rows: set[tuple[str, str]] = set()
+    schemas: set[str] = set()
+    for (schema_name,) in schema_listed:
+        schema = _norm_ident(exp.to_identifier(str(schema_name)), engine)
+        if schema:
+            schemas.add(schema)
+    for schema_name, table_name in listed:
+        schema = _norm_ident(exp.to_identifier(str(schema_name)), engine)
+        table = _norm_ident(exp.to_identifier(str(table_name)), engine)
+        if schema and table:
+            schemas.add(schema)
+            rows.add((schema, table))
+    return _Catalog(
+        database=database,
+        default_schema=default_schema,
+        schemas=frozenset(schemas),
+        rows=frozenset(rows),
+    )
+
+
+def _qualifier_known(names: list[str], catalog: _Catalog) -> bool:
+    """True when the qualifier is a schema or this database. The table may be missing."""
+    if len(names) == 2:
+        qualifier = names[0]
+        return qualifier in catalog.schemas or qualifier == catalog.database
+    if len(names) == 3:
+        database, schema, _table = names
+        return database == catalog.database and schema in catalog.schemas
+    return False
+
+
+def _bind(names: list[str], catalog: _Catalog) -> tuple[str, str] | None:
+    """``(schema, table)`` the catalog binds, or None when the qualifier does not."""
+    if len(names) == 2:
+        qualifier, table = names
+        if qualifier in catalog.schemas and (qualifier, table) in catalog.rows:
+            return (qualifier, table)
+        if qualifier == catalog.database and (catalog.default_schema, table) in catalog.rows:
+            return (catalog.default_schema, table)
+        return None
+    if len(names) == 3:
+        database, schema, table = names
+        if (
+            database == catalog.database
+            and schema in catalog.schemas
+            and (schema, table) in catalog.rows
+        ):
+            return (schema, table)
+        return None
+    return None
+
+
+def _grant_rows(
+    grantable: set[str], dialect: str | None, catalog: _Catalog | None
+) -> set[tuple[str, str]]:
+    """Catalog rows a grant token binds to. Empty when there is no catalog."""
+    if catalog is None:
+        return set()
+    found = _engine(dialect)
+    if found is None:
+        return set()
+    dialect_name, engine = found
+    rows: set[tuple[str, str]] = set()
+    for raw in grantable:
+        token = str(raw).strip()
+        if not token:
+            continue
+        table = _parsed_table(token, dialect_name, engine)
+        if table is None:
+            continue
+        nodes = [
+            node
+            for node in (table.args.get("catalog"), table.args.get("db"), table.this)
+            if isinstance(node, exp.Identifier)
+        ]
+        names: list[str] = []
+        for node in nodes:
+            text = _norm_ident(node, engine)
+            if not text:
+                names = []
+                break
+            names.append(text)
+        if len(names) == 1:
+            names = [catalog.default_schema, names[0]]
+        bound = _bind(names, catalog)
+        if bound is not None:
+            rows.add(bound)
+    return rows

@@ -19,7 +19,11 @@ from dms_executor.envelope import (
     build_answer_envelope,
     reserved_as_of_abstain,
 )
-from dms_executor.grant_struct import serve_gap, sql_refusal_envelope
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    serve_gap,
+    sql_refusal_envelope,
+)
 
 _AVG = re.compile(r"^\s*average of them\s*[.?]?\s*$", re.I)
 _ADD = re.compile(r"^\s*add\s+(-?\d+(?:\.\d+)?)\s*[.?]?\s*$", re.I)
@@ -148,10 +152,15 @@ def _followup_execute(
             route="followup",
             question=question,
         )
-    gap = serve_gap(sql, grantable=set(grantable or ()), dialect=dialect)
+    gap = serve_gap(
+        sql,
+        grantable=set(grantable or ()),
+        dialect=dialect,
+    )
     if gap:
         return None, sql_refusal_envelope(
             reason=gap,
+            shown=customer_grant_reason(gap),
             space_id=space_id,
             session_id=session_id,
             route="followup",

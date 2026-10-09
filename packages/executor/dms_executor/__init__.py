@@ -290,7 +290,11 @@ class Executor:
     ) -> list[dict[str, Any]]:
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
-        gap = serve_gap(sql, grantable=set(grantable or ()), dialect=self.dialect)
+        gap = serve_gap(
+            sql,
+            grantable=set(grantable or ()),
+            dialect=self.dialect,
+        )
         if gap:
             raise SecurityEvent(gap, gap)
         ensure_demo_warehouse(self._warehouse)
@@ -319,6 +323,7 @@ class Executor:
         if gap:
             return sql_refusal_envelope(
                 reason=gap,
+                shown=customer_grant_reason(gap),
                 space_id=space_id,
                 session_id=session_id,
                 route="user_sql",
@@ -592,7 +597,7 @@ class Executor:
                 out,
                 payload if isinstance(payload, dict) else None,
                 raw_loop if isinstance(raw_loop, list) else None,
-                dialect=extract_dialect(getattr(self, "_warehouse", None)),
+                dialect=extract_dialect(self.dialect),
             )
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
@@ -949,12 +954,17 @@ class Executor:
                 raise AskServiceError(err.code, err.detail) from exc
         raw_sql = getattr(resp, "sql_used", None)
         if raw_sql and str(raw_sql).strip() and not getattr(resp, "abstained", False):
-            gap = serve_gap(str(raw_sql), grantable=set(readable), dialect=self.dialect)
+            gap = serve_gap(
+                str(raw_sql),
+                grantable=set(readable),
+                dialect=self.dialect,
+                warehouse=self._warehouse,
+            )
             if gap:
-                # The code only. The table name is not user-visible here.
-                # The envelope builder records the code.
+                # The envelope shows the code. The ticket keeps the relation.
                 refused = sql_refusal_envelope(
-                    reason=customer_grant_reason(gap),
+                    reason=gap,
+                    shown=customer_grant_reason(gap),
                     space_id=space_id,
                     session_id=session_id,
                     route="abstain",
@@ -991,7 +1001,9 @@ class Executor:
             raise RuntimeError("CortexClient required for submit")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
         gap = serve_gap(
-            sql, grantable=set(acl.row_predicates), dialect=self.dialect
+            sql,
+            grantable=set(acl.row_predicates),
+            dialect=self.dialect,
         )
         if gap:
             raise SecurityEvent(gap, gap)

@@ -110,9 +110,7 @@ from dms_executor.semantic_retrieve import (
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
-    EXTRACT_DIALECT,
     apply_sql_credit,
-    extract_dialect,
     loop_entry,
     run_model_loop,
 )
@@ -1363,7 +1361,8 @@ def maybe_generative_ask(
     q = normalize_ask_question(question)
     if not q:
         return None
-    if sqlglot_dialect(dialect) is None:
+    resolved = sqlglot_dialect(dialect)
+    if resolved is None:
         return sql_refusal_envelope(
             reason="sql_dialect_unknown",
             space_id=space_id,
@@ -1371,6 +1370,7 @@ def maybe_generative_ask(
             route="generated",
             question=q,
         )
+    dialect = resolved
     if is_uncertified_paraphrase(q):
         return _abstain(
             q, "uncertified paraphrase: not a generative certify boundary",
@@ -1474,8 +1474,6 @@ def maybe_generative_ask(
     trail_notes: list[str] = []
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
-    dialect = EXTRACT_DIALECT if cloop_b_enabled() else extract_dialect(lake)
-
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
         if not isinstance(env, dict):
