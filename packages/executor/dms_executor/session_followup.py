@@ -204,6 +204,22 @@ def run_followup_sql(
     )
 
 
+def _followup_relation(
+    grantable: set[str] | None, prior: dict[str, Any] | None
+) -> str | None:
+    """A granted base table for a follow-up constant. None if the space grants none.
+
+    The figure is already known. The statement still has to read a granted
+    table, or the grant check refuses it.
+    """
+    grants = {str(name).strip() for name in (grantable or ()) if str(name).strip()}
+    cited = [str(name).strip() for name in ((prior or {}).get("grounded_tables") or [])]
+    for name in [item for item in cited if item in grants] + sorted(grants):
+        if name.isidentifier():
+            return name
+    return None
+
+
 def maybe_followup(
     question: str,
     *,
@@ -233,7 +249,17 @@ def maybe_followup(
                 why="average of them: no prior numeric values",
             )
         expr = " + ".join(f"{n:.10g}" for n in nums)
-        sql = f"SELECT ROUND(({expr}) / {len(nums)}.0, 2) AS average_myr"
+        relation = _followup_relation(grantable, prior)
+        if relation is None:
+            return _abstain(
+                space_id=space_id,
+                session_id=session_id,
+                why="average of them: no granted table",
+            )
+        sql = (
+            f"SELECT ROUND(({expr}) / {len(nums)}.0, 2) AS average_myr "
+            f"FROM {relation} LIMIT 1"
+        )
         try:
             rows, refused = _followup_execute(
                 sql,
@@ -269,7 +295,17 @@ def maybe_followup(
             session_id=session_id,
             why="add N: prior turn was not a single scalar",
         )
-    sql = f"SELECT ROUND({nums[0]:.10g} + {delta:.10g}, 2) AS adjusted_myr"
+    relation = _followup_relation(grantable, prior)
+    if relation is None:
+        return _abstain(
+            space_id=space_id,
+            session_id=session_id,
+            why="add N: no granted table",
+        )
+    sql = (
+        f"SELECT ROUND({nums[0]:.10g} + {delta:.10g}, 2) AS adjusted_myr "
+        f"FROM {relation} LIMIT 1"
+    )
     try:
         rows, refused = _followup_execute(
             sql,

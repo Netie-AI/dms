@@ -82,7 +82,7 @@ from dms_core.pii import (
     is_mask_token,
 )
 
-from dms_executor.grant_struct import normalize_relation, sqlglot_dialect
+from dms_executor.grant_struct import relation_gap, sqlglot_dialect
 from dms_executor.ontology import Ontology, relation_tables
 
 # ponytail: 4 characters per token. Ceiling: a model tokenizer disagrees.
@@ -476,22 +476,14 @@ def _dataset_items(schema: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 
 def _granted(name: str, grantable: set[str] | None, *, dialect: str) -> str | None:
-    """None when ``name`` is granted. Same dialect miss as ``serve_gap``.
+    """None when ``name`` is granted. Same keys as ``serve_gap``.
 
-    A missing or unknown dialect is ``sql_dialect_unknown``. There is no
-    serving-dialect fallback. ``grantable is None`` means this caller is
-    not filtering.
+    ``grantable is None`` means this caller is not filtering. Any other
+    miss is ``relation_gap``.
     """
     if grantable is None:
         return None
-    if sqlglot_dialect(dialect or "") is None:
-        return "sql_dialect_unknown"
-    key = normalize_relation(name, dialect=dialect)
-    if not key:
-        return "sql_relation_unresolved"
-    if any(normalize_relation(str(token), dialect=dialect) == key for token in grantable):
-        return None
-    return "sql_relation_not_granted"
+    return relation_gap(name, grantable=set(grantable), dialect=dialect)
 
 
 def _column_items(dataset: Mapping[str, Any]) -> list[Mapping[str, Any]]:

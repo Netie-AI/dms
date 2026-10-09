@@ -302,7 +302,7 @@ def test_ungranted_relation_refuses_every_entry(
     held = register_verified_query(
         space_id=OPS,
         question=f"vq hold {name}",
-        sql="SELECT 1 AS n",
+        sql="SELECT 1 AS n FROM inventory",
         path=db,
         dialect="duckdb",
     )
@@ -769,6 +769,7 @@ def test_normalize_relation_follows_the_engine() -> None:
         "src_a.orders", dialect="snowflake"
     )
     assert normalize_relation("orders", dialect="no-such-engine") is None
+    assert serve_gap("SELECT 1 FROM orders", grantable={"orders"}, dialect="duckdb") is None
     assert serve_gap("SELECT 1 FROM orders", grantable={"orders"}, dialect="nope") == (
         "sql_dialect_unknown"
     )
@@ -1071,18 +1072,25 @@ def test_digit_leading_uploads_are_askable(
 
 
 def test_scalar_functions_serve_and_readers_refuse() -> None:
-    """The grant decision is the relations. Typed readers and scripts still refuse."""
+    """A scalar over a granted relation serves. A statement with no granted table does not."""
     grants = {"orders"}
-    serve = (
-        "SELECT CASE WHEN amount < 0 THEN error('neg') ELSE amount END FROM orders",
+    assert (
+        serve_gap(
+            "SELECT CASE WHEN amount < 0 THEN error('neg') ELSE amount END FROM orders",
+            grantable=grants,
+            dialect="duckdb",
+        )
+        is None
+    )
+    no_table = (
         "SELECT printf('%d items', 3)",
         "SELECT CAST(1 AS INTEGER)",
         "SELECT date_trunc('day', DATE '2020-01-01')",
         "SELECT * FROM generate_series(1, 3)",
         "SELECT * FROM unnest([1, 2, 3])",
     )
-    for sql in serve:
-        assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
+    for sql in no_table:
+        assert serve_gap(sql, grantable=grants, dialect="duckdb") == "ungranted", sql
     refuse = (
         "SELECT * FROM read_csv('x.csv')",
         "SELECT * FROM read_parquet('x.parquet')",
@@ -1184,3 +1192,91 @@ def test_ungranted_name_stays_out_of_both_envelopes(
         if rec.message.startswith("pipeline_failure ")
     ]
     assert f"ungranted:{planted}" in reasons
+
+
+_NO_TABLE = (
+    "SELECT 1",
+    "SELECT 'literal'",
+    "VALUES (1), (2)",
+    "SELECT * FROM generate_series(1, 3)",
+    "SELECT * FROM range(3)",
+    "SELECT * FROM unnest([1, 2, 3])",
+)
+
+
+@pytest.mark.parametrize("sql", _NO_TABLE)
+def test_no_granted_base_table_is_a_direct_http_refusal(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each no-table shape is bare ungranted, before EXPLAIN, over HTTP."""
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from fastapi.testclient import TestClient
+
+    assert serve_gap(sql, grantable={"orders"}, dialect="duckdb") == "ungranted"
+    db = ensure_demo_warehouse(tmp_path / "notable.duckdb")
+
+    class _Plant:
+        def __init__(self) -> None:
+            self.submits: list[Any] = []
+
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+            return {"query_sql": sql, "plan_source": "ontology_plan"}
+
+        def submit(self, req: Any) -> Any:
+            self.submits.append(req)
+            raise AssertionError("submit")
+
+        def ask(self, req: Any) -> Any:
+            raise AssertionError("ask")
+
+        def ledger_append(self, req: Any) -> Any:
+            raise AssertionError("ledger")
+
+    plant = _Plant()
+    app = create_app()
+    exe = Executor(
+        cortex=plant, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    app.state.ask_service = exe
+    app.state.cortex = plant
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": "b7 no table probe", "session_id": "ses_b7"},
+    )
+    assert response.status_code == 200, response.text
+    env = response.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, sql
+    assert env["badge"] == "ABSTAIN", sql
+    assert env["sql_used"] is None, sql
+    assert env["rows"] == [], sql
+    assert env["answer_id"] == "ans_gen01_abstain", sql
+    blob = json.dumps(env)
+    assert "ungranted" in blob, sql
+    assert "explain:" not in blob, sql
+    assert plant.submits == [], sql
+
+
+def test_usd_book_grant_is_the_same_verdict() -> None:
+    """Grant usd.book covers the one-identifier table \"usd.book\" at every call site."""
+    from dms_executor.demo_pack import _grant_covers
+    from dms_executor.grant_struct import relation_gap
+    from dms_executor.ontology import ungranted_tables
+    from dms_executor.schema_context import _granted
+
+    grant = {"usd.book"}
+    table = '"usd.book"'
+    gap = relation_gap(table, grantable=grant, dialect="duckdb")
+    assert gap is None
+    assert ungranted_tables({table}, grant, dialect="duckdb") == ()
+    assert _granted(table, grant, dialect="duckdb") is None
+    assert _grant_covers(table, grant, dialect="duckdb") is True
+    assert serve_gap(
+        "SELECT * FROM \"usd.book\"", grantable=grant, dialect="duckdb"
+    ) is None

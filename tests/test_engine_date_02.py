@@ -371,7 +371,9 @@ def test_live_nosql_after_sql_carries_no_clock(
     from dms_executor.demo_warehouse import current_engine_clock
 
     exe = Executor(warehouse_path=tmp_path / "sql.duckdb")
-    sql_env = exe.answer_user_sql("SELECT 1 AS n", session_id="ses_sql")
+    sql_env = exe.answer_user_sql(
+        "SELECT 1 AS n FROM inventory", session_id="ses_sql"
+    )
     sql_day = sql_env.get("engine_as_of")
     assert sql_day
     nosql = exe.answer_user_sql("SELECT $as_of AS day", session_id="ses_nosql")
@@ -589,11 +591,15 @@ def test_live_sql_nosql_sql_records_keep_own_clocks(
             idx = len(asks)
             asks.append(idx)
             if idx == 0:
-                env = exe.answer_user_sql("SELECT 1 AS n", session_id="ses_a")
+                env = exe.answer_user_sql(
+                    "SELECT 1 AS n FROM inventory", session_id="ses_a"
+                )
             elif idx == 1:
                 env = exe.answer_user_sql("SELECT $as_of AS day", session_id="ses_b")
             elif idx == 2:
-                env = exe.answer_user_sql("SELECT 2 AS n", session_id="ses_c")
+                env = exe.answer_user_sql(
+                    "SELECT 2 AS n FROM inventory", session_id="ses_c"
+                )
             else:
                 env = _envelope(case_clock=False)
             return _Resp(env)

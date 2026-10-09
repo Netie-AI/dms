@@ -102,7 +102,9 @@ def _install(
         if method == "GET" and url.rstrip("/").endswith("/health"):
             return _Resp(_health())
         if method == "POST" and url.rstrip("/").endswith("/v1/chat/ask"):
-            env = exe.answer_user_sql("SELECT 1 AS n", session_id="ses_mask_clock")
+            env = exe.answer_user_sql(
+                "SELECT 1 AS n FROM inventory", session_id="ses_mask_clock"
+            )
             if plant is not None:
                 _plant(env, plant)
             return _Resp(env)

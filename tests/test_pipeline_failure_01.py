@@ -177,7 +177,7 @@ def test_db_error_text_stays_out_of_the_ticket(
 
     def compute(_ctx: dict[str, Any]) -> dict[str, Any]:
         return _names(
-            query_sql=f"SELECT error('{marker}')"
+            query_sql=f"SELECT error('{marker}') FROM locations"
         )
 
     env = _assert_abstain(_ask(tmp_path, "Which locations are cold storage?", compute))

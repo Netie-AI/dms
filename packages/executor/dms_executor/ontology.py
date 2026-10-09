@@ -398,23 +398,17 @@ def relation_tables(relation: str) -> frozenset[str]:
 def ungranted_tables(
     tables: set[str], grantable: set[str], *, dialect: str | None
 ) -> tuple[str, ...]:
-    """Tables whose ``normalize_relation`` key is not in the grant set.
+    """Tables ``relation_gap`` does not grant.
 
     The dialect is the caller's. A missing dialect grants nothing.
     """
-    from dms_executor.grant_struct import normalize_relation
+    from dms_executor.grant_struct import relation_gap
 
-    keys: set[str] = set()
-    for token in grantable:
-        key = normalize_relation(str(token), dialect=dialect)
-        if key:
-            keys.add(key)
     blocked: list[str] = []
     for table in tables:
         if not table:
             continue
-        key = normalize_relation(str(table), dialect=dialect)
-        if not key or key not in keys:
+        if relation_gap(str(table), grantable=set(grantable), dialect=dialect):
             blocked.append(str(table))
     return tuple(sorted(set(blocked)))
 

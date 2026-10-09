@@ -72,7 +72,7 @@ class _GenCortex:
         return AskResponse(
             answer="Cortex fallback.",
             badge="certified",
-            sql_used="SELECT 1 AS cortex_marker",
+            sql_used="SELECT 1 AS cortex_marker FROM inventory",
             rows=[{"cortex_marker": 1}],
             audit_id="aud_gen01_cortex",
             route="sql",

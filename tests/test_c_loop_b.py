@@ -167,7 +167,7 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         seen.append(ctx.get("sql_loop_feedback"))
         if len(seen) == 1:
-            return _names(query_sql="SELECT error('boom')")
+            return _names(query_sql="SELECT error('boom') FROM locations")
         return _names(query_sql=_COLD_SQL)
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)
@@ -533,13 +533,13 @@ def test_missing_extract_does_not_retry(
 
     def compute(_ctx: dict[str, Any]) -> dict[str, Any]:
         calls["n"] += 1
-        return _names(query_sql="SELECT 1 AS n")
+        return _names(query_sql="SELECT 1 AS n FROM locations")
 
     env = _assert_abstain(
         maybe_generative_ask(
             "How many rows?",
             warehouse=tmp_path / "missing.duckdb",
-            grantable=set(),
+            grantable={"locations"},
             compute=compute,
             submit=_submit(tmp_path / "missing.duckdb"),
             ledger_append=_ledger,
@@ -563,7 +563,7 @@ def test_db_error_text_is_masked_before_prompt_and_attempt(
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         seen.append(ctx.get("sql_loop_feedback"))
         if len(seen) == 1:
-            return _names(query_sql=f"SELECT error('{secret_row}')")
+            return _names(query_sql=f"SELECT error('{secret_row}') FROM locations")
         return _names(query_sql=_COLD_SQL)
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)

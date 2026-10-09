@@ -30,6 +30,9 @@ _CAPTURE_DAY = (2026, 10, 8)
 GOLDEN = HERE / "flag_off_52_f9ffc3e1.json"
 # One executing capture of main 57d85c52. as_of is masked at compare time.
 EXEC_MAIN = HERE / "flag_off_52_exec_main.json"
+# Main served these as L0 ``SELECT 1 AS n``. A statement that reads no granted
+# base table is a direct ungranted refusal.
+_CONSTANT_L0 = frozenset({"trap_alerts_ungranted", "trap_high_risk_pending"})
 
 
 def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,11 +181,25 @@ def _text_problem(left: Any, right: Any, *, rows_relaxed: bool) -> str | None:
     return None
 
 
+def _value_rows(values: Any) -> list[Any]:
+    """values[] without the positional id. The row rule grades the cells."""
+    if not isinstance(values, list):
+        return []
+    out: list[Any] = []
+    for item in values:
+        if isinstance(item, dict):
+            out.append({key: val for key, val in item.items() if key != "id"})
+        else:
+            out.append(item)
+    return out
+
+
 def _without_row_order(env: dict[str, Any]) -> dict[str, Any]:
     """Drop fields the row rule already judged. as_of stays masked. checker_version may differ."""
     out = json.loads(json.dumps(env, default=str))
     out.pop("as_of", None)
     out.pop("rows", None)
+    out.pop("values", None)
     out.pop("text", None)
     shadow = out.get("served_check_shadow")
     if isinstance(shadow, dict):
@@ -201,6 +218,11 @@ def flag_off_problems(main: dict[str, Any], got: dict[str, Any]) -> list[str]:
     row_hit = rows_problem(sql, list(main.get("rows") or []), list(got.get("rows") or []))
     if row_hit:
         problems.append(row_hit)
+    val_hit = rows_problem(
+        sql, _value_rows(main.get("values")), _value_rows(got.get("values"))
+    )
+    if val_hit:
+        problems.append(f"values {val_hit}")
     relaxed = row_hit is None and main.get("rows") != got.get("rows")
     text_hit = _text_problem(main.get("text"), got.get("text"), rows_relaxed=relaxed)
     if text_hit:
@@ -235,6 +257,33 @@ def test_planted_row_value_or_dropped_duplicate_fails() -> None:
     key_swap = [base[2], base[0], base[1]]
     assert rows_problem(ordered, tied, tie_swap) is None
     assert rows_problem(ordered, tied, key_swap) == "rows order"
+    values = [
+        {"id": "v0", "value": 2.0, "label": "sku_count"},
+        {"id": "v1", "value": 1.0, "label": "sku_count"},
+    ]
+    # Encounter order rewrites the positional id. The cells are a multiset.
+    shuffled_values = [
+        {"id": "v0", "value": 1.0, "label": "sku_count"},
+        {"id": "v1", "value": 2.0, "label": "sku_count"},
+    ]
+    changed_values = [
+        {"id": "v0", "value": 9.0, "label": "sku_count"},
+        values[1],
+    ]
+    assert rows_problem(sql, _value_rows(values), _value_rows(shuffled_values)) is None
+    assert rows_problem(sql, _value_rows(values), _value_rows(changed_values)) == (
+        "rows multiset"
+    )
+
+
+def _assert_direct_ungranted(env: dict[str, Any], case_id: str) -> None:
+    assert env["abstained"] is True, case_id
+    assert env["badge"] == "ABSTAIN", case_id
+    assert env["sql_used"] is None, case_id
+    assert env["rows"] == [], case_id
+    blob = json.dumps(env)
+    assert "ungranted" in blob, case_id
+    assert "explain:" not in blob, case_id
 
 
 def test_flag_off_executing_matches_main_except_row_order_and_checker(
@@ -259,6 +308,11 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
     for got_row, main_row in zip(live, golden, strict=True):
         got = got_row["env"]
         main = main_row["env"]
+        if got_row["id"] in _CONSTANT_L0:
+            assert main.get("badge") == "L0_CERTIFIED", got_row["id"]
+            assert main.get("sql_used") == "SELECT 1 AS n", got_row["id"]
+            _assert_direct_ungranted(got, got_row["id"])
+            continue
         hit = flag_off_problems(main, got)
         if hit:
             problems.append(f"{got_row['id']}: {hit}")
@@ -278,12 +332,22 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
     assert len(live) == 52
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert [row["id"] for row in live] == [row["id"] for row in golden]
-    left = dump_rows(_stable_rows(live))
-    right = dump_rows(_stable_rows(golden))
+    compared_live: list[dict[str, Any]] = []
+    compared_golden: list[dict[str, Any]] = []
+    for row, gold in zip(live, golden, strict=True):
+        if row["id"] in _CONSTANT_L0:
+            assert gold["env"].get("badge") == "L0_CERTIFIED", row["id"]
+            assert gold["env"].get("sql_used") == "SELECT 1 AS n", row["id"]
+            _assert_direct_ungranted(row["env"], row["id"])
+            continue
+        compared_live.append(row)
+        compared_golden.append(gold)
+    left = dump_rows(_stable_rows(compared_live))
+    right = dump_rows(_stable_rows(compared_golden))
     if left != right:
-        main_rows = {row["id"]: row["env"] for row in golden}
+        main_rows = {row["id"]: row["env"] for row in compared_golden}
         problems: list[str] = []
-        for row in live:
+        for row in compared_live:
             paths = _diff_paths(_stable(row["env"]), _stable(main_rows[row["id"]]))
             if paths:
                 problems.append(f"{row['id']}: {paths}")

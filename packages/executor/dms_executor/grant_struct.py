@@ -98,6 +98,8 @@ def serve_gap(
     ``sql_relation_unresolved``. A reader the parser types as a table or
     external-read function, in any position, is ``sql_relation_not_granted``.
     A missing name in the default schema stays ``ungranted:<name>``.
+    A statement that reads no granted base table is bare ``ungranted``.
+    A table function is not a granted base table.
     """
     if _engine(dialect) is None:
         return "sql_dialect_unknown"
@@ -106,6 +108,15 @@ def serve_gap(
         return "ungranted:unparsed"
     if len(trees) != 1:
         return "multi_statement"
+    # A value constructor is not a SELECT. The non-select scanner is not
+    # this outcome: a VALUES list that reads no granted base table is bare
+    # ungranted. A VALUES that does read one falls through to that scanner.
+    if isinstance(trees[0], exp.Values):
+        gap = _allow(
+            trees[0], grantable, dialect, _catalog_for(trees[0], warehouse, dialect)
+        )
+        if gap:
+            return gap
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
@@ -388,13 +399,16 @@ def _allow(
     not_relation = False
     qualified_miss = False
     unsettled = False
+    saw_granted = False
     missing: set[str] = set()
     for table in tree.find_all(exp.Table):
         this = table.this
         if not isinstance(this, exp.Identifier):
-            # A function in the relation slot is not a granted name.
-            # A typed value generator (generate_series) reads no relation.
-            # Placeholder and a deeper dot have no name to settle.
+            # A function in the relation slot is not a granted base table.
+            # An unclassified reader (read_text, glob) stays not a relation.
+            # A typed generator (generate_series, range) is the same: it
+            # does not count as a grant. Placeholder and a deeper dot have
+            # no name to settle.
             if isinstance(this, exp.Anonymous):
                 not_relation = True
             elif not isinstance(this, exp.Func):
@@ -427,6 +441,7 @@ def _allow(
             names = [default, names[0]]
         key = _relation_key(names)
         if key in keys:
+            saw_granted = True
             continue
         if catalog is not None and had_qualifier:
             # Same catalog row as a grant is granted. A different row is not.
@@ -435,6 +450,7 @@ def _allow(
             bound = _bind(cited, catalog)
             if bound is not None:
                 if bound in granted_rows:
+                    saw_granted = True
                     continue
                 qualified_miss = True
                 continue
@@ -461,6 +477,8 @@ def _allow(
         return "sql_relation_not_granted"
     if missing:
         return "ungranted:" + ",".join(sorted(missing))
+    if not saw_granted:
+        return "ungranted"
     return None
 
 

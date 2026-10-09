@@ -23,7 +23,7 @@ from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.grant_struct import (
-    normalize_relation,
+    relation_gap,
     serve_gap,
     sql_refusal_envelope,
     structural_grant_stop,
@@ -493,17 +493,8 @@ def _as_of() -> str:
 
 
 def _grant_covers(table: str, allowed: set[str], *, dialect: str | None) -> bool:
-    """True when the grant normalises to the same qualified relation.
-
-    The compare is ``normalize_relation`` in the engine dialect. A different
-    spelling of the table is not a grant. A missing dialect covers nothing.
-    """
-    key = normalize_relation(table, dialect=dialect)
-    if not key:
-        return False
-    return any(
-        normalize_relation(str(token), dialect=dialect) == key for token in allowed
-    )
+    """True when ``relation_gap`` grants ``table``. A missing dialect covers nothing."""
+    return relation_gap(table, grantable=set(allowed), dialect=dialect) is None
 
 
 def match_pack_phrase(
