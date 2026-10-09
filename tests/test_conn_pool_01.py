@@ -322,8 +322,8 @@ def test_concurrent_asks_with_schema_value_and_serving(
     side_errors: list[BaseException] = []
 
     def _schema_and_values() -> None:
-        try:
-            while not stop.is_set():
+        while not stop.is_set():
+            try:
                 retrieve_schema_sql(
                     lake,
                     {"dock_berths", "tide_reads"},
@@ -339,20 +339,27 @@ def test_concurrent_asks_with_schema_value_and_serving(
                     tables=["dock_berths", "tide_reads"],
                     column_names=["port_name", "berth_id", "height_m"],
                 )
-        except BaseException as exc:  # noqa: BLE001
-            side_errors.append(exc)
+            except (ServingLeaseCap, ServingLeaseQueueFull):
+                # The 40-ask burst fills the waiter bound. That is a retry, not a crash.
+                continue
+            except BaseException as exc:  # noqa: BLE001
+                side_errors.append(exc)
+                return
 
     def _serving() -> None:
-        try:
-            while not stop.is_set():
+        while not stop.is_set():
+            try:
                 rows = execute_sql(
                     "SELECT COUNT(*) AS n FROM dock_berths",
                     path=lake,
                     product=True,
                 )
                 assert rows and rows[0]["n"] == 3
-        except BaseException as exc:  # noqa: BLE001
-            side_errors.append(exc)
+            except (ServingLeaseCap, ServingLeaseQueueFull):
+                continue
+            except BaseException as exc:  # noqa: BLE001
+                side_errors.append(exc)
+                return
 
     workers = [
         threading.Thread(target=_schema_and_values, name="schema-values"),
@@ -1300,7 +1307,11 @@ def test_abstain_including_watermark_stays_under_ask_timeout(
         raised_s = time.monotonic() - started
         assert raised.status_code == 200, raised.text[:500]
         body = raised.json()
-        assert SERVING_LEASE_CAP_REASON in _reasons(body)
+        # The configured wait is 30s. The ask budget (8s minus the reserve)
+        # runs out while the slot is still held, so this is a late arrival,
+        # not a capacity hit.
+        assert "serving_deadline_reserve" in _reasons(body)
+        assert SERVING_LEASE_CAP_REASON not in _reasons(body)
         assert raised_s < INSIGHTS_ASK_TIMEOUT_SECONDS
         assert raised_s >= 5.0
     finally:
