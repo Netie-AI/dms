@@ -54,6 +54,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from dms_executor.demo_warehouse import connect_file
+from dms_executor.measure_use import attach_confirmed_measures
 from dms_executor.ontology import Ontology, Violation, from_manifest
 
 #: Provenance columns every bronze row carries; not attributes of the object.
@@ -595,15 +596,26 @@ def load_space_ontology(
     ``maybe_generative_ask`` then runs ``verify()`` against the bronze rows as
     they are now, so a link that broke after the last derive is refused today,
     not trusted from yesterday's snapshot. None when the Space has none.
-    Raises when the store cannot be read; the caller names that abstain.
+
+    The Space's CONFIRMED measures (active versions only) are attached with provenance
+    (``measure_use.attach_confirmed_measures``). A row that cannot be trusted is skipped
+    and its reason kept on the ontology; it never raises. Proposed and rejected rows are
+    never read, so they cannot reach compile, ranking or the wire.
+
+    Raises when the store cannot be read (the catalogs or the measures); the caller names
+    that abstain, so a failed measures read never silently drops measures.
     """
-    if space_uuid(space_id) is None:
+    sid = space_uuid(space_id)
+    if sid is None:
         return None
     catalogs = stored_catalogs(str(space_id), store)
     if not catalogs:
         return None
     onto = ontology_from_catalog(merge_catalogs(catalogs))
-    return onto if onto.objects else None
+    if not onto.objects:
+        return None
+    attach_confirmed_measures(onto, sid, store or ontology_store())
+    return onto
 
 
 # --------------------------------------------------------------------------
@@ -614,21 +626,40 @@ def load_space_ontology(
 #: Cortex ``caller_ontology`` limits (MAX_ONTOLOGY_BYTES, MAX_LINKS), with headroom.
 WIRE_MAX_BYTES = 60 * 1024
 WIRE_MAX_LINKS = 256
+#: What the confirmed measures may take of that. At most 80 are confirmed (name <= 48,
+#: description <= 200), which fits with room to spare; the cap is what keeps a bad row or a
+#: wide-character description from squeezing the objects and links out.
+WIRE_MAX_MEASURE_BYTES = 32 * 1024
 
 
 def budget_space_block(space: Mapping[str, Any], *, used: int) -> dict[str, Any]:
-    """Objects, then links, while the whole body stays inside Cortex's limits.
+    """Measures first, then objects and links, while the whole body stays inside Cortex's limits.
 
-    The DMS join rule still reads the full ontology; only what Cortex is told
-    shrinks, and ``space_truncated`` says so.
+    A steward confirmed each measure, so those are budgeted first (name order, at most
+    ``WIRE_MAX_MEASURE_BYTES``); ``measures_truncated`` says one was left out. Objects and links
+    share what remains. The DMS join rule still reads the full ontology; only what Cortex is
+    told shrinks, and ``space_truncated`` says so.
     """
     out: dict[str, Any] = {
         "objects": {},
         "links": {},
-        "measures": dict(space.get("measures") or {}),
+        "measures": {},
         "verified": bool(space.get("verified")),
     }
     size = used + len(json.dumps(out)) + 64
+    measures = space.get("measures") or {}
+    measure_bytes = 0
+    measures_cut = False
+    for name in sorted(measures):
+        cost = len(json.dumps({name: measures[name]})) + 2
+        if measure_bytes + cost > WIRE_MAX_MEASURE_BYTES or size + cost > WIRE_MAX_BYTES:
+            measures_cut = True
+            continue
+        out["measures"][name] = measures[name]
+        measure_bytes += cost
+        size += cost
+    if measures_cut:
+        out["measures_truncated"] = True
     cut = False
     for key, limit in (("objects", None), ("links", WIRE_MAX_LINKS)):
         for name, spec in (space.get(key) or {}).items():

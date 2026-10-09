@@ -1765,6 +1765,10 @@ def test_an_unknown_code_has_no_way_to_become_a_failure() -> None:
 
 
 def test_generative_ask_does_not_import_the_steward_service_so_there_is_no_cycle() -> None:
+    """``measure_confirm`` imports ``generative_ask`` (the one compile the ask uses), so
+    ``generative_ask`` must never import ``measure_confirm``. It DOES import ``measure_use``
+    since step 6 (``maybe_generative_ask`` prunes unusable measures); that edge is acyclic
+    because ``measure_use`` imports neither (pinned in tests/test_measure_use.py)."""
     tree = ast.parse((EXECUTOR_DIR / "generative_ask.py").read_text())
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -1773,7 +1777,7 @@ def test_generative_ask_does_not_import_the_steward_service_so_there_is_no_cycle
             imported.update(f"{node.module}.{a.name}" for a in node.names)
         elif isinstance(node, ast.Import):
             imported.update(a.name for a in node.names)
-    assert not {m for m in imported if "measure_confirm" in m or "measure_use" in m}, imported
+    assert not {m for m in imported if "measure_confirm" in m}, imported
 
 
 def test_decide_measure_is_called_from_the_service_and_nowhere_else_in_the_executor() -> None:

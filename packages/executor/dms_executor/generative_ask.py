@@ -77,6 +77,7 @@ from dms_executor.gen_path_refuse import (
     ranking_missing_metric_gap,
 )
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
+from dms_executor.measure_use import prune_unusable_measures
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -1051,8 +1052,13 @@ def ontology_plan_from_ranking(
     *,
     onto: Ontology | None,
     ctx: dict[str, Any],
+    demo: bool = True,
 ) -> dict[str, Any] | None:
-    """Cortex ranked metric + retrieve slots. ontology_plan, not bind_plan."""
+    """Cortex ranked metric + retrieve slots. ontology_plan, not bind_plan.
+
+    ``demo=False`` (a Space with its own ontology) passes no aliases: the demo pack's
+    metric ids and aliases must never resolve onto a customer Space's measure names.
+    """
     if not isinstance(payload, dict) or onto is None or not onto.measures:
         return None
     prefer = intent_slots(question, onto).get("measure")
@@ -1060,7 +1066,7 @@ def ontology_plan_from_ranking(
     ranked = query_plan_from_insights_ranking(
         payload,
         set(onto.measures),
-        aliases=load_measure_aliases(),
+        aliases=load_measure_aliases() if demo else {},
         specs={name: (m.description or "") for name, m in onto.measures.items()},
         prefer=prefer_s or None,
         question=question,
@@ -1550,6 +1556,15 @@ def maybe_generative_ask(
                 declared = onto
                 onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
+    if not demo_ontology_allowed and ontology is not None:
+        # dms#284: a Space's confirmed measures are used only as they check out against the
+        # lake AS IT IS NOW (grain still verified and granted this turn, column still there
+        # with the type it was confirmed with). Everything below -- the rank window, the
+        # retrieve context, the wire, ranking, plan binding and the no_declared_measure
+        # test -- then sees only usable measures. A pruned measure can only degrade an
+        # answer to a named abstain or the existing generated-SQL path, never upgrade one.
+        # No measures, no work: this is a no-op until a steward has confirmed one.
+        prune_unusable_measures((ontology, onto, declared), declared_violations, lake, allowed)
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
@@ -1667,7 +1682,7 @@ def maybe_generative_ask(
         # Ranking compile stays off this path. Model SQL runs on the extract.
         sql_in = query_sql_from_payload(payload)
         would_rank = kind == "miss" and ontology_plan_from_ranking(
-            q, payload, onto=onto, ctx=ctx
+            q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
         ) is not None
         if kind == "sql" or would_rank:
             if sql_in and sql_has_reserved_as_of(sql_in):
@@ -1702,7 +1717,9 @@ def maybe_generative_ask(
             )
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
-        ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
+        ranked_slots = ontology_plan_from_ranking(
+            q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
+        )
     if kind == "miss" and ranked_slots is not None:
         payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
         kind = parse_compute_plan(payload)
@@ -1712,7 +1729,7 @@ def maybe_generative_ask(
     if kind == "miss" and ranked_slots is None:
         # GEN-PATH-REFUSE-01: Cortex ranked the intended metric, DMS cannot
         # compile it. Named ABSTAIN — do not bind_plan or Cortex.ask a guess.
-        gap = ranking_missing_metric_gap(q, payload, onto=onto)
+        gap = ranking_missing_metric_gap(q, payload, onto=onto, demo=demo_ontology_allowed)
         if gap:
             return _stamp(
                 _abstain(

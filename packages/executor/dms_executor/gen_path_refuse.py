@@ -99,17 +99,20 @@ def ranking_missing_metric_gap(
     payload: dict[str, Any] | None,
     *,
     onto: Ontology | None,
+    demo: bool = True,
 ) -> str | None:
     """Named unknown_measure when Cortex ranked an intended metric missing on DMS.
 
     Overlay recovery (ranked slots that compile) is not a gap. Transport miss
     (no Insights ontology ranking) is not a gap — product Cortex.ask still runs.
+    ``demo=False`` (a Space with its own ontology) reads no demo-pack aliases, the same
+    rule ``ontology_plan_from_ranking`` follows.
     """
     if not isinstance(payload, dict) or onto is None or not onto.measures:
         return None
     prefer = intent_slots(question, onto).get("measure")
     prefer_s = str(prefer).strip() if prefer else ""
-    aliases = load_measure_aliases()
+    aliases = load_measure_aliases() if demo else {}
     specs = {name: (m.description or "") for name, m in onto.measures.items()}
     allowed = set(onto.measures)
     ranked = query_plan_from_insights_ranking(

@@ -872,3 +872,43 @@ def test_service_two_confirms_racing_on_postgres_make_one_transition(
     assert not errors, errors
     assert sorted(r["already"] for r in results) == [False, True]
     assert len(svc.ledger.appended) == 1 and svc.audit("measure.confirm") == 1
+
+
+def test_confirmed_measures_load_for_the_ask_from_postgres(svc: _Svc) -> None:
+    """Step 6 on a real database: the ask path reads confirmed rows through the viewer role,
+    the stored fields recompute to the stored hash after the round trip, and the confirm-time
+    column type (JSONB evidence) is the type the lake reports."""
+    from dms_executor import generative_ask as ga
+    from dms_executor.measure_use import measure_exclusions, prune_unusable_measures
+    from dms_executor.space_ontology import load_space_ontology
+
+    views = svc.propose()
+    svc.confirm(views["schools_budget_sum"])
+    svc.confirm(views["schools_count"])
+    svc.reject(views["districts_count"], "later")
+
+    onto = load_space_ontology(svc.space, svc.world.alpha)
+    assert onto is not None
+    assert set(onto.measures) == {"schools_budget_sum", "schools_count"}  # no proposed, no rejected
+    assert measure_exclusions(onto) == {}  # the hash recomputed from what Postgres returned
+    prov = onto.measures["schools_budget_sum"].provenance
+    assert prov is not None
+    assert prov.persisted is True and prov.columns_checked is False
+    assert prov.definition_hash == views["schools_budget_sum"]["definition_hash"]
+    assert prov.column_type == "DECIMAL(10,2)" and prov.ledger_entry_id.startswith("pg_led_")
+    assert prov.version_id == str(svc.world.version_id) and prov.decided_at
+
+    loaded = ga.load_verified_ontology(svc.rig.lake, onto)
+    assert loaded is not None
+    violations = list(ga.cached_verify_violations(loaded) or [])
+    allowed = {GRAIN, "bronze.public_districts"}
+    assert prune_unusable_measures([loaded], violations, svc.rig.lake, allowed) == {}
+    assert all(m.provenance and m.provenance.columns_checked for m in loaded.measures.values())
+
+    # RLS: another tenant's store sees neither the Space's versions nor its measures
+    assert load_space_ontology(svc.space, svc.world.beta) is None
+
+    # a withdrawn measure leaves the very next load
+    svc.reject(views["schools_count"], "wrong")
+    again = load_space_ontology(svc.space, svc.world.alpha)
+    assert again is not None and set(again.measures) == {"schools_budget_sum"}
