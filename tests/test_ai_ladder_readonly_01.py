@@ -281,8 +281,12 @@ def test_lock_timeout_abstains_through_build_abstain(
     assert env["rows"] == []
     assert isinstance(env.get("ticket_id"), str) and env["ticket_id"]
     text = " ".join(str(item) for item in env.get("assumptions") or [])
-    assert "db_error:" in text
-    assert "TimeoutError:" in text
+    # Ladder exhaust is a reconfirm. The ticket keeps db_error. The raw
+    # exception stays out of the text a person reads.
+    assert "reconfirm" in text
+    assert "db_error" in text
+    assert "TimeoutError" not in text
+    assert env.get("abstain_reason") == "reconfirm"
 
 
 def test_twenty_asks_p95_stays_under_the_bound(
