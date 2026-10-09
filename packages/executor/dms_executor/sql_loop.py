@@ -50,8 +50,13 @@ ATTEMPT_TIMEOUT_KEY = "_attempt_timeout_s"
 _DEADLINE_KEY = "_serving_deadline"
 #: One share below this is not a model call. It stays with the compile.
 _MIN_ATTEMPT_S = 0.05
+#: Cooperative stop after the slice. A call that ignores it is discarded.
+_CANCEL_GRACE_S = 0.25
 _serving_deadline: ContextVar[float | None] = ContextVar(
     "dms_serving_deadline", default=None
+)
+_attempt_cancel: ContextVar[threading.Event | None] = ContextVar(
+    "dms_attempt_cancel", default=None
 )
 #: VALUE-EXISTS-01 later returns None from ``empty_result_reason`` so the
 #: caller can serve this empty answer. Until then the reason is an abstain.
@@ -328,8 +333,13 @@ def loop_entry(
     sql: str | None,
     outcome: str,
     dialect: str,
+    model_calls: int = 1,
 ) -> dict[str, Any]:
-    """One model attempt. ``outcome`` is never empty. Secrets are not stored."""
+    """One model attempt. ``outcome`` is never empty. Secrets are not stored.
+
+    ``model_calls`` is 1 when this attempt spent one model call, and 0 when
+    the attempt was discarded (the serving deadline cancelled it).
+    """
     why = str(outcome or "").strip() or "no_outcome"
     model = _text(payload.get("served_model") if isinstance(payload, Mapping) else None)
     if model is None and isinstance(payload, Mapping):
@@ -344,6 +354,7 @@ def loop_entry(
         "tokens": _tokens(payload),
         "sql": sql,
         "outcome": why,
+        "model_calls": 1 if model_calls else 0,
         "model_wrote": bool(sql),
         "dialect": dialect,
     }
@@ -383,6 +394,11 @@ class CompileDefer(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def attempt_cancel_event() -> threading.Event | None:
+    """Set when this attempt's slice is over. The call should stop."""
+    return _attempt_cancel.get()
 
 
 def begin_serving_budget(seconds: float | None = None) -> None:
@@ -434,22 +450,27 @@ def bound_model_compute(
 ) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
     """Give each model call one slice of the serving deadline.
 
-    ponytail: a call that ignores its timeout is abandoned on a daemon
-    thread. The compile does not wait for it. Upgrade: cancel the HTTP
-    call, then join.
+    A call still running at the end of its slice is cancelled and not
+    counted. The compile reserve is the share ``attempt_slice`` keeps back.
+
+    ponytail: cancel is cooperative (``attempt_cancel_event``). A call that
+    ignores it is discarded after a short grace and still not counted.
+    Upgrade: cancel the HTTP call, then join.
     """
     begin_serving_budget()
     calls = {"n": 0}
 
     def wrapped(ctx: dict[str, Any]) -> dict[str, Any] | None:
         left = insights_call_cap() - calls["n"]
-        calls["n"] += 1
         slice_s = attempt_slice(left)
-        if slice_s is None:
+        if slice_s is None or left < 1:
             return deadline_marker()
         body = dict(ctx)
         body[ATTEMPT_TIMEOUT_KEY] = slice_s
-        return _invoke_bounded(compute, body, slice_s)
+        got = _invoke_bounded(compute, body, slice_s)
+        if not is_deadline(got):
+            calls["n"] += 1
+        return got
 
     return wrapped
 
@@ -460,28 +481,31 @@ def _invoke_bounded(
     slice_s: float,
 ) -> dict[str, Any] | None:
     box: dict[str, Any] = {}
+    cancel = threading.Event()
 
     def run() -> None:
+        _attempt_cancel.set(cancel)
         try:
             box["v"] = compute(ctx)
         except Exception as exc:  # noqa: BLE001 — same miss as a raised compute
             box["e"] = exc
-        finally:
-            box["n"] = recorded_model_calls()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     thread.join(slice_s)
     if thread.is_alive():
-        note_model_call()
+        # Discard this future. It does not take a call-cap slot.
+        cancel.set()
+        thread.join(_CANCEL_GRACE_S)
         return deadline_marker()
-    noted = int(box.get("n") or 0)
-    for _ in range(noted):
-        note_model_call()
-    if "e" in box:
-        return None
     got = box.get("v")
-    return got if isinstance(got, dict) else None
+    if isinstance(got, dict) and is_deadline(got):
+        return got
+    # One finished attempt is one model call on the ask's own counter.
+    note_model_call()
+    if "e" in box or not isinstance(got, dict):
+        return None
+    return got
 
 
 def _served_outcome(env: dict[str, Any]) -> str:
@@ -745,6 +769,7 @@ def _call(
                     sql=previous_sql,
                     outcome="insights_timeout:generate",
                     dialect=dialect,
+                    model_calls=0,
                 )
             )
         raise CompileDefer("insights_timeout:generate")

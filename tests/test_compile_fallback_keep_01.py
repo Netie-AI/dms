@@ -65,11 +65,13 @@ class _Cortex:
         self.slow_after = slow_after
         self.sleep_s = sleep_s
         self.calls = 0
+        self.running = False
+        self.sleep_finished = False
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         self.calls += 1
         if self.slow_after and self.calls >= self.slow_after:
-            time.sleep(self.sleep_s)
+            self._sleep_until_cancelled()
         metric = self.ranking_for.get(question, _RANK)
         return {
             "phase": "generate",
@@ -80,6 +82,23 @@ class _Cortex:
             "ontology": {"metrics": [{"id": metric}]},
             "generative": {"sql": _BAD, "ok": True, "stamp": {"impl": "stub"}},
         }
+
+    def _sleep_until_cancelled(self) -> None:
+        """Block until the attempt is cancelled, or the full sleep ends."""
+        import dms_executor.sql_loop as sql_loop
+
+        cancel = getattr(sql_loop, "attempt_cancel_event", None)
+        event = cancel() if cancel else None
+        self.running = True
+        try:
+            end = time.monotonic() + self.sleep_s
+            while time.monotonic() < end:
+                if event is not None and event.is_set():
+                    return
+                time.sleep(0.02)
+            self.sleep_finished = True
+        finally:
+            self.running = False
 
     def submit(self, req: Any) -> QueryResult:
         plan = getattr(req, "plan", None)
@@ -165,6 +184,9 @@ def test_exhausted_loop_serves_the_compile(
     )
     assert cortex.calls == 2
     _assert_compile(env)
+    assert env.get("model_calls") == 2
+    assert env.get("loop")
+    assert all(item.get("model_calls") == 1 for item in env["loop"])
 
 
 def test_deadline_serves_the_compile_inside_the_budget(
@@ -183,7 +205,16 @@ def test_deadline_serves_the_compile_inside_the_budget(
     elapsed = time.monotonic() - started
     assert cortex.calls == 2
     assert elapsed < deadline
+    assert cortex.running is False
+    assert cortex.sleep_finished is False
     _assert_compile(env)
+    # The slow call was cancelled. It did not take a second cap slot.
+    assert env.get("model_calls") == 1
+    counted = [item for item in env["loop"] if item.get("model_calls") == 1]
+    discarded = [item for item in env["loop"] if item.get("model_calls") == 0]
+    assert len(counted) == 1
+    assert len(discarded) == 1
+    assert discarded[0]["outcome"] == "insights_timeout:generate"
 
 
 def _pack() -> tuple[dict[str, str], list[dict[str, Any]]]:
