@@ -56,6 +56,7 @@ from dms_executor.demo_pack import (
     curated_pack_metric_miss,
     curated_pack_present,  # noqa: F401 - re-exported; files-on-disk check
     curated_pack_status,  # noqa: F401 - re-exported; wiring health reads it
+    empty_confident_answer,
     is_curated_l0_without_pack_metric,
     is_uncertified_paraphrase,
     maybe_pack_ask,
@@ -850,6 +851,9 @@ class Executor:
                 bind_on_miss=False,
                 dialect=SERVING_DIALECT,
             )
+            if gen_env is not None and empty_confident_answer(gen_env):
+                # The ladder ran and would ship L1/L2 over no rows. Do not serve it.
+                gen_env = None
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
@@ -918,6 +922,32 @@ class Executor:
             ),
             cascade,
         )
+        if empty_confident_answer(env):
+            # Governed or generated, zero rows. The ladder already ran above
+            # when this path allows it. Do not serve the empty badge.
+            env = build_abstain(
+                reason="empty_governed_rows",
+                question=question,
+                stage="governed",
+                answer_id="ans_empty_l1",
+                text=(
+                    "The governed query returned no rows, so that result was "
+                    "not served."
+                ),
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[
+                    "governed result had no rows",
+                    "not served as L1 or L2",
+                ],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            env = attach_cascade(env, cascade)
         self._store_turn(session_id, space_id, env)
         return env
 

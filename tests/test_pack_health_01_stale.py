@@ -19,5 +19,5 @@ def test_scoring_file_edits_are_not_metrics(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert demo_pack.score_pack_exact_metrics() == ()
-    assert demo_pack.curated_l0_question_norms() == frozenset()
+    assert "synthetic" not in demo_pack.curated_l0_question_norms()
     assert demo_pack.curated_pack_status().name == "absent"

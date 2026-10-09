@@ -132,7 +132,8 @@ def test_unregistered_phrase_is_not_named_from_a_scoring_list(tmp_path: Path) ->
     assert env["abstained"] is True
     assert env["rows"] == []
     text = env["text"]
-    assert "pack-metric miss" not in text
+    assert "exact-match miss" in text
+    assert "pack-metric miss" in text
     assert "999999" not in text
     assert "exact match ok" not in text
 

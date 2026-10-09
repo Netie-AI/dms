@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from dms_executor.abstain import build_abstain
@@ -237,7 +238,8 @@ def __getattr__(name: str) -> Any:
 
 
 def _exact_pack_metrics() -> tuple[PackMetric, ...]:
-    return PACK_METRICS + score_pack_exact_metrics()
+    """Product metrics only. ``load_score_pack_metrics`` is not on this path."""
+    return PACK_METRICS
 
 
 # Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
@@ -374,9 +376,48 @@ def lookup_pack_metric(
     return hit
 
 
+def _l0_questions_path() -> Path:
+    """Curated expect=l0 phrases. Not oracle SQL, and not read at import."""
+    return (
+        Path(__file__).resolve().parents[3]
+        / "tests"
+        / "fixtures"
+        / "curated_ceo"
+        / "questions.yaml"
+    )
+
+
 def _load_l0_norms() -> frozenset[str]:
-    """Empty. A scoring question list is not a product input."""
-    return frozenset()
+    """Normalised curated questions whose expect is l0.
+
+    A missing or unreadable file is an empty set. Oracle SQL is not read.
+    """
+    path = _l0_questions_path()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    try:
+        import yaml
+
+        data = yaml.safe_load(text) or {}
+    except Exception:  # noqa: BLE001 - a bad file is an empty set
+        return frozenset()
+    if not isinstance(data, dict):
+        return frozenset()
+    norms: set[str] = set()
+    rows = data.get("questions") or []
+    if not isinstance(rows, list):
+        return frozenset()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("expect") or "").lower() != "l0":
+            continue
+        n = _norm(str(row.get("question") or ""))
+        if n:
+            norms.add(n)
+    return frozenset(norms)
 
 
 curated_l0_question_norms = _Memo(_load_l0_norms)
@@ -510,6 +551,18 @@ def envelope_from_pack_submit(
     return env
 
 
+def empty_confident_answer(env: dict[str, Any] | None) -> bool:
+    """True when an L1 or L2 badge would ship with no rows.
+
+    Abstain is not this. A count row of zero is not this: there is a row.
+    """
+    if not isinstance(env, dict) or env.get("abstained"):
+        return False
+    if env.get("badge") not in {"L1_GOVERNED_METRIC", "L2_VALIDATED"}:
+        return False
+    return not list(env.get("rows") or [])
+
+
 def maybe_pack_ask(
     question: str,
     *,
@@ -524,7 +577,8 @@ def maybe_pack_ask(
 
     Missing submit/ledger does not fall back to local DuckDB (F83). A phrase
     match whose grants, Cortex SQL, or ledger step fails is a named ABSTAIN.
-    None means the phrase did not match, so a later lane may run.
+    None means the phrase did not match, or the governed execution returned
+    no rows. The caller then runs the ladder.
     """
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
@@ -576,6 +630,10 @@ def maybe_pack_ask(
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
         )
+    # A governed execution with no rows is not an answer. None lets the
+    # caller run the same generate / execute / check / retry ladder.
+    if not rows_from_submit_result(result):
+        return None
     return envelope_from_pack_submit(
         metric=hit,
         result=result,

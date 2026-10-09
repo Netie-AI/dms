@@ -450,37 +450,17 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
     assert "demo_pack_unavailable" not in r.text
 
 
-# These ids were answered or reworded from the scoring fixture. The rest of
-# the capture stays byte-equal with as_of masked.
+# Served from the scoring file on main. The rest stay byte-equal with as_of masked.
+# ops_supplier_rank_boundary is the same phrase as cq_supplier_ranking.
 _FIXTURE_FED = frozenset(
     {
-        "cq_sales_top5_value",
         "cq_sku_count",
         "cq_sales_top3_volume",
         "cq_sku_count_by_category",
-        "trap_categoty",
-        "cq_chemicals_list",
         "cq_supplier_ranking",
-        "cq_audit_overdue",
-        "cq_sku_count_syn_short",
-        "cq_sku_count_syn_label",
-        "cq_sales_top5_syn_skus",
-        "cq_top3_category_syn_value",
-        "cq_sales_top5_syn_sales",
-        "cq_top3_category_syn_show",
-        "cq_top3_category_syn_plain",
-        "cq_top3_category_syn_typo",
+        "trap_categoty",
         "ops_sku_count",
         "ops_sku_count_by_category",
-        "ops_sku_count_syn_short",
-        "ops_sku_count_syn_label",
-        "ops_chemicals_list",
-        "ops_sku_count_by_category_syn",
-        "ops_stock_value_syn",
-        "ops_shipment_cost_syn",
-        "cq_sku_count_by_category_per",
-        "cq_stock_value_worth",
-        "ops_freight_spend_destination",
         "ops_supplier_rank_boundary",
     }
 )

@@ -39,27 +39,15 @@ _CLOCK = {
     "engine_timezone",
     "engine_timezone_after",
 }
-# Wording the scoring fixture used to answer or reword. Both spaces.
+# Phrases the scoring file used to serve. Both spaces, and the same
+# supplier-ranking and categoty phrases when they show up again.
 _FIXTURE_FED = frozenset(
     {
-        "Top 5 selling SKUs by revenue",
         "How many SKUs do we have in inventory?",
         "Top 3 SKUs by quantity sold",
         "Show SKU count by category",
         "Show top 3 categoty sales",
         "Rank suppliers by combined risk and lead time score",
-        "Top 5 SKUs by revenue",
-        "top 3 categories by sales value",
-        "Top 5 selling SKUs by sales",
-        "show top 3 category sales",
-        "top 3 category sales",
-        "top 3 categoty sales",
-        "SKU count by category",
-        "stock value by category",
-        "shipment cost by destination",
-        "how many SKUs per category",
-        "what is our inventory worth per category",
-        "freight spend per destination",
         "show top 3 categoty sales",
     }
 )
@@ -270,7 +258,7 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
         sql_used = str(env.get("sql_used") or "")
         if env.get("badge") == "L2_VALIDATED" and "is_cold_storage" in sql_used:
             canned += 1
-    assert fed == 22
+    assert fed == 9
     assert extras_all == [], extras_all
     assert any("served_check_shadow" in row["envelope"] for row in got)
     assert l2 >= 5, l2
