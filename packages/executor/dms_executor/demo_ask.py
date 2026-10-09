@@ -9,6 +9,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     execute_sql,
@@ -633,7 +634,9 @@ def _abstain(
     text: str | None = None,
     assumptions: list[str] | None = None,
 ) -> dict[str, Any]:
-    return _pack(
+    env = build_abstain(
+        reason="abstain",
+        stage="demo",
         answer_id=answer_id,
         text=text
         or (
@@ -641,13 +644,17 @@ def _abstain(
             "Try one of the suggested questions."
         ),
         values=[],
-        badge="ABSTAIN",
-        abstained=True,
         assumptions=assumptions or ["demo router abstained — 0 confidently wrong"],
         space_id=space_id,
         contributing_sources=[],
         rows=[],
+        ask_mode="demo",
+        as_of=_as_of(),
+        suggestions=SUGGESTIONS,
     )
+    stamp_engine_clock(env)
+    assert_envelope_valid(env)
+    return env
 
 
 def _abstain_predictive(*, space_id: str | None) -> dict[str, Any]:
