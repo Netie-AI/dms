@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.grant_struct import (
@@ -459,11 +460,12 @@ def maybe_uncertified_refuse_ask(
     """
     if not is_uncertified_paraphrase(question):
         return None
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="demo_pack",
         answer_id="ans_uncertified_paraphrase",
         text=uncertified_refuse_text(question),
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -476,7 +478,6 @@ def maybe_uncertified_refuse_ask(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
         suggestions=(
             [CAPACITY_UTILISATION_Q]
             if _norm(question) == _norm(HOW_FULL_TRAP_Q)
@@ -606,11 +607,12 @@ def curated_pack_metric_miss(
         "so the pack lookup did not match. "
         "This is not a generic generative abstain."
     )
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="demo_pack",
         answer_id="ans_curated_step",
         text=text,
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -620,7 +622,6 @@ def curated_pack_metric_miss(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
     )
     assert_envelope_valid(env)
     return env
@@ -644,11 +645,12 @@ def _curated_step_refusal(
         f"but a later step failed: {failed_step}. "
         "I am not answering from a generative fallback."
     )
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="demo_pack",
         answer_id="ans_curated_step",
         text=text,
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -658,7 +660,6 @@ def _curated_step_refusal(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
     )
     assert_envelope_valid(env)
     return env
