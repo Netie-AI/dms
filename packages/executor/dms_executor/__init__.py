@@ -582,6 +582,11 @@ class Executor:
             out.pop("lane", None)
         masked = mask_unknown_keys(out)
         backstop_missing_ticket(masked, question=question)
+        # Direct callers never reach the HTTP boundary. The grant file is
+        # this executor's warehouse, not DMS_WAREHOUSE_DB. Chat ask scrubs
+        # again as the last step before serialisation.
+        if isinstance(masked, dict):
+            hide_echo(masked, "", warehouse=getattr(self, "_warehouse", None))
         return masked
 
     def _live_ask(
