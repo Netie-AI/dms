@@ -952,7 +952,7 @@ class Executor:
             gap = serve_gap(str(raw_sql), grantable=set(readable), dialect=self.dialect)
             if gap:
                 # The code only. The table name is not user-visible here.
-                # #405's ticket builder records it after that rebase.
+                # The envelope builder records the code.
                 refused = sql_refusal_envelope(
                     reason=customer_grant_reason(gap),
                     space_id=space_id,

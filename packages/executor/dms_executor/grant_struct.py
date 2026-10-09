@@ -22,8 +22,9 @@ from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_warehouse import clear_engine_clock
-from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 
@@ -130,8 +131,8 @@ def customer_grant_reason(reason: str) -> str:
     """User-visible reason code. A table name is not part of the code.
 
     ``ungranted:file`` and ``ungranted:unparsed`` stay. A bare
-    ``ungranted:<table>`` drops the table. The name waits for the #405
-    ticket; this function does not log it.
+    ``ungranted:<table>`` drops the table. The envelope builder records
+    the code. This function does not log it.
     """
     gap = str(reason or "").strip()
     if gap.startswith("ungranted:") and gap not in {"ungranted:file", "ungranted:unparsed"}:
@@ -153,11 +154,12 @@ def sql_refusal_envelope(
     question: str | None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. The statement did not run. No path in the envelope."""
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason=reason,
+        question=question or "",
+        stage=route or "unspecified",
         answer_id="ans_sql_refused",
         text=customer_abstain_text(reason),
-        badge="ABSTAIN",
-        abstained=True,
         rows=[],
         values=[],
         sql_used=None,
@@ -167,7 +169,6 @@ def sql_refusal_envelope(
         session_id=session_id,
         ask_mode="live",
         route=route,
-        question=question,
     )
     assert_envelope_valid(env)
     clear_engine_clock()
