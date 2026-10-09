@@ -28,6 +28,7 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
+from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.manifest import ManifestMinter, SessionAcl
 
 # Cortex main InsightsWireIn (InsightsAskIn plus the extension). Unknown keys
@@ -369,9 +370,7 @@ def _served_codes(env: dict[str, Any]) -> list[str]:
     return sorted(str(row.get("location_code")) for row in rows if isinstance(row, dict))
 
 
-def test_pinned_279cbd85_still_serves(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pinned_279cbd85_still_serves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin contract ignores unknown fields and still serves the model SQL.
 
     The body itself has no model or strict key.
@@ -386,9 +385,7 @@ def test_pinned_279cbd85_still_serves(
     _assert_clean([("pin", stub.posts[0])])
 
 
-def test_current_cortex_schema_reaches_ov(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_current_cortex_schema_reaches_ov(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Current Cortex rejects unknown fields. The AI lane still reaches OV.
 
     On main this is 422 ``not modelled by POST /v1/insights: model, strict``.
@@ -401,3 +398,136 @@ def test_current_cortex_schema_reaches_ov(
     assert _served_codes(env) == _gold(tmp_path / "drop.duckdb")
     assert stub.posts
     _assert_clean([("current", stub.posts[0])])
+
+
+_GRANTS = {"inventory", "locations", "transactions", "suppliers", "shipments"}
+
+
+def _values(db: Path, sql: str) -> list[str]:
+    con = connect_file(db)
+    try:
+        cur = con.execute(sql)
+        return sorted(str(cell) for row in cur.fetchall() for cell in row)
+    finally:
+        con.close()
+
+
+def _submit(db: Path):
+    def submit(sql: str) -> Any:
+        con = connect_file(db)
+        try:
+            cur = con.execute(sql)
+            cols = [str(c[0]) for c in (cur.description or [])]
+            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            con.close()
+        return QueryResult(ok=True, status="ok", run_id="run_shape", output={"rows": rows})
+
+    return submit
+
+
+def _shape_env(tmp_path: Path, question: str, metric_id: str) -> tuple[dict[str, Any], Path]:
+    """Generate SELECT is the cold-storage list. Ranking names ``metric_id``."""
+    db = tmp_path / "shape.duckdb"
+    ensure_demo_warehouse(db)
+    payload = {
+        "phase": "generate",
+        "query_sql": _SQL,
+        "plan_origin": "generate_sql",
+        "ontology": {"metrics": [{"id": metric_id}]},
+        "generative": {"ok": True, "sql": _SQL, "stamp": {"task": "freeroute"}},
+    }
+    env = maybe_generative_ask(
+        question,
+        warehouse=db,
+        grantable=set(_GRANTS),
+        compute=lambda _ctx: payload,
+        submit=_submit(db),
+        ledger_append=lambda _p: LedgerAppendResponse(entry_id="led_shape", hash="hash_shape"),
+        ontology=load_verified_ontology(db),
+    )
+    assert isinstance(env, dict)
+    return env, db
+
+
+def _served_cells(env: dict[str, Any]) -> list[str]:
+    rows = env.get("rows") or []
+    assert isinstance(rows, list)
+    return sorted(str(cell) for row in rows if isinstance(row, dict) for cell in row.values())
+
+
+def test_count_shape_does_not_serve_a_location_list(tmp_path: Path) -> None:
+    """A count compile and a location-list SELECT do not share a projection.
+
+    Red on main: the SELECT is served. The stamp is ranking, and no model
+    name is invented.
+    """
+    env, db = _shape_env(tmp_path, "How many SKUs in inventory?", "cq_sku_count")
+    assert_envelope_valid(env)
+    assert env.get("abstained") is not True
+    assert env.get("plan_origin") == "ontology_ranking"
+    assert "served_model" not in env
+    assert "is_cold_storage" not in str(env.get("sql_used") or "")
+    assert _served_cells(env) == _values(db, "SELECT COUNT(DISTINCT sku) FROM inventory")
+
+
+def test_list_shape_does_not_serve_a_location_list(tmp_path: Path) -> None:
+    """A chemicals list and a location-list SELECT do not share a projection."""
+    env, db = _shape_env(tmp_path, "List chemicals in inventory", "cq_chemicals_list")
+    assert_envelope_valid(env)
+    assert env.get("abstained") is not True
+    assert env.get("plan_origin") == "ontology_ranking"
+    assert "served_model" not in env
+    assert "is_cold_storage" not in str(env.get("sql_used") or "")
+    skus = set(_values(db, "SELECT sku FROM inventory WHERE category = 'CHEMICALS'"))
+    assert skus
+    assert skus <= set(_served_cells(env))
+
+
+def test_audit_shape_does_not_serve_a_location_list(tmp_path: Path) -> None:
+    """An audit-overdue compile and a location-list SELECT do not share a projection."""
+    env, db = _shape_env(tmp_path, "Which suppliers have an audit overdue?", "cq_audit_overdue")
+    assert_envelope_valid(env)
+    assert env.get("abstained") is not True
+    assert env.get("plan_origin") == "ontology_ranking"
+    assert "served_model" not in env
+    assert "is_cold_storage" not in str(env.get("sql_used") or "")
+    suppliers = set(
+        _values(
+            db,
+            "SELECT supplier_id FROM suppliers "
+            "WHERE CAST(last_audit_date AS DATE) < CURRENT_DATE - INTERVAL 90 DAY",
+        )
+    )
+    assert len(suppliers) == 2
+    assert suppliers <= set(_served_cells(env))
+    assert "WH-C" not in _served_cells(env)
+
+
+def test_grouped_ask_does_not_serve_one_ungrouped_row(tmp_path: Path) -> None:
+    """A by-destination ask and a one-row ungrouped SELECT are not the same shape.
+
+    E10 would abstain the SELECT. The ranked compile is the breakdown.
+    """
+    env, _db = _shape_env(tmp_path, "shipment cost by destination", "cq_cost_by_destination")
+    assert_envelope_valid(env)
+    assert env.get("abstained") is not True
+    assert env.get("plan_origin") == "ontology_ranking"
+    assert "served_model" not in env
+    assert "is_cold_storage" not in str(env.get("sql_used") or "")
+    rows = env.get("rows") or []
+    assert isinstance(rows, list) and len(rows) != 1
+
+
+def test_missing_measure_does_not_serve_stand_in_sql(tmp_path: Path) -> None:
+    """A ranked metric DMS cannot compile is an abstain. The SELECT is not a row."""
+    env, _db = _shape_env(
+        tmp_path, "List active alerts across the warehouse network", "active_alerts"
+    )
+    assert_envelope_valid(env)
+    assert env.get("abstained") is True
+    assert env.get("rows") == []
+    assert env.get("plan_origin") != "generate_sql"
+    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "unknown_measure" in assumptions
+    assert "active_alerts" in assumptions

@@ -62,6 +62,7 @@ from dms_executor.demo_warehouse import (
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
     _relation_bare,
+    _should_demote_shape_mismatch,
     _sql_cited_labels,
     asked_calendar_years,
     assert_envelope_valid,
@@ -582,6 +583,54 @@ def _rows_gt(rows: list[dict[str, Any]], measure: str, keep_gt: float) -> list[d
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _one_returned_row(sql: str, lake: Path | None) -> bool:
+    """True when the SELECT runs and returns one row. A failure is not one row."""
+    if lake is None:
+        return False
+    con = connect_file(lake)
+    try:
+        got = con.execute(sql).fetchall()
+    except Exception:
+        return False
+    finally:
+        con.close()
+    return len(got) == 1
+
+
+def _source_columns(sql: str) -> frozenset[str] | None:
+    """Column names the statement reads. None when it will not parse.
+
+    Aliases are not columns. ``location_code`` and ``location_location_code``
+    are not a miss when both statements read ``location_code``.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        return None
+    names = {col.name.lower() for col in tree.find_all(exp.Column) if col.name}
+    if not names:
+        return None
+    return frozenset(names)
+
+
+def shape_output_miss(generate_sql: str, compiled_sql: str) -> str | None:
+    """The generate SELECT reads none of the ranked compile's columns.
+
+    A shared source column is the same shape, even when the alias differs.
+    Unparsed SQL is not a miss.
+    """
+    left = _source_columns(generate_sql)
+    right = _source_columns(compiled_sql)
+    if not left or not right:
+        return None
+    if left.isdisjoint(right):
+        return "shape:columns"
+    return None
 
 
 def query_sql_from_payload(payload: dict[str, Any] | None) -> str | None:
@@ -1326,7 +1375,10 @@ def maybe_generative_ask(
     the prefer lock (not bind_plan; not skip-to-weaker on abort). Leftover
     Cortex certified ids such as ``cq_audit_overdue`` overlay onto the
     verified ``audit_overdue`` measure. Planted refuses stay ABSTAIN.
-    Invalid generate SELECT may climb via those slots; hostile SQL does not.
+    Invalid generate SELECT may climb via those slots. A generate SELECT
+    that reads none of that compile's columns climbs the same way. Hostile
+    SQL does not. A ranked metric DMS cannot compile abstains; the SELECT
+    is not a substitute.
     Cortex compute miss may bind_plan when ``bind_on_miss`` (offline harness
     only) and Insights was not reached. ``Executor.live_ask`` always passes
     ``bind_on_miss=False`` (GEN-03). Product path leaves miss as None so Cortex
@@ -1638,6 +1690,42 @@ def maybe_generative_ask(
                     question=q,
                 )
             )
+        if (
+            not why
+            and ranked_slots is not None
+            and _one_returned_row(sql, lake)
+            and _should_demote_shape_mismatch(question=q, sql=sql, rows=[{}])
+        ):
+            # E10 would demote this SELECT after submit. Climb first.
+            why = "shape:e10"
+        if not why and ranked_slots is not None and onto is not None:
+            merged = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
+            ranked_plan = plan_from_payload(merged)
+            compiled = (
+                _compile_maybe_unverified(onto, ranked_plan)
+                if ranked_plan is not None
+                else None
+            )
+            if isinstance(compiled, CompiledQuery):
+                shape = shape_output_miss(sql, compiled.sql)
+                if shape:
+                    why = shape
+        if not why and ranked_slots is None:
+            # SQL is not a stand-in for a metric DMS cannot compile.
+            gap = ranking_missing_metric_gap(
+                q, payload if isinstance(payload, dict) else None, onto=onto
+            )
+            if gap:
+                return _stamp(
+                    _abstain(
+                        q,
+                        gap,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                        stage="serve_gap",
+                    )
+                )
         if why:
             if cloop_b_enabled():
                 loop_attempts.append(
