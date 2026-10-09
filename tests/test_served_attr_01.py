@@ -217,7 +217,8 @@ def test_ranking_after_model_call_reports_served_fields(
     leg = {"phase": "generate", **_STAMP, **_SERVED}
     fake = _Http([leg, leg], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
-    assert env["plan_origin"] == "ontology_ranking"
+    assert env["served_route"] == "ontology_compile"
+    assert env["plan_origin"] == "compile"
     # A model call happened. The served SQL is the ontology compile, not that
     # model's SQL, so credit is missing. The copied served_* fields stay.
     assert env["served_attribution"] == "missing"
@@ -227,7 +228,8 @@ def test_ranking_after_model_call_reports_served_fields(
 def test_ranking_after_model_call_without_served_is_missing(tmp_path: Path) -> None:
     fake = _Http([{"phase": "generate", **_STAMP}], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
-    assert env["plan_origin"] == "ontology_ranking"
+    assert env["served_route"] == "ontology_compile"
+    assert env["plan_origin"] == "compile"
     assert env["served_attribution"] == "missing"
 
 
@@ -254,7 +256,8 @@ def test_ranking_only_with_no_model_call_is_none(tmp_path: Path) -> None:
     }
     fake = _Http([unarmed, unarmed], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
-    assert env["plan_origin"] == "ontology_ranking"
+    assert env["served_route"] == "ontology_compile"
+    assert env["plan_origin"] == "compile"
     assert env["generate_legs"]["count"] >= 1
     assert env["served_attribution"] == "none"
 

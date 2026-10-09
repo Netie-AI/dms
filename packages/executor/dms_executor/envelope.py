@@ -1884,6 +1884,9 @@ def reserved_as_of_abstain(
     assert_envelope_valid(env)
     # No SQL ran. Drop any leftover so this answer does not keep the previous clock.
     clear_engine_clock()
+    from dms_executor.route_stamp import ROUTE_LADDER, stamp_route
+
+    stamp_route(env, ROUTE_LADDER)
     return env
 
 

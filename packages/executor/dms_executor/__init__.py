@@ -600,6 +600,8 @@ class Executor:
             control_token = bind_ask_control(ctrl)
         ctrl.deadline = deadline
         ctrl.start()
+        from dms_executor.route_stamp import ROUTE_LADDER, freeze_route, stamp_route
+
         try:
             try:
                 try:
@@ -640,6 +642,7 @@ class Executor:
                     route="abstain",
                 )
                 assert_envelope_valid(env)
+                stamp_route(env, ROUTE_LADDER)
             except (
                 ServingLeaseCap,
                 ServingLeaseQueueFull,
@@ -692,6 +695,7 @@ class Executor:
                         route="abstain",
                     )
                     assert_envelope_valid(env)
+                    stamp_route(env, ROUTE_LADDER)
                 finally:
                     reset_serving_lease_block(token)
             stamp_engine_clock(env)
@@ -716,6 +720,7 @@ class Executor:
                 out["lane"] = mapped
             else:
                 out.pop("lane", None)
+            freeze_route(out)
             masked = mask_unknown_keys(out)
             backstop_missing_ticket(masked, question=question)
             return masked
@@ -1322,6 +1327,29 @@ def map_ask_response_to_envelope(
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
+    from dms_executor.route_stamp import (
+        ROUTE_EXEC,
+        ROUTE_L1,
+        ROUTE_LADDER,
+        ROUTE_MODEL,
+        ROUTE_VERIFIED,
+        stamp_route,
+    )
+
+    model = str(getattr(resp, "served_model", None) or "").strip()
+    if abstained:
+        route = ROUTE_LADDER
+    elif badge == "L0_CERTIFIED":
+        route = ROUTE_VERIFIED
+    elif badge == "L1_GOVERNED_METRIC":
+        route = ROUTE_L1
+    elif badge == "L2_VALIDATED" and model:
+        route = ROUTE_MODEL
+    elif badge == "L2_VALIDATED":
+        route = ROUTE_EXEC
+    else:
+        route = ROUTE_LADDER
+    stamp_route(env, route, served_model=model or None)
     return env
 
 

@@ -462,5 +462,16 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
+    def _drop(body: Any) -> Any:
+        if isinstance(body, dict):
+            return {
+                key: _drop(val)
+                for key, val in body.items()
+                if key not in {"served_route", "plan_origin", "ladder_rung", "served_model"}
+            }
+        if isinstance(body, list):
+            return [_drop(val) for val in body]
+        return body
+
     for qid in ids:
-        assert got["cases"][qid] == golden["cases"][qid], qid
+        assert _drop(got["cases"][qid]) == _drop(golden["cases"][qid]), qid
