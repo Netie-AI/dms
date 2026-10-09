@@ -253,6 +253,55 @@ def test_schema_qualifier_is_not_scrubbed(
     assert "bronze" not in ticket["names"]
 
 
+_FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+@pytest.mark.parametrize(
+    ("reason", "ticket_name"),
+    [
+        ("ungranted:`hr`", "hr"),
+        ('ungranted:`hr`."payroll"', "hr.payroll"),
+        ('ungranted:"hr".`payroll`', "hr.payroll"),
+        ("ungranted:[hr].[payroll]", "hr.payroll"),
+    ],
+)
+def test_any_quoting_drops_ungranted_names_and_keeps_granted(
+    reason: str,
+    ticket_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Backticks, mixed quotes, and brackets are identifiers. Grants stay."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    env = build_abstain(
+        reason=reason,
+        question="headcount by site",
+        text=f"The bronze layer still cites ungranted:inventory beside {reason}.",
+        assumptions=["bronze layer", "ungranted:inventory", reason],
+        abstain_reason=reason,
+        space_id=_FINANCE,
+        session_id="ses_hr_1",
+        answer_id="ans_hr",
+    )
+    blob = _visible(env)
+    assert "bronze layer" in blob
+    assert re.search(r"(?<![A-Za-z0-9_])inventory(?![A-Za-z0-9_])", blob)
+    for part in ticket_name.split("."):
+        assert (
+            re.search(
+                rf"(?i)(?<![A-Za-z0-9_]){re.escape(part)}(?![A-Za-z0-9_])",
+                blob,
+            )
+            is None
+        )
+    assert env["session_id"] == "ses_hr_1"
+    assert env["space_id"] == _FINANCE
+    ticket = _ticket(caplog)
+    assert ticket_name in ticket["names"]
+    assert "headcount by site" not in json.dumps(ticket)
+
+
 def test_db_error_text_stays_out_of_the_ticket(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
