@@ -785,6 +785,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    ladder_rung: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -855,6 +856,8 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if ladder_rung:
+        env["ladder_rung"] = ladder_rung
     return env
 
 
@@ -911,7 +914,14 @@ def _ladder_retry(
             "step": step,
         }
         if step == "richer_context" and not nxt.get("schema_context"):
-            nxt["schema_context"] = "richer_context"
+            richer = _richer_schema_prompt(
+                question,
+                warehouse=warehouse,
+                ontology=ontology,
+                grantable=grantable,
+            )
+            if richer:
+                nxt["schema_context"] = richer
         try:
             payload = compute(nxt)
         except Exception:  # noqa: BLE001 - one rung failing is not a serve
@@ -952,9 +962,36 @@ def _ladder_retry(
             ctx=ctx,
             ontology=ontology,
             grantable=grantable,
+            ladder_rung=step,
             _from_ladder=True,
         )
     return None
+
+
+def _richer_schema_prompt(
+    question: str,
+    *,
+    warehouse: Path | None,
+    ontology: Ontology | None,
+    grantable: set[str] | None,
+) -> str:
+    """Catalog prompt for the richer-context rung. Never the placeholder token."""
+    try:
+        from dms_executor.schema_context import build_schema_context, read_catalog
+
+        _fingerprint, schema = read_catalog(warehouse, grantable, "duckdb")
+        built = build_schema_context(
+            question,
+            schema,
+            ontology=ontology,
+            grantable=grantable,
+        )
+        prompt = str(getattr(built, "prompt", "") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing prompt is not the placeholder
+        return ""
+    if not prompt or prompt == "richer_context":
+        return ""
+    return prompt
 
 
 def hold_ungrounded_sql(
@@ -1005,6 +1042,7 @@ def _submit_validated(
     ctx: dict[str, Any] | None = None,
     ontology: Ontology | None = None,
     grantable: set[str] | None = None,
+    ladder_rung: str = "",
     _from_ladder: bool = False,
 ) -> dict[str, Any]:
     finding = served_result_reason(
@@ -1143,6 +1181,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        ladder_rung=ladder_rung,
     )
 
 
@@ -1378,6 +1417,7 @@ def _run_extract_loop(
     dialect: str,
     grantable: set[str],
     declared: Ontology | None,
+    ontology: Ontology | None,
     declared_violations: list[Violation],
     space_id: str | None,
     session_id: str | None,
@@ -1409,6 +1449,17 @@ def _run_extract_loop(
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        # Product path. declared is None once verify passes; the loaded
+        # ontology is the one the grain check can use. None does not pass.
+        if ontology is None:
+            return _abstain(
+                question,
+                "ontology_unavailable",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=PLAN_SOURCE_ONTOLOGY,
+                stage="extract_loop",
+            )
         return _submit_validated(
             sql,
             question=question,
@@ -1423,7 +1474,7 @@ def _run_extract_loop(
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
             compute=compute,
             ctx=ctx,
-            ontology=declared,
+            ontology=ontology,
             grantable=grantable,
         )
 
@@ -1729,6 +1780,7 @@ def maybe_generative_ask(
                     dialect=dialect,
                     grantable=allowed,
                     declared=declared,
+                    ontology=onto,
                     declared_violations=declared_violations,
                     space_id=space_id,
                     session_id=session_id,

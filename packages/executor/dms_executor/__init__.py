@@ -81,6 +81,7 @@ from dms_executor.envelope import (
 )
 from dms_executor.generative_ask import (
     hold_ungrounded_sql,
+    load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -928,6 +929,7 @@ class Executor:
             env = attach_cascade(held, cascade)
             self._store_turn(session_id, space_id, env)
             return env
+        gate_warehouse, gate_ontology = _served_check_inputs(self._warehouse)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -937,6 +939,9 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                warehouse=gate_warehouse,
+                ontology=gate_ontology,
+                as_of=datetime_now(),
             ),
             cascade,
         )
@@ -1021,6 +1026,13 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
 _chart_from_rows = chart_from_rows
 
 
+def _served_check_inputs(warehouse: Path | None) -> tuple[Path | None, Any]:
+    """Warehouse file and its verified ontology. Missing either does not pass."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return None, None
+    return warehouse, load_verified_ontology(warehouse)
+
+
 def map_ask_response_to_envelope(
     resp: AskResponse,
     *,
@@ -1029,6 +1041,9 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    warehouse: Path | None = None,
+    ontology: Any | None = None,
+    as_of: str | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import (
@@ -1081,7 +1096,16 @@ def map_ask_response_to_envelope(
         if raw_name == "generated":
             from dms_executor.served_gate import served_result_reason
 
-            gate_finding = served_result_reason(str(resp.sql_used or ""))
+            # Missing warehouse, ontology, or as_of is not a pass and not L2.
+            if warehouse is None or ontology is None or not as_of:
+                gate_finding = "inputs_missing"
+            else:
+                gate_finding = served_result_reason(
+                    str(resp.sql_used or ""),
+                    warehouse=warehouse,
+                    ontology=ontology,
+                    as_of=as_of,
+                )
             gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))
     badge = normalize_badge(

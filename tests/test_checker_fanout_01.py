@@ -178,6 +178,13 @@ def test_real_fanout_refuses_the_badge(tmp_path: Path) -> None:
         if isinstance(ctx.get("sql_loop_feedback"), dict)
     ]
     assert steps == ["self_correct", "richer_context", "stronger_tier"]
+    richer = next(
+        ctx for ctx in calls
+        if (ctx.get("sql_loop_feedback") or {}).get("step") == "richer_context"
+    )
+    prompt = str(richer.get("schema_context") or "")
+    assert prompt and prompt != "richer_context"
+    assert "SCHEMA" in prompt
     assert_envelope_valid(env)
 
 
@@ -310,3 +317,331 @@ def test_currently_correct_generated_sql_keeps_the_gate(tmp_path: Path) -> None:
         assert why is None, row["id"]
         checked += 1
     assert checked >= 17
+
+
+_SKU_PER_LOCATION = (
+    "SELECT l.location_id AS location_id, COUNT(i.sku) AS sku_count "
+    "FROM locations l JOIN inventory i ON i.location_id = l.location_id "
+    "GROUP BY l.location_id"
+)
+_LINES_PER_SUPPLIER = (
+    "SELECT s.supplier_id AS supplier_id, COUNT(*) AS line_count "
+    "FROM suppliers s JOIN inventory i ON i.supplier_id = s.supplier_id "
+    "GROUP BY s.supplier_id"
+)
+_SUM_CAPACITY = (
+    "SELECT l.location_id AS location_id, SUM(l.capacity_kg) AS capacity "
+    "FROM locations l JOIN inventory i ON i.location_id = l.location_id "
+    "GROUP BY l.location_id"
+)
+_AUDIT_CLOCK = (
+    "SELECT supplier_id, COUNT(*) FILTER (WHERE CAST(last_audit_date AS DATE) "
+    "< CURRENT_DATE - INTERVAL 90 DAY) AS n FROM suppliers GROUP BY supplier_id"
+)
+
+
+def _executed(db: Path, sql: str) -> list[dict[str, Any]]:
+    con = connect_file(db)
+    try:
+        cur = con.execute(sql)
+        cols = [str(d[0]) for d in (cur.description or [])]
+        return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+    finally:
+        con.close()
+
+
+def _cells(rows: list[dict[str, Any]]) -> list[tuple[tuple[str, Any], ...]]:
+    def cell(value: Any) -> Any:
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return value
+
+    return sorted(
+        tuple(sorted((str(key), cell(val)) for key, val in row.items())) for row in rows
+    )
+
+
+def test_one_to_many_counts_keep_l2_and_wrong_grain_sum_does_not(tmp_path: Path) -> None:
+    """GROUP BY grain, not the FROM-table key. Counts stay. A fanned SUM does not."""
+    from dms_executor.served_gate import served_result_reason
+
+    db = tmp_path / "grain.duckdb"
+    ensure_demo_warehouse(db)
+    onto = demo_ontology(db)
+    con = connect_file(db)
+    try:
+        assert onto.verify(con) == []
+    finally:
+        con.close()
+    bound = "2026-10-09T00:00:00Z"
+    for sql in (_SKU_PER_LOCATION, _LINES_PER_SUPPLIER):
+        assert served_result_reason(sql, warehouse=db, as_of=bound, ontology=onto) is None
+        env = _ask(db, "list product skus", sql, [])
+        assert env["badge"] == "L2_VALIDATED"
+        assert _cells(env["rows"]) == _cells(_executed(db, sql))
+    refused = _ask(db, "list product skus", _SUM_CAPACITY, [])
+    assert refused["badge"] != "L2_VALIDATED"
+    assert refused["abstained"] is True
+    notes = " ".join(str(a) for a in (refused.get("assumptions") or []))
+    blob = f"{refused.get('text') or ''} {notes}"
+    assert "fanout_subject_keys" in blob
+    lot = onto.compile("stock_value_myr", group_by=[("product", "sku")])
+    assert served_result_reason(lot.sql, warehouse=db, as_of=bound, ontology=onto) is None
+    served = _ask(db, "list product skus", lot.sql, [])
+    assert served["badge"] == "L2_VALIDATED"
+    assert _cells(served["rows"]) == _cells(_executed(db, lot.sql))
+
+
+def test_ladder_rung_stamps_the_step_that_served(tmp_path: Path) -> None:
+    db = tmp_path / "rung.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db)
+    assert onto is not None
+    calls: list[dict[str, Any]] = []
+    good = "SELECT sku FROM inventory"
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(ctx))
+        step = str((ctx.get("sql_loop_feedback") or {}).get("step") or "")
+        if step == "richer_context":
+            return {"query_sql": good}
+        return {"query_sql": _DUP_ROWS_SQL}
+
+    env = maybe_generative_ask(
+        "list product skus",
+        warehouse=db,
+        grantable=set(DEMO_TABLES),
+        compute=compute,
+        submit=_submit(db),
+        ledger_append=_ledger,
+        ontology=onto,
+    )
+    assert env is not None
+    assert env["badge"] == "L2_VALIDATED"
+    assert env.get("ladder_rung") == "richer_context"
+    richer = next(
+        ctx for ctx in calls
+        if (ctx.get("sql_loop_feedback") or {}).get("step") == "richer_context"
+    )
+    prompt = str(richer.get("schema_context") or "")
+    assert prompt and prompt != "richer_context"
+    assert "SCHEMA" in prompt
+    assert_envelope_valid(env)
+
+
+def test_audit_clock_uses_bound_as_of_at_0300_myt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """03:00 Asia/Kuala_Lumpur is still the previous UTC day. The bound as_of wins."""
+    import os
+    import time
+    from datetime import UTC, datetime
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Kuala_Lumpur"
+    time.tzset()
+    db = tmp_path / "audit.duckdb"
+    ensure_demo_warehouse(db)
+    onto = demo_ontology(db)
+    con = connect_file(db)
+    try:
+        host = str(con.execute("SELECT CAST(CURRENT_DATE AS VARCHAR)").fetchone()[0])[:10]
+    finally:
+        con.close()
+    # 03:00 MYT is 19:00 the previous UTC day. Force that day to differ from the host date.
+    as_of_day = "2026-10-08" if host != "2026-10-08" else "2026-10-07"
+    as_of = f"{as_of_day}T19:00:00Z"
+    assert host != as_of_day
+    from dms_executor.served_gate import served_result_reason
+
+    assert served_result_reason(
+        _AUDIT_CLOCK, warehouse=db, as_of=as_of, ontology=onto
+    ) is None
+    assert served_result_reason(
+        "SELECT COUNT(*) AS n FROM suppliers WHERE last_audit_date "
+        "< DATE '2020-01-01' - INTERVAL 90 DAY",
+        warehouse=db,
+        as_of=as_of,
+        ontology=onto,
+    ) == "as_of_window"
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            _ = tz
+            year = int(as_of_day[0:4])
+            month = int(as_of_day[5:7])
+            day = int(as_of_day[8:10])
+            return datetime(year, month, day, 19, 0, tzinfo=UTC)
+
+    monkeypatch.setattr("dms_executor.generative_ask.datetime", _Clock)
+    try:
+        env = _ask(db, "list product skus", _AUDIT_CLOCK, [])
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert "as_of_window" not in " ".join(str(a) for a in (env.get("assumptions") or []))
+
+
+def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cartesian and wrong-grain SUM refuse on every route. Counts and lot serve."""
+    import os
+    import time
+    from datetime import UTC, datetime
+
+    from cortex_client.models import (
+        AskRequest,
+        AskResponse,
+        LedgerAppendRequest,
+        LedgerAppendResponse,
+    )
+    from cortex_contract.execution import QueryResult
+    from dms_api import settings as settings_mod
+    from dms_api.app import create_app
+    from fastapi.testclient import TestClient
+
+    old_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Kuala_Lumpur"
+    time.tzset()
+    db = tmp_path / "http.duckdb"
+    ensure_demo_warehouse(db)
+    onto = demo_ontology(db)
+    con = connect_file(db)
+    try:
+        assert onto.verify(con) == []
+        host = str(con.execute("SELECT CAST(CURRENT_DATE AS VARCHAR)").fetchone()[0])[:10]
+    finally:
+        con.close()
+    lot = onto.compile("stock_value_myr", group_by=[("product", "sku")])
+    assert getattr(lot, "sql", None), lot
+    as_of_day = "2026-10-08" if host != "2026-10-08" else "2026-10-07"
+    as_of = f"{as_of_day}T19:00:00Z"
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            _ = tz
+            year = int(as_of_day[0:4])
+            month = int(as_of_day[5:7])
+            day = int(as_of_day[8:10])
+            return datetime(year, month, day, 19, 0, tzinfo=UTC)
+
+    monkeypatch.setattr("dms_executor.generative_ask.datetime", _Clock)
+    monkeypatch.setattr("dms_executor.datetime_now", lambda: as_of)
+
+    cases = (
+        ("cartesian", _DUP_ROWS_SQL, False),
+        ("sum_capacity", _SUM_CAPACITY, False),
+        ("skus_per_location", _SKU_PER_LOCATION, True),
+        ("lines_per_supplier", _LINES_PER_SUPPLIER, True),
+        ("lot_of_product", lot.sql, True),
+        ("audit_0300_myt", _AUDIT_CLOCK, True),
+    )
+
+    class _Cortex:
+        def __init__(self, sql: str, *, generated: bool) -> None:
+            self.sql = sql
+            self.generated = generated
+            self.asks: list[Any] = []
+
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
+            _ = (question, kwargs)
+            if self.generated:
+                return None
+            return {"query_sql": self.sql}
+
+        def submit(self, req: Any) -> QueryResult:
+            body = getattr(req, "body", None) or {}
+            sql = str(body.get("sql") or self.sql)
+            rows = _executed(db, sql) if sql.strip() else []
+            return QueryResult(ok=True, status="ok", run_id="run-http", output={"rows": rows})
+
+        def ask(self, req: AskRequest) -> AskResponse:
+            self.asks.append(req)
+            rows = _executed(db, self.sql)
+            return AskResponse(
+                answer="served",
+                badge="generated",
+                sql_used=self.sql,
+                rows=rows,
+                assumptions="recorded",
+                route="generated",
+                audit_id="aud-http",
+            )
+
+        def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+            _ = req
+            return LedgerAppendResponse(entry_id="ent-http", hash="hash-http")
+
+    def post(route: str, sql: str) -> dict[str, Any]:
+        monkeypatch.setenv("DMS_ASK_MODE", "live")
+        monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+        monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+        if route == "cloop_b":
+            monkeypatch.setenv("DMS_CLOOP_B", "1")
+        else:
+            monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+        monkeypatch.delenv("DMS_LANE_ONTOLOGY_RANKED", raising=False)
+        settings_mod.get_settings.cache_clear()
+        minted = ManifestMinter()
+
+        def _mint(acl: SessionAcl) -> Manifest:
+            return Manifest(
+                session_id=acl.session_id,
+                org_id=acl.org_id,
+                space_id=acl.space_id,
+                pool_id=acl.pool_id,
+                issuer_key_id="test-kid",
+                allowed_paths=list(acl.allowed_paths),
+                row_predicates=dict(acl.row_predicates),
+                issued_at="2026-10-09T00:00:00+00:00",
+                expires_at="2026-10-09T01:00:00+00:00",
+                signature="dGVzdHNpZw",
+            )
+
+        minted.mint_manifest = _mint  # type: ignore[method-assign]
+        minted.fetch_intermediate = lambda: None  # type: ignore[method-assign]
+        minted.close = lambda: None  # type: ignore[method-assign]
+        minted.invalidate = lambda *_a, **_k: None  # type: ignore[method-assign]
+        cortex = _Cortex(sql, generated=(route == "generated"))
+        app = create_app()
+        app.state.ask_service = Executor(
+            cortex=cortex, minter=minted, warehouse_path=db  # type: ignore[arg-type]
+        )
+        app.state.cortex = cortex
+        res = TestClient(app).post(
+            "/v1/chat/ask",
+            json={
+                "question": "list product skus",
+                "space_id": _FINANCE,
+                "session_id": "ses_fan_http",
+            },
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        if route == "generated":
+            assert cortex.asks, route
+        return body
+
+    try:
+        for name, sql, serve in cases:
+            for route in ("flag_off", "cloop_b", "generated"):
+                env = post(route, sql)
+                label = f"{route} {name}"
+                if serve:
+                    assert env["badge"] == "L2_VALIDATED", label
+                    assert env["abstained"] is False, label
+                    assert _cells(env["rows"]) == _cells(_executed(db, sql)), label
+                else:
+                    assert env["badge"] != "L2_VALIDATED", label
+                    assert env["abstained"] is True, label
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
