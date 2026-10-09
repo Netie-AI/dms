@@ -517,16 +517,14 @@ def test_live_ask_product_never_consults_compute(minter: ManifestMinter) -> None
     env = exe.live_ask("What is revenue by product category?", session_id="ses_gen01_unsure")
     assert fake.computes == []
     assert len(fake.asks) == 1
-    assert env["audit_id"] == "aud_gen01_cortex"
     assert_envelope_valid(env)
-    # The fixture's scalar SELECT 1 cannot answer a by-category ask, so E10
-    # demotes it: the rendered answer is Cortex's, refused, not a GEN-01 abstain.
-    assert "live Cortex ask" in (env.get("assumptions") or [])
+    # The fixture answers with SELECT 1. That cites no granted table, so the
+    # served-result check refuses it before a badge. E10 never sees the row.
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
     assert env["values"] == []
-    assert "breakdown" in env["text"]
-    assert "ontology-grounded" not in env["text"]
+    blob = f"{env.get('text') or ''} {' '.join(env.get('assumptions') or [])}"
+    assert "no_granted_table" in blob
 
 
 def test_live_ask_vq04_beats_greedy_compute(minter: ManifestMinter) -> None:

@@ -101,6 +101,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.served_gate import served_result_reason
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
@@ -108,6 +109,7 @@ from dms_executor.sql_loop import (
     apply_sql_credit,
     extract_dialect,
     loop_entry,
+    mask_feedback_text,
     run_model_loop,
 )
 from dms_executor.verified_queries import rows_from_submit_result
@@ -839,6 +841,163 @@ def _l2_envelope(
     return env
 
 
+_LADDER_STEPS = ("self_correct", "richer_context", "stronger_tier")
+
+
+def _sql_from_payload(payload: dict[str, Any] | None, onto: Ontology | None) -> str | None:
+    """Retry SQL from a ladder compute payload. Plan compile or query_sql."""
+    if not isinstance(payload, dict):
+        return None
+    sql = query_sql_from_payload(payload)
+    if sql:
+        return sql
+    plan = plan_from_payload(payload)
+    if plan is None or onto is None:
+        return None
+    compiled = _compile_maybe_unverified(onto, plan)
+    if isinstance(compiled, CompiledQuery):
+        return compiled.sql
+    return None
+
+
+def _ladder_retry(
+    sql: str,
+    finding: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    notes: Sequence[str],
+    plan_source: str,
+    keep_gt: float | None,
+    measure: str | None,
+    coverage: Coverage | None,
+    where_paths: Sequence[WherePath],
+    warehouse: Path | None,
+    plan_origin: str,
+    lead: str,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    ctx: dict[str, Any] | None,
+    ontology: Ontology | None,
+    grantable: set[str] | None,
+) -> dict[str, Any] | None:
+    """Self-correct, richer context, stronger tier. A passing retry may serve."""
+    for step in _LADDER_STEPS:
+        if compute is None:
+            continue
+        nxt = dict(ctx or {})
+        nxt["sql_loop_feedback"] = {
+            "previous_sql": mask_feedback_text(sql),
+            "reason": finding,
+            "step": step,
+        }
+        if step == "richer_context" and not nxt.get("schema_context"):
+            nxt["schema_context"] = "richer_context"
+        try:
+            payload = compute(nxt)
+        except Exception:  # noqa: BLE001 - one rung failing is not a serve
+            payload = None
+        new_sql = _sql_from_payload(payload if isinstance(payload, dict) else None, ontology)
+        if not new_sql or new_sql.strip() == sql.strip():
+            continue
+        if grantable is not None:
+            why = validate_compiled_sql(
+                new_sql, grantable=grantable, warehouse=warehouse
+            )
+            if why:
+                continue
+        if served_result_reason(
+            new_sql,
+            warehouse=warehouse,
+            as_of=_as_of(),
+            ontology=ontology,
+            grantable=grantable,
+        ):
+            continue
+        return _submit_validated(
+            new_sql,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=notes,
+            plan_source=plan_source,
+            keep_gt=keep_gt,
+            measure=measure,
+            coverage=coverage_from_sql_path(sql=new_sql),
+            where_paths=where_paths,
+            warehouse=warehouse,
+            plan_origin=plan_origin,
+            lead=lead,
+            compute=None,
+            ctx=ctx,
+            ontology=ontology,
+            grantable=grantable,
+            _from_ladder=True,
+        )
+    return None
+
+
+def hold_ungrounded_sql(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+) -> dict[str, Any] | None:
+    """Ladder, then reconfirm, when served SQL touches no granted table.
+
+    None means the SQL may keep its badge. A constant select is not served.
+    """
+    finding = served_result_reason(
+        sql,
+        warehouse=warehouse,
+        as_of=_as_of(),
+        grantable=grantable,
+    )
+    if finding != "no_granted_table":
+        return None
+    served = _ladder_retry(
+        sql,
+        finding,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+        notes=(),
+        plan_source=PLAN_SOURCE_OTHER,
+        keep_gt=None,
+        measure=None,
+        coverage=None,
+        where_paths=(),
+        warehouse=warehouse,
+        plan_origin="",
+        lead="",
+        compute=compute,
+        ctx={},
+        ontology=None,
+        grantable=grantable,
+    )
+    if served is not None:
+        return served
+    return _abstain(
+        question,
+        f"reconfirm:{finding}",
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_OTHER,
+    )
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -856,7 +1015,54 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    ctx: dict[str, Any] | None = None,
+    ontology: Ontology | None = None,
+    grantable: set[str] | None = None,
+    _from_ladder: bool = False,
 ) -> dict[str, Any]:
+    finding = served_result_reason(
+        sql,
+        warehouse=warehouse,
+        as_of=_as_of(),
+        ontology=ontology,
+        grantable=grantable,
+    )
+    if finding:
+        served = None
+        if not _from_ladder:
+            served = _ladder_retry(
+                sql,
+                finding,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=notes,
+                plan_source=plan_source,
+                keep_gt=keep_gt,
+                measure=measure,
+                coverage=coverage,
+                where_paths=where_paths,
+                warehouse=warehouse,
+                plan_origin=plan_origin,
+                lead=lead,
+                compute=compute,
+                ctx=ctx,
+                ontology=ontology,
+                grantable=grantable,
+            )
+        if served is not None:
+            return served
+        return _abstain(
+            question,
+            f"reconfirm:{finding}",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     if not coverage_valid(coverage):
         return _abstain(
             question,
@@ -1075,6 +1281,8 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        ontology=onto,
+        grantable=allowed,
     )
 
 
@@ -1150,6 +1358,8 @@ def rank_window_ask(
         coverage=compiled.coverage,
         warehouse=lake,
         lead=lead,
+        ontology=onto,
+        grantable=allowed,
     )
 
 
@@ -1226,6 +1436,10 @@ def _run_extract_loop(
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            compute=compute,
+            ctx=ctx,
+            ontology=declared,
+            grantable=grantable,
         )
 
     def abstain(
@@ -1682,6 +1896,10 @@ def maybe_generative_ask(
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
                     plan_origin=origin,
+                    compute=compute,
+                    ctx=ctx,
+                    ontology=onto,
+                    grantable=allowed,
                 )
             )
     if kind != "plan":
@@ -1855,5 +2073,9 @@ def maybe_generative_ask(
             where_paths=compiled.where_paths,
             warehouse=lake,
             plan_origin=origin,
+            compute=compute,
+            ctx=ctx,
+            ontology=onto,
+            grantable=allowed,
         )
     )
