@@ -450,8 +450,13 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
     assert "demo_pack_unavailable" not in r.text
 
 
-# Served from the scoring file on main. The rest stay byte-equal with as_of masked.
-# ops_supplier_rank_boundary is the same phrase as cq_supplier_ranking.
+# Envelopes that differ from the canned capture. Grade the served envelope.
+# cq_supplier_ranking (and the same phrase on ops) is an E10 ABSTAIN with 0
+# rows on canned main: the stub returns one row, the governed SQL has no
+# GROUP BY, envelope.py:510 demotes at envelope.py:1548, and envelope.py:1712
+# clears the rows.
+# That is not a value that differed from gold. Exec-SQL returns the real
+# rows and E10 does not fire.
 _FIXTURE_FED = frozenset(
     {
         "cq_sku_count",

@@ -22,7 +22,8 @@ _SHADOW = "served_check_shadow"
 # date.today() - 90 days, which was 2026-07-10 on this day.
 _CAPTURE_DAY = (2026, 10, 8)
 GOLDEN = HERE / "flag_off_52_f9ffc3e1.json"
-# Served from the scoring fixture on the capture. They must differ now.
+# Envelopes that differ from the canned capture. cq_supplier_ranking on that
+# capture is an E10 ABSTAIN with 0 rows (envelope.py:1548), not a gold value.
 _FIXTURE_FED = frozenset(
     {
         "cq_sku_count",

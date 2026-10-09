@@ -573,20 +573,43 @@ def maybe_pack_ask(
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
 ) -> dict[str, Any] | None:
-    """L1 envelope when the demo pack matches and Cortex executed the SQL.
+    """L1 envelope, or None when the phrase missed or the execution had no rows."""
+    env, _empty = run_pack_ask(
+        question,
+        space_id=space_id,
+        session_id=session_id,
+        grantable=grantable,
+        tables=tables,
+        submit=submit,
+        ledger_append=ledger_append,
+    )
+    return env
+
+
+def run_pack_ask(
+    question: str,
+    *,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    grantable: set[str] | None = None,
+    tables: list[str] | None = None,
+    submit: Callable[[str], Any] | None = None,
+    ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """L1 envelope, and whether governed SQL ran and returned no rows.
 
     Missing submit/ledger does not fall back to local DuckDB (F83). A phrase
     match whose grants, Cortex SQL, or ledger step fails is a named ABSTAIN.
-    None means the phrase did not match, or the governed execution returned
-    no rows. The caller then runs the ladder.
+    ``(None, False)`` is a phrase miss or hostile SQL. ``(None, True)`` means
+    the governed execution returned no rows, so the caller runs the ladder.
     """
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
-        return None
+        return None, False
     try:
         reject_hostile_chat_sql(phrase.sql)
     except SecurityEvent:
-        return None
+        return None, False
     hit = lookup_pack_metric(
         question,
         grantable=grantable,
@@ -595,11 +618,11 @@ def maybe_pack_ask(
     if hit is None:
         return _curated_step_refusal(
             question, "grants fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     if submit is None or ledger_append is None:
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     try:
         result = submit(hit.sql)
     except OpenVaultTokenError:
@@ -607,33 +630,32 @@ def maybe_pack_ask(
     except Exception:  # noqa: BLE001
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     ok = getattr(result, "ok", None)
     if ok is False or getattr(result, "output", None) is None:
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     run_id = str(getattr(result, "run_id", None) or "")
     try:
         led = ledger_append({"sql": hit.sql, "run_id": run_id})
     except Exception:  # noqa: BLE001
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     entry_id = getattr(led, "entry_id", None) if led is not None else None
     if not (isinstance(entry_id, str) and entry_id.strip()):
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
-        )
+        ), False
     led_hash = getattr(led, "hash", None)
     if not (isinstance(led_hash, str) and led_hash.strip()) or led_hash == entry_id:
         return _curated_step_refusal(
             question, "ledger fail", space_id=space_id, session_id=session_id
-        )
-    # A governed execution with no rows is not an answer. None lets the
-    # caller run the same generate / execute / check / retry ladder.
+        ), False
+    # No rows: the caller runs the ladder before any empty answer is served.
     if not rows_from_submit_result(result):
-        return None
+        return None, True
     return envelope_from_pack_submit(
         metric=hit,
         result=result,
@@ -641,4 +663,4 @@ def maybe_pack_ask(
         space_id=space_id,
         session_id=session_id,
         audit_id=entry_id.strip(),
-    )
+    ), False

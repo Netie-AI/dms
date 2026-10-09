@@ -319,17 +319,108 @@ def _ladder_ask(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, fill: bool) 
         exe.close()
 
 
-def test_zero_row_l1_reaches_the_ladder_and_is_not_served_empty(
+def test_zero_row_l1_ladder_serves_the_rows_it_finds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     earned = _ladder_ask(tmp_path, monkeypatch, fill=True)
     assert earned["_insights"] >= 1
     assert earned["badge"] == "L2_VALIDATED"
-    assert earned["rows"]
-    empty = _ladder_ask(tmp_path, monkeypatch, fill=False)
-    assert empty["_insights"] >= 1
-    assert empty["badge"] == "ABSTAIN"
-    assert empty["badge"] not in {"L1_GOVERNED_METRIC", "L2_VALIDATED"}
+    assert earned["abstained"] is False
+    served = list(earned.get("rows") or [])
+    assert served
+    real = execute_sql(_LADDER_SQL, path=tmp_path / "ladder.duckdb", product=True)
+    assert real
+    assert _rows_key(served) == _rows_key(real)
+
+
+_OVERDUE_SQL = (
+    "SELECT supplier_id FROM suppliers "
+    "WHERE CAST(last_audit_date AS DATE) < CURRENT_DATE - INTERVAL 90 DAY"
+)
+
+
+class _RealSQL:
+    """Every SQL submit runs on the warehouse. Nothing is canned empty."""
+
+    def __init__(self, db: Path, ladder_sql: str) -> None:
+        self.db = db
+        self.ladder_sql = ladder_sql
+        self.insights: list[str] = []
+        self.sqls: list[str] = []
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        self.insights.append(question)
+        return {
+            "phase": "generate",
+            "query_sql": self.ladder_sql,
+            "generative": {"sql": self.ladder_sql, "ok": True, "stamp": {"impl": "stub"}},
+        }
+
+    def submit(self, req: Any) -> QueryResult:
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else getattr(plan, "kind", None)
+        if kind != "sql":
+            return QueryResult(ok=True, status="bound", run_id="run_bind")
+        body = getattr(req, "body", None)
+        sql = body.get("sql") if isinstance(body, dict) else ""
+        self.sqls.append(sql if isinstance(sql, str) else "")
+        rows = execute_sql(sql, path=self.db, product=True) if isinstance(sql, str) else []
+        return QueryResult(ok=True, status="ok", run_id="run_real", output={"rows": rows})
+
+    def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+        _ = req
+        return LedgerAppendResponse(entry_id="led_real", hash="hash_real_not_entry")
+
+    def ask(self, req: AskRequest) -> AskResponse:
+        raise AssertionError(f"ladder should have served: {req}")
+
+
+def test_true_empty_nothing_overdue_is_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both steps execute and match nothing. The empty answer is served."""
+    import duckdb
+    from dms_executor.demo_pack import COLD_STORAGE_Q, COLD_STORAGE_SQL
+    from dms_executor.envelope import PROVENANCE_L1_EMPTY, PROVENANCE_LADDER_EMPTY
+
+    _flags_off(monkeypatch)
+    db = tmp_path / "overdue.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("UPDATE locations SET is_cold_storage = FALSE")
+        con.execute("UPDATE suppliers SET last_audit_date = CURRENT_DATE")
+    finally:
+        con.close()
+    assert execute_sql(COLD_STORAGE_SQL, path=db, product=True) == []
+    assert execute_sql(_OVERDUE_SQL, path=db, product=True) == []
+    cortex = _RealSQL(db, _OVERDUE_SQL)
+    client, exe = _client(cortex, db)
+    try:
+        res = client.post(
+            "/v1/chat/ask",
+            json={
+                "question": COLD_STORAGE_Q,
+                "space_id": _FINANCE,
+                "session_id": "ses_overdue_empty",
+            },
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert isinstance(body, dict)
+        assert_envelope_valid(body)
+    finally:
+        exe.close()
+    assert cortex.insights
+    assert body["abstained"] is False
+    assert body["badge"] != "ABSTAIN"
+    assert body["badge"] == "L2_VALIDATED"
+    assert body["rows"] == []
+    assumptions = list(body.get("assumptions") or [])
+    assert PROVENANCE_L1_EMPTY in assumptions
+    assert PROVENANCE_LADDER_EMPTY in assumptions
+    assert " ".join(str(body.get("sql_used") or "").split()) == " ".join(_OVERDUE_SQL.split())
+    assert any(_OVERDUE_SQL in sql for sql in cortex.sqls)
 
 
 def test_runtime_modules_do_not_reference_scoring_files() -> None:

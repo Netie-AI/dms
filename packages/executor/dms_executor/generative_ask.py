@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import copy
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +62,8 @@ from dms_executor.demo_warehouse import (
     warehouse_path,
 )
 from dms_executor.envelope import (
+    PROVENANCE_L1_EMPTY,
+    PROVENANCE_LADDER_EMPTY,
     RESERVED_PARAM_AS_OF,
     _relation_bare,
     _sql_cited_labels,
@@ -113,6 +117,19 @@ from dms_executor.sql_loop import (
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
+# ponytail: one in-flight flag so every ladder submit sees the empty L1.
+# Ceiling: a nested ask on this thread. Upgrade: an arg on _submit_validated
+# if a nested ask appears.
+_AFTER_EMPTY_L1: ContextVar[bool] = ContextVar("dms_after_empty_l1", default=False)
+
+
+@contextmanager
+def after_empty_l1(active: bool) -> Iterator[None]:
+    token = _AFTER_EMPTY_L1.set(bool(active))
+    try:
+        yield
+    finally:
+        _AFTER_EMPTY_L1.reset(token)
 _UNSURE_ASK = re.compile(
     r"\b(worry about|is this good|just give me)\b",
     re.I,
@@ -766,14 +783,33 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    after_empty_l1: bool = False,
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
-    text = f"{lead}\n" if lead else ""
-    text += f"Found {len(out_rows)} row(s)."
-    if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
+    both_empty = bool(after_empty_l1) and not out_rows
+    if both_empty:
+        text = (
+            "L1 returned 0 rows, then the ladder's independent SQL also returned 0 rows."
         )
+        assumptions = [
+            PROVENANCE_L1_EMPTY,
+            PROVENANCE_LADDER_EMPTY,
+            "GEN-01 ontology compile",
+            "executed via Cortex submit after validate",
+            *notes,
+        ]
+    else:
+        text = f"{lead}\n" if lead else ""
+        text += f"Found {len(out_rows)} row(s)."
+        if out_rows:
+            text += "\n" + "\n".join(
+                "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
+            )
+        assumptions = [
+            "GEN-01 ontology compile",
+            "executed via Cortex submit after validate",
+            *notes,
+        ]
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
     env = build_answer_envelope(
@@ -784,11 +820,7 @@ def _l2_envelope(
         rows=out_rows,
         sql_used=sql,
         chart=chart,
-        assumptions=[
-            "GEN-01 ontology compile",
-            "executed via Cortex submit after validate",
-            *notes,
-        ],
+        assumptions=assumptions,
         as_of=_as_of(),
         space_id=space_id,
         session_id=session_id,
@@ -952,6 +984,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        after_empty_l1=_AFTER_EMPTY_L1.get(),
     )
 
 
