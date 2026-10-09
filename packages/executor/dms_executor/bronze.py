@@ -13,6 +13,7 @@ from typing import Any
 import duckdb
 
 from dms_executor.demo_warehouse import (
+    connect_locked_readonly,
     connect_readonly,
     ensure_demo_warehouse,
     warehouse_path,
@@ -261,7 +262,12 @@ def lookup_ingest_watermarks(*, path: Path | None = None) -> dict[str, dict[str,
     db = path or warehouse_path()
     if not Path(db).is_file():
         return {}
-    con = duckdb.connect(str(db))
+    # Same serving lock as the ask. A raw connect races a read-only attach.
+    # A miss is no watermarks: this read must not turn the abstain into a 503.
+    try:
+        con = connect_locked_readonly(Path(db))
+    except Exception:  # noqa: BLE001 - lock miss or unreadable file
+        return {}
     try:
         rows = con.execute(
             f"SELECT table_name, filename, extracted_at, truncated, source_kind "

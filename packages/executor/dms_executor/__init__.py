@@ -65,9 +65,11 @@ from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     SERVING_DIALECT,
     ReservedParamError,
+    ServingLockWait,
     ensure_demo_warehouse,
     execute_sql,
     read_health_engine_clock,
+    serving_deadline,
     sql_has_reserved_as_of,
     stamp_engine_clock,
 )
@@ -200,6 +202,35 @@ def _seen(
     return payload
 
 
+def _serving_lock_envelope(
+    question: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    ask_mode: str,
+) -> dict[str, Any]:
+    """Ask stopped because the serving file lock outlasted the deadline."""
+    env = build_abstain(
+        reason="serving_lock_wait",
+        question=question,
+        stage="serving",
+        answer_id="ans_serving_lock",
+        text=(
+            "The data is briefly locked for an update, so I stopped before answering."
+        ),
+        values=[],
+        rows=[],
+        sql_used=None,
+        assumptions=["serving_lock_wait"],
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode=ask_mode,
+        route="abstain",
+    )
+    assert_envelope_valid(env)
+    return env
+
+
 class Executor:
     """Serving engine + manifest-aware submit path."""
 
@@ -317,8 +348,14 @@ class Executor:
         return env
 
     def demo_ask(self, question: str, *, space_id: str | None = None) -> dict[str, Any]:
-        ensure_demo_warehouse(self._warehouse)
-        return answer_demo_question(question, space_id=space_id)
+        with serving_deadline():
+            try:
+                ensure_demo_warehouse(self._warehouse)
+                return answer_demo_question(question, space_id=space_id)
+            except ServingLockWait:
+                return _serving_lock_envelope(
+                    question, space_id=space_id, session_id=None, ask_mode="demo"
+                )
 
     def mint_manifest(self, session: SessionContext | SessionAcl) -> Any:
         if isinstance(session, SessionAcl):
@@ -523,10 +560,32 @@ class Executor:
         generate seam ran, its setup fields reach the envelope on every path,
         including the contract-ask fallback after a generative miss.
         """
-        from cortex_client.compute import begin_answer_model_calls, recorded_model_calls
+        from cortex_client.compute import begin_answer_model_calls
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
+        with serving_deadline():
+            return self._live_ask_bounded(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+                ask_path=ask_path,
+                seen=seen,
+            )
+
+    def _live_ask_bounded(
+        self,
+        question: str,
+        *,
+        space_id: str | None,
+        session_id: str | None,
+        tables: list[str] | None,
+        ask_path: str | None,
+        seen: list[dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        from cortex_client.compute import recorded_model_calls
+
         try:
             env = self._live_ask(
                 question,
@@ -535,6 +594,13 @@ class Executor:
                 tables=tables,
                 ask_path=ask_path,
                 seen=seen,
+            )
+        except ServingLockWait:
+            env = _serving_lock_envelope(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
             )
         except OpenVaultTokenError as exc:
             # Every lane needs the signing key; no lane may relabel its absence.
@@ -741,6 +807,8 @@ class Executor:
         # never falls back to the whole space.
         try:
             granted = self.grantable_tables(space_id=space_id)
+        except ServingLockWait:
+            raise
         except Exception:  # noqa: BLE001 -- empty context, never the whole space
             granted = []
         selection = [t for t in (tables or []) if t]

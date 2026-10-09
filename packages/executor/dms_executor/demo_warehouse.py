@@ -8,9 +8,12 @@ Cortex's duckdb file). Uploaded bronze is copied to the engine file by
 
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
-from collections.abc import Mapping
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +34,77 @@ _CLOCK_PENDING = False
 
 class ReservedParamError(Exception):
     """Product SQL named $as_of. The statement was not executed."""
+
+
+# Monotonic instant the in-flight ask must finish. Unset off the ask path.
+_SERVING_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "dms_serving_deadline", default=None
+)
+
+
+class ServingLockWait(TimeoutError):
+    """The serving file lock was not free before the ask deadline."""
+
+    def __init__(self) -> None:
+        super().__init__("serving lock")
+
+
+def serving_lock_wait_s() -> float:
+    """Seconds a serving-path lock acquire may block.
+
+    An armed ask gets only the time it has left. Otherwise the full serving
+    deadline (``insights_timeout_s``). Call sites do not pick their own number.
+    """
+    from cortex_client.compute import insights_timeout_s
+
+    budget = insights_timeout_s()
+    deadline = _SERVING_DEADLINE.get()
+    if deadline is None:
+        return budget
+    return min(budget, max(0.0, deadline - time.monotonic()))
+
+
+def arm_serving_deadline() -> contextvars.Token[float | None]:
+    """Start this ask's deadline. Reset the token on the same context."""
+    from cortex_client.compute import insights_timeout_s
+
+    return _SERVING_DEADLINE.set(time.monotonic() + insights_timeout_s())
+
+
+def reset_serving_deadline(token: contextvars.Token[float | None]) -> None:
+    _SERVING_DEADLINE.reset(token)
+
+
+@contextmanager
+def serving_deadline() -> Iterator[None]:
+    """Bound every serving lock wait in this context by the ask deadline."""
+    token = arm_serving_deadline()
+    try:
+        yield
+    finally:
+        reset_serving_deadline(token)
+
+
+def _file_lock_wait(explicit: float | None) -> float | None:
+    """None waits without a bound. An armed ask caps every wait, including an explicit one."""
+    if explicit is None and _SERVING_DEADLINE.get() is None:
+        return None
+    if explicit is None:
+        return serving_lock_wait_s()
+    deadline = _SERVING_DEADLINE.get()
+    if deadline is None:
+        return explicit
+    return min(explicit, max(0.0, deadline - time.monotonic()))
+
+
+def _acquire_file_lock(lock: threading.RLock, timeout: float | None) -> None:
+    """Take ``lock``. A missed serving deadline raises and does not leave it held."""
+    wait = _file_lock_wait(timeout)
+    if wait is None:
+        lock.acquire()
+        return
+    if not lock.acquire(timeout=wait):
+        raise ServingLockWait()
 
 
 def sql_has_reserved_as_of(sql: str) -> bool:
@@ -261,15 +335,13 @@ def connect_file(
 ) -> duckdb.DuckDBPyConnection:
     """Write-mode attach. Caller must close(); one live attach per file until then.
 
-    ``timeout`` None waits until the lock is free. A number is the serving
-    deadline: a miss raises ``TimeoutError`` and does not open the file.
+    ``timeout`` None waits until the lock is free, unless an ask deadline is
+    armed: then the wait is whatever ``serving_lock_wait_s`` has left. A miss
+    raises ``ServingLockWait`` and does not open the file.
     """
     db = Path(path)
     lock = _lock_for(db)
-    if timeout is None:
-        lock.acquire()
-    elif not lock.acquire(timeout=timeout):
-        raise TimeoutError("serving lock")
+    _acquire_file_lock(lock, timeout)
     try:
         con = duckdb.connect(str(db), config=_SERVING_CONFIG)
     except BaseException:
@@ -283,16 +355,14 @@ def acquire_serving_lock(
 ) -> threading.RLock | None:
     """Take the per-file serving lock, or None if the deadline passes.
 
-    ``timeout`` defaults to the serving deadline (``insights_timeout_s``).
-    The caller must ``release()`` on the same thread. None means the lock
-    was not taken.
+    The wait is ``serving_lock_wait_s`` (time left on an armed ask, otherwise
+    the full serving deadline). The caller must ``release()`` on the same
+    thread. None means the lock was not taken.
     """
-    if timeout is None:
-        from cortex_client.compute import insights_timeout_s
-
-        timeout = insights_timeout_s()
     lock = _lock_for(Path(path))
-    if not lock.acquire(timeout=timeout):
+    try:
+        _acquire_file_lock(lock, serving_lock_wait_s() if timeout is None else timeout)
+    except ServingLockWait:
         return None
     return lock
 
@@ -310,7 +380,7 @@ def connect_locked_readonly(
     db = Path(path)
     lock = acquire_serving_lock(db, timeout=timeout)
     if lock is None:
-        raise TimeoutError("serving lock")
+        raise ServingLockWait()
     try:
         con = duckdb.connect(str(db), read_only=True, config=_SERVING_CONFIG)
     except BaseException:
@@ -330,7 +400,10 @@ def ensure_demo_warehouse(path: Path | None = None) -> Path:
     db = path or warehouse_path()
     key = str(db.resolve())
     lock = _lock_for(db)
-    with lock:
+    # Same wait as every other serving acquire. Off the ask path this still
+    # waits the writer out (library lists share the file).
+    _acquire_file_lock(lock, None)
+    try:
         # Do not probe schema via a second duckdb.connect(): DuckDB 1.5 treats
         # a second RW attach of the same file as BinderException. The old
         # ``except Exception: return False`` then fell through to another
@@ -345,6 +418,8 @@ def ensure_demo_warehouse(path: Path | None = None) -> Path:
             con.close()
         _SEEDED.add(key)
         return db
+    finally:
+        lock.release()
 
 
 def _seed(con: duckdb.DuckDBPyConnection) -> None:

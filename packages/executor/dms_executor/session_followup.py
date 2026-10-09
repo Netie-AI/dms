@@ -215,7 +215,11 @@ def maybe_followup(
                 session_id=session_id,
                 question=question,
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            from dms_executor.demo_warehouse import ServingLockWait
+
+            if isinstance(exc, ServingLockWait):
+                raise
             return _abstain(
                 space_id=space_id,
                 session_id=session_id,
@@ -249,7 +253,11 @@ def maybe_followup(
             session_id=session_id,
             question=question,
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        from dms_executor.demo_warehouse import ServingLockWait
+
+        if isinstance(exc, ServingLockWait):
+            raise
         return _abstain(
             space_id=space_id,
             session_id=session_id,

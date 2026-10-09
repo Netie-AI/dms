@@ -24,7 +24,7 @@ from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope
 
-from dms_executor.demo_warehouse import connect_file
+from dms_executor.demo_warehouse import connect_file, serving_lock_wait_s
 
 _DIALECT = "duckdb"
 
@@ -431,7 +431,7 @@ def _col_type(schema: dict[str, dict[str, str]], table: str, column: str) -> str
 def _load_schema(warehouse: Path | None) -> dict[str, dict[str, str]]:
     if warehouse is None or not Path(warehouse).is_file():
         return {}
-    con = connect_file(Path(warehouse))
+    con = connect_file(Path(warehouse), timeout=serving_lock_wait_s())
     out: dict[str, dict[str, str]] = {}
     try:
         rows = con.execute(
@@ -456,7 +456,7 @@ def _load_relation_units(
     result: dict[str, tuple[str | None, bool]] = {}
     if warehouse is None or not Path(warehouse).is_file() or not schema:
         return result
-    con = connect_file(Path(warehouse))
+    con = connect_file(Path(warehouse), timeout=serving_lock_wait_s())
     try:
         for table, cols in schema.items():
             ccy_cols = [c for c in cols if is_currency_column(c)]

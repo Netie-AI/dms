@@ -390,10 +390,10 @@ def summarize_context(parts: dict[str, Any]) -> dict[str, Any]:
 
 
 def _connect_serving(warehouse: Path) -> Any:
-    """Serving attach with the ask deadline. A miss raises ``TimeoutError``."""
-    from cortex_client.compute import insights_timeout_s
+    """Serving attach. The wait is the time left on the ask deadline."""
+    from dms_executor.demo_warehouse import serving_lock_wait_s
 
-    return connect_file(Path(warehouse), timeout=insights_timeout_s())
+    return connect_file(Path(warehouse), timeout=serving_lock_wait_s())
 
 
 def _one_value(warehouse: Path, sql: str) -> str | None:
