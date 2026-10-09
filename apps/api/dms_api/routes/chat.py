@@ -182,6 +182,13 @@ def _space_refusal_envelope(
     )
 
 
+def _release(env: dict[str, Any], ask: Any) -> dict[str, Any]:
+    """Scrub ungranted names immediately before FastAPI serialises the body."""
+    from dms_api.wiring import scrub_ask_envelope
+
+    return scrub_ask_envelope(env, warehouse=getattr(ask, "_warehouse", None))
+
+
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     """E6 — demo_fallback_used must set an unmissable banner flag."""
     from dms_api.wiring import build_validated_envelope
@@ -252,7 +259,7 @@ def chat_ask(
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
         env["ask_mode"] = "demo"
-        return env
+        return _release(env, ask)
 
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
@@ -260,19 +267,24 @@ def chat_ask(
     if cortex is None:
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, "fallback — Cortex client missing")
+            return _release(
+                _stamp_demo_fallback(env, "fallback — Cortex client missing"), ask
+            )
         raise HTTPException(
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
         )
 
     try:
-        return ask.live_ask(
-            body.question,
-            space_id=body.space_id,
-            session_id=body.session_id,
-            tables=body.grounded_tables,
-            ask_path=body.ask_path,
+        return _release(
+            ask.live_ask(
+                body.question,
+                space_id=body.space_id,
+                session_id=body.session_id,
+                tables=body.grounded_tables,
+                ask_path=body.ask_path,
+            ),
+            ask,
         )
     except GroundingRefused as exc:
         # Refusing is the fix, not the failure: this used to widen the manifest
@@ -317,18 +329,23 @@ def chat_ask(
         if exc.code == "path_not_allowed" and body.space_id:
             space = store.get(body.space_id)
             missing = _missing_table(exc.detail)
-            return _space_refusal_envelope(
-                space_id=body.space_id,
-                space_name=getattr(space, "name", None),
-                missing_table=missing,
-                session_id=body.session_id,
+            return _release(
+                _space_refusal_envelope(
+                    space_id=body.space_id,
+                    space_name=getattr(space, "name", None),
+                    missing_table=missing,
+                    session_id=body.session_id,
+                ),
+                ask,
             )
 
         # Never mask policy refusals with demo numbers (0 confidently wrong).
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
+            return _release(
+                _stamp_demo_fallback(env, f"fallback after live error: {exc.code}"), ask
+            )
         raise HTTPException(
             status_code=_status_for(exc.code, exc.detail),
             detail={"code": exc.code, "message": exc.detail or exc.code},
@@ -337,7 +354,7 @@ def chat_ask(
         if settings.dms_demo_fallback:
             logger.warning("live ask failed: %s; demo fallback", exc)
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, "fallback — live ask failed")
+            return _release(_stamp_demo_fallback(env, "fallback — live ask failed"), ask)
         # A slow engine and a broken one are different answers. 504 tells the
         # caller to try again; 503 says the dependency is out. The launcher
         # prints "Cortex ok" the moment /health responds, which is before the

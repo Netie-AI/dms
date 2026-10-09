@@ -94,6 +94,7 @@ from dms_executor.manifest import (
     reject_hostile_chat_sql,
     should_rement,
 )
+from dms_executor.name_echo import hide_echo
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
@@ -581,6 +582,11 @@ class Executor:
             out.pop("lane", None)
         masked = mask_unknown_keys(out)
         backstop_missing_ticket(masked, question=question)
+        # Direct callers never reach the HTTP boundary. The grant file is
+        # this executor's warehouse, not DMS_WAREHOUSE_DB. Chat ask scrubs
+        # again as the last step before serialisation.
+        if isinstance(masked, dict):
+            hide_echo(masked, "", warehouse=getattr(self, "_warehouse", None))
         return masked
 
     def _live_ask(
@@ -1199,6 +1205,7 @@ __all__ = [
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "hide_echo",
     "read_health_engine_clock",
     "list_bronze_tables",
     "list_promote_targets",
