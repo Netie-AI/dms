@@ -1793,3 +1793,845 @@ def test_the_service_is_exported_for_the_api_layer() -> None:
         "measures_view", "MeasureRefusal", "MEASURE_REFUSAL_COPY",
     ):  # fmt: skip
         assert name in dms_executor.__all__ and hasattr(dms_executor, name), name
+
+
+# =============================================================================
+# step 5: the API surface (routes/spaces.py -> wiring -> measure_confirm)
+# =============================================================================
+#
+# Everything goes through the real FastAPI app (TestClient). Cortex is a recording stand-in
+# that serves the ledger append and the chain read-back; the compliance gate is replaced
+# by a recorder (the only seam every other route test uses) and each verdict Cortex can give
+# is exercised. The in-memory ontology store is the store, so "nothing was written" is a
+# comparison of every row and every audit entry before and after.
+
+MEASURES_URL = "/ontology/measures"
+ROUTE_TASKS = {
+    "propose": "spaces.ontology.measures.propose",
+    "create": "spaces.ontology.measures.create",
+    "confirm": "spaces.ontology.measures.confirm",
+    "reject": "spaces.ontology.measures.reject",
+}
+FORBIDDEN_BODY_FIELDS = [
+    "expression", "sql", "filter", "actor", "confirmed_by", "steward_id", "tenant_id", "role",
+    "state", "source", "ledger_entry_id", "user_id", "actor_user_id", "version_id", "signature",
+]  # fmt: skip
+
+
+class _ApiCortex:
+    """What the API hands the ledger helpers: ``ledger_append`` and ``verify_ledger``."""
+
+    base_url = "http://cortex.test"
+
+    def __init__(self, ledger: _Ledger) -> None:
+        self.ledger = ledger
+
+    def ledger_append(self, req: Any) -> Any:
+        return self.ledger.append(event_type=req.event_type, payload=req.payload, actor=req.actor)
+
+    def verify_ledger(self) -> Any:
+        return self.ledger.verify()
+
+
+@dataclass
+class _Api:
+    env: _Env
+    gate_calls: list[dict[str, Any]]
+    verdict: dict[str, str | None]
+
+    @property
+    def client(self) -> Any:
+        return self.env.rig.client
+
+    @property
+    def base(self) -> str:
+        return f"/v1/spaces/{self.env.space}"
+
+    def url(self, suffix: str = "") -> str:
+        return f"{self.base}{MEASURES_URL}{suffix}"
+
+    def settings(self, **over: Any) -> Any:
+        from dms_api.settings import Settings, get_settings
+
+        s = Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            dms_ask_mode="live",
+            dms_demo_fallback=False,
+            dms_harness_ask_paths=True,
+            **over,
+        )
+        self.env.rig.app.dependency_overrides[get_settings] = lambda: s
+        return s
+
+    def deny(self, reason: str | None) -> None:
+        self.verdict["reason"] = reason
+
+    def snapshot(self) -> tuple[Any, ...]:
+        """Every measure row and every audit entry: equal before and after = nothing written."""
+        rows = tuple(
+            sorted(
+                (str(m.id), m.state, m.name, m.definition_hash, m.ledger_entry_id or "")
+                for m in self.env.store.measures_for_space(self.env.sid)
+            )
+        )
+        audit = tuple(a.action_type for a in self.env.store._audit)
+        return rows, audit, len(self.env.ledger.appended)
+
+    def get(self, suffix: str = "") -> Any:
+        return self.client.get(self.url(suffix))
+
+    def post(self, suffix: str = "", body: Any = None, **kw: Any) -> Any:
+        return self.client.post(self.url(suffix), json={} if body is None else body, **kw)
+
+    def propose(self) -> dict[str, dict[str, Any]]:
+        r = self.post("/propose")
+        assert r.status_code == 200, r.text
+        return {m["name"]: m for m in r.json()["created"]}
+
+    def confirm(self, view: dict[str, Any], **body: Any) -> Any:
+        body.setdefault("definition_hash", view["definition_hash"])
+        return self.post(f"/{view['id']}/confirm", body)
+
+    def reject(self, view: dict[str, Any], reason: str = "not needed") -> Any:
+        return self.post(f"/{view['id']}/reject", {"reason": reason})
+
+    def detail(self, r: Any) -> dict[str, Any]:
+        d = r.json()["detail"]
+        assert isinstance(d, dict), d
+        return d
+
+
+@pytest.fixture()
+def api(env: _Env, monkeypatch: pytest.MonkeyPatch) -> _Api:
+    import dms_api.routes.spaces as space_routes
+    from cortex_client.gate import ComplianceDecision
+
+    calls: list[dict[str, Any]] = []
+    verdict: dict[str, str | None] = {"reason": None}
+
+    def gate(*, action: str, **kw: Any) -> Any:
+        calls.append({"action": action, **kw})
+        reason = verdict["reason"]
+        if reason is None:
+            return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+        return ComplianceDecision(allowed=False, reason=reason, action=action)
+
+    monkeypatch.setattr(space_routes, "compliance_gate", gate)
+    env.rig.app.state.cortex = _ApiCortex(env.ledger)
+    out = _Api(env=env, gate_calls=calls, verdict=verdict)
+    out.settings()  # the steward config the rig already used, made explicit
+    return out
+
+
+def _all_four(api: _Api, view: dict[str, Any]) -> dict[str, Any]:
+    """One request per mutation route, each valid on its own, keyed by route name."""
+    return {
+        "propose": lambda: api.post("/propose"),
+        "create": lambda: api.post(
+            "",
+            {
+                "name": "api_probe", "grain": SCHOOLS, "aggregate": "count", "column": "*",
+                "description": "Schools.",
+            },
+        ),
+        "confirm": lambda: api.confirm(view),
+        "reject": lambda: api.reject(view),
+    }  # fmt: skip
+
+
+# ------------------------------------------------------------------ the gate and the role
+
+
+@pytest.mark.parametrize("reason", ["gate_denied", "gate_task_unknown", "gate_unavailable"])
+@pytest.mark.parametrize("route", sorted(ROUTE_TASKS))
+def test_a_gate_that_denies_or_cannot_decide_is_a_403_and_writes_nothing(
+    api: _Api, route: str, reason: str
+) -> None:
+    view = api.propose()["schools_count"]
+    api.deny(reason)
+    before = api.snapshot()
+    api.gate_calls.clear()
+    r = _all_four(api, view)[route]()
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == reason
+    assert [c["action"] for c in api.gate_calls] == [ROUTE_TASKS[route]]
+    assert api.snapshot() == before  # no row, no audit entry, no ledger append
+
+
+def test_the_gate_is_asked_with_the_task_id_and_the_server_resolved_actor(api: _Api) -> None:
+    s = api.settings(dms_actor_user_id="cccccccc-cccc-cccc-cccc-cccccccccccc")
+    view = api.propose()["schools_count"]
+    assert api.confirm(view).status_code == 200
+    assert api.reject(view).status_code == 200
+    calls = {c["action"]: c for c in api.gate_calls}
+    assert set(calls) == {ROUTE_TASKS["propose"], ROUTE_TASKS["confirm"], ROUTE_TASKS["reject"]}
+    for task, c in calls.items():
+        assert c["actor"] == s.dms_actor_user_id
+        assert c["metadata"]["task_id"] == task
+        assert c["metadata"]["space_id"] == api.env.space
+        assert c["metadata"]["actor_role"] == "steward"
+    assert calls[ROUTE_TASKS["confirm"]]["metadata"]["measure_id"] == view["id"]
+    # and the ledger actor is that same configured actor, never anything from the request
+    assert {e["actor"] for e in api.env.ledger.appended} == {s.dms_actor_user_id}
+
+
+@pytest.mark.parametrize("role", ["viewer", "analyst", "Steward", "ADMIN", "", "steward "])
+@pytest.mark.parametrize("route", sorted(ROUTE_TASKS))
+def test_a_viewer_or_an_unknown_role_cannot_decide_and_is_refused_before_the_gate(
+    api: _Api, route: str, role: str
+) -> None:
+    view = api.propose()["schools_count"]
+    api.settings(dms_actor_role=role)
+    before = api.snapshot()
+    api.gate_calls.clear()
+    r = _all_four(api, view)[route]()
+    assert r.status_code == 403, r.text
+    d = api.detail(r)
+    assert d["code"] == "steward_role_required"
+    assert d["message"] == MEASURE_REFUSAL_COPY["steward_role_required"] and d["failed"] == []
+    assert api.gate_calls == []  # the role is checked before Cortex is bothered
+    assert api.snapshot() == before
+
+
+def test_an_admin_may_decide_and_a_viewer_can_still_read(api: _Api) -> None:
+    api.settings(dms_actor_role="admin")
+    view = api.propose()["schools_count"]
+    assert api.confirm(view).status_code == 200
+    api.settings(dms_actor_role="viewer")
+    r = api.get()
+    assert r.status_code == 200
+    assert r.json()["viewer"] == {"role": "viewer", "can_decide": False}
+
+
+@pytest.mark.parametrize("header", ["x-dms-role", "x-dms-actor-id", "x-dms-tenant-id"])
+@pytest.mark.parametrize("route", ["get", *sorted(ROUTE_TASKS)])
+def test_a_request_that_names_its_own_identity_is_a_400(
+    api: _Api, route: str, header: str
+) -> None:
+    view = api.propose()["schools_count"]
+    before = api.snapshot()
+    headers = {header: "steward" if header == "x-dms-role" else str(uuid4())}
+    if route == "get":
+        r = api.client.get(api.url(), headers=headers)
+    else:
+        r = api.client.post(
+            api.url(_suffix(route, view)), json=_valid_body(route, view), headers=headers
+        )
+    assert r.status_code == 400, r.text
+    assert r.json()["code"] == "identity_header_not_accepted"
+    assert api.snapshot() == before
+
+
+# ------------------------------------------------------------------ bodies
+
+
+def _valid_body(route: str, view: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "propose": {},
+        "create": {
+            "name": "api_probe", "grain": SCHOOLS, "aggregate": "count", "column": "*",
+            "description": "Schools.",
+        },
+        "confirm": {"definition_hash": view["definition_hash"]},
+        "reject": {"reason": "no"},
+    }[route]  # fmt: skip
+
+
+def _suffix(route: str, view: dict[str, Any]) -> str:
+    return {
+        "propose": "/propose", "create": "",
+        "confirm": f"/{view['id']}/confirm", "reject": f"/{view['id']}/reject",
+    }[route]  # fmt: skip
+
+
+@pytest.mark.parametrize("field", FORBIDDEN_BODY_FIELDS + ["definition_hash"])
+@pytest.mark.parametrize("route", ["create", "reject", "propose"])
+def test_a_body_that_names_a_field_the_server_owns_is_a_422_and_stores_nothing(
+    api: _Api, route: str, field: str
+) -> None:
+    view = api.propose()["schools_count"]
+    body = {**_valid_body(route, view), field: "x"}
+    before = api.snapshot()
+    api.gate_calls.clear()
+    r = api.post(_suffix(route, view), body)
+    assert r.status_code == 422, r.text
+    assert any(e["type"] == "extra_forbidden" for e in r.json()["detail"])
+    assert api.gate_calls == []  # refused at the door: not even a gate call
+    assert api.snapshot() == before
+
+
+@pytest.mark.parametrize("field", FORBIDDEN_BODY_FIELDS)
+def test_confirm_takes_only_hash_name_and_description(api: _Api, field: str) -> None:
+    view = api.propose()["schools_count"]
+    before = api.snapshot()
+    r = api.confirm(view, **{field: "x"})
+    assert r.status_code == 422, r.text
+    assert any(e["type"] == "extra_forbidden" for e in r.json()["detail"])
+    assert api.snapshot() == before
+
+
+def test_a_body_with_the_wrong_shape_is_a_422_and_stores_nothing(api: _Api) -> None:
+    view = api.propose()["schools_count"]
+    before = api.snapshot()
+    for suffix, body in [
+        ("", {"name": "x_y"}),  # missing grain, aggregate, description
+        ("", {"name": 5, "grain": SCHOOLS, "aggregate": "count", "description": "d"}),
+        (f"/{view['id']}/confirm", {}),
+        (f"/{view['id']}/confirm", {"definition_hash": ["a"]}),
+        (f"/{view['id']}/reject", {}),
+        ("/propose", {"limit": 3}),
+    ]:
+        assert api.post(suffix, body).status_code == 422, (suffix, body)
+    assert api.snapshot() == before
+
+
+# ------------------------------------------------------------------ ids and Spaces
+
+
+def test_an_unknown_space_is_a_404_before_roles_and_gates(api: _Api) -> None:
+    api.settings(dms_actor_role="viewer")
+    bad = f"/v1/spaces/{uuid4()}{MEASURES_URL}"
+    for method, suffix, body in [
+        ("get", "", None),
+        ("post", "/propose", {}),
+        ("post", "", {"name": "a_b", "grain": SCHOOLS, "aggregate": "count", "description": "x"}),
+        ("post", f"/{uuid4()}/confirm", {"definition_hash": "0" * 64}),
+        ("post", f"/{uuid4()}/reject", {"reason": "x"}),
+    ]:
+        r = getattr(api.client, method)(bad + suffix, **({} if body is None else {"json": body}))
+        assert r.status_code == 404, (suffix, r.text)
+        assert api.detail(r)["code"] == "space_not_found"
+    assert api.gate_calls == []
+
+
+def test_a_measure_id_of_another_space_or_nowhere_is_a_404_and_nothing_changes(
+    api: _Api,
+) -> None:
+    mine = api.propose()["schools_count"]
+    other = api.env.rig.space("Another")  # a real Space, with no ontology and no measures
+    before = api.snapshot()
+    for mid in (mine["id"], str(uuid4()), "not-a-uuid"):
+        for suffix, body in [
+            (f"/{mid}/confirm", {"definition_hash": mine["definition_hash"]}),
+            (f"/{mid}/reject", {"reason": "x"}),
+        ]:
+            r = api.client.post(f"/v1/spaces/{other}{MEASURES_URL}{suffix}", json=body)
+            assert r.status_code == 404, (mid, suffix, r.text)
+            assert api.detail(r)["code"] == "measure_not_found"
+    r = api.client.post(api.url(f"/{uuid4()}/confirm"), json={"definition_hash": "0" * 64})
+    assert r.status_code == 404 and api.detail(r)["code"] == "measure_not_found"
+    r = api.client.post(api.url("/not-a-uuid/reject"), json={"reason": "x"})
+    assert r.status_code == 404 and api.detail(r)["code"] == "measure_not_found"
+    assert api.snapshot() == before  # not even a measure.confirm_refused audit row
+
+
+# ------------------------------------------------------------------ propose and manual entry
+
+
+def test_propose_over_http_is_idempotent_deterministic_and_unledgered(api: _Api) -> None:
+    first = api.post("/propose")
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert {m["name"] for m in body["created"]} == {
+        "schools_budget_sum", "schools_count", "districts_count",
+    }  # fmt: skip
+    assert all(m["state"] == "proposed" and m["source"] == "derived" for m in body["created"])
+    assert api.env.ledger.appended == []  # a proposal is not authority
+    again = api.post("/propose").json()
+    assert again["created"] == []
+    assert len(api.env.store.measures_for_space(api.env.sid)) == 3
+    assert api.env.audit("measure.propose") == ["measure.propose"]
+    # an empty JSON body and no body at all are the same request
+    assert api.client.post(api.url("/propose")).status_code == 200
+
+
+def test_manual_entry_over_http_is_201_proposed_only_and_200_when_repeated(api: _Api) -> None:
+    body = {
+        "name": "biggest_budget", "grain": SCHOOLS, "aggregate": "max", "column": "budget",
+        "description": "The largest school budget.",
+    }  # fmt: skip
+    r = api.post("", body)
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert out["created"] is True
+    m = out["measure"]
+    assert m["state"] == "proposed" and m["source"] == "manual" and m["decided_by"] is None
+    assert m["answers_certified"] is False and m["ledger_entry_id"] is None
+    assert Decimal(m["evidence"]["probe_value"]) == Decimal("200.25")  # the lake's own number
+    assert api.env.ledger.appended == []
+    again = api.post("", body)
+    assert again.status_code == 200 and again.json()["created"] is False
+    assert again.json()["measure"]["id"] == m["id"]
+    assert len(api.env.store.measures_for_space(api.env.sid)) == 1
+    # a column omitted means COUNT(*)
+    star = api.post("", {"name": "all_schools", "grain": SCHOOLS, "aggregate": "count",
+                         "description": "Every school."})  # fmt: skip
+    assert star.status_code == 201 and star.json()["measure"]["column"] == "*"
+
+
+@pytest.mark.parametrize(
+    ("kw", "status", "top", "codes"),
+    [
+        ({"aggregate": "median", "column": "budget"}, 422, "measure_invalid",
+         {"aggregate_invalid"}),
+        ({"aggregate": "sum", "column": "name"}, 422, "measure_invalid",
+         {"column_not_numeric"}),
+        ({"aggregate": "sum", "column": "school_id"}, 422, "measure_invalid",
+         {"key_column_aggregate"}),
+        ({"aggregate": "sum", "column": "nope"}, 422, "measure_invalid", {"column_missing"}),
+        ({"name": "Bad Name"}, 422, "measure_invalid", {"name_invalid"}),
+        ({"name": "budget"}, 422, "measure_invalid", {"name_reserved"}),
+        ({"description": "select a from b"}, 422, "measure_invalid", {"description_invalid"}),
+        ({"description": ""}, 422, "measure_invalid", {"description_invalid"}),
+        ({"description": "x" * 201}, 422, "measure_invalid", {"description_invalid"}),
+        ({"grain": "bronze.nowhere"}, 422, "unknown_object", {"unknown_object"}),
+        ({"name": "schools_count", "aggregate": "count_distinct", "column": "name"}, 409,
+         "name_taken", {"name_taken"}),
+    ],
+)  # fmt: skip
+def test_manual_entry_refusals_are_named_with_plain_copy_and_store_nothing(
+    api: _Api, kw: dict[str, Any], status: int, top: str, codes: set[str]
+) -> None:
+    api.propose()
+    before = api.snapshot()
+    body = {
+        "name": "manual_probe", "grain": SCHOOLS, "aggregate": "count", "column": "*",
+        "description": "Schools.",
+    }  # fmt: skip
+    body.update(kw)
+    r = api.post("", body)
+    assert r.status_code == status, r.text
+    d = api.detail(r)
+    assert d["code"] == top and d["message"] == MEASURE_REFUSAL_COPY[top]
+    assert codes <= {f["code"] for f in d["failed"]}
+    for f in d["failed"]:
+        assert f["message"] == MEASURE_REFUSAL_COPY[f["code"]]
+    assert api.snapshot() == before
+
+
+def test_manual_entry_cannot_smuggle_sql_through_any_declared_field(api: _Api) -> None:
+    before = api.snapshot()
+    for kw in (
+        {"column": 'budget") FROM bronze.public_schools; DROP TABLE x; --'},
+        {"column": "budget); SELECT 1"},
+        {"name": "x; drop table t"},
+        {"grain": "bronze.public_schools; select 1"},
+        {"aggregate": "sum(budget)/count(*)", "column": "budget"},
+    ):
+        body = {
+            "name": "sneaky_one", "grain": SCHOOLS, "aggregate": "sum", "column": "budget",
+            "description": "Budget.",
+        }  # fmt: skip
+        body.update(kw)
+        r = api.post("", body)
+        assert r.status_code in (409, 422), (kw, r.text)
+    assert api.snapshot() == before
+    assert _oracle(api.env.lake, "SELECT COUNT(*) AS n FROM bronze.public_schools") == [{"n": 4}]
+
+
+# ------------------------------------------------------------------ confirm
+
+
+def test_confirm_over_http_writes_one_ledger_entry_with_pointers_and_the_view_agrees(
+    api: _Api,
+) -> None:
+    view = api.propose()["schools_budget_sum"]
+    r = api.confirm(view)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["already"] is False
+    m = out["measure"]
+    assert m["state"] == "confirmed" and m["ledger_entry_id"] == "led_m1"
+    assert m["decided_by"] == api.settings().dms_actor_user_id
+    assert m["answers_certified"] is True
+    assert Decimal(m["evidence"]["probe_value"]) == Decimal(
+        str(_oracle(api.env.lake, "SELECT SUM(budget) AS t FROM bronze.public_schools")[0]["t"])
+    )  # the number a steward saw is the lake's own: 360.75
+    [entry] = api.env.ledger.appended
+    assert entry["event_type"] == "ontology.measure.confirmed"
+    assert entry["actor"] == api.settings().dms_actor_user_id
+    assert entry["payload"]["measure_id"] == view["id"]
+    assert entry["payload"]["definition_hash"] == view["definition_hash"]
+    assert entry["payload"]["to_state"] == "confirmed"
+    assert "probe_value" not in str(entry["payload"]) and "360.75" not in str(entry["payload"])
+    assert api.env.ledger.verifies == 1  # the chain was read back before the row changed
+    assert api.env.audit("measure.confirm") == ["measure.confirm"]
+    listed = {x["name"]: x for x in api.get().json()["measures"]}["schools_budget_sum"]
+    assert listed["state"] == "confirmed" and listed["ledger_entry_id"] == "led_m1"
+
+
+def test_confirm_twice_is_200_already_with_exactly_one_ledger_append(api: _Api) -> None:
+    view = api.propose()["schools_count"]
+    first = api.confirm(view)
+    second = api.confirm(view)
+    assert first.status_code == 200 and first.json()["already"] is False
+    assert second.status_code == 200 and second.json()["already"] is True
+    assert second.json()["measure"]["ledger_entry_id"] == first.json()["measure"]["ledger_entry_id"]
+    assert len(api.env.ledger.appended) == 1
+    assert api.env.audit("measure.confirm") == ["measure.confirm"]
+
+
+def test_rename_at_confirm_changes_the_hash_and_a_confirmed_one_cannot_be_reworded(
+    api: _Api,
+) -> None:
+    view = api.propose()["schools_budget_sum"]
+    r = api.confirm(
+        view, name="school_budget_total", description="The total of all school budgets."
+    )
+    assert r.status_code == 200, r.text
+    m = r.json()["measure"]
+    assert m["name"] == "school_budget_total" and m["definition_hash"] != view["definition_hash"]
+    assert m["definition_hash"] == measure_definition_hash(
+        "school_budget_total", SCHOOLS, "sum", "budget", "The total of all school budgets."
+    )
+    # the old hash is stale now; the new wording is final
+    stale = api.post(f"/{view['id']}/confirm", {"definition_hash": view["definition_hash"]})
+    assert stale.status_code == 409 and api.detail(stale)["code"] == "stale_definition"
+    reword = api.post(
+        f"/{view['id']}/confirm",
+        {"definition_hash": m["definition_hash"], "name": "something_else"},
+    )
+    assert reword.status_code == 409
+    assert api.detail(reword)["code"] == "measure_confirmed_immutable"
+    assert len(api.env.ledger.appended) == 1
+
+
+def test_a_stale_hash_is_a_409_that_carries_the_current_row_and_changes_nothing(
+    api: _Api,
+) -> None:
+    view = api.propose()["schools_count"]
+    before = api.snapshot()
+    r = api.post(f"/{view['id']}/confirm", {"definition_hash": "0" * 64})
+    assert r.status_code == 409
+    d = api.detail(r)
+    assert d["code"] == "stale_definition" and d["message"] == MEASURE_REFUSAL_COPY[d["code"]]
+    assert d["current"]["id"] == view["id"] and d["current"]["state"] == "proposed"
+    assert d["current"]["definition_hash"] == view["definition_hash"]
+    rows, audit, appended = api.snapshot()
+    assert (rows, appended) == (before[0], before[2]) and appended == 0
+    assert audit == (*before[1], "measure.confirm_refused")  # the refusal is audited, nothing else
+
+
+def test_confirm_returns_every_failed_criterion_together_and_burns_nothing(api: _Api) -> None:
+    view = api.propose()["schools_budget_sum"]
+    _lake_exec(api.env.lake, "UPDATE bronze.public_schools SET budget = NULL")
+    r = api.confirm(view, name="Bad Name", description="select a from b")
+    assert r.status_code == 422, r.text
+    d = api.detail(r)
+    assert d["code"] == "measure_invalid"
+    codes = {f["code"] for f in d["failed"]}
+    assert {"name_invalid", "description_invalid", "column_all_null"} <= codes
+    assert all(f["message"] == MEASURE_REFUSAL_COPY[f["code"]] for f in d["failed"])
+    assert api.env.ledger.appended == []
+    assert api.env.audit("measure.confirm_refused") == ["measure.confirm_refused"]
+    # fix the data and the very same measure confirms: the refusal did not burn the row
+    _lake_exec(api.env.lake, "UPDATE bronze.public_schools SET budget = 1")
+    assert api.confirm(view).status_code == 200
+
+
+@pytest.mark.parametrize("fault", ["append_raises", "chain_does_not_verify", "no_chain_hash"])
+@pytest.mark.parametrize("route", ["confirm", "reject"])
+def test_a_ledger_fault_is_a_503_and_the_measure_is_exactly_as_it_was(
+    api: _Api, route: str, fault: str
+) -> None:
+    view = api.propose()["schools_count"]
+    if route == "reject":
+        assert api.confirm(view).status_code == 200  # withdrawal also needs the ledger
+    ledger = api.env.ledger
+    if fault == "append_raises":
+        ledger.append_error = RuntimeError("cortex down")
+    elif fault == "chain_does_not_verify":
+        ledger.verify_ok = False
+    else:
+        ledger.hash_is_entry_id = True
+    state_before = api.env.row(view["id"]).state
+    before = api.snapshot()
+    r = _all_four(api, view)[route]()
+    assert r.status_code == 503, r.text
+    d = api.detail(r)
+    assert d["code"] == "ledger_append_failed" and d["message"] == MEASURE_REFUSAL_COPY[d["code"]]
+    assert api.env.row(view["id"]).state == state_before
+    rows, audit, _appended = api.snapshot()
+    assert (rows, audit) == before[:2]  # no decision row, no audit entry, no pointer
+    assert "led_m" not in str(api.get().json()["measures"]) or state_before == "confirmed"
+
+
+def test_a_ledger_that_recovers_lets_the_same_measure_through(api: _Api) -> None:
+    view = api.propose()["schools_count"]
+    api.env.ledger.append_error = RuntimeError("down")
+    assert api.confirm(view).status_code == 503
+    api.env.ledger.append_error = None
+    ok = api.confirm(view)
+    assert ok.status_code == 200 and ok.json()["measure"]["state"] == "confirmed"
+    assert len(api.env.ledger.appended) == 1
+
+
+def test_no_cortex_client_is_a_named_503_before_any_write_even_if_the_gate_passes(
+    api: _Api,
+) -> None:
+    view = api.propose()["schools_count"]
+    api.env.rig.app.state.cortex = None
+    before = api.snapshot()
+    for route in ROUTE_TASKS:
+        r = _all_four(api, view)[route]()
+        assert r.status_code == 503, (route, r.text)
+        assert api.detail(r)["code"] == "ledger_unavailable"
+    assert api.snapshot() == before
+
+
+# ------------------------------------------------------------------ reject
+
+
+def test_reject_needs_a_reason_withdraws_a_confirmed_measure_and_is_idempotent(api: _Api) -> None:
+    views = api.propose()
+    before = api.snapshot()
+    for reason in ("", "   ", "bad\nnews", "x" * 201):
+        r = api.reject(views["districts_count"], reason)
+        assert r.status_code == 422, (reason, r.text)
+        assert api.detail(r)["code"] == "reason_invalid"
+    assert api.snapshot() == before
+    # reject a proposal
+    r = api.reject(views["districts_count"], "not a figure we publish")
+    assert r.status_code == 200 and r.json()["already"] is False
+    m = r.json()["measure"]
+    assert m["state"] == "rejected" and m["decision_reason"] == "not a figure we publish"
+    assert m["ledger_entry_id"] and m["answers_certified"] is False
+    n = len(api.env.ledger.appended)
+    again = api.reject(views["districts_count"], "different words")
+    assert again.status_code == 200 and again.json()["already"] is True
+    assert len(api.env.ledger.appended) == n
+    assert again.json()["measure"]["decision_reason"] == "not a figure we publish"
+    # withdraw a confirmed one
+    assert api.confirm(views["schools_count"]).status_code == 200
+    w = api.reject(views["schools_count"], "definition changed upstream")
+    assert w.status_code == 200 and w.json()["measure"]["state"] == "rejected"
+    events = [e["event_type"] for e in api.env.ledger.appended]
+    assert events == [
+        "ontology.measure.rejected",
+        "ontology.measure.confirmed",
+        "ontology.measure.rejected",
+    ]
+    # the steward's typed reason never goes to the ledger, only to the row and the audit
+    assert "upstream" not in str(api.env.ledger.appended)
+    # a rejected measure is not resurrected by proposing again, and can be confirmed again
+    assert api.post("/propose").json()["created"] == []
+    back = api.confirm(views["schools_count"])
+    assert back.status_code == 200 and back.json()["measure"]["state"] == "confirmed"
+
+
+# ------------------------------------------------------------------ the read surface
+
+
+def test_get_lists_counts_limits_viewer_and_persistence(api: _Api) -> None:
+    views = api.propose()
+    api.confirm(views["schools_count"])
+    api.reject(views["districts_count"], "later")
+    r = api.get()
+    assert r.status_code == 200, r.text
+    v = r.json()
+    assert v["space_id"] == api.env.space
+    assert v["persisted"] is False  # the in-memory ontology store is bound: say so
+    assert v["counts"] == {"proposed": 1, "confirmed": 1, "rejected": 1}
+    assert v["limits"] == {"confirmed_max": 80}
+    assert v["viewer"] == {"role": "steward", "can_decide": True}
+    assert len(v["versions"]) == 1 and v["drift"] == []
+    by = {m["name"]: m for m in v["measures"]}
+    assert by["schools_count"]["answers_certified"] is True
+    assert by["schools_budget_sum"]["answers_certified"] is False
+    assert by["districts_count"]["state"] == "rejected"
+    assert by["schools_budget_sum"]["definition"] == (
+        "SUM of budget per bronze.public_schools row"
+    )
+
+
+def test_evidence_values_are_hidden_from_a_deployment_that_cannot_decide(api: _Api) -> None:
+    api.propose()
+    steward = {m["name"]: m for m in api.get().json()["measures"]}["schools_budget_sum"]
+    assert Decimal(steward["evidence"]["probe_value"]) == Decimal("360.75")
+    assert "SUM" in steward["evidence"]["probe_sql"]
+    api.settings(dms_actor_role="viewer")
+    r = api.get()
+    assert r.status_code == 200
+    viewer = {m["name"]: m for m in r.json()["measures"]}["schools_budget_sum"]
+    assert "probe_value" not in viewer["evidence"] and "probe_sql" not in viewer["evidence"]
+    assert viewer["evidence"]["grain_rows"] == 4  # counts and booleans stay
+    assert "360.75" not in r.text
+    api.settings(dms_actor_role="not_a_role")
+    assert "360.75" not in api.get().text
+
+
+def test_the_ontology_view_carries_the_compact_measures_and_the_new_note(api: _Api) -> None:
+    views = api.propose()
+    api.confirm(views["schools_count"])
+    api.reject(views["districts_count"], "later")
+    r = api.client.get(f"{api.base}/ontology")
+    assert r.status_code == 200, r.text
+    [onto] = r.json()["ontologies"]
+    assert onto["measures"] == sorted(onto["measures"], key=lambda m: m["name"])
+    got = {m["name"]: m for m in onto["measures"]}
+    assert set(got) == {"schools_count", "schools_budget_sum", "districts_count"}
+    for m in got.values():
+        assert set(m) == {"id", "name", "state", "answers_certified"}  # no evidence here
+    assert got["schools_count"] == {
+        "id": views["schools_count"]["id"], "name": "schools_count",
+        "state": "confirmed", "answers_certified": True,
+    }  # fmt: skip
+    assert got["districts_count"]["state"] == "rejected"
+    assert got["districts_count"]["answers_certified"] is False
+    assert got["schools_budget_sum"] == {
+        "id": views["schools_budget_sum"]["id"], "name": "schools_budget_sum",
+        "state": "proposed", "answers_certified": False,
+    }  # fmt: skip
+    note = onto["measures_note"]
+    assert "no measures are derived" not in note
+    assert "no_declared_measure" in note and "proposed or rejected" in note
+    assert "360.75" not in r.text  # the compact list is not an evidence surface
+
+
+def test_a_confirmed_measure_whose_data_moved_is_listed_unusable_with_the_reason(
+    api: _Api,
+) -> None:
+    view = api.propose()["schools_budget_sum"]
+    api.confirm(view)
+    body = api.env.snapshot().body
+    edited = {**body, "objects": {**body["objects"]}}
+    spec = dict(edited["objects"][SCHOOLS])
+    spec["attributes"] = [a for a in spec["attributes"] if a["name"] != "budget"]
+    edited["objects"][SCHOOLS] = spec
+    api.env.store.record_snapshot(api.env.version().id, body=edited, violations=[], verified=True)
+    m = {x["name"]: x for x in api.get().json()["measures"]}["schools_budget_sum"]
+    assert (m["state"], m["usable"], m["unusable_reason"]) == ("confirmed", False, "column_missing")
+    assert m["answers_certified"] is False
+    [onto] = api.client.get(f"{api.base}/ontology").json()["ontologies"]
+    certified = {x["name"]: x["answers_certified"] for x in onto["measures"]}
+    assert certified["schools_budget_sum"] is False
+
+
+# ------------------------------------------------------------------ store and lake failures
+
+
+def test_a_store_that_cannot_be_read_is_a_named_503_never_an_empty_list(
+    api: _Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = api.propose()["schools_count"]
+
+    def boom(*a: Any, **k: Any) -> Any:
+        raise RuntimeError("db down: password=hunter2")
+
+    monkeypatch.setattr(api.env.store, "measures_for_space", boom)
+    for r in (
+        api.get(),
+        api.post("/propose"),
+        api.confirm(view),
+        api.reject(view),
+        api.client.get(f"{api.base}/ontology"),
+    ):
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"]["code"] == "ontology_store_unavailable"
+        assert "hunter2" not in r.text  # the cause is logged, never returned
+    assert api.env.ledger.appended == []
+
+
+def test_a_warehouse_that_cannot_be_read_is_a_503_and_changes_nothing(
+    api: _Api, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    view = api.propose()["schools_count"]
+    before = api.snapshot()
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(tmp_path / "gone.duckdb"))
+    # (propose would be a no-op here: every candidate already exists, so it reads no lake)
+    new = {"name": "api_probe", "grain": SCHOOLS, "aggregate": "count", "description": "Schools."}
+    for r in (api.post("", new), api.confirm(view)):
+        assert r.status_code == 503, r.text
+        assert api.detail(r)["code"] == "warehouse_unavailable"
+    assert api.snapshot() == before
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(api.env.lake))
+    assert api.post("", new).status_code == 201  # the same request works once the lake is back
+
+
+class _FkViolation(Exception):
+    """What psycopg raises for a foreign key: a sqlstate and a diag naming the constraint."""
+
+    sqlstate = "23503"
+
+    def __init__(self, constraint: str) -> None:
+        super().__init__("insert or update violates foreign key constraint")
+        self.diag = SimpleNamespace(constraint_name=constraint)
+
+
+def test_an_actor_without_a_user_row_is_actor_not_provisioned_not_a_broken_store(
+    api: _Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = api.propose()["schools_count"]
+    real = api.env.store.decide_measure
+
+    def refuses(*a: Any, **k: Any) -> Any:
+        raise _FkViolation("onto_measure_decided_by_fkey")
+
+    monkeypatch.setattr(api.env.store, "decide_measure", refuses)
+    for r in (api.confirm(view), api.reject(view)):
+        assert r.status_code == 503, r.text
+        d = api.detail(r)
+        assert d["code"] == "actor_not_provisioned"
+        assert d["message"] == MEASURE_REFUSAL_COPY["actor_not_provisioned"]
+    assert api.env.row(view["id"]).state == "proposed"
+    # a foreign key on anything else is the store failing, not the actor
+    monkeypatch.setattr(
+        api.env.store,
+        "decide_measure",
+        lambda *a, **k: (_ for _ in ()).throw(_FkViolation("onto_measure_version_id_fkey")),
+    )
+    r = api.confirm(view)
+    assert r.status_code == 503 and api.detail(r)["code"] == "ontology_store_unavailable"
+    monkeypatch.setattr(api.env.store, "decide_measure", real)
+    assert api.confirm(view).status_code == 200
+
+
+def test_a_configured_actor_that_is_not_a_uuid_cannot_be_a_user_row(api: _Api) -> None:
+    view = api.propose()["schools_count"]
+    api.settings(dms_actor_user_id="steward-one")
+    before = api.snapshot()
+    for route in ROUTE_TASKS:
+        r = _all_four(api, view)[route]()
+        assert r.status_code == 503, (route, r.text)
+        assert api.detail(r)["code"] == "actor_not_provisioned"
+    assert api.snapshot() == before
+
+
+# ------------------------------------------------------------------ source-level properties
+
+
+def test_the_routes_reach_the_executor_only_through_wiring_and_the_gate_is_in_each_route() -> None:
+    src = (ROOT / "apps" / "api" / "dms_api" / "routes" / "spaces.py").read_text()
+    tree = ast.parse(src)
+    assert "dms_executor" not in src and "duckdb" not in src
+    routes = {
+        n.name: n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr in ("post", "get")
+            for d in n.decorator_list
+        )
+    }  # fmt: skip
+    mutations = {
+        "propose_space_measures", "create_space_measure",
+        "confirm_space_measure", "reject_space_measure",
+    }  # fmt: skip
+    assert mutations <= set(routes) and "list_space_measures" in routes
+    for name in mutations:
+        calls = [
+            c for c in ast.walk(routes[name])
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        ]  # fmt: skip
+        order = [c.func.id for c in calls if isinstance(c.func, ast.Name)]
+        assert "compliance_gate" in order and "enforce" in order, name
+        gate = order.index("compliance_gate")
+        # nothing that touches the store is called before the gate is asked and enforced
+        for later in ("measures_propose", "measures_create", "measures_confirm", "measures_reject"):
+            if later in order:
+                assert order.index(later) > order.index("enforce") > gate, name
+    # a role check never carries a policy-sounding name (the invariants forbid local gates)
+    names = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert "_require_steward" in names
+    assert not [n for n in names if re.search(r"(^|_)(gate|policy|authorize)(_|$)", n)]

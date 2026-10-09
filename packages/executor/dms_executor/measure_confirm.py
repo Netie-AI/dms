@@ -83,6 +83,7 @@ __all__ = [
     "MeasureRefusal",
     "QueryPlan",
     "SpaceState",
+    "compact_measures",
     "confirm_measure",
     "create_measure",
     "evaluate_confirm_criteria",
@@ -967,6 +968,25 @@ def measure_view(row: OntoMeasure, state: SpaceState, *, can_decide: bool) -> di
         "confirm_blockers": blockers,
         "answers_certified": row.state == "confirmed" and usable,
     }
+
+
+def compact_measures(
+    space_id: str, store: OntologyStorePort | None = None
+) -> dict[UUID, list[dict[str, Any]]]:
+    """Per version, the short form the ontology view carries: which measures exist and
+    whether they answer, none of the evidence (that is the measures list's job)."""
+    state = _state(space_id, store)
+    out: dict[UUID, list[dict[str, Any]]] = {}
+    for m in sorted(state.rows, key=lambda r: r.name):
+        out.setdefault(m.version_id, []).append(
+            {
+                "id": str(m.id),
+                "name": m.name,
+                "state": m.state,
+                "answers_certified": m.state == "confirmed" and _unusable_reason(m, state) is None,
+            }
+        )
+    return out
 
 
 def measures_view(

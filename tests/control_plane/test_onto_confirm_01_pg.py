@@ -774,6 +774,57 @@ def test_service_actor_without_a_user_row_leaves_the_measure_proposed(svc: _Svc)
     assert svc.world.count("SELECT count(*) FROM dms.ledger_ref", ()) == 0
 
 
+def test_the_api_layer_recognises_the_real_foreign_key_error_for_every_steward_write(
+    svc: _Svc,
+) -> None:
+    """``actor_not_provisioned`` is decided from the database's own error (SQLSTATE 23503 and
+    the constraint it names), so this asserts it against what Postgres really raises on each
+    write a steward makes, not against a stand-in."""
+    from dms_api.wiring import _is_actor_fk
+
+    stranger = uuid.uuid4()
+    view = svc.propose()["schools_count"]
+    other = svc.propose()  # nothing new: proposing is idempotent
+    assert other == {}
+    with pytest.raises(psycopg.errors.ForeignKeyViolation) as confirm:
+        svc.confirm(view, actor=stranger)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation) as reject:
+        mc.reject_measure(
+            svc.space, uuid.UUID(view["id"]), reason="x", actor=stranger,
+            store=svc.world.alpha, ledger_append=svc.ledger.append,
+            ledger_verify=svc.ledger.verify,
+        )  # fmt: skip
+    with pytest.raises(psycopg.errors.ForeignKeyViolation) as create:
+        mc.create_measure(
+            svc.space, name="stranger_count", grain=GRAIN, aggregate="count", column="*",
+            description="Schools.", actor=stranger, warehouse=svc.rig.lake,
+            store=svc.world.alpha,
+        )  # fmt: skip
+    for exc in (confirm.value, reject.value, create.value):
+        assert _is_actor_fk(exc), exc.diag.constraint_name
+    assert _is_actor_fk(ValueError("no")) is False
+    assert svc.state(view) == "proposed"
+
+
+def test_the_ontology_view_carries_the_compact_measures_from_postgres(svc: _Svc) -> None:
+    from dms_executor.space_ontology import space_ontology_views
+
+    views = svc.propose()
+    svc.confirm(views["schools_count"])
+    svc.reject(views["districts_count"], "later")
+    [onto] = space_ontology_views(svc.space, store=svc.world.alpha)
+    got = {m["name"]: m for m in onto["measures"]}
+    assert {n: (m["state"], m["answers_certified"]) for n, m in got.items()} == {
+        "schools_count": ("confirmed", True),
+        "districts_count": ("rejected", False),
+        "schools_budget_sum": ("proposed", False),
+    }
+    assert all(set(m) == {"id", "name", "state", "answers_certified"} for m in got.values())
+    assert "confirmed" in onto["measures_note"] and "no measures are derived" not in onto[
+        "measures_note"
+    ]
+
+
 def test_service_cannot_see_or_decide_another_tenants_measures(svc: _Svc) -> None:
     view = svc.propose()["schools_count"]
     beta = svc.world.beta

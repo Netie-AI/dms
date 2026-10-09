@@ -397,8 +397,15 @@ def derive_and_store(
 # --------------------------------------------------------------------------
 
 
-def ontology_view(version: OntologyVersion, snap: OntologySnapshot) -> dict[str, Any]:
+def ontology_view(
+    version: OntologyVersion,
+    snap: OntologySnapshot,
+    measures: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     """Objects and links with verified/unverified status and the violation that failed.
+
+    ``measures`` is the compact list for this version (id, name, state, answers_certified);
+    the full rows, evidence and refusal reasons are ``GET .../ontology/measures``.
 
     A subject is ``verified`` only when the latest measurement found nothing
     against it AND (for a link) a cardinality was measured. ``status`` of a
@@ -493,9 +500,13 @@ def ontology_view(version: OntologyVersion, snap: OntologySnapshot) -> dict[str,
         "verified": snap.verified,
         "objects": objects,
         "links": links,
-        "measures": [],
-        "measures_note": "no measures are derived; a question needing one abstains "
-        "no_declared_measure until a steward declares it",
+        "measures": [dict(m) for m in measures],
+        # True now and after the answer path reads confirmed measures: nothing a
+        # steward has not confirmed can back an answer, and a question that needs a
+        # measure the Space has not confirmed abstains.
+        "measures_note": "only a measure a steward has confirmed can back an answer; a "
+        "proposed or rejected measure never does, and a question that needs a measure "
+        "this Space has not confirmed abstains no_declared_measure",
     }
 
 
@@ -507,6 +518,10 @@ def space_ontology_views(
     if sid is None:
         return []
     target = store or ontology_store()
+    # measure_confirm imports this module, so it is imported where it is used.
+    from dms_executor.measure_confirm import compact_measures
+
+    compact = compact_measures(space_id, target)
     out: list[dict[str, Any]] = []
     seen: set[UUID] = set()
     for active in target.active_for_space(sid):
@@ -516,7 +531,7 @@ def space_ontology_views(
             seen.add(version.id)
             snap = target.latest_snapshot(version.id)
             if snap is not None:
-                out.append(ontology_view(version, snap))
+                out.append(ontology_view(version, snap, compact.get(version.id, ())))
     return out
 
 
