@@ -602,6 +602,46 @@ def test_flag_on_mismatch_writes_pipeline_failure_ticket(
     assert email not in caplog.text
 
 
+def test_validate_on_retry_names_the_ticket_and_hides_the_table(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Writer SQL is DESC. Spec is asc, n=3. The retry selects an ungranted table.
+
+    The ticket reason is a named code and retries is at least 1. The table
+    name is absent from the serialized envelope and present only on the ticket.
+    """
+    tickets._reset_pipeline_failures()
+    table = "not_a_granted_table"
+    question = "lowest 3 categories by stock value"
+    retry_sql = (
+        f"SELECT category FROM {table} ORDER BY category ASC LIMIT 3"
+    )
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = _DESC3
+    harness.retry_sql = retry_sql
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = harness.ask(question)
+    assert env is not None
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert harness.submits == []
+    assert table not in json.dumps(env)
+    rows = _tickets(caplog)
+    assert len(rows) == 1
+    ticket = rows[0]
+    assert ticket["reason"] != "unspecified"
+    assert ticket["reason"] == "validate:ungranted"
+    assert ticket["retries"] >= 1
+    assert ticket["stage"] == "intent_spec"
+    assert ticket["names"] == table
+    blob = json.dumps(ticket)
+    assert table in blob
+    assert retry_sql not in blob
+    assert question not in blob
+    assert question not in caplog.text
+    assert retry_sql not in caplog.text
+
+
 def test_flag_on_unverified_writes_pipeline_failure_ticket(
     harness: _Harness, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -207,7 +207,8 @@ def test_ungranted_table_abstains(records) -> None:
     assert r["stub_trace"]["submit_sql"] == []
     assert env(r)["abstained"] is True
     assert r["mechanical"]["verdict"] == "CORRECT"
-    assert r["mechanical"]["abstain_reason"] == "validate:ungranted:alerts"
+    assert r["mechanical"]["abstain_reason"] == "validate:ungranted"
+    assert "validate:ungranted:alerts" not in json.dumps(env(r))
 
 
 # ------------------------------------------------------------------ (v) extension rows survive
@@ -302,12 +303,14 @@ def test_space_scope_facts_stated_in_the_contract(h) -> None:
     fin_ship = ask("A-050", "finance", "shipments")
     assert (
         env(fin_ship)["abstained"]
-        and fin_ship["mechanical"]["abstain_reason"] == "validate:ungranted:shipments"
+        and fin_ship["mechanical"]["abstain_reason"] == "validate:ungranted"
+        and "validate:ungranted:shipments" not in json.dumps(env(fin_ship))
     )
     ops_txn = ask("A-051", "ops", "transactions")
     assert (
         env(ops_txn)["abstained"]
-        and ops_txn["mechanical"]["abstain_reason"] == "validate:ungranted:transactions"
+        and ops_txn["mechanical"]["abstain_reason"] == "validate:ungranted"
+        and "validate:ungranted:transactions" not in json.dumps(env(ops_txn))
     )
     ops_ship = ask("A-052", "ops", "shipments")
     assert env(ops_ship)["badge"] == "L2_VALIDATED"

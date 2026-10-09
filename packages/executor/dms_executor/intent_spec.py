@@ -665,4 +665,5 @@ def apply_intent_spec(
         None,
         _attempt(parsed, "checked"),
         parsed.spec.offset is not None,
+        retries=retries,
     )

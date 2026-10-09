@@ -738,6 +738,9 @@ def _abstain(
     retries: int = 0,
     stage: str = "generative",
 ) -> dict[str, Any]:
+    from dms_executor.pipeline_failure import visible_reason
+
+    shown = visible_reason(reason)
     env = build_abstain(
         reason=reason,
         question=question,
@@ -745,10 +748,10 @@ def _abstain(
         retries=retries,
         stage=stage,
         answer_id="ans_gen01_abstain",
-        text=customer_abstain_text(reason),
+        text=customer_abstain_text(shown),
         rows=[],
         sql_used=None,
-        assumptions=[f"GEN-01: {reason}", *[n for n in notes if str(n).strip()]],
+        assumptions=[f"GEN-01: {shown}", *[n for n in notes if str(n).strip()]],
         as_of=_as_of(),
         space_id=space_id,
         session_id=session_id,

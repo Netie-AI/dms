@@ -18,6 +18,8 @@ the envelope ``audit_id`` (or ``answer_id`` when that is the record id) so
 a fixer can pull the ask through its existing access-controlled record.
 ``reason`` is a named reason code. A database or engine error message is
 not a code and is dropped. Unknown prose becomes ``unspecified``.
+An identifier tail after the closed code ``ungranted`` is a relation name.
+That name is logged as ``names`` and is not part of the reason code.
 
 Group key is ``(reason code, sha256 of the normalised masked question)``.
 The raw question is never the key. Normalisation is the masked text,
@@ -94,6 +96,7 @@ _CODES = frozenset(
         "submit_failed",
         "ticket_missing",
         "ungranted",
+        "validate",
         "value_exists_pending",
         "warehouse_missing",
     }
@@ -127,18 +130,53 @@ def _known_codes() -> frozenset[str]:
     return _CODES | GAP_REASONS
 
 
-def _reason_code(raw: str) -> str:
-    """Named code only. Error prose and unknown tokens are dropped."""
+def _walk(raw: str) -> tuple[list[str], list[str]]:
+    """Known code tokens, and the tail after a closed code.
+
+    An unknown token stops the walk. The tail is empty unless a closed
+    code was reached. Commas inside a tail part are separate names.
+    """
     known = _known_codes()
     codes: list[str] = []
-    for part in str(raw or "").casefold().split(":"):
+    parts = str(raw or "").casefold().split(":")
+    for index, part in enumerate(parts):
         token = part.strip()
         if not _TOKEN.fullmatch(token) or token not in known:
-            break
+            return codes, []
         codes.append(token)
         if token in _CLOSED:
-            break
+            rest: list[str] = []
+            for later in parts[index + 1 :]:
+                rest.extend(bit.strip() for bit in later.split(","))
+            return codes, [bit for bit in rest if bit]
+    return codes, []
+
+
+def _reason_code(raw: str) -> str:
+    """Named code only. Error prose and unknown tokens are dropped."""
+    codes, _tail = _walk(raw)
     return ":".join(codes) if codes else "unspecified"
+
+
+def visible_reason(raw: str) -> str:
+    """User-visible reason. An ungranted relation name is not included.
+
+    Every other reason is returned unchanged, including named gap detail.
+    """
+    codes, tail = _walk(raw)
+    if codes and codes[-1] == "ungranted" and tail:
+        return ":".join(codes)
+    return str(raw or "")
+
+
+def _ungranted_names(raw: str) -> str | None:
+    """Identifier names after ``ungranted``, or None when the tail is prose."""
+    codes, tail = _walk(raw)
+    if not codes or codes[-1] != "ungranted" or not tail:
+        return None
+    if any(not _TOKEN.fullmatch(bit) for bit in tail):
+        return None
+    return ",".join(tail)
 
 
 def _masked(value: Any) -> tuple[str | None, bool]:
@@ -202,6 +240,7 @@ def log_pipeline_failure_ticket(
     Question text and SQL text are not written.
     """
     reason_s = _reason_code(reason)
+    names = _ungranted_names(reason)
     stage_s = str(stage or "").strip() or "unspecified"
     ask_s = str(ask_id or "").strip() or "unspecified"
     try:
@@ -218,6 +257,8 @@ def log_pipeline_failure_ticket(
         "retries": retries_n,
         "stage": stage_s,
     }
+    if names:
+        payload["names"] = names
     if question_failed or sql_failed:
         group = uuid.uuid4().hex
         count, ticket_id = _bump(group)
