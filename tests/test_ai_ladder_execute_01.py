@@ -18,11 +18,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
-from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
+from dms_executor.demo_warehouse import (
+    connect_file,
+    connect_locked_readonly,
+    ensure_demo_warehouse,
+)
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.schema_context import stop_index_builds
@@ -349,3 +354,137 @@ def test_alter_and_rename_through_ask_leave_the_schema(
             from dms_api import settings as settings_mod
 
             settings_mod.get_settings.cache_clear()
+
+
+def _non_select(case: str, dest: Path) -> str:
+    if case == "copy":
+        return f"COPY (SELECT 1 AS n) TO '{dest.as_posix()}'"
+    if case == "set":
+        return "SET threads = 1"
+    if case == "alter":
+        return "ALTER TABLE locations RENAME TO locations_gone"
+    if case == "rename":
+        return "ALTER TABLE locations RENAME location_code TO loc_gone"
+    raise AssertionError(case)
+
+
+class _LeakModel:
+    """Runs submitted SQL. A gate miss shows up as a file or a schema change."""
+
+    def __init__(self, db: Path, sql: str) -> None:
+        self._db = db
+        self._sql = sql
+        self.sql: list[str] = []
+        self.asks: list[Any] = []
+        self.ontologies: list[Any] = []
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        del question
+        self.ontologies.append(kwargs.get("ontology"))
+        return {
+            "phase": "generate",
+            "query_sql": self._sql,
+            "served_model": "fake-model",
+            "served_provider": "fake-provider",
+            "ov_key_id": "ovk-fake",
+        }
+
+    def submit(self, req: Any) -> QueryResult:
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else None
+        if kind == "session_bind":
+            return QueryResult(ok=True, status="bound", run_id="run_ns_bind")
+        body = getattr(req, "body", None)
+        text = str(body.get("sql") or "") if isinstance(body, dict) else ""
+        self.sql.append(text)
+        if text:
+            con = connect_file(self._db)
+            try:
+                con.execute(text)
+            finally:
+                con.close()
+        return QueryResult(ok=True, status="ok", run_id="run_ns", output={"rows": []})
+
+    def ledger_append(self, _req: LedgerAppendRequest) -> LedgerAppendResponse:
+        return LedgerAppendResponse(entry_id="led_ns", hash="hash_ns")
+
+    def ask(self, req: AskRequest) -> AskResponse:
+        self.asks.append(req)
+        return AskResponse(
+            answer="unused",
+            badge="certified",
+            sql_used="SELECT 1",
+            rows=[{"n": 1}],
+            audit_id="aud_unused",
+            route="sql",
+        )
+
+
+@pytest.mark.parametrize("path_name", ["ask", "sql"])
+@pytest.mark.parametrize("case", ["copy", "set", "alter", "rename"])
+def test_single_non_select_through_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path_name: str, case: str
+) -> None:
+    """One non-SELECT is refused from its parsed type, before EXPLAIN.
+
+    The first-token check already names these heads. This turns that check
+    off so the parsed-type gate is the one under test. ``ask`` is the extract
+    loop. ``sql`` is ``kind == sql`` with the loop off.
+    """
+    monkeypatch.setattr("dms_executor.manifest.reject_hostile_chat_sql", lambda _sql: None)
+    monkeypatch.setattr("dms_executor.generative_ask.reject_hostile_chat_sql", lambda _sql: None)
+    monkeypatch.setattr("dms_executor.reject_hostile_chat_sql", lambda _sql: None)
+    db = ensure_demo_warehouse(tmp_path / f"{path_name}-{case}.duckdb")
+    _flags(monkeypatch, db)
+    # The schema index opens the file on another thread. This case does not
+    # need it, and a second attach with a different mode trips DuckDB.
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "0")
+    if path_name == "sql":
+        monkeypatch.setenv("DMS_CLOOP_B", "0")
+    dest = tmp_path / f"{path_name}-{case}.out"
+    before = _shape(db)
+    sql = _non_select(case, dest)
+    model = _LeakModel(db, sql)
+    try:
+        client = _client(db, model, monkeypatch)  # type: ignore[arg-type]
+        resp = client.post(
+            "/v1/chat/ask",
+            json={
+                "question": "Count the location rows",
+                "space_id": _SPACE,
+                "session_id": f"ses_ns_{path_name}_{case}",
+                "ask_path": "generative",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_envelope_valid(body)
+        assert not dest.exists()
+        assert _shape(db) == before
+        assert body["abstained"] is True
+        assert body["badge"] == "ABSTAIN"
+        assert body["rows"] == []
+        assert model.sql == []
+        blob = " ".join(str(item) for item in body["assumptions"])
+        assert "hostile_sql" not in blob
+        assert "statement_not_allowed" in blob
+    finally:
+        stop_index_builds(5)
+        from dms_api import settings as settings_mod
+
+        settings_mod.get_settings.cache_clear()
+
+
+def test_serving_connect_disables_external_access(tmp_path: Path) -> None:
+    db = ensure_demo_warehouse(tmp_path / "sandbox.duckdb")
+    dest = tmp_path / "sandbox.csv"
+    con = connect_locked_readonly(db)
+    try:
+        flag = con.execute("SELECT current_setting('enable_external_access')").fetchone()
+        assert flag is not None
+        assert str(flag[0]).lower() in {"false", "0"}
+        with pytest.raises(duckdb.Error):
+            con.execute(f"COPY (SELECT 1 AS n) TO '{dest.as_posix()}'")
+    finally:
+        con.close()
+    assert not dest.exists()

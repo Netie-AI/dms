@@ -250,6 +250,10 @@ class _LockedConnection:
 
 # The serving file is DuckDB. Schema context copies this string; it does not invent one.
 SERVING_DIALECT = "duckdb"
+# Second layer under the single-SELECT gate. File reads and writes stay off.
+_SERVING_CONFIG: dict[str, str | bool | int | float | list[str]] = {
+    "enable_external_access": False,
+}
 
 
 def connect_file(
@@ -267,7 +271,7 @@ def connect_file(
     elif not lock.acquire(timeout=timeout):
         raise TimeoutError("serving lock")
     try:
-        con = duckdb.connect(str(db))
+        con = duckdb.connect(str(db), config=_SERVING_CONFIG)
     except BaseException:
         lock.release()
         raise
@@ -308,7 +312,7 @@ def connect_locked_readonly(
     if lock is None:
         raise TimeoutError("serving lock")
     try:
-        con = duckdb.connect(str(db), read_only=True)
+        con = duckdb.connect(str(db), read_only=True, config=_SERVING_CONFIG)
     except BaseException:
         lock.release()
         raise
