@@ -176,6 +176,41 @@ jobs:
           # Netie-AI/Cortex#5 or a packaging bug presents as a crypto bug.
           token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
 
+      - name: Start connector source containers (CONNECT-01)
+        # Throwaway PostgreSQL / MySQL / SQL Server for tests/test_connectors_live.py.
+        # Started first so they boot while packages install. The password is random per
+        # run and masked; it is never in the repo, and it reaches the connector only as
+        # a mocked OpenVault response. Not `services:` because those need the value at
+        # workflow parse time, which would put it in the YAML.
+        shell: bash
+        run: |
+          set -euo pipefail
+          PW="$(openssl rand -hex 16)Aa1!"
+          echo "::add-mask::$PW"
+          echo "DMS_CONNECTOR_CI_PASSWORD=$PW" >> "$GITHUB_ENV"
+          echo "DMS_CONNECTOR_LIVE=1" >> "$GITHUB_ENV"
+          pids=()
+          docker run -d --name ci-pg -p 5432:5432 -e POSTGRES_PASSWORD="$PW" postgres:16 & pids+=($!)
+          docker run -d --name ci-mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD="$PW" \
+            -e MYSQL_DATABASE=connect01 mysql:8.4 & pids+=($!)
+          docker run -d --name ci-mssql -p 1433:1433 -e ACCEPT_EULA=Y \
+            -e MSSQL_SA_PASSWORD="$PW" mcr.microsoft.com/mssql/server:2022-latest & pids+=($!)
+          for p in "${pids[@]}"; do wait "$p"; done
+
+      - name: ODBC Driver 18 for SQL Server (CONNECT-01)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if odbcinst -q -d 2>/dev/null | grep -q "ODBC Driver 18 for SQL Server"; then
+            echo "msodbcsql18 already on the runner"
+            exit 0
+          fi
+          curl -sSL -o /tmp/ms-prod.deb \
+            "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb"
+          sudo dpkg -i /tmp/ms-prod.deb
+          sudo apt-get update -q
+          sudo ACCEPT_EULA=Y apt-get install -y -q msodbcsql18 unixodbc
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -188,7 +223,7 @@ jobs:
           python -m build --wheel ./_cortex/packages/cortex_contract
           pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
           pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger"
-          pip install -e ".[dev]"
+          pip install -e ".[dev,sources]"
           pip install fastapi uvicorn httpx pydantic-settings cryptography
 
       - name: Ruff
