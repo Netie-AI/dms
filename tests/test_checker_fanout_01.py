@@ -35,6 +35,8 @@ _FANOUT_SQL = (
 _DUP_ROWS_SQL = (
     "SELECT i.sku AS sku FROM inventory i JOIN locations l ON TRUE"
 )
+# Finance does not grant this table. The reply must not repeat its name.
+_ALERTS_SQL = "SELECT alert_id, severity FROM alerts WHERE resolved = FALSE"
 
 
 def _questions() -> dict[str, str]:
@@ -540,17 +542,20 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         ("lines_per_supplier", _LINES_PER_SUPPLIER, True),
         ("lot_of_product", lot.sql, True),
         ("audit_0300_myt", _AUDIT_CLOCK, True),
+        # Cortex ask SQL, not insights query_sql. hold_ungrounded_sql sees it.
+        ("alerts_finance", _ALERTS_SQL, False),
     )
 
     class _Cortex:
-        def __init__(self, sql: str, *, generated: bool) -> None:
+        def __init__(self, sql: str, *, generated: bool, via_ask: bool) -> None:
             self.sql = sql
             self.generated = generated
+            self.via_ask = via_ask
             self.asks: list[Any] = []
 
         def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
             _ = (question, kwargs)
-            if self.generated:
+            if self.generated or self.via_ask:
                 return None
             return {"query_sql": self.sql}
 
@@ -577,7 +582,7 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             _ = req
             return LedgerAppendResponse(entry_id="ent-http", hash="hash-http")
 
-    def post(route: str, sql: str) -> dict[str, Any]:
+    def post(route: str, sql: str, *, via_ask: bool = False) -> dict[str, Any]:
         monkeypatch.setenv("DMS_ASK_MODE", "live")
         monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
         monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
@@ -607,7 +612,7 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         minted.fetch_intermediate = lambda: None  # type: ignore[method-assign]
         minted.close = lambda: None  # type: ignore[method-assign]
         minted.invalidate = lambda *_a, **_k: None  # type: ignore[method-assign]
-        cortex = _Cortex(sql, generated=(route == "generated"))
+        cortex = _Cortex(sql, generated=(route == "generated"), via_ask=via_ask)
         app = create_app()
         app.state.ask_service = Executor(
             cortex=cortex, minter=minted, warehouse_path=db  # type: ignore[arg-type]
@@ -623,14 +628,15 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         )
         assert res.status_code == 200, res.text
         body = res.json()
-        if route == "generated":
+        if route == "generated" or via_ask:
             assert cortex.asks, route
         return body
 
     try:
         for name, sql, serve in cases:
+            via_ask = name == "alerts_finance"
             for route in ("flag_off", "cloop_b", "generated"):
-                env = post(route, sql)
+                env = post(route, sql, via_ask=via_ask)
                 label = f"{route} {name}"
                 if serve:
                     assert env["badge"] == "L2_VALIDATED", label
@@ -639,6 +645,22 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 else:
                     assert env["badge"] != "L2_VALIDATED", label
                     assert env["abstained"] is True, label
+                    if via_ask:
+                        notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+                        folded = " ".join(
+                            (
+                                str(env.get("text") or ""),
+                                notes,
+                                str(env.get("sql_used") or ""),
+                                str(env.get("rows") or ""),
+                            )
+                        ).lower()
+                        assert env["badge"] == "ABSTAIN", label
+                        assert env["badge"] != "L0_CERTIFIED", label
+                        assert env.get("answer_id") == "ans_gen01_abstain", label
+                        assert "ungranted" in notes, label
+                        assert "reconfirm" not in folded, label
+                        assert "alerts" not in folded, label
     finally:
         if old_tz is None:
             os.environ.pop("TZ", None)

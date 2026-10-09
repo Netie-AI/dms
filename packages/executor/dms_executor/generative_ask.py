@@ -1003,17 +1003,19 @@ def hold_ungrounded_sql(
     warehouse: Path | None,
     grantable: set[str],
 ) -> dict[str, Any] | None:
-    """Direct refusal when the grant check says the statement cites no relation.
+    """Direct refusal for every ungranted outcome of the one grant check.
 
-    None means the SQL may keep its badge. The check is ``validate_compiled_sql``.
-    #421 replaces that call. This is not a reconfirm and not a second grant check.
+    ``validate_compiled_sql`` returns bare ``ungranted`` or ``ungranted:<names>``.
+    Both abstain here. The names stay in that function and are not copied onto
+    the reply. None means the SQL may keep its badge. #421 replaces that call.
+    This is not a reconfirm and not a second grant check.
     """
     why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
-    if why != "ungranted":
+    if not isinstance(why, str) or why.split(":", 1)[0] != "ungranted":
         return None
     return _abstain(
         question,
-        why,
+        "ungranted",
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,
