@@ -25,6 +25,7 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
+from dms_executor.ask_clarify import openvault_clarify_writer
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
@@ -212,8 +213,14 @@ class Executor:
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
         session_store: Any | None = None,
+        clarify_model: Any = None,
     ) -> None:
         self._cortex = cortex
+        self._clarify_model = clarify_model
+        # Same process memory as session turns. TTL matches the session ACL.
+        self._clarify_attempts: dict[str, Any] = {}
+        self._clarify_reask_parent: str | None = None
+        self._clarify_skipped: str | None = None
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
@@ -516,6 +523,9 @@ class Executor:
         session_id: str | None = None,
         tables: list[str] | None = None,
         ask_path: str | None = None,
+        clarify_id: str | None = None,
+        option_id: str | None = None,
+        clarify_text: str | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
 
@@ -527,6 +537,8 @@ class Executor:
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
+        self._clarify_reask_parent = None
+        self._clarify_skipped = None
         try:
             env = self._live_ask(
                 question,
@@ -535,6 +547,9 @@ class Executor:
                 tables=tables,
                 ask_path=ask_path,
                 seen=seen,
+                clarify_id=clarify_id,
+                option_id=option_id,
+                clarify_text=clarify_text,
             )
         except OpenVaultTokenError as exc:
             # Every lane needs the signing key; no lane may relabel its absence.
@@ -557,18 +572,36 @@ class Executor:
                 route="abstain",
             )
             assert_envelope_valid(env)
+        parent = self._clarify_reask_parent
+        self._clarify_reask_parent = None
+        if parent and isinstance(env, dict):
+            env["clarify_reask"] = True
+            env["clarify_parent_id"] = parent
+        skipped = self._clarify_skipped
+        self._clarify_skipped = None
+        if skipped and isinstance(env, dict):
+            from dms_executor.ask_clarify import clarify_enabled, state_chosen_reading
+
+            # Flag on only. A clarify reply is not a skipped ask.
+            if clarify_enabled() and env.get("status") != "clarify":
+                env["clarify_skipped"] = skipped
+                state_chosen_reading(env)
         stamp_engine_clock(env)
+        is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
         payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
-        stamped = with_served_attribution(env, payload)
-        out = stamped if stamped is not None else env
-        if isinstance(out, dict):
-            raw_loop = out.get("loop")
-            apply_sql_credit(
-                out,
-                payload if isinstance(payload, dict) else None,
-                raw_loop if isinstance(raw_loop, list) else None,
-                dialect=extract_dialect(getattr(self, "_warehouse", None)),
-            )
+        if is_clarify:
+            out = env
+        else:
+            stamped = with_served_attribution(env, payload)
+            out = stamped if stamped is not None else env
+            if isinstance(out, dict):
+                raw_loop = out.get("loop")
+                apply_sql_credit(
+                    out,
+                    payload if isinstance(payload, dict) else None,
+                    raw_loop if isinstance(raw_loop, list) else None,
+                    dialect=extract_dialect(getattr(self, "_warehouse", None)),
+                )
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 
@@ -580,8 +613,35 @@ class Executor:
         else:
             out.pop("lane", None)
         masked = mask_unknown_keys(out)
+        if is_clarify:
+            for key in list(masked):
+                if str(key).startswith("served_"):
+                    masked.pop(key, None)
+        self._record_ask_outcome(masked)
         backstop_missing_ticket(masked, question=question)
         return masked
+
+    def _record_ask_outcome(self, env: dict[str, Any]) -> None:
+        """Count served / abstain / clarify. A stats failure must not change the ask."""
+        try:
+            from dms_core.clarify_stats import record_outcome
+
+            if env.get("clarify_reask"):
+                # The parent clarify already counted. Keep one ask.
+                if env.get("status") == "clarify":
+                    return
+                record_outcome(
+                    "abstain" if env.get("abstained") else "served",
+                    replace_clarify=True,
+                )
+            elif env.get("status") == "clarify":
+                record_outcome("clarify")
+            elif env.get("abstained"):
+                record_outcome("abstain")
+            else:
+                record_outcome("served")
+        except Exception:  # noqa: BLE001
+            return
 
     def _live_ask(
         self,
@@ -592,6 +652,9 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
         seen: list[dict[str, Any] | None],
+        clarify_id: str | None = None,
+        option_id: str | None = None,
+        clarify_text: str | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -613,6 +676,46 @@ class Executor:
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
+        clarify_locked = False
+        if clarify_id:
+            from dms_executor.ask_clarify import clarify_enabled, resolve_clarify
+
+            if clarify_enabled():
+                try:
+                    granted_now = set(self.grantable_tables(space_id=space_id))
+                except Exception:  # noqa: BLE001 -- fail closed, never 500 the pick
+                    granted_now = set()
+                resolved = resolve_clarify(
+                    self._clarify_attempts,
+                    clarify_id=clarify_id,
+                    option_id=option_id,
+                    clarify_text=clarify_text,
+                    space_id=space_id,
+                    session_id=session_id,
+                    fallback_question=question,
+                    warehouse=self._warehouse,
+                    grantable=granted_now,
+                )
+                if isinstance(resolved, dict):
+                    return resolved
+                from dms_executor.ask_clarify import Reask, reask_refusal
+
+                if isinstance(resolved, Reask):
+                    self._clarify_reask_parent = resolved.parent_id
+                    question = normalize_ask_question(resolved.question)
+                    clarify_locked = True
+                    refused = reask_refusal(
+                        question,
+                        warehouse=self._warehouse,
+                        grantable=granted_now,
+                        space_id=space_id,
+                        session_id=session_id,
+                    )
+                    if refused is not None:
+                        return refused
+                else:
+                    question = normalize_ask_question(resolved)
+                    clarify_locked = True
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
             ladder = "product"
@@ -820,6 +923,7 @@ class Executor:
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
+            skip_out: list[str] = []
             gen_env = maybe_generative_ask(
                 question,
                 space_id=space_id,
@@ -848,8 +952,15 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                clarify_store=self._clarify_attempts,
+                clarify_model=self._clarify_model,
+                clarify_locked=clarify_locked,
+                clarify_original=asked,
+                clarify_skip_out=skip_out,
                 dialect=SERVING_DIALECT,
             )
+            if skip_out:
+                self._clarify_skipped = skip_out[-1]
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
@@ -1183,6 +1294,7 @@ __all__ = [
     "SourceGrant",
     "answer_demo_question",
     "assert_envelope_valid",
+    "openvault_clarify_writer",
     "build_answer_envelope",
     "normalize_contributing_sources",
     "build_library_tree",

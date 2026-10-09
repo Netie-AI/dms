@@ -426,10 +426,16 @@ def extract_ranking(env: dict[str, Any]) -> list[tuple[str, float]] | None:
 def judge(env: dict[str, Any], expected: list[tuple[str, float]]) -> tuple[str, str]:
     """Classify one answer. Returns (outcome, detail).
 
-    outcome is one of: abstained | correct | WRONG
+    outcome is one of: clarify | abstained | correct | WRONG
     Only 'correct' and 'WRONG' touch precision. 'abstained' costs coverage
     only - refusing is always allowed, being confidently wrong never is.
+    A clarify reply is neither served nor abstained. ``none_fits`` is the same.
     """
+    from score_curated import clarify_unanswered
+
+    if clarify_unanswered(env):
+        detail = str(env.get("question") or env.get("text") or env.get("option_id") or "")
+        return "clarify", detail[:120]
     if env.get("abstained"):
         return "abstained", str(env.get("text") or "")[:120]
 
@@ -623,7 +629,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print(f"\n=== SCORING (space={args.space}) ===")
-    answered = correct = wrong = 0
+    answered = correct = wrong = clarify_n = 0
+    clarify_prompt = clarify_completion = 0
     failures: list[str] = []
     for case, expected in cases:
         try:
@@ -646,6 +653,11 @@ def main(argv: list[str] | None = None) -> int:
         outcome, detail = judge(env, expected)
         badge = env.get("badge")
         print(f"  {case['id']:<32} {outcome:<10} [{badge}] {detail}")
+        if outcome == "clarify":
+            clarify_n += 1
+            clarify_prompt += int(env.get("clarify_prompt_tokens") or 0)
+            clarify_completion += int(env.get("clarify_completion_tokens") or 0)
+            continue
         if outcome == "abstained":
             continue
         answered += 1
@@ -678,6 +690,16 @@ def main(argv: list[str] | None = None) -> int:
                 "wrong": wrong,
                 "total": total,
                 "abstained": total - answered,
+                "clarify": clarify_n,
+                "abstain_rate": (
+                    round((total - answered - clarify_n) / total, 4) if total else None
+                ),
+                "clarify_rate": round(clarify_n / total, 4) if total else None,
+                "tokens_per_clarify": (
+                    round((clarify_prompt + clarify_completion) / clarify_n, 4)
+                    if clarify_n
+                    else None
+                ),
                 "passed": wrong == 0 and not failures,
             },
             indent=2,

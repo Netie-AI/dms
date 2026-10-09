@@ -90,6 +90,14 @@ export type AnswerEnvelope = {
   served_model?: string | null;
   /** Named abstain when the writer set it. Other names live in assumptions. */
   abstain_reason?: string | null;
+  /** ASK-CLARIFY-01. `clarify` is not a served answer. */
+  status?: string;
+  clarify_id?: string;
+  question?: string;
+  original_question?: string;
+  options?: { id: string; label: string; binding?: Record<string, unknown> }[];
+  clarify_prompt_tokens?: number;
+  clarify_completion_tokens?: number;
 };
 
 export type SpaceSummary = {

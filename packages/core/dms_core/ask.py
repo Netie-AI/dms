@@ -25,6 +25,10 @@ class AskServicePort(Protocol):
         #: Cortex ask; exact = pack/VQ only; generative = skip pack, no plan
         #: source on live_ask (bind_plan and POST /dms/query are off). None = product.
         ask_path: str | None = None,
+        #: ASK-CLARIFY-01 follow-up. Ignored unless DMS_ASK_CLARIFY is on.
+        clarify_id: str | None = None,
+        option_id: str | None = None,
+        clarify_text: str | None = None,
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
