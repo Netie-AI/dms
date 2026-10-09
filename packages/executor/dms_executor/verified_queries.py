@@ -351,6 +351,9 @@ def envelope_from_verified_submit(
         audit_id=receipt,
     )
     assert_envelope_valid(env)
+    from dms_executor.route_stamp import ROUTE_VERIFIED, stamp_route
+
+    stamp_route(env, ROUTE_VERIFIED)
     return env
 
 
