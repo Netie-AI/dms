@@ -933,8 +933,11 @@ def _insights_generate_post(
     )
     if shot.kind == "unavailable":
         return abstain_payload(shot)
-    # 4xx/5xx and a validation body are an AI-call error. Do not look like
-    # a quiet miss: a quiet miss is what the ontology GET used to compile.
+    # 401/403 stay the named unauthorized envelope. Other 4xx/5xx, including
+    # a validation 422, are an AI-call error. A quiet miss is what the
+    # ontology GET used to compile.
+    if status in {401, 403}:
+        return _insights_envelope(res)
     if status >= 400:
         return ai_call_error_payload(status)
     return _insights_envelope(res)
@@ -1302,15 +1305,20 @@ def compute_query(
             if (
                 not dms_query
                 and isinstance(insights_payload, dict)
-                and insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
                 and not gen01_rules_enabled()
+                and (
+                    insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
+                    or int(insights_payload.get(_HTTP_STATUS_KEY) or 0) in {401, 403}
+                )
             ):
                 # Ask lane: drop any ontology ranking merged after the error.
                 # That ranking is the GEN-01 rule builder. Legacy compute_query
-                # still posts /dms/query.
+                # still posts /dms/query. 401/403 keep insights_unauthorized.
                 out = {
                     k: v for k, v in insights_payload.items() if k != "ontology"
                 }
+                if int(out.get(_HTTP_STATUS_KEY) or 0) in {401, 403}:
+                    return insights_fail_payload(INSIGHTS_FAIL_UNAUTHORIZED, out)
                 out["insights_fail"] = INSIGHTS_FAIL_AI_ERROR
                 return out
             ranked_plan = typed_ranked_retry_plan(
