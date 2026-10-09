@@ -28,6 +28,7 @@ from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_grants import canonical_space_id
 from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.grant_struct import serve_gap
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.skills_quarantine import (
     canonical_pack_hash,
@@ -189,6 +190,7 @@ def register_verified_query(
     synonyms: list[str] | None = None,
     pack_hash: str | None = None,
     path: Path | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any]:
     """Persist a Space-scoped Q→SQL asset after hostile + grant checks."""
     sid = scope_key(space_id)
@@ -200,15 +202,20 @@ def register_verified_query(
         raise ValueError("question_required")
     if not sql_text:
         raise ValueError("sql_required")
-    try:
-        reject_hostile_chat_sql(sql_text)
-    except SecurityEvent as exc:
-        raise ValueError(f"hostile_sql:{exc.code}") from exc
     db = path or warehouse_path()
     grantable = _grantable(space_id, db)
+    # Statement count before the hostile scanner, both inside serve_gap.
+    # A plain ungranted demo table keeps the sql_not_in_space sentence.
+    gap = serve_gap(sql_text, grantable=grantable, dialect=dialect)
+    # A plain ungranted relation still reaches the demo-table sentence.
+    # ``ungranted:file`` and ``ungranted:unparsed`` do too; anything else raises.
+    if gap and gap != "ungranted" and not str(gap).startswith("ungranted:"):
+        raise ValueError(gap)
     leaked = _sql_outside_space(sql_text, grantable)
     if leaked:
         raise ValueError(f"sql_not_in_space:{','.join(sorted(leaked))}")
+    if gap:
+        raise ValueError(gap)
     qn = normalize_verified_question(q)
     syn = _synonyms_norm(synonyms)
     carried = canonical_pack_hash(pack_hash)
@@ -269,6 +276,7 @@ def lookup_verified_query(
     warehouse: Path | None = None,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, str] | None:
     """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer."""
     if tables:
@@ -285,6 +293,9 @@ def lookup_verified_query(
     try:
         reject_hostile_chat_sql(sql_text)
     except SecurityEvent:
+        return None
+    gap = serve_gap(sql_text, grantable=allowed, dialect=dialect)
+    if gap:
         return None
     return {"asset_id": str(match["asset_id"]), "sql": sql_text}
 
@@ -364,6 +375,7 @@ def maybe_verified_ask(
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L0 envelope when this Space has a matching asset executed via Cortex.
 
@@ -377,6 +389,7 @@ def maybe_verified_ask(
         warehouse=warehouse,
         grantable=grantable,
         tables=tables,
+        dialect=dialect,
     )
     if hit is None:
         return None

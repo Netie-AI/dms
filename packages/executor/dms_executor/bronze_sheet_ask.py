@@ -71,11 +71,11 @@ def bronze_sheet_lane_enabled() -> bool:
 
 
 def bronze_lane_table(question: str) -> str | None:
-    """Bronze table this question would read, or None if it is not that lane.
+    """Bronze table the sheet server would read, or None if it is not that lane.
 
     Same scope as ``maybe_bronze_sheet_ask`` before any DuckDB open. The
-    grant decision stays with ``table_is_granted`` on the caller's readable
-    set. This function does not decide grants.
+    phrase match only names that table. It does not grant, and it does not
+    build SQL. The grant decision is ``relation_gap`` on this name.
     """
     if _NO_SQL.search(question or ""):
         return None

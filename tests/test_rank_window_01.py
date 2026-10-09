@@ -147,6 +147,7 @@ class _Harness:
             ledger_append=lambda _p: SimpleNamespace(entry_id="led_rw", hash="hash_rw"),
             ontology=onto,
             bind_on_miss=False,
+            dialect="duckdb",
         )
 
 
@@ -626,6 +627,7 @@ def test_rank_window_parse_and_compile_touch_no_scored_pack(
             question, onto=onto, allowed={"transactions", "inventory"}, lake=lake,
             space_id=None, session_id=None, submit=h.submit,
             ledger_append=lambda _p: SimpleNamespace(entry_id="led_rw", hash="hash_rw"),
+            dialect="duckdb",
         )
         assert env is not None and env["badge"] == "L2_VALIDATED"
     hits = [p for p in opened if _PACK_RE.search(p)]

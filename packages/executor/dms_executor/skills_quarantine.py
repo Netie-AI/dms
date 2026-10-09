@@ -50,6 +50,7 @@ from typing import Any
 import duckdb
 from sqlglot import exp, parse_one
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
 from dms_executor.manifest import reject_hostile_chat_sql
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ def _canonical_sql(sql: str) -> str:
         if isinstance(name, str):
             node.set("this", name.lower())
         node.set("quoted", False)
-    emitted = tree.sql(dialect="duckdb", normalize=True, comments=False)
+    emitted = tree.sql(dialect=SERVING_DIALECT, normalize=True, comments=False)
     return " ".join(str(emitted).split())
 
 
@@ -106,7 +107,7 @@ def _parse_sql(sql: str) -> Any | None:
         attempts.append(swapped)
     for attempt in attempts:
         try:
-            return parse_one(attempt, read="duckdb")
+            return parse_one(attempt, read=SERVING_DIALECT)
         except Exception:
             continue
     return None

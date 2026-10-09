@@ -292,6 +292,7 @@ def _ask(tmp_path: Path, case_id: str, qid: str, mode: str) -> dict[str, Any]:
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=_ontology(case),
+        dialect="duckdb",
     )
     assert env is not None, f"{case_id}/{qid}/{mode}: no envelope"
     assert_envelope_valid(env)

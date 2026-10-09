@@ -8,12 +8,18 @@ Wall-clock fields are placeholders. Every other key and value is
 compared, including ``served_check_shadow``. A key main does not send
 fails the test.
 
-The fixture bytes were captured from ce08153. The same bytes match
-beabdc6 (skills quarantine, no stamp on this stub).
+Against main 57d85c52, as_of stays masked. ``checker_version`` is not
+masked: it may differ, it must equal the sha256 of the current
+``sql_grounds.py``, and it is the only field that may differ.
+
+The fixture bytes were captured from ce08153. checker_version is the
+sha256 of sql_grounds.py, which now reads SERVING_DIALECT. Every other
+field is that capture.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -24,12 +30,17 @@ import pytest
 import yaml
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
-from dms_executor import Executor
+from dms_executor import Executor, sql_grounds
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 from dms_executor.manifest import ManifestMinter, SessionAcl
 
 _FIXTURE = Path(__file__).resolve().parents[0] / "fixtures" / "c_loop_b" / "flag_off_main.json"
 _BASELINE = "ce08153c7f74418db33a38c0372d675e567d7040"
+# Main 57d85c52 fixture. Swapping the live checker hash back to this value
+# reproduces that file byte for byte. The grant check does not own the stamp.
+_MAIN_CHECKER = "5d5a8179d2938cfe57d30ebda7004e400ea86653aeba391244c252d7f1281d61"
+_MAIN_FIXTURE_SHA = "3881294637d9e3ef55e6aac7517f09084f03f5303f4b0624f466095b612527f1"
+_CHECKER_FIELD = "served_check_shadow.checker_version"
 _SQL = "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
 _CLOCK = {
     "as_of",
@@ -110,6 +121,31 @@ def _extra_keys(main: Any, got: Any, path: str = "") -> list[str]:
         for index, (left, right) in enumerate(zip(main, got, strict=False)):
             found.extend(_extra_keys(left, right, f"{path}[{index}]"))
     return found
+
+
+def _changed_fields(left: Any, right: Any, path: str = "") -> list[str]:
+    """Paths whose values differ. Clock fields stay masked. checker_version does not."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        found: list[str] = []
+        for key in sorted(set(left) | set(right)):
+            here = f"{path}.{key}" if path else str(key)
+            if key not in left or key not in right:
+                found.append(here)
+                continue
+            if key in _CLOCK:
+                continue
+            found.extend(_changed_fields(left[key], right[key], here))
+        return found
+    if isinstance(left, list) and isinstance(right, list):
+        if len(left) != len(right):
+            return [path or "$"]
+        found = []
+        for index, (a, b) in enumerate(zip(left, right, strict=True)):
+            found.extend(_changed_fields(a, b, f"{path}[{index}]"))
+        return found
+    if left != right:
+        return [path or "$"]
+    return []
 
 
 class _Cortex:
@@ -219,11 +255,19 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     golden = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     assert golden["baseline"] == _BASELINE
     expected = golden["asks"]
+    source = Path(sql_grounds.__file__).resolve().read_bytes()
+    live_hash = hashlib.sha256(source).hexdigest()
+    fixture_bytes = _FIXTURE.read_bytes()
+    assert live_hash.encode() in fixture_bytes
+    main_bytes = fixture_bytes.replace(live_hash.encode(), _MAIN_CHECKER.encode())
+    assert hashlib.sha256(main_bytes).hexdigest() == _MAIN_FIXTURE_SHA
+    main_asks = json.loads(main_bytes)["asks"]
     got = run_envelopes(db)
-    assert len(got) == len(expected) == 73
+    assert len(got) == len(expected) == len(main_asks) == 73
     l2 = 0
     abstain = 0
     canned = 0
+    version_diffs = 0
     extras_all: list[tuple[str, list[str]]] = []
     for index, question in enumerate(_questions()):
         env = got[index]["envelope"]
@@ -237,6 +281,14 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
         env = got[index]["envelope"]
         main = expected[index]["envelope"]
         assert env == main, question
+        shadow = env.get("served_check_shadow")
+        if isinstance(shadow, dict) and "checker_version" in shadow:
+            assert shadow["checker_version"] == live_hash, question
+        changed = _changed_fields(main_asks[index]["envelope"], env)
+        bad = [path for path in changed if path != _CHECKER_FIELD]
+        assert bad == [], (question, bad)
+        if _CHECKER_FIELD in changed:
+            version_diffs += 1
         if env.get("badge") == "L2_VALIDATED":
             l2 += 1
         if env.get("abstained") is True:
@@ -245,6 +297,7 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
         if env.get("badge") == "L2_VALIDATED" and "is_cold_storage" in sql_used:
             canned += 1
     assert any("served_check_shadow" in row["envelope"] for row in got)
+    assert version_diffs >= 1, version_diffs
     assert l2 >= 5, l2
     assert abstain >= 1, abstain
     assert canned >= 3, canned

@@ -83,6 +83,7 @@ def _env(tmp_path: Path, question: str, metric_id: str, **kwargs: Any) -> dict[s
         ontology=onto,
         bind_on_miss=True,
         **kwargs,
+        dialect="duckdb",
     )
 
 
@@ -248,6 +249,7 @@ def test_invalid_generate_sql_climbs_via_ranking(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -273,6 +275,7 @@ def test_hostile_sql_does_not_climb_to_ranking(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -299,6 +302,7 @@ def test_ungranted_spend_does_not_green(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"

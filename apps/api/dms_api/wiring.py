@@ -166,6 +166,7 @@ def register_verified_query(
         question=question,
         sql=sql,
         synonyms=synonyms,
+        dialect=dms_executor.SERVING_DIALECT,
     )
 
 

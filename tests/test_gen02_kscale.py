@@ -88,6 +88,7 @@ def _env(tmp_path: Path, question: str, *metric_ids: str) -> dict[str, Any] | No
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
 
 

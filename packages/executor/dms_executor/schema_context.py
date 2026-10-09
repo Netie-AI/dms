@@ -82,7 +82,8 @@ from dms_core.pii import (
     is_mask_token,
 )
 
-from dms_executor.ontology import Ontology, relation_tables, table_is_granted
+from dms_executor.grant_struct import relation_gap, sqlglot_dialect
+from dms_executor.ontology import Ontology, relation_tables
 
 # ponytail: 4 characters per token. Ceiling: a model tokenizer disagrees.
 # Upgrade: count with the tokenizer of the model that writes the SQL.
@@ -474,10 +475,15 @@ def _dataset_items(schema: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in raw if isinstance(item, Mapping)]
 
 
-def _granted(name: str, grantable: set[str] | None) -> bool:
+def _granted(name: str, grantable: set[str] | None, *, dialect: str) -> str | None:
+    """None when ``name`` is granted. Same keys as ``serve_gap``.
+
+    ``grantable is None`` means this caller is not filtering. Any other
+    miss is ``relation_gap``.
+    """
     if grantable is None:
-        return True
-    return table_is_granted(name, grantable)
+        return None
+    return relation_gap(name, grantable=set(grantable), dialect=dialect)
 
 
 def _column_items(dataset: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -1242,7 +1248,9 @@ def build_schema_context(
     datasets = [
         item
         for item in _dataset_items(described)
-        if _text(item.get("name")) and _granted(_text(item.get("name")), grantable)
+        if _text(item.get("name")) and _granted(
+            _text(item.get("name")), grantable, dialect=dialect
+        ) is None
     ]
     names = {_text(item.get("name")) for item in datasets}
     declared = _declared_columns(datasets)
@@ -1453,6 +1461,9 @@ def build_schema_context(
             kept_measures,
             table_desc_out,
         )
+    if grantable is not None and sqlglot_dialect(dialect or "") is None:
+        prompt = f"sql_dialect_unknown\n{prompt}"
+        envelope_prompt = f"sql_dialect_unknown\n{envelope_prompt}"
     return SchemaContext(
         prompt=prompt,
         samples_included=any(col.samples for col in chosen),
@@ -1622,7 +1633,7 @@ def read_catalog(
             column_name_text = str(column_name)
             if not _ident(table) or not _ident(column_name_text):
                 continue
-            if not _granted(table, grantable):
+            if _granted(table, grantable, dialect=named) is not None:
                 continue
             data = str(data_type or "")
             fp_rows.append((table, column_name_text, data))

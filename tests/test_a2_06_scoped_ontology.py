@@ -180,6 +180,7 @@ def test_no_declared_ontology_keeps_answering_sql(tmp_path: Path) -> None:
         submit=submit,
         ledger_append=_ledger,
         ontology=None,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -239,6 +240,7 @@ def _ask_fixture(
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -440,6 +442,7 @@ def test_missing_violations_cache_fail_closed(
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=loaded,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
