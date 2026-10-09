@@ -1,4 +1,4 @@
-/** Product modes: cream = CEO / Claude-white ask; graphite = operator appliance. */
+/** Product modes: cream = CEO ask; graphite = operator appliance. */
 
 export type ProductMode = "cream" | "graphite";
 

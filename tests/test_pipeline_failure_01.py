@@ -135,7 +135,7 @@ def test_flag_on_abstain_kinds_each_write_one_ticket(
             "loop_exhausted:checker:explain",
             "SELECT nope FROM inventory",
             "cold storage locations",
-            1,
+            2,
         ),
         (
             "checker:hostile_sql:path_not_allowed",
@@ -183,7 +183,7 @@ def test_db_error_text_stays_out_of_the_ticket(
     assert len(grouped) == 1
     ticket = next(iter(grouped.values()))
     assert ticket["reason"] == "loop_exhausted:db_error"
-    assert ticket["retries"] == 1
+    assert ticket["retries"] == 2
     assert ticket["ask_id"] == env["audit_id"]
     _no_prose(ticket, marker)
     assert marker not in caplog.text

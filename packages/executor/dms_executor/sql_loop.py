@@ -100,24 +100,67 @@ def empty_result_reason(sql: str) -> str | None:
     return EMPTY_UNVERIFIED
 
 
-def run_readonly(
-    sql: str, warehouse: Path
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Execute on a read-only extract connection. ``(rows, None)`` or ``(None, error)``."""
+def _one_select(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT. A single non-SELECT returns ``""``.
+
+    ``WITH`` that ends in SELECT is a SELECT. Any other count, or a parse
+    error, is a refusal and is not executed. ``""`` means the read-only
+    engine must be the thing that refuses the statement.
+    """
     import duckdb
 
     try:
-        con = duckdb.connect(str(warehouse), read_only=True)
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 — parse failure is a refusal
+        return f"{type(exc).__name__}: {exc}"
+    if len(stmts) == 1 and stmts[0].type == duckdb.StatementType.SELECT:
+        return None
+    if len(stmts) == 1:
+        return ""
+    return "multi_statement"
+
+
+def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
         cur = con.execute(sql)
         desc = cur.description or []
         cols = [d[0] for d in desc]
         rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
         return rows, None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — engine error is the extract result
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def run_readonly(
+    sql: str, warehouse: Path
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Execute on a read-only extract. ``(rows, None)`` or ``(None, error)``.
+
+    Takes the serving lock, then opens ``read_only``. The lock is what keeps
+    a writer and this connect from mixing access modes. A lock wait past the
+    serving deadline returns ``TimeoutError: ...`` and does not open the file.
+    One SELECT runs. A single other statement is executed so the read-only
+    engine refuses it. Anything else, including a parse failure, is refused
+    without executing.
+    """
+    from dms_executor.demo_warehouse import connect_locked_readonly
+
+    try:
+        con = connect_locked_readonly(Path(warehouse))
+    except TimeoutError as exc:
+        return None, f"TimeoutError: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        gate = _one_select(con, sql)
+        if gate is None:
+            return _fetch(con, sql)
+        if gate == "":
+            _rows, err = _fetch(con, sql)
+            if err:
+                return None, err
+            return None, "statement_not_select"
+        return None, gate
     finally:
         con.close()
 
@@ -342,13 +385,22 @@ def loop_entry(
     return entry
 
 
-def feedback_prompt(question: str, *, previous_sql: str | None, reason: str | None) -> str:
+def feedback_prompt(
+    question: str,
+    *,
+    previous_sql: str | None,
+    reason: str | None,
+    plan: str | None = None,
+) -> str:
     """Prompt for one attempt. A retry appends the previous SQL and the error."""
+    base = question
+    if plan:
+        base = f"{question}\n\nplan:\n{plan}"
     if not reason:
-        return question
+        return base
     safe_reason = mask_feedback_text(reason)
     safe_sql = mask_feedback_text(previous_sql or "")
-    return f"{question}\n\nprevious_sql:\n{safe_sql}\n\nfeedback:\n{safe_reason}"
+    return f"{base}\n\nprevious_sql:\n{safe_sql}\n\nfeedback:\n{safe_reason}"
 
 
 def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
@@ -425,6 +477,7 @@ def run_model_loop(
     empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     attempts: list[dict[str, Any]],
     no_retry_reasons: frozenset[str] = frozenset(),
+    calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
@@ -441,9 +494,38 @@ def run_model_loop(
     reason: str | None = None
     prev_sql: str | None = None
     protected_sql: str | None = None
+    escalated = False
+    raw_plan = ctx.get("sql_plan")
+    plan: str = raw_plan if isinstance(raw_plan, str) else ""
+
+    def _escalate(outcome: str, sql: str | None) -> bool:
+        nonlocal escalated, retries, used, prev_sql, reason, current
+        if escalated:
+            return False
+        escalated = True
+        retries += 1
+        used += 1
+        prev_sql = sql
+        reason = outcome
+        escalated_prompt = feedback_prompt(
+            question, previous_sql=sql, reason=outcome, plan=plan or None
+        )
+        current = _call(
+            compute,
+            ctx,
+            escalated_prompt,
+            reason,
+            sql,
+            step="escalate",
+            trace=calls,
+            plan=plan,
+        )
+        return True
 
     while True:
-        prompt = feedback_prompt(question, previous_sql=prev_sql, reason=reason)
+        prompt = feedback_prompt(
+            question, previous_sql=prev_sql, reason=reason, plan=plan or None
+        )
         sql = model_sql(current)
         if not sql:
             attempts.append(
@@ -455,6 +537,8 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            if _escalate("no_sql", None):
+                continue
             return abstain("no_sql", attempts, sql=None, retries=retries)
 
         if protected_sql:
@@ -472,12 +556,16 @@ def run_model_loop(
                 )
                 if not _can_retry(retries=retries, used=used, cap=cap):
                     head = f"loop_exhausted:{flag}"
+                    if _escalate(head, sql):
+                        continue
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
                 used += 1
                 prev_sql = sql
                 reason = flag
-                current = _call(compute, ctx, prompt, reason, sql)
+                current = _call(
+                    compute, ctx, prompt, reason, sql, step="retry", trace=calls, plan=plan
+                )
                 continue
             if dropped:
                 attempts.append(
@@ -491,12 +579,16 @@ def run_model_loop(
                 )
                 if not _can_retry(retries=retries, used=used, cap=cap):
                     head = "loop_exhausted:filter_dropped"
+                    if _escalate(head, sql):
+                        continue
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
                 used += 1
                 prev_sql = sql
                 reason = "filter_dropped"
-                current = _call(compute, ctx, prompt, reason, sql)
+                current = _call(
+                    compute, ctx, prompt, reason, sql, step="retry", trace=calls, plan=plan
+                )
                 continue
 
         why = check(sql)
@@ -522,13 +614,17 @@ def run_model_loop(
                     if _no_model_retry(why, no_retry_reasons)
                     else f"loop_exhausted:{outcome}"
                 )
+                if not _no_model_retry(why, no_retry_reasons) and _escalate(head, sql):
+                    continue
                 return abstain(head, attempts, sql=sql, retries=retries)
             protected_sql = sql
             retries += 1
             used += 1
             prev_sql = sql
             reason = outcome
-            current = _call(compute, ctx, prompt, reason, sql)
+            current = _call(
+                compute, ctx, prompt, reason, sql, step="retry", trace=calls, plan=plan
+            )
             continue
 
         if warehouse is None or not Path(warehouse).is_file():
@@ -549,15 +645,23 @@ def run_model_loop(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
+            # A missed lock deadline abstains once. Retrying would wait the
+            # deadline again.
+            if exec_err.startswith("TimeoutError:"):
+                return abstain(outcome, attempts, sql=sql, retries=retries)
             protected_sql = sql
             if not _can_retry(retries=retries, used=used, cap=cap):
                 head = f"loop_exhausted:{outcome}"
+                if _escalate(head, sql):
+                    continue
                 return abstain(head, attempts, sql=sql, retries=retries)
             retries += 1
             used += 1
             prev_sql = sql
             reason = outcome
-            current = _call(compute, ctx, prompt, reason, sql)
+            current = _call(
+                compute, ctx, prompt, reason, sql, step="retry", trace=calls, plan=plan
+            )
             continue
 
         got = rows or []
@@ -599,7 +703,13 @@ def _call(
     prompt: str,
     reason: str,
     previous_sql: str | None,
+    *,
+    step: str,
+    trace: list[dict[str, Any]] | None,
+    plan: str,
 ) -> dict[str, Any] | None:
+    from dms_executor.ai_ladder import higher_tier, reported_call
+
     feedback = {
         "previous_sql": mask_feedback_text(previous_sql or ""),
         "reason": mask_feedback_text(reason),
@@ -607,11 +717,19 @@ def _call(
     }
     nxt = dict(ctx)
     nxt["sql_loop_feedback"] = feedback
+    nxt["sql_prompt"] = prompt
+    nxt["ladder_step"] = step
+    nxt.pop("ov_tier", None)
+    if step == "escalate":
+        nxt["ov_tier"] = higher_tier()
     try:
         got = compute(nxt)
     except Exception:
-        return None
-    return got if isinstance(got, dict) else None
+        got = None
+    body = got if isinstance(got, dict) else None
+    if trace is not None:
+        trace.append(reported_call(step, body))
+    return body
 
 
 def _clear_credit(env: dict[str, Any]) -> None:

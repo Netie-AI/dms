@@ -163,28 +163,39 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
-    onto = ontology
+    onto = ontology if isinstance(ontology, dict) else {}
+    step = onto.get("ladder_step") if isinstance(onto.get("ladder_step"), str) else ""
+    tier = onto.get("ov_tier") if isinstance(onto.get("ov_tier"), str) else None
+    raw_prompt = onto.get("sql_prompt")
+    asked = raw_prompt if isinstance(raw_prompt, str) else ""
+    prompt = asked.strip() or question
+    if step in {"plan", "escalate", "reconfirm"} or tier:
+        from dms_executor.ai_ladder import ov_complete
+
+        return ov_complete(prompt, tier=tier)
     feedback = None
-    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
-        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
-        raw = ontology.get("sql_loop_feedback")
+    if "sql_loop_feedback" in onto:
+        raw = onto.get("sql_loop_feedback")
         feedback = raw if isinstance(raw, dict) else None
+    from dms_executor.ai_ladder import strip_ladder_keys
+
+    cleaned = strip_ladder_keys(onto)
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
             "space_id": space_id,
-            "ontology": onto,
+            "ontology": cleaned,
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
-        return fn(question, **kwargs)
+        return fn(prompt, **kwargs)
     except TypeError:
         try:
             return fn(
-                question,
+                prompt,
                 session_id=session_id,
                 space_id=space_id,
-                ontology=onto,
+                ontology=cleaned,
             )
         except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
             return None
@@ -572,7 +583,11 @@ class Executor:
         from dms_core.ask import lane_for_route
         from dms_core.pii import mask_unknown_keys
 
-        out["model_calls"] = recorded_model_calls()
+        ladder = out.get("ladder_calls")
+        if isinstance(ladder, list) and ladder:
+            out["model_calls"] = len(ladder)
+        else:
+            out["model_calls"] = recorded_model_calls()
         # Lane is the route this path produced. A payload lane is not kept.
         mapped = lane_for_route(out.get("route"))
         if mapped is not None:

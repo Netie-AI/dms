@@ -13,7 +13,6 @@ from dms_api.app import create_app
 from dms_core.freeroute import (
     FREEROUTE_PREFERENCE,
     WRONG_DISCIPLINE,
-    candidate_models,
     catalog_paths,
     plan_free_providers,
     public_row,
@@ -76,7 +75,11 @@ def _records() -> list[dict[str, Any]]:
                 }
             ]
         },
-        register={"providers": [{"id": "github_models", "label": "GitHub Models"}]},
+        register={
+            "providers": [
+                {"id": "github_models", "label": "GitHub Models", "retired": True}
+            ]
+        },
         keys=[{"label": "Groq", "provider": "groq", "role": "free", "token": "sk-leak"}],
     )
 
@@ -87,11 +90,12 @@ def test_preference_matches_compute_free_normal() -> None:
     assert WRONG_DISCIPLINE == "WRONG=0"
 
 
-def test_dup_labels_skipped_groq_first_paid_skipped() -> None:
+def test_dup_labels_skipped_paid_skipped() -> None:
     plan = plan_free_providers(_records())
     labels = [row["label"] for row in plan["attempted"]]
-    assert labels[0] == "Groq"
+    assert "Groq" in labels
     assert "Google AI Studio" in labels
+    assert labels == sorted(labels, key=str.casefold)
     assert "OpenAI" not in labels
     reasons = {row["reason"] for row in plan["skipped"]}
     assert "dup_label" in reasons
@@ -139,7 +143,7 @@ def test_redact_and_harness_md() -> None:
     assert "dup_label" in md
     assert "Attempted" in md
     assert "LIVE_KEY" not in md
-    assert candidate_models(plan)[0] == "llama-3.3-70b-versatile"
+    assert all("chat_models" not in row for row in plan["attempted"])
 
 
 def test_client_and_bakeoff_never_chat_or_scrape() -> None:
@@ -165,7 +169,7 @@ def test_route_returns_ov_plan(monkeypatch: Any) -> None:
     )
     body = TestClient(create_app()).get("/v1/freeroute/providers").json()
     assert body["preference"] == "free+normal"
-    assert body["attempted"][0]["label"] == "Groq"
+    assert "Groq" in [row["label"] for row in body["attempted"]]
     assert any(row.get("reason") == "dup_label" for row in body["skipped"])
     assert body["chat_tokens"] is False
     assert "harness_md" in body

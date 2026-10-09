@@ -24,12 +24,15 @@ CONTROL = "Top 5 selling SKUs by revenue"
 
 
 def candidates_from_openvault(base: str) -> list[str]:
-    """Model ids from OpenVault API free+normal plan. Not a hardcoded chat list."""
-    from dms_api.freeroute_client import consume_freeroute_plan
-    from dms_core.freeroute import candidate_models
+    """Ask OpenVault for the free+normal tier. Model ids stay on the vault.
 
-    plan = consume_freeroute_plan(base)
-    return candidate_models(plan)
+    DMS no longer maps a tier to model ids. Until OpenVault returns them on
+    the tier route, this list is empty and the bakeoff aborts.
+    """
+    from dms_api.freeroute_client import consume_freeroute_plan
+
+    consume_freeroute_plan(base)
+    return []
 
 
 def select_promote_winner(results: list[dict]) -> str | None:

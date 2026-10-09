@@ -51,6 +51,16 @@ from cortex_client.qualifiers import (
 from dms_core.pii import mask_unknown_keys
 
 from dms_executor.abstain import build_abstain
+from dms_executor.ai_ladder import (
+    closest_question,
+    direct_refusal,
+    ladder_active,
+    prepare_sql_context,
+    reconfirm_context,
+    reconfirm_envelope,
+    reported_call,
+    scrub_ungranted,
+)
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
@@ -1189,6 +1199,7 @@ def _run_extract_loop(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
+    calls: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
 
@@ -1245,16 +1256,35 @@ def _run_extract_loop(
                 retries=retries,
                 stage="extract_loop",
             )
-        return _abstain(
-            question,
-            reason,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=PLAN_SOURCE_ONTOLOGY,
+        if reason.startswith("empty_result") or direct_refusal(reason):
+            env = _abstain(
+                question,
+                reason,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=PLAN_SOURCE_ONTOLOGY,
+                sql=sql,
+                retries=retries,
+                stage="extract_loop",
+            )
+            return scrub_ungranted(env, reason)
+        try:
+            payload = compute(reconfirm_context(ctx, question=question, reason=reason))
+        except Exception:
+            payload = None
+        body = payload if isinstance(payload, dict) else None
+        calls.append(reported_call("reconfirm", body))
+        env = reconfirm_envelope(
+            reason=reason,
+            question=question,
             sql=sql,
             retries=retries,
-            stage="extract_loop",
+            space_id=space_id,
+            session_id=session_id,
+            closest=closest_question(body, sql),
+            as_of=_as_of(),
         )
+        return with_plan_source(env, PLAN_SOURCE_ONTOLOGY)
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         # Reached only when empty_result_reason returns None (VALUE-EXISTS-01).
@@ -1294,6 +1324,7 @@ def _run_extract_loop(
         empty_answer=empty_answer,
         attempts=attempts,
         no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        calls=calls,
     )
 
 
@@ -1437,10 +1468,15 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    ladder_calls: list[dict[str, Any]] = []
+    if ladder_active():
+        ctx = prepare_sql_context(ctx, question=q, compute=compute, calls=ladder_calls)
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
         payload = None
+    if ladder_active():
+        ladder_calls.append(reported_call("sql", payload if isinstance(payload, dict) else None))
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
     # or drop Cortex setup fields. Ranking merge keeps these keys.
     setup_src = payload if isinstance(payload, dict) else None
@@ -1461,6 +1497,13 @@ def maybe_generative_ask(
             return stamped
         if loop_attempts:
             stamped["loop"] = list(loop_attempts)
+        if cloop_b_enabled() and ladder_calls:
+            stamped["ladder_calls"] = [dict(item) for item in ladder_calls]
+            last = ladder_calls[-1]
+            step = last.get("step") if isinstance(last, dict) else None
+            if isinstance(step, str) and step:
+                stamped["ladder_rung"] = step
+            stamped["model_calls"] = len(ladder_calls)
         apply_sql_credit(stamped, setup_src, loop_attempts, dialect=dialect)
         if envelope_prompt or index_stamp:
             if envelope_prompt:
@@ -1535,6 +1578,7 @@ def maybe_generative_ask(
                     submit=submit,
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
+                    calls=ladder_calls,
                 )
             )
     ranked_slots: dict[str, Any] | None = None
