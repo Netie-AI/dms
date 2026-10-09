@@ -923,26 +923,6 @@ class Executor:
                 session_id=acl.session_id,
                 warehouse=self._warehouse,
                 grantable=grant_set,
-                compute=lambda catalog: _seen(
-                    seen,
-                    _insights_compute_seam(
-                        self._cortex,
-                        question,
-                        session_id=acl.session_id,
-                        space_id=space_id,
-                        ontology=catalog if isinstance(catalog, dict) else {},
-                    ),
-                ),
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=acl.session_id, tables=tables
-                ),
-                ledger_append=lambda payload: self._ledger_verified_query(
-                    asset_sql=str(payload.get("sql") or ""),
-                    run_id=str(payload.get("run_id") or ""),
-                    space_id=space_id,
-                    session_id=acl.session_id,
-                    event_type="ask.generated_ontology",
-                ),
             )
         if held is not None:
             env = attach_cascade(held, cascade)

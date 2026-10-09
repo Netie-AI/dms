@@ -22,7 +22,6 @@ from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.ontology import demo_ontology
-from dms_executor.served_gate import served_result_reason
 
 _PACK = Path(__file__).resolve().parent / "fixtures" / "curated_ceo" / "questions.yaml"
 _GOLDEN = Path(__file__).resolve().parent / "fixtures" / "ask_guide" / "flag_off_52_f9ffc3e1.json"
@@ -31,6 +30,10 @@ _KEEP = ("cq_chemicals_list", "ops_chemicals_list", "cq_audit_overdue")
 _FANOUT_SQL = (
     "SELECT f.sku AS sku, COUNT(*) AS n "
     "FROM inventory f JOIN locations l ON TRUE GROUP BY f.sku"
+)
+# Cross join duplicates the subject key in the served rows. No GROUP BY.
+_DUP_ROWS_SQL = (
+    "SELECT i.sku AS sku FROM inventory i JOIN locations l ON TRUE"
 )
 
 
@@ -112,6 +115,8 @@ def minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
 
 def test_extra_columns_keep_the_badge(tmp_path: Path) -> None:
     """List cases on this seed are an extra measure cell, not a fan-out."""
+    from dms_executor.served_gate import served_result_reason
+
     db = tmp_path / "demo.duckdb"
     ensure_demo_warehouse(db)
     onto = demo_ontology(db)
@@ -147,7 +152,6 @@ def test_extra_columns_keep_the_badge(tmp_path: Path) -> None:
             warehouse=db,
             as_of="2026-10-09T00:00:00Z",
             ontology=onto,
-            grantable=set(DEMO_TABLES),
         ) is None
         env = _ask(db, questions[case_id], sql, [])
         assert env["badge"] == "L2_VALIDATED", case_id
@@ -161,7 +165,8 @@ def test_real_fanout_refuses_the_badge(tmp_path: Path) -> None:
     db = tmp_path / "fan.duckdb"
     ensure_demo_warehouse(db)
     calls: list[dict[str, Any]] = []
-    env = _ask(db, "stock by location", _FANOUT_SQL, calls)
+    # "stock by location" abstains on main for a qualifier gap, before a badge.
+    env = _ask(db, "list product skus", _FANOUT_SQL, calls)
     assert env["badge"] != "L2_VALIDATED"
     assert env["abstained"] is True
     blob = " ".join(str(item) for item in (env.get("assumptions") or []))
@@ -179,8 +184,8 @@ def test_real_fanout_refuses_the_badge(tmp_path: Path) -> None:
 def test_constant_select_touching_no_granted_table_is_refused(
     tmp_path: Path, minter: ManifestMinter
 ) -> None:
+    """Direct grant refusal. Red on main: that tree still serves the select."""
     question = _questions()["trap_alerts_ungranted"]
-    calls: list[dict[str, Any]] = []
 
     class _Cortex:
         def submit(self, req: Any) -> QueryResult:
@@ -200,7 +205,7 @@ def test_constant_select_touching_no_granted_table_is_refused(
             )
 
         def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
-            calls.append({"question": question, **kwargs})
+            _ = (question, kwargs)
             return {"ontology": {"metrics": []}}
 
         def ledger_append(self, req: Any) -> Any:
@@ -214,15 +219,41 @@ def test_constant_select_touching_no_granted_table_is_refused(
     assert env["badge"] != "L2_VALIDATED"
     assert env["badge"] != "L0_CERTIFIED"
     assert env["abstained"] is True
+    assert env.get("answer_id") == "ans_gen01_abstain"
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    text = str(env.get("text") or "")
+    assert "ungranted" in notes
+    assert "reconfirm" not in notes
+    assert "reconfirm" not in text
+    # The served statement cites no relation, so the reply must not name one.
+    folded = f"{text} {notes}".lower()
+    assert "alerts" not in folded
+    assert_envelope_valid(env)
+
+
+def test_duplicated_subject_rows_never_take_l2(tmp_path: Path) -> None:
+    """Cartesian join. Main badges L2_VALIDATED. Head refuses fanout_subject_keys.
+
+    The question is one main serves. A qualifier-gap question abstains on main
+    for a different reason and is not this must-fail.
+    """
+    db = tmp_path / "dup.duckdb"
+    ensure_demo_warehouse(db)
+    con = connect_file(db)
+    try:
+        rows = con.execute(_DUP_ROWS_SQL).fetchall()
+    finally:
+        con.close()
+    skus = [row[0] for row in rows]
+    # 7 inventory keys crossed with every location: 35 served rows.
+    assert len(skus) == 35
+    assert len(set(skus)) == 7
+    env = _ask(db, "list product skus", _DUP_ROWS_SQL, [])
+    # Red on main: this fails because the main-side badge is L2_VALIDATED.
+    assert env["badge"] != "L2_VALIDATED", "main-side badge is L2_VALIDATED"
+    assert env["abstained"] is True
     blob = f"{env.get('text') or ''} {' '.join(str(a) for a in (env.get('assumptions') or []))}"
-    assert "no_granted_table" in blob
-    reasons = [
-        str((call.get("sql_feedback") or {}).get("reason") or "")
-        for call in calls
-        if isinstance(call.get("sql_feedback"), dict)
-    ]
-    assert reasons
-    assert all(reason == "no_granted_table" for reason in reasons)
+    assert "fanout_subject_keys" in blob
     assert_envelope_valid(env)
 
 
@@ -261,6 +292,8 @@ def test_currently_correct_generated_sql_keeps_the_gate(tmp_path: Path) -> None:
         onto.verify(con)
     finally:
         con.close()
+    from dms_executor.served_gate import served_result_reason
+
     golden = json.loads(_GOLDEN.read_text(encoding="utf-8"))
     checked = 0
     for row in golden:
@@ -273,7 +306,6 @@ def test_currently_correct_generated_sql_keeps_the_gate(tmp_path: Path) -> None:
             warehouse=db,
             as_of="2026-10-09T00:00:00Z",
             ontology=onto,
-            grantable=set(DEMO_TABLES),
         )
         assert why is None, row["id"]
         checked += 1

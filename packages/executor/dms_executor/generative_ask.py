@@ -673,6 +673,25 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
+def _literal_select(sql: str) -> bool:
+    """A select of literals. No relation, and no function call.
+
+    A function call still goes through EXPLAIN and execution. Parse failure
+    is not this case.
+    """
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(sql, read="duckdb")
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(tree, exp.Select):
+        return False
+    if any(isinstance(node, exp.Table) and node.name for node in tree.find_all(exp.Table)):
+        return False
+    return not any(isinstance(node, exp.Func) for node in tree.find_all(exp.Func))
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -690,8 +709,17 @@ def validate_compiled_sql(
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
-    if warehouse is None or not Path(warehouse).is_file():
+    # A literal select cites no relation. That is ungranted even when no
+    # warehouse was configured. A missing warehouse file is still
+    # warehouse_missing, so an extract against a path that is not there
+    # keeps that reason.
+    literal = not named and _literal_select(sql)
+    if warehouse is None:
+        return "ungranted" if literal else "warehouse_missing"
+    if not Path(warehouse).is_file():
         return "warehouse_missing"
+    if literal:
+        return "ungranted"
     con = connect_file(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
@@ -913,7 +941,6 @@ def _ladder_retry(
             warehouse=warehouse,
             as_of=_as_of(),
             ontology=ontology,
-            grantable=grantable,
         ):
             continue
         return _submit_validated(
@@ -949,52 +976,22 @@ def hold_ungrounded_sql(
     session_id: str | None,
     warehouse: Path | None,
     grantable: set[str],
-    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
-    submit: Callable[[str], Any],
-    ledger_append: Callable[[dict[str, Any]], Any],
 ) -> dict[str, Any] | None:
-    """Ladder, then reconfirm, when served SQL touches no granted table.
+    """Direct refusal when the grant check says the statement cites no relation.
 
-    None means the SQL may keep its badge. A constant select is not served.
+    None means the SQL may keep its badge. The check is ``validate_compiled_sql``.
+    #421 replaces that call. This is not a reconfirm and not a second grant check.
     """
-    finding = served_result_reason(
-        sql,
-        warehouse=warehouse,
-        as_of=_as_of(),
-        grantable=grantable,
-    )
-    if finding != "no_granted_table":
+    why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+    if why != "ungranted":
         return None
-    served = _ladder_retry(
-        sql,
-        finding,
-        question=question,
-        space_id=space_id,
-        session_id=session_id,
-        submit=submit,
-        ledger_append=ledger_append,
-        notes=(),
-        plan_source=PLAN_SOURCE_OTHER,
-        keep_gt=None,
-        measure=None,
-        coverage=None,
-        where_paths=(),
-        warehouse=warehouse,
-        plan_origin="",
-        lead="",
-        compute=compute,
-        ctx={},
-        ontology=None,
-        grantable=grantable,
-    )
-    if served is not None:
-        return served
     return _abstain(
         question,
-        f"reconfirm:{finding}",
+        why,
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,
+        stage="grant",
     )
 
 
@@ -1026,7 +1023,6 @@ def _submit_validated(
         warehouse=warehouse,
         as_of=_as_of(),
         ontology=ontology,
-        grantable=grantable,
     )
     if finding:
         served = None
@@ -1581,6 +1577,7 @@ def maybe_generative_ask(
         )
 
     lake: Path | None
+    given_warehouse = Path(warehouse) if warehouse is not None else None
     if warehouse is not None:
         lake = Path(warehouse)
     else:
@@ -1739,7 +1736,7 @@ def maybe_generative_ask(
                     ctx=ctx,
                     payload=payload,
                     compute=compute,
-                    warehouse=lake,
+                    warehouse=given_warehouse if given_warehouse is not None else lake,
                     dialect=dialect,
                     grantable=allowed,
                     declared=declared,

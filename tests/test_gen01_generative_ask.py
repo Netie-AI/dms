@@ -518,13 +518,14 @@ def test_live_ask_product_never_consults_compute(minter: ManifestMinter) -> None
     assert fake.computes == []
     assert len(fake.asks) == 1
     assert_envelope_valid(env)
-    # The fixture answers with SELECT 1. That cites no granted table, so the
-    # served-result check refuses it before a badge. E10 never sees the row.
+    # The fixture answers with SELECT 1. The grant check refuses that
+    # directly. E10 never sees the row, and the ladder is not asked.
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
     assert env["values"] == []
-    blob = f"{env.get('text') or ''} {' '.join(env.get('assumptions') or [])}"
-    assert "no_granted_table" in blob
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert "ungranted" in notes
+    assert "reconfirm" not in notes
 
 
 def test_live_ask_vq04_beats_greedy_compute(minter: ManifestMinter) -> None:

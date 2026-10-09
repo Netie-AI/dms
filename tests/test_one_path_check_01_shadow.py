@@ -3,8 +3,8 @@
 The 52-question replay is the existing flag-off fixture
 (``tests/fixtures/ask_guide``). ``as_of`` is the wall clock, so both sides
 replace it. The only other allowed difference is ``served_check_shadow``,
-except two constant ``SELECT 1`` answers that cite no granted table.
-Those abstain with ``no_granted_table``.
+except two constant ``SELECT 1`` answers. The grant check refuses
+those directly. The reply does not name a table.
 """
 
 from __future__ import annotations
@@ -94,7 +94,8 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
             assert env.get("badge") != "L0_CERTIFIED"
             notes = " ".join(str(a) for a in (env.get("assumptions") or []))
             blob = f"{env.get('text') or ''} {notes}"
-            assert "no_granted_table" in blob, row["id"]
+            assert "ungranted" in notes, row["id"]
+            assert "reconfirm" not in blob, row["id"]
             continue
         paths = _diff_paths(_stable(row["env"]), _stable(main_rows[row["id"]]))
         if paths:

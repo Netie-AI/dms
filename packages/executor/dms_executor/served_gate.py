@@ -1,17 +1,17 @@
-"""Served-result gate. Runs before a confident badge on generated SQL.
+"""Served-result check. Runs before a confident badge on generated SQL.
 
 Fails:
 
 - Fan-out: joined rows are not distinct on the subject's base key
   (COUNT(*) vs COUNT(DISTINCT key), before GROUP BY), or an aggregate
-  crosses a verified many-to-many link. An extra result column is not a fail.
+  crosses a verified many-to-many link that is a direct join of two plain
+  tables. An extra result column is not a fail. Duplicated subject keys
+  are the wrong grain.
 - As-of window: an INTERVAL whose anchor day is not the request as_of.
   A clock anchor on the same calendar day is the same window.
-- Constant select: the statement cites no table, and a grant set was given,
-  so it touches no granted table.
 
-No question words and no case ids. A parse or probe error does not flag.
-``served_check_shadow`` stays the recorder; this function is the block.
+Grants are not decided here. No question words and no case ids. A parse
+or probe error does not flag. ``served_check_shadow`` stays the recorder.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ def served_result_reason(
     warehouse: Path | str | None = None,
     as_of: str | None = None,
     ontology: Any | None = None,
-    grantable: set[str] | None = None,
 ) -> str | None:
     """Reason code, or None when this SQL may take a badge."""
     try:
@@ -42,8 +41,6 @@ def served_result_reason(
         return None
     if not isinstance(tree, exp.Select):
         return None
-    if _constant_select(tree, grantable):
-        return "no_granted_table"
     window = _as_of_window(tree, as_of, warehouse)
     if window:
         return window
@@ -51,13 +48,6 @@ def served_result_reason(
     if many:
         return many
     return _distinct_key_probe(tree, warehouse, ontology)
-
-
-def _constant_select(tree: exp.Select, grantable: set[str] | None) -> bool:
-    """True when a grant set exists and the select cites no table."""
-    if grantable is None:
-        return False
-    return not any(table.name for table in tree.find_all(exp.Table))
 
 
 def _as_of_window(

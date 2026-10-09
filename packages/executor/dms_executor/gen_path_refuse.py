@@ -59,7 +59,6 @@ GAP_REASONS = frozenset(
         "fanout_subject_keys",
         "fanout_many_to_many",
         "as_of_window",
-        "no_granted_table",
     }
 )
 
