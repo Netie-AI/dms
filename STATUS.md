@@ -1,53 +1,41 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-06  
+**Last updated:** 2026-10-09 MYT
 **Remote:** https://github.com/Netie-AI/dms
+**Main:** `57d85c52`
 
-## Direct interact
+## Direction
 
-```powershell
-D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -OpenBrowser
-python D:\DMS\scripts\verify_demo_live.py
-python D:\DMS\scripts\verify_l2_vs_l1.py
-python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
-python D:\DMS\scripts\walk_buyer_studio.py --self-check
-pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
-python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
-```
+AI-first, DB-GPT/Genie-style text-to-SQL. The model writes the SQL from ontology, schema, and verified-example context, then executes, checks, and retries.
 
-Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove IAP = section 2.1, origin `https://studio.netie.ai`, `:8090` loopback) - AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
+Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button.
 
-## Shipped / verified
+Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules.
 
-Archived: [docs/archive/2026-10-06_STATUS_shipped-and-open-next.md](docs/archive/2026-10-06_STATUS_shipped-and-open-next.md) (DOCS-01, [#371](https://github.com/Netie-AI/dms/issues/371)). Closed work lives on its issue.
+DMS never holds or routes provider keys. Routing lives in OpenVault.
 
-## Truth to hold
+## 52 pack
 
-- Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34)
-- Demo: `verify_demo_live.py` 31/31 on a cold stack; bounds error ~3/31, not zero (R-0010)
-- Engine bench is 3 variants of ONE schema family; on the honest coarse unit (3 databases) the bound is 100% - [#256](https://github.com/Netie-AI/dms/issues/256), [#265](https://github.com/Netie-AI/dms/issues/265)
-- Free-form: **not a measurement**. Quote "no recorded green run" until [Cortex#11](https://github.com/Netie-AI/Cortex/issues/11) closes the engine half of F40 (R-0011)
-- CCA ask-path hook ships OFF (`DMS_CCA_CASCADE=0`) until measured on a real question log - [#132](https://github.com/Netie-AI/dms/issues/132)
+flag-off, no model key, main 57d85c52: 23 correct / 0 wrong of 43 answerable (21 plus 2 column-alias matches).
 
-## Open next
+On current mains with a model configured, every AI call was rejected by Cortex with 422 (DMS sent model/strict fields), so DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. The fixes are DROP-ROUTE-FIELDS-01 and GEN01-WRONG-TO-LADDER-01 (P0).
 
-GitHub issues are the source of truth. This table holds links only.
+AI answers are 0 until #426 lands. The live-model number is pending.
 
-| Item | Issue |
-|------|-------|
-| **This tick** | **STUDIO-RESULT-01** (#365) renders the ask envelope in Studio. UI only. No payload (#364), no mint (#362), no prove pin. Nothing PASS. Prove owner stays vault / OV mint 401. |
-| PROVE-SUBMIT-01 - live BLOCKED, vault / OV mint 401 | [#359](https://github.com/Netie-AI/dms/issues/359), [#362](https://github.com/Netie-AI/dms/issues/362), [#363](https://github.com/Netie-AI/dms/pull/363) |
-| ORACLE-FIX-01 | [#301](https://github.com/Netie-AI/dms/issues/301) |
-| EPIC-020b | [#173](https://github.com/Netie-AI/dms/issues/173) |
-| F73 accuracy remainder - EPIC-019 | [#38](https://github.com/Netie-AI/dms/issues/38) |
-| F73 delivery (gated) - EPIC-016 | [#29](https://github.com/Netie-AI/dms/issues/29) |
-| SCALE-WAREHOUSE-01 - do not reseat | [#237](https://github.com/Netie-AI/dms/issues/237) |
-| F41 EPIC-021a - founder decision | [#380](https://github.com/Netie-AI/dms/issues/380) |
-| F68 monetization - founder decision | [#381](https://github.com/Netie-AI/dms/issues/381) |
-| `app.netie.ai/cortex` 404 | [#382](https://github.com/Netie-AI/dms/issues/382) |
-| F73 surface cream/graphite (queued) | [#383](https://github.com/Netie-AI/dms/issues/383) |
-| `verify_freeform_demo --self-check` not in CI | [#384](https://github.com/Netie-AI/dms/issues/384) |
-| Live Power BI / Superset connector after EXPORT-02 | [#385](https://github.com/Netie-AI/dms/issues/385) |
+## Open work
 
-## Agent models
-PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.
+GitHub issues are the source of truth. Short list: [TASK.md](TASK.md).
+
+| Item | PR |
+|------|----|
+| Serving attach for the AI schema index and extract SQL | [#426](https://github.com/Netie-AI/dms/pull/426) |
+| VALUE-HINT-SPAN | [#423](https://github.com/Netie-AI/dms/pull/423) |
+| INTENT-SPEC-01 | [#409](https://github.com/Netie-AI/dms/pull/409) |
+| ASK-CLARIFY-01 | [#419](https://github.com/Netie-AI/dms/pull/419) |
+| ASK-RECONFIRM-01 | [#425](https://github.com/Netie-AI/dms/pull/425) |
+| GRANT-STRUCT-01 | [#421](https://github.com/Netie-AI/dms/pull/421) |
+| GRANT-KEY-01 | [#422](https://github.com/Netie-AI/dms/pull/422) |
+| CONN-POOL-01 | [#420](https://github.com/Netie-AI/dms/pull/420) |
+| ONTO-DERIVE-01 after BANK-02 | [#316](https://github.com/Netie-AI/dms/pull/316) after [#342](https://github.com/Netie-AI/dms/pull/342) |
+| AI-LADDER-PLAN-01 | no PR |
+| NAME-ECHO-01 | no PR |
