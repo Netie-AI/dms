@@ -358,11 +358,26 @@ def _scrub_value(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
     return value
 
 
+def _tail_failed(text: str) -> bool:
+    """True when an ungranted tail does not tokenize. No confirming parse."""
+    raw = text or ""
+    if not raw or _PREFIX.search(raw) is None:
+        return False
+    tokens = _tokenize(raw)
+    if tokens is None:
+        return True
+    try:
+        for match in _PREFIX.finditer(raw):
+            _leading_tables(tokens, match.end())
+    except _Closed:
+        return True
+    return False
+
+
 def _clear_closed(value: Any) -> Any:
     """Clear a value whose ungranted tail did not tokenize."""
     if isinstance(value, str):
-        _parts, failed = _names_in(value)
-        return "" if failed else value
+        return "" if _tail_failed(value) else value
     if isinstance(value, list):
         return [_clear_closed(item) for item in value]
     if isinstance(value, dict):
@@ -450,7 +465,11 @@ def _blobs(reason: str, env: dict[str, Any]) -> list[str]:
 def _collect_parts(reason: str, env: dict[str, Any]) -> list[tuple[str, ...]]:
     found: list[tuple[str, ...]] = []
     seen: set[str] = set()
+    seen_blobs: set[str] = set()
     for blob in _blobs(reason, env):
+        if blob in seen_blobs:
+            continue
+        seen_blobs.add(blob)
         parts, failed = _names_in(blob)
         if failed:
             continue
