@@ -2,7 +2,7 @@
 
 1. catalog        — schema / table registry (swap: Postgres → Glue / Unity)
 2. object_store   — blob/parquet home (swap: local FS → MinIO → S3)
-3. model_provider — LLM calls (swap: OpenVault → Azure OpenAI)
+3. model_provider — LLM calls (swap: OpenVault → another hosted model API)
 4. serving_engine — SQL/lake execute (swap: DuckDB → warehouse)
 5. secrets        — key material (swap: env → OpenVault)
 """

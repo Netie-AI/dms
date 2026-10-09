@@ -74,6 +74,20 @@ def _ledger(_p: dict[str, Any]) -> Any:
     return SimpleNamespace(entry_id="led_loop", hash="hash_loop_not_entry")
 
 
+def _wrap(compute):
+    """Plan and reconfirm are ladder steps. SQL counts stay on ``compute``."""
+
+    def wrapped(ctx: dict[str, Any]) -> dict[str, Any]:
+        step = str(ctx.get("ladder_step") or "")
+        if step == "plan":
+            return _names(plan="plan over the granted schema")
+        if step == "reconfirm":
+            return _names(closest_question="Which locations are cold storage?")
+        return compute(ctx)
+
+    return wrapped
+
+
 def _ask(
     tmp_path: Path,
     question: str,
@@ -89,7 +103,7 @@ def _ask(
         question,
         warehouse=db,
         grantable=set(_GRANTS if grantable is None else grantable),
-        compute=compute,
+        compute=_wrap(compute),
         submit=_submit(db),
         ledger_append=_ledger,
         ontology=onto,
@@ -193,9 +207,11 @@ def test_loop_exhaustion_is_a_named_abstain_with_zero_rows(
         return _names(query_sql="SELECT nope FROM inventory")
 
     env = _assert_abstain(_ask(tmp_path, "Which locations are cold storage?", compute))
-    assert calls["n"] == 2
+    assert calls["n"] == 3
     assert env["rows"] == []
-    assert "loop_exhausted:" in env["text"]
+    assert env["abstain_reason"] == "reconfirm"
+    assert env["route"] == "confirm"
+    assert env["suggestions"]
     assert env["sql_used"] is None
     assert env["served_attribution"] == "missing"
     assert all(str(item.get("outcome") or "").strip() for item in env["loop"])
@@ -247,7 +263,7 @@ def test_submit_abstain_is_not_logged_as_served(
             "Which locations are cold storage?",
             warehouse=db,
             grantable=set(_GRANTS),
-            compute=compute,
+            compute=_wrap(compute),
             submit=submit,
             ledger_append=_ledger,
             ontology=onto,
@@ -299,9 +315,10 @@ def test_retry_that_drops_a_filter_is_rejected(
         return _names(query_sql=sql)
 
     env = _assert_abstain(_ask(tmp_path, "Count rows where a and b match", compute))
-    assert calls["n"] == 2
+    assert calls["n"] == 3
     assert env["loop"][1]["outcome"] == "filter_dropped"
-    assert "loop_exhausted:filter_dropped" in env["text"]
+    assert env["abstain_reason"] == "reconfirm"
+    assert env["suggestions"]
     assert env["rows"] == []
     assert all(str(item.get("outcome") or "").strip() for item in env["loop"])
     assert all(item.get("outcome") != "served" for item in env["loop"])
@@ -365,8 +382,9 @@ def test_lowest_categories_do_not_fall_back_to_ontology(
         )
 
     env = _assert_abstain(_ask(tmp_path, question, compute))
-    assert calls["n"] == 1
-    assert "no_sql" in env["text"]
+    assert calls["n"] == 2
+    assert env["abstain_reason"] == "reconfirm"
+    assert env["loop"][0]["outcome"] == "no_sql"
     assert env.get("plan_origin") != "ontology_ranking"
     assert env["sql_used"] is None
     assert env["rows"] == []
@@ -404,8 +422,8 @@ def test_chemicals_list_shapes_are_not_served_by_ranking(
             assert calls["n"] == 1
             assert env["loop"][0]["outcome"].startswith("checker:ungranted:")
         else:
-            assert calls["n"] == 2
-            assert "loop_exhausted:" in env["text"]
+            assert calls["n"] == 3
+            assert env["abstain_reason"] == "reconfirm"
 
 
 def test_cte_drop_inner_and_subquery_drop_inner() -> None:
@@ -442,7 +460,7 @@ def test_parse_failure_on_retry_does_not_serve(
         return _names(query_sql="SELECT !!!")
 
     env = _assert_abstain(_ask(tmp_path, "Which locations are cold storage?", compute))
-    assert calls["n"] == 2
+    assert calls["n"] == 3
     assert "filter_parse_failed" in env["loop"][1]["outcome"]
     assert env["rows"] == []
     assert env["served_attribution"] != "reported"
@@ -487,7 +505,7 @@ def test_missing_extract_does_not_retry(
             "How many rows?",
             warehouse=tmp_path / "missing.duckdb",
             grantable=set(),
-            compute=compute,
+            compute=_wrap(compute),
             submit=_submit(tmp_path / "missing.duckdb"),
             ledger_append=_ledger,
             ontology=None,
