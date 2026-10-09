@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from dms_executor.name_echo import hide_echo
+
 _LOG = logging.getLogger(__name__)
 
 
@@ -102,7 +104,7 @@ def build_abstain(
             stage=stage,
             ask_id=ask_id,
         )
-        return demote
+        return hide_echo(demote, reason)
 
     from dms_executor.envelope import build_answer_envelope
 
@@ -122,7 +124,7 @@ def build_abstain(
         stage=stage,
         ask_id=ask_id,
     )
-    return env
+    return hide_echo(env, reason)
 
 
 def _envelope_reason(env: dict[str, Any]) -> str:

@@ -233,6 +233,11 @@ def log_pipeline_failure_ticket(
         payload["group"] = group
         payload["count"] = count
         payload["ticket_id"] = ticket_id
+    from dms_executor.name_echo import echoed_names
+
+    names = echoed_names(str(reason or ""))
+    if names:
+        payload["names"] = names
     _LOG.warning(
         "pipeline_failure %s",
         json.dumps(payload, sort_keys=True, default=str),
