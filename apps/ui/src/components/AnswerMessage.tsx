@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/Badge";
 import { ClarifyChoices } from "@/components/ClarifyChoices";
+import { ConfirmPrompt } from "@/components/ConfirmPrompt";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
@@ -125,7 +126,7 @@ function renderWithValues(
 }
 
 export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
-  const { selectValue, setSourcePanelOpen, ask, replyClarify, suggestions, productMode } =
+  const { selectValue, setSourcePanelOpen, ask, replyClarify, replyConfirm, suggestions, productMode } =
     useApp();
   const [showSql, setShowSql] = useState(false);
   const [showLayer, setShowLayer] = useState(false);
@@ -187,6 +188,23 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     }, 1000);
     return () => window.clearInterval(tick);
   }, [ask, envelope.answer_id, isExclusionConfirm, noChip]);
+
+  if (
+    envelope.status === "confirm" &&
+    envelope.confirm_reason &&
+    envelope.suggested_question &&
+    envelope.confirm_id
+  ) {
+    return (
+      <ConfirmPrompt
+        reason={envelope.confirm_reason}
+        suggestion={envelope.suggested_question}
+        onChoice={(choice) => {
+          void replyConfirm(envelope, choice);
+        }}
+      />
+    );
+  }
 
   if (envelope.status === "clarify" && envelope.options?.length) {
     return (

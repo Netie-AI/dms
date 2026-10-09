@@ -29,6 +29,9 @@ class AskServicePort(Protocol):
         clarify_id: str | None = None,
         option_id: str | None = None,
         clarify_text: str | None = None,
+        #: ASK-RECONFIRM-01. Ignored unless DMS_ASK_RECONFIRM is on.
+        confirm_id: str | None = None,
+        confirm_choice: str | None = None,
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...

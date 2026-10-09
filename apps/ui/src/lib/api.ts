@@ -152,6 +152,8 @@ export type AskPayload = {
   clarify_id?: string;
   option_id?: string;
   clarify_text?: string;
+  confirm_id?: string;
+  confirm?: "yes" | "no";
 };
 
 export async function postAsk(
@@ -171,6 +173,8 @@ export async function postAsk(
       clarify_id: payload.clarify_id,
       option_id: payload.option_id,
       clarify_text: payload.clarify_text,
+      confirm_id: payload.confirm_id,
+      confirm: payload.confirm,
     }),
     signal,
   });

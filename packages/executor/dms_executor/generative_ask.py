@@ -1263,6 +1263,12 @@ def _run_extract_loop(
                 why = f"{why}: {detail}"
         if why:
             return why
+        from dms_executor.ask_reconfirm import pii_column_reason, reconfirm_enabled
+
+        if reconfirm_enabled():
+            blocked = pii_column_reason(sql, dialect)
+            if blocked:
+                return blocked
         if declared is not None:
             broken = violations_cited_by_sql(sql, declared, declared_violations)
             if broken:
@@ -1627,6 +1633,21 @@ def maybe_generative_ask(
                 stage="insights_budget",
             )
         )
+    from dms_executor.ask_reconfirm import serving_capacity_reason
+
+    capacity = serving_capacity_reason(payload if isinstance(payload, dict) else None)
+    if capacity:
+        # Our limit, not a user refusal. The confirm step explains it when the flag is on.
+        return _stamp(
+            _abstain(
+                q,
+                capacity,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
+                stage="serving",
+            )
+        )
     if (
         cloop_b_enabled()
         and not ontology_ranked_lane_enabled()
@@ -1799,6 +1820,23 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            from dms_executor.ask_reconfirm import pii_column_reason, reconfirm_enabled
+
+            if reconfirm_enabled():
+                blocked = pii_column_reason(sql, dialect)
+                if blocked:
+                    return _stamp(
+                        _abstain(
+                            q,
+                            blocked,
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=source,
+                            notes=trail_notes,
+                            sql=sql,
+                            stage="gate",
+                        )
+                    )
             return _stamp(
                 _submit_validated(
                     sql,

@@ -83,6 +83,7 @@ type AppState = {
     optionId: string | null,
     freeText?: string,
   ) => Promise<void>;
+  replyConfirm: (envelope: AnswerEnvelope, choice: "yes" | "no") => Promise<void>;
   clearThread: () => void;
   focusedSourceId: string | null;
   setFocusedSourceId: (id: string | null) => void;
@@ -410,6 +411,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const replyConfirm = useCallback(
+    async (envelope: AnswerEnvelope, choice: "yes" | "no") => {
+      if (!envelope.confirm_id) return;
+      const shown =
+        choice === "yes"
+          ? envelope.suggested_question || "Yes"
+          : "No";
+      setMessages((prev) => [...prev, { id: `u_${Date.now()}`, role: "user", text: shown }]);
+      setAsking(true);
+      setActivity({ label: "Asking…", progress: null });
+      setAskError(null);
+      try {
+        const next = await postAsk({
+          question: envelope.original_question || envelope.suggested_question || shown,
+          space_id: activeSpaceIdRef.current,
+          session_id: sessionIdRef.current,
+          grounded_tables: groundedTablesRef.current,
+          confirm_id: envelope.confirm_id,
+          confirm: choice,
+        });
+        setMessages((prev) => [
+          ...prev,
+          { id: next.answer_id || `a_${Date.now()}`, role: "assistant", envelope: next },
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "ask failed";
+        setAskError(msg);
+      } finally {
+        setAsking(false);
+        setActivity(null);
+      }
+    },
+    [],
+  );
+
   const drainQueue = useCallback(async () => {
     if (drainingRef.current) return;
     drainingRef.current = true;
@@ -493,6 +529,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setActivity,
     ask,
     replyClarify,
+    replyConfirm,
     clearThread,
     focusedSourceId,
     setFocusedSourceId,

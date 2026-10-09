@@ -56,8 +56,24 @@ def load_responses() -> dict[str, Any]:
     return data
 
 
-def replay_pack() -> list[dict[str, Any]]:
-    """POST every pack question. Flag stays unset. Same stub on every call."""
+def replay_pack(
+    *,
+    reconfirm_writer: Any = None,
+    suggestion: str | None = None,
+    suggestion_sql: str | None = None,
+    warehouse: Path | None = None,
+    follow_yes: bool = False,
+    yes_warehouse: Path | None = None,
+) -> list[dict[str, Any]]:
+    """POST every pack question. Flag stays unset unless the caller set it.
+
+    ``reconfirm_writer`` is only attached. The flag-off capture leaves it
+    unset, so the model is not called. ``follow_yes`` posts the stored
+    token after a confirm. ``yes_warehouse`` is attached only for that
+    second call, so the first pass keeps the flag-off warehouse.
+    """
+    if reconfirm_writer is None:
+        os.environ.pop("DMS_ASK_RECONFIRM", None)
     os.environ.pop("DMS_ASK_CLARIFY", None)
     import yaml
     from cortex_client.models import (
@@ -104,6 +120,27 @@ def replay_pack() -> list[dict[str, Any]]:
                     status=str(bind["status"]),
                     run_id=str(bind["run_id"]),
                 )
+            sql = ""
+            body_in = getattr(req, "body", None)
+            if isinstance(body_in, dict):
+                sql = str(body_in.get("sql") or "")
+            exec_db = warehouse if warehouse is not None else yes_warehouse
+            if suggestion_sql and sql.strip() == suggestion_sql.strip() and exec_db is not None:
+                from dms_executor.demo_warehouse import connect_file
+
+                con = connect_file(exec_db)
+                try:
+                    cur = con.execute(sql)
+                    cols = [d[0] for d in (cur.description or [])]
+                    rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+                finally:
+                    con.close()
+                return QueryResult(
+                    ok=True,
+                    status="ok",
+                    run_id="run_exec",
+                    output={"rows": rows},
+                )
             body = self._row()["submit"]
             return QueryResult(
                 ok=bool(body["ok"]),
@@ -134,7 +171,8 @@ def replay_pack() -> list[dict[str, Any]]:
             )
 
         def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
-            _ = question
+            if suggestion and question.strip() == suggestion and suggestion_sql:
+                return {"query_sql": suggestion_sql}
             return dict(self._row()["insights"])
 
     minter = ManifestMinter(openvault_url="http://127.0.0.1:9")
@@ -160,7 +198,12 @@ def replay_pack() -> list[dict[str, Any]]:
 
     cortex = _Stub()
     app = create_app()
-    app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+    app.state.ask_service = Executor(  # type: ignore[arg-type]
+        cortex=cortex,
+        minter=minter,
+        warehouse_path=warehouse,
+        clarify_model=reconfirm_writer,
+    )
     app.state.cortex = cortex
     settings = Settings(
         _env_file=None,  # type: ignore[call-arg]
@@ -185,7 +228,39 @@ def replay_pack() -> list[dict[str, Any]]:
         body = res.json()
         if not isinstance(body, dict):
             raise AssertionError(f"{question['id']} envelope is not an object")
-        rows.append({"id": question["id"], "env": body})
+        row_out: dict[str, Any] = {"id": question["id"], "env": body}
+        if (
+            follow_yes
+            and body.get("status") == "confirm"
+            and isinstance(body.get("confirm_id"), str)
+        ):
+            service = app.state.ask_service
+            held = getattr(service, "_warehouse", None)
+            if yes_warehouse is not None:
+                service._warehouse = yes_warehouse
+            try:
+                yes = client.post(
+                    "/v1/chat/ask",
+                    json={
+                        "question": "client supplied text that must be ignored",
+                        "space_id": spaces[str(question["space"])],
+                        "session_id": SESSION_ID,
+                        "confirm_id": body["confirm_id"],
+                        "confirm": "yes",
+                    },
+                )
+            finally:
+                if yes_warehouse is not None:
+                    service._warehouse = held
+            if yes.status_code != 200:
+                raise AssertionError(
+                    f"{question['id']} yes HTTP {yes.status_code}: {yes.text[:400]}"
+                )
+            yes_body = yes.json()
+            if not isinstance(yes_body, dict):
+                raise AssertionError(f"{question['id']} yes envelope is not an object")
+            row_out["yes"] = yes_body
+        rows.append(row_out)
     return rows
 
 

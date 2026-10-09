@@ -132,6 +132,9 @@ class AskBody(BaseModel):
     clarify_id: str | None = Field(default=None, max_length=64)
     option_id: str | None = Field(default=None, max_length=64)
     clarify_text: str | None = Field(default=None, max_length=500)
+    #: ASK-RECONFIRM-01. Ignored unless DMS_ASK_RECONFIRM is on.
+    confirm_id: str | None = Field(default=None, max_length=64)
+    confirm: Literal["yes", "no"] | None = None
 
 
 #: The ask_path values only a measurement origin may run (GEN-03).
@@ -281,6 +284,8 @@ def chat_ask(
             clarify_id=body.clarify_id,
             option_id=body.option_id,
             clarify_text=body.clarify_text,
+            confirm_id=body.confirm_id,
+            confirm_choice=body.confirm,
         )
     except GroundingRefused as exc:
         # Refusing is the fix, not the failure: this used to widen the manifest
