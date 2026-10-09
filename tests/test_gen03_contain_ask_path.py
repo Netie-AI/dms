@@ -429,6 +429,7 @@ def test_the_bind_trap_fires_when_the_binder_is_reached(bind_calls: list[str]) -
             submit=lambda _sql: None,
             ledger_append=lambda _payload: None,
             bind_on_miss=True,
+            dialect="duckdb",
         )
     assert bind_calls == ["What is the total stock value of SKU-BETA?"]
 
@@ -560,6 +561,7 @@ def test_bind_on_miss_keep_hold_not_cold_and_2099(tmp_path: Path) -> None:
             submit=_submit,
             ledger_append=_ledger,
             bind_on_miss=True,
+            dialect="duckdb",
         )
         assert env is not None, question
         _assert_keep_hold_not_l2(env, question)
@@ -574,6 +576,7 @@ def test_bind_on_miss_keep_hold_not_cold_and_2099(tmp_path: Path) -> None:
         submit=_submit,
         ledger_append=_ledger,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None, _NOT_COLD_Q
     sql = " ".join(submitted) + " " + str(env.get("sql_used") or "")

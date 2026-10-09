@@ -195,6 +195,7 @@ class Executor:
         cortex: CortexClient | None = None,
         minter: ManifestMinter | None = None,
         warehouse_path: Path | str | None = None,
+        dialect: str | None = SERVING_DIALECT,
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
         session_store: Any | None = None,
@@ -203,6 +204,7 @@ class Executor:
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
+        self.dialect = dialect
         self._bound_sessions: set[str] = set()
         self._turns: dict[tuple[str, str], dict[str, Any]] = {}
         # The Space boundary reads its facts from here. Defaults to the DR-0002
@@ -268,7 +270,7 @@ class Executor:
     ) -> list[dict[str, Any]]:
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
-        gap = serve_gap(sql, grantable=set(grantable or ()), dialect="duckdb")
+        gap = serve_gap(sql, grantable=set(grantable or ()), dialect=self.dialect)
         if gap:
             raise SecurityEvent(gap, gap)
         ensure_demo_warehouse(self._warehouse)
@@ -293,7 +295,7 @@ class Executor:
             grants = set(self.grantable_tables(space_id=space_id))
         except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
             grants = set()
-        gap = serve_gap(sql, grantable=grants, dialect="duckdb")
+        gap = serve_gap(sql, grantable=grants, dialect=self.dialect)
         if gap:
             return sql_refusal_envelope(
                 reason=gap,
@@ -656,6 +658,7 @@ class Executor:
                 warehouse=self._warehouse,
                 tables=tables,
                 grantable=follow_grants,
+                dialect=self.dialect,
             )
             if follow is not None:
                 self._store_turn(session_id, space_id, follow)
@@ -678,6 +681,7 @@ class Executor:
                     space_id=space_id,
                     session_id=session_id,
                 ),
+                dialect=self.dialect,
             )
             if verified_env is not None:
                 self._store_turn(session_id, space_id, verified_env)
@@ -701,6 +705,7 @@ class Executor:
                     session_id=session_id,
                     event_type="ask.governed_metric",
                 ),
+                dialect=self.dialect,
             )
             if pack_env is not None:
                 self._store_turn(session_id, space_id, pack_env)
@@ -788,15 +793,20 @@ class Executor:
                     ingested_bronze_tables(self._warehouse, space_id=space_id)
                 )
                 bronze_readable = set(active).intersection(granted)
-                granted_sheet = (
-                    relation_gap(
-                        target,
-                        grantable=bronze_readable,
-                        dialect=SERVING_DIALECT,
-                    )
-                    is None
+                sheet_gap = relation_gap(
+                    target,
+                    grantable=bronze_readable,
+                    dialect=self.dialect,
                 )
-                if granted_sheet:
+                if sheet_gap == "sql_dialect_unknown":
+                    bronze_env = sql_refusal_envelope(
+                        reason=sheet_gap,
+                        space_id=space_id,
+                        session_id=session_id,
+                        route="abstain",
+                        question=question,
+                    )
+                elif sheet_gap is None:
                     bronze_env = (
                         maybe_bronze_sheet_ask(
                             question,
@@ -849,7 +859,7 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
-                dialect=SERVING_DIALECT,
+                dialect=self.dialect,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
@@ -906,7 +916,7 @@ class Executor:
                 raise AskServiceError(err.code, err.detail) from exc
         raw_sql = getattr(resp, "sql_used", None)
         if raw_sql and str(raw_sql).strip() and not getattr(resp, "abstained", False):
-            gap = serve_gap(str(raw_sql), grantable=set(readable), dialect="duckdb")
+            gap = serve_gap(str(raw_sql), grantable=set(readable), dialect=self.dialect)
             if gap:
                 # The code only. The table name is not user-visible here.
                 # #405's ticket builder records it after that rebase.
@@ -948,7 +958,7 @@ class Executor:
             raise RuntimeError("CortexClient required for submit")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
         gap = serve_gap(
-            sql, grantable=set(acl.row_predicates), dialect="duckdb"
+            sql, grantable=set(acl.row_predicates), dialect=self.dialect
         )
         if gap:
             raise SecurityEvent(gap, gap)

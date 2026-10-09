@@ -190,6 +190,7 @@ def register_verified_query(
     synonyms: list[str] | None = None,
     pack_hash: str | None = None,
     path: Path | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any]:
     """Persist a Space-scoped Q→SQL asset after hostile + grant checks."""
     sid = scope_key(space_id)
@@ -205,7 +206,7 @@ def register_verified_query(
     grantable = _grantable(space_id, db)
     # Statement count before the hostile scanner, both inside serve_gap.
     # A plain ungranted demo table keeps the sql_not_in_space sentence.
-    gap = serve_gap(sql_text, grantable=grantable, dialect="duckdb")
+    gap = serve_gap(sql_text, grantable=grantable, dialect=dialect)
     if gap and not str(gap).startswith("ungranted:"):
         raise ValueError(gap)
     leaked = _sql_outside_space(sql_text, grantable)
@@ -273,6 +274,7 @@ def lookup_verified_query(
     warehouse: Path | None = None,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, str] | None:
     """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer."""
     if tables:
@@ -290,7 +292,7 @@ def lookup_verified_query(
         reject_hostile_chat_sql(sql_text)
     except SecurityEvent:
         return None
-    gap = serve_gap(sql_text, grantable=allowed, dialect="duckdb")
+    gap = serve_gap(sql_text, grantable=allowed, dialect=dialect)
     if gap:
         return None
     return {"asset_id": str(match["asset_id"]), "sql": sql_text}
@@ -371,6 +373,7 @@ def maybe_verified_ask(
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L0 envelope when this Space has a matching asset executed via Cortex.
 
@@ -384,6 +387,7 @@ def maybe_verified_ask(
         warehouse=warehouse,
         grantable=grantable,
         tables=tables,
+        dialect=dialect,
     )
     if hit is None:
         return None

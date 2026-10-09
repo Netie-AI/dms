@@ -19,6 +19,9 @@ import duckdb
 # Product SQL may not bind this. Oracle and scorer calls may.
 RESERVED_PARAM_AS_OF = "reserved_param:as_of"
 
+# The serving file is DuckDB. Callers read this name. They do not write it.
+SERVING_DIALECT = "duckdb"
+
 _LOCKS_GUARD = threading.Lock()
 _FILE_LOCKS: dict[str, threading.RLock] = {}
 _SEEDED: set[str] = set()
@@ -43,7 +46,7 @@ def sql_has_reserved_as_of(sql: str) -> bool:
     from sqlglot.tokens import TokenType
 
     try:
-        tokens = tokenize(sql or "", read="duckdb")
+        tokens = tokenize(sql or "", read=SERVING_DIALECT)
     except Exception:  # noqa: BLE001 - unreadable SQL is not a placeholder
         return False
     saw_param = False
@@ -246,10 +249,6 @@ class _LockedConnection:
 
     def __exit__(self, *args: object) -> None:
         self.close()
-
-
-# The serving file is DuckDB. Schema context copies this string; it does not invent one.
-SERVING_DIALECT = "duckdb"
 
 
 def connect_file(path: Path) -> duckdb.DuckDBPyConnection:

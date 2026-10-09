@@ -491,17 +491,17 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _grant_covers(table: str, allowed: set[str]) -> bool:
+def _grant_covers(table: str, allowed: set[str], *, dialect: str | None) -> bool:
     """True when the grant normalises to the same qualified relation.
 
-    Pack SQL is duckdb. The compare is ``normalize_relation``. A different
-    spelling of the table is not a grant.
+    The compare is ``normalize_relation`` in the engine dialect. A different
+    spelling of the table is not a grant. A missing dialect covers nothing.
     """
-    key = normalize_relation(table, dialect="duckdb")
+    key = normalize_relation(table, dialect=dialect)
     if not key:
         return False
     return any(
-        normalize_relation(str(token), dialect="duckdb") == key for token in allowed
+        normalize_relation(str(token), dialect=dialect) == key for token in allowed
     )
 
 
@@ -527,6 +527,7 @@ def lookup_pack_metric(
     *,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
+    dialect: str | None = None,
 ) -> PackMetric | None:
     """Return the pack metric when the phrase matches and grants cover it.
 
@@ -540,13 +541,13 @@ def lookup_pack_metric(
     if hit is None:
         return None
     allowed = grantable if grantable is not None else set()
-    if any(not _grant_covers(t, allowed) for t in hit.tables):
+    if any(not _grant_covers(t, allowed, dialect=dialect) for t in hit.tables):
         return None
     try:
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
         return None
-    gap = serve_gap(hit.sql, grantable=set(allowed), dialect="duckdb")
+    gap = serve_gap(hit.sql, grantable=set(allowed), dialect=dialect)
     if gap:
         return None
     return hit
@@ -715,6 +716,7 @@ def maybe_pack_ask(
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L1 envelope when the demo pack matches and Cortex executed the SQL.
 
@@ -725,7 +727,7 @@ def maybe_pack_ask(
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
         return None
-    gap = serve_gap(phrase.sql, grantable=set(grantable or ()), dialect="duckdb")
+    gap = serve_gap(phrase.sql, grantable=set(grantable or ()), dialect=dialect)
     if gap and structural_grant_stop(gap):
         return sql_refusal_envelope(
             reason=gap,
@@ -742,6 +744,7 @@ def maybe_pack_ask(
         question,
         grantable=grantable,
         tables=tables,
+        dialect=dialect,
     )
     if hit is None:
         return _curated_step_refusal(

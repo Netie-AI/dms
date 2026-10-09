@@ -228,14 +228,14 @@ def test_pack_misses_when_space_grants_only_prefixed_names() -> None:
         "warehouse_suppliers",
         "warehouse_transactions",
     }
-    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant) is None
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant, dialect="duckdb") is None
     ops = {
         "warehouse_inventory",
         "warehouse_locations",
         "warehouse_shipments",
     }
-    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
-    assert lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops) is None
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops, dialect="duckdb") is None
+    assert lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops, dialect="duckdb") is None
 
 
 def test_finance_spend_by_country_is_governed_metric(
@@ -395,7 +395,7 @@ def test_scalar_total_spend_then_add_2000(
 def test_followup_without_prior_abstains() -> None:
     from dms_executor.session_followup import maybe_followup
 
-    env = maybe_followup("average of them", prior=None, session_id="ses_none")
+    env = maybe_followup("average of them", prior=None, session_id="ses_none", dialect="duckdb")
     assert env is not None
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
@@ -509,13 +509,13 @@ def test_vq03_exact_asks_hit_pack_and_traps_miss() -> None:
     ops = {"locations", "inventory", "shipments"}
     for question, space, metric_id in _VQ03_CASES:
         grant = finance if space == FINANCE else ops
-        hit = lookup_pack_metric(question, grantable=grant)
+        hit = lookup_pack_metric(question, grantable=grant, dialect="duckdb")
         assert hit is not None, question
         assert hit.metric_id == metric_id
-    assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance) is None
-    assert lookup_pack_metric(DELAYED_COUNT_TRAP_Q, grantable=ops) is None
-    assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance) is None
-    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
+    assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance, dialect="duckdb") is None
+    assert lookup_pack_metric(DELAYED_COUNT_TRAP_Q, grantable=ops, dialect="duckdb") is None
+    assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance, dialect="duckdb") is None
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops, dialect="duckdb") is None
     assert is_uncertified_paraphrase(HOW_FULL_TRAP_Q)
     assert is_uncertified_paraphrase(DELAYED_COUNT_TRAP_Q)
     assert not is_uncertified_paraphrase(CAPACITY_UTILISATION_Q)
@@ -577,6 +577,7 @@ def test_vq03_finance_ops_asks_are_governed_metric(
             if space == FINANCE
             else {"locations", "inventory", "shipments"}
         ),
+        dialect="duckdb",
     )
     assert hit is not None
     assert submitted == hit.sql

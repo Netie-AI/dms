@@ -49,12 +49,12 @@ _STOP = frozenset(
 )
 
 
-def sqlglot_dialect(kind: str) -> str | None:
+def sqlglot_dialect(kind: str | None) -> str | None:
     """sqlglot read-dialect for a kind production already passes. None if unknown."""
     return _dialect_name(kind)
 
 
-def normalize_relation(name: str, *, dialect: str) -> str | None:
+def normalize_relation(name: str, *, dialect: str | None) -> str | None:
     """Canonical relation key for ``dialect``, or None if it cannot be settled.
 
     One function. sqlglot's own ``normalize_identifier`` applies that
@@ -82,7 +82,7 @@ def normalize_relation(name: str, *, dialect: str) -> str | None:
     return _table_key(table, dialect_name, engine)
 
 
-def serve_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
+def serve_gap(sql: str, *, grantable: set[str], dialect: str | None) -> str | None:
     """None when the statement is one granted read.
 
     Order: the dialect has to be one sqlglot knows, then parse, then one
@@ -109,7 +109,7 @@ def serve_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
     return _allow(trees[0], grantable, dialect)
 
 
-def relation_gap(name: str, *, grantable: set[str], dialect: str) -> str | None:
+def relation_gap(name: str, *, grantable: set[str], dialect: str | None) -> str | None:
     """None when ``name`` is a granted relation. Same keys as ``serve_gap``.
 
     The caller already has the relation. This does not build a statement.
@@ -174,7 +174,7 @@ def sql_refusal_envelope(
     return env
 
 
-def _trees(sql: str, dialect: str) -> list[exp.Expression] | None:
+def _trees(sql: str, dialect: str | None) -> list[exp.Expression] | None:
     read = sqlglot_dialect(dialect)
     if read is None:
         return None
@@ -239,7 +239,7 @@ _DEFAULT_SCHEMA = {
 }
 
 
-def _dialect_name(kind: str) -> str | None:
+def _dialect_name(kind: str | None) -> str | None:
     key = (kind or "").strip().lower()
     if not key:
         return None
@@ -251,7 +251,7 @@ def _dialect_name(kind: str) -> str | None:
     return mapped
 
 
-def _engine(dialect: str) -> tuple[str, Dialect] | None:
+def _engine(dialect: str | None) -> tuple[str, Dialect] | None:
     name = _dialect_name(dialect)
     if name is None:
         return None
@@ -310,7 +310,7 @@ def _table_key(table: exp.Table, dialect_name: str, engine: Dialect) -> str | No
     return _relation_key(names)
 
 
-def _grant_keys(grantable: set[str], dialect: str) -> set[str]:
+def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
     """Exact keys. A dotted token is also the one-identifier table name."""
     keys: set[str] = set()
     found = _engine(dialect)
@@ -363,7 +363,7 @@ def _cte_keys(tree: exp.Expression, engine: Dialect) -> set[str]:
     return names
 
 
-def _allow(tree: exp.Expression, grantable: set[str], dialect: str) -> str | None:
+def _allow(tree: exp.Expression, grantable: set[str], dialect: str | None) -> str | None:
     found = _engine(dialect)
     if found is None:
         return "sql_dialect_unknown"

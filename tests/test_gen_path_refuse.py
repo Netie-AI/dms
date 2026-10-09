@@ -151,6 +151,7 @@ def test_unknown_measure_abstains_with_named_gap(tmp_path: Path) -> None:
         submit=_submit_trap,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     _assert_named_gap(env, "unknown_measure")
     assert "profit" in str(env["text"])
@@ -171,6 +172,7 @@ def test_no_path_abstains_with_named_gap(tmp_path: Path) -> None:
         submit=_submit_trap,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     _assert_named_gap(env, "no_path")
     assert "orphan" in str(env["text"])
@@ -191,6 +193,7 @@ def test_fanout_path_abstains_with_named_gap(tmp_path: Path) -> None:
         submit=_submit_trap,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     _assert_named_gap(env, "fanout_refused")
 
@@ -209,6 +212,7 @@ def test_ontology_unverified_names_the_gap() -> None:
         ontology=o,
         tables=None,
         warehouse=None,
+        dialect="duckdb",
     )
     _assert_named_gap(env, "ontology_unverified")
 
@@ -259,6 +263,7 @@ def test_ranked_missing_metric_abstains_not_bind_plan(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     _assert_named_gap(env, "unknown_measure")
     assert MISSING_METRIC_ID in str(env["text"])
@@ -280,6 +285,7 @@ def test_product_path_missing_metric_does_not_fall_through(tmp_path: Path) -> No
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=False,
+        dialect="duckdb",
     )
     assert env is not None
     _assert_named_gap(env, "unknown_measure")
@@ -299,6 +305,7 @@ def test_known_measure_still_compiles(tmp_path: Path) -> None:
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -323,6 +330,7 @@ def test_transport_miss_still_binds_known_measure(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"

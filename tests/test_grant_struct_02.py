@@ -278,6 +278,7 @@ def test_ungranted_relation_refuses_every_entry(
             grantable={"orders", "inventory"},
             submit=lambda s: pack_submits.append(s),
             ledger_append=lambda _p: None,
+            dialect="duckdb",
         )
     finally:
         pack_mod.match_pack_phrase = real_match
@@ -295,6 +296,7 @@ def test_ungranted_relation_refuses_every_entry(
             question=f"vq refuse {name}",
             sql=sql,
             path=db,
+            dialect="duckdb",
         )
     assert reason in str(ve.value), name
     held = register_verified_query(
@@ -302,6 +304,7 @@ def test_ungranted_relation_refuses_every_entry(
         question=f"vq hold {name}",
         sql="SELECT 1 AS n",
         path=db,
+        dialect="duckdb",
     )
     con = duckdb.connect(str(db))
     try:
@@ -317,6 +320,7 @@ def test_ungranted_relation_refuses_every_entry(
             space_id=OPS,
             warehouse=db,
             grantable={"orders", "inventory"},
+            dialect="duckdb",
         )
         is None
     ), name
@@ -329,6 +333,7 @@ def test_ungranted_relation_refuses_every_entry(
             grantable={"orders", "inventory"},
             submit=lambda s: vq_submits.append(s),
             ledger_append=lambda _p: None,
+            dialect="duckdb",
         )
         is None
     ), name
@@ -342,6 +347,7 @@ def test_ungranted_relation_refuses_every_entry(
         question="average of them",
         why="gate",
         text="no",
+        dialect="duckdb",
     )
     assert_envelope_valid(followed)
     assert followed["abstained"] is True, name
@@ -477,6 +483,7 @@ def test_fallback_refuses_every_serve_gap(
             grantable={"orders", "inventory"},
             submit=lambda s: pack_submits.append(s),
             ledger_append=lambda _p: None,
+            dialect="duckdb",
         )
     finally:
         pack_mod.match_pack_phrase = real_match
@@ -491,7 +498,8 @@ def test_fallback_refuses_every_serve_gap(
 
     with pytest.raises(ValueError) as ve:
         register_verified_query(
-            space_id=OPS, question=f"vq hole {name}", sql=sql, path=db
+            space_id=OPS, question=f"vq hole {name}", sql=sql, path=db,
+            dialect="duckdb",
         )
     # A demo table outside the Space keeps the sql_not_in_space sentence.
     assert reason in str(ve.value) or str(ve.value).startswith("sql_not_in_space:"), name
@@ -505,6 +513,7 @@ def test_fallback_refuses_every_serve_gap(
         why="gate",
         text="no",
         grantable={"orders", "inventory"},
+        dialect="duckdb",
     )
     assert followed["abstained"] is True, name
     assert followed["sql_used"] is None, name
@@ -641,6 +650,7 @@ def test_followup_serves_a_granted_table(tmp_path: Path) -> None:
         why="granted follow-up",
         text="served",
         grantable={"inventory"},
+        dialect="duckdb",
     )
     assert_envelope_valid(env)
     assert env["abstained"] is False

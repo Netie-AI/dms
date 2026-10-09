@@ -540,6 +540,7 @@ def test_live_followup_sql_upper_as_of_abstains(
             question="average of them",
             why="follow-up sql",
             text="should not run",
+            dialect="duckdb",
         )
     except Exception as exc:  # noqa: BLE001 - parent lets DuckDB see $AS_OF
         env = {"abstain_reason": type(exc).__name__, "rows": [1], "badge": "ERR", "route": "ERR"}

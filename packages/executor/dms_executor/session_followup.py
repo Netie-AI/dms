@@ -137,6 +137,7 @@ def _followup_execute(
     session_id: str | None,
     question: str,
     grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
     """Rows, or a reserved_param abstain. The placeholder never reaches DuckDB."""
     if sql_has_reserved_as_of(sql):
@@ -146,7 +147,7 @@ def _followup_execute(
             route="followup",
             question=question,
         )
-    gap = serve_gap(sql, grantable=set(grantable or ()), dialect="duckdb")
+    gap = serve_gap(sql, grantable=set(grantable or ()), dialect=dialect)
     if gap:
         return None, sql_refusal_envelope(
             reason=gap,
@@ -168,6 +169,7 @@ def run_followup_sql(
     why: str,
     text: str,
     grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any]:
     """Follow-up SQL. A real $as_of placeholder abstains and does not run."""
     rows, refused = _followup_execute(
@@ -177,6 +179,7 @@ def run_followup_sql(
         session_id=session_id,
         question=question,
         grantable=grantable,
+        dialect=dialect,
     )
     if refused is not None:
         return refused
@@ -200,6 +203,7 @@ def maybe_followup(
     warehouse: Path | None = None,
     tables: list[str] | None = None,
     grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """Envelope for a follow-up, or None when this ask is not a follow-up."""
     if tables:
@@ -228,6 +232,7 @@ def maybe_followup(
                 session_id=session_id,
                 question=question,
                 grantable=grantable,
+                dialect=dialect,
             )
         except Exception:  # noqa: BLE001
             return _abstain(
@@ -261,9 +266,10 @@ def maybe_followup(
             warehouse=warehouse,
             space_id=space_id,
             session_id=session_id,
-            question=question,
-            grantable=grantable,
-        )
+        question=question,
+        grantable=grantable,
+        dialect=dialect,
+    )
     except Exception:  # noqa: BLE001
         return _abstain(
             space_id=space_id,

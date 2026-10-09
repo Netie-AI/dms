@@ -754,6 +754,7 @@ def test_followup_sql_reserved_as_of_abstains(tmp_path: Path) -> None:
         question="average of them",
         why="follow-up sql",
         text="should not run",
+        dialect="duckdb",
     )
     assert_envelope_valid(env)
     assert env["abstain_reason"] == RESERVED_PARAM_AS_OF
@@ -809,6 +810,7 @@ def test_followup_literal_and_comment_as_of_unchanged(
         question="average of them",
         why="literal",
         text="literal stays",
+        dialect="duckdb",
     )
     assert literal["rows"] == [{"x": "$as_of"}]
     assert literal.get("abstain_reason") != "reserved_param:as_of"
@@ -820,6 +822,7 @@ def test_followup_literal_and_comment_as_of_unchanged(
         question="average of them",
         why="comment",
         text="comment stays",
+        dialect="duckdb",
     )
     assert commented["rows"] == [{"n": 1}]
     assert commented.get("abstain_reason") != "reserved_param:as_of"

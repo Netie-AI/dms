@@ -70,7 +70,12 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
-from dms_executor.grant_struct import serve_gap, structural_grant_stop
+from dms_executor.grant_struct import (
+    serve_gap,
+    sql_refusal_envelope,
+    sqlglot_dialect,
+    structural_grant_stop,
+)
 from dms_executor.manifest import OpenVaultTokenError
 from dms_executor.ontology import (
     CompiledQuery,
@@ -666,14 +671,14 @@ def validate_compiled_sql(
     *,
     grantable: set[str],
     warehouse: Path | None,
-    dialect: str = "duckdb",
+    dialect: str | None = None,
 ) -> str | None:
     """None if the compiled SQL may be submitted. Else a reason (do not execute).
 
-    Grants are the objects sqlglot sees in ``dialect`` (the extract dialect the
-    caller already uses; warehouse SQL is duckdb). ``serve_gap`` counts
-    statements, runs the hostile scanner, then the allow-list. A miss
-    returns here, before EXPLAIN.
+    Grants are the objects sqlglot sees in ``dialect`` (the engine that will
+    run the SQL). A missing dialect is ``sql_dialect_unknown`` before EXPLAIN.
+    ``serve_gap`` counts statements, runs the hostile scanner, then the
+    allow-list. A miss returns here, before EXPLAIN.
     """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
@@ -992,7 +997,7 @@ def _try_multi_grain_envelope(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
-    dialect: str = "duckdb",
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
@@ -1000,7 +1005,9 @@ def _try_multi_grain_envelope(
     None means this ask is not a multi-grain compile (caller continues).
     """
     lock = _multi_grain_measure(q, onto, payload)
-    multi = try_compile_multi_grain(onto, lock or None, q, grantable=allowed)
+    multi = try_compile_multi_grain(
+        onto, lock or None, q, grantable=allowed, dialect=dialect
+    )
     if multi is None:
         return None
     source = PLAN_SOURCE_ONTOLOGY
@@ -1063,7 +1070,7 @@ def rank_window_ask(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
-    dialect: str = "duckdb",
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
@@ -1164,7 +1171,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
-    dialect: str = "duckdb",
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1199,6 +1206,14 @@ def maybe_generative_ask(
     q = normalize_ask_question(question)
     if not q:
         return None
+    if sqlglot_dialect(dialect) is None:
+        return sql_refusal_envelope(
+            reason="sql_dialect_unknown",
+            space_id=space_id,
+            session_id=session_id,
+            route="generated",
+            question=q,
+        )
     if is_uncertified_paraphrase(q):
         return _abstain(
             q, "uncertified paraphrase: not a generative certify boundary",
