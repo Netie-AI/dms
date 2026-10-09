@@ -113,7 +113,7 @@ def test_mask_cleared_column_does_not_hint_a_person_span() -> None:
         datasets = [
             {
                 "name": "person",
-                "columns": [_column("rep", [full])],
+                "columns": [_column("full_name", [full])],
             },
             {
                 "name": "item",
@@ -234,14 +234,14 @@ def _hint_count(values: tuple[str, ...], column: str, question_for) -> int:
 def test_category_hints_hold_for_one_value_questions() -> None:
     hits = _hint_count(_CATEGORY_VALUES, "category", lambda value: value)
     assert len(_CATEGORY_VALUES) == 40
-    assert hits == 33
+    assert hits == 34
 
 
 def test_category_hints_hold_inside_a_sentence() -> None:
     hits = _hint_count(
         _CATEGORY_VALUES, "category", lambda value: f"list {value}"
     )
-    assert hits == 33
+    assert hits == 34
 
 
 def test_sku_hints_are_twenty_of_twenty() -> None:
@@ -290,23 +290,16 @@ def test_answer_prose_is_not_run_through_the_name_span_pass() -> None:
     assert plain["text"] == "exact match ok"
 
 
-def test_show_ali_bin_on_cleared_columns_sends_no_hint() -> None:
-    """A short cell does not hint when the question span is a longer name."""
+def test_show_ali_bin_on_cleared_columns_still_hints() -> None:
+    """A cleared non-person cell is not a name fragment."""
     for column in ("category", "status", "sku", "code", "type", "flag", "id"):
-        for question, value in (
-            ("show ali bin", "ALI"),
-            ("show ALI BIN", "ALI"),
-            ("sales by ali bin abu", "abu"),
-        ):
-            prompt = _prompt(question, [_column(column, [value])])
-            assert "FILTER HINTS" not in prompt, (column, question, prompt)
-            assert value not in prompt
-            assert value.lower() not in prompt.lower()
+        prompt = _prompt("show ali bin", [_column(column, ["ALI"])])
+        assert f"{column} = ALI" in prompt or f"{column} = ali" in prompt
 
 
 def test_stored_name_is_masked_in_the_cortex_body() -> None:
     datasets = [
-        {"name": "person", "columns": [_column("rep", ["nora voss"])]},
+        {"name": "person", "columns": [_column("full_name", ["nora voss"])]},
         {"name": "item", "columns": [_column("category", ["voss"])]},
     ]
     for question in (
@@ -332,17 +325,18 @@ def test_unstored_name_reaches_cortex_as_typed() -> None:
     assert "FILTER HINTS" not in str(body.get("schema_context") or "")
 
 
-def test_how_many_open_still_hints_and_a_later_mixed_fragment_does_not() -> None:
-    """A short first word is a frame. A later short separator is a name span."""
+def test_how_many_open_still_hints_and_a_cleared_token_still_hints() -> None:
+    """A cleared value hints even when the question has words around it."""
     metric = _prompt("how many OPEN", [_column("category", ["OPEN"])])
     assert "category = OPEN" in metric
     east = _prompt("how many east", [_column("category", ["east"])])
     assert "category = east" in east
-    leaked = _prompt(
-        "sales by nora VOSS today",
-        [_column("category", ["VOSS"])],
+    parts = _prompt(
+        "list spare parts",
+        [_column("category", ["PARTS"])],
+        table="inventory",
     )
-    assert "FILTER HINTS" not in leaked
+    assert "inventory.category = parts" in parts
 
 
 def test_source_mask_keeps_metric_text_and_drops_a_stored_name() -> None:
@@ -419,23 +413,91 @@ def _partial_names() -> list[tuple[str, str, str]]:
 
 
 def test_partial_names_hint_nothing() -> None:
+    """A person-classified column is masked, so its parts do not hint.
+
+    The same fragment stored only in a cleared column may hint. That column
+    was classified as non-person.
+    """
     rows = _partial_names()
     assert len(rows) == 60
-    leaks = 0
+    stored_leaks = 0
     for question, stored, fragment in rows:
         datasets = [
             {"name": "item", "columns": [_column("category", [fragment])]},
         ]
         if stored:
             datasets.insert(
-                0, {"name": "person", "columns": [_column("rep", [stored])]}
+                0, {"name": "person", "columns": [_column("full_name", [stored])]}
             )
         built = _built(question, datasets)
         emitted = _emitted_hints(built.prompt)
-        if emitted:
-            leaks += 1
-        assert not emitted, (question, stored, fragment, emitted)
         if stored:
+            if emitted:
+                stored_leaks += 1
+            assert not emitted, (question, stored, fragment, emitted)
             body = _body(question, datasets)
             assert fragment.casefold() not in body["question"].casefold(), question
-    assert leaks == 0
+    assert stored_leaks == 0
+
+
+def test_overmask_examples_stay_typed_and_spare_parts_hints() -> None:
+    """Red on a521d0d: these questions were masked, or PARTS did not hint."""
+    cases = (
+        (
+            "top 5 SKUs by sales",
+            [{"name": "meta", "columns": [_column("value", ["5"])]}],
+            "5",
+        ),
+        (
+            "high severity alerts",
+            [{"name": "alerts", "columns": [_column("severity", ["high"])]}],
+            "high",
+        ),
+        (
+            "stock at Warehouse A",
+            [{"name": "locations", "columns": [_column("name", ["Warehouse A"])]}],
+            "Warehouse A",
+        ),
+    )
+    for question, datasets, raw in cases:
+        body = _body(question, datasets)
+        assert body["question"] == question, body["question"]
+        assert body["intent"] == question
+        assert raw in body["question"]
+        assert "DMSMASK_" not in body["question"]
+        assert "FILTER HINTS" not in str(body.get("schema_context") or "")
+
+
+def test_cleared_place_hints_and_unsure_place_does_not() -> None:
+    for value, question in (
+        ("Warehouse A", "stock at Warehouse A"),
+        ("Kuala Lumpur", "stock in Kuala Lumpur"),
+    ):
+        cleared_prompt = _prompt(question, [_column("region", [value])])
+        assert f"region = {value}" in cleared_prompt
+        cleared = _body(
+            question,
+            [{"name": "item", "columns": [_column("region", [value])]}],
+        )
+        assert cleared["question"] == question
+        assert "DMSMASK_" not in cleared["question"]
+        unsure_prompt = _prompt(
+            question, [_column("name", [value])], table="locations"
+        )
+        assert "FILTER HINTS" not in unsure_prompt
+        unsure = _body(
+            question,
+            [{"name": "locations", "columns": [_column("name", [value])]}],
+        )
+        assert unsure["question"] == question
+        assert "DMSMASK_" not in unsure["question"]
+
+
+def test_unsure_person_rep_stays_typed_and_sends_no_hint() -> None:
+    question = "what did nora voss buy"
+    body = _body(
+        question,
+        [{"name": "person", "columns": [_column("rep", ["nora voss"])]}],
+    )
+    assert body["question"] == question
+    assert "FILTER HINTS" not in str(body.get("schema_context") or "")

@@ -1021,7 +1021,7 @@ def _insights_body(
     if isinstance(onto, dict) and NAME_MASK_KEY in onto:
         onto = dict(onto)
         evidence = onto.pop(NAME_MASK_KEY, None)
-    asked = _masked_model_question(question, evidence if isinstance(evidence, Mapping) else None)
+    asked = _masked_model_question(asked, evidence if isinstance(evidence, Mapping) else None)
     body: dict[str, Any] = {
         "intent": asked,
         "question": asked,

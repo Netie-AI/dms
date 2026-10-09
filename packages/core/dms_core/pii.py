@@ -681,15 +681,15 @@ def _mask_source_names(
     exempt_values: Sequence[str],
     schema_terms: Sequence[str],
 ) -> str:
-    """Mask stored person or unclassified values. Leave everything else.
+    """Mask values the caller already classified as person-column cells.
 
-    A span is masked when its tokens match a stored value from a person-like
-    or unclassified column, case-insensitively, token by token. Longest
-    value wins. A typed name stored nowhere is not a value, so it stays.
-    Title-Case ``_PERSON_NAME_FIND`` is only a backstop for a span that
-    already matches one of those stored values. It never masks a schema
-    term or a value from a column the column gate cleared as non-person.
-    No word list. The lists are the source's own cells and labels.
+    The column classifier decides which cells are passed in. This function
+    does not look at a value's shape to decide. A span is masked when its
+    tokens match one of those cells, case-insensitively, token by token.
+    Longest value wins. Anything not in that list stays typed, including a
+    name stored nowhere. The Title-Case backstop only replaces a span that
+    is already one of those cells, and it skips a cleared value or a schema
+    term. No word list.
     """
     if not text or is_mask_token(text):
         return text

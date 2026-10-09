@@ -28,11 +28,11 @@ mask's own metric skip treats as non-personal. An unknown column such as
 ``col1`` is not cleared, so it sends no hint even when the value probe
 would leave the cell raw. Value hints are looked up on the masker's
 output for the question, never on the raw question. That output is
-``fail_closed_mask_payload``: a stored value from a person-like or
-unclassified column is masked there, and the Cortex question is that
-same text. A cleared-column value hints only when it covers the whole
-span it was matched in. A fragment of a multi-word span whose other
-words match nothing does not hint. On a cleared column the value probe is the
+``fail_closed_mask_payload``. Only a column the classifier marks as a
+person-name column contributes values to that mask. A cleared non-person
+column stays typed and may hint, including when the question has words
+around the stored value. A column the classifier has not decided is
+unsure: its values stay typed and are not hints. On a cleared column the value probe is the
 second layer. It flags a cell the detector already flags, including a
 repeated Title-Case word. It does not re-title a one-word or hyphenated
 code, because that drop removes a cleared metric code. If any check
@@ -686,6 +686,22 @@ def _mask_would_flag(value: str, *, variants: bool) -> bool:
         return True
 
 
+def _cleared_value_blocked(value: str) -> bool:
+    """Hint probe. A multi-word cleared value is not dropped for Title-Case.
+
+    Storage still uses :func:`_mask_would_flag`, so a Title-Case name does
+    not enter the index. The column classifier already cleared this column.
+    A single Title-Case token still uses that probe.
+    """
+    text = " ".join(str(value).split())
+    if " " in text:
+        try:
+            return classify_column("category", [text]) is not None
+        except Exception:  # noqa: BLE001 -- doubt: send no hint
+            return True
+    return _mask_would_flag(text, variants=True)
+
+
 def _hint_column_blocked(
     table: str,
     column: str,
@@ -705,7 +721,7 @@ def _hint_column_blocked(
     except Exception:  # noqa: BLE001 -- doubt: send no hint
         return True
     # A non_personal tag does not re-title a multi-word phrase.
-    return any(_mask_would_flag(value, variants=not tagged) for value in values)
+    return any(_cleared_value_blocked(value) for value in values)
 
 
 def _hint_value_cleared(
@@ -722,9 +738,8 @@ def _hint_value_cleared(
     as typed so a lowercase rendering of an all-caps code is not turned into
     a repeated Title-Case pair.
     """
-    if _mask_would_flag(stored, variants=variants) or _mask_would_flag(
-        emitted, variants=False
-    ):
+    del variants
+    if _cleared_value_blocked(stored) or _cleared_value_blocked(emitted):
         return False
     key = f"{table}.{column}"
     try:
@@ -860,6 +875,12 @@ def _span_is_fragment(
     that span, and a short separator before another stored value is not either.
     """
     if width < 1 or start < 0 or start + width > len(words):
+        return False
+    # A full stored value from a cleared non-person column is not a name
+    # fragment. ``parts`` inside ``spare parts`` still hints when ``PARTS``
+    # is that value. Neighboring words do not take it away.
+    matched = tuple(_word_fold(words[start + i]) for i in range(width))
+    if matched in phrases:
         return False
     case = _letter_case(words[start])
     if not case:
@@ -1492,13 +1513,25 @@ def _label_terms(
     return terms
 
 
+def _column_is_person(table: str, column: str) -> bool:
+    """True only when the column classifier says the column holds names.
+
+    Metadata only. A cell's shape is not a vote. None or an error is
+    unsure: the value stays typed and is not a hint.
+    """
+    try:
+        return classify_column(column, (), table=table) == "name"
+    except Exception:  # noqa: BLE001 -- unsure: do not mask, do not hint
+        return False
+
+
 def _name_evidence(
     prepared: Sequence[Mapping[str, Any]],
     index: Mapping[str, Sequence[str]],
     ontology: Ontology | Mapping[str, Any] | None,
     onto: Mapping[str, Any],
 ) -> dict[str, list[str]]:
-    """Runtime source evidence. Cleared non-person values are the only exemption."""
+    """Person columns are masked. Cleared columns may hint. Unsure does neither."""
     roles: dict[str, str] = {}
     terms: list[str] = []
     seen_tables: set[str] = set()
@@ -1509,12 +1542,21 @@ def _name_evidence(
             seen_tables.add(table)
             terms.append(table)
         terms.append(name)
-        roles[f"{table}.{name}"] = "exempt" if item.get("cleared") else "name"
+        key = f"{table}.{name}"
+        if item.get("cleared"):
+            roles[key] = "exempt"
+        elif _column_is_person(table, name):
+            roles[key] = "person"
+        else:
+            roles[key] = "unsure"
     terms.extend(_label_terms(ontology, onto))
     names: list[str] = []
     exempt: list[str] = []
     for key, values in index.items():
-        target = exempt if roles.get(key) == "exempt" else names
+        role = roles.get(key, "unsure")
+        if role == "unsure":
+            continue
+        target = names if role == "person" else exempt
         target.extend(str(value) for value in values)
     return {
         "name_values": names,
