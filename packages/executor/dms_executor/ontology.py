@@ -1840,10 +1840,13 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     path = Path(warehouse)
     if not path.is_file():
         return {}
-    import duckdb
+    # Same lock as the schema index, then a read-only connect. A read-only
+    # connect beside an open writer raises ConnectionException; the lock
+    # waits that writer out. A missed deadline sees no columns.
+    from dms_executor.demo_warehouse import connect_locked_readonly
 
     try:
-        con = duckdb.connect(str(path), read_only=True)
+        con = connect_locked_readonly(path)
     except Exception:  # noqa: BLE001
         return {}
     try:

@@ -196,7 +196,7 @@ def retrieve_schema_sql(
         "SELECT table_name, column_name FROM information_schema.columns "
         f"WHERE table_name IN ({listed})"
     )
-    con = connect_file(Path(warehouse))
+    con = _connect_serving(Path(warehouse))
     try:
         rows = con.execute(sql).fetchall()
     except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
@@ -236,7 +236,7 @@ def retrieve_value_encodings(
         return {}
     skip = re.compile(r"(amount|qty|quantity|cost|kg|myr|score|load|capacity|date|id)$", re.I)
     encodings: dict[str, list[str]] = {}
-    con = connect_file(Path(warehouse))
+    con = _connect_serving(Path(warehouse))
     try:
         for item in schema:
             table = _safe_ident(str(item.get("table") or ""))
@@ -389,8 +389,15 @@ def summarize_context(parts: dict[str, Any]) -> dict[str, Any]:
     return trimmed
 
 
+def _connect_serving(warehouse: Path) -> Any:
+    """Serving attach with the ask deadline. A miss raises ``TimeoutError``."""
+    from cortex_client.compute import insights_timeout_s
+
+    return connect_file(Path(warehouse), timeout=insights_timeout_s())
+
+
 def _one_value(warehouse: Path, sql: str) -> str | None:
-    con = connect_file(warehouse)
+    con = _connect_serving(warehouse)
     try:
         rows = con.execute(sql).fetchall()
     except Exception:  # noqa: BLE001 -- empty retrieve, do not 503

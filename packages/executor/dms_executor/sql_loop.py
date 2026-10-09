@@ -43,7 +43,14 @@ EMPTY_NOTE = "no rows match"
 #: caller can serve this empty answer. Until then the reason is an abstain.
 EMPTY_UNVERIFIED = "empty_result_unverified:value_exists_pending"
 _NO_RETRY_HEADS = frozenset(
-    {"hostile_sql", "ungranted", "multi_statement", "warehouse_missing"}
+    {
+        "hostile_sql",
+        "ungranted",
+        "multi_statement",
+        "warehouse_missing",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+    }
 )
 # Key-name segments after splitting on non-alphanumerics. "token" is a
 # segment, so "prompt_tokens" is not a secret key.
@@ -100,24 +107,67 @@ def empty_result_reason(sql: str) -> str | None:
     return EMPTY_UNVERIFIED
 
 
-def run_readonly(
-    sql: str, warehouse: Path
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Execute on a read-only extract connection. ``(rows, None)`` or ``(None, error)``."""
+def _one_select(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT. A single non-SELECT returns ``""``.
+
+    ``WITH`` that ends in SELECT is a SELECT. Any other count, or a parse
+    error, is a refusal and is not executed. ``""`` means the read-only
+    engine must be the thing that refuses the statement.
+    """
     import duckdb
 
     try:
-        con = duckdb.connect(str(warehouse), read_only=True)
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 — parse failure is a refusal
+        return f"{type(exc).__name__}: {exc}"
+    if len(stmts) == 1 and stmts[0].type == duckdb.StatementType.SELECT:
+        return None
+    if len(stmts) == 1:
+        return ""
+    return "multi_statement"
+
+
+def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
         cur = con.execute(sql)
         desc = cur.description or []
         cols = [d[0] for d in desc]
         rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
         return rows, None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — engine error is the extract result
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def run_readonly(
+    sql: str, warehouse: Path
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Execute on a read-only extract. ``(rows, None)`` or ``(None, error)``.
+
+    Takes the serving lock, then opens ``read_only``. The lock is what keeps
+    a writer and this connect from mixing access modes. A lock wait past the
+    serving deadline returns ``serving_lock_wait`` and does not open the file.
+    One SELECT runs. A single other statement is executed so the read-only
+    engine refuses it. Anything else, including a parse failure, is refused
+    without executing.
+    """
+    from dms_executor.demo_warehouse import connect_locked_readonly
+
+    try:
+        con = connect_locked_readonly(Path(warehouse))
+    except TimeoutError:
+        return None, "serving_lock_wait"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        gate = _one_select(con, sql)
+        if gate is None:
+            return _fetch(con, sql)
+        if gate == "":
+            _rows, err = _fetch(con, sql)
+            if err:
+                return None, err
+            return None, "statement_not_select"
+        return None, gate
     finally:
         con.close()
 
@@ -500,6 +550,18 @@ def run_model_loop(
                 continue
 
         why = check(sql)
+        if why == "serving_lock_wait":
+            # The checker waited out the serving deadline. No retry, no engine text.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome="serving_lock_wait",
+                    dialect=dialect,
+                )
+            )
+            return abstain("serving_lock_wait", attempts, sql=sql, retries=retries)
         if why:
             safe_why = mask_feedback_text(why)
             outcome = f"checker:{safe_why}"
@@ -541,6 +603,18 @@ def run_model_loop(
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
+        if exec_err == "serving_lock_wait":
+            # Named abstain. No engine text, and no second wait.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome="serving_lock_wait",
+                    dialect=dialect,
+                )
+            )
+            return abstain("serving_lock_wait", attempts, sql=sql, retries=retries)
         if exec_err:
             safe_err = mask_feedback_text(exec_err)
             outcome = f"db_error:{safe_err}"

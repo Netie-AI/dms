@@ -250,15 +250,69 @@ class _LockedConnection:
 
 # The serving file is DuckDB. Schema context copies this string; it does not invent one.
 SERVING_DIALECT = "duckdb"
+# Second layer under the single-SELECT gate. File reads and writes stay off.
+_SERVING_CONFIG: dict[str, str | bool | int | float | list[str]] = {
+    "enable_external_access": False,
+}
 
 
-def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
-    """Write-mode attach. Caller must close(); one live attach per file until then."""
+def connect_file(
+    path: Path, *, timeout: float | None = None
+) -> duckdb.DuckDBPyConnection:
+    """Write-mode attach. Caller must close(); one live attach per file until then.
+
+    ``timeout`` None waits until the lock is free. A number is the serving
+    deadline: a miss raises ``TimeoutError`` and does not open the file.
+    """
     db = Path(path)
     lock = _lock_for(db)
-    lock.acquire()
+    if timeout is None:
+        lock.acquire()
+    elif not lock.acquire(timeout=timeout):
+        raise TimeoutError("serving lock")
     try:
-        con = duckdb.connect(str(db))
+        con = duckdb.connect(str(db), config=_SERVING_CONFIG)
+    except BaseException:
+        lock.release()
+        raise
+    return _LockedConnection(con, lock)  # type: ignore[return-value]
+
+
+def acquire_serving_lock(
+    path: Path, *, timeout: float | None = None
+) -> threading.RLock | None:
+    """Take the per-file serving lock, or None if the deadline passes.
+
+    ``timeout`` defaults to the serving deadline (``insights_timeout_s``).
+    The caller must ``release()`` on the same thread. None means the lock
+    was not taken.
+    """
+    if timeout is None:
+        from cortex_client.compute import insights_timeout_s
+
+        timeout = insights_timeout_s()
+    lock = _lock_for(Path(path))
+    if not lock.acquire(timeout=timeout):
+        return None
+    return lock
+
+
+def connect_locked_readonly(
+    path: Path, *, timeout: float | None = None
+) -> duckdb.DuckDBPyConnection:
+    """Read-only attach under the same per-file lock as ``connect_file``.
+
+    The lock is taken first and held until ``close()``. DuckDB 1.5 rejects a
+    read-only connect while a write attach of that file is open, so a waiter
+    blocks instead of raising a mixed-mode error. A missed deadline raises
+    ``TimeoutError`` and does not open the file.
+    """
+    db = Path(path)
+    lock = acquire_serving_lock(db, timeout=timeout)
+    if lock is None:
+        raise TimeoutError("serving lock")
+    try:
+        con = duckdb.connect(str(db), read_only=True, config=_SERVING_CONFIG)
     except BaseException:
         lock.release()
         raise

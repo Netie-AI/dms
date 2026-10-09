@@ -26,7 +26,13 @@ import duckdb
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_grants import canonical_space_id
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    connect_file,
+    connect_locked_readonly,
+    ensure_demo_warehouse,
+    warehouse_path,
+)
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.skills_quarantine import (
@@ -103,10 +109,33 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN pack_hash VARCHAR")
 
 
+_LOAD_SQL = """
+SELECT asset_id, space_id, question, question_norm, sql_text,
+       synonyms_json, created_at, pack_hash
+FROM main._verified_queries
+WHERE space_id = ?
+ORDER BY created_at DESC
+"""
+
+
 def _connect(path: Path | None) -> duckdb.DuckDBPyConnection:
+    """Writer attach for a register. Same per-file lock as the serving file."""
     db = ensure_demo_warehouse(path)
-    # Write-mode: mixed read_only=True vs RW on one file 500s DuckDB.
-    return duckdb.connect(str(db))
+    return connect_file(db)
+
+
+def _pack_hash_ready(con: duckdb.DuckDBPyConnection) -> bool:
+    row = con.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '_verified_queries' AND lower(column_name) = 'pack_hash'
+        """
+    ).fetchone()
+    return row is not None
+
+
+def _load_space(con: duckdb.DuckDBPyConnection, sid: str) -> list[tuple[Any, ...]]:
+    return list(con.execute(_LOAD_SQL, [sid]).fetchall())
 
 
 def _cell(value: Any) -> Any:
@@ -162,23 +191,31 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
-    """Load one Space, then drop scored-pack rows. The only SELECT."""
-    con = _connect(db)
+    """Load one Space, then drop scored-pack rows. The only SELECT.
+
+    The ask path opens read-only under the serving lock. A missing table or
+    the pre-pack_hash shape is the one writer path (``connect_file``), not a
+    bare connect beside a read-only attach.
+    """
+    path = ensure_demo_warehouse(db)
+    raw: list[tuple[Any, ...]] | None = None
     try:
-        _ensure(con)
-        raw = con.execute(
-            f"""
-            SELECT asset_id, space_id, question, question_norm, sql_text,
-                   synonyms_json, created_at, pack_hash
-            FROM {_TABLE}
-            WHERE space_id = ?
-            ORDER BY created_at DESC
-            """,
-            [sid],
-        ).fetchall()
+        con = connect_locked_readonly(path)
+    except TimeoutError:
+        return []
+    try:
+        if _pack_hash_ready(con):
+            raw = _load_space(con, sid)
     finally:
         con.close()
-    return filter_retrieved_rows((_stored_row(row) for row in raw), warehouse=db)
+    if raw is None:
+        con = connect_file(path)
+        try:
+            _ensure(con)
+            raw = _load_space(con, sid)
+        finally:
+            con.close()
+    return filter_retrieved_rows((_stored_row(row) for row in raw), warehouse=path)
 
 
 def register_verified_query(

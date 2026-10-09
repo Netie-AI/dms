@@ -56,6 +56,7 @@ from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     connect_file,
+    connect_locked_readonly,
     sql_has_reserved_as_of,
     warehouse_path,
 )
@@ -690,13 +691,37 @@ def validate_compiled_sql(
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
-    con = connect_file(Path(warehouse))
+    # EXPLAIN shares the serving file. Open it read-only, and refuse anything
+    # that is not one SELECT before EXPLAIN runs. A read-write EXPLAIN applies
+    # a later statement in the same string.
     try:
+        con = connect_locked_readonly(Path(warehouse))
+    except TimeoutError:
+        return "serving_lock_wait"
+    try:
+        gate = _refusal_before_explain(con, sql)
+        if gate:
+            return gate
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
+    return None
+
+
+def _refusal_before_explain(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT. Otherwise a refusal, and nothing ran."""
+    import duckdb
+
+    try:
+        stmts = con.extract_statements(sql)
+    except Exception:
+        return "sql_not_analyzable"
+    if len(stmts) != 1:
+        return "multi_statement"
+    if stmts[0].type != duckdb.StatementType.SELECT:
+        return "statement_not_allowed"
     return None
 
 
@@ -1049,12 +1074,24 @@ def _try_multi_grain_envelope(
             question=q,
         )
     why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    if why == "serving_lock_wait":
+        return _abstain(
+            q, "serving_lock_wait",
+            space_id=space_id, session_id=session_id, plan_source=source,
+            sql=multi.sql,
+        )
     if why == RESERVED_PARAM_AS_OF:
         return reserved_as_of_abstain(
             space_id=space_id,
             session_id=session_id,
             route="generated",
             question=q,
+        )
+    if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _abstain(
+            q, why,
+            space_id=space_id, session_id=session_id, plan_source=source,
+            sql=multi.sql,
         )
     if why:
         gap = missing_join_for_ungranted(why, detect_supply_chain_grains(q))
@@ -1130,6 +1167,10 @@ def rank_window_ask(
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
     bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    if bad == "serving_lock_wait":
+        return _no("serving_lock_wait")
+    if bad in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _no(bad)
     if bad:
         return _no(f"validate:{bad}")
     noun = _ENTITY_NOUN.get(str(win.entity), str(win.entity))
@@ -1414,9 +1455,17 @@ def maybe_generative_ask(
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
-    ctx = retrieve_short_context(
-        q, warehouse=lake, grantable=allowed, ontology=onto
-    )
+    try:
+        ctx = retrieve_short_context(
+            q, warehouse=lake, grantable=allowed, ontology=onto
+        )
+    except TimeoutError as exc:
+        if str(exc) != "serving lock":
+            raise
+        return _abstain(
+            q, "serving_lock_wait",
+            space_id=space_id, session_id=session_id, stage="extract_loop",
+        )
     envelope_prompt = ""
     index_stamp = ""
     if schema_context_enabled():
@@ -1612,6 +1661,14 @@ def maybe_generative_ask(
                 )
             )
         why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        if why == "serving_lock_wait":
+            return _stamp(
+                _abstain(
+                    q, "serving_lock_wait",
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                    sql=sql, stage="extract_loop",
+                )
+            )
         broken = (
             violations_cited_by_sql(sql, declared, declared_violations)
             if declared is not None and not why
@@ -1636,6 +1693,14 @@ def maybe_generative_ask(
                     session_id=session_id,
                     route="generated",
                     question=q,
+                )
+            )
+        if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+            return _stamp(
+                _abstain(
+                    q, why,
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                    sql=sql,
                 )
             )
         if why:
@@ -1817,6 +1882,14 @@ def maybe_generative_ask(
         )
 
     why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    if why == "serving_lock_wait":
+        return _stamp(
+            _abstain(
+                q, "serving_lock_wait",
+                space_id=space_id, session_id=session_id, plan_source=source,
+                sql=compiled.sql,
+            )
+        )
     if why == RESERVED_PARAM_AS_OF:
         return _stamp(
             reserved_as_of_abstain(
@@ -1824,6 +1897,14 @@ def maybe_generative_ask(
                 session_id=session_id,
                 route="generated",
                 question=q,
+            )
+        )
+    if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _stamp(
+            _abstain(
+                q, why,
+                space_id=space_id, session_id=session_id, plan_source=source,
+                sql=compiled.sql,
             )
         )
     if why:
