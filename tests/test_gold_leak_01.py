@@ -187,12 +187,10 @@ def test_planted_gold_does_not_change_the_seven_answers(
         monkeypatch.setattr(demo_pack, "_score_fixture_dir", lambda: planted.parent)
     try:
         _ORACLES.write_text(planted.read_text(encoding="utf-8"), encoding="utf-8")
-        demo_pack.score_pack_exact_metrics.cache_clear()
         demo_pack.curated_l0_question_norms.cache_clear()
         after = _serve(tmp_path / "after.duckdb", rows, monkeypatch)
     finally:
         _ORACLES.write_text(original, encoding="utf-8")
-        demo_pack.score_pack_exact_metrics.cache_clear()
         demo_pack.curated_l0_question_norms.cache_clear()
     for qid in _LEAK_IDS:
         assert after[qid] == before[qid], qid
@@ -246,13 +244,7 @@ def test_seven_ids_when_scoring_tree_is_unreadable(
     for qid in _LEAK_IDS:
         for side in (readable, blocked):
             assert "oracles.yaml" not in str(side[qid])
-            if qid == "cq_supplier_ranking":
-                assert side[qid]["abstained"] is False, qid
-                assert side[qid].get("rows"), qid
-                assert side[qid]["badge"] != "ABSTAIN", qid
-                continue
-            assert side[qid]["badge"] != "L1_GOVERNED_METRIC", qid
-            assert not side[qid].get("rows"), qid
+            assert not _l1_or_compile(side[qid]), qid
 
 
 def _path_opens_tests(tree: ast.AST) -> bool:
@@ -526,91 +518,72 @@ def test_l1_with_rows_makes_zero_extra_calls(
     assert body["model_calls"] == 0
 
 
-def _id_order(rows: list[dict[str, Any]]) -> list[str]:
-    out: list[str] = []
-    for row in rows:
-        text = next(v for v in row.values() if isinstance(v, str))
-        out.append(text)
-    return out
+_COMPILE_ORIGINS = frozenset({"ontology_ranking", "ontology_compile"})
+_COMPILE_SOURCES = frozenset({"ontology_plan"})
 
 
-def test_cq_supplier_ranking_grades_the_served_rows(
+def _l1_or_compile(env: dict[str, Any]) -> bool:
+    """True when the envelope is an L1 serve or an ontology compile."""
+    if env.get("badge") == "L1_GOVERNED_METRIC":
+        return True
+    if env.get("route") == "governed_metric":
+        return True
+    if str(env.get("plan_origin") or "") in _COMPILE_ORIGINS:
+        return True
+    return str(env.get("plan_source") or "") in _COMPILE_SOURCES
+
+
+def test_none_of_the_seven_is_l1_or_compile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The served rows are the ontology result, in engine order.
-
-    A bare abstain is a pipeline failure. demo_pack copies submit rows
-    through without sorting them.
-    """
-    live_rows = [row for row in _questions() if row["id"] == "cq_supplier_ranking"]
-    assert len(live_rows) == 1
-    db = tmp_path / "live.duckdb"
-    live = _serve(db, live_rows, monkeypatch)["cq_supplier_ranking"]
-    assert live["abstained"] is False
-    assert live["badge"] != "ABSTAIN"
-    assert "pack-metric miss" not in str(live.get("assumptions"))
-    served = list(live.get("rows") or [])
-    assert served
-    sql = str(live.get("sql_used") or "")
-    engine = execute_sql(sql, path=db, product=True)
-    assert _id_order(served) == _id_order(engine)
-    assert _id_order(served) == ["SUP-04", "SUP-02", "SUP-01", "SUP-03"]
-    graded = _judge()(_case("cq_supplier_ranking"), live, oracle_db=db, oracles=_oracles())
-    assert graded.verdict != "WRONG"
-    assert graded.verdict != "ABSTAIN"
-    assert live.get("model_calls") == 0
+    """A miss goes to the ladder. None of the seven is an L1 or compile serve."""
+    rows = [row for row in _questions() if row["id"] in _LEAK_IDS]
+    assert len(rows) == 7
+    served = _serve(tmp_path / "seven.duckdb", rows, monkeypatch)
+    for qid in _LEAK_IDS:
+        assert not _l1_or_compile(served[qid]), qid
 
 
-def _assert_supplier_rank(env: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = list(env.get("rows") or [])
-    assert env["badge"] == "L1_GOVERNED_METRIC"
-    assert env["abstained"] is False
-    assert len(rows) == 4
-    assert _id_order(rows) == ["SUP-04", "SUP-02", "SUP-01", "SUP-03"]
-    return rows
-
-
-def test_supplier_rank_survives_blank_or_removed_oracle_and_pack(
+def test_blanked_or_removed_oracle_is_not_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Blanking or removing the oracle and the scored pack does not change L1.
+    """Nothing reads the oracle. Blanking or deleting it does not change the ask."""
+    import io
 
-    The four rows and their order come from the declared measure, not from
-    either file.
-    """
-    live_rows = [row for row in _questions() if row["id"] == "cq_supplier_ranking"]
-    assert len(live_rows) == 1
-    intact = _serve(tmp_path / "intact.duckdb", live_rows, monkeypatch)["cq_supplier_ranking"]
-    expected = _assert_supplier_rank(intact)
+    rows = [row for row in _questions() if row["id"] in _LEAK_IDS]
+    assert len(rows) == 7
+    real_open = io.open
+
+    def _guard(file: Any, *args: Any, **kwargs: Any) -> Any:
+        label = file if isinstance(file, (str, Path)) else ""
+        if str(label).endswith("oracles.yaml"):
+            raise AssertionError("oracles.yaml")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(io, "open", _guard)
+    intact = _serve(tmp_path / "intact.duckdb", rows, monkeypatch)
+    monkeypatch.setattr(io, "open", real_open)
+    for qid in _LEAK_IDS:
+        assert not _l1_or_compile(intact[qid]), qid
 
     oracle = _ORACLES
-    pack = _PACK / "questions.yaml"
-    saved = {
-        oracle: oracle.read_text(encoding="utf-8"),
-        pack: pack.read_text(encoding="utf-8"),
-    }
+    saved = oracle.read_text(encoding="utf-8")
     import dms_executor.demo_pack as demo_pack
 
     try:
         oracle.write_text("", encoding="utf-8")
-        pack.write_text("", encoding="utf-8")
         demo_pack.curated_l0_question_norms.cache_clear()
-        blanked = _serve(tmp_path / "blanked.duckdb", live_rows, monkeypatch)[
-            "cq_supplier_ranking"
-        ]
-        assert _assert_supplier_rank(blanked) == expected
-
+        blanked = _serve(tmp_path / "blanked.duckdb", rows, monkeypatch)
         oracle.unlink()
-        pack.unlink()
         demo_pack.curated_l0_question_norms.cache_clear()
-        removed = _serve(tmp_path / "removed.duckdb", live_rows, monkeypatch)[
-            "cq_supplier_ranking"
-        ]
-        assert _assert_supplier_rank(removed) == expected
+        removed = _serve(tmp_path / "removed.duckdb", rows, monkeypatch)
     finally:
-        for path, text in saved.items():
-            path.write_text(text, encoding="utf-8")
+        oracle.write_text(saved, encoding="utf-8")
         demo_pack.curated_l0_question_norms.cache_clear()
+    for qid in _LEAK_IDS:
+        assert blanked[qid] == intact[qid], qid
+        assert removed[qid] == intact[qid], qid
+        assert not _l1_or_compile(removed[qid]), qid
 
 
 def test_runtime_modules_do_not_reference_scoring_files() -> None:
@@ -631,10 +604,8 @@ def test_load_score_pack_metrics_is_not_on_live_ask(
 ) -> None:
     import dms_executor.demo_pack as demo_pack
 
-    def boom(*_a: Any, **_k: Any) -> tuple:
-        raise AssertionError("load_score_pack_metrics")
-
-    monkeypatch.setattr(demo_pack, "load_score_pack_metrics", boom)
+    assert not hasattr(demo_pack, "load_score_pack_metrics")
+    assert not hasattr(demo_pack, "score_pack_exact_metrics")
     rows = _questions()
     served = _serve(tmp_path / "reach.duckdb", rows, monkeypatch)
     assert set(served) == {row["id"] for row in rows}

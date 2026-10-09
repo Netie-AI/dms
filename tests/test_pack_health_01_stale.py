@@ -18,6 +18,6 @@ def test_scoring_file_edits_are_not_metrics(tmp_path: Path) -> None:
         "oracles:\n  cq_sku_count:\n    sql: SELECT 0 AS planted\n",
         encoding="utf-8",
     )
-    assert demo_pack.score_pack_exact_metrics() == ()
+    assert not hasattr(demo_pack, "score_pack_exact_metrics")
     assert "synthetic" not in demo_pack.curated_l0_question_norms()
     assert demo_pack.curated_pack_status().name == "absent"

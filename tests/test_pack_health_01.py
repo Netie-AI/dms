@@ -24,7 +24,7 @@ def test_health_stays_absent_and_base_metric_still_answers(
     assert demo_pack.curated_pack_present() is False
     assert demo_pack.curated_pack_status().name == "absent"
     assert demo_pack.curated_pack_status().error_class is None
-    assert demo_pack.score_pack_exact_metrics() == ()
+    assert not hasattr(demo_pack, "score_pack_exact_metrics")
     _flags_off(monkeypatch)
     client, exe = _client(_Cortex(), tmp_path / "wh.duckdb")
     try:

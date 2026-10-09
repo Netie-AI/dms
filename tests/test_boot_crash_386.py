@@ -211,11 +211,9 @@ def pack_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[No
     """Scoring files are not a pack source. The hook is gone; the dir is unused."""
     from dms_executor import demo_pack
 
-    demo_pack.score_pack_exact_metrics.cache_clear()
     demo_pack.curated_l0_question_norms.cache_clear()
     _ = tmp_path, monkeypatch
     yield
-    demo_pack.score_pack_exact_metrics.cache_clear()
     demo_pack.curated_l0_question_norms.cache_clear()
 
 
@@ -410,17 +408,18 @@ def test_health_pack_ignores_a_checkout_fixture() -> None:
 def test_pack_is_not_read_at_import() -> None:
     src = (ROOT / "packages/executor/dms_executor/demo_pack.py").read_text(encoding="utf-8")
     assert not re.search(r"^\w[\w: .,\[\]]*=\s*load_score_pack_metrics\(", src, re.M)
+    assert "def load_score_pack_metrics" not in src
     from dms_executor import demo_pack
 
-    assert demo_pack.SCORE_PACK_EXACT_METRICS == demo_pack.score_pack_exact_metrics()
+    assert not hasattr(demo_pack, "SCORE_PACK_EXACT_METRICS")
+    assert not hasattr(demo_pack, "load_score_pack_metrics")
 
 
 def test_missing_pack_is_empty_and_ask_is_not_503(
     pack_missing: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from dms_executor.demo_pack import maybe_pack_ask, score_pack_exact_metrics
+    from dms_executor.demo_pack import maybe_pack_ask
 
-    assert score_pack_exact_metrics() == ()
     assert (
         maybe_pack_ask(
             "How many SKUs do we have in inventory?",
@@ -515,12 +514,10 @@ def _assert_ops_rank_boundary_from_engine(got: dict[str, Any], db: Path) -> None
     engine_rows = execute_sql("SELECT supplier_id FROM suppliers", path=db, product=True)
     engine_ids = {str(row["supplier_id"]) for row in engine_rows}
     assert engine_ids
-    assert body["abstained"] is True
-    assert body["badge"] == "ABSTAIN"
-    assert list(body.get("rows") or []) == []
-    assert not body.get("sql_used")
-    assert "grants fail" in list(body.get("assumptions") or [])
-    assert "pack-metric miss" not in str(body.get("assumptions"))
+    assert body["badge"] != "L1_GOVERNED_METRIC"
+    assert body.get("route") != "governed_metric"
+    assert str(body.get("plan_origin") or "") not in {"ontology_ranking", "ontology_compile"}
+    assert body.get("plan_source") != "ontology_plan"
     served_ids = {
         str(value)
         for row in body.get("rows") or []

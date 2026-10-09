@@ -16,9 +16,7 @@ from dms_executor.demo_grants import DEMO_SPACE_GRANTS
 from dms_executor.demo_pack import (
     PACK_METRICS,
     SCORE_PACK_EXACT_IDS,
-    load_score_pack_metrics,
     lookup_pack_metric,
-    score_pack_exact_metrics,
 )
 
 _FIXTURE = (
@@ -83,13 +81,11 @@ def test_cq_sku_count_is_not_a_pack_hit() -> None:
 
 
 def test_allowlist_is_not_loaded() -> None:
-    """The named ids are not metrics. An empty id set is empty too."""
+    """The named ids are not metrics."""
     assert "cq_sku_count" in SCORE_PACK_EXACT_IDS
-    assert load_score_pack_metrics(ids=frozenset()) == ()
-    assert load_score_pack_metrics() == ()
     base_only = {m.metric_id for m in PACK_METRICS}
     assert "cq_sku_count" not in base_only
-    assert score_pack_exact_metrics() == ()
+    assert SCORE_PACK_EXACT_IDS.isdisjoint(base_only)
 
 
 def test_allowlist_and_rise_ids_miss() -> None:
@@ -114,4 +110,4 @@ def test_refuse_and_abstain_stay_misses() -> None:
 
 def test_pack_metrics_stay_the_climb_snapshot() -> None:
     assert {m.metric_id for m in PACK_METRICS} == _BASE_IDS
-    assert "cq_sku_count_syn_short" not in {m.metric_id for m in score_pack_exact_metrics()}
+    assert "cq_sku_count_syn_short" not in {m.metric_id for m in PACK_METRICS}

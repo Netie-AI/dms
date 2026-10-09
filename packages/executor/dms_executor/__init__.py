@@ -708,7 +708,6 @@ class Executor:
                     session_id=session_id,
                     event_type="ask.governed_metric",
                 ),
-                warehouse=self._warehouse,
             )
             if pack_env is not None:
                 self._store_turn(session_id, space_id, pack_env)
