@@ -1512,9 +1512,9 @@ def _save_record(serving: Path, space_id: str, payload: Mapping[str, Any]) -> No
 
 
 def _open_serving(serving: Path) -> Any:
-    from dms_executor.demo_warehouse import connect_file
+    from dms_executor.demo_warehouse import connect_file, serving_lock_wait_s
 
-    return connect_file(Path(serving))
+    return connect_file(Path(serving), timeout=serving_lock_wait_s())
 
 
 def _fingerprint(
@@ -1583,8 +1583,12 @@ def read_catalog(
         body["dialect"] = named
     if serving is None or not Path(serving).is_file():
         return "", body
+    from dms_executor.demo_warehouse import ServingLockWait
+
     try:
         con = _open_serving(Path(serving))
+    except ServingLockWait:
+        raise
     except Exception:  # noqa: BLE001
         return "", body
     try:
@@ -1808,9 +1812,13 @@ def schedule_index_build(
     )
 
     def _job() -> None:
+        from dms_executor.demo_warehouse import ServingLockWait
+
         try:
             if not _STOP.is_set():
                 build_space_index(serving, space_id, grantable, dialect)
+        except ServingLockWait:
+            return
         finally:
             with _BUILD_LOCK:
                 _BUILDING.discard(key)
@@ -1934,6 +1942,8 @@ def prepare_generate_context(
     """
     if not schema_context_enabled():
         return ctx
+    from dms_executor.demo_warehouse import ServingLockWait
+
     stamp = ""
     try:
         described = schema
@@ -1950,6 +1960,8 @@ def prepare_generate_context(
             space_id=space_id,
             max_tokens=max_tokens,
         )
+    except ServingLockWait:
+        raise
     except Exception:  # noqa: BLE001 -- schema context must not sink the ask
         return ctx
     if not built.prompt:

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dms_executor.acl import SourceGrant
+from dms_executor.demo_warehouse import ServingLockWait
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,8 @@ def ingested_bronze_tables(
         if space_id:
             return tuple(t["table"] for t in list_bronze_tables(path=path, space_id=space_id))
         return tuple(t["table"] for t in list_bronze_tables(path=path))
+    except ServingLockWait:
+        raise
     except Exception as exc:  # noqa: BLE001
         # A warehouse that cannot be read must not silently mean "no uploads are
         # grantable" — that would present as your own file being refused.
