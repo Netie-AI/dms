@@ -106,8 +106,6 @@ def require_certified_priors(trace: list[dict[str, Any]]) -> None:
 def refuse_missing_schema() -> dict[str, Any]:
     """Closed-fail payload for a cascade-path ask with no schema (before L0)."""
     return {
-        "badge": "ABSTAIN",
-        "abstained": True,
         "text": (
             "Constraint cascade schema is missing, so I will not certify an answer. "
             "No later stage ran."

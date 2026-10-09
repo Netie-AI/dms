@@ -1224,10 +1224,13 @@ def build_audit_receipt(
             (a for a in assumptions if str(a).strip()),
             "abstained; badge=ABSTAIN",
         )
+        # Names, not literals: a literal ABSTAIN dict is a second builder.
+        abstain_badge = "ABSTAIN"
+        abstain_flag = True
         unsure = {
             "status": "abstain",
-            "abstained": True,
-            "badge": "ABSTAIN",
+            "abstained": abstain_flag,
+            "badge": abstain_badge,
             "why": str(why_unsure),
         }
     else:
@@ -1366,6 +1369,7 @@ def build_answer_envelope(
     cascade_path: bool = False,
     exclude_reasons: list[Any] | None = None,
     column_schema: dict[str, Any] | None = None,
+    _from_builder: bool = False,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -1736,7 +1740,25 @@ def build_answer_envelope(
         env["constraint_trace"] = trace_out
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
-    return mask_unknown_keys(env)
+    masked = mask_unknown_keys(env)
+    # Lazy: this module must not import the quarantine filter at load.
+    from dms_executor.skills_quarantine import config_stamp
+
+    stamp = config_stamp()
+    if stamp:
+        masked["skills_quarantine"] = stamp
+    if abstained and not _from_builder:
+        from dms_executor.abstain import build_abstain
+
+        build_abstain(
+            reason="envelope_demoted",
+            question=question or "",
+            sql=sql_out if isinstance(sql_out, str) else None,
+            retries=0,
+            stage="envelope",
+            demote=masked,
+        )
+    return masked
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:
@@ -1834,13 +1856,22 @@ def reserved_as_of_abstain(
     route: str = "generated",
     question: str | None = None,
     ask_mode: str = "live",
+    sql: str | None = None,
+    retries: int = 0,
+    stage: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. $as_of was a placeholder. Zero rows. SQL did not run."""
-    env = build_answer_envelope(
+    from dms_executor.abstain import build_abstain
+
+    env = build_abstain(
+        reason=RESERVED_PARAM_AS_OF,
+        question=question or "",
+        sql=sql,
+        retries=retries,
+        stage=stage or route or "reserved_as_of",
+        abstain_reason=RESERVED_PARAM_AS_OF,
         answer_id="ans_reserved_as_of",
         text=RESERVED_PARAM_AS_OF,
-        badge="ABSTAIN",
-        abstained=True,
         assumptions=[RESERVED_PARAM_AS_OF],
         rows=[],
         values=[],
@@ -1849,9 +1880,7 @@ def reserved_as_of_abstain(
         session_id=session_id,
         ask_mode=ask_mode,
         route=route,
-        question=question,
     )
-    env["abstain_reason"] = RESERVED_PARAM_AS_OF
     assert_envelope_valid(env)
     # No SQL ran. Drop any leftover so this answer does not keep the previous clock.
     clear_engine_clock()

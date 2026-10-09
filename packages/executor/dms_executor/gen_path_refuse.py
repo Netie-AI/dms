@@ -53,6 +53,11 @@ GAP_REASONS = frozenset(
         "intent_spec_unverified",
         "intent_spec_mismatch",
         "contradiction",
+        "loop_exhausted",
+        "empty_result_unverified",
+        "no_sql",
+        "multi_statement",
+        "warehouse_missing",
     }
 )
 
