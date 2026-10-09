@@ -5,23 +5,24 @@ id fields are not rewritten. Matching is the whole identifier, any
 length, so a name shorter than four characters is not a hole and a
 name is not cut out of a longer identifier.
 
-An ungranted tail is parsed with sqlglot. The extract dialect is tried
-first. A longer read from another registered dialect wins, so the
-identifier parts come from that dialect's parser rather than from a
-list of quote or joining characters. A name the envelope's Space
-grants stays. ``ungranted:file`` and ``ungranted:unparsed`` are reason
-codes.
+An ungranted tail is tokenized once in the serving dialect and parsed
+once with that dialect's parser. The identifier parts come from that
+parse. They are compared with the Space grant set, including tables
+uploaded into the Space. A granted name stays. A name the Space does
+not grant is removed. ``ungranted:file`` and ``ungranted:unparsed`` are
+reason codes. A tail that does not tokenize is fail-closed: the field
+is cleared.
 """
 
 from __future__ import annotations
 
 import re
-from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-from sqlglot import Dialects, exp, parse_one, tokenize
+from sqlglot import exp, parse_one, tokenize
 from sqlglot.errors import SqlglotError
-from sqlglot.tokens import TokenType
+from sqlglot.tokens import Token, TokenType
 
 # Reason-code tails. Not a table list.
 _CODE_TAILS = frozenset({"file", "unparsed"})
@@ -48,108 +49,210 @@ _NAME_KEYS = frozenset(
         "text",
     }
 )
-# Colon form, ``ungranted table <name>``, or ``(ungranted <name>)``.
+# Colon form, ``ungranted table <name>``, ``(ungranted <name>)``, or the
+# ontology sentence ``(object X cites ungranted T)``.
 # ``ungranted_table`` is before ``ungranted`` so the suffix is not a name.
 _PREFIX = re.compile(
     r"(?i)(?:(?<![A-Za-z0-9_])ungranted_table\s*:\s*"
     r"|(?<![A-Za-z0-9_])ungranted\s+table\s+"
     r"|(?<![A-Za-z0-9_])ungranted\s*:\s*"
-    r"|\(\s*ungranted\s+)"
+    r"|\(\s*ungranted\s+"
+    r"|(?<![A-Za-z0-9_])cites\s+ungranted\s+)"
 )
-_WRAP = "SELECT * FROM "
 _NAME_TOKENS = frozenset({TokenType.IDENTIFIER, TokenType.VAR, TokenType.STRING})
 
 
-@lru_cache(maxsize=1)
-def _dialect_names() -> tuple[str, ...]:
+class _Closed(Exception):
+    """An identifier delimiter the serving tokenizer opened did not close."""
+
+
+def _dialect() -> str:
     from dms_executor.sql_loop import EXTRACT_DIALECT
 
-    names = [item.value for item in Dialects if item.value]
-    names.sort(key=lambda name: (name != EXTRACT_DIALECT, name))
-    return tuple(names)
+    return EXTRACT_DIALECT
 
 
-def _tables_at_start(tree: exp.Expression) -> list[tuple[tuple[str, ...], int]] | None:
-    """Parts of each leading table, and how far the last part reaches.
-
-    ``None`` when the first table does not start at the tail. The reach
-    is the AST end, so an alias is not included.
-    """
-    base = len(_WRAP)
-    found: list[tuple[tuple[str, ...], int]] = []
-    for table in tree.find_all(exp.Table):
-        idents = [part for part in table.parts if part.name]
-        if not idents:
-            continue
-        start = idents[0].meta.get("start")
-        end = idents[-1].meta.get("end")
-        if start is None or end is None:
-            continue
-        if not found and start != base:
-            return None
-        if start < base:
-            continue
-        found.append((tuple(part.name for part in idents), end + 1 - base))
-    if not found:
+def _tokenize(text: str) -> list[Token] | None:
+    try:
+        return list(tokenize(text, read=_dialect()))
+    except SqlglotError:
         return None
+
+
+def _read_atom(tokens: list[Token], index: int) -> tuple[str, int, int, int] | None:
+    """One identifier. ``(name, end, next_index, start)``.
+
+    Raises ``_Closed`` when a delimiter the tokenizer did not consume as
+    an identifier has no closer.
+    """
+    if index >= len(tokens):
+        return None
+    tok = tokens[index]
+    if tok.start is None or tok.end is None:
+        return None
+    if tok.token_type in _NAME_TOKENS:
+        return tok.text, tok.end + 1, index + 1, tok.start
+    if tok.token_type == TokenType.L_BRACKET:
+        return _read_bracket(tokens, index)
+    if tok.token_type == TokenType.UNKNOWN and tok.text:
+        return _read_delimited(tokens, index, tok.text)
+    return None
+
+
+def _read_bracket(tokens: list[Token], index: int) -> tuple[str, int, int, int]:
+    if index + 2 >= len(tokens):
+        raise _Closed
+    inner = tokens[index + 1]
+    close = tokens[index + 2]
+    opener = tokens[index]
+    if (
+        inner.token_type not in _NAME_TOKENS
+        or close.token_type != TokenType.R_BRACKET
+        or inner.text is None
+        or opener.start is None
+        or close.end is None
+    ):
+        raise _Closed
+    return inner.text, close.end + 1, index + 3, opener.start
+
+
+def _read_delimited(
+    tokens: list[Token], index: int, delim: str
+) -> tuple[str, int, int, int]:
+    opener = tokens[index]
+    if opener.start is None:
+        raise _Closed
+    chunks: list[str] = []
+    cursor = index + 1
+    count = len(tokens)
+    while cursor < count:
+        tok = tokens[cursor]
+        if tok.token_type == TokenType.UNKNOWN and tok.text == delim:
+            nxt = cursor + 1
+            if (
+                nxt < count
+                and tokens[nxt].token_type == TokenType.UNKNOWN
+                and tokens[nxt].text == delim
+            ):
+                chunks.append(delim)
+                cursor = nxt + 1
+                continue
+            if not chunks or tok.end is None:
+                raise _Closed
+            return "".join(chunks), tok.end + 1, cursor + 1, opener.start
+        if tok.token_type in _NAME_TOKENS and tok.text:
+            chunks.append(tok.text)
+            cursor += 1
+            continue
+        raise _Closed
+    raise _Closed
+
+
+def _index_at(tokens: list[Token], offset: int) -> int:
+    for index, tok in enumerate(tokens):
+        if tok.start is not None and tok.start >= offset:
+            return index
+    return len(tokens)
+
+
+def _leading_tables(
+    tokens: list[Token], offset: int
+) -> list[tuple[tuple[str, ...], int]]:
+    """Tables at ``offset``. A dot joins parts only when nothing is between them."""
+    index = _index_at(tokens, offset)
+    count = len(tokens)
+    found: list[tuple[tuple[str, ...], int]] = []
+    while index < count:
+        atom = _read_atom(tokens, index)
+        if atom is None:
+            break
+        name, end, index, _start = atom
+        parts = [name]
+        while (
+            index < count
+            and tokens[index].token_type == TokenType.DOT
+            and tokens[index].start == end
+            and tokens[index].end is not None
+        ):
+            nxt = _read_atom(tokens, index + 1)
+            if nxt is None:
+                break
+            nxt_name, nxt_end, nxt_index, nxt_start = nxt
+            if nxt_start != tokens[index].end + 1:
+                break
+            parts.append(nxt_name)
+            end = nxt_end
+            index = nxt_index
+        found.append((tuple(parts), end))
+        if (
+            index < count
+            and tokens[index].token_type == TokenType.COMMA
+            and tokens[index].start == end
+        ):
+            index += 1
+            continue
+        break
     return found
 
 
-@lru_cache(maxsize=512)
-def _parsed_tail(body: str) -> tuple[tuple[str, ...], ...]:
-    """Identifier parts at the start of an ungranted tail.
+def _quote(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
-    The longest successful read wins. A following word that the parser
-    accepts only as an alias does not extend the name.
-    """
-    best: tuple[int, int, tuple[tuple[str, ...], ...]] | None = None
-    for dialect in _dialect_names():
-        try:
-            tokens = list(tokenize(body, read=dialect))
-        except SqlglotError:
-            continue
-        for tok in tokens:
-            if tok.end is None:
-                continue
-            try:
-                tree = parse_one(_WRAP + body[: tok.end + 1], read=dialect)
-            except SqlglotError:
-                continue
-            tables = _tables_at_start(tree)
-            if not tables:
-                continue
-            coverage = max(reach for _parts, reach in tables)
-            parts = tuple(item[0] for item in tables)
-            candidate = (coverage, len(parts), parts)
-            if best is None or candidate[:2] > best[:2]:
-                best = candidate
-    if best is None:
+
+def _confirm(tables: list[tuple[tuple[str, ...], int]]) -> tuple[tuple[str, ...], ...]:
+    """One parse in the serving dialect. The AST parts are the names."""
+    if not tables:
         return ()
-    return best[2]
+    sql = "SELECT * FROM " + ", ".join(
+        ".".join(_quote(part) for part in parts) for parts, _end in tables
+    )
+    try:
+        tree = parse_one(sql, read=_dialect())
+    except SqlglotError:
+        return tuple(parts for parts, _end in tables)
+    found: list[tuple[str, ...]] = []
+    for table in tree.find_all(exp.Table):
+        idents = tuple(part.name for part in table.parts if part.name)
+        if idents:
+            found.append(idents)
+    if len(found) != len(tables):
+        return tuple(parts for parts, _end in tables)
+    return tuple(found)
 
 
-def _parts_in(text: str) -> list[tuple[str, ...]]:
+def _names_in(text: str) -> tuple[list[tuple[str, ...]], bool]:
+    """Names after ungranted markers, and whether the field must be cleared.
+
+    The text is tokenized once. Each tail is parsed once.
+    """
+    raw = text or ""
+    if not raw or _PREFIX.search(raw) is None:
+        return [], False
+    tokens = _tokenize(raw)
+    if tokens is None:
+        return [], True
     found: list[tuple[str, ...]] = []
     seen: set[str] = set()
-    raw = text or ""
-    for match in _PREFIX.finditer(raw):
-        tail = raw[match.end() :]
-        body = tail.lstrip()
-        if not body:
-            continue
-        for parts in _parsed_tail(body):
-            name = ".".join(parts)
-            key = name.casefold()
-            if not name or key in _CODE_TAILS or key in seen:
-                continue
-            seen.add(key)
-            found.append(parts)
-    return found
+    try:
+        for match in _PREFIX.finditer(raw):
+            for parts in _confirm(_leading_tables(tokens, match.end())):
+                name = ".".join(parts)
+                key = name.casefold()
+                if not name or key in _CODE_TAILS or key in seen:
+                    continue
+                seen.add(key)
+                found.append(parts)
+    except _Closed:
+        return [], True
+    return found, False
 
 
 def echoed_names(text: str) -> list[str]:
     """Relation identifiers the grant check named, quoting stripped."""
-    return [".".join(parts) for parts in _parts_in(text)]
+    parts, failed = _names_in(text)
+    if failed:
+        return []
+    return [".".join(item) for item in parts]
 
 
 def _drop_keys(parts_list: list[tuple[str, ...]]) -> set[str]:
@@ -162,39 +265,39 @@ def _drop_keys(parts_list: list[tuple[str, ...]]) -> set[str]:
     return keys
 
 
-def _token_spans(text: str, dropping: set[str]) -> list[tuple[int, int]]:
+def _spans(tokens: list[Token], dropping: set[str]) -> list[tuple[int, int]] | None:
+    """Spans to delete. ``None`` means the field did not tokenize closed."""
     spans: list[tuple[int, int]] = []
-    for dialect in _dialect_names():
-        try:
-            tokens = list(tokenize(text, read=dialect))
-        except SqlglotError:
-            continue
-        index = 0
-        count = len(tokens)
+    index = 0
+    count = len(tokens)
+    try:
         while index < count:
-            tok = tokens[index]
-            if tok.token_type not in _NAME_TOKENS or tok.start is None or tok.end is None:
+            atom = _read_atom(tokens, index)
+            if atom is None:
                 index += 1
                 continue
-            parts = [tok]
-            cursor = index + 1
+            name, end, index, start = atom
+            parts = [name]
             while (
-                cursor + 1 < count
-                and tokens[cursor].token_type == TokenType.DOT
-                and tokens[cursor + 1].token_type in _NAME_TOKENS
-                and tokens[cursor].start == parts[-1].end + 1
-                and tokens[cursor + 1].start == tokens[cursor].end + 1
-                and tokens[cursor].start is not None
-                and tokens[cursor + 1].start is not None
-                and tokens[cursor + 1].end is not None
+                index < count
+                and tokens[index].token_type == TokenType.DOT
+                and tokens[index].start == end
+                and tokens[index].end is not None
             ):
-                parts.append(tokens[cursor + 1])
-                cursor += 2
-            names = [part.text for part in parts]
-            full = ".".join(names).casefold()
-            if full in dropping or names[-1].casefold() in dropping:
-                spans.append((parts[0].start, parts[-1].end + 1))
-            index = cursor
+                nxt = _read_atom(tokens, index + 1)
+                if nxt is None:
+                    break
+                nxt_name, nxt_end, nxt_index, nxt_start = nxt
+                if nxt_start != tokens[index].end + 1:
+                    break
+                parts.append(nxt_name)
+                end = nxt_end
+                index = nxt_index
+            full = ".".join(parts).casefold()
+            if full in dropping or parts[-1].casefold() in dropping:
+                spans.append((start, end))
+    except _Closed:
+        return None
     return spans
 
 
@@ -220,10 +323,18 @@ def _apply(text: str, spans: list[tuple[int, int]]) -> str:
 
 
 def scrub_text(text: str, parts_list: list[tuple[str, ...]]) -> str:
-    """Remove each ungranted name, including the quoting sqlglot consumed."""
+    """Remove each ungranted name. An unclosed tail clears the field."""
     if not text or not parts_list:
         return text
-    return _apply(text, _token_spans(text, _drop_keys(parts_list)))
+    tokens = _tokenize(text)
+    if tokens is None:
+        if _PREFIX.search(text):
+            return ""
+        return text
+    spans = _spans(tokens, _drop_keys(parts_list))
+    if spans is None:
+        return "" if _PREFIX.search(text) else text
+    return _apply(text, spans)
 
 
 def _scrub_value(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
@@ -234,6 +345,21 @@ def _scrub_value(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
     if isinstance(value, dict):
         return {
             str(key): item if str(key) in _ID_KEYS else _scrub_value(item, parts_list)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _clear_closed(value: Any) -> Any:
+    """Clear a value whose ungranted tail did not tokenize."""
+    if isinstance(value, str):
+        _parts, failed = _names_in(value)
+        return "" if failed else value
+    if isinstance(value, list):
+        return [_clear_closed(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): item if str(key) in _ID_KEYS else _clear_closed(item)
             for key, item in value.items()
         }
     return value
@@ -264,26 +390,40 @@ def _collect_parts(reason: str, env: dict[str, Any]) -> list[tuple[str, ...]]:
     found: list[tuple[str, ...]] = []
     seen: set[str] = set()
     for blob in _blobs(reason, env):
-        for parts in _parts_in(blob):
-            key = ".".join(parts).casefold()
+        parts, failed = _names_in(blob)
+        if failed:
+            continue
+        for item in parts:
+            key = ".".join(item).casefold()
             if key in seen:
                 continue
             seen.add(key)
-            found.append(parts)
+            found.append(item)
     return found
 
 
-def _grant_names(env: dict[str, Any]) -> set[str]:
-    """Tables the envelope's Space may read. No Space, nothing granted."""
-    from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
+def _grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[str]:
+    """Tables this Space may read, including its uploads.
+
+    The same seed the session store gives the validator. No Space, or a
+    Space that is not seeded, grants nothing.
+    """
+    from dms_executor.demo_grants import (
+        DEMO_SPACE_GRANTS,
+        canonical_space_id,
+        ingested_bronze_tables,
+    )
 
     raw = env.get("space_id")
     if not isinstance(raw, str) or not raw.strip():
         return set()
-    entry = DEMO_SPACE_GRANTS.get(canonical_space_id(raw.strip()))
+    sid = canonical_space_id(raw.strip())
+    entry = DEMO_SPACE_GRANTS.get(sid)
     if not entry:
         return set()
-    return set(entry[1])
+    names = set(entry[1])
+    names.update(ingested_bronze_tables(warehouse, space_id=sid))
+    return names
 
 
 def _ungranted(
@@ -300,23 +440,36 @@ def _ungranted(
     return out
 
 
-def hide_echo(env: dict[str, Any], reason: str) -> dict[str, Any]:
-    """Scrub name-carrying fields. Id fields are left as they are."""
-    parts_list = _ungranted(_collect_parts(reason, env), _grant_names(env))
+def _scrub_field(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
+    cleared = _clear_closed(value)
     if not parts_list:
-        return env
+        return cleared
+    return _scrub_value(cleared, parts_list)
+
+
+def hide_echo(
+    env: dict[str, Any],
+    reason: str,
+    *,
+    warehouse: Path | None = None,
+) -> dict[str, Any]:
+    """Scrub name-carrying fields. Id fields and loop SQL are left as they are.
+
+    Loop ``outcome`` is included. ``loop[].sql`` and ``raw_reply`` are not.
+    """
+    parts_list = _ungranted(_collect_parts(reason, env), _grant_names(env, warehouse))
     for key in _NAME_KEYS:
         if key not in env or key in _ID_KEYS:
             continue
-        env[key] = _scrub_value(env[key], parts_list)
+        env[key] = _scrub_field(env[key], parts_list)
     loop = env.get("loop")
     if isinstance(loop, list):
         for item in loop:
             if isinstance(item, dict) and isinstance(item.get("outcome"), str):
-                item["outcome"] = scrub_text(item["outcome"], parts_list)
+                item["outcome"] = _scrub_field(item["outcome"], parts_list)
     receipt = env.get("audit_receipt")
     if isinstance(receipt, dict):
         unsure = receipt.get("unsure")
         if isinstance(unsure, dict) and isinstance(unsure.get("why"), str):
-            unsure["why"] = scrub_text(unsure["why"], parts_list)
+            unsure["why"] = _scrub_field(unsure["why"], parts_list)
     return env

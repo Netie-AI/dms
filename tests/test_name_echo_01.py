@@ -383,6 +383,113 @@ def test_granted_prefix_stays_when_longer_name_is_ungranted(
     assert "headcount by site" not in json.dumps(ticket)
 
 
+def test_object_cites_ungranted_is_a_tail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ontology.py names the table after 'cites ungranted', not after a colon."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    reason = (
+        "missing_join: no granted join path for grain plant "
+        "(object plant cites ungranted shipments)"
+    )
+    env = build_abstain(
+        reason=reason,
+        question="shipping cost by SKU and plant",
+        text=reason,
+        assumptions=["bronze layer", reason],
+        abstain_reason=reason,
+        space_id=_FINANCE,
+        session_id="ses_cite",
+        answer_id="ans_cite",
+    )
+    blob = _visible(env)
+    assert "shipments" not in blob
+    assert "bronze layer" in blob
+    assert "plant" in blob
+    ticket = _ticket(caplog)
+    assert "shipments" in ticket["names"]
+
+
+def test_unbalanced_quote_clears_the_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tail that does not tokenize is fail-closed, not left on the envelope."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    env = build_abstain(
+        reason='ungranted:"unterminated',
+        question="headcount",
+        text='The bronze layer cites ungranted:"unterminated',
+        assumptions=["bronze layer", 'ungranted:"unterminated'],
+        abstain_reason='ungranted:"unterminated',
+        space_id=_FINANCE,
+        session_id="ses_open",
+        answer_id="ans_open",
+    )
+    assert env["text"] == ""
+    assert env["abstain_reason"] == ""
+    assert "bronze layer" in env["assumptions"]
+    assert all("unterminated" not in str(item) for item in env["assumptions"])
+    assert env["session_id"] == "ses_open"
+
+
+def test_space_upload_is_granted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An uploaded table uses the same grant source as the validator."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+
+    def _uploads(path: object = None, *, space_id: str | None = None) -> tuple[str, ...]:
+        if space_id == _FINANCE:
+            return ("uploaded_sheet",)
+        return ()
+
+    monkeypatch.setattr("dms_executor.demo_grants.ingested_bronze_tables", _uploads)
+    env = build_abstain(
+        reason="ungranted:hr_payroll,uploaded_sheet",
+        question="headcount",
+        text="ungranted:hr_payroll beside ungranted:uploaded_sheet",
+        assumptions=["bronze layer", "ungranted:uploaded_sheet"],
+        abstain_reason="ungranted:hr_payroll,uploaded_sheet",
+        space_id=_FINANCE,
+        session_id="ses_up",
+        answer_id="ans_up",
+    )
+    blob = _visible(env)
+    assert "hr_payroll" not in blob
+    assert "uploaded_sheet" in blob
+    assert "bronze layer" in blob
+    ticket = _ticket(caplog)
+    assert "hr_payroll" in ticket["names"]
+
+
+def test_sixty_ungranted_names_scrub_under_200ms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One serving-dialect parse per tail. Sixty names stay under 200 ms."""
+    import time
+
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    names = [f"tbl_{index:02d}_secret" for index in range(60)]
+    blob = " ".join(f"ungranted:{name}" for name in names) + " bronze layer"
+    env = {
+        "text": blob,
+        "abstain_reason": blob,
+        "assumptions": [blob],
+        "space_id": "not-a-space",
+        "session_id": "ses_speed",
+    }
+    from dms_executor.name_echo import hide_echo
+
+    started = time.perf_counter()
+    hide_echo(env, blob)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.2, elapsed
+    for name in names:
+        assert name not in env["text"]
+        assert name not in env["abstain_reason"]
+    assert "bronze layer" in env["text"]
+
+
 def test_db_error_text_stays_out_of_the_ticket(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -404,3 +511,217 @@ def test_db_error_text_stays_out_of_the_ticket(
     assert marker not in raw
     assert question not in raw
     assert "SELECT" not in raw
+
+
+# P04 is the loop outcome attached after build_abstain. The other eight are
+# the same HTTP path with the flag on: short, schema, and bare ungranted names.
+_HTTP_PROBES = (
+    ("p01", "how many florbs did wibble sell last quarter", "SELECT 1 FROM t", "t"),
+    ("p02", "how many florbs did wibble sell last quarter", "SELECT 1 FROM po", "po"),
+    (
+        "p03",
+        "how many florbs did wibble sell last quarter",
+        "SELECT 1 FROM secret_hr",
+        "secret_hr",
+    ),
+    ("p04", "List chemicals in inventory", "SELECT 1 FROM hr_payroll", "hr_payroll"),
+    (
+        "p05",
+        "how many florbs did wibble sell last quarter",
+        "SELECT 1 FROM not_granted",
+        "not_granted",
+    ),
+    (
+        "p06",
+        "how many florbs did wibble sell last quarter",
+        "SELECT 1 FROM zz_payroll",
+        "zz_payroll",
+    ),
+    (
+        "p07",
+        "how many florbs did wibble sell last quarter",
+        "SELECT 1 FROM bronze.po_sheet",
+        "po_sheet",
+    ),
+    (
+        "p08",
+        "how many florbs did wibble sell last quarter",
+        'SELECT 1 FROM "hr data"',
+        "hr",
+    ),
+    (
+        "p09",
+        "how many florbs did wibble sell last quarter",
+        "SELECT 1 FROM sku_shadow",
+        "sku_shadow",
+    ),
+)
+
+
+def _post_ask(monkeypatch: pytest.MonkeyPatch, question: str, sql: str) -> dict:
+    """POST /v1/chat/ask with the extract loop on and one model SQL."""
+    from dataclasses import dataclass, field
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from cortex_client.compute import COMPUTE_PATH, compute_insights
+    from cortex_client.models import (
+        AskRequest,
+        AskResponse,
+        LedgerAppendRequest,
+        LedgerAppendResponse,
+    )
+    from cortex_contract.execution import Manifest, QueryResult
+    from dms_api import settings as settings_mod
+    from dms_api.app import create_app
+    from dms_executor import Executor
+    from dms_executor.manifest import ManifestMinter, SessionAcl
+    from fastapi.testclient import TestClient
+
+    class _Http:
+        def __init__(self, body: dict) -> None:
+            self.body = body
+            self.calls: list[str] = []
+
+        def __call__(self, *a: object, **k: object) -> _Http:
+            return self
+
+        def __enter__(self) -> _Http:
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+        def post(self, url: str, json: object = None, headers: object = None) -> object:
+            self.calls.append("POST " + url)
+            if str(url).endswith(COMPUTE_PATH):
+                raise AssertionError("ask lane must never POST /dms/query")
+            return SimpleNamespace(status_code=200, json=lambda: self.body)
+
+        def get(self, url: str, params: object = None, headers: object = None) -> object:
+            self.calls.append("GET " + url)
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"phase": "ontology", "ontology": {"metrics": []}},
+            )
+
+    @dataclass
+    class _Cortex:
+        fake: _Http
+        asks: list[AskRequest] = field(default_factory=list)
+
+        def compute_insights(self, question: str, **kwargs: object) -> dict | None:
+            with patch("cortex_client.compute.httpx.Client", self.fake):
+                return compute_insights(
+                    "http://127.0.0.1:8010",
+                    question=question,
+                    session_id=kwargs.get("session_id"),
+                    space_id=kwargs.get("space_id"),
+                    ontology=kwargs.get("ontology"),
+                    api_key="fake-name-echo-key",
+                )
+
+        def submit(self, req: object) -> QueryResult:
+            return QueryResult(ok=True, status="bound", run_id="run_name_echo")
+
+        def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+            return LedgerAppendResponse(entry_id="led_name_echo", hash="hash_name_echo")
+
+        def ask(self, req: AskRequest) -> AskResponse:
+            self.asks.append(req)
+            return AskResponse(
+                answer="There are 5 locations.",
+                badge="certified",
+                sql_used="SELECT COUNT(*) AS location_count FROM locations",
+                rows=[{"location_count": 5}],
+                audit_id="aud_name_echo",
+                route="sql",
+            )
+
+    wire = {
+        "phase": "generate",
+        "generative": {"sql": sql, "ok": True, "raw_reply": sql},
+        "raw_reply": sql,
+    }
+    cortex = _Cortex(fake=_Http(wire))
+    minter = ManifestMinter()
+
+    def _mint(acl: SessionAcl) -> Manifest:
+        return Manifest(
+            session_id=acl.session_id,
+            org_id=acl.org_id,
+            space_id=acl.space_id,
+            pool_id=acl.pool_id,
+            issuer_key_id="test-kid",
+            allowed_paths=list(acl.allowed_paths),
+            row_predicates=dict(acl.row_predicates),
+            issued_at="2026-09-26T00:00:00+00:00",
+            expires_at="2026-09-26T01:00:00+00:00",
+            signature="dGVzdHNpZw",
+        )
+
+    minter.mint_manifest = _mint  # type: ignore[method-assign]
+    minter.fetch_intermediate = lambda: None  # type: ignore[method-assign]
+    minter.close = lambda: None  # type: ignore[method-assign]
+    minter.invalidate = lambda *_a, **_k: None  # type: ignore[method-assign]
+
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    monkeypatch.setenv("CORTEX_API_KEY", "fake-name-echo-key")
+    settings_mod.get_settings.cache_clear()
+    try:
+        app = create_app()
+        app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+        app.state.cortex = cortex
+        res = TestClient(app).post(
+            "/v1/chat/ask",
+            json={"question": question, "session_id": "ses_name_echo_http"},
+        )
+    finally:
+        settings_mod.get_settings.cache_clear()
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert isinstance(body, dict)
+    return body
+
+
+@pytest.mark.parametrize(
+    ("probe", "question", "sql", "name"),
+    _HTTP_PROBES,
+    ids=[row[0] for row in _HTTP_PROBES],
+)
+def test_http_loop_outcome_drops_ungranted_name(
+    probe: str,
+    question: str,
+    sql: str,
+    name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Flag on, over HTTP. The loop is attached after build_abstain."""
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    body = _post_ask(monkeypatch, question, sql)
+    assert body.get("abstained") is True, probe
+    loop = body.get("loop")
+    assert isinstance(loop, list) and loop, probe
+    entry = loop[0]
+    assert isinstance(entry, dict)
+    outcome = str(entry.get("outcome") or "")
+    assert re.search(
+        rf"(?i)(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", outcome
+    ) is None, outcome
+    assert entry.get("sql") == sql, probe
+    # Lead has not ruled on loop SQL. The statement and the raw reply stay.
+    assert entry.get("raw_reply") == sql, probe
+    visible = _visible(body)
+    assert re.search(
+        rf"(?i)(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", visible
+    ) is None, visible
+    tickets = [
+        json.loads(rec.getMessage().split("pipeline_failure ", 1)[1])
+        for rec in caplog.records
+        if rec.getMessage().startswith("pipeline_failure ")
+    ]
+    assert any(name in (item.get("names") or []) for item in tickets), tickets

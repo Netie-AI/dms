@@ -581,6 +581,12 @@ class Executor:
             out.pop("lane", None)
         masked = mask_unknown_keys(out)
         backstop_missing_ticket(masked, question=question)
+        # The extract loop is attached after build_abstain. Scrub once here,
+        # on the envelope that will be returned. Loop SQL and raw_reply stay.
+        if isinstance(masked, dict):
+            from dms_executor.name_echo import hide_echo
+
+            hide_echo(masked, "", warehouse=getattr(self, "_warehouse", None))
         return masked
 
     def _live_ask(
