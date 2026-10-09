@@ -163,25 +163,43 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
+    prompt = question
     onto = ontology
     feedback = None
-    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
-        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
-        raw = ontology.get("sql_loop_feedback")
-        feedback = raw if isinstance(raw, dict) else None
+    extra_kwargs: dict[str, Any] = {}
+    if isinstance(ontology, dict):
+        from dms_executor.intent_spec import route_overrides
+
+        cleaned, extra = route_overrides(dict(ontology))
+        if isinstance(cleaned, dict) and "sql_loop_feedback" in cleaned:
+            raw = cleaned.pop("sql_loop_feedback")
+            feedback = raw if isinstance(raw, dict) else None
+            onto = cleaned
+        elif extra and isinstance(cleaned, dict):
+            onto = cleaned
+        if extra:
+            role = extra.get("dms_route_role")
+            if isinstance(role, str) and role.strip():
+                extra_kwargs["role"] = role.strip()
+            override = extra.get("dms_route_prompt")
+            if isinstance(override, str) and override.strip():
+                prompt = override
+            if extra.get("dms_route_single_shot"):
+                extra_kwargs["single_shot"] = True
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
             "space_id": space_id,
             "ontology": onto,
+            **extra_kwargs,
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
-        return fn(question, **kwargs)
+        return fn(prompt, **kwargs)
     except TypeError:
         try:
             return fn(
-                question,
+                prompt,
                 session_id=session_id,
                 space_id=space_id,
                 ontology=onto,

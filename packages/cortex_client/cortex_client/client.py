@@ -200,6 +200,8 @@ class CortexClient:
         session_id: str | None = None,
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
+        role: str | None = None,
+        single_shot: bool = False,
         sql_feedback: dict[str, Any] | None = None,
         schema_context: str | None = None,
     ) -> dict[str, Any] | None:
@@ -227,6 +229,8 @@ class CortexClient:
             ontology=onto,
             api_key=self.api_key,
             timeout=bound,
+            role=role,
+            single_shot=single_shot,
             sql_feedback=sql_feedback,
         )
 
