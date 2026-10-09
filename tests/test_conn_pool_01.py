@@ -1357,16 +1357,19 @@ def test_http_disconnect_after_grant_releases_on_interrupt(
     assert serving_waiter_count(lake) >= 1
     started = time.monotonic()
     _drop_socket(held["sock"])
+    # Cap is 1, so the queued ask cannot be granted until the dropped ask
+    # gives the lease and the read lock back. That handoff is the release.
+    # lease_refs can be 1 again in the same instant the waiter is served, so
+    # a refs==0 check in this gap races the grant (CI saw refs==1 at 0.152s).
     while (
-        (lease_refs(lake) > 0 or serving_read_holds(lake) > 0)
+        serving_waiter_count(lake) > 0
         and time.monotonic() - started < INSIGHTS_ASK_TIMEOUT_SECONDS
     ):
         time.sleep(0.01)
     release_s = time.monotonic() - started
     print(f"MEASURE post_grant_release_s={release_s:.3f}")
     try:
-        assert lease_refs(lake) == 0
-        assert serving_read_holds(lake) == 0
+        assert serving_waiter_count(lake) == 0
         assert release_s <= INSIGHTS_ASK_TIMEOUT_SECONDS
         second.join(8.0)
         served_s = time.monotonic() - started
