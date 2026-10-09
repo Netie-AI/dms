@@ -36,7 +36,7 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
 from dms_api.settings import Settings, get_settings
 from dms_executor import Executor
-from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.demo_warehouse import ensure_demo_warehouse, execute_sql
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
@@ -456,8 +456,9 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
 # at envelope.py:1560, and envelope.py:1716 clears the rows.
 # That is not a value that differed from gold. Exec-SQL returns the real
 # rows and E10 does not fire.
-# ops_supplier_rank_boundary grants-fails before submit on both sides, so
-# that envelope still matches the capture and is not listed here.
+# ops_supplier_rank_boundary is not compared to the capture. The warehouse
+# still has supplier rows; the ops grant set does not include that table.
+_ENGINE_NOT_CAPTURE = frozenset({"ops_supplier_rank_boundary"})
 _FIXTURE_FED = frozenset(
     {
         "cq_sku_count",
@@ -479,13 +480,51 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert golden["captured_from"] == BASE
     assert golden["flags_off"] == list(_FLAGS_OFF)
-    got = flag_off_envelopes(tmp_path / "wh.duckdb")
+    db = tmp_path / "wh.duckdb"
+    got = flag_off_envelopes(db)
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
     assert _FIXTURE_FED <= set(ids)
+    assert _ENGINE_NOT_CAPTURE <= set(ids)
     for qid in ids:
+        if qid in _ENGINE_NOT_CAPTURE:
+            continue
         if qid in _FIXTURE_FED:
             assert got["cases"][qid] != golden["cases"][qid], qid
         else:
             assert got["cases"][qid] == golden["cases"][qid], qid
+    _assert_ops_rank_boundary_from_engine(got, db)
+
+
+def _assert_ops_rank_boundary_from_engine(got: dict[str, Any], db: Path) -> None:
+    """Ops does not serve supplier rows the engine still holds.
+
+    The capture is not the grade. Grants come from the Space. The warehouse
+    query is the engine's own rows.
+    """
+    case = next(row for row in _cases() if row["id"] == "ops_supplier_rank_boundary")
+    body = got["cases"][case["id"]]["body"]
+    assert isinstance(body, dict)
+    exe = Executor(warehouse_path=db)
+    try:
+        granted = set(exe.grantable_tables(space_id=case["space_id"]))
+    finally:
+        exe.close()
+    assert "suppliers" not in granted
+    engine_rows = execute_sql("SELECT supplier_id FROM suppliers", path=db, product=True)
+    engine_ids = {str(row["supplier_id"]) for row in engine_rows}
+    assert engine_ids
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert list(body.get("rows") or []) == []
+    assert not body.get("sql_used")
+    assert "grants fail" in list(body.get("assumptions") or [])
+    assert "pack-metric miss" not in str(body.get("assumptions"))
+    served_ids = {
+        str(value)
+        for row in body.get("rows") or []
+        if isinstance(row, dict)
+        for value in row.values()
+    }
+    assert served_ids.isdisjoint(engine_ids)
