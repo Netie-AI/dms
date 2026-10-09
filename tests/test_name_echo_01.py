@@ -302,6 +302,87 @@ def test_any_quoting_drops_ungranted_names_and_keeps_granted(
     assert "headcount by site" not in json.dumps(ticket)
 
 
+def _surface(env: dict) -> str:
+    chunks = [str(env.get(key) or "") for key in ("text", "abstain_reason", "message")]
+    assumptions = env.get("assumptions") or []
+    if isinstance(assumptions, list):
+        chunks.extend(str(item) for item in assumptions)
+    return "\n".join(chunks)
+
+
+@pytest.mark.parametrize(
+    ("reason", "logical"),
+    [
+        ('ungranted:"hr data"', "hr data"),
+        ('ungranted:"a""b"', 'a"b'),
+        ("ungranted:`a``b`", "a`b"),
+        ("ungranted:人员", "人员"),
+    ],
+)
+def test_sqlglot_identifier_shapes_stay_off_the_envelope(
+    reason: str,
+    logical: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Spaces, escaped quotes, and non-ASCII names are identifier parts."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    env = build_abstain(
+        reason=reason,
+        question="headcount by site",
+        text=f"The bronze layer still cites ungranted:inventory beside {reason}.",
+        assumptions=["bronze layer", "ungranted:inventory", reason],
+        abstain_reason=reason,
+        space_id=_FINANCE,
+        session_id="ses_hr_1",
+        answer_id="ans_ident",
+    )
+    surface = _surface(env)
+    assert "bronze layer" in surface
+    assert re.search(r"(?<![A-Za-z0-9_])inventory(?![A-Za-z0-9_])", surface)
+    assert logical not in surface
+    assert reason.split(":", 1)[1] not in surface
+    assert env["session_id"] == "ses_hr_1"
+    ticket = _ticket(caplog)
+    assert logical in ticket["names"]
+    assert "headcount by site" not in json.dumps(ticket)
+
+
+def test_granted_prefix_stays_when_longer_name_is_ungranted(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """hr is granted. hr_payroll is a different identifier and is not."""
+    from dms_executor.demo_grants import DEMO_SPACE_GRANTS
+
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    label, tables = DEMO_SPACE_GRANTS[_FINANCE]
+    monkeypatch.setitem(DEMO_SPACE_GRANTS, _FINANCE, (label, (*tables, "hr")))
+    env = build_abstain(
+        reason="ungranted:hr_payroll",
+        question="headcount by site",
+        text=(
+            "The bronze layer still cites ungranted:hr beside "
+            "ungranted:inventory and ungranted:hr_payroll."
+        ),
+        assumptions=["bronze layer", "ungranted:hr", "ungranted:hr_payroll"],
+        abstain_reason="ungranted:hr_payroll",
+        space_id=_FINANCE,
+        session_id="ses_hr_1",
+        answer_id="ans_prefix",
+    )
+    surface = _surface(env)
+    assert "bronze layer" in surface
+    assert re.search(r"(?<![A-Za-z0-9_])hr(?![A-Za-z0-9_])", surface)
+    assert re.search(r"(?<![A-Za-z0-9_])inventory(?![A-Za-z0-9_])", surface)
+    assert "hr_payroll" not in surface
+    assert env["session_id"] == "ses_hr_1"
+    ticket = _ticket(caplog)
+    assert "hr_payroll" in ticket["names"]
+    assert "headcount by site" not in json.dumps(ticket)
+
+
 def test_db_error_text_stays_out_of_the_ticket(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
