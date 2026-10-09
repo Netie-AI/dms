@@ -32,8 +32,9 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import (
-    bronze_candidate_sql,
     bronze_grant_abstain,
+    bronze_lane_table,
+    bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
 from dms_executor.contract_infer import infer_contract
@@ -82,7 +83,12 @@ from dms_executor.generative_ask import (
     path_miss_envelope,
     with_served_attribution,
 )
-from dms_executor.grant_struct import bronze_gap, serve_gap, sql_refusal_envelope
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    relation_gap,
+    serve_gap,
+    sql_refusal_envelope,
+)
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
@@ -762,46 +768,56 @@ class Executor:
 
         asked = question
         question = with_grounded_scope(question, tables)
-        # The phrase only builds the statement the sheet server would read.
-        # Whether that statement is granted is bronze_gap on the parsed SQL.
-        # An ungranted statement waits: a later plan that only touches granted
-        # tables may still serve. No model, and the pending reason is returned.
-        pending_bronze: str | None = None
+        # dms#284: an ungranted sheet refuses before any model call. The
+        # phrase lane only names the sheet server's table. The grant is
+        # relation_gap, the same keys as serve_gap. No probe SQL is built.
+        # A later lane must not answer that question from another table.
         if allow_bronze:
-            candidate = bronze_candidate_sql(question)
-            if candidate is not None and not space_id:
+            target = bronze_lane_table(question)
+            if target is None:
+                bronze_env = None
+            elif not space_id:
                 bronze_env = bronze_grant_abstain(
                     question,
                     reason="no_space",
                     space_id=space_id,
                     session_id=session_id,
                 )
-                env = attach_cascade(bronze_env, cascade)
-                self._store_turn(session_id, space_id, env)
-                return env
-            if candidate is not None:
+            else:
                 active = set(
                     ingested_bronze_tables(self._warehouse, space_id=space_id)
                 )
                 bronze_readable = set(active).intersection(granted)
-                gap = bronze_gap(
-                    candidate, grantable=bronze_readable, dialect="duckdb"
+                granted_sheet = (
+                    relation_gap(
+                        target,
+                        grantable=bronze_readable,
+                        dialect=SERVING_DIALECT,
+                    )
+                    is None
                 )
-                if gap is None:
-                    # Flag off: maybe_bronze_sheet_ask returns None. A granted
-                    # sheet then continues. An ungranted one is pending below.
-                    served = maybe_bronze_sheet_ask(
+                if granted_sheet:
+                    bronze_env = (
+                        maybe_bronze_sheet_ask(
+                            question,
+                            space_id=space_id,
+                            session_id=session_id,
+                            warehouse=self._warehouse,
+                        )
+                        if bronze_sheet_lane_enabled()
+                        else None
+                    )
+                else:
+                    bronze_env = bronze_grant_abstain(
                         question,
+                        reason=f"ungranted_table:{target}",
                         space_id=space_id,
                         session_id=session_id,
-                        warehouse=self._warehouse,
                     )
-                    if served is not None:
-                        env = attach_cascade(served, cascade)
-                        self._store_turn(session_id, space_id, env)
-                        return env
-                else:
-                    pending_bronze = gap
+            if bronze_env is not None:
+                env = attach_cascade(bronze_env, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -851,16 +867,6 @@ class Executor:
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
-        if pending_bronze:
-            bronze_env = bronze_grant_abstain(
-                question,
-                reason=pending_bronze,
-                space_id=space_id,
-                session_id=session_id,
-            )
-            env = attach_cascade(bronze_env, cascade)
-            self._store_turn(session_id, space_id, env)
-            return env
         if not allow_cortex:
             env = path_miss_envelope(
                 question,
@@ -902,8 +908,10 @@ class Executor:
         if raw_sql and str(raw_sql).strip() and not getattr(resp, "abstained", False):
             gap = serve_gap(str(raw_sql), grantable=set(readable), dialect="duckdb")
             if gap:
+                # The code only. The table name is not user-visible here.
+                # #405's ticket builder records it after that rebase.
                 refused = sql_refusal_envelope(
-                    reason=gap,
+                    reason=customer_grant_reason(gap),
                     space_id=space_id,
                     session_id=session_id,
                     route="abstain",

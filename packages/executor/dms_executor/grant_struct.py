@@ -26,7 +26,6 @@ from dms_executor.demo_warehouse import clear_engine_clock
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.gen_path_refuse import customer_abstain_text
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
-from dms_executor.ontology import table_is_granted
 
 # SourceConfig.kind plus the warehouse dialect. Not a block list.
 _DIALECTS = {
@@ -110,27 +109,34 @@ def serve_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
     return _allow(trees[0], grantable, dialect)
 
 
-def bronze_gap(sql: str, *, grantable: set[str], dialect: str) -> str | None:
-    """Sheet-lane gap. The qualified relation is the existing sentence.
+def relation_gap(name: str, *, grantable: set[str], dialect: str) -> str | None:
+    """None when ``name`` is a granted relation. Same keys as ``serve_gap``.
 
-    A path or a table function stays kind-only. It does not carry a path.
+    The caller already has the relation. This does not build a statement.
+    A statement still goes through ``serve_gap``. A missing dialect is
+    ``sql_dialect_unknown``.
     """
-    trees = _trees(sql, dialect)
-    if trees is None:
-        return "ungranted:unparsed"
-    if len(trees) != 1:
-        return "multi_statement"
-    allowed = {str(g).strip().strip('"').strip("`").lower() for g in grantable}
-    for kind, token in _relations(trees[0]):
-        if kind == "unresolved":
-            return "sql_relation_not_granted"
-        if kind == "dotted":
-            if token.lower() not in allowed:
-                return "sql_relation_not_granted"
-            continue
-        if kind == "table" and not table_is_granted(token, set(grantable)):
-            return f"ungranted_table:{token}"
-    return None
+    if _engine(dialect) is None:
+        return "sql_dialect_unknown"
+    key = normalize_relation(name, dialect=dialect)
+    if not key:
+        return "sql_relation_unresolved"
+    if key in _grant_keys(set(grantable), dialect):
+        return None
+    return "sql_relation_not_granted"
+
+
+def customer_grant_reason(reason: str) -> str:
+    """User-visible reason code. A table name is not part of the code.
+
+    ``ungranted:file`` and ``ungranted:unparsed`` stay. A bare
+    ``ungranted:<table>`` drops the table. The name waits for the #405
+    ticket; this function does not log it.
+    """
+    gap = str(reason or "").strip()
+    if gap.startswith("ungranted:") and gap not in {"ungranted:file", "ungranted:unparsed"}:
+        return "ungranted"
+    return gap
 
 
 def structural_grant_stop(reason: str) -> bool:

@@ -1765,7 +1765,7 @@ def test_index_failed_stamp_on_envelope_and_attempt(
 
     monkeypatch.setattr("dms_executor.schema_context._bounded_read", _boom)
     assert (
-        build_space_index(serving, "space-failed", {"person"})
+        build_space_index(serving, "space-failed", {"person"}, "duckdb")
         == "index_failed:RuntimeError"
     )
     onto = Ontology()

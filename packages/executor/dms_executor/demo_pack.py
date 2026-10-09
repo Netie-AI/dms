@@ -21,7 +21,12 @@ from typing import Any, Generic, TypeVar
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
-from dms_executor.grant_struct import serve_gap, sql_refusal_envelope, structural_grant_stop
+from dms_executor.grant_struct import (
+    normalize_relation,
+    serve_gap,
+    sql_refusal_envelope,
+    structural_grant_stop,
+)
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -487,10 +492,17 @@ def _as_of() -> str:
 
 
 def _grant_covers(table: str, allowed: set[str]) -> bool:
-    """True when the Space grant names the table or its Cortex warehouse_ alias."""
-    if table in allowed:
-        return True
-    return f"warehouse_{table}" in allowed
+    """True when the grant normalises to the same qualified relation.
+
+    Pack SQL is duckdb. The compare is ``normalize_relation``. A different
+    spelling of the table is not a grant.
+    """
+    key = normalize_relation(table, dialect="duckdb")
+    if not key:
+        return False
+    return any(
+        normalize_relation(str(token), dialect="duckdb") == key for token in allowed
+    )
 
 
 def match_pack_phrase(
@@ -521,9 +533,8 @@ def lookup_pack_metric(
     The phrase set is the ten base metrics plus the score-pack allowlist.
     A Space that does not grant every table the SQL names is not a hit here
     (Warehouse Ops vs suppliers). ``maybe_pack_ask`` names that as ``grants
-    fail`` instead of treating it as no match. Cortex ``warehouse_<table>``
-    aliases count as the same grant. Column presence is Cortex's job on
-    submit -- do not probe the thin DMS local file.
+    fail`` instead of treating it as no match. Column presence is Cortex's
+    job on submit -- do not probe the thin DMS local file.
     """
     hit = match_pack_phrase(question, tables=tables)
     if hit is None:
@@ -535,13 +546,7 @@ def lookup_pack_metric(
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
         return None
-    # serve_gap compares exact keys. ``_grant_covers`` already decided the
-    # Cortex ``warehouse_<table>`` alias. Hand the checker that bare name.
-    covered = set(allowed)
-    for table in hit.tables:
-        if _grant_covers(table, allowed):
-            covered.add(table)
-    gap = serve_gap(hit.sql, grantable=covered, dialect="duckdb")
+    gap = serve_gap(hit.sql, grantable=set(allowed), dialect="duckdb")
     if gap:
         return None
     return hit

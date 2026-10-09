@@ -14,7 +14,7 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import DEMO_TABLES, Executor
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import maybe_generative_ask
-from dms_executor.grant_struct import bronze_gap, serve_gap, sqlglot_dialect
+from dms_executor.grant_struct import serve_gap, sqlglot_dialect
 from dms_executor.manifest import ManifestMinter, SessionAcl
 
 OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -122,9 +122,17 @@ def test_phrasings_refuse_the_file_the_sql_reads(
     assert env["abstained"] is True
     assert env["rows"] == []
     assert env["sql_used"] is None
-    assert "sql_relation_not_granted" in _reason(env)
     assert model.submits == []
     assert HIDDEN not in json.dumps(env)
+    # A named ungranted sheet refuses before the model (dms#284).
+    # Any other wording is the SQL the model wrote.
+    from dms_executor.bronze_sheet_ask import bronze_lane_table
+
+    if bronze_lane_table(question):
+        assert "ungranted_table:" in _reason(env)
+        assert model.asks == []
+    else:
+        assert "sql_relation_not_granted" in _reason(env)
 
 
 def test_sql_shapes_refuse_before_submit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,7 +180,11 @@ def test_sql_shapes_refuse_before_submit(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_harmless_wording_serves_granted_sql(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Old phrase shape. The statement only reads a granted table."""
+    """A question that is not the sheet lane. The statement reads a granted table.
+
+    An ungranted sheet refuses before the model. That case is the bronze
+    grant test, not this one.
+    """
     import duckdb
     from dms_executor.demo_warehouse import ensure_demo_warehouse
 
@@ -204,7 +216,7 @@ def test_harmless_wording_serves_granted_sql(
     model = _Model(sql)
     exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
     env = exe.live_ask(
-        "In qwest_box.xlsx on the Sales sheet, what are the top 3 categories?",
+        "How many rows are there?",
         space_id=OPS,
         session_id="ses_grant_struct_ok",
     )
@@ -266,9 +278,11 @@ def test_parse_failure_does_not_retry_or_echo(monkeypatch: pytest.MonkeyPatch) -
     assert "ungranted:unparsed" in _reason(env)
 
 
-def test_bronze_gap_names_the_parsed_relation() -> None:
+def test_qualified_bronze_name_is_not_a_bare_grant() -> None:
+    """A bare sheet name is not ``bronze."<sheet>"``. One checker, serve_gap."""
     sql = 'SELECT 1 FROM bronze."qwest_box_Sales"'
-    assert bronze_gap(sql, grantable=set(), dialect="duckdb") == (
-        "ungranted_table:bronze.qwest_box_Sales"
+    assert serve_gap(sql, grantable=set(), dialect="duckdb") == "sql_relation_not_granted"
+    assert (
+        serve_gap(sql, grantable={"qwest_box_Sales"}, dialect="duckdb")
+        == "sql_relation_not_granted"
     )
-    assert bronze_gap(sql, grantable={"qwest_box_Sales"}, dialect="duckdb") is None

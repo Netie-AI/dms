@@ -82,8 +82,7 @@ from dms_core.pii import (
     is_mask_token,
 )
 
-from dms_executor.demo_warehouse import SERVING_DIALECT
-from dms_executor.grant_struct import normalize_relation
+from dms_executor.grant_struct import normalize_relation, sqlglot_dialect
 from dms_executor.ontology import Ontology, relation_tables
 
 # ponytail: 4 characters per token. Ceiling: a model tokenizer disagrees.
@@ -476,21 +475,23 @@ def _dataset_items(schema: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in raw if isinstance(item, Mapping)]
 
 
-def _granted(name: str, grantable: set[str] | None, *, dialect: str) -> bool:
-    """Same key as ``normalize_relation``. No second name compare.
+def _granted(name: str, grantable: set[str] | None, *, dialect: str) -> str | None:
+    """None when ``name`` is granted. Same dialect miss as ``serve_gap``.
 
-    A connector that names no dialect is the serving file. That file is
-    DuckDB, so the fold is ``SERVING_DIALECT``.
+    A missing or unknown dialect is ``sql_dialect_unknown``. There is no
+    serving-dialect fallback. ``grantable is None`` means this caller is
+    not filtering.
     """
     if grantable is None:
-        return True
-    fold = dialect or SERVING_DIALECT
-    key = normalize_relation(name, dialect=fold)
+        return None
+    if sqlglot_dialect(dialect or "") is None:
+        return "sql_dialect_unknown"
+    key = normalize_relation(name, dialect=dialect)
     if not key:
-        return False
-    return any(
-        normalize_relation(str(token), dialect=fold) == key for token in grantable
-    )
+        return "sql_relation_unresolved"
+    if any(normalize_relation(str(token), dialect=dialect) == key for token in grantable):
+        return None
+    return "sql_relation_not_granted"
 
 
 def _column_items(dataset: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -1257,7 +1258,7 @@ def build_schema_context(
         for item in _dataset_items(described)
         if _text(item.get("name")) and _granted(
             _text(item.get("name")), grantable, dialect=dialect
-        )
+        ) is None
     ]
     names = {_text(item.get("name")) for item in datasets}
     declared = _declared_columns(datasets)
@@ -1468,6 +1469,9 @@ def build_schema_context(
             kept_measures,
             table_desc_out,
         )
+    if grantable is not None and sqlglot_dialect(dialect or "") is None:
+        prompt = f"sql_dialect_unknown\n{prompt}"
+        envelope_prompt = f"sql_dialect_unknown\n{envelope_prompt}"
     return SchemaContext(
         prompt=prompt,
         samples_included=any(col.samples for col in chosen),
@@ -1637,7 +1641,7 @@ def read_catalog(
             column_name_text = str(column_name)
             if not _ident(table) or not _ident(column_name_text):
                 continue
-            if not _granted(table, grantable, dialect=named):
+            if _granted(table, grantable, dialect=named) is not None:
                 continue
             data = str(data_type or "")
             fp_rows.append((table, column_name_text, data))

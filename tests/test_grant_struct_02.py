@@ -517,7 +517,14 @@ def test_fallback_refuses_every_serve_gap(
     assert fb_env["abstained"] is True, name
     assert fb_env["rows"] == [], name
     assert fb_env["sql_used"] is None, name
-    assert reason in _reason(fb_env), name
+    from dms_executor.grant_struct import customer_grant_reason
+
+    shown = customer_grant_reason(reason)
+    assert shown in _reason(fb_env), name
+    fb_blob = json.dumps(fb_env)
+    if shown == "ungranted":
+        for part in reason.split(":", 1)[1].split(","):
+            assert part not in fb_blob, name
     assert _sql_submits(fb.submits) == [], name
 
 
@@ -890,3 +897,85 @@ def test_postgres_quoted_schema_refuses_shortlist_and_serve() -> None:
         )
         == "sql_relation_not_granted"
     )
+
+
+_SHEET_SQL = 'SELECT 1 FROM bronze."sheet_x"'
+_SHEET_NAME = 'bronze."sheet_x"'
+# On 19eb1f59 bronze_gap allowed each of these for bronze."sheet_x".
+_SHEET_GRANTS = ("other_schema.sheet_x", "warehouse_sheet_x", "SHEET_X")
+
+
+@pytest.mark.parametrize("grant", _SHEET_GRANTS)
+def test_sheet_grant_shapes_refuse_on_both_paths(grant: str) -> None:
+    """One checker. The name path and the SQL path both refuse these grants."""
+    from dms_executor.grant_struct import relation_gap
+
+    grants = {grant}
+    assert serve_gap(_SHEET_SQL, grantable=grants, dialect="duckdb") == (
+        "sql_relation_not_granted"
+    )
+    assert relation_gap(_SHEET_NAME, grantable=grants, dialect="duckdb") == (
+        "sql_relation_not_granted"
+    )
+
+
+def test_qualified_bronze_sheet_serves_when_that_relation_is_granted() -> None:
+    from dms_executor.grant_struct import relation_gap
+
+    grants = {"bronze.sheet_x"}
+    assert serve_gap(_SHEET_SQL, grantable=grants, dialect="duckdb") is None
+    assert relation_gap("bronze.sheet_x", grantable=grants, dialect="duckdb") is None
+
+
+def test_postgres_schema_without_dialect_is_unknown() -> None:
+    """No dialect is sql_dialect_unknown. DuckDB must not fold a Postgres name.
+
+    Fails on 19eb1f59: a blank dialect fell back to duckdb and granted
+    ``"SRC_A".orders`` from ``src_a.orders``.
+    """
+    from dms_executor.schema_context import build_schema_context
+
+    granted = {"src_a.orders"}
+    prompt = build_schema_context(
+        "how many qwestbeta orders",
+        {
+            "datasets": [
+                {
+                    "name": "src_a.orders",
+                    "columns": [
+                        {
+                            "name": "n",
+                            "type": "integer",
+                            "distinct": 1,
+                            "values": ["ALPHAGRANT"],
+                        }
+                    ],
+                },
+                {
+                    "name": '"SRC_A".orders',
+                    "columns": [
+                        {
+                            "name": "category",
+                            "type": "varchar",
+                            "distinct": 1,
+                            "values": ["QWESTBETA"],
+                        }
+                    ],
+                },
+            ]
+        },
+        grantable=granted,
+    ).prompt
+    assert "sql_dialect_unknown" in prompt
+    body = prompt.split("sql_dialect_unknown", 1)[-1]
+    assert "src_a.orders" not in body
+    assert "SRC_A" not in prompt
+    assert "QWESTBETA" not in prompt
+    assert "qwestbeta" not in prompt
+    assert "ALPHAGRANT" not in prompt
+    assert serve_gap(
+        'SELECT 1 FROM "SRC_A".orders', grantable=granted, dialect=""
+    ) == "sql_dialect_unknown"
+    assert serve_gap(
+        "SELECT 1 FROM src_a.orders", grantable=granted, dialect="   "
+    ) == "sql_dialect_unknown"

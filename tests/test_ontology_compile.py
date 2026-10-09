@@ -549,7 +549,8 @@ def test_compile_ops_shipping_sku_plant_is_granted_path(tmp_path: Path) -> None:
     assert "sku" in sql
 
 
-def test_compile_warehouse_alias_counts_as_granted_plant_path(tmp_path: Path) -> None:
+def test_compile_prefixed_names_are_not_the_plant_path(tmp_path: Path) -> None:
+    """A prefixed grant is a different relation. The plant path stays ungranted."""
     _db, onto = _demo_onto(tmp_path)
     got = onto.compile_grains(
         "shipping_cost_myr",
@@ -560,8 +561,8 @@ def test_compile_warehouse_alias_counts_as_granted_plant_path(tmp_path: Path) ->
             "warehouse_locations",
         },
     )
-    assert isinstance(got, CompiledQuery)
-    assert {p.grain for p in got.where_paths} >= {"sku", "plant"}
+    assert isinstance(got, Refusal)
+    assert got.reason == "missing_join"
 
 
 def test_compile_finance_stock_sku_plant_is_granted_path(tmp_path: Path) -> None:

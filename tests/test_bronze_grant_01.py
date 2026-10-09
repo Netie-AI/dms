@@ -153,6 +153,79 @@ def _shape_columns(path: Path, table: str) -> set[str]:
         con.close()
 
 
+def test_flag_off_ungranted_sheet_refuses_before_any_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dms#284. The sheet is refused before Insights, submit, or Cortex.ask.
+
+    On 19eb1f59 this ran one Insights compute and one SQL submit, then
+    abstained through the xlsx scope rule.
+    """
+    db = tmp_path / "before-model.duckdb"
+    filename = "grantgap.xlsx"
+    table = _seed(db, filename, space_id=None, amount=1545366.40)
+    monkeypatch.delenv("DMS_LANE_BRONZE_SHEET", raising=False)
+    monkeypatch.delenv("DMS_SCHEMA_CONTEXT", raising=False)
+
+    class _Count:
+        def __init__(self) -> None:
+            self.computes = 0
+            self.submits = 0
+            self.asks = 0
+
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+            self.computes += 1
+            return {
+                "query_sql": "SELECT COUNT(*) AS n FROM inventory",
+                "plan_source": "ontology_plan",
+            }
+
+        def submit(self, _req: Any) -> Any:
+            self.submits += 1
+            from cortex_contract.execution import QueryResult
+
+            return QueryResult(
+                ok=True,
+                status="ok",
+                run_id="run-should-not",
+                output={"rows": [{"n": 1}]},
+            )
+
+        def ask(self, _req: Any) -> AskResponse:
+            self.asks += 1
+            return AskResponse(
+                answer="1",
+                abstained=False,
+                badge="generated",
+                rows=[{"n": 1}],
+                sql_used="SELECT COUNT(*) AS n FROM inventory",
+                route="generated",
+            )
+
+        def ledger_append(self, _req: Any) -> Any:
+            from cortex_client.models import LedgerAppendResponse
+
+            return LedgerAppendResponse(entry_id="led_x", hash="hash_x_not_led")
+
+    stub = _Count()
+    _point_warehouse(monkeypatch, db)
+    env = Executor(cortex=stub, warehouse_path=db).live_ask(  # type: ignore[arg-type]
+        _question(filename),
+        space_id=OPS,
+        session_id="ses_bronze_grant",
+    )
+    assert_envelope_valid(env)
+    assert stub.computes == 0
+    assert stub.submits == 0
+    assert stub.asks == 0
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["rows"] == []
+    assert env["sql_used"] is None
+    assert f"ungranted_table:{table}" in env["text"]
+    assert f"ungranted_table:{table}" in env["assumptions"]
+    assert "1545366.4" not in env["text"]
+
+
 def test_ungranted_space_bronze_sum_abstains(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

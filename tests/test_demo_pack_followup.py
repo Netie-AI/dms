@@ -220,25 +220,22 @@ def _live_client(
     return TestClient(app)
 
 
-def test_pack_hits_when_space_grants_warehouse_aliases() -> None:
+def test_pack_misses_when_space_grants_only_prefixed_names() -> None:
+    """A prefixed name is a different relation. It does not cover the bare table."""
     grant = {
         "warehouse_inventory",
         "warehouse_locations",
         "warehouse_suppliers",
         "warehouse_transactions",
     }
-    hit = lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant)
-    assert hit is not None
-    assert hit.metric_id == "spend_by_country"
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant) is None
     ops = {
         "warehouse_inventory",
         "warehouse_locations",
         "warehouse_shipments",
     }
     assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
-    stock = lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops)
-    assert stock is not None
-    assert stock.metric_id == "stock_value_by_category"
+    assert lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops) is None
 
 
 def test_finance_spend_by_country_is_governed_metric(
@@ -482,6 +479,10 @@ def test_quoted_warehouse_schema_spend_does_not_f32_demote(
     assert env["sql_used"] is None
     blob = r.text
     assert "sql_relation_not_granted" in blob
+    assert "validate:sql_relation_not_granted" in env["assumptions"]
+    assumptions = " ".join(str(item) for item in env["assumptions"])
+    assert "inventory" not in assumptions
+    assert "warehouse_" not in assumptions
     assert "20,516.00" not in blob
     assert "20516" not in blob
     assert len(cortex.asks) == 1

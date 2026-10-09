@@ -395,17 +395,28 @@ def relation_tables(relation: str) -> frozenset[str]:
     return frozenset({bare} if bare else ())
 
 
-def table_is_granted(table: str, grantable: set[str]) -> bool:
-    """True when the Space grant names the table or a Cortex warehouse_ alias."""
-    t = _bare_table(table)
-    if not t:
-        return False
-    allowed = {_bare_table(x) for x in grantable}
-    return t in allowed or f"warehouse_{t}" in allowed
+def ungranted_tables(
+    tables: set[str], grantable: set[str], *, dialect: str
+) -> tuple[str, ...]:
+    """Tables whose ``normalize_relation`` key is not in the grant set.
 
+    The dialect is the caller's. A missing dialect grants nothing.
+    """
+    from dms_executor.grant_struct import normalize_relation
 
-def ungranted_tables(tables: set[str], grantable: set[str]) -> tuple[str, ...]:
-    return tuple(sorted(t for t in tables if t and not table_is_granted(t, grantable)))
+    keys: set[str] = set()
+    for token in grantable:
+        key = normalize_relation(str(token), dialect=dialect)
+        if key:
+            keys.add(key)
+    blocked: list[str] = []
+    for table in tables:
+        if not table:
+            continue
+        key = normalize_relation(str(table), dialect=dialect)
+        if not key or key not in keys:
+            blocked.append(str(table))
+    return tuple(sorted(set(blocked)))
 
 
 def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
@@ -1291,7 +1302,9 @@ class Ontology:
         return [
             p
             for p in pool
-            if not ungranted_tables(set(self.steps_tables(p.steps)), grantable)
+            if not ungranted_tables(
+                set(self.steps_tables(p.steps)), grantable, dialect="duckdb"
+            )
         ]
 
     def _ranked_where_paths_for(
@@ -1671,7 +1684,7 @@ class Ontology:
             for grain, obj, _c in specs:
                 if obj == m.grain:
                     blocked = ungranted_tables(
-                        set(self.object_tables(obj)), grantable
+                        set(self.object_tables(obj)), grantable, dialect="duckdb"
                     )
                     if blocked:
                         grant_miss.append(
@@ -1687,7 +1700,7 @@ class Ontology:
                 for path in ranked:
                     if path.grain == grain:
                         cited |= set(self.steps_tables(path.steps))
-                blocked = ungranted_tables(cited, grantable)
+                blocked = ungranted_tables(cited, grantable, dialect="duckdb")
                 extra = f" (ungranted {', '.join(blocked)})" if blocked else ""
                 grant_miss.append(
                     f"join {m.grain}->{obj} for grain {grain}{extra}"

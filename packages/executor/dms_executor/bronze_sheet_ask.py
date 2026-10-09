@@ -69,26 +69,12 @@ def bronze_sheet_lane_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def bronze_candidate_sql(question: str) -> str | None:
-    """Statement the sheet server would read, or None if this is not that server.
-
-    The phrase match only chooses which file was named, so the server can
-    build a statement. Grants parse that statement. They do not read the
-    question.
-    """
-    table = bronze_lane_table(question)
-    if not table:
-        return None
-    ident = table.split(".", 1)[-1]
-    return f'SELECT 1 FROM bronze."{ident}"'
-
-
 def bronze_lane_table(question: str) -> str | None:
-    """Bronze table this question would read, or None if it is not that lane.
+    """Bronze table the sheet server would read, or None if it is not that lane.
 
-    Same scope as ``maybe_bronze_sheet_ask`` before any DuckDB open. Which
-    file was named is context for that server. The grant decision is the
-    parsed statement (``bronze_gap``), not this phrase.
+    Same scope as ``maybe_bronze_sheet_ask`` before any DuckDB open. The
+    phrase match only names that table. It does not grant, and it does not
+    build SQL. The grant decision is ``relation_gap`` on this name.
     """
     if _NO_SQL.search(question or ""):
         return None
