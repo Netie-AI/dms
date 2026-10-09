@@ -453,7 +453,9 @@ def test_chemicals_list_shapes_are_not_served_by_ranking(
         assert all(item.get("outcome") != "served" for item in env["loop"])
         if "not_granted" in sql:
             assert calls["n"] == 1
-            assert env["loop"][0]["outcome"].startswith("checker:ungranted:")
+            assert env["loop"][0]["outcome"] == "checker:ungranted"
+            assert "not_granted" not in json.dumps(env["assumptions"])
+            assert "not_granted" not in env["text"]
         else:
             assert calls["n"] == 2
             assert "loop_exhausted:" in env["text"]

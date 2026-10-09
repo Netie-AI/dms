@@ -515,6 +515,9 @@ def test_relation_tables_bare_and_subquery() -> None:
     gap = missing_join_for_ungranted("ungranted:shipments", ("sku", "plant")) or ""
     assert "missing_join" in gap and "plant" in gap
     assert not gap.startswith("validate:")
+    bare = missing_join_for_ungranted("ungranted", ("sku", "plant")) or ""
+    assert "missing_join" in bare and "plant" in bare
+    assert "shipments" not in bare
     assert missing_join_for_ungranted("explain:BinderException", ("sku", "plant")) is None
 
 

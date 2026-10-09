@@ -207,7 +207,9 @@ def register_verified_query(
     # Statement count before the hostile scanner, both inside serve_gap.
     # A plain ungranted demo table keeps the sql_not_in_space sentence.
     gap = serve_gap(sql_text, grantable=grantable, dialect=dialect)
-    if gap and not str(gap).startswith("ungranted:"):
+    # A plain ungranted relation still reaches the demo-table sentence.
+    # ``ungranted:file`` and ``ungranted:unparsed`` do too; anything else raises.
+    if gap and gap != "ungranted" and not str(gap).startswith("ungranted:"):
         raise ValueError(gap)
     leaked = _sql_outside_space(sql_text, grantable)
     if leaked:

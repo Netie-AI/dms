@@ -411,10 +411,9 @@ def test_granted_quoted_and_semicolon_shapes_serve(
     assert user["sql_used"], sql
 
 
-# These three are served by the Cortex.ask fallback on a0e796c09fd8.
-# A plain ungranted name is ``ungranted:<bare>``. A non-default schema is
-# ``sql_relation_not_granted``. The pack lane keeps its grants-fail sentence
-# for a plain ungranted name and does not submit.
+# A plain ungranted name is bare ``ungranted``. The name is not in the code.
+# A non-default schema is ``sql_relation_not_granted``. The pack lane keeps
+# its grants-fail sentence for a plain ungranted name and does not submit.
 _FALLBACK_HOLES = (
     (
         "information_schema",
@@ -424,17 +423,17 @@ _FALLBACK_HOLES = (
     (
         "main_secret",
         "SELECT * FROM main.secret_ungranted",
-        "ungranted:secret_ungranted",
+        "ungranted",
     ),
     (
         "cte_orders",
         "WITH orders AS (SELECT * FROM alerts) SELECT * FROM orders",
-        "ungranted:alerts",
+        "ungranted",
     ),
     (
         "cte_secret",
         "WITH orders AS (SELECT * FROM secret_ungranted) SELECT * FROM orders",
-        "ungranted:secret_ungranted",
+        "ungranted",
     ),
 )
 
@@ -466,8 +465,9 @@ def test_fallback_refuses_every_serve_gap(
     assert shown_user in _reason(user), name
     if shown_user == "ungranted":
         user_blob = json.dumps(user)
-        for part in reason.split(":", 1)[1].split(","):
-            assert part not in user_blob, name
+        for planted in ("secret_ungranted", "alerts"):
+            if planted in sql:
+                assert planted not in user_blob, name
 
     before = len(_sql_submits(model.submits))
     with pytest.raises(SecurityEvent) as ei:
@@ -498,7 +498,7 @@ def test_fallback_refuses_every_serve_gap(
     assert pack_env is not None, name
     assert pack_env["abstained"] is True, name
     assert pack_env["sql_used"] is None, name
-    if reason.startswith("ungranted:"):
+    if reason == "ungranted" or reason.startswith("ungranted:"):
         assert "grants fail" in _reason(pack_env), name
     else:
         assert reason in _reason(pack_env), name
@@ -528,8 +528,9 @@ def test_fallback_refuses_every_serve_gap(
     assert shown_fu in _reason(followed), name
     if shown_fu == "ungranted":
         fu_blob = json.dumps(followed)
-        for part in reason.split(":", 1)[1].split(","):
-            assert part not in fu_blob, name
+        for planted in ("secret_ungranted", "alerts"):
+            if planted in sql:
+                assert planted not in fu_blob, name
 
     fb = _Fallback(sql)
     fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
@@ -544,8 +545,9 @@ def test_fallback_refuses_every_serve_gap(
     assert shown in _reason(fb_env), name
     fb_blob = json.dumps(fb_env)
     if shown == "ungranted":
-        for part in reason.split(":", 1)[1].split(","):
-            assert part not in fb_blob, name
+        for planted in ("secret_ungranted", "alerts"):
+            if planted in sql:
+                assert planted not in fb_blob, name
     assert _sql_submits(fb.submits) == [], name
 
 
@@ -1160,7 +1162,7 @@ def test_catalog_binds_a_qualified_name_to_the_same_relation(
 def test_ungranted_name_stays_out_of_both_envelopes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """User SQL and follow-up mask the relation. The ticket keeps it."""
+    """The grant code is bare ungranted. The relation is not in the envelope or the ticket."""
     planted = "zz_planted_secret"
     sql = f"SELECT 1 FROM {planted}"
     db = ensure_demo_warehouse(tmp_path / "mask.duckdb")
@@ -1191,7 +1193,9 @@ def test_ungranted_name_stays_out_of_both_envelopes(
         for rec in caplog.records
         if rec.message.startswith("pipeline_failure ")
     ]
-    assert f"ungranted:{planted}" in reasons
+    assert "ungranted" in reasons
+    assert planted not in reasons
+    assert all(planted not in str(item) for item in reasons)
 
 
 _NO_TABLE = (
@@ -1261,6 +1265,79 @@ def test_no_granted_base_table_is_a_direct_http_refusal(
     assert "ungranted" in blob, sql
     assert "explain:" not in blob, sql
     assert plant.submits == [], sql
+
+
+def test_generators_serve_only_beside_a_granted_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generator alone is ungranted. Beside a grant it serves. A reader does not."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    grants = {"orders"}
+    assert (
+        serve_gap("SELECT * FROM generate_series(1, 3)", grantable=grants, dialect="duckdb")
+        == "ungranted"
+    )
+    series_join = "SELECT COUNT(*) AS n FROM orders JOIN generate_series(1, 3) g ON TRUE"
+    assert serve_gap(series_join, grantable=grants, dialect="duckdb") is None
+    joined_reader = "SELECT * FROM orders JOIN read_csv('x.csv') t ON TRUE"
+    gap = serve_gap(joined_reader, grantable=grants, dialect="duckdb")
+    assert gap
+    assert gap.startswith("hostile_sql:") or gap == "sql_relation_not_granted"
+    unnest_sql = "SELECT unnest(items) AS n FROM orders"
+    assert serve_gap(unnest_sql, grantable=grants, dialect="duckdb") is None
+    db = ensure_demo_warehouse(tmp_path / "gen.duckdb")
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE orders (items INTEGER[])")
+        con.execute("INSERT INTO orders VALUES ([1, 2])")
+    finally:
+        con.close()
+    explained: list[str] = []
+    real = duckdb.DuckDBPyConnection.execute
+
+    def _wrapped(self: Any, statement: str, *args: Any, **kwargs: Any) -> Any:
+        if str(statement).lstrip().upper().startswith("EXPLAIN"):
+            explained.append(str(statement))
+        return real(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(duckdb.DuckDBPyConnection, "execute", _wrapped)
+    why = validate_compiled_sql(
+        joined_reader, grantable=grants, warehouse=db, dialect="duckdb"
+    )
+    assert why
+    assert why.startswith("hostile_sql:") or why == "sql_relation_not_granted"
+    assert explained == []
+    _grant_orders(monkeypatch)
+    exe = Executor(warehouse_path=db)
+    alone = exe.answer_user_sql(
+        "SELECT * FROM generate_series(1, 3)",
+        space_id=OPS,
+        session_id="ses_series_alone",
+    )
+    assert alone["abstained"] is True
+    assert alone["sql_used"] is None
+    assert "ungranted" in _reason(alone)
+    assert "explain:" not in json.dumps(alone)
+    series = exe.answer_user_sql(series_join, space_id=OPS, session_id="ses_series_join")
+    assert_envelope_valid(series)
+    assert series["abstained"] is False
+    assert series["rows"] == [{"n": 3}]
+    unnest = exe.answer_user_sql(unnest_sql, space_id=OPS, session_id="ses_unnest")
+    assert_envelope_valid(unnest)
+    assert unnest["abstained"] is False
+    assert sorted(row["n"] for row in unnest["rows"]) == [1, 2]
+    reader = exe.answer_user_sql(
+        joined_reader, space_id=OPS, session_id="ses_reader_join"
+    )
+    assert_envelope_valid(reader)
+    assert reader["abstained"] is True
+    assert reader["sql_used"] is None
+    assert reader["rows"] == []
+    blob = json.dumps(reader)
+    assert "x.csv" not in blob
+    assert "explain:" not in blob
+    assert explained == []
 
 
 def test_usd_book_grant_is_the_same_verdict() -> None:

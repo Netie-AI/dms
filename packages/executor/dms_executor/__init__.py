@@ -961,7 +961,7 @@ class Executor:
                 warehouse=self._warehouse,
             )
             if gap:
-                # The envelope shows the code. The ticket keeps the relation.
+                # One code. The relation name is not part of it.
                 refused = sql_refusal_envelope(
                     reason=gap,
                     shown=customer_grant_reason(gap),

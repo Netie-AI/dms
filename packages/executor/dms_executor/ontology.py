@@ -420,15 +420,21 @@ def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
     ``validate:ungranted:shipments`` without naming ``missing_join`` / plant.
     """
     head = str(why or "").strip()
-    if not head.startswith("ungranted:"):
+    named_table = head.startswith("ungranted:") and head not in {
+        "ungranted:file",
+        "ungranted:unparsed",
+    }
+    if head != "ungranted" and not named_table:
         return None
     named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
     focus = [g for g in named if g != "sku"] or list(named)
     label = ", ".join(focus) if focus else "join"
-    tables = head.split(":", 1)[-1]
+    # The grant code is bare ``ungranted``. A legacy ``ungranted:<table>``
+    # still names the table. The customer sentence does not have to.
+    detail = f" (ungranted {head.split(':', 1)[-1]})" if named_table else ""
     return (
-        f"missing_join: no granted join path for grain {label} "
-        f"(ungranted {tables}). Declare the link on a granted table, "
+        f"missing_join: no granted join path for grain {label}{detail}. "
+        "Declare the link on a granted table, "
         "or ask for a measure defined at that grain."
     )
 

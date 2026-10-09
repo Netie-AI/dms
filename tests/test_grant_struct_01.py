@@ -159,8 +159,7 @@ def test_sql_shapes_refuse_before_submit(monkeypatch: pytest.MonkeyPatch) -> Non
         assert "qwest_hidden" not in blob, name
         assert "qwest_pack" not in blob, name
         assert "qwest_side" not in blob, name
-        named = name in {"cte_table", "subquery", "quoted", "qualified"}
-        assert named or "beta_secret" not in blob, name
+        assert "beta_secret" not in blob, name
         if name in {"glob", "cte_file", "read_xlsx"}:
             assert classified == "sql_relation_not_granted"
             assert "sql_relation_not_granted" in _reason(env)
@@ -168,8 +167,9 @@ def test_sql_shapes_refuse_before_submit(monkeypatch: pytest.MonkeyPatch) -> Non
             assert classified == "sql_relation_not_granted"
             assert "sql_relation_not_granted" in _reason(env)
         elif name in {"cte_table", "subquery", "quoted"}:
-            assert classified == "ungranted:beta_secret"
-            assert "ungranted:beta_secret" in _reason(env)
+            assert classified == "ungranted"
+            assert "ungranted" in _reason(env)
+            assert "ungranted:beta_secret" not in _reason(env)
         else:
             # read_csv / read_parquet / ATTACH: the existing scanner refuses
             # first. The allow-list would also refuse them.
@@ -237,7 +237,7 @@ def test_dialect_is_an_input() -> None:
     assert sqlglot_dialect("sqlserver") == "tsql"
     assert sqlglot_dialect("mysql") == "mysql"
     assert sqlglot_dialect("no-such-engine") is None
-    assert serve_gap(sql, grantable=set(), dialect="mysql") == "ungranted:secret_tbl"
+    assert serve_gap(sql, grantable=set(), dialect="mysql") == "ungranted"
     assert serve_gap(sql, grantable=set(), dialect="duckdb") == "ungranted:unparsed"
     assert serve_gap(sql, grantable=set(), dialect="no-such-engine") == "sql_dialect_unknown"
     assert serve_gap("", grantable={"alpha_metric"}, dialect="duckdb") == "ungranted:unparsed"

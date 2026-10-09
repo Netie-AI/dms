@@ -4,12 +4,12 @@ The question text is not an input. Callers pass the extract dialect they
 already use (warehouse SQL is duckdb). sqlglot parses in that dialect.
 
 Allow-list: every relation the parser can see, including inside CTEs and
-subqueries, must be a granted qualified name. A table or external-read
-function anywhere in the tree (select list, WHERE, a subquery) is not a
-granted relation. The default schema is part of the comparison, so a
-different schema is not the granted table. More than one statement
-refuses. A parse failure refuses. No function-name list and no split
-on ``;``.
+subqueries, must be a granted qualified name. A file or external reader
+anywhere in the tree is refused. A pure generator is not itself a
+grant; it is served only beside a granted base table. The default
+schema is part of the comparison, so a different schema is not the
+granted table. More than one statement refuses. A parse failure
+refuses. No function-name list and no split on ``;``.
 """
 
 from __future__ import annotations
@@ -97,9 +97,13 @@ def serve_gap(
     ``sql_dialect_unknown``. A name that cannot be settled is
     ``sql_relation_unresolved``. A reader the parser types as a table or
     external-read function, in any position, is ``sql_relation_not_granted``.
-    A missing name in the default schema stays ``ungranted:<name>``.
-    A statement that reads no granted base table is bare ``ungranted``.
-    A table function is not a granted base table.
+    A missing name in the default schema is bare ``ungranted``. The
+    relation is not part of that code. A statement whose only source is a
+    generator or a literal is the same code. A file or external reader is
+    ``sql_relation_not_granted`` even beside a granted table. A pure
+    generator is served only when the statement also reads a granted base
+    table. sqlglot's node type decides. An unclassified function is
+    settled from ``duckdb_functions()``.
     """
     if _engine(dialect) is None:
         return "sql_dialect_unknown"
@@ -356,15 +360,96 @@ def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
     return keys
 
 
-def _external_read(tree: exp.Expression) -> bool:
-    """A parser-typed file reader anywhere in the tree.
+def _file_reader_types() -> tuple[type, ...]:
+    """sqlglot classes that are file readers. Not a list of function names."""
+    found: list[type] = []
+    for name, cls in vars(exp).items():
+        if isinstance(cls, type) and issubclass(cls, exp.Func) and name.startswith("Read"):
+            found.append(cls)
+    return tuple(found)
 
-    An unclassified scalar (``error``, ``printf``) is not a relation. The
-    grant decision is which relations the statement reads. A function the
-    parser leaves unclassified and places in the relation slot is handled
-    in ``_allow``, because that slot is not a granted name.
+
+def _anon_name(node: exp.Anonymous) -> str:
+    this = node.this
+    if isinstance(this, exp.Identifier):
+        return str(this.name or "")
+    return str(this or "")
+
+
+def _catalog_row_reads_a_file(params: Any, ptypes: Any) -> bool:
+    """True when this ``duckdb_functions()`` row is a path reader.
+
+    DuckDB names that parameter ``filename``, or exposes one ``col0``
+    argument of type VARCHAR / VARCHAR[]. ``generate_series`` and
+    ``unnest`` do not have that shape. A generator registered as a single
+    path argument would be refused; the upgrade is a catalog category.
     """
-    return any(isinstance(node, (exp.ReadCSV, exp.ReadParquet)) for node in tree.walk())
+    names = [str(param).lower() for param in (params or ())]
+    types = [str(kind).upper() for kind in (ptypes or ())]
+    if "filename" in names:
+        return True
+    return names == ["col0"] and types in (["VARCHAR"], ["VARCHAR[]"])
+
+
+_FUNCTION_KIND: dict[str, str] | None = None
+
+
+def _function_kinds() -> dict[str, str]:
+    """``reader`` / ``generator`` / ``other`` from ``duckdb_functions()``."""
+    global _FUNCTION_KIND
+    if _FUNCTION_KIND is not None:
+        return _FUNCTION_KIND
+    import duckdb
+
+    kinds: dict[str, str] = {}
+    rank = {"other": 1, "generator": 2, "reader": 3}
+    try:
+        con = duckdb.connect()
+    except Exception:  # noqa: BLE001 - no catalog, an unclassified name stays unknown
+        _FUNCTION_KIND = kinds
+        return kinds
+    try:
+        rows = con.execute(
+            "SELECT function_name, function_type, parameters, parameter_types "
+            "FROM duckdb_functions()"
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        rows = []
+    finally:
+        con.close()
+    for name, ftype, params, ptypes in rows:
+        key = str(name or "").lower()
+        if not key:
+            continue
+        if ftype in {"table", "table_macro"} and _catalog_row_reads_a_file(params, ptypes):
+            kind = "reader"
+        elif ftype in {"table", "table_macro"}:
+            kind = "generator"
+        else:
+            kind = "other"
+        if rank[kind] > rank.get(kinds.get(key, ""), 0):
+            kinds[key] = kind
+    _FUNCTION_KIND = kinds
+    return kinds
+
+
+def _function_kind(name: str) -> str:
+    return _function_kinds().get(str(name or "").strip().lower(), "unknown")
+
+
+def _file_reader(tree: exp.Expression) -> bool:
+    """A file or external reader anywhere in the tree.
+
+    A typed reader node is enough. An unclassified call is a reader when
+    ``duckdb_functions()`` says so. A pure generator is not a reader.
+    """
+    typed = _file_reader_types()
+    for node in tree.walk():
+        if typed and isinstance(node, typed):
+            return True
+        if isinstance(node, exp.Anonymous) and _function_kind(_anon_name(node)) == "reader":
+            return True
+    return False
 
 
 def _cte_keys(tree: exp.Expression, engine: Dialect) -> set[str]:
@@ -390,7 +475,7 @@ def _allow(
     if found is None:
         return "sql_dialect_unknown"
     dialect_name, engine = found
-    if _external_read(tree):
+    if _file_reader(tree):
         return "sql_relation_not_granted"
     default = _default_schema(dialect_name, engine)
     keys = _grant_keys(grantable, dialect)
@@ -404,14 +489,17 @@ def _allow(
     for table in tree.find_all(exp.Table):
         this = table.this
         if not isinstance(this, exp.Identifier):
-            # A function in the relation slot is not a granted base table.
-            # An unclassified reader (read_text, glob) stays not a relation.
-            # A typed generator (generate_series, range) is the same: it
-            # does not count as a grant. Placeholder and a deeper dot have
-            # no name to settle.
-            if isinstance(this, exp.Anonymous):
+            # A generator in the relation slot is not a granted base table.
+            # It is served only when some other relation in this statement
+            # is granted. A reader was already refused. An unclassified
+            # call the catalog does not call a generator is not a relation.
+            if isinstance(this, (exp.GenerateSeries, exp.Unnest)):
+                continue
+            if isinstance(this, exp.Anonymous) and _function_kind(_anon_name(this)) == "generator":
+                continue
+            if isinstance(this, exp.Func):
                 not_relation = True
-            elif not isinstance(this, exp.Func):
+            else:
                 unsettled = True
             continue
         nodes = [
@@ -475,9 +563,7 @@ def _allow(
         return "sql_relation_unresolved"
     if not_relation or qualified_miss:
         return "sql_relation_not_granted"
-    if missing:
-        return "ungranted:" + ",".join(sorted(missing))
-    if not saw_granted:
+    if missing or not saw_granted:
         return "ungranted"
     return None
 
