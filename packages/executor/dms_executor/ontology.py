@@ -1840,10 +1840,10 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     path = Path(warehouse)
     if not path.is_file():
         return {}
-    import duckdb
+    from dms_executor.demo_warehouse import connect_serving
 
     try:
-        con = duckdb.connect(str(path), read_only=True)
+        con = connect_serving(path)
     except Exception:  # noqa: BLE001
         return {}
     try:
@@ -2072,9 +2072,9 @@ def demo_ontology(warehouse: Path) -> Ontology:
 
 
 def _connect(warehouse: Path) -> Any:
-    import duckdb
+    from dms_executor.demo_warehouse import connect_serving
 
-    return duckdb.connect(str(warehouse), read_only=True)
+    return connect_serving(warehouse)
 
 
 def run_demo(warehouse: Path) -> int:

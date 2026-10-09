@@ -110,11 +110,26 @@ def ingested_bronze_tables(
     "exists, was never seeded".
     """
     from dms_executor.bronze import list_bronze_tables
+    from dms_executor.lake_registry import (
+        ServingDeadlineExceeded,
+        ServingDeadlineReserve,
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+    )
 
     try:
         if space_id:
             return tuple(t["table"] for t in list_bronze_tables(path=path, space_id=space_id))
         return tuple(t["table"] for t in list_bronze_tables(path=path))
+    except (
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+        ServingDeadlineExceeded,
+        ServingDeadlineReserve,
+    ):
+        raise
     except Exception as exc:  # noqa: BLE001
         # A warehouse that cannot be read must not silently mean "no uploads are
         # grantable" — that would present as your own file being refused.

@@ -21,6 +21,7 @@ from dms_core.ask import MODEL_LANES, NO_MODEL_LANES
 
 from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
+from dms_executor.demo_warehouse import connect_serving
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
 
@@ -227,7 +228,7 @@ def _grouped_top_n(
     db = _db_with_table(ident, warehouse)
     if db is None:
         return None
-    con = duckdb.connect(str(db), read_only=True)
+    con = connect_serving(db)
     try:
         cols = _cols(con, ident)
         if "category" not in cols or measure not in cols:
@@ -295,7 +296,7 @@ def _eq_filter_total(
     db = _db_with_table(ident, warehouse)
     if db is None:
         return None
-    con = duckdb.connect(str(db), read_only=True)
+    con = connect_serving(db)
     try:
         cols = _cols(con, ident)
         if col not in cols or measure not in cols:
@@ -385,7 +386,7 @@ def _db_with_table(ident: str, warehouse: Path | None) -> Path | None:
         con = None
         for _attempt in range(2):
             try:
-                con = duckdb.connect(str(db), read_only=True)
+                con = connect_serving(db)
                 break
             except duckdb.Error:
                 time.sleep(0.1)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from cortex_client import compliance_gate
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from dms_api.deps import AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
@@ -104,6 +104,7 @@ def mcp_call(
     store: SpaceStoreDep,
     cortex: CortexDep,
     ask: AskServiceDep,
+    request: Request,
 ) -> dict[str, Any]:
     decision = compliance_gate(
         action="mcp.call",
@@ -129,7 +130,7 @@ def mcp_call(
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from exc
-        result = chat_ask(ask_body, settings, store, cortex, ask)
+        result = chat_ask(ask_body, settings, store, cortex, ask, request)
         return {"ok": True, "name": name, "result": result}
 
     if name == TOOL_PREVIEW:
