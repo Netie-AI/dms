@@ -938,7 +938,10 @@ def test_ungranted_name_absent_from_ask_http(
     """
     name = _letter_name()
     _hide_table(wh, name)
-    reply = f'use "{name.upper()}" from main.{name}'
+    reply = (
+        f"use {name} \"{name.upper()}\" '{name}' "
+        f"from main.{name} and main.\"{name.upper()}\""
+    )
     question = "show qxalpha771 and qxbeta771"
     tables = ["qxalpha_fact", "qxbeta_fact"]
     monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
@@ -1002,6 +1005,74 @@ def test_ungranted_name_absent_from_ask_http(
     assert not any(str(key).startswith("clarify_") for key in head_env)
     main_env = _main_flag_off(flag_payload, wh)
     assert _canonical(head_env) == _canonical(main_env)
+
+
+def test_ungranted_cccc_does_not_rewrite_space_id(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Table ``cccc`` must not eat the ``cccc`` runs inside the space id."""
+    name = "cccc"
+    _hide_table(wh, name)
+    monkeypatch.setenv("DMS_ASK_CLARIFY", "1")
+    client, exe = _bind_client(wh, _Writer(_two_measures()))
+    try:
+        status, chunks, _headers = _stream_body(
+            client,
+            {
+                "question": "show qxalpha771 and qxbeta771",
+                "space_id": FINANCE,
+                "session_id": "ses_cccc_http",
+                "grounded_tables": ["qxalpha_fact", "qxbeta_fact"],
+            },
+        )
+        assert status == 200, chunks
+        opened = json.loads(b"".join(chunks))
+        assert opened["status"] == "clarify"
+        status, chunks, _headers = _stream_body(
+            client,
+            {
+                "question": "show qxalpha771 and qxbeta771",
+                "space_id": FINANCE,
+                "session_id": "ses_cccc_http",
+                "grounded_tables": ["qxalpha_fact", "qxbeta_fact"],
+                "clarify_id": opened["clarify_id"],
+                "clarify_text": "use cccc",
+            },
+        )
+        assert status == 200, chunks
+        body = json.loads(b"".join(chunks))
+    finally:
+        exe.close()
+    assert body["space_id"] == FINANCE
+    assert body["session_id"] == "ses_cccc_http"
+    assert body["abstain_reason"] == "ungranted_table"
+
+
+def test_closed_tail_scrub_keeps_session_id_and_filter_cc() -> None:
+    """``ungranted_table:sku`` must not rewrite ``ses_cc_sku`` or ``cc``."""
+    from dms_executor.abstain import build_abstain
+
+    env = build_abstain(
+        reason="ungranted_table:sku",
+        question="q",
+        abstain_reason="ungranted_table:sku",
+        answer_id="ans_ungranted_table:sku",
+        text="ABSTAIN ungranted_table:sku",
+        assumptions=["ungranted_table:sku", "filter sku=cc"],
+        space_id=FINANCE,
+        session_id="ses_cc_sku",
+        rows=[],
+        values=[],
+        sql_used=None,
+        ask_mode="live",
+        route="abstain",
+    )
+    assert env["session_id"] == "ses_cc_sku"
+    assert env["space_id"] == FINANCE
+    assert "filter sku=cc" in env["assumptions"]
+    assert env["answer_id"] == "ans_ungranted_table"
+    assert env["abstain_reason"] == "ungranted_table"
+    assert env["text"] == "ABSTAIN ungranted_table:sku"
 
 
 def test_free_text_exact_label_serves(wh: Path) -> None:

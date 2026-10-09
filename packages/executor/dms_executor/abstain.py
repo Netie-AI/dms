@@ -17,7 +17,6 @@ from typing import Any
 _LOG = logging.getLogger(__name__)
 # The bronze grant path still echoes its reason in ``text``. That echo is
 # NAME-ECHO-01. This builder does not rewrite ``text``.
-_RAW_TEXT = "text"
 
 
 def _code_and_names(reason: str) -> tuple[str, list[str]]:
@@ -65,34 +64,68 @@ def _names_of(*reasons: str | None) -> tuple[str, list[str]]:
     return visible, names
 
 
-def _scrub_text(value: str, names: list[str]) -> str:
-    """Drop each name in any case. Quotes and a schema prefix still contain it."""
+def _whole_ident(value: str, names: list[str]) -> str:
+    """Drop a name only as a whole identifier. A shorter token inside one stays."""
     out = value
     for name in names:
         if len(name) < 2:
             continue
-        out = re.sub(rf"(?i){re.escape(name)}", "", out)
+        out = re.sub(
+            rf"(?i)(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+            "",
+            out,
+        )
     return out
 
 
-def _scrub_value(value: Any, names: list[str]) -> Any:
-    if isinstance(value, str):
-        return _scrub_text(value, names)
-    if isinstance(value, list):
-        return [_scrub_value(item, names) for item in value]
-    if isinstance(value, dict):
-        return {
-            key: item if key == _RAW_TEXT else _scrub_value(item, names)
-            for key, item in value.items()
-        }
-    return value
-
-
-def _bare_assumption(item: str, visible: str, names: list[str]) -> str:
-    scrubbed = _scrub_text(item, names).strip()
-    if visible and scrubbed.casefold().rstrip(":").strip() == visible:
+def _reason_sentence(item: str, visible: str, names: list[str]) -> str:
+    """Collapse a closed-code tail to the code. Any other sentence stays whole."""
+    if not visible:
+        return item
+    core = re.sub(r"[^a-z0-9_]+", "", _whole_ident(item, names).casefold())
+    vis = re.sub(r"[^a-z0-9_]+", "", visible.casefold())
+    if core == vis:
         return visible
-    return scrubbed
+    return item
+
+
+def _scrub_receipt(receipt: dict[str, Any], visible: str, names: list[str]) -> None:
+    for part in ("include", "exclude", "unsure"):
+        block = receipt.get(part)
+        if not isinstance(block, dict):
+            continue
+        why = block.get("why")
+        if isinstance(why, str):
+            block["why"] = _reason_sentence(why, visible, names)
+        reasons = block.get("reasons")
+        if isinstance(reasons, list):
+            block["reasons"] = [
+                _reason_sentence(str(item), visible, names) if not isinstance(item, dict) else item
+                for item in reasons
+            ]
+
+
+def _scrub_reason_fields(target: dict[str, Any], visible: str, names: list[str]) -> None:
+    """Reason fields only. Ids, including space_id and session_id, stay put.
+
+    ``abstain_reason`` is assigned in ``build_abstain`` so the package scan
+    still sees one constructor.
+    """
+    assumptions = target.get("assumptions")
+    if isinstance(assumptions, list):
+        target["assumptions"] = [
+            _reason_sentence(str(item), visible, names) for item in assumptions
+        ]
+    answer_id = target.get("answer_id")
+    if isinstance(answer_id, str):
+        cleaned = _whole_ident(answer_id, names).strip().rstrip(":").strip()
+        target["answer_id"] = cleaned or answer_id
+    question = target.get("question")
+    if isinstance(question, str):
+        target["question"] = _whole_ident(question, names)
+    receipt = target.get("audit_receipt")
+    if isinstance(receipt, dict):
+        _scrub_receipt(receipt, visible, names)
 
 
 def _ask_id(env: dict[str, Any], ask_id: str | None) -> str:
@@ -157,34 +190,14 @@ def build_abstain(
     """
     visible, names = _names_of(reason, abstain_reason)
     if names:
-        envelope = {
-            key: value if key == _RAW_TEXT else _scrub_value(value, names)
-            for key, value in envelope.items()
-        }
-        assumptions = envelope.get("assumptions")
-        if isinstance(assumptions, list):
-            envelope["assumptions"] = [
-                _bare_assumption(str(item), visible, names)
-                if visible
-                else _scrub_text(str(item), names)
-                for item in assumptions
-            ]
-        answer_id = envelope.get("answer_id")
-        if isinstance(answer_id, str):
-            envelope["answer_id"] = answer_id.strip().rstrip(":").strip() or answer_id
+        if isinstance(envelope.get("abstain_reason"), str) and visible:
+            envelope["abstain_reason"] = visible
+        _scrub_reason_fields(envelope, visible, names)
     if demote is not None:
         if names:
-            for key in list(demote):
-                if key == _RAW_TEXT:
-                    continue
-                demote[key] = _scrub_value(demote[key], names)
-            if visible and isinstance(demote.get("abstain_reason"), str):
+            if isinstance(demote.get("abstain_reason"), str) and visible:
                 demote["abstain_reason"] = visible
-            held = demote.get("assumptions")
-            if visible and isinstance(held, list):
-                demote["assumptions"] = [
-                    _bare_assumption(str(item), visible, names) for item in held
-                ]
+            _scrub_reason_fields(demote, visible, names)
         if "text" in envelope or "demote_note" in envelope:
             demote["constraint_trace"] = []
             demote["badge"] = "ABSTAIN"
@@ -214,7 +227,7 @@ def build_abstain(
 
     from dms_executor.envelope import build_answer_envelope
 
-    shown_question = _scrub_text(question, names) if names else question
+    shown_question = _whole_ident(question, names) if names else question
     if shown_question and "question" not in envelope:
         envelope["question"] = shown_question
     envelope["badge"] = "ABSTAIN"
