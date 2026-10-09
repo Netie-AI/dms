@@ -3,7 +3,9 @@
 COPY-only is the Dockerfile COPY set (no tests/). Insights are unarmed and
 submit executes the product SQL. Flags off and on, every envelope has one
 route. A planted contradiction is not a route. Answers stay the main bytes
-apart from the stamp fields, as_of, and ticket_id.
+apart from the stamp fields, as_of, and ticket_id. Unordered SQL uses the
+row-order rule: rows, value cells, and the row lines in the text compare
+as a set.
 """
 
 from __future__ import annotations
@@ -207,17 +209,78 @@ def _serve(tmp_path: Path, *, flags_on: bool) -> list[dict[str, Any]]:
     return rows
 
 
+def _ordered_sql(sql: str) -> bool:
+    """True when the statement has a top-level ORDER BY. Nested ORDER BY does not count."""
+    from sqlglot import parse_one
+
+    try:
+        tree = parse_one(sql, read="duckdb")
+    except Exception:
+        return True
+    return bool(tree.args.get("order"))
+
+
+def _align_unordered(env: dict[str, Any]) -> dict[str, Any]:
+    sql = env.get("sql_used")
+    if not isinstance(sql, str) or _ordered_sql(sql):
+        return env
+    out = dict(env)
+    rows = out.get("rows")
+    if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
+        out["rows"] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+    values = out.get("values")
+    if isinstance(values, list) and all(isinstance(item, dict) for item in values):
+        ranked = sorted(
+            values,
+            key=lambda item: json.dumps(
+                {key: val for key, val in item.items() if key != "id"},
+                sort_keys=True,
+                default=str,
+            ),
+        )
+        renumbered: list[Any] = []
+        number = 0
+        for item in ranked:
+            item = dict(item)
+            ident = item.get("id")
+            if isinstance(ident, str) and ident[1:].isdigit() and ident.startswith("v"):
+                item["id"] = f"v{number}"
+                number += 1
+            renumbered.append(item)
+        out["values"] = renumbered
+    text = out.get("text")
+    if isinstance(text, str) and "\n  - " in text:
+        head, rest = text.split("\n", 1)
+        lines = rest.split("\n")
+        bullets = [line for line in lines if line.startswith("  - ")]
+        other = [line for line in lines if line and not line.startswith("  - ")]
+        if bullets and not other:
+            out["text"] = head + "\n" + "\n".join(sorted(bullets))
+    return out
+
+
 def _assert_main_bytes(live: list[dict[str, Any]], fixture_name: str) -> None:
     frozen = json.loads((FIXTURE / fixture_name).read_text(encoding="utf-8"))
     assert [row["id"] for row in live] == [row["id"] for row in frozen]
     for got, old in zip(live, frozen, strict=True):
-        assert _drop(got["env"]) == _drop(old["env"]), got["id"]
+        assert _align_unordered(_drop(got["env"])) == _align_unordered(_drop(old["env"])), got["id"]
 
 
 def _assert_one_route(rows: list[dict[str, Any]]) -> None:
     for row in rows:
         got = route_of(row["env"])
         assert got in ROUTES, (row["id"], got)
+
+
+def test_unordered_row_swap_still_matches_main_bytes() -> None:
+    frozen = json.loads((FIXTURE / "copy_off.json").read_text(encoding="utf-8"))
+    env = next(item["env"] for item in frozen if item["id"] == "ops_shipment_cost")
+    swapped = json.loads(json.dumps(env))
+    swapped["rows"] = list(reversed(env["rows"]))
+    swapped["values"] = list(reversed(env["values"]))
+    head, rest = str(env["text"]).split("\n", 1)
+    swapped["text"] = head + "\n" + "\n".join(reversed(rest.split("\n")))
+    assert _align_unordered(_drop(swapped)) == _align_unordered(_drop(env))
 
 
 def test_planted_contradiction_is_not_a_route() -> None:
