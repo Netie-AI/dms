@@ -208,11 +208,12 @@ def flag_off_envelopes(warehouse: Path) -> dict[str, Any]:
 
 @pytest.fixture()
 def pack_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Scoring files are not a pack source. The hook is gone; the dir is unused."""
     from dms_executor import demo_pack
 
     demo_pack.score_pack_exact_metrics.cache_clear()
     demo_pack.curated_l0_question_norms.cache_clear()
-    monkeypatch.setattr(demo_pack, "_score_fixture_dir", lambda: tmp_path / "absent")
+    _ = tmp_path, monkeypatch
     yield
     demo_pack.score_pack_exact_metrics.cache_clear()
     demo_pack.curated_l0_question_norms.cache_clear()
@@ -399,12 +400,11 @@ def test_image_layout_health_is_absent_and_ask_is_not_503(tmp_path: Path) -> Non
     assert got["pack"] != "curated_ceo"
 
 
-def test_health_pack_stays_curated_ceo_when_the_fixture_is_present() -> None:
-    from dms_api.routes.health import GEN_PATH_CLIMB
+def test_health_pack_ignores_a_checkout_fixture() -> None:
+    """A scoring file on disk must not flip /health to a loaded pack."""
     from dms_api.wiring import health_pack_name
 
-    assert GEN_PATH_CLIMB["pack"] == "curated_ceo"
-    assert health_pack_name() == "curated_ceo"
+    assert health_pack_name() == "absent"
 
 
 def test_pack_is_not_read_at_import() -> None:
@@ -450,10 +450,46 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
     assert "demo_pack_unavailable" not in r.text
 
 
+# These ids were answered or reworded from the scoring fixture. The rest of
+# the capture stays byte-equal with as_of masked.
+_FIXTURE_FED = frozenset(
+    {
+        "cq_sales_top5_value",
+        "cq_sku_count",
+        "cq_sales_top3_volume",
+        "cq_sku_count_by_category",
+        "trap_categoty",
+        "cq_chemicals_list",
+        "cq_supplier_ranking",
+        "cq_audit_overdue",
+        "cq_sku_count_syn_short",
+        "cq_sku_count_syn_label",
+        "cq_sales_top5_syn_skus",
+        "cq_top3_category_syn_value",
+        "cq_sales_top5_syn_sales",
+        "cq_top3_category_syn_show",
+        "cq_top3_category_syn_plain",
+        "cq_top3_category_syn_typo",
+        "ops_sku_count",
+        "ops_sku_count_by_category",
+        "ops_sku_count_syn_short",
+        "ops_sku_count_syn_label",
+        "ops_chemicals_list",
+        "ops_sku_count_by_category_syn",
+        "ops_stock_value_syn",
+        "ops_shipment_cost_syn",
+        "cq_sku_count_by_category_per",
+        "cq_stock_value_worth",
+        "ops_freight_spend_destination",
+        "ops_supplier_rank_boundary",
+    }
+)
+
+
 def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every curated_ceo question, flags off, matches the f9ffc3e1 capture."""
+    """Ids the scoring fixture fed differ. Every other id matches the capture."""
     _flags_off(monkeypatch)
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert golden["captured_from"] == BASE
@@ -462,5 +498,9 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
+    assert _FIXTURE_FED <= set(ids)
     for qid in ids:
-        assert got["cases"][qid] == golden["cases"][qid], qid
+        if qid in _FIXTURE_FED:
+            assert got["cases"][qid] != golden["cases"][qid], qid
+        else:
+            assert got["cases"][qid] == golden["cases"][qid], qid

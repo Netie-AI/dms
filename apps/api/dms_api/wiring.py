@@ -434,9 +434,9 @@ def gold_sign_metric(
 def health_pack_fields() -> dict[str, str]:
     """Pack identity for /health.
 
-    ``curated_ceo`` when both files load. ``absent`` when a file is not on disk.
-    ``unreadable`` when a file is on disk but cannot be used, with ``pack_error``
-    set to the exception class. The class only: a parser message quotes the file.
+    ``absent`` — scoring files are not a pack source. ``unreadable`` is kept
+    for a status that names an exception class, with ``pack_error`` set to
+    that class only.
     """
     try:
         status = dms_executor.curated_pack_status()

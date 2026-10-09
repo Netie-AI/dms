@@ -28,6 +28,7 @@ from cortex_contract.execution import QueryResult
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from dms_api.app import create_app
 from dms_executor import Executor
+from dms_executor.demo_pack import SPEND_BY_COUNTRY_Q
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import (
@@ -48,7 +49,6 @@ CURRENT = "svc-current-TOKEN-do-not-log"
 MINTED = "svc-minted-TOKEN-do-not-log"
 ADMIN_SENTINEL = "ADMIN-SENTINEL-must-never-leave-dms"
 FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
-SKU_Q = "How many SKUs do we have in inventory?"
 
 
 @dataclass
@@ -421,7 +421,7 @@ def test_chat_ask_abstains_with_named_ov_reason(
     try:
         resp = TestClient(app).post(
             "/v1/chat/ask",
-            json={"question": SKU_Q, "space_id": FINANCE, "session_id": "ses_ov"},
+            json={"question": SPEND_BY_COUNTRY_Q, "space_id": FINANCE, "session_id": "ses_ov"},
         )
     finally:
         exe.close()
@@ -466,7 +466,8 @@ def test_n_asks_reuse_one_client_and_one_intermediate_fetch(
     exe = Executor(cortex=cortex, minter=ManifestMinter(openvault_url=OV), warehouse_path=db)  # type: ignore[arg-type]
     try:
         envs = [
-            exe.live_ask(SKU_Q, space_id=FINANCE, session_id=f"ses_n{i}") for i in range(5)
+            exe.live_ask(SPEND_BY_COUNTRY_Q, space_id=FINANCE, session_id=f"ses_n{i}")
+            for i in range(5)
         ]
     finally:
         exe.close()

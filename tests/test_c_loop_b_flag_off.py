@@ -1,15 +1,16 @@
-"""Flag off is byte-equal to main on the 73-ask set, shadow fields included.
+"""Flag off stays the ce08153 bytes except asks the scoring fixture fed.
 
 The stub binds the session, then runs one canned SELECT. Several asks
 serve L2 from that SQL. Planted and pre-gate asks abstain. The stub
 does not route on question words.
 
-Wall-clock fields are placeholders. Every other key and value is
-compared, including ``served_check_shadow``. A key main does not send
-fails the test.
+Wall-clock fields are placeholders. On an unchanged ask, every other key
+and value is compared, including ``served_check_shadow``. A key main does
+not send fails that ask. Asks the scoring fixture used to answer or
+reword must differ, and may carry generative keys.
 
 The fixture bytes were captured from ce08153. The same bytes match
-beabdc6 (skills quarantine, no stamp on this stub).
+beabdc6 (skills quarantine, no stamp on this stub) except the fixture-fed asks.
 """
 
 from __future__ import annotations
@@ -38,6 +39,30 @@ _CLOCK = {
     "engine_timezone",
     "engine_timezone_after",
 }
+# Wording the scoring fixture used to answer or reword. Both spaces.
+_FIXTURE_FED = frozenset(
+    {
+        "Top 5 selling SKUs by revenue",
+        "How many SKUs do we have in inventory?",
+        "Top 3 SKUs by quantity sold",
+        "Show SKU count by category",
+        "Show top 3 categoty sales",
+        "Rank suppliers by combined risk and lead time score",
+        "Top 5 SKUs by revenue",
+        "top 3 categories by sales value",
+        "Top 5 selling SKUs by sales",
+        "show top 3 category sales",
+        "top 3 category sales",
+        "top 3 categoty sales",
+        "SKU count by category",
+        "stock value by category",
+        "shipment cost by destination",
+        "how many SKUs per category",
+        "what is our inventory worth per category",
+        "freight spend per destination",
+        "show top 3 categoty sales",
+    }
+)
 
 
 def _questions() -> list[str]:
@@ -224,19 +249,20 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     l2 = 0
     abstain = 0
     canned = 0
+    fed = 0
     extras_all: list[tuple[str, list[str]]] = []
     for index, question in enumerate(_questions()):
         env = got[index]["envelope"]
         main = expected[index]["envelope"]
         assert expected[index]["question"] == question
-        extras = _extra_keys(main, env)
-        if extras:
-            extras_all.append((question, extras))
-    assert extras_all == [], extras_all
-    for index, question in enumerate(_questions()):
-        env = got[index]["envelope"]
-        main = expected[index]["envelope"]
-        assert env == main, question
+        if question in _FIXTURE_FED:
+            fed += 1
+            assert env != main, question
+        else:
+            extras = _extra_keys(main, env)
+            if extras:
+                extras_all.append((question, extras))
+            assert env == main, question
         if env.get("badge") == "L2_VALIDATED":
             l2 += 1
         if env.get("abstained") is True:
@@ -244,6 +270,8 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
         sql_used = str(env.get("sql_used") or "")
         if env.get("badge") == "L2_VALIDATED" and "is_cold_storage" in sql_used:
             canned += 1
+    assert fed == 22
+    assert extras_all == [], extras_all
     assert any("served_check_shadow" in row["envelope"] for row in got)
     assert l2 >= 5, l2
     assert abstain >= 1, abstain
