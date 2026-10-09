@@ -101,13 +101,19 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.served_gate import served_result_reason
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
     EXTRACT_DIALECT,
+    CompileDefer,
+    ServeHold,
     apply_sql_credit,
+    bound_model_compute,
     extract_dialect,
+    is_deadline,
     loop_entry,
+    mask_feedback_text,
     run_model_loop,
 )
 from dms_executor.verified_queries import rows_from_submit_result
@@ -688,6 +694,23 @@ def validate_compiled_sql(
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
+    # No cited relation. A literal select is the same grant outcome, bare
+    # code. A missing warehouse file stays warehouse_missing. A function
+    # call is not this outcome.
+    if not named and (warehouse is None or Path(warehouse).is_file()):
+        from sqlglot import exp, parse_one
+
+        try:
+            tree = parse_one(sql, read="duckdb")
+        except Exception:  # noqa: BLE001
+            tree = None
+        tables = tree.find_all(exp.Table) if tree is not None else ()
+        funcs = tree.find_all(exp.Func) if tree is not None else ()
+        no_table = isinstance(tree, exp.Select) and not any(
+            isinstance(node, exp.Table) and node.name for node in tables
+        )
+        if no_table and not any(isinstance(node, exp.Func) for node in funcs):
+            return "ungranted"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     con = connect_file(Path(warehouse))
@@ -839,6 +862,132 @@ def _l2_envelope(
     return env
 
 
+_LADDER_STEPS = ("self_correct", "richer_context", "stronger_tier")
+
+
+def _sql_from_payload(payload: dict[str, Any] | None, onto: Ontology | None) -> str | None:
+    """Retry SQL from a ladder compute payload. Plan compile or query_sql."""
+    if not isinstance(payload, dict):
+        return None
+    sql = query_sql_from_payload(payload)
+    if sql:
+        return sql
+    plan = plan_from_payload(payload)
+    if plan is None or onto is None:
+        return None
+    compiled = _compile_maybe_unverified(onto, plan)
+    if isinstance(compiled, CompiledQuery):
+        return compiled.sql
+    return None
+
+
+def _ladder_retry(
+    sql: str,
+    finding: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    notes: Sequence[str],
+    plan_source: str,
+    keep_gt: float | None,
+    measure: str | None,
+    coverage: Coverage | None,
+    where_paths: Sequence[WherePath],
+    warehouse: Path | None,
+    plan_origin: str,
+    lead: str,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    ctx: dict[str, Any] | None,
+    ontology: Ontology | None,
+    grantable: set[str] | None,
+) -> dict[str, Any] | None:
+    """Self-correct, richer context, stronger tier. A passing retry may serve."""
+    for step in _LADDER_STEPS:
+        if compute is None:
+            continue
+        nxt = dict(ctx or {})
+        nxt["sql_loop_feedback"] = {
+            "previous_sql": mask_feedback_text(sql),
+            "reason": finding,
+            "step": step,
+        }
+        if step == "richer_context" and not nxt.get("schema_context"):
+            nxt["schema_context"] = "richer_context"
+        try:
+            payload = compute(nxt)
+        except Exception:  # noqa: BLE001 - one rung failing is not a serve
+            payload = None
+        new_sql = _sql_from_payload(payload if isinstance(payload, dict) else None, ontology)
+        if not new_sql or new_sql.strip() == sql.strip():
+            continue
+        if grantable is not None:
+            why = validate_compiled_sql(
+                new_sql, grantable=grantable, warehouse=warehouse
+            )
+            if why:
+                continue
+        if served_result_reason(
+            new_sql,
+            warehouse=warehouse,
+            as_of=_as_of(),
+            ontology=ontology,
+        ):
+            continue
+        return _submit_validated(
+            new_sql,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=notes,
+            plan_source=plan_source,
+            keep_gt=keep_gt,
+            measure=measure,
+            coverage=coverage_from_sql_path(sql=new_sql),
+            where_paths=where_paths,
+            warehouse=warehouse,
+            plan_origin=plan_origin,
+            lead=lead,
+            compute=None,
+            ctx=ctx,
+            ontology=ontology,
+            grantable=grantable,
+            _from_ladder=True,
+        )
+    return None
+
+
+def hold_ungrounded_sql(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+) -> dict[str, Any] | None:
+    """Direct refusal when the grant check says the statement cites no relation.
+
+    None means the SQL may keep its badge. The check is ``validate_compiled_sql``.
+    #421 replaces that call. This is not a reconfirm and not a second grant check.
+    """
+    why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+    if why != "ungranted":
+        return None
+    return _abstain(
+        question,
+        why,
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_OTHER,
+        stage="grant",
+    )
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -856,7 +1005,53 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    ctx: dict[str, Any] | None = None,
+    ontology: Ontology | None = None,
+    grantable: set[str] | None = None,
+    _from_ladder: bool = False,
 ) -> dict[str, Any]:
+    finding = served_result_reason(
+        sql,
+        warehouse=warehouse,
+        as_of=_as_of(),
+        ontology=ontology,
+    )
+    if finding:
+        served = None
+        if not _from_ladder:
+            served = _ladder_retry(
+                sql,
+                finding,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=notes,
+                plan_source=plan_source,
+                keep_gt=keep_gt,
+                measure=measure,
+                coverage=coverage,
+                where_paths=where_paths,
+                warehouse=warehouse,
+                plan_origin=plan_origin,
+                lead=lead,
+                compute=compute,
+                ctx=ctx,
+                ontology=ontology,
+                grantable=grantable,
+            )
+        if served is not None:
+            return served
+        return _abstain(
+            question,
+            f"reconfirm:{finding}",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     if not coverage_valid(coverage):
         return _abstain(
             question,
@@ -1075,6 +1270,8 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        ontology=onto,
+        grantable=allowed,
     )
 
 
@@ -1150,6 +1347,8 @@ def rank_window_ask(
         coverage=compiled.coverage,
         warehouse=lake,
         lead=lead,
+        ontology=onto,
+        grantable=allowed,
     )
 
 
@@ -1190,7 +1389,12 @@ def _run_extract_loop(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
+    """Read-only extract loop. Empty rows do not retry.
+
+    A failed check raises ``CompileDefer`` so the caller may compile.
+    A timeout, provider error, or empty reply raises ``ServeHold``.
+    That path does not compile.
+    """
 
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
@@ -1226,6 +1430,10 @@ def _run_extract_loop(
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            compute=compute,
+            ctx=ctx,
+            ontology=declared,
+            grantable=grantable,
         )
 
     def abstain(
@@ -1367,6 +1575,7 @@ def maybe_generative_ask(
         )
 
     lake: Path | None
+    given_warehouse = Path(warehouse) if warehouse is not None else None
     if warehouse is not None:
         lake = Path(warehouse)
     else:
@@ -1437,6 +1646,12 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    # Model calls share one serving deadline. Each call gets one slice.
+    # A cancelled call is not counted. That spare share is not a licence
+    # to serve the ranking compile. Flag off does not wrap.
+    loop_on = cloop_b_enabled() and not ontology_ranked_lane_enabled()
+    if loop_on:
+        compute = bound_model_compute(compute)
     try:
         payload = compute(ctx)
     except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1471,6 +1686,66 @@ def maybe_generative_ask(
             stamped = mask_unknown_keys(stamped)
         return stamped
 
+    def _model_hold(reason: str) -> dict[str, Any]:
+        """Ladder, then reconfirm. The ranking compile does not run.
+
+        A timeout, a provider error, and an empty reply land here. Model
+        SQL that ran and failed its check does not.
+        """
+        previous = ""
+        if loop_attempts:
+            raw_sql = loop_attempts[-1].get("sql")
+            if isinstance(raw_sql, str):
+                previous = raw_sql
+
+        def _sql_only(body: dict[str, Any]) -> dict[str, Any] | None:
+            try:
+                got = compute(body) if compute is not None else None
+            except Exception:  # noqa: BLE001 — a rung that raises is not a serve
+                return None
+            if not isinstance(got, dict) or is_deadline(got):
+                return None
+            if insights_fail_reason(got) and not query_sql_from_payload(got):
+                return None
+            if not query_sql_from_payload(got):
+                return None
+            return got
+
+        served = None
+        if compute is not None and submit is not None and ledger_append is not None:
+            served = _ladder_retry(
+                previous,
+                reason,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=(),
+                plan_source=PLAN_SOURCE_ONTOLOGY,
+                keep_gt=None,
+                measure=None,
+                coverage=None,
+                where_paths=(),
+                warehouse=lake,
+                plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+                lead="",
+                compute=_sql_only,
+                ctx=ctx,
+                ontology=onto,
+                grantable=allowed,
+            )
+        if served is not None:
+            return served
+        return _abstain(
+            q,
+            f"reconfirm:{reason}",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=PLAN_SOURCE_ONTOLOGY,
+            stage="extract_loop",
+        )
+
     if verify_cache_missing:
         return _stamp(
             _abstain(
@@ -1485,8 +1760,16 @@ def maybe_generative_ask(
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
+    # A timeout never serves the ranking compile. Flag off keeps its abstain.
+    deadline_first = bool(budget_stop) and loop_on and (
+        is_deadline(payload if isinstance(payload, dict) else None)
+        or str(budget_stop).startswith("insights_timeout")
+    )
+    if loop_on and payload is None:
+        return _stamp(_model_hold("provider_error"))
+    if deadline_first:
+        return _stamp(_model_hold(str(budget_stop or "insights_timeout:generate")))
     if budget_stop:
-        # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
         return _stamp(
             _abstain(
                 q,
@@ -1502,7 +1785,8 @@ def maybe_generative_ask(
         and not ontology_ranked_lane_enabled()
         and isinstance(payload, dict)
     ):
-        # Ranking compile stays off this path. Model SQL runs on the extract.
+        # Model SQL runs on the extract. The ranking compile runs only when
+        # that SQL failed its check.
         sql_in = query_sql_from_payload(payload)
         would_rank = kind == "miss" and ontology_plan_from_ranking(
             q, payload, onto=onto, ctx=ctx
@@ -1519,24 +1803,61 @@ def maybe_generative_ask(
                         stage="extract_loop",
                     )
                 )
-            return _stamp(
-                _run_extract_loop(
-                    question=q,
-                    ctx=ctx,
-                    payload=payload,
-                    compute=compute,
-                    warehouse=lake,
-                    dialect=dialect,
-                    grantable=allowed,
-                    declared=declared,
-                    declared_violations=declared_violations,
-                    space_id=space_id,
-                    session_id=session_id,
-                    submit=submit,
-                    ledger_append=ledger_append,
-                    attempts=loop_attempts,
+            try:
+                return _stamp(
+                    _run_extract_loop(
+                        question=q,
+                        ctx=ctx,
+                        payload=payload,
+                        compute=compute,
+                        warehouse=given_warehouse if given_warehouse is not None else lake,
+                        dialect=dialect,
+                        grantable=allowed,
+                        declared=declared,
+                        declared_violations=declared_violations,
+                        space_id=space_id,
+                        session_id=session_id,
+                        submit=submit,
+                        ledger_append=ledger_append,
+                        attempts=loop_attempts,
+                    )
                 )
-            )
+            except ServeHold as held:
+                # Timeout, provider error, or empty reply. Ladder or
+                # reconfirm. The ranking compile does not run.
+                return _stamp(_model_hold(held.reason))
+            except CompileDefer as deferred:
+                # The model SQL ran and failed its check. That is the only
+                # way into the ranking compile, which still waits on the
+                # founder's call. No ranking: abstain with the loop reason.
+                body = payload if isinstance(payload, dict) else None
+                if ontology_plan_from_ranking(q, body, onto=onto, ctx=ctx) is None:
+                    last_sql = None
+                    if loop_attempts:
+                        raw_sql = loop_attempts[-1].get("sql")
+                        last_sql = raw_sql if isinstance(raw_sql, str) else None
+                    return _stamp(
+                        _abstain(
+                            q,
+                            deferred.reason,
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=PLAN_SOURCE_ONTOLOGY,
+                            sql=last_sql,
+                            retries=max(0, len(loop_attempts) - 1),
+                            stage="extract_loop",
+                        )
+                    )
+                payload = dict(body or {})
+                payload.pop("query_sql", None)
+                gen = payload.get("generative")
+                if isinstance(gen, dict):
+                    gen = dict(gen)
+                    gen.pop("sql", None)
+                    payload["generative"] = gen
+                kind = parse_compute_plan(payload)
+                source = plan_source_from_payload(payload)
+                origin = plan_origin_from_payload(payload)
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
@@ -1682,6 +2003,10 @@ def maybe_generative_ask(
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
                     plan_origin=origin,
+                    compute=compute,
+                    ctx=ctx,
+                    ontology=onto,
+                    grantable=allowed,
                 )
             )
     if kind != "plan":
@@ -1855,5 +2180,9 @@ def maybe_generative_ask(
             where_paths=compiled.where_paths,
             warehouse=lake,
             plan_origin=origin,
+            compute=compute,
+            ctx=ctx,
+            ontology=onto,
+            grantable=allowed,
         )
     )

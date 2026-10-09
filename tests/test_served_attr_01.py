@@ -218,9 +218,12 @@ def test_ranking_after_model_call_reports_served_fields(
     fake = _Http([leg, leg], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
     assert env["plan_origin"] == "ontology_ranking"
-    # A model call happened. The served SQL is the ontology compile, not that
-    # model's SQL, so credit is missing. The copied served_* fields stay.
+    # A model call happened. The served SQL is the ranking compile, so the
+    # envelope names that step and does not name the model as the producer.
+    # The leg still records what the call reported.
     assert env["served_attribution"] == "missing"
+    assert "served_provider" not in env
+    assert "served_model" not in env
     assert env["generate_legs"]["legs"][0] == {"returned": "nothing", **_SERVED}
 
 

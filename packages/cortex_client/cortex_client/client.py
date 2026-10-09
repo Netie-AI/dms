@@ -202,6 +202,7 @@ class CortexClient:
         ontology: dict[str, Any] | None = None,
         sql_feedback: dict[str, Any] | None = None,
         schema_context: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
@@ -219,6 +220,8 @@ class CortexClient:
             onto = dict(ontology or {})
             onto[SCHEMA_CONTEXT_FIELD] = schema_context
         bound = min(insights_timeout_s(), float(self.timeout))
+        if timeout is not None and timeout > 0:
+            bound = min(bound, float(timeout))
         return post_compute_insights(
             self.base_url,
             question=question,
