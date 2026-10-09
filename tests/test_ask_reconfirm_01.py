@@ -12,12 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import dms_executor.pipeline_failure as tickets
 import duckdb
 import pytest
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
-
-import dms_executor.pipeline_failure as tickets
 from dms_executor import Executor
 from dms_executor.ask_clarify import minted_clarify_id
 from dms_executor.demo_grants import DemoSessionStore
@@ -32,8 +31,8 @@ CLOCK = "2026-10-08T00:00:00Z"
 Q_STUCK = "What is the qx marker figure?"
 Q_NARROW = "Show the qx marker figure"
 Q_DECOY = "client supplied text that must be ignored"
-SQL_OK = "SELECT SUM(qxalpha771) AS n FROM qxalpha_fact"
-SQL_BAD = "SELECT qxmissing771 FROM qxalpha_fact"
+SQL_OK = "SELECT 1 AS n"
+SQL_BAD = "SELECT nope FROM inventory"
 PASSPORT_VALUE = "QXPASS441771"
 TEXT_VALUE = "qxtextsample441"
 AMOUNT_SAMPLE = "441771"
@@ -79,6 +78,7 @@ class _Cortex:
     script: list[dict[str, Any]] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
     submits: list[Any] = field(default_factory=list)
+    asks: list[Any] = field(default_factory=list)
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         self.questions.append(question)
@@ -108,7 +108,7 @@ class _Cortex:
         return LedgerAppendResponse(entry_id="led_reconfirm", hash="hash_reconfirm")
 
     def ask(self, req: AskRequest) -> AskResponse:
-        _ = req
+        self.asks.append(req)
         return AskResponse(
             answer="stub contract answer",
             badge="certified",
@@ -130,7 +130,7 @@ class _Writer:
         return self.payload
 
 
-def _seed(path: Path, secret: str | None = None) -> None:
+def _seed(path: Path) -> None:
     ensure_demo_warehouse(path)
     con = connect_file(path)
     try:
@@ -143,9 +143,17 @@ def _seed(path: Path, secret: str | None = None) -> None:
             "INSERT INTO qxpii_fact VALUES (?, ?, ?)",
             [PASSPORT_VALUE, float(AMOUNT_SAMPLE), TEXT_VALUE],
         )
-        if secret:
-            con.execute(f"CREATE TABLE {secret} (secret_amount DOUBLE)")
-            con.execute(f"INSERT INTO {secret} VALUES (9)")
+        con.execute("ALTER TABLE inventory ADD COLUMN passport_no VARCHAR")
+        con.execute("UPDATE inventory SET passport_no = ?", [PASSPORT_VALUE])
+    finally:
+        con.close()
+
+
+def _add_secret(path: Path, secret: str) -> None:
+    con = connect_file(path)
+    try:
+        con.execute(f"CREATE TABLE {secret} (secret_amount DOUBLE)")
+        con.execute(f"INSERT INTO {secret} VALUES (9)")
     finally:
         con.close()
 
@@ -422,13 +430,13 @@ def test_hard_refusals_have_no_suggestion(wh: Path, caplog: pytest.LogCaptureFix
     assert _MP is not None
     writer = _Writer({"reason": "try this", "suggested_question": Q_NARROW})
     secret = "qxzz9f3a2c1b7e4d"
-    _seed(wh, secret)
+    _add_secret(wh, secret)
     cases = (
-        ("ungranted", {"query_sql": f"SELECT 1 AS n FROM {secret}"}),
-        ("pii", {"query_sql": "SELECT passport_no FROM qxpii_fact"}),
-        ("write", {"query_sql": "DELETE FROM qxalpha_fact"}),
+        ("ungranted", {"query_sql": f"SELECT 1 AS n FROM {secret}"}, "ungranted"),
+        ("pii", {"query_sql": "SELECT passport_no FROM inventory"}, "pii_column"),
+        ("write", {"query_sql": "DELETE FROM inventory"}, "hostile_sql"),
     )
-    for name, payload in cases:
+    for name, payload, token in cases:
         held = _Cortex(db=wh, script=[payload])
         env, _, exe = _ask(wh, Q_STUCK, writer=writer, flag=True, script=[], cortex=held)
         try:
@@ -436,9 +444,10 @@ def test_hard_refusals_have_no_suggestion(wh: Path, caplog: pytest.LogCaptureFix
             assert "suggested_question" not in env, name
             assert env["abstained"] is True, name
             assert env["rows"] == [], name
-            blob = _blob(env)
-            assert secret not in blob.lower(), name
-            assert PASSPORT_VALUE not in blob, name
+            blob = _blob(env).lower()
+            assert token in blob, name
+            assert secret not in blob, name
+            assert PASSPORT_VALUE.lower() not in blob, name
         finally:
             exe.close()
         assert writer.prompts == [], name
@@ -467,7 +476,7 @@ def test_hard_refusals_have_no_suggestion(wh: Path, caplog: pytest.LogCaptureFix
 def test_ungranted_name_absent_from_http_body(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_ASK_RECONFIRM", "1")
     secret = "qxzz9f3a2c1b7e4d"
-    _seed(wh, secret)
+    _add_secret(wh, secret)
     import dms_executor
     from dms_api.app import create_app
     from dms_api.deps import get_settings

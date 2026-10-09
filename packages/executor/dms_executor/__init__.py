@@ -767,7 +767,7 @@ class Executor:
                     granted_now = set(self.grantable_tables(space_id=space_id))
                 except Exception:  # noqa: BLE001 -- fail closed, never 500 the pick
                     granted_now = set()
-                resolved = resolve_clarify(
+                picked = resolve_clarify(
                     self._clarify_attempts,
                     clarify_id=clarify_id,
                     option_id=option_id,
@@ -778,13 +778,13 @@ class Executor:
                     warehouse=self._warehouse,
                     grantable=granted_now,
                 )
-                if isinstance(resolved, dict):
-                    return resolved
+                if isinstance(picked, dict):
+                    return picked
                 from dms_executor.ask_clarify import Reask, reask_refusal
 
-                if isinstance(resolved, Reask):
-                    self._clarify_reask_parent = resolved.parent_id
-                    question = normalize_ask_question(resolved.question)
+                if isinstance(picked, Reask):
+                    self._clarify_reask_parent = picked.parent_id
+                    question = normalize_ask_question(picked.question)
                     clarify_locked = True
                     refused = reask_refusal(
                         question,
@@ -796,7 +796,7 @@ class Executor:
                     if refused is not None:
                         return refused
                 else:
-                    question = normalize_ask_question(resolved)
+                    question = normalize_ask_question(picked)
                     clarify_locked = True
         ladder = (ask_path or "product").strip().lower()
         if ladder not in {"product", "exact", "generative"}:
