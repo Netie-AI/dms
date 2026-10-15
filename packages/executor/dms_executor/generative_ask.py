@@ -689,9 +689,18 @@ def validate_compiled_sql(
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
     named = cited_relations(sql)
-    # Qualified grants (bronze.sheet) match the bare cited name. Exact set
-    # membership treated a granted upload as ungranted.
-    missing = {t for t in named if not table_is_granted(t, grantable)}
+    # A qualified upload grant (bronze.sheet) matches the bare cited sheet
+    # name. A demo-lake table keeps the exact match: bronze.alerts is an
+    # upload and does not open the lake table alerts.
+    missing = {
+        t
+        for t in named
+        if not (
+            (t in grantable or f"warehouse_{t}" in grantable)
+            if _is_demo_lake_relation(t)
+            else table_is_granted(t, grantable)
+        )
+    }
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     # No cited relation. A literal select is the same grant outcome, bare

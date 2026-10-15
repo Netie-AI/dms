@@ -826,3 +826,24 @@ def test_file_reader_sql_is_refused_before_any_local_execution(
     assert "fanout_subject_keys" not in text, route
     assert not probed, f"{route} ran the served-result probe on refused SQL: {probed}"
 
+
+def test_qualified_upload_grant_does_not_grant_the_demo_lake_table(tmp_path: Path) -> None:
+    """A grant on bronze.alerts is an upload. It does not open the lake table alerts."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "grant.duckdb"
+    ensure_demo_warehouse(db)
+    lake = "SELECT alert_id FROM alerts"
+    assert (
+        validate_compiled_sql(lake, grantable={"bronze.alerts"}, warehouse=db)
+        == "ungranted:alerts"
+    )
+    # The upload itself, cited by its bare label, stays granted by its qualified grant.
+    sheet = "SELECT * FROM q3_sales_sheet"
+    assert validate_compiled_sql(
+        sheet, grantable={"bronze.q3_sales_sheet"}, warehouse=db
+    ) != "ungranted:q3_sales_sheet"
+    # The lake table granted by its own name still passes the grant step.
+    assert (
+        validate_compiled_sql(lake, grantable={"alerts"}, warehouse=db) != "ungranted:alerts"
+    )
