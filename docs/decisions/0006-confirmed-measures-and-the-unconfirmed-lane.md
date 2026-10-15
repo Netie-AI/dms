@@ -235,15 +235,42 @@ against a non-seed database in this step.
      the answer abstains `too_many_groups` when that extra row exists; an answer under the
      cap is whole and its coverage no longer lists a LIMIT exclusion. An ungrouped plan is
      one row and keeps the SQL the steward saw at confirm.
-  5. *A plan-supplied `via` that picks one of several declared links is Cortex's choice.*
-     The compiler refuses `ambiguous_path` without a `via`; with one it would answer, so
-     `via_choice_reason` refuses the same plan. A `via` naming the only link picks nothing.
+  5. *A route among several is nobody's pick the question made.* The compiler refuses
+     `ambiguous_path` between parallel links without a `via`; with one it would answer, so
+     `via_choice_reason` refuses the same plan. That closed the parallel-link repro and not the
+     class: with `enrollments.school_id -> schools` and `schools.district_id -> districts`
+     beside a direct `enrollments.district_id -> districts`, "enrollments in North" is the
+     enrollment's own district (1 row) or its school's (3 rows), a `via` naming the only link of
+     its hop passed, and with no `via` the compiler took the shorter route in silence. Now
+     `route_choice_reason` counts the routes from the measure's grain to EVERY object the plan
+     groups by, filters on or names in its `via` (`Ontology.routes_between`, the routes without
+     the `via`, many-to-one only for a grouping and every verified link for a filter, parallel
+     links counting separately) and refuses `ambiguous_path` when there is more than one, with
+     or without a `via`. The count stops at two and spends at most 20,000 link inspections; a
+     graph it cannot finish counting is refused too. A `via` that names the grain itself (a
+     self-link, the parent's reading beside the row's own) is refused. Deviation from the
+     smallest fix: the no-`via` default is closed in this lane as well, because a `via` equal to
+     the default would otherwise be refused while the same plan without it answered. Every other
+     lane still takes `Ontology.compile`'s shortest path, unchanged.
   6. *Cheap P2s from the same round.* A text literal whose column also holds another
      spelling differing only in case or surrounding spaces (`North` and `north`) refuses
      `ambiguous_filter_value`; the equality would match one spelling and drop the rest (one
      probe query per literal, as before). A COUNT measure answers only a question that asks
      for a count (`how many`, `number of`, `count`, `tally`): "show me the schools" asks for
      rows.
+  7. *"North and South" over two different columns is a list the plan ANDs.* A district filter
+     plus a region filter, the question "How many schools are there in North and South?": the
+     plan matches no school (COUNT printed 0) or the few that are both (a believable wrong
+     figure). `_joined_values` refuses `unstated_filter` when two neighbouring stated values
+     sit in different filters (a value used by several filters is not provably in any one) and
+     what lies between them is only a join: an `and` or a comma, with frame words and
+     separators. One filter's own `IN` list is the one case where that join is right. Two
+     values side by side ("March 2024", "Q1 2024") are two conditions and still answer, and so
+     does a phrase of its own between them ("public schools in North", "schools are public in
+     North", "In North, how many schools are public?": `schools`, `public`, a verb or a
+     preposition with no `and`). The price is a false refusal of "schools that are public and
+     in North": `and in` joins two conditions as readily as two places, and the text cannot
+     tell which.
 - **A NULL aggregate is not a figure.** A confirmed answer whose measure is NULL in ANY row,
   or that has no rows, abstains `empty_aggregate`: dropping the group would hide one the
   customer asked about and printing it would read `=None` under the badge. A NULL group KEY
@@ -285,11 +312,17 @@ against a non-seed database in this step.
 - A parent-table grouping is demoted by the envelope's own E9-02 scope check when the joined
   tables share a prefix (`public_schools`, `public_districts`): a false refusal in the
   envelope, not in this lane.
-- A plan whose filters sit on two DIFFERENT columns is ANDed, and `and` is a frame word:
-  "schools in North and South" with a district filter and a region filter states one reading
-  of two. Same-column conditions are closed (guard 2); the cross-column connective is not.
-- A `via` that names one of several links is always refused, even when the question says
-  "mail district": a false refusal until a proven phrase-to-link mapping exists.
+- A conjunction across two columns is refused only when frame words alone join the values
+  (guard 7). A value restated with a phrase of its own ("schools in North and schools in
+  South", "North and the number of schools in South") is read as two statements, and the plan
+  still ANDs them: a believable 0 or a small wrong figure. The text cannot tell a second
+  subject from a second condition. Unlock: a plan-side signal (Cortex reporting an `OR`/list
+  intent) or a phrase-to-column map.
+- A dimension reachable by more than one route is refused (guard 5) however the question is
+  worded, and a `via` is never accepted as the customer's pick, even when the question says
+  "mail district": false refusals until a proven phrase-to-route mapping exists. A table that
+  holds a redundant foreign key beside a chain (an order line with `customer_id` and
+  `order_id -> customer_id`) loses the certified lane for that dimension.
 - Accounting is by token and literal, not by relation. A literal is stated when the question
   contains it exactly; the gate cannot tell whether it is stated about the column the plan
   filters ("district 2" and "2 districts" both state `2`). The value probe bounds it

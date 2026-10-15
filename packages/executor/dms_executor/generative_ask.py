@@ -92,7 +92,7 @@ from dms_executor.measure_use import (
     measure_fit,
     prune_unusable_measures,
     read_source_pulls,
-    via_choice_reason,
+    route_choice_reason,
 )
 from dms_executor.ontology import (
     CompiledQuery,
@@ -2256,9 +2256,22 @@ def maybe_generative_ask(
                     suggest_from=space_onto,
                 )
             )
-        # A link the plan names among several declared ones is Cortex's pick, and no word of
-        # the question made it: the compiler refuses the same plan without the ``via``.
-        picked = via_choice_reason(plan.via, space_onto)
+        # A route among several is somebody's pick, and no word of the question made it. A
+        # ``via`` that names one of several declared links is Cortex's (the compiler refuses the
+        # same plan without it); a second, longer route to a dimension is the shortest-path
+        # default's. The lane states one figure, so it answers only over exactly one route.
+        grained = space_onto.measures.get(plan.measure or "")
+        picked = (
+            route_choice_reason(
+                space_onto,
+                grain=grained.grain,
+                via=plan.via,
+                group_by=plan.group_by,
+                filters=plan.filters,
+            )
+            if grained is not None
+            else None
+        )
         if picked:
             return _stamp(
                 _abstain(

@@ -18,6 +18,9 @@ Four jobs, all inert until a confirmed row exists:
   and the fit check both read it.
 * ``filter_values_present`` is rule 12 at ask time: a plan filter literal that does not
   exist in its column as landed (``north`` for ``North``) must not become a plausible 0.
+* ``route_choice_reason`` refuses a plan whose join route is a choice among several (a direct
+  foreign key beside a chain, parallel links, a ``via`` that picks one): the lane states one
+  figure, so it answers only over exactly one route.
 
 ``aggregate_cues`` (the cue word sets measure_fit and the ad hoc lane both read) is pure.
 
@@ -80,6 +83,7 @@ __all__ = [
     "measure_fit",
     "prune_unusable_measures",
     "read_source_pulls",
+    "route_choice_reason",
     "via_choice_reason",
 ]
 
@@ -895,14 +899,17 @@ def _render_literal(value: Any) -> str | None:
     return None
 
 
-def _filter_literals(filters: Iterable[Sequence[Any]]) -> tuple[list[str], list[str]]:
-    """``(literals, unstateable)``: the rendered literal of every ``=`` / ``IN`` filter (a value
-    once per filter that uses it), and what a question cannot state (an operator other than
-    those two, an empty or NULL or nested value, a filter DMS cannot read). Anything in the
-    second list is a refusal."""
+def _filter_literals(
+    filters: Iterable[Sequence[Any]],
+) -> tuple[list[str], list[str], dict[str, set[int]]]:
+    """``(literals, unstateable, users)``: the rendered literal of every ``=`` / ``IN`` filter (a
+    value once per filter that uses it), what a question cannot state (an operator other than
+    those two, an empty or NULL or nested value, a filter DMS cannot read), and which filters
+    (by position) use each literal. Anything in the second list is a refusal."""
     literals: list[str] = []
     bad: list[str] = []
-    for item in filters:
+    users: dict[str, set[int]] = {}
+    for position, item in enumerate(filters):
         parts = list(item)
         if len(parts) < 4:
             bad.append("an unreadable filter")
@@ -930,7 +937,8 @@ def _filter_literals(filters: Iterable[Sequence[Any]]) -> tuple[list[str], list[
             elif rendered not in stated:  # one IN list names a value once
                 stated.add(rendered)
                 literals.append(rendered)
-    return literals, bad
+                users.setdefault(rendered, set()).add(position)
+    return literals, bad, users
 
 
 def _claim_literals(text: str, literals: Iterable[str]) -> tuple[list[tuple[int, int]], list[str]]:
@@ -966,6 +974,56 @@ def _claim_literals(text: str, literals: Iterable[str]) -> tuple[list[tuple[int,
                 literal if need == 1 else f"{literal} (needs {need} mentions, found {got})"
             )
     return sorted(claimed), missing
+
+
+def _only_joins(between: str) -> bool:
+    """Whether what sits between two stated values only JOINS them: whitespace, ``? . ,`` and
+    frame words, with an ``and`` or a comma as the join. Two values side by side with no join
+    ("March 2024", "Q1 2024") are two conditions in ordinary speech, not a list. A word of any
+    other kind (a name of the plan, a cue, an unknown word) means a phrase of its own stands
+    between the values, and a symbol is refused as content by the pass that reads what is
+    left."""
+    words: list[str] = []
+    run: list[str] = []
+    comma = False
+    for ch in between:
+        if _is_word_char(ch):
+            run.append(ch)
+            continue
+        if run:
+            words.append("".join(run))
+            run = []
+        if ch == ",":
+            comma = True
+        elif not (_is_space_char(ch) or ch in _SEPARATOR_PUNCT):
+            return False
+    if run:
+        words.append("".join(run))
+    if any(w not in FRAME_WORDS for w in words):
+        return False
+    return comma or "and" in words
+
+
+def _joined_values(
+    text: str, spans: Sequence[tuple[int, int]], users: Mapping[str, set[int]]
+) -> list[str]:
+    """Pairs of stated values that the question joins as ONE list and the plan filters as
+    separate conditions. "North and South" is two places; as a district filter and a region
+    filter the plan ANDs them, which matches no row (``COUNT`` prints 0) or a few (a plausible
+    wrong figure). Two neighbouring claimed values are one list only when ONE filter alone
+    uses both (an ``IN`` list); a value that several filters use is not provably in any one
+    list, so it is refused too. Two values with a phrase of their own between them ("public
+    schools in North": ``schools`` and ``in``) or with no join at all ("March 2024") are not
+    joined."""
+    out: list[str] = []
+    for (s1, e1), (s2, e2) in zip(spans, spans[1:], strict=False):
+        first, second = text[s1:e1], text[s2:e2]
+        mine = users.get(first, set())
+        if first != second and len(mine) == 1 and mine == users.get(second, set()):
+            continue
+        if _only_joins(text[e1:s2]):
+            out.append(f"{first} and {second} are one list in the question but two conditions")
+    return out
 
 
 @dataclass(frozen=True)
@@ -1101,7 +1159,7 @@ def account_for_question(
     text = unicodedata.normalize("NFKC", str(question or ""))
     plan_filters = [list(f) for f in filters]
     held = tables or {}
-    literals, unstateable = _filter_literals(plan_filters)
+    literals, unstateable, users = _filter_literals(plan_filters)
     # Two conditions on one column are never what a question states: "North and South" is one
     # IN list. As separate equalities they AND to the empty set (COUNT would print 0), and an
     # equality beside an IN list silently narrows it.
@@ -1110,7 +1168,10 @@ def account_for_question(
     )
     repeated = [f"two conditions on {col}" for (_obj, col), n in sorted(columns.items()) if n > 1]
     spans, missing = _claim_literals(text, literals)
-    refused = [*repeated, *unstateable, *missing]
+    # "North and South" over a district filter and a region filter is the same symptom across
+    # two columns: a conjunction between two stated values reads as a list, the plan ANDs them.
+    joined = _joined_values(text, spans, users)
+    refused = [*repeated, *unstateable, *missing, *joined]
     if refused:
         return Accounting(GAP_UNSTATED_FILTER, tuple(repr(r) for r in refused))
 
@@ -1256,9 +1317,12 @@ def measure_fit(
       by (``unbound_constraint``: "in the US" answered by the unfiltered total). Default
       deny: anything else, in any case, script or symbol, is a condition the plan dropped.
       Two filters on one column, or a literal that more filters use than the question states,
-      are conditions the plan added (``unstated_filter``). ``tables`` maps each relation the
-      plan names to its table's name at the source (``read_source_pulls``): a relation's own
-      name carries the source schema ("public schools"), so it is never vocabulary.
+      are conditions the plan added (``unstated_filter``), and so are two stated values that
+      the question joins as one list ("North and South", "North, South") while the plan
+      filters them as separate conditions on different columns. ``tables`` maps each
+      relation the plan names to its table's name at the source (``read_source_pulls``): a
+      relation's own name carries the source schema ("public schools"), so it is never
+      vocabulary.
       ``filters=None`` means no plan is being checked, and skips both tests.
 
     Only structured (provenance-bearing) measures take part. The cue, quantity and qualifier
@@ -1358,5 +1422,73 @@ def via_choice_reason(via: Mapping[str, str] | None, onto: Ontology) -> str | No
                 f"{REASON_AMBIGUOUS_PATH}: the plan picks {name!r} of {len(siblings)} declared "
                 f"links from {link.from_object!r} to {dim!r} ({', '.join(siblings)}); the "
                 "question does not say which, and the layer will not choose"
+            )
+    return None
+
+
+def route_choice_reason(
+    onto: Ontology,
+    *,
+    grain: str,
+    via: Mapping[str, str] | None,
+    group_by: Iterable[Sequence[Any]] = (),
+    filters: Iterable[Sequence[Any]] = (),
+) -> str | None:
+    """``ambiguous_path: <why>`` when the join route a plan takes is a choice among several.
+
+    "Enrollments in North" is the enrollment's own district or its school's district when both
+    links exist: two valid joins, two different numbers, and nothing in the question picks. The
+    compiler would take the shorter one in silence, and a ``via`` would take whichever Cortex
+    named; either way the customer reads one green figure with no sign of the other. So the
+    confirmed lane answers only when exactly ONE route joins the grain to every object the plan
+    groups by, filters on, or names in its ``via``. Routes are counted without the ``via``, over
+    the links the compiler may pass (many-to-one for a grouping, any verified link for a filter,
+    so a filter's count is the larger and covers both). Parallel links count as routes. A
+    ``via`` that names the grain itself picks the parent's reading over the row's own. A route
+    count the search could not finish is not one. Unknown objects are left to the compiler,
+    which refuses them by name. A false refusal is safe; one figure for one of two questions is
+    not.
+    """
+    picked = via_choice_reason(via, onto)
+    if picked:
+        return picked
+    resolved_grain = onto.resolve_object(grain)
+    if isinstance(resolved_grain, Refusal):
+        return None
+    #: object -> whether the larger, filter-sized count applies (a grouping alone needs only
+    #: the many-to-one routes; a filter or a ``via`` key is counted over every verified link).
+    wanted: dict[str, bool] = {}
+    for role, items in (("group", group_by), ("filter", filters)):
+        for item in items:
+            obj = onto.resolve_object(str(item[0])) if item else None
+            if isinstance(obj, str):
+                wanted[obj] = wanted.get(obj, False) or role == "filter"
+    via_objects: set[str] = set()
+    for key in via or {}:
+        obj = onto.resolve_object(str(key))
+        if isinstance(obj, str):
+            via_objects.add(obj)
+            wanted[obj] = True
+    for obj, for_filter in sorted(wanted.items()):
+        if obj == resolved_grain:
+            if obj in via_objects:
+                return (
+                    f"{REASON_AMBIGUOUS_PATH}: the plan reads {obj!r} through a link to itself; "
+                    "the row's own value is the other reading, and the question does not say "
+                    "which"
+                )
+            continue
+        routes = onto.routes_between(resolved_grain, obj, for_filter=for_filter)
+        if routes is None:
+            return (
+                f"{REASON_AMBIGUOUS_PATH}: the routes from {resolved_grain!r} to {obj!r} are "
+                "too many to tell apart, and the layer will not choose"
+            )
+        if len(routes) > 1:
+            shown = "; ".join(" -> ".join(link.name for link in route) for route in routes)
+            return (
+                f"{REASON_AMBIGUOUS_PATH}: more than one route joins {resolved_grain!r} to "
+                f"{obj!r} ({shown}); the question does not say which, and the layer will not "
+                "choose"
             )
     return None

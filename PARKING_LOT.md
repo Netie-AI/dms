@@ -467,6 +467,19 @@ masked figure is a product decision.
 reason, or exempt a numeric aggregate the lane computed from the scan); the lane then asserts
 it at the envelope.
 
+## P-DMS-56 - A second subject between two values hides a cross-column AND (dms#284)
+
+The confirmed lane refuses two stated values that the question joins with `and` or a comma while
+the plan filters them on two different columns ("How many schools are there in North and
+South?": a district filter plus a region filter, COUNT 0). Only frame words may sit between
+them. A value restated with a phrase of its own ("schools in North and schools in South",
+"North and the number of schools in South") reads as two statements, and the plan still ANDs
+them: a believable 0 or a small wrong figure under the confirmed badge. The text cannot tell a
+second subject from a second condition ("In North, how many schools are public?" is one). The
+opposite cost is accepted: "schools that are public and in North" is refused.
+**Unlock:** Cortex reports an OR / list intent on the plan, or steward alias phrases (P-DMS-44)
+give a phrase-to-column map; the lane then admits the explicit AND and refuses the rest.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

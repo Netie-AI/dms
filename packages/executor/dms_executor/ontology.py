@@ -1258,6 +1258,71 @@ class Ontology:
                         stack.append((to_obj, nxt, seen | {to_obj}))
         return found
 
+    def routes_between(
+        self,
+        start: str,
+        target: str,
+        *,
+        for_filter: bool = False,
+        limit: int = 2,
+        budget: int = 20_000,
+    ) -> list[list[LinkType]] | None:
+        """Up to ``limit`` passable acyclic routes from ``start`` to ``target``: the routes
+        ``_all_paths`` lists (no ``via``), found without listing the rest. A caller that asks
+        "is there more than one reading?" needs two, not every one of an exponential set.
+
+        Only objects that can still reach ``target`` are walked, so a dead branch costs nothing.
+        None when the walk spent ``budget`` link inspections without finishing (a graph too
+        tangled to count): a caller that needs a clean answer treats that as ambiguous.
+        """
+        if start == target:
+            return [[]]
+
+        def passable(link: LinkType) -> bool:
+            if link.cardinality == "unverified":
+                return False
+            return for_filter or link.cardinality == "many_to_one"
+
+        inbound: dict[str, list[str]] = {}
+        for link in self.links.values():
+            if passable(link):
+                inbound.setdefault(link.to_object, []).append(link.from_object)
+        reach = {target}
+        frontier = [target]
+        while frontier:
+            nxt_frontier: list[str] = []
+            for obj in frontier:
+                for parent in inbound.get(obj, ()):
+                    if parent not in reach:
+                        reach.add(parent)
+                        nxt_frontier.append(parent)
+            frontier = nxt_frontier
+        if start not in reach:
+            return []
+        found: list[list[LinkType]] = []
+        spent = 0
+        stack: list[tuple[str, list[LinkType], frozenset[str]]] = [
+            (start, [], frozenset({start}))
+        ]
+        while stack:
+            obj, path, seen = stack.pop()
+            for link in self.links.values():
+                if link.from_object != obj:
+                    continue
+                spent += 1
+                if spent > budget:
+                    return None
+                if link.to_object in seen or link.to_object not in reach or not passable(link):
+                    continue
+                route = [*path, link]
+                if link.to_object == target:
+                    found.append(route)
+                    if len(found) >= limit:
+                        return found
+                else:
+                    stack.append((link.to_object, route, seen | {link.to_object}))
+        return found
+
     def _column_for_grain(self, obj: str, grain: str) -> str | None:
         preferred = GRAIN_COLUMNS.get(grain, ())
         cols = self.__dict__.get("_column_cache", {}).get(obj)

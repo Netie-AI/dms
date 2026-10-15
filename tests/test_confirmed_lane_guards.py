@@ -16,7 +16,11 @@ adversary round, each at the customer envelope (``POST /v1/chat/ask`` through
 * F4 the plan's own ``limit`` (Cortex's, or the default 50) is a row cap the question never
   stated: a grouped answer states every group or abstains.
 * F5 a plan-supplied ``via`` that picks one of two declared links is a choice no word of the
-  question made.
+  question made. F5b the same class for a ROUTE: two paths of different length to one dimension
+  (a direct foreign key and a chain through another table) are two readings of "in North", and
+  neither a ``via`` nor the layer's shortest-path default may pick one for the customer.
+* F2b "North and South" over a district filter and a region filter is the same symptom as F2 on
+  two DIFFERENT columns: a conjunction between two stated values is a list, the plan ANDs them.
 
 Non-confirmed lanes are untouched; this file only reads the confirmed lane.
 """
@@ -24,6 +28,7 @@ Non-confirmed lanes are untouched; this file only reads the confirmed lane.
 from __future__ import annotations
 
 import copy
+import time
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -121,6 +126,7 @@ def build(
     *,
     schema: str = "public",
     lake: dict[str, Any] | None = None,
+    also: tuple[str, ...] = (),
 ) -> _Rigged:
     held = lake if lake is not None else _lake(schema)
     monkeypatch.setattr(ing, "PKS", held["pks"])
@@ -130,7 +136,7 @@ def build(
     rig.ingest(space, tables=held["tables"], data=held["data"], types=held["types"])
     env = _Env(rig=rig, space=space, sid=UUID(space), store=store, ledger=_Ledger())
     rigged = _Rigged(env)
-    rigged.confirm(BUDGET, SCOUNT)
+    rigged.confirm(BUDGET, SCOUNT, *also)
     return rigged
 
 
@@ -368,11 +374,12 @@ def test_f2_a_literal_two_filters_use_must_be_stated_twice(
 def test_f2_unit_the_accounting_counts_multiplicity() -> None:
     acc = mu.account_for_question
     q = "total budget of schools in North"
-    two = [("o", "a", "=", "North"), ("o", "b", "=", "North")]
+    two = [("o", "district", "=", "North"), ("o", "region", "=", "North")]
     assert acc(q, measure=BUDGET, grain="bronze.public_schools", filters=two).reason == (
         "unstated_filter"
     )
-    q2 = "total budget of schools in North North"
+    # said twice, each time after its own column's name: two statements, two conditions
+    q2 = "total budget of schools in North in region North"
     assert acc(q2, measure=BUDGET, grain="bronze.public_schools", filters=two).ok
     # one IN list never repeats a value
     assert acc(
@@ -381,6 +388,172 @@ def test_f2_unit_the_accounting_counts_multiplicity() -> None:
         grain="bronze.public_schools",
         filters=[("o", "a", "IN", ["North", "North"])],
     ).ok
+
+
+# ============================================================ F2b: a conjunction across two columns
+
+NORTH_AND_SOUTH = (
+    (DISTRICTS, "name", "=", "North"),
+    (SCHOOLS, "region", "=", "South"),
+)
+
+
+def _south_dogwood() -> dict[str, Any]:
+    """Dogwood (district North) is in region South too, so ANDing the two literals matches ONE
+    school: a plausible wrong figure, not only a zero."""
+    held = copy.deepcopy(_lake())
+    held["data"]['"public"."schools"'][1][3][5] = "South"
+    return held
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How many schools are there in North and South?",
+        "How many schools are there in North, South?",
+        "How many schools are there in North, and South?",
+        "How many schools are there in North and in South?",
+        "How many schools are there in North, how many in South?",
+    ],
+)
+def test_f2b_two_values_joined_by_and_on_two_columns_are_a_list_not_two_conditions(
+    r: _Rigged, question: str
+) -> None:
+    """The adversary's repro. The question names two places; the plan ANDs a district filter and
+    a region filter, which matches no school, and COUNT printed 0 under the confirmed badge."""
+    assert _oracle(r.rig.lake, "SELECT COUNT(*) AS v FROM bronze.public_schools") == [{"v": 4}]
+    assert _oracle(
+        r.rig.lake,
+        "SELECT COUNT(*) AS v FROM bronze.public_schools "
+        "WHERE district_id = 1 AND region = 'South'",
+    ) == [{"v": 0}]
+    env = r.plan(question, SCOUNT, filters=NORTH_AND_SOUTH)
+    text = _refused(r, env, "fit_disagrees:unstated_filter")
+    assert "schools_count=0" not in text and "Found 1 row" not in text
+
+
+def test_f2b_the_anded_figure_can_be_a_plausible_nonzero_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: Any, store: OntologyStore
+) -> None:
+    rigged = build(tmp_path, monkeypatch, minter, store, lake=_south_dogwood())
+    anded = _oracle(
+        rigged.rig.lake,
+        "SELECT COUNT(*) AS v FROM bronze.public_schools "
+        "WHERE district_id = 1 AND region = 'South'",
+    )
+    assert anded == [{"v": 1}], "one school is North AND South: the wrong figure is a believable 1"
+    env = rigged.plan(
+        "How many schools are there in North and South?", SCOUNT, filters=NORTH_AND_SOUTH
+    )
+    text = _refused(rigged, env, "fit_disagrees:unstated_filter")
+    assert "schools_count=1" not in text
+
+
+@pytest.mark.parametrize(
+    ("question", "filters", "where", "figure"),
+    [
+        # one value list on one column is what "North and South" states
+        (
+            "How many schools are there in North and South?",
+            ((DISTRICTS, "name", "IN", ["North", "South"]),),
+            "district_id IN (1, 2)",
+            "4",
+        ),
+        # a value of its own column between two values that share one: the join is a list, the
+        # other literal is a condition introduced by a place and a verb, not by "and"
+        (
+            "How many public schools are there in North and South?",
+            ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "IN", ["North", "South"])),
+            "kind = 'public' AND district_id IN (1, 2)",
+            "2",
+        ),
+        # two conditions on two columns, each stated with words between them and no conjunction
+        (
+            "How many public schools are there in North?",
+            ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "=", "North")),
+            "kind = 'public' AND district_id = 1",
+            "1",
+        ),
+        (
+            "How many schools are public in North?",
+            ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "=", "North")),
+            "kind = 'public' AND district_id = 1",
+            "1",
+        ),
+        # a comma that ends a clause: a name of the plan stands between the two values
+        (
+            "In North, how many schools are public?",
+            ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "=", "North")),
+            "kind = 'public' AND district_id = 1",
+            "1",
+        ),
+    ],
+)
+def test_f2b_controls_what_the_question_states_still_answers(
+    r: _Rigged,
+    question: str,
+    filters: tuple[tuple[Any, ...], ...],
+    where: str,
+    figure: str,
+) -> None:
+    oracle = _oracle(r.rig.lake, f"SELECT COUNT(*) AS v FROM bronze.public_schools WHERE {where}")
+    env = r.plan(question, SCOUNT, filters=filters)
+    _assert_answer(env, oracle, figure)
+
+
+def test_f2b_mutation_without_the_gate_the_anded_zero_is_stated_as_a_finding(
+    r: _Rigged, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The harm the gate prevents, shown by turning it off: 0 under the confirmed badge."""
+    monkeypatch.setattr(mu, "_joined_values", lambda *a, **k: [])
+    env = r.plan("How many schools are there in North and South?", SCOUNT, filters=NORTH_AND_SOUTH)
+    _assert_answer(env, [{"v": 0}], "schools_count=0")
+
+
+def test_f2b_unit_a_conjunction_joins_values_of_different_filters_only() -> None:
+    acc = mu.account_for_question
+    grain = "bronze.public_schools"
+    two = [("o", "district", "=", "North"), ("o", "region", "=", "South")]
+    one = [("o", "district", "IN", ["North", "South"])]
+    for q in (
+        "total budget of schools in North and South",
+        "total budget of schools in North, South",
+        "total budget of schools in North, and South",
+        "total budget of schools in North and in South",
+        "total budget of schools in North, how many in South",
+        "total budget of schools in South and North",
+    ):
+        got = acc(q, measure=BUDGET, grain=grain, filters=two)
+        assert (got.ok, got.reason) == (False, "unstated_filter"), (q, got)
+        assert acc(q, measure=BUDGET, grain=grain, filters=one).ok, q
+    # nothing between them but a name of the plan, or a preposition: not a list
+    for q in (
+        "total budget of schools in North in region South",
+        "total budget of schools in North and region South",
+        "total budget of schools in district North and region South",
+    ):
+        assert acc(q, measure=BUDGET, grain=grain, filters=two).ok, q
+    # two values side by side, or with a verb or a name between them, are not a list
+    months = [("o", "month", "=", "March"), ("o", "year", "=", 2024)]
+    for q in (
+        "total budget of schools in March 2024",
+        "total budget of schools in 2024 March",
+        "total budget of schools in March of 2024",
+        "total budget of schools in March in year 2024",
+    ):
+        assert acc(q, measure=BUDGET, grain=grain, filters=months).ok, q
+    # ... but "and" or a comma between them is
+    for q in (
+        "total budget of schools in March and 2024",
+        "total budget of schools in March, 2024",
+    ):
+        got = acc(q, measure=BUDGET, grain=grain, filters=months)
+        assert (got.ok, got.reason) == (False, "unstated_filter"), (q, got)
+    # a value used by two filters is not provably one list: joined, it is refused
+    both = [("o", "district", "=", "North"), ("o", "region", "=", "North")]
+    q = "total budget of schools in North and North"
+    got = acc(q, measure=BUDGET, grain=grain, filters=both)
+    assert (got.ok, got.reason) == (False, "unstated_filter"), got
 
 
 # ============================================================ F3: a truncated re-pull
@@ -655,6 +828,214 @@ def test_f5_a_via_naming_the_only_declared_link_picks_nothing_and_answers(r: _Ri
     _assert_answer(env, _sum(r, "district_id = 1"), "310.75")
 
 
+# ============================================================ F5b: a route the question never chose
+
+ENROLL = "bronze.public_enrollments"
+ECOUNT = "enrollments_count"
+ENROLL_Q = "How many enrollments are there in North?"
+VIA_DIRECT = "enrollments_district_id_fkey"
+VIA_SCHOOL = "schools_district_id_fkey"
+
+
+def _diamond() -> dict[str, Any]:
+    """Enrollments reach districts two ways: by their own ``district_id`` (one hop) and by their
+    school's district (two hops). Enrollment 5 is North by its own district and South by its
+    school; enrollments 1 to 3 are the other way round: direct 1, through the school 3."""
+    held = copy.deepcopy(_lake())
+    held["tables"] = [*held["tables"], ("public", "enrollments")]
+    held["data"]['"public"."enrollments"'] = (
+        ["enrollment_id", "school_id", "district_id"],
+        [[1, 1, 2], [2, 1, 2], [3, 2, 2], [4, 3, 2], [5, 3, 1]],
+    )
+    held["types"]["public.enrollments"] = [
+        ("enrollment_id", "integer", 32, 0),
+        ("school_id", "integer", 32, 0),
+        ("district_id", "integer", 32, 0),
+    ]
+    held["pks"] = [*held["pks"], ("public", "enrollments", "enrollment_id", 1)]
+    held["fks"] = [
+        *held["fks"],
+        (
+            "enrollments_school_id_fkey", "public", "enrollments", "school_id",
+            "public", "schools", "school_id", 1,
+        ),
+        (
+            VIA_DIRECT, "public", "enrollments", "district_id",
+            "public", "districts", "district_id", 1,
+        ),
+    ]  # fmt: skip
+    return held
+
+
+@pytest.fixture()
+def d(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: Any, store: OntologyStore
+) -> _Rigged:
+    return build(tmp_path, monkeypatch, minter, store, lake=_diamond(), also=(ECOUNT,))
+
+
+def _enrolled(rigged: _Rigged, where: str = "TRUE") -> list[dict[str, Any]]:
+    return _oracle(
+        rigged.rig.lake, f"SELECT COUNT(*) AS v FROM bronze.public_enrollments WHERE {where}"
+    )
+
+
+def test_f5b_a_via_that_chooses_between_two_routes_is_not_the_customers_choice(
+    d: _Rigged,
+) -> None:
+    """The adversary's repro. "In North" is the enrollment's own district (1) or its school's
+    district (3): both are valid joins, each is one green number, neither is what was asked."""
+    direct = _enrolled(d, "district_id = 1")
+    through = _enrolled(
+        d, "school_id IN (SELECT school_id FROM bronze.public_schools WHERE district_id = 1)"
+    )
+    assert (direct, through) == ([{"v": 1}], [{"v": 3}]), "the two readings are different numbers"
+    north = ((DISTRICTS, "name", "=", "North"),)
+    for via in (VIA_DIRECT, VIA_SCHOOL):
+        env = typed(d, ENROLL_Q, ECOUNT, filters=north, via={DISTRICTS: via})
+        assert env["abstained"] is True and env["rows"] == [], (via, env["text"], env["rows"])
+        assert "ambiguous_path" in env["text"], env["text"]
+        assert VIA_DIRECT in env["text"] and VIA_SCHOOL in env["text"], "both routes are named"
+        assert "measure_basis" not in env and "Found 1 row" not in env["text"]
+        assert d.executed == [] and d.rig.cortex.asks == []
+
+
+def test_f5b_the_layers_own_shortest_path_does_not_choose_either(d: _Rigged) -> None:
+    """With no via the compiler takes the shorter route and says nothing; the confirmed lane
+    states one figure under a confirmed basis, so it does not state that one."""
+    north = ((DISTRICTS, "name", "=", "North"),)
+    for env in (
+        d.plan(ENROLL_Q, ECOUNT, filters=north),
+        typed(d, ENROLL_Q, ECOUNT, filters=north),
+    ):
+        assert env["abstained"] is True and env["rows"] == [], env["text"]
+        assert "ambiguous_path" in env["text"], env["text"]
+        assert "measure_basis" not in env and "Found 1 row" not in env["text"]
+    assert d.executed == []
+
+
+def test_f5b_a_breakdown_has_the_same_two_readings(d: _Rigged) -> None:
+    env = d.plan(
+        "How many enrollments are there by districts?",
+        ECOUNT,
+        group_by=((DISTRICTS, "name"),),
+    )
+    assert env["abstained"] is True and env["rows"] == [], env["text"]
+    assert "ambiguous_path" in env["text"], env["text"]
+    assert "measure_basis" not in env and d.executed == []
+
+
+def test_f5b_controls_a_single_route_still_answers_next_to_the_diamond(d: _Rigged) -> None:
+    """The enrollments table has one route to schools, and the schools measure has one route to
+    districts: neither is ambiguous, and neither is refused."""
+    _assert_answer(d.plan("How many enrollments are there?", ECOUNT), _enrolled(d), "5")
+    env = d.plan(
+        "How many enrollments are there in Alder?",
+        ECOUNT,
+        filters=((SCHOOLS, "name", "=", "Alder"),),
+    )
+    _assert_answer(env, _enrolled(d, "school_id = 1"), "2")
+    env = d.plan(
+        "What is the total budget of schools in North?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "=", "North"),),
+    )
+    _assert_answer(env, _sum(d, "district_id = 1"), "310.75")
+    # a via that names the only route to its object picks nothing
+    env = typed(
+        d, "What is the total budget of schools in North?", BUDGET,
+        filters=((DISTRICTS, "name", "=", "North"),),
+        via={DISTRICTS: VIA_SCHOOL},
+    )  # fmt: skip
+    _assert_answer(env, _sum(d, "district_id = 1"), "310.75")
+
+
+def test_f5b_unit_the_routes_are_counted_per_object_the_plan_uses() -> None:
+    onto = _routes_onto()
+
+    def refusal(
+        *, via: dict[str, str] | None = None, group_by: Any = (), filters: Any = ()
+    ) -> str | None:
+        return mu.route_choice_reason(
+            onto, grain="fact", via=via, group_by=group_by, filters=filters
+        )
+
+    on_dim = [("dim", "c", "=", "x")]
+    on_mid = [("mid", "c", "=", "x")]
+    assert refusal(filters=on_dim)
+    assert refusal(group_by=[("dim", "c")])
+    assert refusal(via={"dim": "mid_dim"}, filters=on_dim)
+    assert refusal(via={"dim": "fact_dim"}, filters=on_dim)
+    # one route each: no refusal, with or without the via that names it
+    assert refusal(filters=on_mid) is None
+    assert refusal(via={"mid": "fact_mid"}, filters=on_mid) is None
+    assert refusal(group_by=[("fact", "c")]) is None
+    # the reason names the object, the count and the routes
+    why = refusal(filters=on_dim)
+    assert why is not None and why.startswith("ambiguous_path:")
+    assert "'dim'" in why and "more than one route" in why
+    assert "fact_dim" in why and "fact_mid -> mid_dim" in why
+
+
+def test_f5b_mutation_without_the_gate_each_reading_is_stated_as_if_it_were_the_answer(
+    d: _Rigged, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The harm the gate prevents, shown by turning it off: the same question answers 1 (direct)
+    with no via and with the direct via, and 3 (through the school) with the other, each as a
+    confirmed figure with no sign of the other reading."""
+    import dms_executor.generative_ask as ga
+
+    monkeypatch.setattr(ga, "route_choice_reason", lambda *a, **k: None)
+    north = ((DISTRICTS, "name", "=", "North"),)
+    _assert_answer(d.plan(ENROLL_Q, ECOUNT, filters=north), _enrolled(d, "district_id = 1"), "1")
+    env = typed(d, ENROLL_Q, ECOUNT, filters=north, via={DISTRICTS: VIA_DIRECT})
+    _assert_answer(env, [{"v": 1}], "1")
+    env = typed(d, ENROLL_Q, ECOUNT, filters=north, via={DISTRICTS: VIA_SCHOOL})
+    _assert_answer(env, [{"v": 3}], "3")
+
+
+def test_f5b_unit_a_via_naming_the_grain_picks_the_parents_reading_over_the_rows_own() -> None:
+    onto = _verified(("emp",), (("emp_manager", "emp", "emp"),))
+    kw: dict[str, Any] = {"grain": "emp", "group_by": [("emp", "name")], "filters": ()}
+    assert mu.route_choice_reason(onto, via=None, **kw) is None, "the row's own attribute"
+    why = mu.route_choice_reason(onto, via={"emp": "emp_manager"}, **kw)
+    assert why is not None and why.startswith("ambiguous_path:") and "itself" in why
+
+
+def test_f5b_unit_a_route_count_the_search_cannot_finish_is_not_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    onto = _routes_onto()
+    assert onto.routes_between("fact", "dim", for_filter=True, budget=1) is None
+    monkeypatch.setattr(type(onto), "routes_between", lambda self, *a, **k: None)
+    why = mu.route_choice_reason(
+        onto, grain="fact", via=None, group_by=(), filters=[("mid", "c", "=", "x")]
+    )
+    assert why is not None and why.startswith("ambiguous_path:") and "too many" in why
+
+
+def test_f5b_unit_counting_routes_stops_at_two_however_tangled_the_graph() -> None:
+    """Thirty layers of three tables, every table linked to every table of the next layer: 3**29
+    routes to the last one. The question is whether there is more than one, and two answer it."""
+    layers = [[f"t{layer}_{n}" for n in range(3)] for layer in range(30)]
+    names = tuple(name for layer in layers for name in layer)
+    links = tuple(
+        (f"{a}__{b}", a, b)
+        for upper, lower in zip(layers, layers[1:], strict=False)
+        for a in upper
+        for b in lower
+    )
+    onto = _verified(names, links)
+    started = time.monotonic()
+    routes = onto.routes_between(layers[0][0], layers[-1][0], for_filter=True)
+    assert routes is not None and len(routes) == 2
+    assert time.monotonic() - started < 2.0
+    one = _verified(("a", "b"), (("a_b", "a", "b"),))
+    assert [len(r) for r in one.routes_between("a", "b") or []] == [1]
+    assert one.routes_between("b", "a") == [], "links run from child to parent only"
+    assert one.routes_between("a", "a") == [[]]
+
+
 # ============================================================ F7: one value, two spellings
 
 
@@ -753,4 +1134,29 @@ def _onto_with(measure: Measure) -> Any:
     onto = Ontology()
     onto.add_object(measure.grain, measure.grain, ["school_id"])
     onto.measures[measure.name] = measure
+    return onto
+
+
+def _routes_onto() -> Any:
+    """fact -> dim directly and fact -> mid -> dim: two routes to dim, one to mid."""
+    return _verified(
+        ("fact", "mid", "dim"),
+        (("fact_dim", "fact", "dim"), ("fact_mid", "fact", "mid"), ("mid_dim", "mid", "dim")),
+    )
+
+
+def _verified(names: tuple[str, ...], links: tuple[tuple[str, str, str], ...]) -> Any:
+    """An ontology of ``names`` with many-to-one ``(name, from, to)`` links, as verify() leaves
+    it."""
+    from dataclasses import replace
+
+    from dms_executor.ontology import Ontology
+
+    onto = Ontology()
+    for name in names:
+        onto.add_object(name, f"bronze.{name}", ["id"])
+    for name, src, dst in links:
+        onto.add_link(name, src, ["fk"], dst, ["id"])
+    for name, link in list(onto.links.items()):
+        onto.links[name] = replace(link, cardinality="many_to_one")
     return onto
