@@ -110,6 +110,7 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
 )
+from dms_executor.sql_shape import select_shape
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -667,6 +668,10 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
     return tuple(out)
 
 
+#: A table name with a path, scheme or extension in it is a file, not a table.
+_PATH_CHARS = re.compile(r"[/\\:.]")
+
+
 def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
@@ -677,16 +682,27 @@ def validate_compiled_sql(
     grantable: set[str],
     warehouse: Path | None,
 ) -> str | None:
-    """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
+    """None if the compiled SQL may be submitted. Else a reason (do not execute).
+
+    The one grant function. SAFE-01: the SQL must be exactly one read-only
+    SELECT that reads at least one real table (``select_shape``, the engine's
+    own statement splitter and one syntax tree) before any table is checked
+    against ``grantable``, and before EXPLAIN, which would run a stacked tail.
+    """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
+    shape_why, named = select_shape(sql)
+    if shape_why:
+        return shape_why
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
+        if any(_PATH_CHARS.search(t) for t in missing):
+            # A quoted path or URL used as a table name. Say the code, not the path.
+            return "hostile_sql:path_not_allowed"
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
