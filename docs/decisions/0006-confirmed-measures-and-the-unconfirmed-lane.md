@@ -228,10 +228,23 @@ against a non-seed database in this step.
 - The confirmed lane does not answer ranking or range phrasing ("top 3", "between",
   "at least", "over 100") or a normalised value ("KL" for "Kuala Lumpur"): the allowlist
   has no word for them, so a plan that carries them is refused. A false refusal is safe, and
-  with SQL present the generated path answers. The MIRROR is not checked: a Cortex-typed plan
-  that carries a filter the question never states is still trusted for it, bounded by the
-  value probe. Cheap to add (every plan literal must appear in the question) but it refuses
-  normalised values, so it is a decision, not a fix.
+  with SQL present the generated path answers.
+- The allowlist reads every script and symbol, not just ASCII words. Verification found that
+  an `[a-z0-9]` tokenizer answered a question whose condition was a Chinese district name (or
+  a Tamil word, an emoji, or "budget / schools") with the unfiltered total under the
+  confirmed basis, because a condition with no ASCII letter left nothing to compare. The
+  tokenizer now treats any letter, digit or mark in any script as a word, folds width and
+  case (NFKC), and treats every other character that is not whitespace or harmless
+  punctuation (`. , ? ! ' " : ; _`, dashes, brackets, quotes) as content that must be
+  accounted for. Whitelist the harmless, never list the harmful.
+- The MIRROR is checked (`unstated_filter`), a decision taken after verification showed a
+  Cortex-typed plan whose `IN ('North', 'South')` answered "the north district" with the
+  figure for both. Every plan filter must use `=` or `IN`, and every word of every literal
+  must be a word of the question. Its cost is accepted: a normalised value ("SKU-BETA" for
+  "beta") is not stated, so the certified lane declines it and the generated-SQL path answers
+  at its own badge (a false refusal, therefore safe). Rule 12's normalisation is unaffected
+  outside this lane. Still open (PARKING_LOT P-DMS-53): coverage is by word, not by relation,
+  and a plan that groups by a column the question never names is not refused.
 - Coverage ceiling of the certified lane: Cortex ranks by name tokens and slot filling is
   demo-shaped, so early L1 hits will be mostly ungrouped totals and simple dimensions;
   English tokens only. Measure and report certified hit rate per Space; never claim coverage.

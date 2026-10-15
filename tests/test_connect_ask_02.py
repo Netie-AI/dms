@@ -1421,6 +1421,12 @@ CONDITIONS = [
     ("What is the total budget of schools in the North district?", NORTH_SQL),
     ("What is the total budget of schools with a budget over 100?", OVER_SQL),
     ("What is the total budget of schools in district 2?", D2_SQL),
+    # A condition written in another script was invisible to the ASCII-only tokenizer: the
+    # question's only word for the filter vanished and the unfiltered total was stated.
+    ("What is the total budget of schools in \u5317\u533a?", NORTH_SQL),
+    ("What is the total budget of schools in \u0b95\u0bc7\u0bb2\u0bbe?", NORTH_SQL),
+    ("What is the total budget of schools in \U0001f334?", NORTH_SQL),
+    ("What is the total budget of schools in district \uff12?", D2_SQL),
 ]
 
 
@@ -1508,6 +1514,126 @@ def test_e15_a_plan_that_carries_the_condition_still_answers(rigged: _Rigged) ->
         _assert_basis(env, rigged, BUDGET)
 
 
+@pytest.mark.parametrize("condition", ["\u5317\u533a", "\u0b95\u0bc7\u0bb2\u0bbe", "\U0001f334"])
+def test_e15_a_typed_plan_without_the_filter_abstains_when_the_condition_is_not_ascii(
+    rigged: _Rigged, condition: str
+) -> None:
+    """The typed plan has no filters and no SQL to fall back on: a condition in any script is a
+    word the plan does not carry, so there is no figure (never the unfiltered 360.75)."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan(f"What is the total budget of schools in {condition}?", BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and "measure_basis" not in env
+    assert f"fit_disagrees:unbound_constraint ({condition!r})" in _reasons(env), env["assumptions"]
+    assert rigged.executed == [] and rigged.rig.cortex.asks == []
+
+
+def test_e15_a_plan_that_carries_the_non_ascii_condition_still_answers(rigged: _Rigged) -> None:
+    """Not a ban on other scripts: when the district really is named \u5317\u533a and the plan
+    filters on it, the measure answers with the filtered figure and its basis."""
+    rigged.confirm(BUDGET)
+    _lake_exec(
+        rigged.rig.lake,
+        "UPDATE bronze.public_districts SET name = '\u5317\u533a' WHERE name = 'North'",
+    )
+    env = rigged.plan(
+        "What is the total budget of schools in \u5317\u533a?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "=", "\u5317\u533a"),),
+    )
+    oracle = _oracle(rigged.rig.lake, NORTH_SQL.replace("'North'", "'\u5317\u533a'"))
+    assert oracle == [{"total_budget": Decimal("310.75")}]
+    _assert_answer(env, oracle, "310.75")
+    assert "360.75" not in str(env["text"])
+    _assert_basis(env, rigged, BUDGET)
+
+
+def test_e15_a_slash_is_a_ratio_not_a_total(rigged: _Rigged) -> None:
+    """'total budget / schools' asks for a budget per school. '/' carries no letter, so a
+    tokenizer that keeps only words reads it as the plain total."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan("What is the total budget / schools?", BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and "measure_basis" not in env
+    assert f"{BUDGET} fit_disagrees:unbound_constraint ('/')" in _reasons(env), env["assumptions"]
+    assert rigged.executed == []
+
+
+# --------------------------- the plan states a value or operator the question never did (E15)
+
+SOUTH_Q = "What is the total budget of schools in the north district?"
+
+
+def test_e15_a_plan_that_adds_a_value_the_question_never_states_abstains(
+    rigged: _Rigged,
+) -> None:
+    """The question asks for North (310.75). The typed plan's IN list adds South, which makes its
+    figure 360.75, stated under the confirmed basis in a sentence about North. The question must
+    state every value the plan filters on."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan(SOUTH_Q, BUDGET, filters=((DISTRICTS, "name", "IN", ["North", "South"]),))
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and "310.75" not in text and "measure_basis" not in env
+    assert f"{BUDGET} fit_disagrees:unstated_filter ('south')" in _reasons(env), env["assumptions"]
+    assert rigged.executed == []
+
+
+def test_e15_the_same_in_list_answers_when_the_question_states_both_values(
+    rigged: _Rigged,
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(
+        "What is the total budget of schools in the North and South districts?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "IN", ["North", "South"]),),
+    )
+    oracle = _oracle(rigged.rig.lake, SUM_SQL)
+    _assert_answer(env, oracle, "360.75")
+    _assert_basis(env, rigged, BUDGET)
+
+
+@pytest.mark.parametrize("op", [">", ">=", "<", "<=", "<>", "LIKE"])
+def test_e15_a_plan_with_an_operator_the_question_cannot_state_abstains(
+    rigged: _Rigged, op: str
+) -> None:
+    """'in district 2' answered by district_id > 2 would be a different number under the badge:
+    only ``=`` and ``IN`` say what a question says."""
+    rigged.confirm(BUDGET)
+    value: Any = "2" if op == "LIKE" else 2
+    env = rigged.plan(
+        "What is the total budget of schools in district 2?",
+        BUDGET,
+        filters=((SCHOOLS, "district_id", op, value),),
+    )
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and "measure_basis" not in env
+    assert f"{BUDGET} fit_disagrees:unstated_filter ('operator {op.lower()}')" in _reasons(env), (
+        env["assumptions"]
+    )
+    assert rigged.executed == []
+
+
+def test_e15_a_value_the_data_spells_differently_is_not_stated_and_abstains(
+    rigged: _Rigged,
+) -> None:
+    """Rule 12's normalisation ('KL' for 'Kuala Lumpur', 'beta' for 'SKU-BETA') is real, but the
+    question did not state the plan's value. The certified lane declines it (a false refusal,
+    which is safe); the generated-SQL path answers it at its own badge."""
+    rigged.confirm(BUDGET)
+    _lake_exec(
+        rigged.rig.lake,
+        "UPDATE bronze.public_districts SET name = 'NORTH-REGION' WHERE name = 'North'",
+    )
+    env = rigged.plan(
+        "What is the total budget of schools in the north district?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "=", "NORTH-REGION"),),
+    )
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "310.75" not in text and "measure_basis" not in env
+    assert f"{BUDGET} fit_disagrees:unstated_filter ('region')" in _reasons(env), env["assumptions"]
+
+
 def test_e15_a_plan_that_carries_part_of_the_condition_abstains(rigged: _Rigged) -> None:
     rigged.confirm(BUDGET)
     env = rigged.plan(
@@ -1551,6 +1677,34 @@ def test_e15_a_group_with_no_value_is_left_out_and_the_answer_says_so(rigged: _R
     assert f"Some groups have no value for {BUDGET} and are not shown." in text, text
     assert not any(v is None for row in env["rows"] for v in row.values()), env["rows"]
     assert f"excluded: groups with no value for {BUDGET}" in _reasons(env), env["assumptions"]
+
+
+def test_e15_a_group_whose_key_is_null_is_a_real_group_and_reads_as_no_value(
+    rigged: _Rigged,
+) -> None:
+    """Two schools lose their district. Their 50.00 is a true figure for a real group, so it
+    stays; the sentence calls the key '(no value)' and never prints the Python word."""
+    rigged.confirm(BUDGET)
+    _lake_exec(
+        rigged.rig.lake,
+        "UPDATE bronze.public_schools SET district_id = NULL WHERE district_id = 2",
+    )
+    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
+    oracle = _oracle(
+        rigged.rig.lake,
+        "SELECT district_id, SUM(budget) AS v FROM bronze.public_schools GROUP BY district_id",
+    )
+    assert sorted((r["district_id"] is None, _norm(r["v"])) for r in oracle) == [
+        (False, "310.75"),
+        (True, "50"),
+    ]
+    _assert_answer(env, oracle, "310.75")
+    text = str(env["text"])
+    assert "None" not in text, text
+    key = f"{SCHOOLS}_district_id"
+    assert f"{key}=(no value), {BUDGET}=50" in text, text
+    assert [_norm(r[BUDGET]) for r in env["rows"] if r[key] is None] == ["50"], env["rows"]
+    _assert_basis(env, rigged, BUDGET)
 
 
 def test_e15_every_group_with_a_value_is_shown_and_nothing_is_said_about_the_rest(

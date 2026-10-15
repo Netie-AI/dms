@@ -351,8 +351,9 @@ confirmed" means configuration plus network position, not a person.
 
 ## P-DMS-44 - Steward alias phrases and Bahasa Malaysia fit tokens
 
-The measure fit check tokenises English only; BM questions fall to the labelled
-(non-certified) lane. BM steward messages are not written.
+The measure fit check's aggregate, quantity and qualifier vocabularies are English only; its
+condition test reads every script, so a BM question has unbound words and falls to the
+labelled (non-certified) lane. BM steward messages are not written.
 **Unlock:** steward alias phrases designed, and a pilot customer asking in BM.
 
 ## P-DMS-45 - Ad hoc ROUND/CAST-of-aggregate answers; a steward reject vetoing the ad hoc lane
@@ -428,6 +429,17 @@ prunes it with `column_type_changed`), so the list can say certified for a measu
 ask will refuse.
 **Unlock:** a steward is misled by it in a pilot, or the list gains a lake probe cheap enough
 to run per request; until then ask-time pruning is the authority and the answer abstains.
+
+## P-DMS-53 - Confirmed-lane coverage is by word, not by relation (dms#284)
+
+`unbound_words` and `unstated_plan_terms` compare words, so they cannot tell which column a
+shared word belongs to: a question word that is also a plan column or literal word is accepted
+whatever role the plan gives it (a school named "North" for "the north district", bounded by
+the value probe), and a plan that groups by a column the question never names is not refused
+(its rows show the grouping). A normalised value ("SKU-BETA" for "beta") is declined by the
+certified lane and answered by the generated-SQL path.
+**Unlock:** a pilot shows a wrong certified figure from either, or steward alias phrases
+(P-DMS-44) give the lane a proven phrase-to-value mapping to re-admit normalised values.
 
 ## Move out of parking lot
 

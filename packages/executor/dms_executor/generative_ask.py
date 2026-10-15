@@ -860,6 +860,9 @@ def _abstain(
     return with_plan_source(env, plan_source)
 
 
+_NO_VALUE = "(no value)"
+
+
 def _l2_envelope(
     *,
     sql: str,
@@ -880,8 +883,16 @@ def _l2_envelope(
     text = f"{lead}\n" if lead else ""
     text += f"Found {len(out_rows)} row(s)."
     if out_rows:
+        # A group whose KEY is NULL is a real group (its figure is right); the sentence calls it
+        # "(no value)" rather than print the Python word under the confirmed badge. Only the
+        # confirmed lane is reworded: every other generated answer reads as it always did.
+        confirmed = measure_ref is not None
         text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
+            "  - "
+            + ", ".join(
+                f"{k}={_NO_VALUE if (v is None and confirmed) else v}" for k, v in row.items()
+            )
+            for row in out_rows[:12]
         )
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
