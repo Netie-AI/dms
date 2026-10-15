@@ -69,6 +69,7 @@ _CODES = frozenset(
         "abstain",
         "as_of",
         "checker",
+        "column_class_unsure",
         "db_error",
         "empty_result_unverified",
         "envelope_demoted",
