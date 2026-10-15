@@ -1000,6 +1000,8 @@ def test_e05_slots_that_cannot_be_bound_leave_the_sql_on_the_generated_path(
 # ---------------------------------------------------------------- rule 12 at ask time (E13)
 
 NORTH_Q = "What is the total budget of schools in the north district?"
+#: The literal the plan filters on is stated exactly, case included.
+NORTH_CAP_Q = "What is the total budget of schools in the North district?"
 
 
 def test_e13_a_filter_value_that_is_not_in_the_column_as_landed_abstains_not_zero(
@@ -1018,7 +1020,7 @@ def test_e13_a_filter_value_that_is_not_in_the_column_as_landed_abstains_not_zer
     assert "measure_basis" not in env
     assert rigged.executed == [] and rigged.rig.cortex.asks == []
 
-    ok = rigged.plan(NORTH_Q, BUDGET, filters=((DISTRICTS, "name", "=", "North"),))
+    ok = rigged.plan(NORTH_CAP_Q, BUDGET, filters=((DISTRICTS, "name", "=", "North"),))
     oracle = _oracle(
         rigged.rig.lake,
         "SELECT SUM(s.budget) AS v FROM bronze.public_schools s "
@@ -1075,7 +1077,7 @@ def test_e13_a_filter_that_matches_the_dimension_but_no_fact_rows_is_empty_aggre
     total is NULL. Still no figure."""
     rigged.confirm(BUDGET)
     _lake_exec(rigged.rig.lake, "DELETE FROM bronze.public_schools WHERE district_id = 1")
-    env = rigged.plan(NORTH_Q, BUDGET, filters=((DISTRICTS, "name", "=", "North"),))
+    env = rigged.plan(NORTH_CAP_Q, BUDGET, filters=((DISTRICTS, "name", "=", "North"),))
     _assert_abstain(env, "empty_aggregate")
 
 
@@ -1500,7 +1502,7 @@ def test_e15_a_plan_that_carries_the_condition_still_answers(rigged: _Rigged) ->
     question states is answered by the measure, with its basis and the filtered oracle rows."""
     rigged.confirm(BUDGET)
     for question, flt, sql, figure in [
-        (NORTH_Q, (DISTRICTS, "name", "=", "North"), NORTH_SQL, "310.75"),
+        (NORTH_CAP_Q, (DISTRICTS, "name", "=", "North"), NORTH_SQL, "310.75"),
         (
             "What is the total budget of schools in district 2?",
             (SCHOOLS, "district_id", "=", 2),
@@ -1514,9 +1516,16 @@ def test_e15_a_plan_that_carries_the_condition_still_answers(rigged: _Rigged) ->
         _assert_basis(env, rigged, BUDGET)
 
 
-@pytest.mark.parametrize("condition", ["\u5317\u533a", "\u0b95\u0bc7\u0bb2\u0bbe", "\U0001f334"])
+@pytest.mark.parametrize(
+    ("condition", "shown"),
+    [
+        ("\u5317\u533a", repr("\u5317\u533a")),
+        ("\u0b95\u0bc7\u0bb2\u0bbe", repr("\u0b95\u0bc7\u0bb2\u0bbe")),
+        ("\U0001f334", repr("\U0001f334") + " (symbol)"),
+    ],
+)
 def test_e15_a_typed_plan_without_the_filter_abstains_when_the_condition_is_not_ascii(
-    rigged: _Rigged, condition: str
+    rigged: _Rigged, condition: str, shown: str
 ) -> None:
     """The typed plan has no filters and no SQL to fall back on: a condition in any script is a
     word the plan does not carry, so there is no figure (never the unfiltered 360.75)."""
@@ -1524,7 +1533,7 @@ def test_e15_a_typed_plan_without_the_filter_abstains_when_the_condition_is_not_
     env = rigged.plan(f"What is the total budget of schools in {condition}?", BUDGET)
     text = _assert_abstain(env, "no_declared_measure")
     assert "360.75" not in text and "measure_basis" not in env
-    assert f"fit_disagrees:unbound_constraint ({condition!r})" in _reasons(env), env["assumptions"]
+    assert f"fit_disagrees:unbound_constraint ({shown})" in _reasons(env), env["assumptions"]
     assert rigged.executed == [] and rigged.rig.cortex.asks == []
 
 
@@ -1555,13 +1564,14 @@ def test_e15_a_slash_is_a_ratio_not_a_total(rigged: _Rigged) -> None:
     env = rigged.plan("What is the total budget / schools?", BUDGET)
     text = _assert_abstain(env, "no_declared_measure")
     assert "360.75" not in text and "measure_basis" not in env
-    assert f"{BUDGET} fit_disagrees:unbound_constraint ('/')" in _reasons(env), env["assumptions"]
+    reason = f"{BUDGET} fit_disagrees:unbound_constraint ('/' (punctuation))"
+    assert reason in _reasons(env), env["assumptions"]
     assert rigged.executed == []
 
 
 # --------------------------- the plan states a value or operator the question never did (E15)
 
-SOUTH_Q = "What is the total budget of schools in the north district?"
+SOUTH_Q = NORTH_CAP_Q
 
 
 def test_e15_a_plan_that_adds_a_value_the_question_never_states_abstains(
@@ -1574,7 +1584,7 @@ def test_e15_a_plan_that_adds_a_value_the_question_never_states_abstains(
     env = rigged.plan(SOUTH_Q, BUDGET, filters=((DISTRICTS, "name", "IN", ["North", "South"]),))
     text = _assert_abstain(env, "no_declared_measure")
     assert "360.75" not in text and "310.75" not in text and "measure_basis" not in env
-    assert f"{BUDGET} fit_disagrees:unstated_filter ('south')" in _reasons(env), env["assumptions"]
+    assert f"{BUDGET} fit_disagrees:unstated_filter ('South')" in _reasons(env), env["assumptions"]
     assert rigged.executed == []
 
 
@@ -1631,7 +1641,9 @@ def test_e15_a_value_the_data_spells_differently_is_not_stated_and_abstains(
     )
     text = _assert_abstain(env, "no_declared_measure")
     assert "310.75" not in text and "measure_basis" not in env
-    assert f"{BUDGET} fit_disagrees:unstated_filter ('region')" in _reasons(env), env["assumptions"]
+    assert f"{BUDGET} fit_disagrees:unstated_filter ('NORTH-REGION')" in _reasons(env), (
+        env["assumptions"]
+    )
 
 
 def test_e15_a_plan_that_carries_part_of_the_condition_abstains(rigged: _Rigged) -> None:
@@ -1642,7 +1654,7 @@ def test_e15_a_plan_that_carries_part_of_the_condition_abstains(rigged: _Rigged)
         filters=((DISTRICTS, "name", "=", "North"),),
     )
     _assert_abstain(env, "no_declared_measure")
-    assert "fit_disagrees:unbound_constraint ('south')" in _reasons(env)
+    assert "fit_disagrees:unbound_constraint ('South')" in _reasons(env)
     assert rigged.executed == []
 
 
@@ -1658,32 +1670,31 @@ def test_e15_a_condition_nothing_can_check_is_a_gap_not_a_total(rigged: _Rigged)
 # -------------------------------------------- a group with no value is not a figure (E15)
 
 
-def test_e15_a_group_with_no_value_is_left_out_and_the_answer_says_so(rigged: _Rigged) -> None:
+def test_e15_a_group_with_no_value_abstains_empty_aggregate(rigged: _Rigged) -> None:
+    """One district's budgets are all NULL, so its SUM is NULL. A figure for the other district
+    would hide a group the customer asked about, and the NULL cell printed would read
+    ``=None`` under the badge: neither is a figure, the answer abstains by name."""
     rigged.confirm(BUDGET)
     _lake_exec(
         rigged.rig.lake, "UPDATE bronze.public_schools SET budget = NULL WHERE district_id = 2"
     )
-    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
     oracle = _oracle(
         rigged.rig.lake,
-        "SELECT district_id, SUM(budget) AS v FROM bronze.public_schools "
-        "GROUP BY district_id HAVING SUM(budget) IS NOT NULL",
+        "SELECT district_id, SUM(budget) AS v FROM bronze.public_schools GROUP BY district_id",
     )
-    assert _multiset(oracle) == _multiset([{"d": 1, "v": Decimal("310.75")}])
-    _assert_answer(env, oracle, "310.75")
-    _assert_basis(env, rigged, BUDGET)
-    text = str(env["text"])
-    assert "None" not in text, text
-    assert f"Some groups have no value for {BUDGET} and are not shown." in text, text
-    assert not any(v is None for row in env["rows"] for v in row.values()), env["rows"]
-    assert f"excluded: groups with no value for {BUDGET}" in _reasons(env), env["assumptions"]
+    assert sorted((r["district_id"], r["v"] is None) for r in oracle) == [(1, False), (2, True)]
+    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
+    text = _assert_abstain(env, "empty_aggregate")
+    assert "None" not in text and "310.75" not in text, text
+    assert env["rows"] == [] and env["values"] == [] and "measure_basis" not in env
+    assert "are not shown" not in text
 
 
-def test_e15_a_group_whose_key_is_null_is_a_real_group_and_reads_as_no_value(
+def test_e15_a_group_whose_key_is_null_is_a_real_group_and_reads_as_null(
     rigged: _Rigged,
 ) -> None:
     """Two schools lose their district. Their 50.00 is a true figure for a real group, so it
-    stays; the sentence calls the key '(no value)' and never prints the Python word."""
+    stays; the sentence calls the key '(null)' and never prints the Python word."""
     rigged.confirm(BUDGET)
     _lake_exec(
         rigged.rig.lake,
@@ -1702,12 +1713,12 @@ def test_e15_a_group_whose_key_is_null_is_a_real_group_and_reads_as_no_value(
     text = str(env["text"])
     assert "None" not in text, text
     key = f"{SCHOOLS}_district_id"
-    assert f"{key}=(no value), {BUDGET}=50" in text, text
+    assert f"{key}=(null), {BUDGET}=50" in text, text
     assert [_norm(r[BUDGET]) for r in env["rows"] if r[key] is None] == ["50"], env["rows"]
     _assert_basis(env, rigged, BUDGET)
 
 
-def test_e15_every_group_with_a_value_is_shown_and_nothing_is_said_about_the_rest(
+def test_e15_every_group_with_a_value_is_shown(
     rigged: _Rigged,
 ) -> None:
     rigged.confirm(BUDGET)

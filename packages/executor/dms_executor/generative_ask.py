@@ -860,7 +860,7 @@ def _abstain(
     return with_plan_source(env, plan_source)
 
 
-_NO_VALUE = "(no value)"
+_NULL_KEY = "(null)"
 
 
 def _l2_envelope(
@@ -884,13 +884,13 @@ def _l2_envelope(
     text += f"Found {len(out_rows)} row(s)."
     if out_rows:
         # A group whose KEY is NULL is a real group (its figure is right); the sentence calls it
-        # "(no value)" rather than print the Python word under the confirmed badge. Only the
+        # "(null)" rather than print the Python word under the confirmed badge. Only the
         # confirmed lane is reworded: every other generated answer reads as it always did.
         confirmed = measure_ref is not None
         text += "\n" + "\n".join(
             "  - "
             + ", ".join(
-                f"{k}={_NO_VALUE if (v is None and confirmed) else v}" for k, v in row.items()
+                f"{k}={_NULL_KEY if (v is None and confirmed) else v}" for k, v in row.items()
             )
             for row in out_rows[:12]
         )
@@ -1055,12 +1055,14 @@ def _submit_validated(
             space_id=space_id, session_id=session_id, plan_source=plan_source,
         )
     if measure_ref is not None:
-        # A confirmed measure that computes nothing is "no value", not a figure: no rows, or
-        # an aggregate that is NULL in every row (SUM over an all-NULL column). The envelope
-        # would otherwise show a plausible empty or zero under the confirmed badge.
+        # A confirmed measure that computes nothing is "no value", not a figure: no rows, or an
+        # aggregate that is NULL in ANY row (SUM over an all-NULL column, or over one group's
+        # NULLs). A NULL cell dropped from a grouped answer would be a group the customer
+        # cannot see, and one printed would read "=None" under the confirmed badge: neither is
+        # a figure, so the answer abstains. A NULL group KEY is different: that group is real
+        # and its figure is right (the sentence reads the key as "(null)").
         held = rows_from_submit_result(result)
-        valued = [r for r in held if r.get(measure_ref.name) is not None]
-        if not valued:
+        if not held or any(r.get(measure_ref.name) is None for r in held):
             return _abstain(
                 question,
                 f"{REASON_EMPTY_AGGREGATE}: {measure_ref.name} has no value for this question",
@@ -1069,20 +1071,6 @@ def _submit_validated(
                 plan_source=plan_source,
                 notes=notes,
             )
-        if len(valued) < len(held):
-            # A group whose measure is NULL has "no value", which is not a figure: it is
-            # left out and the answer says so, never rendered as ``=None`` under the badge.
-            # (No digits in the sentence: a count would be a figure the rows do not hold.)
-            result = SimpleNamespace(
-                ok=True,
-                status=getattr(result, "status", "ok"),
-                run_id=getattr(result, "run_id", "") or "",
-                output={"rows": valued},
-            )
-            lead = (f"{lead}\n" if lead else "") + (
-                f"Some groups have no value for {measure_ref.name} and are not shown."
-            )
-            notes = (*notes, f"excluded: groups with no value for {measure_ref.name}")
     if keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
         if not kept:
@@ -1824,31 +1812,23 @@ def maybe_generative_ask(
             q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
         )
         if ranked_slots is not None:
-            raw_ranked = ranked_slots.get("query_plan")
-            ranked_measure = (
-                str(raw_ranked.get("measure") or "") if isinstance(raw_ranked, dict) else ""
-            )
-            ranked_filters = (
-                _filters(raw_ranked.get("filters")) if isinstance(raw_ranked, dict) else None
-            )
             # The plan's own filters are part of the reading: a question that states a
-            # condition the ranked plan does not carry ("in the north district", "over 100")
-            # is not answered by the plan's unfiltered total, and the valid SQL stays.
-            # A plan whose filters cannot be read fails closed (a word nothing accounts for).
+            # condition the ranked plan does not carry ("in the US", "over 100") is not
+            # answered by the plan's unfiltered total, and one that the plan adds to is not
+            # answered either. The plan is read exactly as the typed branch will read it; one
+            # that cannot be read fails closed.
+            ranked_plan = plan_from_payload(ranked_slots)
             confirmed_fit = (
-                FitVerdict(False, ranked_measure or None, "unbound_constraint")
-                if ranked_filters is None
+                FitVerdict(False, None, "unbound_constraint")
+                if ranked_plan is None
                 else measure_fit(
                     q,
                     space_onto.measures,
-                    candidate=ranked_measure or None,
-                    grouped_by=(
-                        _pairs(raw_ranked.get("group_by"))
-                        if isinstance(raw_ranked, dict)
-                        else None
-                    )
-                    or (),
-                    filters=ranked_filters,
+                    candidate=ranked_plan.measure,
+                    grouped_by=ranked_plan.group_by,
+                    filters=ranked_plan.filters,
+                    keep_gt=ranked_plan.keep_gt,
+                    offset=ranked_plan.offset,
                 )
             )
     if kind == "sql" and confirmed_fit is not None:
@@ -2213,6 +2193,8 @@ def maybe_generative_ask(
             candidate=plan.measure,
             grouped_by=plan.group_by,
             filters=plan.filters,
+            keep_gt=plan.keep_gt,
+            offset=plan.offset,
         )
         if not verdict.ok:
             why = f"fit_disagrees:{verdict.reason}" + (

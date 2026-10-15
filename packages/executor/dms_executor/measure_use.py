@@ -24,6 +24,7 @@ Nothing here imports ``generative_ask`` or ``measure_confirm``; ``space_ontology
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -59,6 +60,8 @@ __all__ = [
     "FitVerdict",
     "REASON_EMPTY_AGGREGATE",
     "REASON_UNMATCHED_FILTER_VALUE",
+    "Accounting",
+    "account_for_question",
     "aggregate_cues",
     "attach_confirmed_measures",
     "confirmed_basis",
@@ -67,8 +70,6 @@ __all__ = [
     "measure_exclusions",
     "measure_fit",
     "prune_unusable_measures",
-    "unbound_words",
-    "unstated_plan_terms",
 ]
 
 #: Why a confirmed row never reached the ask, or was removed from it. These are the tails
@@ -667,141 +668,363 @@ def _grouped_words(grouped_by: Iterable[tuple[str, str]]) -> frozenset[str]:
     return frozenset(out)
 
 
-#: Words that constrain nothing by themselves: articles, copulas, question frames, request
-#: verbs and the prepositions that only introduce a phrase. The content words of such a
-#: phrase ("in the NORTH district") are checked on their own; a word that restricts or
-#: compares (over, under, between, than, before, since, top, last...) is deliberately NOT here.
-_FRAME_STEMS = frozenset(
-    _stems(
-        "a an the of is are was were be been what which who whom whose how much do does did "
-        "there here me my we our us you your i it its this that these those and or to in on "
-        "at for with from where has have had give show tell get find list please can could "
-        "would will all any every each by per as across s"
-    )
+# --------------------------------------------------------------------------
+# exact accounting: what the question says is what the plan computes
+# --------------------------------------------------------------------------
+#
+# A confirmed measure answers under a confirmed basis, so the number must be the one the
+# question asked for. That fails in two directions, and both are the same class: a condition
+# that goes missing without a trace. The plan DROPS one the question states ("in the US"
+# answered by the unfiltered total), or the plan ADDS one the question never stated (a filter
+# on a literal the question did not say). A list of words to look for reaches a ceiling after
+# a few rounds (every list is one more word, script or plural away from a gap), so this is
+# exact accounting with default deny instead:
+#
+#   1. The plan's filter literals are found in the question as exact, case-sensitive text on
+#      token boundaries and removed. A literal the question does not contain is a refusal.
+#   2. Every character that remains is accounted for. A character that is not a letter, digit
+#      or mark, whitespace, ``? . ,`` or a final ``!`` is a refusal; so is a token that is not
+#      a CLOSED, lowercase, ASCII word the lane understands.
+#
+# The words the lane understands are three explicit sets, matched exactly: the aggregate
+# phrasing ``measure_fit`` already validated (cues), a short closed list of frame words that
+# state no condition, and the vocabulary of the plan's own names. Nothing is stemmed, and a
+# token with an uppercase letter or a digit is never a vocabulary word: ``US``, ``OR``,
+# ``Wills``, ``Doe``, ``2`` and ``-2`` are all conditions or values. A false refusal is safe
+# (the generated-SQL path or a named abstain answers); a stated figure for a different
+# question is a confidently wrong number.
+
+#: Words that introduce a phrase and constrain nothing. CLOSED and LOWERCASE; matched
+#: case-sensitively, never stemmed and never pluralised ("Cans" is not "can"). Pronouns
+#: (me us my we our i it its), connectives (to be as or by per each every across where) and
+#: the demonstratives are deliberately NOT here: each can name a value or a condition.
+FRAME_WORDS = frozenset(
+    {
+        "the", "a", "an", "of", "is", "are", "was", "were", "what", "which", "how", "much",
+        "many", "do", "does", "there", "and", "in", "on", "at", "for", "with", "from", "all",
+        "any", "give", "show", "tell", "find", "list", "please", "can", "could", "would", "you",
+    }
+)  # fmt: skip
+#: A request phrase at the very start of the question, stripped as a whole phrase. ``me`` is
+#: a word nowhere else.
+LEADING_PHRASES = frozenset(
+    {("show", "me"), ("tell", "me"), ("give", "me"), ("can", "you"), ("could", "you")}
 )
-#: The words of the aggregate phrasing itself ("how many", "number of", "total", "highest"):
-#: ``measure_fit`` already requires every such cue to be one the measure's aggregate answers.
-_CUE_STEMS_FLAT = frozenset(t for runs in _CUE_STEMS.values() for run in runs for t in run)
-
-
-def _name_stems(name: str) -> frozenset[str]:
-    """Every stemmed word of a snake_case or dotted name (``bronze.public_districts``)."""
-    return frozenset(_stems(name))
-
-
-def _plan_stems(
-    grouped_by: Iterable[tuple[str, str]], filters: Iterable[Sequence[Any]]
-) -> frozenset[str]:
-    """Every word the PLAN accounts for: what it groups by, and, for each filter, its object,
-    its column and its literal(s) (``('bronze.public_districts', 'name', '=', 'North')`` ->
-    public, district, name, north). The words of what the plan computes, not of the question."""
-    out: set[str] = set(_grouped_words(grouped_by))
-    for f in filters:
-        parts = list(f)
-        for name in parts[:2]:
-            out.update(t for t in _name_stems(name) if len(t) >= 2)
-        if len(parts) >= 4:
-            value = parts[3]
-            literals = value if isinstance(value, (list, tuple, set)) else [value]
-            for lit in literals:
-                if lit is not None and not isinstance(lit, (dict, list, tuple, set)):
-                    out.update(_stems(str(lit)))
-    return frozenset(out)
-
-
-def unbound_words(
-    question: str,
-    measure: str,
-    *,
-    grain: str,
-    grouped_by: Iterable[tuple[str, str]] = (),
-    filters: Iterable[Sequence[Any]] = (),
-) -> tuple[str, ...]:
-    """The question's words that nothing accounts for, in order, or ``()``.
-
-    A confirmed measure answers a question only if the measure and the plan TOGETHER carry
-    everything the question asks. This is an allowlist, not a list of phrases to refuse: a
-    word of the question is accounted for when it is a frame word, part of the aggregate
-    phrasing, a word of the measure's own name or of its grain's table, or a word of what the
-    plan groups by or filters on (object, column, literal). Every other word is a condition
-    the number does not apply ("in the NORTH district", "over 100", "in district 2",
-    "last year"), and a plan that drops it states the wrong total under a confirmed basis.
-    Ranking and range phrasing ("top 5", "between", "at least") is likewise never accounted
-    for: the confirmed lane does not answer it. A false refusal is safe (the generated-SQL
-    path, or an abstain, answers); a dropped condition is a confidently wrong figure.
-
-    The tokenizer is Unicode-aware and counts every character that is not whitespace or
-    harmless punctuation (``_char_kind``): a condition written in Chinese, Tamil or an emoji is
-    an unbound word like any other, never invisible. The aggregate and frame vocabularies are
-    English, so a question in another language is simply refused here.
-    """
-    grain_table = str(grain or "").rsplit(".", 1)[-1]
-    covered = (
-        _FRAME_STEMS
-        | _CUE_STEMS_FLAT
-        | _name_stems(measure)
-        | _name_stems(grain_table)
-        | _plan_stems(grouped_by, filters)
-    )
-    seen: dict[str, None] = {}
-    for tok in _stems(question):
-        if tok not in covered:
-            seen.setdefault(tok)
-    return tuple(seen)
-
-
-#: The only filter operators the confirmed lane answers. A question states a value ("in the
-#: North district", "in district 2"); no question the allowlist lets through states ``<>``,
-#: ``>``, ``<=`` or ``LIKE``, so a plan that carries one is not what was asked.
+#: ``by X`` / ``per X`` / ``each X`` / ``every X`` are covered only when the plan groups by X.
+BREAKDOWN_WORDS = frozenset({"by", "per", "each", "every"})
+#: Single-word aggregate cues ``measure_fit`` validated, and the multi-word ones as phrases.
+CUE_WORD_SET = frozenset(w for words in _CUE_WORDS.values() for w in words if " " not in w)
+CUE_PHRASES = tuple(w.split() for words in _CUE_WORDS.values() for w in words if " " in w)
+#: Punctuation that carries no condition. ``!`` counts only as the last character.
+_SEPARATOR_PUNCT = frozenset("?.,")
+#: The only operators a question can state ("in district 2"); ``>``, ``<>`` and ``LIKE`` are
+#: a different number, so a plan that carries one is not what was asked.
 _STATED_OPERATORS = frozenset({"=", "IN"})
 
+GAP_UNSTATED_FILTER = "unstated_filter"
+GAP_UNBOUND_CONSTRAINT = "unbound_constraint"
 
-def unstated_plan_terms(question: str, filters: Iterable[Sequence[Any]]) -> tuple[str, ...]:
-    """The plan's filter terms that the question never states, in order, or ``()``.
 
-    The mirror of ``unbound_words``. That test checks that the plan carries every word of the
-    question; this one checks that the question carries every value of the plan. A typed plan
-    whose ``IN`` list adds ``South`` to the ``North`` the question asked for would otherwise be
-    answered with the figure for both, under a confirmed badge, in a sentence about North. Two
-    things must hold for every filter: its operator is ``=`` or ``IN``, and EVERY word of EVERY
-    literal is a word of the question (a literal is a scalar or one element of an ``IN`` list).
-    Nothing else is accepted, so a filter DMS cannot read, an empty or NULL literal and a nested
-    value are all unstated. A normalised value (``SKU-BETA`` for "beta", ``Kuala Lumpur`` for
-    "KL") is NOT stated by the question and is refused here: the generated-SQL path answers it
-    at its own badge, which is a false refusal and therefore safe.
-    """
-    stated = frozenset(_stems(question))
-    seen: dict[str, None] = {}
+def _is_word_char(ch: str) -> bool:
+    return unicodedata.category(ch)[0] in "LNM"
+
+
+def _is_space_char(ch: str) -> bool:
+    return unicodedata.category(ch) in ("Zs", "Zl", "Zp") or ch in "\t\n\r\x0b\x0c"
+
+
+def _content_class(ch: str) -> str:
+    major = unicodedata.category(ch)[0]
+    return {"S": "symbol", "P": "punctuation", "C": "control or format character"}.get(
+        major, "other character"
+    )
+
+
+def _render_literal(value: Any) -> str | None:
+    """A plan literal as it must read in the question, or None when no question can state it."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value) if math.isfinite(value) else None
+    if isinstance(value, str):
+        text = unicodedata.normalize("NFKC", value)
+        return text if any(_is_word_char(c) for c in text) else None
+    return None
+
+
+def _filter_literals(filters: Iterable[Sequence[Any]]) -> tuple[list[str], list[str]]:
+    """``(literals, unstateable)``: the rendered literal of every ``=`` / ``IN`` filter, and
+    what a question cannot state (an operator other than those two, an empty or NULL or
+    nested value, a filter DMS cannot read). Anything in the second list is a refusal."""
+    literals: list[str] = []
+    bad: list[str] = []
     for item in filters:
         parts = list(item)
         if len(parts) < 4:
-            seen.setdefault("an unreadable filter")
+            bad.append("an unreadable filter")
             continue
         verb = str(parts[2]).strip().upper()
         if verb not in _STATED_OPERATORS:
-            seen.setdefault(f"operator {verb.lower() or 'none'}")
+            bad.append(f"operator {verb.lower() or 'none'}")
+            continue
         value = parts[3]
+        many = isinstance(value, (list, tuple, set, frozenset))
+        if many and verb != "IN":
+            bad.append(repr(value))
+            continue
         if isinstance(value, (set, frozenset)):
-            literals = sorted(value, key=str)
-        elif isinstance(value, (list, tuple)):
-            literals = list(value)
+            elements = sorted(value, key=str)
         else:
-            literals = [value]
-        for lit in literals:
-            if lit is None or isinstance(lit, (dict, list, tuple, set, frozenset)):
-                seen.setdefault(repr(lit))
+            elements = list(value) if many else [value]
+        if not elements:
+            bad.append("an empty list")
+        for element in elements:
+            rendered = _render_literal(element)
+            if rendered is None:
+                bad.append(repr(element))
+            else:
+                literals.append(rendered)
+    return literals, bad
+
+
+def _claim_literals(text: str, literals: Iterable[str]) -> tuple[list[tuple[int, int]], list[str]]:
+    """The spans of ``text`` the literals occupy, and the literals it never states.
+
+    A literal is stated by an exact, case-sensitive occurrence whose neighbours are not word
+    characters (so ``North`` is not ``Northern`` and ``5`` is not the tail of ``25``). Longer
+    literals claim first and a span is never claimed twice: ``5`` is not stated by the ``5`` in
+    a stated ``2.5``. Whatever sits next to a span (a sign, a point, a quote) stays in the
+    text and is accounted for like any other character."""
+    claimed: list[tuple[int, int]] = []
+    missing: list[str] = []
+    for literal in sorted(set(literals), key=lambda s: (-len(s), s)):
+        found = False
+        at = text.find(literal)
+        while at >= 0:
+            end = at + len(literal)
+            clear = (at == 0 or not _is_word_char(text[at - 1])) and (
+                end == len(text) or not _is_word_char(text[end])
+            )
+            if clear and not any(at < e and s < end for s, e in claimed):
+                claimed.append((at, end))
+                found = True
+            at = text.find(literal, at + 1)
+        if not found:
+            missing.append(literal)
+    return sorted(claimed), missing
+
+
+@dataclass(frozen=True)
+class _Item:
+    kind: str  # "w" word run, "x" content run, "s" a claimed literal span
+    text: str
+
+
+def _items(text: str, spans: Sequence[tuple[int, int]]) -> list[_Item]:
+    """The question as runs of word characters, runs of content characters and claimed spans.
+    Whitespace, ``? . ,`` and a final ``!`` only separate."""
+    starts = dict(spans)
+    bang = -1
+    last = len(text) - 1
+    while last >= 0 and _is_space_char(text[last]):
+        last -= 1
+    if last >= 0 and text[last] == "!" and not any(s <= last < e for s, e in spans):
+        bang = last
+    out: list[_Item] = []
+    run: list[str] = []
+    kind = ""
+
+    def flush() -> None:
+        nonlocal run, kind
+        if run:
+            out.append(_Item(kind, "".join(run)))
+        run, kind = [], ""
+
+    i = 0
+    while i < len(text):
+        if i in starts:
+            flush()
+            out.append(_Item("s", text[i : starts[i]]))
+            i = starts[i]
+            continue
+        ch = text[i]
+        if _is_space_char(ch) or ch in _SEPARATOR_PUNCT or i == bang:
+            flush()
+        else:
+            want = "w" if _is_word_char(ch) else "x"
+            if want != kind:
+                flush()
+                kind = want
+            run.append(ch)
+        i += 1
+    flush()
+    return out
+
+
+def _lowercase_ascii_word(token: str) -> bool:
+    return token.isascii() and token.isalpha() and token.islower()
+
+
+def _plain(item: _Item, *, first: bool) -> str | None:
+    """The word the allowlist reads, or None when the token is not a plain lowercase ASCII
+    word. Only the very first token of the question may be capitalised (and only as
+    ``Title``); it is lower-cased here and nowhere else."""
+    if item.kind != "w":
+        return None
+    token = item.text
+    if _lowercase_ascii_word(token):
+        return token
+    if first and token.isascii() and token.isalpha() and token[0].isupper():
+        rest = token[1:]
+        if not rest or rest.islower():
+            return token.lower()
+    return None
+
+
+def _name_words(*names: str) -> frozenset[str]:
+    """The lowercase ASCII words of snake_case / dotted names. One letter is not a word."""
+    out: set[str] = set()
+    for name in names:
+        for word in re.split(r"[^0-9A-Za-z]+", str(name or "")):
+            if len(word) >= 2 and word.isalpha():
+                out.add(word.lower())
+    return frozenset(out)
+
+
+def _last_part(name: str) -> str:
+    return str(name or "").rsplit(".", 1)[-1]
+
+
+def _is_form(token: str, word: str) -> bool:
+    """``token`` is ``word`` or its plural or singular: the ONE plural rule (``-s``, and
+    ``-y`` / ``-ies``). Applied to plain lowercase tokens only, and only against the words
+    of the plan's own names; never to a frame word or a cue."""
+    if token == word or token == word + "s":
+        return True
+    if word.endswith("y") and token == word[:-1] + "ies":
+        return True
+    if len(token) >= 3:
+        if word.endswith("ies") and token == word[:-3] + "y":
+            return True
+        if word.endswith("s") and not word.endswith("ss") and token == word[:-1]:
+            return True
+    return False
+
+
+def _in_words(token: str, words: Iterable[str], *, fold: bool) -> bool:
+    return any(token == w or (fold and _is_form(token, w)) for w in words)
+
+
+@dataclass(frozen=True)
+class Accounting:
+    """``reason`` is "" when everything the question says is accounted for, else
+    ``unstated_filter`` (the plan carries a value the question never stated) or
+    ``unbound_constraint`` (the question carries something the plan does not).
+    ``unaccounted`` is what nothing accounts for, ready to show."""
+
+    reason: str
+    unaccounted: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.reason
+
+
+def account_for_question(
+    question: str,
+    *,
+    measure: str,
+    grain: str,
+    grouped_by: Iterable[tuple[str, str]] = (),
+    filters: Iterable[Sequence[Any]] = (),
+) -> Accounting:
+    """Whether the question says nothing that the measure and this plan do not carry, and the
+    plan carries no filter value the question did not say. Pure, default deny; see the notes
+    above. The raw question is used with its case, NFKC-normalised."""
+    text = unicodedata.normalize("NFKC", str(question or ""))
+    plan_filters = [list(f) for f in filters]
+    literals, unstateable = _filter_literals(plan_filters)
+    spans, missing = _claim_literals(text, literals)
+    refused = [*unstateable, *missing]
+    if refused:
+        return Accounting(GAP_UNSTATED_FILTER, tuple(repr(r) for r in refused))
+
+    group_pairs = [(str(o), str(c)) for o, c in grouped_by]
+    own = _name_words(measure, _last_part(grain))
+    # "by X" names a column the plan groups by, or the table that column sits in; the measure's
+    # own table is not a breakdown ("by schools" is not "by district_id of schools").
+    grain_table = _last_part(grain)
+    group = _name_words(
+        *(_last_part(o) for o, _c in group_pairs if _last_part(o) != grain_table),
+        *(c for _o, c in group_pairs),
+    )
+    group_all = _name_words(
+        *(_last_part(o) for o, _c in group_pairs), *(c for _o, c in group_pairs)
+    )
+    named = _name_words(
+        *(_last_part(str(p[0])) for p in plan_filters if len(p) >= 2),
+        *(str(p[1]) for p in plan_filters if len(p) >= 2),
+    )
+    vocabulary = own | group_all | named
+
+    items = _items(text, spans)
+    plain = [_plain(item, first=(n == 0)) for n, item in enumerate(items)]
+    covered = [item.kind == "s" for item in items]
+
+    # A request phrase at the very start, as a whole phrase and by position.
+    at = 0
+    while at < len(items):
+        pair = (plain[at], plain[at + 1]) if at + 1 < len(items) else None
+        if pair in LEADING_PHRASES:
+            covered[at] = covered[at + 1] = True
+            at += 2
+        elif plain[at] == "please":
+            covered[at] = True
+            at += 1
+        else:
+            break
+    # Aggregate phrasing of several words ("number of") is covered only as the whole phrase.
+    for phrase in CUE_PHRASES:
+        width = len(phrase)
+        for n in range(len(items) - width + 1):
+            if plain[n : n + width] == phrase:
+                for k in range(n, n + width):
+                    covered[k] = True
+
+    gaps: list[str] = []
+    for n, item in enumerate(items):
+        if covered[n]:
+            continue
+        token = plain[n]
+        if item.kind == "x":
+            gaps.append(f"{item.text!r} ({_content_class(item.text[0])})")
+            continue
+        if token is None:
+            gaps.append(repr(item.text))
+            continue
+        if token in FRAME_WORDS or token in CUE_WORD_SET:
+            continue
+        # The first token is lower-cased for the tests above and below, but a word that had to
+        # be changed is not pluralised: only a token written lowercase takes the plural rule.
+        fold = token == item.text
+        if token in BREAKDOWN_WORDS:
+            following = plain[n + 1] if n + 1 < len(items) else None
+            if following is not None and _in_words(following, group, fold=True):
                 continue
-            words = _stems(str(lit))
-            if not words:
-                seen.setdefault(repr(lit))
-            for word in words:
-                if word not in stated:
-                    seen.setdefault(word)
-    return tuple(seen)
+            gaps.append(repr(item.text))
+            continue
+        if _in_words(token, vocabulary, fold=fold):
+            continue
+        gaps.append(repr(item.text))
+    if gaps:
+        return Accounting(GAP_UNBOUND_CONSTRAINT, tuple(gaps))
+    return Accounting("")
 
 
-def _shown(words: Sequence[str]) -> str:
-    return ", ".join(repr(w) for w in words[:3]) + (", ..." if len(words) > 3 else "")
+def _shown(items: Sequence[str]) -> str:
+    return ", ".join(items[:3]) + (", ..." if len(items) > 3 else "")
 
 
 def _content_tokens(name: str) -> frozenset[str]:
@@ -833,6 +1056,8 @@ def measure_fit(
     candidate: str | None = None,
     grouped_by: Iterable[tuple[str, str]] = (),
     filters: Iterable[Sequence[Any]] | None = None,
+    keep_gt: float | None = None,
+    offset: int | None = None,
 ) -> FitVerdict:
     """Whether a confirmed measure answers this question, by DMS's own reading.
 
@@ -859,18 +1084,19 @@ def measure_fit(
       ``(object, column)`` pairs): "total budget by district" is answered by the total grouped
       by district, and by nothing else. A false refusal here is safe; a plain total offered
       as "per student" is a wrong figure;
-    * when the caller passes the plan's ``filters`` (possibly empty), every other word of the
-      question must be accounted for by the measure or the plan (``unbound_words``), else the
-      plan would drop a condition the question states (``unbound_constraint``: "in the north
-      district" answered by the unfiltered total). The mirror holds too
-      (``unstated_filter``): every filter of the plan must use ``=`` or ``IN`` and every word
-      of every literal must be a word of the question, so a plan cannot add a value
-      (``IN ('North', 'South')`` for "the north district") or an operator the question never
-      stated. ``filters=None`` means no plan is being checked, and skips both tests.
+    * when the caller passes the plan's ``filters`` (possibly empty), the question and the plan
+      are accounted for exactly (``account_for_question``): every filter literal of the plan
+      is stated by the question (``unstated_filter``: the plan may not add a value, an
+      operator other than ``=`` / ``IN``, a ``keep_gt`` threshold or an ``offset`` the question
+      never stated), and everything left in the question is an aggregate cue, a frame word,
+      a word of the measure's or the plan's own names, or a breakdown the plan really groups
+      by (``unbound_constraint``: "in the US" answered by the unfiltered total). Default
+      deny: anything else, in any case, script or symbol, is a condition the plan dropped.
+      ``filters=None`` means no plan is being checked, and skips both tests.
 
     Only structured (provenance-bearing) measures take part. The cue, quantity and qualifier
-    vocabularies are English; the condition tests (``unbound_constraint``, ``unstated_filter``)
-    read every script and symbol, so a non-English condition is refused, never ignored.
+    vocabularies are English; the accounting reads every script and symbol, so a non-English
+    condition is refused, never ignored.
     """
     pool = {n: m for n, m in measures.items() if m.provenance is not None}
     qtoks = frozenset(_stems(question))
@@ -909,12 +1135,18 @@ def measure_fit(
         return FitVerdict(False, pick, "qualifier_cue")
     if filters is not None:
         plan_filters = tuple(filters)
-        loose = unbound_words(
-            question, pick, grain=prov.grain, grouped_by=grouped, filters=plan_filters
+        # A threshold on the aggregate or a row window is a condition the plan states; no
+        # question the lane accepts states one, so a plan carrying either is not what was asked.
+        extras = [
+            repr(name)
+            for name, value in (("keep_gt", keep_gt), ("offset", offset))
+            if value is not None
+        ]
+        if extras:
+            return FitVerdict(False, pick, GAP_UNSTATED_FILTER, _shown(extras))
+        reading = account_for_question(
+            question, measure=pick, grain=prov.grain, grouped_by=grouped, filters=plan_filters
         )
-        if loose:
-            return FitVerdict(False, pick, "unbound_constraint", _shown(loose))
-        stray = unstated_plan_terms(question, plan_filters)
-        if stray:
-            return FitVerdict(False, pick, "unstated_filter", _shown(stray))
+        if not reading.ok:
+            return FitVerdict(False, pick, reading.reason, _shown(reading.unaccounted))
     return FitVerdict(True, pick, "ok")

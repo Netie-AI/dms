@@ -432,11 +432,11 @@ to run per request; until then ask-time pruning is the authority and the answer 
 
 ## P-DMS-53 - Confirmed-lane coverage is by word, not by relation (dms#284)
 
-`unbound_words` and `unstated_plan_terms` compare words, so they cannot tell which column a
-shared word belongs to: a question word that is also a plan column or literal word is accepted
-whatever role the plan gives it (a school named "North" for "the north district", bounded by
-the value probe), and a plan that groups by a column the question never names is not refused
-(its rows show the grouping). A normalised value ("SKU-BETA" for "beta") is declined by the
+`account_for_question` accounts for tokens and literals, so it cannot tell which column a
+shared word belongs to: a literal the question states is accepted whatever column the plan
+filters ("district 2" and "2 districts" both state `2`, bounded by the value probe), and a
+plan that groups by a column the question never names is not refused (its rows show the
+grouping). A normalised value ("SKU-BETA" for "beta") is declined by the
 certified lane and answered by the generated-SQL path.
 **Unlock:** a pilot shows a wrong certified figure from either, or steward alias phrases
 (P-DMS-44) give the lane a proven phrase-to-value mapping to re-admit normalised values.

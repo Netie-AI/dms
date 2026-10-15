@@ -175,26 +175,46 @@ against a non-seed database in this step.
   hardened qualifier rule would refuse every grouped ask on the confirmed lane.
 - **Rule 12 at ask time.** Every `=` / `IN` literal of a plan's filters is probed against its
   column as landed before compile (`unmatched_filter_value`; unreadable or over-long lists
-  fail closed). An aggregate that is NULL in every returned row, or a plan with no rows,
+  fail closed). An aggregate that is NULL in any returned row, or a plan with no rows,
   is `empty_aggregate`. `COUNT` over an empty table is 0 and answers: 0 is a value.
 - **After a confirmed plan abstains the ask never falls back to Cortex SQL.** Two paths would
   be two numbers.
-- **The plan must carry every condition the question states** (verifier finding, fixed). The
-  first cut checked only aggregate cues and a list of qualifier words, so "total budget of
-  schools in the north district" was answered by the measure's UNFILTERED total (360.75, the
-  right figure was 310.75) under a confirmed basis, and the router even replaced Cortex's
-  correct filtered SQL with it. `measure_fit` now takes the plan's filters and runs an
-  allowlist, `unbound_words`: every word of the question must be a frame word ("what", "the",
-  "of", "in"), part of the aggregate phrasing, a word of the measure's name or its grain's
-  table, or a word of what the plan groups by or filters on (object, column, literal). Any
-  other word is a condition nothing applied (`unbound_constraint`, naming the first words).
+- **The question and the plan are accounted for exactly** (verifier findings across three
+  rounds, fixed at the root). The first cut checked aggregate cues and a list of qualifier
+  words; the second a word allowlist the tokenizer could not see past (non-ASCII); the third
+  Unicode tokens compared as lower-cased stems, where a frame word that is also a legitimate
+  VALUE still counted as covered ("total budget of schools in the US" answered the unfiltered
+  total, as did "OR", "IT", "IN", "A", "Wills", "Doe", "Cans"). A word or stem list reaches a
+  ceiling after a few rounds, so `measure_use.account_for_question` replaces it with exact
+  accounting and default deny, on the RAW NFKC-normalised question with its case:
+  1. Every plan filter literal (scalar or `IN` element, as the plan carries it: sign, decimal
+     point, date punctuation) must occur in the question as an exact, case-sensitive
+     substring on token boundaries, and its span is removed. A literal the question does not
+     state, an operator other than `=` / `IN`, an empty, NULL, boolean or nested literal, a
+     `keep_gt` or an `offset` refuses as `unstated_filter` (`-2` is not `2`, `1.5` is not
+     `5.1`, `2024-01-05` is not `2024-05-01`, `5` is not stated by the `5` of `2.5`).
+  2. Everything left is accounted for. A character that is not a letter, digit or mark,
+     whitespace, `? . ,` or a final `!` refuses and names its class (symbol, punctuation,
+     control or format character): emoji, backticks, `$`, `&`, `*`, `-`, apostrophes.
+  3. Each remaining token is exactly one of: an aggregate CUE `measure_fit` already
+     validated (whole phrases such as "number of"); a FRAME word from a closed lowercase list
+     of 35 words matched case-sensitively with no stemming and no plural folding (pronouns
+     and connectives such as `me us it or to be as by per each every across where this that
+     has have will` are NOT frame words); a leading request phrase ("show me", "tell me",
+     "give me", "can you", "could you") stripped positionally; or a word of the measure's
+     name, its grain table, or a name the plan groups or filters by, compared exactly and
+     lowercase with one plural rule (`-s`, `-y`/`-ies`, either direction) that is never
+     applied to a token that was capitalised. Only the first token may be capitalised
+     (`Title`, lower-cased for the test). Every other token, including any with an uppercase
+     letter, a digit or a non-ASCII letter, is a condition the plan dropped
+     (`unbound_constraint`). `by` / `per` / `each` / `every` are covered only when the
+     plan's group-by names the next word (a column, or a table other than the measure's own).
   With SQL present the SQL stays on today's path (`confirmed_measure_not_preferred:
-  unbound_constraint`); with only a plan the ask abstains `no_declared_measure`. It is an
-  allowlist on purpose: a blocklist of phrases ("in", "over", "between") is exactly what the
-  first cut had, and the next phrase it did not list would drop its condition the same way.
-- **A group with no value is not a figure.** A grouped confirmed answer drops a group whose
-  measure is NULL, says so in the text and in the assumptions (no digits in the sentence),
-  and abstains `empty_aggregate` only when no group has a value. It never renders `=None`.
+  unbound_constraint`); with only a plan the ask abstains `no_declared_measure`.
+- **A NULL aggregate is not a figure.** A confirmed answer whose measure is NULL in ANY row,
+  or that has no rows, abstains `empty_aggregate`: dropping the group would hide one the
+  customer asked about and printing it would read `=None` under the badge. A NULL group KEY
+  is a real group and reads `(null)`.
 - **A Python bool is not 1.** The value probe requires a BOOLEAN column for a boolean literal
   (`TRUE = 1` holds in SQL).
 - **The `measure confirmed:` sentence is exempt from the PII scan** the way the basis it
@@ -226,25 +246,15 @@ against a non-seed database in this step.
 - A ledger outage fails confirm closed. An orphan ledger entry after a failed commit
   confers no authority: the ask path trusts only database rows plus the hash recompute.
 - The confirmed lane does not answer ranking or range phrasing ("top 3", "between",
-  "at least", "over 100") or a normalised value ("KL" for "Kuala Lumpur"): the allowlist
-  has no word for them, so a plan that carries them is refused. A false refusal is safe, and
-  with SQL present the generated path answers.
-- The allowlist reads every script and symbol, not just ASCII words. Verification found that
-  an `[a-z0-9]` tokenizer answered a question whose condition was a Chinese district name (or
-  a Tamil word, an emoji, or "budget / schools") with the unfiltered total under the
-  confirmed basis, because a condition with no ASCII letter left nothing to compare. The
-  tokenizer now treats any letter, digit or mark in any script as a word, folds width and
-  case (NFKC), and treats every other character that is not whitespace or harmless
-  punctuation (`. , ? ! ' " : ; _`, dashes, brackets, quotes) as content that must be
-  accounted for. Whitelist the harmless, never list the harmful.
-- The MIRROR is checked (`unstated_filter`), a decision taken after verification showed a
-  Cortex-typed plan whose `IN ('North', 'South')` answered "the north district" with the
-  figure for both. Every plan filter must use `=` or `IN`, and every word of every literal
-  must be a word of the question. Its cost is accepted: a normalised value ("SKU-BETA" for
-  "beta") is not stated, so the certified lane declines it and the generated-SQL path answers
-  at its own badge (a false refusal, therefore safe). Rule 12's normalisation is unaffected
-  outside this lane. Still open (PARKING_LOT P-DMS-53): coverage is by word, not by relation,
-  and a plan that groups by a column the question never names is not refused.
+  "at least", "over 100"), a contraction, a pronoun, a quotation or a normalised value ("KL"
+  for "Kuala Lumpur"): no rule above admits them, so a plan that carries them is refused. A
+  false refusal is safe, and with SQL present the generated path answers.
+- Accounting is by token and literal, not by relation. A literal is stated when the question
+  contains it exactly; the gate cannot tell whether it is stated about the column the plan
+  filters ("district 2" and "2 districts" both state `2`). The value probe bounds it
+  (`unmatched_filter_value`) and P-DMS-53 stays open. A dangling frame phrase ("...in a") is
+  accepted: it names no value. A vocabulary word that is also a value (a table called `us`)
+  is accepted, because it is a name the plan itself carries.
 - Coverage ceiling of the certified lane: Cortex ranks by name tokens and slot filling is
   demo-shaped, so early L1 hits will be mostly ungrouped totals and simple dimensions;
   English tokens only. Measure and report certified hit rate per Space; never claim coverage.

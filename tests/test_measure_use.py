@@ -36,8 +36,6 @@ from dms_executor.measure_use import (
     measure_exclusions,
     measure_fit,
     prune_unusable_measures,
-    unbound_words,
-    unstated_plan_terms,
 )
 from dms_executor.ontology import Measure, MeasureProvenance, Ontology, measure_expression
 from dms_executor.space_ontology import (
@@ -1313,102 +1311,133 @@ def test_fit_a_grouping_never_covers_a_restriction(question: str) -> None:
     assert got == FitVerdict(False, BUDGET.name, "qualifier_cue"), question
 
 
-# ----------------------------------------------- the plan carries what the question asks
+# ------------------------------------- exact accounting: the question and the plan agree (fit)
 
 NORTH_FILTER = ("bronze.public_districts", "name", "=", "North")
+
+
+def _acct(question: str, **kw: Any) -> mu.Accounting:
+    return mu.account_for_question(question, measure="schools_budget_sum", grain=SCHOOLS, **kw)
 
 
 @pytest.mark.parametrize(
     "question",
     [
         "What is the total budget of all schools?",
-        "what's the total school budget",
-        "Give me the sum of budgets across all schools",
-        "What is the overall budget for the schools?",
         "total budget of schools",
+        "What is the overall budget for the schools?",
+        "Show me the total budget of schools",
+        "show me the total budget of schools",
+        "Tell me the total budget of schools, please.",
+        "Can you give me the sum of the budgets of all schools?",
+        "Could you please show me the total budget of schools?!",
+        "How much is the budget of the schools",
+        "Total budget of schools",
+        "List all the schools budget",
     ],
 )
 def test_fit_a_plain_question_with_no_plan_condition_is_ok(question: str) -> None:
-    assert unbound_words(question, "schools_budget_sum", grain=SCHOOLS) == ()
+    assert _acct(question).ok, _acct(question)
     assert measure_fit(question, _pool(BUDGET), filters=()).ok is True
 
 
 @pytest.mark.parametrize(
     ("question", "words"),
     [
-        ("What is the total budget of schools in the north district?", ("north", "district")),
-        ("What is the total budget of schools with a budget over 100?", ("over", "100")),
-        ("What is the total budget of schools in district 2?", ("district", "2")),
-        ("What is the total budget of schools last year?", ("last", "year")),
-        ("What is the total budget of schools at most 100?", ("most", "100")),
-        ("What is the total budget of schools between 5 and 9?", ("between", "5", "9")),
-        ("What is the total budget of schools in the database?", ("database",)),
+        ("What is the total budget of schools in the north district?", ("'north'", "'district'")),
+        ("What is the total budget of schools with a budget over 100?", ("'over'", "'100'")),
+        ("What is the total budget of schools in district 2?", ("'district'", "'2'")),
+        ("What is the total budget of schools last year?", ("'last'", "'year'")),
+        ("What is the total budget of schools at most 100?", ("'most'", "'100'")),
+        ("What is the total budget of schools between 5 and 9?", ("'between'", "'5'", "'9'")),
+        ("What is the total budget of schools in the database?", ("'database'",)),
+        ("What is the total budget of schools in the US?", ("'US'",)),
+        ("What is the total budget of schools in the us?", ("'us'",)),
+        ("What is the total budget of schools in OR?", ("'OR'",)),
+        ("What is the total budget of schools in IT?", ("'IT'",)),
+        ("What is the total budget of schools in IN?", ("'IN'",)),
+        ("What is the total budget of schools in A?", ("'A'",)),
+        ("What is the total budget of Wills schools?", ("'Wills'",)),
+        ("What is the total budget of Doe schools?", ("'Doe'",)),
+        ("What is the total budget of Cans schools?", ("'Cans'",)),
+        (
+            "What is the total budget of schools where region is north?",
+            ("'where'", "'region'", "'north'"),
+        ),
+        ("Show us the total budget of schools", ("'us'",)),
     ],
 )
 def test_fit_a_condition_the_plan_does_not_carry_is_unbound(
     question: str, words: tuple[str, ...]
 ) -> None:
-    assert unbound_words(question, "schools_budget_sum", grain=SCHOOLS) == words
     got = measure_fit(question, _pool(BUDGET), filters=())
     assert (got.ok, got.pick, got.reason) == (False, "schools_budget_sum", "unbound_constraint")
-    assert got.detail.startswith(repr(words[0])), got.detail
+    assert got.detail == ", ".join(words), got.detail
 
 
-def test_fit_a_plan_that_carries_the_condition_covers_its_words() -> None:
-    q = "What is the total budget of schools in the north district?"
-    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS, filters=[NORTH_FILTER]) == ()
+def test_fit_a_plan_that_carries_the_condition_covers_it() -> None:
+    q = "What is the total budget of schools in the North district?"
     assert measure_fit(q, _pool(BUDGET), filters=[NORTH_FILTER]).ok is True
     # a JSON plan carries its filters as lists, and IN carries a list of literals
-    as_json = [list(NORTH_FILTER)]
-    assert measure_fit(q, _pool(BUDGET), filters=as_json).ok is True
+    assert measure_fit(q, _pool(BUDGET), filters=[list(NORTH_FILTER)]).ok is True
     both = ("bronze.public_districts", "name", "IN", ["North", "South"])
     q2 = "What is the total budget of schools in the North and South districts?"
     assert measure_fit(q2, _pool(BUDGET), filters=[both]).ok is True
-    # ... and a numeric literal covers its number
     by_id = ("bronze.public_schools", "district_id", "=", 2)
     q3 = "What is the total budget of schools in district 2?"
     assert measure_fit(q3, _pool(BUDGET), filters=[by_id]).ok is True
 
 
 def test_fit_a_plan_that_carries_only_part_of_the_condition_is_unbound() -> None:
-    """'North and South' with a plan for North alone drops South: the second word is unbound."""
     q = "What is the total budget of schools in the North and South districts?"
     got = measure_fit(q, _pool(BUDGET), filters=[NORTH_FILTER])
-    assert (got.ok, got.reason, got.detail) == (False, "unbound_constraint", "'south'")
+    assert (got.ok, got.reason, got.detail) == (False, "unbound_constraint", "'South'")
 
 
-def test_fit_a_group_by_covers_its_word_and_a_filter_does_not_cover_another_word() -> None:
-    by_district = [("bronze.public_districts", "name")]
-    q = "What is the total budget of all schools for every district?"
-    assert measure_fit(q, _pool(BUDGET), grouped_by=by_district, filters=()).ok is True
+def test_fit_a_filter_word_is_not_a_license_for_another_word() -> None:
     got = measure_fit(
-        "What is the total budget of schools in the north region?",
+        "What is the total budget of schools in the North region?",
         _pool(BUDGET),
         filters=[NORTH_FILTER],
     )
     assert (got.ok, got.detail) == (False, "'region'")
 
 
-def test_fit_without_a_plan_the_unbound_test_is_not_made() -> None:
+def test_fit_a_group_by_covers_the_breakdown_word_and_only_that() -> None:
+    by_district = [("bronze.public_districts", "name")]
+    ok = "What is the total budget of all schools for every district?"
+    assert measure_fit(ok, _pool(BUDGET), grouped_by=by_district, filters=()).ok is True
+    assert measure_fit(
+        "What is the total budget of schools by district?",
+        _pool(BUDGET),
+        grouped_by=by_district,
+        filters=(),
+    ).ok is True
+    # a plan that does not group by it covers nothing; "by schools" is not a grouping either
+    for q in (
+        "What is the total budget of schools by schools?",
+        "What is the total budget of schools by region?",
+    ):
+        got = measure_fit(q, _pool(BUDGET), grouped_by=by_district, filters=())
+        assert got.ok is False, q
+
+
+def test_fit_without_a_plan_the_accounting_is_not_made() -> None:
     """``filters=None`` is a caller with no plan (a listing, a ranking probe): unchanged."""
     q = "What is the total budget of schools in the north district?"
     assert measure_fit(q, _pool(BUDGET)).ok is True
 
 
 def test_fit_ranking_and_range_phrasing_is_never_accounted_for() -> None:
-    """The confirmed lane does not answer "top 3" or "between": a false refusal is safe."""
     by_district = [(DISTRICTS, "name")]
-    q = "What are the top 3 districts by total budget of schools?"
-    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS, grouped_by=by_district) == (
-        "top",
-        "3",
-    )
+    q = "What are the top 3 districts for the total budget of schools?"
+    got = measure_fit(q, _pool(BUDGET), grouped_by=by_district, filters=())
+    assert (got.ok, got.reason) == (False, "unbound_constraint")
+    assert got.detail == "'top', '3'", got.detail
 
 
-# ------------------------------- a condition in ANY script is a word, never invisible (P1)
+# ------------------------------- a condition in ANY script is a token, never invisible
 
-#: Conditions the old ASCII-only tokenizer could not see: the question's word was not in
-#: ``[a-z0-9]``, so nothing was left to compare and the unfiltered total was stated.
 NON_ASCII_CONDITIONS = [
     pytest.param("\u5317\u533a", id="cjk"),
     pytest.param("\u0b95\u0bc7\u0bb2\u0bbe", id="tamil"),
@@ -1416,172 +1445,277 @@ NON_ASCII_CONDITIONS = [
     pytest.param("\u00f1orth", id="latin-diacritic"),
     pytest.param("\u5317 district", id="cjk-then-ascii"),
     pytest.param("district \uff12", id="fullwidth-digit"),
+    pytest.param("\uff35\uff33", id="fullwidth-capitals"),
 ]
 
 
 @pytest.mark.parametrize("condition", NON_ASCII_CONDITIONS)
 def test_fit_a_condition_in_any_script_is_unbound(condition: str) -> None:
     q = f"What is the total budget of schools in {condition}?"
-    loose = unbound_words(q, "schools_budget_sum", grain=SCHOOLS)
-    assert loose, f"a condition written as {condition!r} vanished from the allowlist"
     got = measure_fit(q, _pool(BUDGET), filters=())
     assert (got.ok, got.pick, got.reason) == (False, "schools_budget_sum", "unbound_constraint")
-    assert got.detail, "the refusal names the words nothing accounts for"
+    assert got.detail, "the refusal names what nothing accounts for"
 
 
 @pytest.mark.parametrize(
     "mark",
-    ["/", "&", "+", "$", "<", ">", "~", "*", "@", "#", "|", "\u00f7", "\u00d7"],
-)
-def test_fit_an_operator_or_symbol_is_content_not_punctuation(mark: str) -> None:
-    """'total budget / schools' is a ratio, not the total: the slash is a word the allowlist
-    must see. Characters that are neither letters, digits nor harmless punctuation are content."""
+    ["/", "&", "+", "$", "<", ">", "~", "*", "@", "#", "|", "\u00f7", "\u00d7", "-", "`", "'", '"',
+     "(", ")", ":", ";", "_", "\u2014", "\u200b", "="],
+)  # fmt: skip
+def test_fit_every_character_outside_the_closed_punctuation_set_is_refused(mark: str) -> None:
+    """Dashes, quotes, brackets, backticks, currency, operators and zero-width marks are not
+    harmless: only ``? . ,`` and a final ``!`` separate, and the refusal names the class."""
     q = f"What is the total budget {mark} schools?"
-    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS) == (mark,)
     got = measure_fit(q, _pool(BUDGET), filters=())
-    assert (got.ok, got.reason) == (False, "unbound_constraint")
+    assert (got.ok, got.reason) == (False, "unbound_constraint"), mark
+    assert "(" in got.detail and got.detail.endswith(")"), got.detail
+
+
+def test_fit_the_refusal_names_the_character_class() -> None:
+    assert _acct("What is the total budget / schools?").unaccounted == ("'/' (punctuation)",)
+    assert _acct("What is the total budget $ schools?").unaccounted == ("'$' (symbol)",)
+    assert _acct("What is the total budget \U0001f334 schools?").unaccounted == (
+        "'\U0001f334' (symbol)",
+    )
+    assert _acct("What is the total budget \u200b schools?").unaccounted == (
+        repr("\u200b") + " (control or format character)",
+    )
 
 
 @pytest.mark.parametrize(
     "question",
     [
         "What is the total budget of schools?",
-        "What's the total budget of schools, please?",
-        'What is the "total budget" of (all) schools: all of it!',
-        "Total budget - of schools; all of the schools...",
-        "What is the total_budget of schools?",
-        "what\u2019s the total budget of schools\u2026",
-        "What is the total budget of schools\uff1f",
+        "What is the total budget of schools, please?",
+        "What is the total budget of schools.",
+        "What is the total budget of schools!",
+        "What is the total budget of schools ?",
+        "What is the total budget of schools,\tall of the schools\n",
+        "What is the total budget of schools\uff1f",  # NFKC folds the fullwidth mark to ?
+        "What is the total budget of schools\u2026",  # NFKC: three full stops
     ],
 )
-def test_fit_harmless_punctuation_is_still_just_a_separator(question: str) -> None:
-    assert unbound_words(question, "schools_budget_sum", grain=SCHOOLS) == ()
+def test_fit_the_closed_punctuation_set_only_separates(question: str) -> None:
     assert measure_fit(question, _pool(BUDGET), filters=()).ok is True
 
 
-def test_fit_a_plan_that_carries_the_non_ascii_literal_covers_its_word() -> None:
-    """The gate is a coverage check, not a ban on other scripts: the plan that carries the very
-    word the question states accounts for it."""
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the total budget of schools!!",
+        "What is the total budget! of schools",
+        "What's the total budget of schools?",
+        "what\u2019s the total school budget",
+    ],
+)
+def test_fit_a_bang_that_is_not_final_and_every_contraction_is_refused(question: str) -> None:
+    got = measure_fit(question, _pool(BUDGET), filters=())
+    assert (got.ok, got.reason) == (False, "unbound_constraint"), question
+
+
+def test_fit_a_plan_that_carries_the_non_ascii_literal_covers_it() -> None:
     q = "What is the total budget of schools in \u5317\u533a?"
     flt = ("bronze.public_districts", "name", "=", "\u5317\u533a")
-    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS, filters=[flt]) == ()
     assert measure_fit(q, _pool(BUDGET), filters=[flt]).ok is True
     other = ("bronze.public_districts", "name", "=", "\u5357\u533a")
     got = measure_fit(q, _pool(BUDGET), filters=[other])
-    assert (got.ok, got.reason) == (False, "unbound_constraint")
+    assert (got.ok, got.reason, got.detail) == (False, "unstated_filter", "'\u5357\u533a'")
 
 
 def test_fit_a_fullwidth_digit_is_the_digit_it_looks_like() -> None:
-    """NFKC folds ``\uff12`` to ``2``: a plan filtering on 2 states what the question states."""
-    q = "What is the total budget of schools in district \uff12?"
+    """NFKC folds the fullwidth 2 to 2, in the question and in the plan."""
     by_id = ("bronze.public_schools", "district_id", "=", 2)
+    q = "What is the total budget of schools in district \uff12?"
     assert measure_fit(q, _pool(BUDGET), filters=[by_id]).ok is True
-    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS) == ("district", "2")
+    assert measure_fit(q, _pool(BUDGET), filters=()).reason == "unbound_constraint"
 
 
-def test_fit_a_word_the_ascii_tokenizer_split_in_two_is_one_word() -> None:
-    """'ñorth' used to read as 'orth' beside a stray letter; now it is one token, and a plan
-    that filters on 'North' does not account for it."""
-    q = "What is the total budget of schools in the \u00f1orth district?"
-    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS, filters=[NORTH_FILTER]) == (
-        "\u00f1orth",
-    )
-
-
-# ------------------------------- the mirror: the plan states nothing the question did not (P2)
+# ---------------------------------- the mirror: the plan states nothing the question did not
 
 
 def test_mirror_a_plan_value_the_question_never_states_is_unstated() -> None:
-    q = "What is the total budget of schools in the north district?"
+    q = "What is the total budget of schools in the North district?"
     both = ("bronze.public_districts", "name", "IN", ["North", "South"])
-    assert unstated_plan_terms(q, [NORTH_FILTER]) == ()
-    assert unstated_plan_terms(q, [both]) == ("south",)
     got = measure_fit(q, _pool(BUDGET), filters=[both])
     assert (got.ok, got.pick, got.reason, got.detail) == (
-        False, "schools_budget_sum", "unstated_filter", "'south'",
+        False, "schools_budget_sum", "unstated_filter", "'South'",
     )  # fmt: skip
-    # the question that does state both is answered
     q2 = "What is the total budget of schools in the North and South districts?"
-    assert unstated_plan_terms(q2, [both]) == ()
     assert measure_fit(q2, _pool(BUDGET), filters=[both]).ok is True
 
 
 @pytest.mark.parametrize("op", [">", ">=", "<", "<=", "<>", "!=", "LIKE", "like", "BETWEEN", ""])
 def test_mirror_only_equals_and_in_state_a_value(op: str) -> None:
-    """No question the lane answers states ``>`` or ``LIKE``: 'in district 2' with a plan for
-    district_id > 2 is a different number."""
     q = "What is the total budget of schools in district 2?"
     flt = ("bronze.public_schools", "district_id", op, 2)
-    assert unstated_plan_terms(q, [flt]) == (f"operator {op.lower() or 'none'}",)
     got = measure_fit(q, _pool(BUDGET), filters=[flt])
     assert (got.ok, got.reason) == (False, "unstated_filter")
+    assert got.detail == repr(f"operator {op.lower() or 'none'}")
 
 
 @pytest.mark.parametrize("op", ["=", "in", " IN ", "In"])
 def test_mirror_the_two_stated_operators_are_case_and_space_blind(op: str) -> None:
     q = "What is the total budget of schools in district 2?"
     flt = ("bronze.public_schools", "district_id", op, [2] if op.strip().upper() == "IN" else 2)
-    assert unstated_plan_terms(q, [flt]) == ()
+    assert measure_fit(q, _pool(BUDGET), filters=[flt]).ok is True
 
 
 @pytest.mark.parametrize(
-    ("value", "terms"),
-    [
-        (None, ("None",)),
-        ("", ("''",)),
-        ("  ", ("'  '",)),
-        ("--", ("'--'",)),
-        ([["North"]], ("['North']",)),
-        ({"a": 1}, ("{'a': 1}",)),
-        ([], ()),
-        ("North East", ("east",)),
-        ("Kuala Lumpur", ("kuala", "lumpur")),
-        ("SKU-BETA", ("sku", "beta")),
-        (2.5, ("2", "5")),
-    ],
+    "value",
+    [None, "", "  ", "--", True, False, [["North"]], {"a": 1}, [], float("nan"), float("inf")],
 )
-def test_mirror_a_literal_the_question_cannot_state_is_unstated(
-    value: object, terms: tuple[str, ...]
-) -> None:
-    """Empty, NULL, nested and partly-stated literals fail closed ('north' is stated by the
-    question, 'east' is not). A normalised value ('SKU-BETA' for 'beta') is refused too: it is
-    not stated, and the generated-SQL path answers it at its own badge."""
-    q = "What is the total budget of schools in the north district?"
-    got = unstated_plan_terms(q, [("bronze.public_districts", "name", "=", value)])
-    assert got == terms
+def test_mirror_a_literal_no_question_can_state_is_unstated(value: object) -> None:
+    q = "What is the total budget of schools in the North district?"
+    flt = ("bronze.public_districts", "name", "IN" if isinstance(value, list) else "=", value)
+    got = measure_fit(q, _pool(BUDGET), filters=[flt])
+    assert (got.ok, got.reason) == (False, "unstated_filter"), value
+
+
+def test_mirror_a_set_literal_names_what_is_missing_in_a_stable_order() -> None:
+    q = "What is the total budget of schools in the North district?"
+    flt = ("bronze.public_districts", "name", "IN", {"South", "West", "North"})
+    got = measure_fit(q, _pool(BUDGET), filters=[flt])
+    assert got.detail == "'South', 'West'"
 
 
 def test_mirror_a_filter_with_too_few_parts_fails_closed() -> None:
-    q = "What is the total budget of schools in the north district?"
-    assert unstated_plan_terms(q, [("bronze.public_districts", "name", "=")]) == (
-        "an unreadable filter",
-    )
+    q = "What is the total budget of schools in the North district?"
+    got = measure_fit(q, _pool(BUDGET), filters=[("bronze.public_districts", "name", "=")])
+    assert (got.reason, got.detail) == ("unstated_filter", "'an unreadable filter'")
 
 
-def test_mirror_a_set_literal_is_checked_in_a_stable_order() -> None:
-    q = "What is the total budget of schools in the north district?"
-    flt = ("bronze.public_districts", "name", "IN", {"South", "West", "North"})
-    assert unstated_plan_terms(q, [flt]) == ("south", "west")
+def test_mirror_a_scalar_with_a_list_value_is_not_a_stated_equality() -> None:
+    q = "What is the total budget of schools in the North district?"
+    flt = ("bronze.public_districts", "name", "=", ["North"])
+    got = measure_fit(q, _pool(BUDGET), filters=[flt])
+    assert got.reason == "unstated_filter"
 
 
-def test_mirror_a_literal_is_stated_by_its_words_in_any_case_script_or_width() -> None:
-    assert unstated_plan_terms(
-        "total budget of schools in the NORTH district", [NORTH_FILTER]
-    ) == ()
-    assert unstated_plan_terms(
-        "total budget of schools in \u5317\u533a", [("o", "c", "=", "\u5317\u533a")]
-    ) == ()
-    assert unstated_plan_terms(
-        "total budget of schools in district \uff12", [("o", "c", "=", 2)]
-    ) == ()
-    assert unstated_plan_terms(
-        "total budget of schools in district 2", [("o", "c", "=", "\uff12")]
-    ) == ()
+@pytest.mark.parametrize(
+    ("question", "value"),
+    [
+        ("What is the total budget of schools in district -2?", 2),  # sign
+        ("What is the total budget of schools in district 2?", -2),
+        ("What is the total budget of schools in district 1.5?", 5),  # tail of a decimal
+        ("What is the total budget of schools in district 5.1?", 1.5),
+        ("What is the total budget of schools in district 25?", 5),  # tail of a number
+        ("What is the total budget of schools in district 2.5?", 5),
+        ("What is the total budget of schools in district 5.0?", 5),
+        ("What is the total budget of schools in district 5?", 5.0),
+        ("What is the total budget of schools in Northern?", "North"),  # prefix of a word
+        ("What is the total budget of schools in North?", "north"),  # case
+        ("What is the total budget of schools in north-east?", "north"),  # glued
+        ("What is the total budget of schools opened 2024-05-01?", "2024-01-05"),  # date order
+        ("What is the total budget of schools opened 2024-01-05?", "2024-01-5"),
+    ],
+)
+def test_mirror_the_literal_must_be_the_question_exactly(question: str, value: object) -> None:
+    flt = ("bronze.public_schools", "district_id", "=", value)
+    got = measure_fit(question, _pool(BUDGET), filters=[flt])
+    assert got.ok is False, (question, value)
+
+
+def test_mirror_a_short_literal_is_not_stated_by_the_tail_of_a_longer_one() -> None:
+    q = "What is the total budget of schools in district 2.5?"
+    both = ("bronze.public_schools", "district_id", "IN", [2.5, 5])
+    got = measure_fit(q, _pool(BUDGET), filters=[both])
+    assert (got.reason, got.detail) == ("unstated_filter", "'5'")
+
+
+def test_mirror_a_threshold_or_a_row_window_is_a_condition_the_plan_states() -> None:
+    q = "What is the total budget of schools?"
+    assert measure_fit(q, _pool(BUDGET), filters=(), keep_gt=5.0).reason == "unstated_filter"
+    assert measure_fit(q, _pool(BUDGET), filters=(), offset=3).reason == "unstated_filter"
+    assert measure_fit(q, _pool(BUDGET), filters=(), keep_gt=None, offset=None).ok is True
+    assert measure_fit(q, _pool(BUDGET), keep_gt=5.0).ok is True  # no plan, no accounting
 
 
 def test_mirror_is_not_made_without_a_plan() -> None:
     q = "What is the total budget of schools in the north district?"
     assert measure_fit(q, _pool(BUDGET)).ok is True  # filters=None: no plan is being checked
+
+
+# ----------------------------------------------- the frame, cue and vocabulary sets are closed
+
+
+@pytest.mark.parametrize(
+    "word", ["me", "us", "my", "we", "our", "i", "it", "its", "to", "be", "as", "or", "by", "per",
+             "each", "every", "across", "where", "this", "that", "these", "those", "has", "have",
+             "had", "will", "not", "but", "if", "then", "than"],
+)  # fmt: skip
+def test_the_pronouns_and_connectives_are_not_frame_words(word: str) -> None:
+    q = f"What is the total budget of schools {word} schools?"
+    assert _acct(q).reason == "unbound_constraint", word
+
+
+@pytest.mark.parametrize("word", sorted(mu.FRAME_WORDS))
+def test_a_frame_word_is_matched_lowercase_exactly(word: str) -> None:
+    ok = f"What is the total budget of schools {word}"
+    assert _acct(ok).ok, word
+    for variant in (word.upper(), word.title() + "s", word + "s", word.title()):
+        if variant == word:
+            continue
+        assert not _acct(f"What is the total budget of schools {variant}").ok, variant
+
+
+def test_a_count_question_is_accounted_for_too() -> None:
+    assert measure_fit("How many schools are there?", _pool(SCOUNT), filters=()).ok is True
+    got = measure_fit("How many schools are there in the US?", _pool(SCOUNT), filters=())
+    assert (got.reason, got.detail) == ("unbound_constraint", "'US'")
+
+
+def test_the_first_token_alone_may_be_capitalised() -> None:
+    assert _acct("What is the total budget of schools").ok
+    assert not _acct("WHAT is the total budget of schools").ok
+    assert not _acct("What is the Total budget of schools").ok
+    assert not _acct("What is the total Budget of schools").ok
+    assert not _acct("what IS the total budget of schools").ok
+    # the capitalised first token is not a license to pluralise or fold
+    assert _acct("Schools budget total").ok
+    assert not _acct("School budget total").ok
+    assert not _acct("Schoolss budget total").ok
+
+
+def test_a_request_phrase_is_stripped_only_at_the_start_and_only_whole() -> None:
+    assert _acct("show me the total budget of schools").ok
+    assert _acct("Can you show me the total budget of schools").ok
+    assert _acct("Please give me the total budget of schools").ok
+    assert not _acct("the total budget of schools, show me").ok
+    assert not _acct("What is the total budget of schools show me").ok
+    assert not _acct("me the total budget of schools").ok
+    assert not _acct("show the total budget of schools for me").ok
+
+
+def test_a_cue_phrase_is_covered_only_whole() -> None:
+    assert _acct("What is the number of schools budget").ok
+    assert not _acct("What is the number schools budget").ok
+    assert not _acct("What is the number budget of schools").ok
+    assert _acct("How many schools budget").ok
+
+
+def test_vocabulary_is_the_plans_own_names_and_one_plural_rule() -> None:
+    assert _acct("total budgets of schools").ok  # budgets = budget + s
+    assert _acct("total budget of public schools").ok  # grain table word
+    assert not _acct("total budget of private schools").ok
+    assert not _acct("total budget of schoolies").ok
+    cat = mu.account_for_question(
+        "total of categories", measure="category_sum", grain="bronze.category"
+    )
+    assert cat.ok  # y -> ies
+    assert not mu.account_for_question(
+        "total of Categories", measure="category_sum", grain="bronze.category"
+    ).ok
+
+
+def test_the_old_collision_cases_are_conditions_not_words() -> None:
+    """Wills/Doe/Cans/Gets/Lists collided with stemmed frame words (will, do, can, get, list)."""
+    for word in ("Wills", "Doe", "Cans", "Gets", "Lists", "Shows", "Gives", "Tells", "Finds"):
+        assert _acct(f"What is the total budget of {word} schools").reason == (
+            "unbound_constraint"
+        ), word
+        assert _acct(f"What is the total budget of schools {word}").reason == (
+            "unbound_constraint"
+        ), word
 
 
 def test_fit_a_bool_literal_is_not_a_number_in_the_probe(env: _Env) -> None:
@@ -1592,3 +1726,24 @@ def test_fit_a_bool_literal_is_not_a_number_in_the_probe(env: _Env) -> None:
     assert got is not None and got.startswith("unmatched_filter_value: "), got
     got = filter_values_present(_plan((SCHOOLS, "district_id", "IN", [1, True])), onto, env.lake)
     assert got is not None and "True" in got, got
+
+
+def test_fit_by_the_measures_own_table_is_not_a_grouping_the_plan_computes() -> None:
+    """A plan grouped by ``district_id`` of the schools table is "by district", never "by
+    schools": the grain's table name does not name a breakdown."""
+    grouped = [(SCHOOLS, "district_id")]
+    ok = measure_fit(
+        "What is the total budget of schools by district?",
+        _pool(BUDGET),
+        grouped_by=grouped,
+        filters=(),
+    )
+    assert ok.ok is True
+    bad = measure_fit(
+        "What is the total budget of schools by schools?",
+        _pool(BUDGET),
+        grouped_by=grouped,
+        filters=(),
+    )
+    assert (bad.ok, bad.reason) == (False, "unbound_constraint")
+    assert bad.detail == "'by'"
