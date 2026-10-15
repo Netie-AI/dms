@@ -142,6 +142,20 @@ class Reask:
     parent_id: str
 
 
+@dataclass
+class ClarifyRequestState:
+    """Clarify stamps for ONE ask call.
+
+    The Executor is a process singleton and the route runs on a thread pool, so
+    these two values must never live on it: a second session's plain ask would
+    read the first session's parent id. One instance is made per ``live_ask``
+    call and handed down by argument.
+    """
+
+    reask_parent: str | None = None
+    skipped: str | None = None
+
+
 class ClarifyWriterUnavailable(Exception):
     """OpenVault could not write the question. Clarify is skipped. The ask continues."""
 
@@ -875,10 +889,9 @@ def consider_clarify(
                 space_id=space_id, session_id=session_id, question=original
             )
         return Gate(envelope=env)
-    try:
-        payload = compute(ctx)
-    except Exception:  # noqa: BLE001
-        payload = None
+    from dms_executor.generative_ask import _compute_or_none
+
+    payload = _compute_or_none(compute, ctx)
     env = None
     if isinstance(payload, dict):
         env = _from_planner_payload(

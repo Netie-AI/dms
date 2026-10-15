@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,7 +26,7 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
-from dms_executor.ask_clarify import openvault_clarify_writer
+from dms_executor.ask_clarify import ClarifyRequestState, openvault_clarify_writer
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
@@ -84,6 +85,27 @@ from dms_executor.generative_ask import (
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
+)
+from dms_executor.lake_registry import (
+    SERVING_DEADLINE_EXCEEDED_REASON,
+    SERVING_DEADLINE_RESERVE_REASON,
+    AskControl,
+    ServingDeadlineExceeded,
+    ServingDeadlineReserve,
+    ServingLeaseCap,
+    ServingLeaseQueueFull,
+    ServingWaitCancelled,
+    ask_disconnected,
+    ask_took_serving_lease,
+    bind_ask_control,
+    bind_ask_deadline,
+    block_serving_lease,
+    current_ask_control,
+    raise_if_ask_stopped,
+    reset_ask_control,
+    reset_ask_deadline,
+    reset_serving_lease_block,
+    serving_deadline_missed,
 )
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -178,19 +200,44 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
-        return fn(question, **kwargs)
-    except TypeError:
         try:
+            return fn(question, **kwargs)
+        except TypeError:
             return fn(
                 question,
                 session_id=session_id,
                 space_id=space_id,
                 ontology=onto,
             )
-        except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
-            return None
-    except Exception:  # noqa: BLE001 — miss into contract ask, do not 503
+    except (
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+        ServingDeadlineExceeded,
+        ServingDeadlineReserve,
+    ):
+        raise
+    except Exception as exc:  # noqa: BLE001 — miss into contract ask, do not 503
+        if ask_disconnected():
+            raise ServingWaitCancelled() from exc
+        interrupted = type(exc).__name__ == "InterruptException"
+        if interrupted or serving_deadline_missed():
+            raise ServingDeadlineExceeded() from exc
+        if ask_took_serving_lease() and _is_timeout_exc(exc):
+            raise ServingDeadlineExceeded() from exc
         return None
+
+
+def _is_timeout_exc(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    return name in {
+        "TimeoutError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ConnectTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+    }
 
 
 def _seen(
@@ -219,8 +266,6 @@ class Executor:
         self._clarify_model = clarify_model
         # Same process memory as session turns. TTL matches the session ACL.
         self._clarify_attempts: dict[str, Any] = {}
-        self._clarify_reask_parent: str | None = None
-        self._clarify_skipped: str | None = None
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
@@ -271,6 +316,17 @@ class Executor:
         self._minter.close()
         self._bound_sessions.clear()
         self._turns.clear()
+        from dms_executor.lake_registry import close_lakes
+
+        close_lakes()
+
+    def begin_client_watch(self) -> tuple[Any, AskControl]:
+        """Bind the ask-thread cancel flag. The route sets ``disconnected``."""
+        ctrl = AskControl()
+        return bind_ask_control(ctrl), ctrl
+
+    def end_client_watch(self, token: Any) -> None:
+        reset_ask_control(token)
 
     def _store_turn(
         self, session_id: str | None, space_id: str | None, env: dict[str, Any]
@@ -533,93 +589,176 @@ class Executor:
         generate seam ran, its setup fields reach the envelope on every path,
         including the contract-ask fallback after a generative miss.
         """
-        from cortex_client.compute import begin_answer_model_calls, recorded_model_calls
+        import httpx
+        from cortex_client.compute import (
+            begin_answer_model_calls,
+            insights_timeout_s,
+            recorded_model_calls,
+        )
 
         begin_answer_model_calls()
         seen: list[dict[str, Any] | None] = []
-        self._clarify_reask_parent = None
-        self._clarify_skipped = None
+        # Per request. The Executor is a process singleton and the route runs on
+        # a thread pool, so a clarify stamp held on self leaks across sessions.
+        clarify_state = ClarifyRequestState()
+        deadline = time.monotonic() + insights_timeout_s()
+        deadline_tokens = bind_ask_deadline(deadline)
+        own_control = current_ask_control() is None
+        control_token: Any = None
+        ctrl = current_ask_control()
+        if ctrl is None:
+            ctrl = AskControl()
+            control_token = bind_ask_control(ctrl)
+        ctrl.deadline = deadline
+        ctrl.start()
         try:
-            env = self._live_ask(
-                question,
-                space_id=space_id,
-                session_id=session_id,
-                tables=tables,
-                ask_path=ask_path,
-                seen=seen,
-                clarify_id=clarify_id,
-                option_id=option_id,
-                clarify_text=clarify_text,
-            )
-        except OpenVaultTokenError as exc:
-            # Every lane needs the signing key; no lane may relabel its absence.
-            env = build_abstain(
-                reason="openvault_mint",
-                question=question,
-                stage="openvault",
-                answer_id="ans_ov_mint",
-                text=(
-                    "I can't answer this: DMS could not get its OpenVault "
-                    f"signing key ({exc.code}). No fallback answer was used."
-                ),
-                values=[],
-                rows=[],
-                sql_used=None,
-                assumptions=[exc.code, "no generative fallback", "no demo fallback"],
-                space_id=space_id,
-                session_id=session_id,
-                ask_mode="live",
-                route="abstain",
-            )
-            assert_envelope_valid(env)
-        parent = self._clarify_reask_parent
-        self._clarify_reask_parent = None
-        if parent and isinstance(env, dict):
-            env["clarify_reask"] = True
-            env["clarify_parent_id"] = parent
-        skipped = self._clarify_skipped
-        self._clarify_skipped = None
-        if skipped and isinstance(env, dict):
-            from dms_executor.ask_clarify import clarify_enabled, state_chosen_reading
-
-            # Flag on only. A clarify reply is not a skipped ask.
-            if clarify_enabled() and env.get("status") != "clarify":
-                env["clarify_skipped"] = skipped
-                state_chosen_reading(env)
-        stamp_engine_clock(env)
-        is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
-        payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
-        if is_clarify:
-            out = env
-        else:
-            stamped = with_served_attribution(env, payload)
-            out = stamped if stamped is not None else env
-            if isinstance(out, dict):
-                raw_loop = out.get("loop")
-                apply_sql_credit(
-                    out,
-                    payload if isinstance(payload, dict) else None,
-                    raw_loop if isinstance(raw_loop, list) else None,
-                    dialect=extract_dialect(getattr(self, "_warehouse", None)),
+            try:
+                try:
+                    env = self._live_ask(
+                        question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        tables=tables,
+                        ask_path=ask_path,
+                        seen=seen,
+                        clarify_id=clarify_id,
+                        option_id=option_id,
+                        clarify_text=clarify_text,
+                        clarify_state=clarify_state,
+                    )
+                    if serving_deadline_missed():
+                        raise ServingDeadlineExceeded()
+                except (TimeoutError, httpx.TimeoutException) as exc:
+                    if ask_disconnected():
+                        raise ServingWaitCancelled() from exc
+                    if ask_took_serving_lease():
+                        raise ServingDeadlineExceeded() from exc
+                    raise
+            except OpenVaultTokenError as exc:
+                # Every lane needs the signing key; no lane may relabel its absence.
+                env = build_abstain(
+                    reason="openvault_mint",
+                    question=question,
+                    stage="openvault",
+                    answer_id="ans_ov_mint",
+                    text=(
+                        "I can't answer this: DMS could not get its OpenVault "
+                        f"signing key ({exc.code}). No fallback answer was used."
+                    ),
+                    values=[],
+                    rows=[],
+                    sql_used=None,
+                    assumptions=[exc.code, "no generative fallback", "no demo fallback"],
+                    space_id=space_id,
+                    session_id=session_id,
+                    ask_mode="live",
+                    route="abstain",
                 )
-        from dms_core.ask import lane_for_route
-        from dms_core.pii import mask_unknown_keys
+                assert_envelope_valid(env)
+            except (
+                ServingLeaseCap,
+                ServingLeaseQueueFull,
+                ServingDeadlineExceeded,
+                ServingDeadlineReserve,
+            ) as exc:
+                # build_abstain writes the ticket when DMS_CLOOP_B is on.
+                # This exit does not log. While the envelope is built, another
+                # serving open must not wait again.
+                token = block_serving_lease(exc.code)
+                try:
+                    if exc.code == ServingLeaseQueueFull.code:
+                        text = (
+                            "I can't answer this right now: the serving wait "
+                            f"queue is full ({exc.code}). No figure was returned."
+                        )
+                        answer_id = "ans_serving_lease_queue_full"
+                    elif exc.code == SERVING_DEADLINE_EXCEEDED_REASON:
+                        text = (
+                            "I can't answer this right now: the ask ran out of "
+                            f"time after a serving connection was granted ({exc.code}). "
+                            "No figure was returned."
+                        )
+                        answer_id = "ans_serving_deadline_exceeded"
+                    elif exc.code == SERVING_DEADLINE_RESERVE_REASON:
+                        text = (
+                            "I can't answer this right now: there is not enough "
+                            f"time left to start ({exc.code}). No figure was returned."
+                        )
+                        answer_id = "ans_serving_deadline_reserve"
+                    else:
+                        text = (
+                            "I can't answer this right now: serving connections are "
+                            f"at the cap ({exc.code}). No figure was returned."
+                        )
+                        answer_id = "ans_serving_lease_cap"
+                    env = build_abstain(
+                        reason=exc.code,
+                        question=question,
+                        stage="serving_lease",
+                        answer_id=answer_id,
+                        text=text,
+                        values=[],
+                        rows=[],
+                        sql_used=None,
+                        assumptions=[exc.code],
+                        space_id=space_id,
+                        session_id=session_id,
+                        ask_mode="live",
+                        route="abstain",
+                    )
+                    assert_envelope_valid(env)
+                finally:
+                    reset_serving_lease_block(token)
+            parent = clarify_state.reask_parent
+            if parent and isinstance(env, dict):
+                env["clarify_reask"] = True
+                env["clarify_parent_id"] = parent
+            skipped = clarify_state.skipped
+            if skipped and isinstance(env, dict):
+                from dms_executor.ask_clarify import clarify_enabled, state_chosen_reading
 
-        out["model_calls"] = recorded_model_calls()
-        # Lane is the route this path produced. A payload lane is not kept.
-        mapped = lane_for_route(out.get("route"))
-        if mapped is not None:
-            out["lane"] = mapped
-        else:
-            out.pop("lane", None)
-        masked = mask_unknown_keys(out)
-        if is_clarify:
-            for key in list(masked):
-                if str(key).startswith("served_"):
-                    masked.pop(key, None)
-        self._record_ask_outcome(masked)
-        backstop_missing_ticket(masked, question=question)
-        return masked
+                # Flag on only. A clarify reply is not a skipped ask.
+                if clarify_enabled() and env.get("status") != "clarify":
+                    env["clarify_skipped"] = skipped
+                    state_chosen_reading(env)
+            stamp_engine_clock(env)
+            is_clarify = isinstance(env, dict) and env.get("status") == "clarify"
+            payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
+            if is_clarify:
+                out = env
+            else:
+                stamped = with_served_attribution(env, payload)
+                out = stamped if stamped is not None else env
+                if isinstance(out, dict):
+                    raw_loop = out.get("loop")
+                    apply_sql_credit(
+                        out,
+                        payload if isinstance(payload, dict) else None,
+                        raw_loop if isinstance(raw_loop, list) else None,
+                        dialect=extract_dialect(getattr(self, "_warehouse", None)),
+                    )
+            from dms_core.ask import lane_for_route
+            from dms_core.pii import mask_unknown_keys
+
+            out["model_calls"] = recorded_model_calls()
+            # Lane is the route this path produced. A payload lane is not kept.
+            mapped = lane_for_route(out.get("route"))
+            if mapped is not None:
+                out["lane"] = mapped
+            else:
+                out.pop("lane", None)
+            masked = mask_unknown_keys(out)
+            if is_clarify:
+                for key in list(masked):
+                    if str(key).startswith("served_"):
+                        masked.pop(key, None)
+            self._record_ask_outcome(masked)
+            backstop_missing_ticket(masked, question=question)
+            return masked
+        finally:
+            if own_control and control_token is not None:
+                reset_ask_control(control_token)
+            reset_ask_deadline(deadline_tokens)
 
     def _record_ask_outcome(self, env: dict[str, Any]) -> None:
         """Count served / abstain / clarify. A stats failure must not change the ask."""
@@ -655,6 +794,7 @@ class Executor:
         clarify_id: str | None = None,
         option_id: str | None = None,
         clarify_text: str | None = None,
+        clarify_state: ClarifyRequestState | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -675,7 +815,10 @@ class Executor:
         """
         if self._cortex is None:
             raise RuntimeError("CortexClient required for live_ask")
+        raise_if_ask_stopped()
         question = normalize_ask_question(question)
+        if clarify_state is None:
+            clarify_state = ClarifyRequestState()
         clarify_locked = False
         if clarify_id:
             from dms_executor.ask_clarify import clarify_enabled, resolve_clarify
@@ -701,7 +844,7 @@ class Executor:
                 from dms_executor.ask_clarify import Reask, reask_refusal
 
                 if isinstance(resolved, Reask):
-                    self._clarify_reask_parent = resolved.parent_id
+                    clarify_state.reask_parent = resolved.parent_id
                     question = normalize_ask_question(resolved.question)
                     clarify_locked = True
                     refused = reask_refusal(
@@ -767,6 +910,7 @@ class Executor:
                 return follow
 
         if certified_first:
+            raise_if_ask_stopped()
             verified_env = maybe_verified_ask(
                 question,
                 space_id=space_id,
@@ -790,6 +934,7 @@ class Executor:
 
             # Phrase match + a failed later step is a named refusal (not None).
             # None means the phrase missed, so generative / contract ask may run.
+            raise_if_ask_stopped()
             pack_env = maybe_pack_ask(
                 question,
                 space_id=space_id,
@@ -844,12 +989,21 @@ class Executor:
         # never falls back to the whole space.
         try:
             granted = self.grantable_tables(space_id=space_id)
+        except (
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+            ServingDeadlineExceeded,
+            ServingDeadlineReserve,
+        ):
+            raise
         except Exception:  # noqa: BLE001 -- empty context, never the whole space
             granted = []
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
         default_readable = [t for t in granted if t in DEMO_TABLES]
         readable = requested or default_readable
+        raise_if_ask_stopped()
         cascade = (
             run_cascade(
                 question,
@@ -923,6 +1077,7 @@ class Executor:
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
+            raise_if_ask_stopped()
             skip_out: list[str] = []
             gen_env = maybe_generative_ask(
                 question,
@@ -960,7 +1115,7 @@ class Executor:
                 dialect=SERVING_DIALECT,
             )
             if skip_out:
-                self._clarify_skipped = skip_out[-1]
+                clarify_state.skipped = skip_out[-1]
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
@@ -996,6 +1151,7 @@ class Executor:
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
         try:
+            raise_if_ask_stopped()
             resp = self._cortex.ask(
                 AskRequest(
                     question=question,
@@ -1003,11 +1159,20 @@ class Executor:
                     space_id=space_id,
                 )
             )
+        except (
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+            ServingDeadlineExceeded,
+            ServingDeadlineReserve,
+        ):
+            raise
         except Exception as exc:  # noqa: BLE001
             err = classify_submit_error(exc)
             if err.code in {"session_unbound", "session_expired"}:
                 self._bound_sessions.discard(acl.session_id)
                 self.bind_session(acl)
+                raise_if_ask_stopped()
                 resp = self._cortex.ask(
                     AskRequest(
                         question=question,

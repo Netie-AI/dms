@@ -9,8 +9,8 @@ from typing import Any
 from dms_executor.bronze import list_bronze_tables
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
-    connect_file,
     connect_readonly,
+    connect_serving,
     ensure_demo_warehouse,
     warehouse_path,
 )
@@ -74,11 +74,10 @@ def list_promote_targets(*, path: Path | None = None) -> list[dict[str, Any]]:
     if not Path(db).is_file():
         return []
 
-    from dms_executor.lake_schema import ensure_lake_schemas
-
-    con = connect_file(Path(db))
+    # Serving cursor. information_schema is empty when silver/gold were never
+    # created. CREATE SCHEMA stays on the ingest connection.
+    con = connect_serving(Path(db))
     try:
-        ensure_lake_schemas(con)
         rows = con.execute(
             """
             SELECT table_schema, table_name
