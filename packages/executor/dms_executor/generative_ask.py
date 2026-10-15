@@ -711,8 +711,8 @@ def _refusal_before_explain(con: Any, sql: str) -> str | None:
 
     try:
         stmts = con.extract_statements(sql)
-    except Exception:
-        return "sql_not_analyzable"
+    except Exception as exc:  # noqa: BLE001 - a syntax error, retryable as on main
+        return f"explain:{type(exc).__name__}"
     if len(stmts) != 1:
         return "multi_statement"
     if stmts[0].type != duckdb.StatementType.SELECT:

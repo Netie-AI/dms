@@ -117,16 +117,21 @@ _REFUSED_SHAPES = frozenset(
 def _one_select(con: Any, sql: str) -> str | None:
     """None when ``sql`` is one SELECT, else the refusal code. Nothing ran.
 
-    ``WITH`` that ends in SELECT is a SELECT. Any other statement type, any
-    other count, and a parse failure are refused without executing. The type
-    comes from the parser, not from the text of the question or the SQL.
+    ``WITH`` that ends in SELECT is a SELECT. Any other statement type and any
+    other count are refused without executing. The type comes from the parser,
+    not from the text of the question or the SQL.
+
+    A parse failure also executes nothing, but it is a syntax error, not a
+    hostile shape: it comes back as ``explain:<Error>``, the code main gave it,
+    so the extract loop still feeds the error back and the repaired SQL can be
+    served. Refusing it with no retry threw that repair away (R-0005).
     """
     import duckdb
 
     try:
         stmts = con.extract_statements(sql)
-    except Exception:  # noqa: BLE001 - parse failure is a refusal
-        return "sql_not_analyzable"
+    except Exception as exc:  # noqa: BLE001 - nothing ran; retryable like EXPLAIN
+        return f"explain:{type(exc).__name__}"
     if len(stmts) != 1:
         return "multi_statement"
     if stmts[0].type != duckdb.StatementType.SELECT:

@@ -548,7 +548,8 @@ def test_extract_waits_for_a_writer_then_returns_rows(tmp_path: Path) -> None:
         ("CREATE TABLE gone AS SELECT 1 AS n", "statement_not_allowed"),
         ("ALTER TABLE locations RENAME TO locations_gone", "statement_not_allowed"),
         ("SELECT 1 AS n; DELETE FROM locations", "multi_statement"),
-        ("SELEC nope FROM", "sql_not_analyzable"),
+        # A syntax error runs nothing but stays retryable, as on main.
+        ("SELEC nope FROM", "explain:ParserException"),
     ],
 )
 def test_extract_refuses_what_is_not_one_select(tmp_path: Path, sql: str, code: str) -> None:
