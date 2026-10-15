@@ -274,3 +274,87 @@ def test_chat_ask_capped_column_envelope_has_no_hint(
     assert f"- category VARCHAR distinct=>={INDEX_COLUMN_CAP}" in context
     assert "inventory.category" not in context.split("FILTER HINTS")[-1]
     assert "ZONE ONE" not in context
+
+
+# -- the index is the complete raw set or it is nothing -------------------
+
+
+def test_a_value_the_pii_pass_drops_leaves_no_hint_for_its_prefix(tmp_path: Path) -> None:
+    """Rule 12: a dropped longer value must not leave a hint on its prefix.
+
+    The PII pass removes 'NORTH Tan Wei Ming' from the stored set. If the
+    remaining NORTH and SOUTH were treated as the whole column, a question
+    naming the dropped value would be hinted to the wrong subset (NORTH).
+    """
+    db = tmp_path / "pii.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE sales (region VARCHAR, amount INTEGER)")
+        for value, count in (("NORTH", 30), ("NORTH Tan Wei Ming", 30), ("SOUTH", 40)):
+            for i in range(count):
+                con.execute("INSERT INTO sales VALUES (?, ?)", [value, i])
+    finally:
+        con.close()
+    ctx = _prompt(db, "total sales for NORTH Tan Wei Ming", {"sales"})
+    assert "sales.region = NORTH" not in ctx.prompt
+    assert "region VARCHAR distinct=2" not in ctx.prompt
+
+
+def test_capped_columns_do_not_spend_the_row_budget_of_later_tables(tmp_path: Path) -> None:
+    """Twenty wide columns must not starve a small table of its hints."""
+    db = tmp_path / "wide.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        cols = ", ".join(f"c{i} VARCHAR" for i in range(20))
+        con.execute(f"CREATE TABLE a_big ({cols})")
+        con.execute(
+            "INSERT INTO a_big SELECT "
+            + ", ".join(f"'v{i}_' || CAST(r AS VARCHAR)" for i in range(20))
+            + " FROM range(600) t(r)"
+        )
+        con.execute("CREATE TABLE z_small (region VARCHAR, amount INTEGER)")
+        con.execute("INSERT INTO z_small VALUES ('NORTH', 1), ('SOUTH', 2)")
+    finally:
+        con.close()
+    ctx = _prompt(db, "total amount for SOUTH in z_small", {"a_big", "z_small"})
+    assert "z_small.region = SOUTH" in ctx.prompt
+    assert "region VARCHAR distinct=2" in ctx.prompt
+
+
+def test_description_mask_is_compiled_once_per_schema_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One matcher per build; rebuilding it per description cost about 5x."""
+    import dms_executor.schema_context as sc
+
+    calls = {"n": 0}
+    real = sc._compile_mask
+
+    def counting(pairs: Any) -> Any:
+        calls["n"] += 1
+        return real(pairs)
+
+    monkeypatch.setattr(sc, "_compile_mask", counting)
+    db = _region_db(tmp_path / "r.duckdb")
+    schema = {
+        "dialect": "duckdb",
+        "datasets": [
+            {
+                "name": f"t{t}",
+                "description": "Net revenue in ringgit",
+                "columns": [
+                    {
+                        "name": f"c{c}",
+                        "type": "varchar",
+                        "values": ["NORTH", "SOUTH"],
+                        "description": "Region code",
+                    }
+                    for c in range(5)
+                ],
+            }
+            for t in range(4)
+        ],
+    }
+    build_schema_context("net revenue by region", schema)
+    assert calls["n"] == 1
+    assert db.exists()

@@ -1128,32 +1128,50 @@ def _mask_alternative(raw: str) -> str:
     return f"{head}{body}{tail}"
 
 
-def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
-    """Replace index values in ``text``, whole tokens only.
+_Mask = tuple[re.Pattern[str], dict[str, str]] | None
+
+
+def _compile_mask(pairs: Sequence[tuple[str, str]]) -> _Mask:
+    """Build the whole-token matcher for ``pairs`` once per schema build.
 
     Longest alternative is tried first. A value is a token when no word
     character touches it, so ``N`` inside ``Net`` is never a hit. A value
     with fewer than ``_MASK_MIN_ALNUM`` letters or digits is skipped: it is
     an ordinary flag or code (``Y``, ``KL``, ``10``) that carries nothing
     to hide and whose token would only cut the description's own words.
+    Compiling once matters: one schema build masks every table, column and
+    measure description against the same index, and rebuilding the pattern
+    per description made a full-cap index about five times slower.
     """
-    if not text or not pairs:
-        return text
     usable = [
         (raw, token)
         for raw, token in pairs
         if sum(ch.isalnum() for ch in raw) >= _MASK_MIN_ALNUM
     ]
     if not usable:
-        return text
+        return None
     pattern = "|".join(_mask_alternative(raw) for raw, _token in usable)
     lookup = {" ".join(raw.split()).lower(): token for raw, token in usable}
+    return re.compile(pattern, re.IGNORECASE), lookup
+
+
+def _apply_mask(text: str, mask: _Mask) -> str:
+    if not text or mask is None:
+        return text
+    compiled, lookup = mask
 
     def _sub(match: re.Match[str]) -> str:
         found = " ".join(match.group(0).split())
         return lookup.get(found.lower(), match.group(0))
 
-    return re.compile(pattern, re.IGNORECASE).sub(_sub, text)
+    return compiled.sub(_sub, text)
+
+
+def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Replace index values in ``text``, whole tokens only (see _compile_mask)."""
+    if not text or not pairs:
+        return text
+    return _apply_mask(text, _compile_mask(pairs))
 
 
 def _word_hit(haystack: str, needle: str) -> bool:
@@ -1758,6 +1776,7 @@ def build_schema_context(
     granted_tokens, granted_phrases = _granted_folds(evidence["exempt_values"])
     schema_folds = _term_folds(evidence["schema_terms"])
     known = _value_token_pairs(loaded_values)
+    mask = _compile_mask(known)
     slots: list[tuple[str, str]] = []
     slot_meta: list[tuple[str, str]] = []
     seen_tables: set[str] = set()
@@ -1765,12 +1784,12 @@ def build_schema_context(
         table = str(item["table"])
         name = str(item["name"])
         key = f"{table}.{name}"
-        table_desc = _mask_known(str(item["table_desc"]), known)
+        table_desc = _apply_mask(str(item["table_desc"]), mask)
         if table_desc and table not in seen_tables:
             seen_tables.add(table)
             slots.append((f"{table}.__table__", table_desc))
             slot_meta.append(("table", table))
-        description = _mask_known(str(item["description"]), known)
+        description = _apply_mask(str(item["description"]), mask)
         hints = [] if mask_failed else _hint_values(
             spans,
             index.get(key, ()),
@@ -1799,7 +1818,7 @@ def build_schema_context(
         if _grain_ok(str(item["grain"]), object_tables, names)
     ]
     for item in measure_items:
-        description = _mask_known(_text(item.get("description")), known)
+        description = _apply_mask(_text(item.get("description")), mask)
         if description:
             slots.append((str(item["name"]), description))
             slot_meta.append(("measure", str(item["name"])))
@@ -2010,6 +2029,25 @@ def _bounded_read(
     return [" ".join(str(row[0]).split()) for row in rows if row and row[0] is not None]
 
 
+def _count_distinct(con: Any, table: str, column: str) -> int | None:
+    """Distinct non-null values in ``column``, counted by the engine.
+
+    One row comes back however wide the column is, so deciding "past the cap"
+    costs nothing against the index row budget. None means the count could
+    not be taken; the caller then indexes nothing for that column.
+    """
+    try:
+        row = con.execute(
+            f"SELECT COUNT(DISTINCT CAST({_quote(column)} AS VARCHAR)) "
+            f"FROM {_quote(table)} WHERE {_quote(column)} IS NOT NULL"
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
 def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[str]:
     """Keep a cell in memory only when the mask clears it. Tokens stay; raw names do not."""
     listed = [value for value in values if value]
@@ -2175,28 +2213,40 @@ def build_space_index(
                 for col in dataset["columns"]:
                     if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
                         break
+                    name = str(col["name"])
                     is_text = _type_family(str(col.get("type") or "")) == "text"
-                    want = INDEX_COLUMN_CAP + 1 if is_text else SAMPLE_ROWS
-                    take = min(want, rows_left)
-                    got = _bounded_read(
-                        con, table, str(col["name"]), take, distinct=is_text
-                    )
-                    rows_left -= len(got)
-                    if is_text and len(got) >= take:
-                        # The read filled its limit, so more distinct values may
-                        # exist. Past the cap the column is capped (no values,
-                        # distinct >= cap). Cut short by the row budget it is
-                        # simply unread. Either way no partial set is kept.
-                        col["values"] = []
-                        if take > INDEX_COLUMN_CAP:
-                            col["capped"] = True
-                            col["distinct"] = f">={INDEX_COLUMN_CAP}"
+                    if not is_text:
+                        got = _bounded_read(con, table, name, min(SAMPLE_ROWS, rows_left))
+                        rows_left -= len(got)
+                        col["samples"] = _stored_values(got, table=table, column=name)[
+                            :_SAMPLE_LIMIT
+                        ]
                         continue
-                    stored = _stored_values(got, table=table, column=str(col["name"]))
-                    if is_text:
-                        col["values"] = stored[:INDEX_COLUMN_CAP]
-                    else:
-                        col["samples"] = stored[:_SAMPLE_LIMIT]
+                    # A text column's index is its complete raw value set or
+                    # nothing (rule 12): a prefix check against part of a
+                    # column cannot tell NORTH from NORTH EAST.
+                    col["values"] = []
+                    total = _count_distinct(con, table, name)
+                    rows_left -= 1
+                    if total is None:
+                        continue
+                    if total > INDEX_COLUMN_CAP:
+                        col["capped"] = True
+                        col["distinct"] = f">={INDEX_COLUMN_CAP}"
+                        continue
+                    if total > rows_left:
+                        continue  # the row budget cannot hold the whole set
+                    got = _bounded_read(con, table, name, total + 1, distinct=True)
+                    rows_left -= len(got)
+                    if len(got) != total:
+                        continue  # the column changed under the read
+                    stored = _stored_values(got, table=table, column=name)
+                    raw_kept = sum(1 for v in stored if not is_mask_token(v))
+                    if raw_kept < sum(1 for v in got if v):
+                        # The PII pass dropped or tokenised a value, so the
+                        # stored set is no longer the column. No hint at all.
+                        continue
+                    col["values"] = stored
             finally:
                 con.close()
     except Exception as exc:  # noqa: BLE001
