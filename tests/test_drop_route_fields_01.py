@@ -28,7 +28,6 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
-from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.manifest import ManifestMinter, SessionAcl
 
 # Cortex main InsightsWireIn (InsightsAskIn plus the extension). Unknown keys
@@ -400,9 +399,6 @@ def test_current_cortex_schema_reaches_ov(tmp_path: Path, monkeypatch: pytest.Mo
     _assert_clean([("current", stub.posts[0])])
 
 
-_GRANTS = {"inventory", "locations", "transactions", "suppliers", "shipments"}
-
-
 def _values(db: Path, sql: str) -> list[str]:
     con = connect_file(db)
     try:
@@ -412,122 +408,210 @@ def _values(db: Path, sql: str) -> list[str]:
         con.close()
 
 
-def _submit(db: Path):
-    def submit(sql: str) -> Any:
-        con = connect_file(db)
-        try:
-            cur = con.execute(sql)
-            cols = [str(c[0]) for c in (cur.description or [])]
-            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
-        finally:
-            con.close()
-        return QueryResult(ok=True, status="ok", run_id="run_shape", output={"rows": rows})
+class _Ranked:
+    """Insights stub whose generate reply carries model SQL and a ranked metric.
 
-    return submit
+    The SQL is what the model returned. The ranked metric is Cortex's
+    retrieval opinion. DMS must serve the SQL when it validates and runs.
+    """
+
+    def __init__(self, sql: str, metric_id: str) -> None:
+        self.payload = {
+            "ok": True,
+            "status": "ABSTAIN",
+            "phase": "generate",
+            "values": [],
+            "query_sql": sql,
+            "sql": sql,
+            "plan_origin": "generate_sql",
+            "ontology": {"metrics": [{"id": metric_id}]},
+            "model_called": True,
+            "generative": {"ok": True, "sql": sql, "stamp": {"task": "freeroute"}},
+        }
+
+    def client(self) -> type:
+        stub = self
+
+        class _Client:
+            def __init__(self, *a: Any, **k: Any) -> None:
+                pass
+
+            def __enter__(self) -> _Client:
+                return self
+
+            def __exit__(self, *a: Any) -> None:
+                return None
+
+            def post(
+                self,
+                url: str,
+                json: dict[str, Any] | None = None,
+                headers: dict[str, str] | None = None,
+            ) -> _Resp:
+                if str(url).rstrip("/").endswith("/v1/insights"):
+                    return _Resp(200, stub.payload)
+                return _Resp(200, {"ok": True, "status": "ABSTAIN", "values": []})
+
+            def get(self, url: str, params: dict[str, Any] | None = None, **k: Any) -> _Resp:
+                return _Resp(200, {"ok": True, "phase": "ontology", "ontology": {}})
+
+            def close(self) -> None:
+                return None
+
+        return _Client
 
 
-def _shape_env(tmp_path: Path, question: str, metric_id: str) -> tuple[dict[str, Any], Path]:
-    """Generate SELECT is the cold-storage list. Ranking names ``metric_id``."""
+def _http_ask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    metric_id: str,
+    sql: str = _SQL,
+) -> tuple[dict[str, Any], Path]:
+    """POST /v1/chat/ask on the generative lane. Model SQL plus a ranked metric."""
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from fastapi.testclient import TestClient
+
+    for name in (
+        "DMS_SCHEMA_CONTEXT",
+        "DMS_CLOOP_B",
+        "DMS_LANE_ONTOLOGY_RANKED",
+        "DMS_CCA_CASCADE",
+        "DMS_STRICT_MODEL",
+        "DMS_STRICT_PROVIDER",
+    ):
+        monkeypatch.delenv(name, raising=False)
     db = tmp_path / "shape.duckdb"
     ensure_demo_warehouse(db)
-    payload = {
-        "phase": "generate",
-        "query_sql": _SQL,
-        "plan_origin": "generate_sql",
-        "ontology": {"metrics": [{"id": metric_id}]},
-        "generative": {"ok": True, "sql": _SQL, "stamp": {"task": "freeroute"}},
-    }
-    env = maybe_generative_ask(
-        question,
-        warehouse=db,
-        grantable=set(_GRANTS),
-        compute=lambda _ctx: payload,
-        submit=_submit(db),
-        ledger_append=lambda _p: LedgerAppendResponse(entry_id="led_shape", hash="hash_shape"),
-        ontology=load_verified_ontology(db),
+    monkeypatch.setattr("cortex_client.compute.httpx.Client", _Ranked(sql, metric_id).client())
+    inner = CortexClient(_LOOPBACK, api_key=_KEY, timeout=5.0)
+    cortex = _Executing(db, inner)
+    exe = Executor(cortex=cortex, minter=_minter(), warehouse_path=db)  # type: ignore[arg-type]
+    app = create_app()
+    app.state.ask_service = exe
+    app.state.cortex = cortex
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+        dms_harness_ask_paths=True,
     )
-    assert isinstance(env, dict)
+    app.dependency_overrides[get_settings] = lambda: settings
+    res = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": question, "session_id": "ses_drop_shape", "ask_path": "generative"},
+    )
+    assert res.status_code == 200, res.text
+    env = res.json()
+    assert_envelope_valid(env)
     return env, db
 
 
-def _served_cells(env: dict[str, Any]) -> list[str]:
+def _row_codes(env: dict[str, Any]) -> list[str]:
     rows = env.get("rows") or []
     assert isinstance(rows, list)
     return sorted(str(cell) for row in rows if isinstance(row, dict) for cell in row.values())
 
 
-def test_count_shape_does_not_serve_a_location_list(tmp_path: Path) -> None:
-    """A count compile and a location-list SELECT do not share a projection.
+def _assert_model_sql_served(env: dict[str, Any], db: Path, sql: str = _SQL) -> None:
+    """The model SQL ran. Its own rows are the answer, in rows and in text."""
+    gold = _values(db, sql)
+    assert gold
+    assert env.get("abstained") is not True, env.get("text")
+    assert env.get("plan_origin") == "generate_sql"
+    assert _row_codes(env) == gold
+    text = str(env.get("text") or "")
+    assert all(cell in text for cell in gold), text
+    assert "served_model" not in env
 
-    Red on main: the SELECT is served. The stamp is ranking, and no model
-    name is invented.
+
+def test_question_words_do_not_discard_validated_model_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model SQL validated. "by code" in the question is context, not a rule.
+
+    Red on c5df0e5e: _should_demote_shape_mismatch matched "by code" before
+    submit and the rule ranked compile replaced the model SQL, serving an
+    unasked load figure with plan_origin ontology_ranking.
+
+    Main's post-run E10 check (envelope.py, unchanged here) still judges the
+    executed one-row result. So the envelope is either the model's own rows or
+    that abstain. It is never the rule compile's rows.
     """
-    env, db = _shape_env(tmp_path, "How many SKUs in inventory?", "cq_sku_count")
-    assert_envelope_valid(env)
-    assert env.get("abstained") is not True
-    assert env.get("plan_origin") == "ontology_ranking"
-    assert "served_model" not in env
-    assert "is_cold_storage" not in str(env.get("sql_used") or "")
-    assert _served_cells(env) == _values(db, "SELECT COUNT(DISTINCT sku) FROM inventory")
-
-
-def test_list_shape_does_not_serve_a_location_list(tmp_path: Path) -> None:
-    """A chemicals list and a location-list SELECT do not share a projection."""
-    env, db = _shape_env(tmp_path, "List chemicals in inventory", "cq_chemicals_list")
-    assert_envelope_valid(env)
-    assert env.get("abstained") is not True
-    assert env.get("plan_origin") == "ontology_ranking"
-    assert "served_model" not in env
-    assert "is_cold_storage" not in str(env.get("sql_used") or "")
-    skus = set(_values(db, "SELECT sku FROM inventory WHERE category = 'CHEMICALS'"))
-    assert skus
-    assert skus <= set(_served_cells(env))
-
-
-def test_audit_shape_does_not_serve_a_location_list(tmp_path: Path) -> None:
-    """An audit-overdue compile and a location-list SELECT do not share a projection."""
-    env, db = _shape_env(tmp_path, "Which suppliers have an audit overdue?", "cq_audit_overdue")
-    assert_envelope_valid(env)
-    assert env.get("abstained") is not True
-    assert env.get("plan_origin") == "ontology_ranking"
-    assert "served_model" not in env
-    assert "is_cold_storage" not in str(env.get("sql_used") or "")
-    suppliers = set(
-        _values(
-            db,
-            "SELECT supplier_id FROM suppliers "
-            "WHERE CAST(last_audit_date AS DATE) < CURRENT_DATE - INTERVAL 90 DAY",
-        )
+    env, db = _http_ask(
+        tmp_path,
+        monkeypatch,
+        "Which location is cold storage? Show it by code",
+        "cq_sku_count",
     )
-    assert len(suppliers) == 2
-    assert suppliers <= set(_served_cells(env))
-    assert "WH-C" not in _served_cells(env)
+    text = str(env.get("text") or "")
+    assert env.get("plan_origin") != "ontology_ranking"
+    assert "ontology_ranking" not in json.dumps(env, default=str)
+    assert "96.7" not in text
+    if env.get("abstained"):
+        assert env.get("rows") == []
+        assert env.get("values") == []
+        assert "single total" in text
+    else:
+        _assert_model_sql_served(env, db)
 
 
-def test_grouped_ask_does_not_serve_one_ungrouped_row(tmp_path: Path) -> None:
-    """A by-destination ask and a one-row ungrouped SELECT are not the same shape.
+@pytest.mark.parametrize(
+    ("question", "metric_id"),
+    [
+        ("How many SKUs in inventory?", "cq_sku_count"),
+        ("List chemicals in inventory", "cq_chemicals_list"),
+        ("Which suppliers have an audit overdue?", "cq_audit_overdue"),
+    ],
+)
+def test_ranker_disagreement_does_not_replace_validated_model_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, question: str, metric_id: str
+) -> None:
+    """Model SQL that validated and never ran is not discarded for the rule compile.
 
-    E10 would abstain the SELECT. The ranked compile is the breakdown.
+    The ranker's metric reads other columns. That is a disagreement between a
+    rule path and the AI path, and the rule path does not win it. Red on
+    c5df0e5e: shape:columns climbed to the ranked compile.
     """
-    env, _db = _shape_env(tmp_path, "shipment cost by destination", "cq_cost_by_destination")
-    assert_envelope_valid(env)
-    assert env.get("abstained") is not True
-    assert env.get("plan_origin") == "ontology_ranking"
-    assert "served_model" not in env
-    assert "is_cold_storage" not in str(env.get("sql_used") or "")
-    rows = env.get("rows") or []
-    assert isinstance(rows, list) and len(rows) != 1
+    env, db = _http_ask(tmp_path, monkeypatch, question, metric_id)
+    _assert_model_sql_served(env, db)
+    assert "ontology_ranking" not in json.dumps(env, default=str)
 
 
-def test_missing_measure_does_not_serve_stand_in_sql(tmp_path: Path) -> None:
-    """A ranked metric DMS cannot compile is an abstain. The SELECT is not a row."""
-    env, _db = _shape_env(
-        tmp_path, "List active alerts across the warehouse network", "active_alerts"
+def test_uncompilable_ranked_metric_does_not_abstain_valid_model_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct abstain is for ungranted, PII and destructive SQL, not ranker gaps.
+
+    Red on c5df0e5e: the ranker named a metric DMS cannot compile and the
+    valid, granted model SQL was abstained as unknown_measure.
+    """
+    env, db = _http_ask(
+        tmp_path,
+        monkeypatch,
+        "List active alerts across the warehouse network",
+        "active_alerts",
     )
-    assert_envelope_valid(env)
+    _assert_model_sql_served(env, db)
+    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "unknown_measure" not in assumptions
+
+
+def test_grouped_ask_one_row_select_is_not_swapped_for_the_rule_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A one-row ungrouped SELECT for a by-destination ask is not rule-replaced.
+
+    E10 still judges the executed result on the envelope (main behaviour). The
+    ranked compile never serves in its place, so the envelope carries no
+    ontology_ranking origin and no rows from a rule path.
+    """
+    env, _db = _http_ask(
+        tmp_path, monkeypatch, "shipment cost by destination", "cq_cost_by_destination"
+    )
+    assert env.get("plan_origin") != "ontology_ranking"
+    assert "ontology_ranking" not in json.dumps(env, default=str)
     assert env.get("abstained") is True
     assert env.get("rows") == []
-    assert env.get("plan_origin") != "generate_sql"
-    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
-    assert "unknown_measure" in assumptions
-    assert "active_alerts" in assumptions
+    assert str(env.get("text") or "").strip()
