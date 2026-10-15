@@ -9,7 +9,6 @@ Cortex's duckdb file). Uploaded bronze is copied to the engine file by
 from __future__ import annotations
 
 import os
-import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,8 +18,6 @@ import duckdb
 # Product SQL may not bind this. Oracle and scorer calls may.
 RESERVED_PARAM_AS_OF = "reserved_param:as_of"
 
-_LOCKS_GUARD = threading.Lock()
-_FILE_LOCKS: dict[str, threading.RLock] = {}
 _SEEDED: set[str] = set()
 
 # Last successful execute_sql on this process. Pending until an envelope stamps it.
@@ -172,9 +169,7 @@ def read_health_engine_clock() -> dict[str, str]:
     }
     return {k: v for k, v in out.items() if v}
 
-# ponytail: one live RW attach per resolved path. DuckDB 1.5 unique-file-handle
-# 500s a second attach of the same file (alias = stem, so browse.duckdb -> "browse").
-# Ceiling: Library /tree lists serialize. Upgrade: RO pool if P-DMS-34 lifts.
+# Lake handles live in lake_registry: one connection per file, cursors for callers.
 
 DEFAULT_REL = Path("data") / "dms_demo.duckdb"
 SCHEMA_VERSION = 5
@@ -205,64 +200,27 @@ def warehouse_path() -> Path:
     return repo / DEFAULT_REL
 
 
-def _lock_for(db: Path) -> threading.RLock:
-    key = str(Path(db).resolve())
-    with _LOCKS_GUARD:
-        lock = _FILE_LOCKS.get(key)
-        if lock is None:
-            lock = threading.RLock()
-            _FILE_LOCKS[key] = lock
-        return lock
-
-
-class _LockedConnection:
-    """DuckDB handle that releases the per-file attach lock on close()."""
-
-    def __init__(self, con: duckdb.DuckDBPyConnection, lock: threading.RLock) -> None:
-        self._con = con
-        self._lock = lock
-        self._closed = False
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._con.close()
-        finally:
-            self._lock.release()
-
-    def execute(self, *args: Any, **kwargs: Any) -> Any:
-        return self._con.execute(*args, **kwargs)
-
-    def executemany(self, *args: Any, **kwargs: Any) -> Any:
-        return self._con.executemany(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._con, name)
-
-    def __enter__(self) -> _LockedConnection:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self.close()
-
-
 # The serving file is DuckDB. Schema context copies this string; it does not invent one.
 SERVING_DIALECT = "duckdb"
 
 
-def connect_file(path: Path) -> duckdb.DuckDBPyConnection:
-    """Write-mode attach. Caller must close(); one live attach per file until then."""
-    db = Path(path)
-    lock = _lock_for(db)
-    lock.acquire()
-    try:
-        con = duckdb.connect(str(db))
-    except BaseException:
-        lock.release()
-        raise
-    return _LockedConnection(con, lock)  # type: ignore[return-value]
+def connect_file(path: Path, *, write: bool = True) -> duckdb.DuckDBPyConnection:
+    """Ingest cursor. Caller must close it, or use it as a context manager.
+
+    The default writes. Callers that only read from chat, schema, or value
+    paths use ``connect_serving`` instead. ``write=False`` is that same
+    serving cursor, for a caller that already has the flag.
+    """
+    from dms_executor.lake_registry import open_lake
+
+    return open_lake(path, write=write)  # type: ignore[return-value]
+
+
+def connect_serving(path: Path) -> duckdb.DuckDBPyConnection:
+    """Serving cursor. DuckDB opened it read-only, external access off, config locked."""
+    from dms_executor.lake_registry import open_lake
+
+    return open_lake(path, write=False)  # type: ignore[return-value]
 
 
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
@@ -275,22 +233,19 @@ def ensure_demo_warehouse(path: Path | None = None) -> Path:
     """
     db = path or warehouse_path()
     key = str(db.resolve())
-    lock = _lock_for(db)
-    with lock:
-        # Do not probe schema via a second duckdb.connect(): DuckDB 1.5 treats
-        # a second RW attach of the same file as BinderException. The old
-        # ``except Exception: return False`` then fell through to another
-        # connect() (CI 34750069692 on b5f02be, test_parallel_library_lists_same_file).
+    if key in _SEEDED and db.is_file():
+        return db
+    db.parent.mkdir(parents=True, exist_ok=True)
+    # Exclusive lease so a concurrent reader does not see a half-seeded file.
+    con = connect_file(db, write=True)
+    try:
         if key in _SEEDED and db.is_file():
             return db
-        db.parent.mkdir(parents=True, exist_ok=True)
-        con = connect_file(db)
-        try:
-            _seed(con)
-        finally:
-            con.close()
+        _seed(con)
         _SEEDED.add(key)
         return db
+    finally:
+        con.close()
 
 
 def _seed(con: duckdb.DuckDBPyConnection) -> None:
@@ -460,9 +415,9 @@ def _seed(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def connect_readonly(path: Path | None = None) -> duckdb.DuckDBPyConnection:
+    """Serving cursor. DuckDB opened the parent read-only."""
     db = ensure_demo_warehouse(path)
-    # Same config as writers. Mixed read_only=True vs RW on one file 500s DuckDB.
-    return connect_file(db)
+    return connect_serving(db)
 
 
 def execute_sql(
