@@ -480,6 +480,29 @@ opposite cost is accepted: "schools that are public and in North" is refused.
 **Unlock:** Cortex reports an OR / list intent on the plan, or steward alias phrases (P-DMS-44)
 give a phrase-to-column map; the lane then admits the explicit AND and refuses the rest.
 
+## P-DMS-57 - A contract ask's own badge reaches a SQL-source Space as L1 or L0 (dms#284)
+
+On a non-demo Space, the contract-ask tail of `Executor._live_ask` maps the engine's badge straight
+onto the envelope. An engine `governed_metric` or `certified` over single-table SQL (so
+`check_sql_against_space` passes it) reaches the customer as `L1_GOVERNED_METRIC` or `L0_CERTIFIED`
+with `abstained=false`, the engine's own text and rows, no `measure_basis`, on a Space with no
+confirmed measure and no verified query. DR-0006 says only a steward-confirmed measure backs a
+certified-tier answer on a Space. Not a regression: it reproduces identically on the merged #316
+baseline `1fb6ab0`, and the confirmed lane's own answers stay `L2_VALIDATED` plus `measure_basis`.
+It is the contract-ask half of the egress finalizer held back in P-DMS-48 (spec 5.7), found by the
+regression-honesty adversary, and not built under that carve-out.
+Pinned as a KNOWN GAP by `tests/test_space_contract_ask_badge_gap.py`: it asserts today's badge, the
+rendered text, the rows and the absent basis through `POST /v1/chat/ask`, and turns red the day the
+leak closes. Probe, uncommitted and reverted: a clamp to `L2_VALIDATED` when `space_onto` is set, the
+badge is L0/L1 and the envelope has no `measure_basis` makes that pin red and the adversary's repro
+green, and the 891 tests of the Space, ask-mapping, generative and invariants files stay green.
+**Decision the founder owes:** the adversary's clamp (`L2_VALIDATED`, both badges) and spec 5.7
+differ. 5.7 leaves `L0_CERTIFIED` untouched (a Cortex verified-query hit may be legitimate) and
+abstains an L1 without a valid basis as `uncertified_l1`.
+**Unlock:** P-DMS-48 unlocks (Cursor UI parity and the founder's badge policy). Then pick clamp or
+abstain, whether L0 is touched, invert the pin to assert no L0/L1 without a valid `measure_basis`
+(and an abstain's reason and text if that is the choice), and strike this entry.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

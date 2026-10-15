@@ -334,6 +334,12 @@ against a non-seed database in this step.
   English tokens only. Measure and report certified hit rate per Space; never claim coverage.
 - Standing P0 candidate outside this slice: EXPLAIN on a write-mode DuckDB connection
   (P-DMS-47).
+- **Until the egress finalizer ships (P-DMS-48), an `L1_GOVERNED_METRIC` or `L0_CERTIFIED` on a
+  SQL-source Space is NOT proof of a steward-confirmed measure.** The contract-ask tail trusts the
+  engine's badge, so a `governed_metric` or `certified` answer over single-table SQL keeps it with
+  no `measure_basis` (P-DMS-57, pinned by `tests/test_space_contract_ask_badge_gap.py`). A
+  confirmed-measure answer is recognised by `measure_basis` and the `measure confirmed:` line, not
+  by the badge. Pre-existing on the #316 baseline; this lane did not introduce it.
 
 ## UNVERIFIED (spec section 12), with the check that settles each
 
