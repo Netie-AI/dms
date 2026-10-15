@@ -675,6 +675,39 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
+_PATH_CHARS = re.compile(r"[/\\:*?]")
+_FILE_EXT = re.compile(r"\.(csv|tsv|txt|json|jsonl|ndjson|parquet|xlsx?|db|duckdb)$", re.I)
+
+
+def _reads_files(sql: str, grantable: set[str]) -> bool:
+    """True when a FROM/JOIN source is a table function or a path, not a table.
+
+    Every DuckDB file reader (read_text, read_blob, sniff_csv, read_ndjson,
+    glob, ...) is a table function, and ``FROM 'x.csv'`` is a replacement scan.
+    One structural test replaces a name list that has to grow with DuckDB.
+    A source that is not a plain identifier is never a granted table. A
+    granted upload may carry its file name as its table name, so an extension
+    alone refuses only when the Space does not grant that exact name.
+    """
+    from sqlglot import exp, parse
+
+    granted = {str(g).strip().lower() for g in grantable}
+    try:
+        trees = parse(sql, read="duckdb")
+    except Exception:  # noqa: BLE001 - the EXPLAIN step owns unparseable SQL
+        return False
+    for tree in trees:
+        for table in tree.find_all(exp.Table) if tree is not None else ():
+            if not isinstance(table.this, exp.Identifier):
+                return True
+            name = table.name
+            if _PATH_CHARS.search(name):
+                return True
+            if _FILE_EXT.search(name) and name.lower() not in granted:
+                return True
+    return False
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -688,6 +721,8 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
+    if _reads_files(sql, grantable):
+        return "hostile_sql:file_reader"
     named = cited_relations(sql)
     # A qualified upload grant (bronze.sheet) matches the bare cited sheet
     # name. A demo-lake table keeps the exact match: bronze.alerts is an
@@ -1039,19 +1074,51 @@ def hold_ungrounded_sql(
     None means the SQL may keep its badge. #421 replaces that call.
     This is not a reconfirm and not a second grant check.
     """
+    return grant_hold(
+        sql,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+        warehouse=warehouse,
+        grantable=grantable,
+    )[0]
+
+
+def grant_hold(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The refusal (or None) and the one grant function's reason for this SQL.
+
+    A reason that is not None and not refused here (a bronze sheet label, an
+    EXPLAIN miss on a table the lake does not hold) still means the SQL was
+    rejected: the caller must not hand it to a probe that executes SQL.
+    """
     why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
     # Hostile SQL (file readers, multi-statement, any non-SELECT) is refused
     # here too, so the served-result probe never runs it in this process.
-    hostile = isinstance(why, str) and why.startswith("hostile_sql:")
+    # An EXPLAIN permission denial is the engine saying the SQL reaches for
+    # something outside the lake: the same refusal.
+    hostile = isinstance(why, str) and (
+        why.startswith("hostile_sql:") or why.startswith("explain:PermissionException")
+    )
     if not hostile and not _cited_ungranted(why):
-        return None
-    return _abstain(
-        question,
-        "hostile_sql" if hostile else "ungranted",
-        space_id=space_id,
-        session_id=session_id,
-        plan_source=PLAN_SOURCE_OTHER,
-        stage="grant",
+        return None, why
+    return (
+        _abstain(
+            question,
+            "hostile_sql" if hostile else "ungranted",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=PLAN_SOURCE_OTHER,
+            stage="grant",
+        ),
+        why,
     )
 
 

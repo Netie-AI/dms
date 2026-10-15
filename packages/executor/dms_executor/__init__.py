@@ -81,7 +81,7 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
-    hold_ungrounded_sql,
+    grant_hold,
     load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
@@ -1083,8 +1083,9 @@ class Executor:
         # lake is the one the grant check and the served-result gate read.
         lake = ensure_demo_warehouse(self._warehouse)
         held = None
+        rejected: str | None = None
         if not resp.abstained:
-            held = hold_ungrounded_sql(
+            held, rejected = grant_hold(
                 str(resp.sql_used or ""),
                 question=question,
                 space_id=space_id,
@@ -1109,6 +1110,8 @@ class Executor:
                 warehouse=gate_warehouse,
                 ontology=gate_ontology,
                 as_of=datetime_now(),
+                # SQL the one grant function rejected is never executed by a probe.
+                probe=rejected is None,
             ),
             cascade,
         )
@@ -1211,6 +1214,7 @@ def map_ask_response_to_envelope(
     warehouse: Path | None = None,
     ontology: Any | None = None,
     as_of: str | None = None,
+    probe: bool = True,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import (
@@ -1272,6 +1276,7 @@ def map_ask_response_to_envelope(
                     warehouse=warehouse,
                     ontology=ontology,
                     as_of=as_of,
+                    probe=probe,
                 )
             gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))

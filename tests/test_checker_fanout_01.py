@@ -682,12 +682,15 @@ def _prod_post(
     *,
     route: str = "generated",
     pass_warehouse: bool = False,
+    rows_sql: str | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """POST /v1/chat/ask with the wiring.py shape: no warehouse_path argument.
 
     The lake is reached the way production reaches it, through
     DMS_WAREHOUSE_DB and the default warehouse_path(). ``pass_warehouse``
     hands the file to the Executor so a test can isolate one concern.
+    ``rows_sql`` is what the fake Cortex runs when its cited SQL uses an alias
+    the lake does not hold.
     """
     from cortex_client.models import (
         AskRequest,
@@ -709,7 +712,7 @@ def _prod_post(
 
         def submit(self, req: Any) -> QueryResult:
             body = getattr(req, "body", None) or {}
-            run_sql = str(body.get("sql") or sql)
+            run_sql = str(body.get("sql") or rows_sql or sql)
             rows = _executed(db, run_sql) if run_sql.strip() else []
             return QueryResult(ok=True, status="ok", run_id="run-prod", output={"rows": rows})
 
@@ -719,7 +722,7 @@ def _prod_post(
                 answer="served",
                 badge="generated",
                 sql_used=sql,
-                rows=_executed(db, sql),
+                rows=_executed(db, rows_sql or sql),
                 assumptions="recorded",
                 route="generated",
                 audit_id="aud-prod",
@@ -847,3 +850,63 @@ def test_qualified_upload_grant_does_not_grant_the_demo_lake_table(tmp_path: Pat
     assert (
         validate_compiled_sql(lake, grantable={"alerts"}, warehouse=db) != "ungranted:alerts"
     )
+
+
+_READERS = (
+    "read_text('{p}')",
+    "read_blob('{p}')",
+    "sniff_csv('{p}')",
+    "read_ndjson('{p}')",
+    "glob('{d}/*')",
+    "'{p}'",
+    '"{d}/x.csv"',
+)
+
+
+@pytest.mark.parametrize("reader", _READERS)
+def test_every_grant_rejection_is_refused_before_any_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    reader: str,
+) -> None:
+    """validate_compiled_sql rejects these as ungranted or EXPLAIN-denied.
+
+    Only read_csv was refused before the probe; the rest were executed by the
+    served-result probe through connect_file on the way to a verdict.
+    """
+    import dms_executor.served_gate as gate
+
+    note = tmp_path / "note.txt"
+    note.write_text("k\n1\n2\n3\n", encoding="utf-8")
+    (tmp_path / "x.csv").write_text("k\n1\n", encoding="utf-8")
+    src = reader.format(p=note.as_posix(), d=tmp_path.as_posix())
+    sql = (
+        "SELECT i.sku AS sku, COUNT(*) AS n FROM inventory i "
+        f"JOIN {src} c ON TRUE GROUP BY i.sku"
+    )
+    db = tmp_path / "rej.duckdb"
+    ensure_demo_warehouse(db)
+    probed: list[str] = []
+    real = gate._row_counts
+
+    def spy(path: Path, probe: str) -> bool:
+        probed.append(probe)
+        return real(path, probe)
+
+    monkeypatch.setattr(gate, "_row_counts", spy)
+    env, _ = _prod_post(
+        db,
+        sql,
+        monkeypatch,
+        minter,
+        pass_warehouse=True,
+        # The fake Cortex must not run the reader itself; DMS is what is tested.
+        rows_sql="SELECT i.sku AS sku, 3 AS n FROM inventory i",
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, reader
+    assert env["badge"] == "ABSTAIN", reader
+    assert env.get("rows") in (None, []), reader
+    assert "fanout_subject_keys" not in str(env.get("text") or ""), reader
+    assert not probed, f"probe ran on SQL the grant function rejects: {probed}"

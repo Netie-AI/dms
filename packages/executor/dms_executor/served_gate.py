@@ -32,8 +32,13 @@ def served_result_reason(
     warehouse: Path | str | None = None,
     as_of: str | None = None,
     ontology: Any | None = None,
+    probe: bool = True,
 ) -> str | None:
-    """Reason code, or None when this SQL may take a badge."""
+    """Reason code, or None when this SQL may take a badge.
+
+    ``probe=False`` skips every check that executes SQL on the lake. A caller
+    passes it for SQL the grant function rejected.
+    """
     try:
         tree = parse_one(sql or "", read=_DIALECT)
     except Exception:  # noqa: BLE001 - unparseable SQL is not evidence
@@ -46,7 +51,7 @@ def served_result_reason(
     many = _direct_many_to_many(tree, ontology)
     if many:
         return many
-    return _distinct_key_probe(tree, warehouse, ontology)
+    return _distinct_key_probe(tree, warehouse if probe else None, ontology)
 
 
 def _as_of_window(tree: exp.Select, as_of: str | None) -> str | None:
