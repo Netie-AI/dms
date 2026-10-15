@@ -110,6 +110,8 @@ INDEX_BUILD_BUDGET_S = 20.0
 _SHORTLIST = 48
 _SPAN_WIDTH = 6
 _PARTIAL_MIN_CHARS = 3
+# A value under this many letters or digits is never a description mask.
+_MASK_MIN_ALNUM = 3
 _LOG = logging.getLogger("dms_executor.schema_context")
 _BOOL_TYPES = frozenset({"bool", "boolean"})
 _DATE_TYPES = frozenset(
@@ -876,17 +878,45 @@ def _value_token_pairs(values: Sequence[str]) -> list[tuple[str, str]]:
     return pairs
 
 
+def _mask_alternative(raw: str) -> str:
+    """One regex alternative for ``raw``, anchored as a whole token.
+
+    A boundary is added only on a side where the value itself starts or ends
+    with a word character. A value that begins or ends with punctuation
+    (``#VOID``, ``C++``) brings its own edge, so a ``\\w`` guard there would
+    refuse a match the value already delimits. Inner whitespace matches any
+    run, as the value was folded to single spaces on the way in.
+    """
+    body = r"\s+".join(re.escape(part) for part in raw.split())
+    head = r"(?<!\w)" if re.match(r"\w", raw) else ""
+    tail = r"(?!\w)" if re.search(r"\w\Z", raw) else ""
+    return f"{head}{body}{tail}"
+
+
 def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
-    """Replace index values in ``text``. Longest alternative is tried first."""
+    """Replace index values in ``text``, whole tokens only.
+
+    Longest alternative is tried first. A value is a token when no word
+    character touches it, so ``N`` inside ``Net`` is never a hit. A value
+    with fewer than ``_MASK_MIN_ALNUM`` letters or digits is skipped: it is
+    an ordinary flag or code (``Y``, ``KL``, ``10``) that carries nothing
+    to hide and whose token would only cut the description's own words.
+    """
     if not text or not pairs:
         return text
-    pattern = "|".join(re.escape(raw) for raw, _token in pairs)
-    if not pattern:
+    usable = [
+        (raw, token)
+        for raw, token in pairs
+        if sum(ch.isalnum() for ch in raw) >= _MASK_MIN_ALNUM
+    ]
+    if not usable:
         return text
-    lookup = {raw.lower(): token for raw, token in pairs}
+    pattern = "|".join(_mask_alternative(raw) for raw, _token in usable)
+    lookup = {" ".join(raw.split()).lower(): token for raw, token in usable}
 
     def _sub(match: re.Match[str]) -> str:
-        return lookup.get(match.group(0).lower(), match.group(0))
+        found = " ".join(match.group(0).split())
+        return lookup.get(found.lower(), match.group(0))
 
     return re.compile(pattern, re.IGNORECASE).sub(_sub, text)
 
