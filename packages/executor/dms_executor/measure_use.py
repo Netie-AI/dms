@@ -13,6 +13,9 @@ Four jobs, all inert until a confirmed row exists:
   with) and removes the ones that fail. A pruned measure can only degrade an answer.
 * ``measure_fit`` is DMS's own check that a confirmed measure answers THIS question. Cortex
   ranks by measure-name tokens, which is not authority to certify; this is the second key.
+* ``read_source_pulls`` is what the ingest registry says about a landed relation (the table's
+  name at its source, schema excluded, and whether the row cap truncated the pull); ``prune``
+  and the fit check both read it.
 * ``filter_values_present`` is rule 12 at ask time: a plan filter literal that does not
   exist in its column as landed (``north`` for ``North``) must not become a plausible 0.
 
@@ -37,6 +40,7 @@ from uuid import UUID
 from dms_core.control_plane.onto_store import OntoMeasure, measure_definition_hash
 from dms_core.measure_line import confirmed_line
 
+from dms_executor.bronze import classify_source_kind
 from dms_executor.demo_warehouse import connect_file
 from dms_executor.measure_basis import MEASURE_STATUS_CONFIRMED
 from dms_executor.measure_spec import NAME_RE, description_failures
@@ -55,10 +59,15 @@ if TYPE_CHECKING:
     from dms_executor.space_ontology import OntologyStorePort
 
 __all__ = [
+    "CONFIRMED_ROW_CAP",
     "EXCLUSION_REASONS",
     "FIT_REASONS",
     "FitVerdict",
+    "PullRecord",
+    "REASON_AMBIGUOUS_FILTER_VALUE",
+    "REASON_AMBIGUOUS_PATH",
     "REASON_EMPTY_AGGREGATE",
+    "REASON_TOO_MANY_GROUPS",
     "REASON_UNMATCHED_FILTER_VALUE",
     "Accounting",
     "account_for_question",
@@ -70,6 +79,8 @@ __all__ = [
     "measure_exclusions",
     "measure_fit",
     "prune_unusable_measures",
+    "read_source_pulls",
+    "via_choice_reason",
 ]
 
 #: Why a confirmed row never reached the ask, or was removed from it. These are the tails
@@ -87,6 +98,7 @@ EXCL_GRAIN_NOT_GRANTED = "grain_not_granted"
 EXCL_COLUMN_MISSING = "column_missing"
 EXCL_COLUMN_TYPE_CHANGED = "column_type_changed"
 EXCL_LAKE_UNREADABLE = "lake_unreadable"
+EXCL_SOURCE_TRUNCATED = "source_truncated"
 
 EXCLUSION_REASONS = frozenset(
     {
@@ -103,6 +115,7 @@ EXCLUSION_REASONS = frozenset(
         EXCL_COLUMN_MISSING,
         EXCL_COLUMN_TYPE_CHANGED,
         EXCL_LAKE_UNREADABLE,
+        EXCL_SOURCE_TRUNCATED,
     }
 )
 
@@ -110,7 +123,14 @@ EXCLUSION_REASONS = frozenset(
 _EXCLUSIONS_SLOT = "_measure_exclusions"
 
 REASON_UNMATCHED_FILTER_VALUE = "unmatched_filter_value"
+REASON_AMBIGUOUS_FILTER_VALUE = "ambiguous_filter_value"
 REASON_EMPTY_AGGREGATE = "empty_aggregate"
+REASON_AMBIGUOUS_PATH = "ambiguous_path"
+REASON_TOO_MANY_GROUPS = "too_many_groups"
+#: The most rows (groups) a confirmed answer states. The lane never cuts a list: it states every
+#: row up to this many or abstains ``too_many_groups``. The question cannot state a row limit, so
+#: neither Cortex's ``limit`` nor the default 50 of a plan is one.
+CONFIRMED_ROW_CAP = 200
 #: The most literals one IN list may carry and still be probed (one probe per literal).
 MAX_PROBED_LITERALS = 50
 
@@ -238,16 +258,20 @@ def attach_confirmed_measures(
 # --------------------------------------------------------------------------
 
 
-def _describe(lake: Path | None, relations: Iterable[str]) -> dict[str, dict[str, str] | None]:
-    """DESCRIBE each relation once. None = could not be read (never "empty")."""
+def _read_lake(
+    lake: Path | None, relations: Iterable[str]
+) -> tuple[dict[str, dict[str, str] | None], dict[str, PullRecord] | None]:
+    """``(described, pulls)`` from ONE connection: DESCRIBE of each relation (None = could not
+    be read, never "empty") and the ingest registry's record of each (None = the registry could
+    not be read; see ``read_source_pulls``)."""
     wanted = sorted(set(relations))
-    out: dict[str, dict[str, str] | None] = dict.fromkeys(wanted)
+    described: dict[str, dict[str, str] | None] = dict.fromkeys(wanted)
     if not wanted or lake is None or not Path(lake).is_file():
-        return out
+        return described, None
     try:
         con = connect_file(Path(lake))
     except Exception:  # noqa: BLE001 - a lake we cannot open proves nothing about a measure
-        return out
+        return described, None
     try:
         for relation in wanted:
             if not _RELATION_RE.fullmatch(relation):
@@ -256,10 +280,77 @@ def _describe(lake: Path | None, relations: Iterable[str]) -> dict[str, dict[str
                 got = con.execute(f"DESCRIBE SELECT * FROM {relation}").fetchall()
             except Exception:  # noqa: BLE001
                 continue
-            out[relation] = {str(r[0]): str(r[1]) for r in got}
+            described[relation] = {str(r[0]): str(r[1]) for r in got}
+        return described, _pulls_on(con, wanted)
     finally:
         con.close()
-    return out
+
+
+@dataclass(frozen=True)
+class PullRecord:
+    """What the ingest registry says about one landed relation.
+
+    ``table`` is the table's name at its SOURCE with the schema left off (``schools`` for a
+    pull of ``public.schools`` into ``bronze.public_schools``), or "" when the registry does not
+    name a SQL source. ``truncated`` is whether the connector's row cap cut the pull.
+    """
+
+    table: str
+    truncated: bool
+
+
+def _source_table(filename: Any) -> str:
+    """The table part of a SQL pull's credential-free source string
+    (``postgresql://host:5432/db#public.schools``), or "" for anything else."""
+    text = str(filename or "")
+    if classify_source_kind(text) != "sql" or "#" not in text:
+        return ""
+    return text.rsplit("#", 1)[-1].rsplit(".", 1)[-1]
+
+
+def _pulls_on(con: Any, relations: Iterable[str]) -> dict[str, PullRecord] | None:
+    names: dict[str, str] = {}
+    for relation in relations:
+        schema, _, bare = str(relation).partition(".")
+        if schema.lower() == "bronze" and bare:
+            names[bare] = str(relation)
+    if not names:
+        return {}
+    try:
+        marks = ", ".join("?" for _ in names)
+        rows = con.execute(
+            "SELECT table_name, filename, truncated FROM bronze._ingest_registry "
+            f"WHERE table_name IN ({marks})",
+            list(names),
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - no registry, or one without the column
+        return None
+    return {
+        names[str(name)]: PullRecord(_source_table(filename), bool(truncated))
+        for name, filename, truncated in rows
+        if str(name) in names
+    }
+
+
+def read_source_pulls(
+    lake: Path | None, relations: Iterable[str]
+) -> dict[str, PullRecord] | None:
+    """``relation -> PullRecord`` for each ``bronze.<name>`` relation the ingest registry knows.
+
+    A relation the registry has no row for is simply absent. ``None`` means the registry could
+    not be read at all (no lake, cannot open, no registry table): a caller that needs the record
+    fails closed on it, so an unreadable ingest record is never read as "whole".
+    """
+    if lake is None or not Path(lake).is_file():
+        return None
+    try:
+        con = connect_file(Path(lake))
+    except Exception:  # noqa: BLE001 - a lake we cannot open proves nothing
+        return None
+    try:
+        return _pulls_on(con, relations)
+    finally:
+        con.close()
 
 
 def _violation_subjects(violations: Iterable[Violation]) -> set[str]:
@@ -275,9 +366,11 @@ def prune_unusable_measures(
     """Remove every loaded measure the lake no longer supports; mark the rest checked.
 
     A measure stays only if (U1) its grain object is not a failed subject of the verify() that
-    just ran and its relation is among this turn's granted tables, and (U2) DESCRIBE of that
-    relation still shows its column with the type it was confirmed with (``*`` needs only a
-    readable relation). A lake that cannot be read removes every measure
+    just ran and its relation is among this turn's granted tables, (U2) the source was not cut
+    by the connector's row cap, as the latest snapshot and the ingest registry as it is now both
+    say (``source_truncated``; a registry that cannot be read is ``lake_unreadable``), and (U3)
+    DESCRIBE of that relation still shows its column with the type it was confirmed with (``*``
+    needs only a readable relation). A lake that cannot be read removes every measure
     (``lake_unreadable``). Survivors are replaced with ``columns_checked=True``. The
     ontologies are mutated in place (``onto`` and ``declared`` may share one); the removal
     reasons are returned and recorded on each ontology. No measures, no work, no lake access.
@@ -312,16 +405,30 @@ def prune_unusable_measures(
                 drop(onto, name, EXCL_GRAIN_UNVERIFIED)
             elif obj.relation.lower() not in granted:
                 drop(onto, name, EXCL_GRAIN_NOT_GRANTED)
+            elif onto.truncated.get(m.grain):
+                # The latest snapshot of the source says the row cap cut it.
+                drop(onto, name, EXCL_SOURCE_TRUNCATED)
             else:
                 needs_lake.append((onto, name, m, obj.relation))
 
-    described = _describe(lake, (rel for _o, _n, _m, rel in needs_lake))
+    described, pulls = _read_lake(lake, (rel for _o, _n, _m, rel in needs_lake))
     for onto, name, m, relation in needs_lake:
         prov = m.provenance
         assert prov is not None
         columns = described.get(relation)
         if columns is None:
             drop(onto, name, EXCL_LAKE_UNREADABLE)
+            continue
+        # The confirm refused a truncated grain; a source can also be cut AFTER the confirm (a
+        # re-pull that hit the row cap, or one that grew past it). The ingest record as it is
+        # NOW decides: a measure over a cut source states a smaller figure as if it were whole.
+        # A record that cannot be read, or that nobody wrote, does not show the source whole.
+        pull = None if pulls is None else pulls.get(relation)
+        if pull is None:
+            drop(onto, name, EXCL_LAKE_UNREADABLE)
+            continue
+        if pull.truncated:
+            drop(onto, name, EXCL_SOURCE_TRUNCATED)
             continue
         if prov.column != "*":
             if prov.column not in columns:
@@ -389,14 +496,16 @@ def confirmed_basis(prov: MeasureProvenance) -> tuple[dict[str, Any], str]:
 
 def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str | None:
     """None when every ``=`` / ``IN`` literal of the plan's filters exists in its column as
-    landed; otherwise ``unmatched_filter_value: <why>``.
+    landed; otherwise ``unmatched_filter_value: <why>`` (or ``ambiguous_filter_value: <why>``).
 
     One ``SELECT 1 ... LIMIT 1`` per literal, case-sensitive exactly as the compiled
-    predicate will be, at most ``MAX_PROBED_LITERALS`` per IN. Other operators are not
-    probed (an empty range is an honest empty range; an encoding mismatch is what a missing
-    equality value is). Anything that cannot be checked (lake unreadable, list too long,
-    unusable relation or value) fails CLOSED. An object or column the ontology does not know
-    is left for the compiler, which refuses it by name.
+    predicate will be, at most ``MAX_PROBED_LITERALS`` per IN. A text literal whose column ALSO
+    holds a value differing from it only in case or surrounding spaces is refused too, as
+    ``ambiguous_filter_value``: the equality would match one spelling and silently drop the
+    others. Other operators are not probed (an empty range is an honest empty range; an
+    encoding mismatch is what a missing equality value is). Anything that cannot be checked
+    (lake unreadable, list too long, unusable relation or value) fails CLOSED. An object or
+    column the ontology does not know is left for the compiler, which refuses it by name.
     """
     probes: list[tuple[str, str, str, Any]] = []  # (object, relation, column, literal)
     for obj_name, column, op, value in getattr(plan, "filters", ()) or ():
@@ -446,17 +555,44 @@ def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str |
             guard = ""
             if isinstance(literal, bool):
                 guard = f"typeof({_ident(column)}) = 'BOOLEAN' AND "
+            shown = repr(literal) if len(repr(literal)) <= 60 else repr(literal)[:57] + "..."
+            missing = (
+                f"{REASON_UNMATCHED_FILTER_VALUE}: {obj_name}.{column} has no value "
+                f"{shown} exactly as written"
+            )
+            ident = _ident(column)
+            exact_sql = f"SELECT 1 FROM {relation} WHERE {guard}{ident} = {rendered} LIMIT 1"
+            if isinstance(literal, str):
+                # ONE query per literal. It reads the rows that equal the literal OR differ from
+                # it only in case or surrounding spaces, and returns the least exact of them
+                # (False sorts first): True = every such row is the literal exactly, False = some
+                # row is another spelling, no row = nothing matches.
+                like = f"lower(trim(CAST({ident} AS VARCHAR))) = lower(trim({rendered}))"
+                sql = (
+                    f"SELECT ({ident} = {rendered}) AS exact FROM {relation} "
+                    f"WHERE ({ident} = {rendered}) OR ({like}) ORDER BY exact ASC LIMIT 1"
+                )
+            else:
+                sql = exact_sql
             try:
-                hit = con.execute(
-                    f"SELECT 1 FROM {relation} WHERE {guard}{_ident(column)} = {rendered} LIMIT 1"
-                ).fetchone()
+                row = con.execute(sql).fetchone()
+                spelled = row is not None and row[0] is False
+                if spelled:
+                    exists = con.execute(exact_sql).fetchone() is not None
             except Exception:  # noqa: BLE001 - a type that cannot be compared is not a match
                 return cannot_check(f"{obj_name}.{column} could not be compared")
-            if hit is None:
-                shown = repr(literal) if len(repr(literal)) <= 60 else repr(literal)[:57] + "..."
+            if row is None:
+                return missing
+            if spelled:
+                if not exists:
+                    return missing
+                # The value exists exactly, and the column holds it under another spelling too
+                # ('North' and 'north'). The equality the plan compiles matches ONE of them and
+                # drops the rest without a trace, so neither reading is certified.
                 return (
-                    f"{REASON_UNMATCHED_FILTER_VALUE}: {obj_name}.{column} has no value "
-                    f"{shown} exactly as written"
+                    f"{REASON_AMBIGUOUS_FILTER_VALUE}: {obj_name}.{column} holds {shown} "
+                    "and also a value that differs from it only in case or spacing, so "
+                    "the filter would drop those rows"
                 )
     finally:
         con.close()
@@ -658,12 +794,17 @@ def _unnamed_qualifier(
     return None
 
 
-def _grouped_words(grouped_by: Iterable[tuple[str, str]]) -> frozenset[str]:
-    """The stemmed words a plan's group-by names: its object (``bronze.public_districts`` ->
-    public, district) and its column. What the plan computes, not what the question says."""
+def _grouped_words(
+    grouped_by: Iterable[tuple[str, str]], tables: Mapping[str, str] | None = None
+) -> frozenset[str]:
+    """The stemmed words a plan's group-by names: its column and its table's name AT THE SOURCE
+    (``tables``: ``bronze.public_districts`` -> ``districts``). What the plan computes, not what
+    the question says. The landed relation's own name is not read: ``bronze.public_districts``
+    holds the schema word ``public``, which is a word of nothing the plan groups by."""
+    held = tables or {}
     out: set[str] = set()
     for obj, column in grouped_by:
-        for part in (str(obj), str(column)):
+        for part in (held.get(str(obj), ""), str(column)):
             out.update(_stem(t) for t in _tokens(part) if len(t) >= 2)
     return frozenset(out)
 
@@ -755,9 +896,10 @@ def _render_literal(value: Any) -> str | None:
 
 
 def _filter_literals(filters: Iterable[Sequence[Any]]) -> tuple[list[str], list[str]]:
-    """``(literals, unstateable)``: the rendered literal of every ``=`` / ``IN`` filter, and
-    what a question cannot state (an operator other than those two, an empty or NULL or
-    nested value, a filter DMS cannot read). Anything in the second list is a refusal."""
+    """``(literals, unstateable)``: the rendered literal of every ``=`` / ``IN`` filter (a value
+    once per filter that uses it), and what a question cannot state (an operator other than
+    those two, an empty or NULL or nested value, a filter DMS cannot read). Anything in the
+    second list is a refusal."""
     literals: list[str] = []
     bad: list[str] = []
     for item in filters:
@@ -780,39 +922,49 @@ def _filter_literals(filters: Iterable[Sequence[Any]]) -> tuple[list[str], list[
             elements = list(value) if many else [value]
         if not elements:
             bad.append("an empty list")
+        stated: set[str] = set()
         for element in elements:
             rendered = _render_literal(element)
             if rendered is None:
                 bad.append(repr(element))
-            else:
+            elif rendered not in stated:  # one IN list names a value once
+                stated.add(rendered)
                 literals.append(rendered)
     return literals, bad
 
 
 def _claim_literals(text: str, literals: Iterable[str]) -> tuple[list[tuple[int, int]], list[str]]:
-    """The spans of ``text`` the literals occupy, and the literals it never states.
+    """The spans of ``text`` the literals occupy, and the literals it never states enough times.
 
     A literal is stated by an exact, case-sensitive occurrence whose neighbours are not word
-    characters (so ``North`` is not ``Northern`` and ``5`` is not the tail of ``25``). Longer
-    literals claim first and a span is never claimed twice: ``5`` is not stated by the ``5`` in
-    a stated ``2.5``. Whatever sits next to a span (a sign, a point, a quote) stays in the
-    text and is accounted for like any other character."""
+    characters (so ``North`` is not ``Northern`` and ``5`` is not the tail of ``25``). A literal
+    that ``k`` filters use must be stated ``k`` times: ``North`` said once is one statement, and
+    a plan that filters the district AND the region on it carries a condition the question did
+    not state. Longer literals claim first and a span is never claimed twice: ``5`` is not stated
+    by the ``5`` in a stated ``2.5``. Whatever sits next to a span (a sign, a point, a quote)
+    stays in the text and is accounted for like any other character. The scan for a literal
+    stops once it has its ``k`` spans, so its cost does not grow with how often the literal
+    occurs."""
     claimed: list[tuple[int, int]] = []
     missing: list[str] = []
-    for literal in sorted(set(literals), key=lambda s: (-len(s), s)):
-        found = False
+    wanted = Counter(literals)
+    for literal in sorted(wanted, key=lambda s: (-len(s), s)):
+        need = wanted[literal]
+        got = 0
         at = text.find(literal)
-        while at >= 0:
+        while at >= 0 and got < need:
             end = at + len(literal)
             clear = (at == 0 or not _is_word_char(text[at - 1])) and (
                 end == len(text) or not _is_word_char(text[end])
             )
             if clear and not any(at < e and s < end for s, e in claimed):
                 claimed.append((at, end))
-                found = True
+                got += 1
             at = text.find(literal, at + 1)
-        if not found:
-            missing.append(literal)
+        if got < need:
+            missing.append(
+                literal if need == 1 else f"{literal} (needs {need} mentions, found {got})"
+            )
     return sorted(claimed), missing
 
 
@@ -893,10 +1045,6 @@ def _name_words(*names: str) -> frozenset[str]:
     return frozenset(out)
 
 
-def _last_part(name: str) -> str:
-    return str(name or "").rsplit(".", 1)[-1]
-
-
 def _is_form(token: str, word: str) -> bool:
     """``token`` is ``word`` or its plural or singular: the ONE plural rule (``-s``, and
     ``-y`` / ``-ies``). Applied to plain lowercase tokens only, and only against the words
@@ -939,32 +1087,46 @@ def account_for_question(
     grain: str,
     grouped_by: Iterable[tuple[str, str]] = (),
     filters: Iterable[Sequence[Any]] = (),
+    tables: Mapping[str, str] | None = None,
 ) -> Accounting:
     """Whether the question says nothing that the measure and this plan do not carry, and the
     plan carries no filter value the question did not say. Pure, default deny; see the notes
-    above. The raw question is used with its case, NFKC-normalised."""
+    above. The raw question is used with its case, NFKC-normalised.
+
+    ``tables`` maps a landed relation to the name of its table AT THE SOURCE, schema left off
+    (``bronze.public_schools`` -> ``schools``: ``read_source_pulls``). A relation's own name is
+    never read as vocabulary, because it is ``<source schema>_<table>`` and the schema word
+    (``public``, ``dbo``, ``hr``) is a word of the storage, not of the data: "public schools" is
+    a condition. A relation not in ``tables`` contributes no word at all."""
     text = unicodedata.normalize("NFKC", str(question or ""))
     plan_filters = [list(f) for f in filters]
+    held = tables or {}
     literals, unstateable = _filter_literals(plan_filters)
+    # Two conditions on one column are never what a question states: "North and South" is one
+    # IN list. As separate equalities they AND to the empty set (COUNT would print 0), and an
+    # equality beside an IN list silently narrows it.
+    columns = Counter(
+        (str(p[0]), str(p[1]).casefold()) for p in plan_filters if len(p) >= 2
+    )
+    repeated = [f"two conditions on {col}" for (_obj, col), n in sorted(columns.items()) if n > 1]
     spans, missing = _claim_literals(text, literals)
-    refused = [*unstateable, *missing]
+    refused = [*repeated, *unstateable, *missing]
     if refused:
         return Accounting(GAP_UNSTATED_FILTER, tuple(repr(r) for r in refused))
 
     group_pairs = [(str(o), str(c)) for o, c in grouped_by]
-    own = _name_words(measure, _last_part(grain))
+    own = _name_words(measure, held.get(grain, ""))
     # "by X" names a column the plan groups by, or the table that column sits in; the measure's
     # own table is not a breakdown ("by schools" is not "by district_id of schools").
-    grain_table = _last_part(grain)
     group = _name_words(
-        *(_last_part(o) for o, _c in group_pairs if _last_part(o) != grain_table),
+        *(held.get(o, "") for o, _c in group_pairs if o != grain),
         *(c for _o, c in group_pairs),
     )
     group_all = _name_words(
-        *(_last_part(o) for o, _c in group_pairs), *(c for _o, c in group_pairs)
+        *(held.get(o, "") for o, _c in group_pairs), *(c for _o, c in group_pairs)
     )
     named = _name_words(
-        *(_last_part(str(p[0])) for p in plan_filters if len(p) >= 2),
+        *(held.get(str(p[0]), "") for p in plan_filters if len(p) >= 2),
         *(str(p[1]) for p in plan_filters if len(p) >= 2),
     )
     vocabulary = own | group_all | named
@@ -1058,6 +1220,7 @@ def measure_fit(
     filters: Iterable[Sequence[Any]] | None = None,
     keep_gt: float | None = None,
     offset: int | None = None,
+    tables: Mapping[str, str] | None = None,
 ) -> FitVerdict:
     """Whether a confirmed measure answers this question, by DMS's own reading.
 
@@ -1074,7 +1237,7 @@ def measure_fit(
       anything but COUNT DISTINCT, and a second cue does not launder the first ("average
       total budget" is not a SUM). The one exemption is count phrasing: "total number",
       "total count" and "how many" are compatible with count and count_distinct and with
-      nothing else;
+      nothing else. A COUNT measure also needs one: "show me the schools" asks for rows;
     * a question about a rate, ratio, share, percentage, change... disagrees unless the
       measure's own name says so (``quantity_cue``);
     * a question that narrows or splits the number (``per``, ``each``, ``excluding``,
@@ -1092,6 +1255,10 @@ def measure_fit(
       a word of the measure's or the plan's own names, or a breakdown the plan really groups
       by (``unbound_constraint``: "in the US" answered by the unfiltered total). Default
       deny: anything else, in any case, script or symbol, is a condition the plan dropped.
+      Two filters on one column, or a literal that more filters use than the question states,
+      are conditions the plan added (``unstated_filter``). ``tables`` maps each relation the
+      plan names to its table's name at the source (``read_source_pulls``): a relation's own
+      name carries the source schema ("public schools"), so it is never vocabulary.
       ``filters=None`` means no plan is being checked, and skips both tests.
 
     Only structured (provenance-bearing) measures take part. The cue, quantity and qualifier
@@ -1121,7 +1288,13 @@ def measure_fit(
     # Every cue the question carries must be one this aggregate can answer. A second cue
     # does not launder the first: "average total budget" asks for an AVG, not the SUM that
     # its word "total" would otherwise let through.
-    if _fit_cues(question) - _COMPATIBLE_CUES.get(prov.aggregate, frozenset()):
+    cues = _fit_cues(question)
+    answers = _COMPATIBLE_CUES.get(prov.aggregate, frozenset())
+    if cues - answers:
+        return FitVerdict(False, pick, "aggregate_cue")
+    # A row count is a number the question must ASK for ("how many", "number of", "count"):
+    # "show me the schools" is a request for the rows, not for the one figure a COUNT states.
+    if prov.aggregate in ("count", "count_distinct") and not cues & answers:
         return FitVerdict(False, pick, "aggregate_cue")
 
     asked = {_canon(t) for t in qtoks if t in _QUANTITY_STEMS}
@@ -1131,7 +1304,10 @@ def measure_fit(
     if asked - named:
         return FitVerdict(False, pick, "quantity_cue")
     grouped = tuple(grouped_by)
-    if _unnamed_qualifier(question, _content_tokens(pick), _grouped_words(grouped)) is not None:
+    if (
+        _unnamed_qualifier(question, _content_tokens(pick), _grouped_words(grouped, tables))
+        is not None
+    ):
         return FitVerdict(False, pick, "qualifier_cue")
     if filters is not None:
         plan_filters = tuple(filters)
@@ -1145,8 +1321,42 @@ def measure_fit(
         if extras:
             return FitVerdict(False, pick, GAP_UNSTATED_FILTER, _shown(extras))
         reading = account_for_question(
-            question, measure=pick, grain=prov.grain, grouped_by=grouped, filters=plan_filters
+            question,
+            measure=pick,
+            grain=prov.grain,
+            grouped_by=grouped,
+            filters=plan_filters,
+            tables=tables,
         )
         if not reading.ok:
             return FitVerdict(False, pick, reading.reason, _shown(reading.unaccounted))
     return FitVerdict(True, pick, "ok")
+
+
+def via_choice_reason(via: Mapping[str, str] | None, onto: Ontology) -> str | None:
+    """``ambiguous_path: <why>`` when a plan-supplied ``via`` picks one of several declared links.
+
+    Two links between the same pair of tables (``district_id`` and ``mail_district_id``, both
+    foreign keys to districts) are two readings, and the layer never picks between them
+    (``Ontology.compile`` refuses ``ambiguous_path`` without a ``via``). A ``via`` in the typed
+    plan is Cortex making that choice, and no word of a question the lane accepts states it, so
+    it is refused here: the same refusal, not a different answer. A ``via`` that names the only
+    link between two tables picks nothing and passes. A name the ontology does not hold is left
+    to the compiler, which refuses it by name (``unknown_link``).
+    """
+    for dim, name in sorted((via or {}).items()):
+        link = onto.links.get(name)
+        if link is None or link.to_object != dim:
+            continue
+        siblings = sorted(
+            other.name
+            for other in onto.links.values()
+            if other.from_object == link.from_object and other.to_object == link.to_object
+        )
+        if len(siblings) > 1:
+            return (
+                f"{REASON_AMBIGUOUS_PATH}: the plan picks {name!r} of {len(siblings)} declared "
+                f"links from {link.from_object!r} to {dim!r} ({', '.join(siblings)}); the "
+                "question does not say which, and the layer will not choose"
+            )
+    return None

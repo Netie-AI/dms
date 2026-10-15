@@ -99,8 +99,12 @@ COUNT_POOL = {COUNT_MEASURE.name: COUNT_MEASURE}
 TOTAL = "360.75"
 
 
+#: What ``read_source_pulls`` names for these relations: the table at the source, schema left off.
+SOURCE_TABLES = {SCHOOLS: "schools", DISTRICTS: "districts"}
+
+
 def _fit(question: str, *filters: tuple[Any, ...], pool: dict[str, Measure] = POOL) -> FitVerdict:
-    return measure_fit(question, pool, filters=list(filters))
+    return measure_fit(question, pool, filters=list(filters), tables=SOURCE_TABLES)
 
 
 # ===================================================================== the verifier's repros
@@ -463,7 +467,8 @@ CUES = {
     "count", "tally", "distinct", "unique",
 }  # fmt: skip
 LEADING = {("show", "me"), ("tell", "me"), ("give", "me"), ("can", "you"), ("could", "you")}
-VOCAB = {"schools", "budget", "sum", "public"}
+#: No "public": that is the source SCHEMA of bronze.public_schools, not a word of the data.
+VOCAB = {"schools", "budget", "sum"}
 GROUP_VOCAB: set[str] = set()
 
 
@@ -504,6 +509,7 @@ def _oracle_accepts(question: str, literals: Sequence[str]) -> bool:
                 continue
             claimed.append((s, e))
             hit = True
+            break  # one statement per use: a second mention is a second condition
         if not hit:
             return False
     out: list[str] = []
@@ -598,7 +604,7 @@ GOOD_TOKENS = sorted(FRAME | CUES | VOCAB | {"districts", "name", "number", "of"
 ]
 BAD_TOKENS = [
     "US", "OR", "IT", "IN", "A", "us", "me", "it", "Wills", "Doe", "Cans", "wills", "cans", "3",
-    "-2", "1.5", "2024-05-01", "North", "north", "South", "district", "by", "per", "each",
+    "-2", "1.5", "2024-05-01", "North", "north", "South", "district", "by", "per", "each", "public",
     CJK, TAMIL, EMOJI, "THE", "The", "Of", "ofs", "schoolss", "school", "Schools",
 ]  # fmt: skip
 PLAN_LITERALS = ["North", "South", "2", "-2", "1.5", "2024-01-05", "Kuala Lumpur", CJK, "A", "OR"]
@@ -627,9 +633,17 @@ def _random_question(rng: random.Random) -> tuple[str, list[str]]:
 
 
 def _gate_accepts(question: str, literals: Sequence[str]) -> bool:
-    flt = [("bronze.public_districts", "name", "=", lit) for lit in literals]
+    # one column, one filter: several values are one IN list, never several equalities
+    if len(literals) > 1:
+        flt = [("bronze.public_districts", "name", "IN", list(literals))]
+    else:
+        flt = [("bronze.public_districts", "name", "=", lit) for lit in literals]
     got = mu.account_for_question(
-        question, measure="schools_budget_sum", grain="bronze.public_schools", filters=flt
+        question,
+        measure="schools_budget_sum",
+        grain="bronze.public_schools",
+        filters=flt,
+        tables=SOURCE_TABLES,
     )
     return got.ok
 

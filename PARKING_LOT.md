@@ -438,6 +438,9 @@ filters ("district 2" and "2 districts" both state `2`, bounded by the value pro
 plan that groups by a column the question never names is not refused (its rows show the
 grouping). A normalised value ("SKU-BETA" for "beta") is declined by the
 certified lane and answered by the generated-SQL path.
+The confirmed-lane adversary round found it concretely: "total budget of 2 schools" with a
+filter `school_id = 2` is accepted (the number sits before the word instead of after a word of
+its column). A numeric literal that must follow a word of its own column is the candidate rule.
 **Unlock:** a pilot shows a wrong certified figure from either, or steward alias phrases
 (P-DMS-44) give the lane a proven phrase-to-value mapping to re-admit normalised values.
 
@@ -452,6 +455,17 @@ injection, and is not fixed there.
 **Unlock:** the prd-agent routes it to the ingest epic and the founder picks the landed name;
 the fix is to rename the colliding source column at landing (as a control character already
 is) and name it on the receipt.
+
+## P-DMS-55 - A very large confirmed total reads as a PII mask token under a green badge
+
+A confirmed `SUM` of 16 or more digits (a `numeric(20,2)` budget total) comes back from the
+envelope's PII layer as `DMSMASK_account_01` with `abstained=false`: the digit run looks like an
+account number. The figure is not wrong, it is absent, and the customer sees a placeholder as
+the total. The masking is in `dms_core.pii`, outside the confirmed lane, and the shape of a
+masked figure is a product decision.
+**Unlock:** the founder decides how a masked numeric result renders (abstain with a named
+reason, or exempt a numeric aggregate the lane computed from the scan); the lane then asserts
+it at the envelope.
 
 ## Move out of parking lot
 

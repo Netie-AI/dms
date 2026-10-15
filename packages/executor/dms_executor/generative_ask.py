@@ -20,7 +20,7 @@ import copy
 import json
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,7 +81,9 @@ from dms_executor.gen_path_refuse import (
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.measure_basis import CONFIRMED_MEASURE_BADGE
 from dms_executor.measure_use import (
+    CONFIRMED_ROW_CAP,
     REASON_EMPTY_AGGREGATE,
+    REASON_TOO_MANY_GROUPS,
     FitVerdict,
     confirmed_basis,
     confirmed_measure_suggestions,
@@ -89,6 +91,8 @@ from dms_executor.measure_use import (
     measure_exclusions,
     measure_fit,
     prune_unusable_measures,
+    read_source_pulls,
+    via_choice_reason,
 )
 from dms_executor.ontology import (
     CompiledQuery,
@@ -671,6 +675,20 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
     )
 
 
+def _fit_tables(plan: QueryPlan, onto: Ontology, lake: Path | None) -> dict[str, str]:
+    """Relation -> its table's name at the source, for every relation the plan names and the
+    measure's grain: what ``measure_fit`` may read as vocabulary instead of the landed relation
+    name, which carries the source schema (``bronze.public_schools``). One ingest-registry read.
+    A relation the registry cannot name is left out, and contributes no word."""
+    relations = {obj for obj, _column in plan.group_by}
+    relations.update(str(f[0]) for f in plan.filters if f)
+    held = onto.measures.get(plan.measure)
+    if held is not None:
+        relations.add(held.grain)
+    pulls = read_source_pulls(lake, relations) or {}
+    return {relation: pull.table for relation, pull in pulls.items() if pull.table}
+
+
 def _pairs(raw: Any) -> tuple[tuple[str, str], ...] | None:
     if raw is None:
         return ()
@@ -971,6 +989,17 @@ def _l2_envelope(
     return env
 
 
+def _without_row_cut(coverage: Coverage | None) -> Coverage | None:
+    """``coverage`` without its ``rows beyond LIMIT n not returned`` exclusion. Only for an answer
+    that has just been shown whole (no row beyond the lane's cap exists)."""
+    if coverage is None:
+        return None
+    return replace(
+        coverage,
+        exclude=tuple(x for x in coverage.exclude if not x.startswith("rows beyond LIMIT ")),
+    )
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -1062,6 +1091,20 @@ def _submit_validated(
         # a figure, so the answer abstains. A NULL group KEY is different: that group is real
         # and its figure is right (the sentence reads the key as "(null)").
         held = rows_from_submit_result(result)
+        if len(held) > CONFIRMED_ROW_CAP:
+            # The compile asked for one row more than the lane states, and it exists: a list
+            # cut at the cap would read as every group. Abstain rather than state part of it.
+            return _abstain(
+                question,
+                f"{REASON_TOO_MANY_GROUPS}: {measure_ref.name} has more than "
+                f"{CONFIRMED_ROW_CAP} groups for this question; a partial list is not stated",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        # Nothing was cut, so the lane's own cap is not an exclusion the customer should read.
+        coverage = _without_row_cut(coverage)
         if not held or any(r.get(measure_ref.name) is None for r in held):
             return _abstain(
                 question,
@@ -1829,6 +1872,7 @@ def maybe_generative_ask(
                     filters=ranked_plan.filters,
                     keep_gt=ranked_plan.keep_gt,
                     offset=ranked_plan.offset,
+                    tables=_fit_tables(ranked_plan, space_onto, lake),
                 )
             )
     if kind == "sql" and confirmed_fit is not None:
@@ -2195,6 +2239,7 @@ def maybe_generative_ask(
             filters=plan.filters,
             keep_gt=plan.keep_gt,
             offset=plan.offset,
+            tables=_fit_tables(plan, space_onto, lake),
         )
         if not verdict.ok:
             why = f"fit_disagrees:{verdict.reason}" + (
@@ -2211,6 +2256,27 @@ def maybe_generative_ask(
                     suggest_from=space_onto,
                 )
             )
+        # A link the plan names among several declared ones is Cortex's pick, and no word of
+        # the question made it: the compiler refuses the same plan without the ``via``.
+        picked = via_choice_reason(plan.via, space_onto)
+        if picked:
+            return _stamp(
+                _abstain(
+                    q,
+                    picked,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
+        # The question cannot state a row limit, so neither can the plan: Cortex's own
+        # ``limit``, or the default 50, would cut a grouped answer and still read complete. A
+        # grouped plan asks for one row more than the lane will state, and ``_submit_validated``
+        # abstains when that row exists. An ungrouped plan is one row whatever its limit says,
+        # and keeps the SQL the steward saw at confirm.
+        if plan.group_by:
+            plan = replace(plan, limit=CONFIRMED_ROW_CAP + 1)
         # Only a measure the lake confirmed THIS ask (grain still verified and granted,
         # column still there with the type it was confirmed with) may answer. The prune
         # marks the ones that pass; anything unmarked cannot vouch for itself.

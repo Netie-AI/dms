@@ -211,6 +211,39 @@ against a non-seed database in this step.
      plan's group-by names the next word (a column, or a table other than the measure's own).
   With SQL present the SQL stays on today's path (`confirmed_measure_not_preferred:
   unbound_constraint`); with only a plan the ask abstains `no_declared_measure`.
+- **Guards found by the confirmed-lane adversary round** (all pinned at the envelope in
+  `tests/test_confirmed_lane_guards.py`; each was disabled in turn and its tests went red):
+  1. *A relation's landed name is not vocabulary.* `bronze.public_schools` is table
+     `schools` of source schema `public`, so the table words in item 3 are the table's name
+     AT THE SOURCE (`measure_use.read_source_pulls`, from the ingest registry), never the
+     landed relation name: "total budget of public schools" is a condition the plan does not
+     carry, whatever the schema is called (`public`, `dbo`, `hr`, `archive`). The same holds
+     for the filter table and the group-by table. A relation the registry cannot name
+     contributes no word at all (default deny).
+  2. *Two conditions on one column are never what a question states.* "North and South" is
+     one `IN` list; as two equalities the plan ANDs to the empty set and `COUNT` prints 0.
+     Two filters on one column (however spelled), or an `=` beside an `IN`, refuse
+     `unstated_filter`. A literal that `k` filters use must occur `k` times in the question
+     (one `North` cannot state both a district and a region); an `IN` list names a value once.
+  3. *A source cut after the confirm is not the source that was confirmed.* `prune` reads
+     the latest snapshot's `truncated` flag AND the ingest registry as it is now, and drops
+     the measure as `source_truncated`; an ingest record that cannot be read or was never
+     written drops it as `lake_unreadable`. Only the grain's own completeness is a
+     measure-level fact: a cut parent leaves orphan keys that `verify()` already refuses.
+  4. *The plan's `limit` is a row cap the question never stated.* A grouped confirmed plan is
+     compiled with `CONFIRMED_ROW_CAP + 1` (200 + 1) rows whatever its own `limit` says, and
+     the answer abstains `too_many_groups` when that extra row exists; an answer under the
+     cap is whole and its coverage no longer lists a LIMIT exclusion. An ungrouped plan is
+     one row and keeps the SQL the steward saw at confirm.
+  5. *A plan-supplied `via` that picks one of several declared links is Cortex's choice.*
+     The compiler refuses `ambiguous_path` without a `via`; with one it would answer, so
+     `via_choice_reason` refuses the same plan. A `via` naming the only link picks nothing.
+  6. *Cheap P2s from the same round.* A text literal whose column also holds another
+     spelling differing only in case or surrounding spaces (`North` and `north`) refuses
+     `ambiguous_filter_value`; the equality would match one spelling and drop the rest (one
+     probe query per literal, as before). A COUNT measure answers only a question that asks
+     for a count (`how many`, `number of`, `count`, `tally`): "show me the schools" asks for
+     rows.
 - **A NULL aggregate is not a figure.** A confirmed answer whose measure is NULL in ANY row,
   or that has no rows, abstains `empty_aggregate`: dropping the group would hide one the
   customer asked about and printing it would read `=None` under the badge. A NULL group KEY
@@ -249,6 +282,14 @@ against a non-seed database in this step.
   "at least", "over 100"), a contraction, a pronoun, a quotation or a normalised value ("KL"
   for "Kuala Lumpur"): no rule above admits them, so a plan that carries them is refused. A
   false refusal is safe, and with SQL present the generated path answers.
+- A parent-table grouping is demoted by the envelope's own E9-02 scope check when the joined
+  tables share a prefix (`public_schools`, `public_districts`): a false refusal in the
+  envelope, not in this lane.
+- A plan whose filters sit on two DIFFERENT columns is ANDed, and `and` is a frame word:
+  "schools in North and South" with a district filter and a region filter states one reading
+  of two. Same-column conditions are closed (guard 2); the cross-column connective is not.
+- A `via` that names one of several links is always refused, even when the question says
+  "mail district": a false refusal until a proven phrase-to-link mapping exists.
 - Accounting is by token and literal, not by relation. A literal is stated when the question
   contains it exactly; the gate cannot tell whether it is stated about the column the plan
   filters ("district 2" and "2 districts" both state `2`). The value probe bounds it

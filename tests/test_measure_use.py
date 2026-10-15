@@ -34,9 +34,9 @@ from dms_executor.measure_use import (
     confirmed_measure_suggestions,
     filter_values_present,
     measure_exclusions,
-    measure_fit,
     prune_unusable_measures,
 )
+from dms_executor.measure_use import measure_fit as _measure_fit
 from dms_executor.ontology import Measure, MeasureProvenance, Ontology, measure_expression
 from dms_executor.space_ontology import (
     WIRE_MAX_BYTES,
@@ -60,6 +60,17 @@ from test_onto_derive_01 import make_minter
 
 EXECUTOR_DIR = Path(__file__).resolve().parents[1] / "packages" / "executor" / "dms_executor"
 ALLOWED = {SCHOOLS, DISTRICTS}
+#: What ``read_source_pulls`` names for the rig's relations: the table at the source, schema
+#: (``public``) left off. The fit reads a relation's words from here and never from its landed
+#: name, so a unit call that does not pass it contributes no relation word at all.
+SOURCE_TABLES = {SCHOOLS: "schools", DISTRICTS: "districts"}
+
+
+def measure_fit(question: str, measures: Any, **kw: Any) -> FitVerdict:
+    """``measure_fit`` as the ask path calls it: with the plan's relations named by their source
+    table. A test that wants none passes ``tables={}``."""
+    kw.setdefault("tables", SOURCE_TABLES)
+    return _measure_fit(question, measures, **kw)
 
 
 @pytest.fixture()
@@ -1317,6 +1328,7 @@ NORTH_FILTER = ("bronze.public_districts", "name", "=", "North")
 
 
 def _acct(question: str, **kw: Any) -> mu.Accounting:
+    kw.setdefault("tables", SOURCE_TABLES)
     return mu.account_for_question(question, measure="schools_budget_sum", grain=SCHOOLS, **kw)
 
 
@@ -1695,7 +1707,11 @@ def test_a_cue_phrase_is_covered_only_whole() -> None:
 
 def test_vocabulary_is_the_plans_own_names_and_one_plural_rule() -> None:
     assert _acct("total budgets of schools").ok  # budgets = budget + s
-    assert _acct("total budget of public schools").ok  # grain table word
+    assert _acct("total budget of schools").ok  # the grain table's name AT THE SOURCE
+    # ... and not the landed relation's name: ``bronze.public_schools`` is table ``schools`` of
+    # source schema ``public``, so "public schools" is a condition the plan does not carry
+    public = _acct("total budget of public schools")
+    assert (public.reason, public.unaccounted) == ("unbound_constraint", ("'public'",))
     assert not _acct("total budget of private schools").ok
     assert not _acct("total budget of schoolies").ok
     cat = mu.account_for_question(

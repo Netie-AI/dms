@@ -50,7 +50,9 @@ GAP_REASONS = frozenset(
         # dms#284: the second named abstain, and the two ask-time rule 12 / empty heads.
         "no_declared_link",
         "unmatched_filter_value",
+        "ambiguous_filter_value",
         "empty_aggregate",
+        "too_many_groups",
         "ontology_store_unavailable",
         "untyped_numeric",
         "ambiguous_measure",
@@ -75,7 +77,13 @@ _GENERIC_ABSTAIN = (
 #: The customer sentence shows the head only. The measure name, the relation names and the
 #: filter value (all of them chosen by the model or typed by the asker) stay in assumptions.
 _HEAD_ONLY_GAPS = frozenset(
-    {"no_declared_measure", "no_declared_link", "unmatched_filter_value", "empty_aggregate"}
+    {
+        "no_declared_measure",
+        "no_declared_link",
+        "unmatched_filter_value",
+        "ambiguous_filter_value",
+        "empty_aggregate",
+    }
 )
 
 #: One plain sentence per head, said first, in the words a customer uses. It names nothing
@@ -87,7 +95,11 @@ _PLAIN_SENTENCE = {
         "The data does not declare a link between these tables, so I will not join them."
     ),
     "unmatched_filter_value": "That value does not appear in the data exactly as written.",
+    "ambiguous_filter_value": (
+        "That value appears in the data under more than one spelling, so I will not pick one."
+    ),
     "empty_aggregate": "The measure has no values for this question.",
+    "too_many_groups": "That breakdown has more groups than I can state completely.",
 }
 
 #: Abstains that offer the Space's usable confirmed measures as what to ask instead.
