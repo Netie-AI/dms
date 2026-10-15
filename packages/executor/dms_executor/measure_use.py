@@ -464,10 +464,22 @@ FIT_REASONS = frozenset(
         "no_match",
         "aggregate_cue",
         "quantity_cue",
+        "qualifier_cue",
         "no_content_tokens",
         "ranker_disagrees",
     }
 )
+
+#: Connectives that narrow or split the number asked for ("per student", "excluding the
+#: north"). A plain aggregate of one column answers none of them, so a question that carries
+#: one is refused unless the measure's own name carries that word.
+_QUALIFIER_WORDS = frozenset({"per", "each", "excluding", "except", "without", "only", "not"})
+_OTHER_THAN = ("other", "than")
+#: "by <word>" asks for a breakdown or a restriction by that dimension.
+_BY = "by"
+
+#: Count phrasing in which "total" is part of the count, not a request for a SUM.
+_COUNT_PHRASES = (("total", "number"), ("total", "count"))
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -506,6 +518,44 @@ def aggregate_cues(question: str) -> frozenset[str]:
     )
 
 
+def _fit_cues(question: str) -> frozenset[str]:
+    """``aggregate_cues`` as the fit check reads it: "total number" and "total count" are
+    count phrasing, so they carry ``count`` and not ``sum`` ("total number of students" is a
+    COUNT question; a SUM measure does not answer it)."""
+    toks = _stems(question)
+    extra: set[str] = set()
+    for phrase in _COUNT_PHRASES:
+        n = len(phrase)
+        i = 0
+        while i <= len(toks) - n:
+            if tuple(toks[i : i + n]) == phrase:
+                extra.add("count")
+                del toks[i : i + n]
+            else:
+                i += 1
+    cues = {
+        cue for cue, runs in _CUE_STEMS.items() if any(_contains_run(toks, run) for run in runs)
+    }
+    return frozenset(cues | extra)
+
+
+def _unnamed_qualifier(question: str, content: frozenset[str]) -> str | None:
+    """The first qualifier connective the question uses that the measure's name does not
+    cover, or None. ``by <word>`` is covered only when the measure names <word>."""
+    toks = _stems(question)
+    for i, tok in enumerate(toks):
+        if tok in _QUALIFIER_WORDS and tok not in content:
+            return tok
+        if tok == _OTHER_THAN[0] and toks[i + 1 : i + 2] == [_OTHER_THAN[1]]:
+            if not set(_OTHER_THAN) <= content:
+                return "other than"
+        if tok == _BY:
+            following = toks[i + 1 : i + 2]
+            if not following or following[0] not in content:
+                return "by " + (following[0] if following else "")
+    return None
+
+
 def _content_tokens(name: str) -> frozenset[str]:
     out = {
         _stem(t)
@@ -538,12 +588,19 @@ def measure_fit(
     * a measure matches iff ALL its content tokens (name words minus aggregate words) are
       in the question; DMS's pick is the match with the most content tokens, a tie is
       ``ambiguous``; ``candidate`` must equal the pick (``ranker_disagrees``);
-    * the question's aggregate cue must not conflict with the measure's aggregate
+    * EVERY aggregate cue in the question must be one the measure's aggregate can answer
       (``aggregate_cue``): a question that asks for an average, a count, a minimum or a
-      maximum is not answered by a SUM, and one that asks for distinct values is not
-      answered by anything but COUNT DISTINCT;
+      maximum is not answered by a SUM, one that asks for distinct values is not answered by
+      anything but COUNT DISTINCT, and a second cue does not launder the first ("average
+      total budget" is not a SUM). The one exemption is count phrasing: "total number",
+      "total count" and "how many" are compatible with count and count_distinct and with
+      nothing else;
     * a question about a rate, ratio, share, percentage, change... disagrees unless the
-      measure's own name says so (``quantity_cue``).
+      measure's own name says so (``quantity_cue``);
+    * a question that narrows or splits the number (``per``, ``each``, ``excluding``,
+      ``except``, ``without``, ``only``, ``not``, ``other than``, ``by <word>``) disagrees
+      unless the measure's own name carries that word (``qualifier_cue``). A false refusal
+      here is safe; a plain total offered as "per student" is a wrong figure.
 
     Only structured (provenance-bearing) measures take part. English tokens only.
     """
@@ -567,10 +624,10 @@ def measure_fit(
 
     prov = pool[pick].provenance
     assert prov is not None
-    cues = aggregate_cues(question)
-    if cues and not (cues & _COMPATIBLE_CUES.get(prov.aggregate, frozenset())):
-        return FitVerdict(False, pick, "aggregate_cue")
-    if "distinct" in cues and prov.aggregate != "count_distinct":
+    # Every cue the question carries must be one this aggregate can answer. A second cue
+    # does not launder the first: "average total budget" asks for an AVG, not the SUM that
+    # its word "total" would otherwise let through.
+    if _fit_cues(question) - _COMPATIBLE_CUES.get(prov.aggregate, frozenset()):
         return FitVerdict(False, pick, "aggregate_cue")
 
     asked = {_canon(t) for t in qtoks if t in _QUANTITY_STEMS}
@@ -579,4 +636,6 @@ def measure_fit(
     named = {_canon(t) for t in _content_tokens(pick)}
     if asked - named:
         return FitVerdict(False, pick, "quantity_cue")
+    if _unnamed_qualifier(question, _content_tokens(pick)) is not None:
+        return FitVerdict(False, pick, "qualifier_cue")
     return FitVerdict(True, pick, "ok")

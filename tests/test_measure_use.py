@@ -201,6 +201,20 @@ def test_fit_candidate_must_equal_dms_own_pick() -> None:
         # highest / lowest vs SUM
         ("Which school has the highest budget?", BUDGET, "aggregate_cue"),
         ("What is the lowest budget of schools?", BUDGET, "aggregate_cue"),
+        # a second cue does not launder a conflicting first one
+        ("What is the average total budget of schools?", BUDGET, "aggregate_cue"),
+        ("What is the total average budget of schools?", BUDGET, "aggregate_cue"),
+        ("What is the total highest budget of schools?", BUDGET, "aggregate_cue"),
+        ("What is the overall mean budget of schools?", BUDGET, "aggregate_cue"),
+        ("What is the budget of schools, total and average?", BUDGET, "aggregate_cue"),
+        # count phrasing fits a count and NOTHING else, a SUM included
+        ("What is the total number of students?", STUDENTS, "aggregate_cue"),
+        ("What is the total count of students?", STUDENTS, "aggregate_cue"),
+        (
+            "What is the total number of students?",
+            _m("students_avg", "avg", "students"),
+            "aggregate_cue",
+        ),
         # total vs COUNT, average vs COUNT
         ("What is the total of schools?", SCOUNT, "aggregate_cue"),
         ("What is the average of schools?", SCOUNT, "aggregate_cue"),
@@ -216,8 +230,13 @@ def test_fit_aggregate_cue_conflict_is_not_ok(question: str, measure: Measure, r
     [
         ("What is the total budget of schools?", BUDGET),
         ("What is the budget of schools?", BUDGET),  # no cue at all: nothing conflicts
-        ("What is the total number of students?", STUDENTS),  # sum + count: fits a SUM
+        # "total number" / "total count" are count phrasing: they fit COUNT and COUNT DISTINCT
         ("What is the total number of students?", _m("students_count", "count", "students")),
+        ("What is the total count of students?", _m("students_count", "count", "students")),
+        (
+            "What is the total number of students?",
+            _m("students_distinct", "count_distinct", "id", SCHOOLS),
+        ),
         ("How many schools are there?", SCOUNT),
         ("What is the average budget of schools?", _m("schools_budget_avg", "avg")),
         ("What is the highest budget of schools?", _m("schools_budget_max", "max")),
@@ -322,8 +341,8 @@ def test_fit_stems_plurals_the_same_way_on_both_sides() -> None:
 
 def test_fit_reasons_are_the_documented_vocabulary() -> None:
     assert FIT_REASONS == {
-        "ok", "ambiguous", "no_match", "aggregate_cue", "quantity_cue", "no_content_tokens",
-        "ranker_disagrees",
+        "ok", "ambiguous", "no_match", "aggregate_cue", "quantity_cue", "qualifier_cue",
+        "no_content_tokens", "ranker_disagrees",
     }  # fmt: skip
 
 
@@ -1172,3 +1191,67 @@ def test_a_fresh_uuid_space_has_no_ontology_so_nothing_loads() -> None:
     assert load_space_ontology(str(uuid4()), OntologyStore()) is None
     assert load_space_ontology(None) is None
     assert load_space_ontology("not-a-uuid") is None
+
+
+@pytest.mark.parametrize(
+    ("question", "measure"),
+    [
+        ("What is the total budget per school?", BUDGET),
+        ("What is the total budget of each school?", BUDGET),
+        ("What is the total budget of schools excluding the north?", BUDGET),
+        ("What is the total budget of schools except the north?", BUDGET),
+        ("What is the total budget of schools without the north?", BUDGET),
+        ("What is the total budget of schools only in the north?", BUDGET),
+        ("What is the total budget of schools not in the north?", BUDGET),
+        ("What is the total budget of schools other than the north?", BUDGET),
+        ("What is the total budget of schools by district?", BUDGET),
+        ("How many schools per district?", SCOUNT),
+        ("How many schools by", SCOUNT),  # a dangling "by" names nothing, so it is not covered
+    ],
+)
+def test_fit_a_qualifier_the_measure_does_not_name_is_not_ok(
+    question: str, measure: Measure
+) -> None:
+    got = measure_fit(question, _pool(measure))
+    assert got == FitVerdict(False, measure.name, "qualifier_cue"), question
+
+
+def test_fit_a_by_phrase_is_covered_when_the_measure_names_its_word() -> None:
+    assert measure_fit("What is the total budget by schools?", _pool(BUDGET)).ok is True
+
+
+def test_fit_a_qualifier_word_in_the_measure_name_is_covered() -> None:
+    per = _m("budget_per_student_avg", "avg", "budget_per_student")
+    assert measure_fit("average budget per student", _pool(per)) == FitVerdict(
+        True, "budget_per_student_avg", "ok"
+    )
+    # but not another qualifier next to it
+    got = measure_fit("average budget per student excluding the north", _pool(per))
+    assert got == FitVerdict(False, "budget_per_student_avg", "qualifier_cue")
+    by = _m("students_by_district_count", "count", "*")
+    assert measure_fit("How many students by district?", _pool(by)).ok is True
+    assert measure_fit("How many students by grade by district?", _pool(by)).reason == (
+        "qualifier_cue"
+    )
+
+
+def test_fit_the_verifier_cases() -> None:
+    assert measure_fit("budget per student", _pool(_m("student_budget_sum", "sum"))).reason == (
+        "qualifier_cue"
+    )
+    assert measure_fit("budget excluding the north", _pool(BUDGET)).reason == "no_match"
+    assert measure_fit("schools budget excluding the north", _pool(BUDGET)).reason == (
+        "qualifier_cue"
+    )
+    assert measure_fit("average total budget of schools", _pool(BUDGET)).reason == "aggregate_cue"
+    students_count = _m("students_count", "count", "*")
+    assert measure_fit("total number of students", _pool(students_count)).ok is True
+
+
+def test_fit_an_ordinary_question_is_still_ok() -> None:
+    for q in (
+        "What is the total budget of all schools?",
+        "total budget of schools",
+        "What is the budget of schools in the north?",
+    ):
+        assert measure_fit(q, _pool(BUDGET)) == FitVerdict(True, "schools_budget_sum", "ok"), q
