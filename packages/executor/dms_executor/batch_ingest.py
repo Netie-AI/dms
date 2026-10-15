@@ -205,7 +205,7 @@ def _remember(
 def _write_land_row_log(
     path: Path, ingest_id: str, rows: list[tuple[int, str, str, str]]
 ) -> None:
-    con = connect_file(path)
+    con = connect_file(path, write=True)
     try:
         ensure_lake_schemas(con)
         con.execute(

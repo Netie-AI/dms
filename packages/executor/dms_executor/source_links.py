@@ -17,10 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
 from dms_executor.db_connector import SourceExtract
-from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import connect_serving, ensure_demo_warehouse, warehouse_path
 from dms_executor.ontology import from_manifest
 
 
@@ -76,7 +74,7 @@ def verify_source_links(
         }
 
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_serving(db)
     try:
         onto = from_manifest(entry, relation_for=_bronze)
         violations = onto.verify(con)
