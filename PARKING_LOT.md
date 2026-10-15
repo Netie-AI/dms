@@ -441,6 +441,18 @@ certified lane and answered by the generated-SQL path.
 **Unlock:** a pilot shows a wrong certified figure from either, or steward alias phrases
 (P-DMS-44) give the lane a proven phrase-to-value mapping to re-admit normalised values.
 
+## P-DMS-54 - A source column named _src or _ingest_id displaces the row provenance
+
+`write_bronze_rows` builds `SELECT src.*, [...] AS _src, ... AS _ingest_id`. A source column
+literally named `_src` (or `_ingest_id`) lands under that name and DuckDB renames the real
+provenance column to `_src_1` (`_ingest_id_1`), so a reader that keys on the `_src` name, such
+as `contract_infer`'s provenance filter, treats the source's data as provenance. Found while
+fixing the column-name statement injection; it is an integrity defect, not a statement
+injection, and is not fixed there.
+**Unlock:** the prd-agent routes it to the ingest epic and the founder picks the landed name;
+the fix is to rename the colliding source column at landing (as a control character already
+is) and name it on the receipt.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.

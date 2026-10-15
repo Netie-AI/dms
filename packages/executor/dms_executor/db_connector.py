@@ -17,6 +17,7 @@ asserts that on this file's source text.
 
 from __future__ import annotations
 
+import unicodedata
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -553,6 +554,25 @@ def _distinct_columns(columns: list[str]) -> tuple[list[str], dict[str, str]]:
     return out, renamed
 
 
+def _landable_name(col: str, position: int) -> str:
+    """The column name DuckDB can hold: a control character (NUL, a newline) becomes ``_``.
+
+    NUL and the empty string are not identifiers DuckDB can parse, and a control
+    character in a column name is not a name anyone typed on purpose. ``position``
+    (1-based) names a column whose whole name was empty.
+    """
+    clean = "".join("_" if unicodedata.category(ch) == "Cc" else ch for ch in col)
+    return clean or f"column_{position}"
+
+
+def _landable_columns(columns: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Source column names -> names that land, and ``{source name: landed name}`` for the
+    renamed. Cleaned first, then made unique case-insensitively, so two names that clean
+    alike both land and the receipt names each."""
+    landed, _ = _distinct_columns([_landable_name(c, i) for i, c in enumerate(columns, 1)])
+    return landed, {a: b for a, b in zip(columns, landed, strict=True) if a != b}
+
+
 def _pull_one(
     cfg: SourceConfig,
     con: Any,
@@ -588,11 +608,12 @@ def _pull_one(
             stem=_bronze_name(target), source=source, path=path, space_id=space_id
         )
     declared = list_source_column_types(cfg, con, target, columns)
-    landed_cols, renamed = _distinct_columns(columns)
+    landed_cols, renamed = _landable_columns(columns)
     if renamed:
         # DuckDB column names are case-insensitive: ``Name`` and ``name`` in one
         # source table were a CatalogException and a 500. The duplicate lands
-        # under a suffixed name and the receipt says which.
+        # under a suffixed name and the receipt says which. A name DuckDB cannot
+        # hold at all (NUL, empty, a control character) is renamed the same way.
         rename_note = "; ".join(f"column {a!r} landed as {b!r}" for a, b in renamed.items())
         note = f"{note}; {rename_note}" if note else rename_note
         if declared is not None:
