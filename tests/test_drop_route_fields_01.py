@@ -615,3 +615,37 @@ def test_grouped_ask_one_row_select_is_not_swapped_for_the_rule_compile(
     assert env.get("abstained") is True
     assert env.get("rows") == []
     assert str(env.get("text") or "").strip()
+
+
+_PIN_ERROR = "pin_caller_error:auto"
+
+
+def test_caller_error_pin_still_stops_the_insights_leg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DROP-ROUTE-FIELDS-01 stops sending the pin. It must not stop checking it.
+
+    A caller-error pin (DMS_STRICT_MODEL=auto) refused the leg before any POST.
+    Red on c5df0e5e: the refusal rode on pin_refusal in the body, which is no
+    longer stamped, so the POST went out unpinned.
+    """
+    monkeypatch.setenv("DMS_STRICT_MODEL", "auto")
+    monkeypatch.delenv("DMS_STRICT_PROVIDER", raising=False)
+    cap = _patch_capture(monkeypatch)
+    out = compute_insights(_LOOPBACK, question="how many skus", api_key=_KEY, timeout=5.0)
+    assert cap.insights == []
+    assert isinstance(out, dict) and out.get("insights_fail") == _PIN_ERROR
+    direct = _insights_generate_post(
+        cap.client()(),
+        _LOOPBACK,
+        {"intent": "how many skus", "question": "how many skus", "generate": True},
+        None,
+    )
+    assert cap.insights == []
+    assert isinstance(direct, dict) and direct.get("insights_fail") == _PIN_ERROR
+    queried = compute_query(_LOOPBACK, question="how many skus", api_key=_KEY, timeout=5.0)
+    assert cap.insights == []
+    assert isinstance(queried, dict) and queried.get("insights_fail") == _PIN_ERROR
+    hosted = insights_post(_LOOPBACK, intent="how many skus", generate=True, api_key=_KEY)
+    assert cap.insights == []
+    assert isinstance(hosted, dict) and hosted.get("insights_fail") == _PIN_ERROR

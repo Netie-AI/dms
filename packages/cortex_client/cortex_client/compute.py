@@ -873,13 +873,16 @@ def _insights_generate_post(
     from cortex_client.strict_pin import (
         abstain_payload,
         interpret,
+        pin_config,
         refusal_payload,
         stamp_generate_headers,
     )
 
     body = without_route_fields(body)
-    if body.get("pin_refusal"):
-        return refusal_payload(str(body["pin_refusal"]))
+    # The pin is not sent, but a caller-error pin still stops this leg.
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     hdr = stamp_generate_headers(headers)
     note_model_call()
     try:
@@ -1221,10 +1224,11 @@ def compute_query(
         ontology=ontology,
         sql_feedback=sql_feedback,
     )
-    if insights_body.get("pin_refusal"):
-        from cortex_client.strict_pin import refusal_payload
+    from cortex_client.strict_pin import pin_config, refusal_payload
 
-        return refusal_payload(str(insights_body["pin_refusal"]))
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",

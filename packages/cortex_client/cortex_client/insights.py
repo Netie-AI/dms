@@ -293,8 +293,11 @@ def insights_post(
     apply_schema_context(body, schema_context)
     extra_headers: dict[str, str] | None = None
     if generate:
-        from cortex_client.strict_pin import stamp_generate_headers
+        from cortex_client.strict_pin import pin_config, stamp_generate_headers
 
+        refusal = pin_config().refusal
+        if refusal:
+            return generate_abstain_payload(refusal)
         extra_headers = stamp_generate_headers({})
     return _request(
         "POST",
