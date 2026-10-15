@@ -1255,3 +1255,57 @@ def test_fit_an_ordinary_question_is_still_ok() -> None:
         "What is the budget of schools in the north?",
     ):
         assert measure_fit(q, _pool(BUDGET)) == FitVerdict(True, "schools_budget_sum", "ok"), q
+
+
+# ------------------------------------------------------------------ a grouping the plan computes
+
+
+@pytest.mark.parametrize(
+    ("question", "measure", "grouped"),
+    [
+        ("What is the total budget of schools by district?", BUDGET, ((DISTRICTS, "name"),)),
+        ("What is the total budget of schools by district?", BUDGET, ((SCHOOLS, "district_id"),)),
+        ("What is the total budget of schools per district?", BUDGET, ((DISTRICTS, "name"),)),
+        ("What is the total budget of schools for each district?", BUDGET, ((DISTRICTS, "name"),)),
+        ("How many schools per district?", SCOUNT, ((DISTRICTS, "name"),)),
+    ],
+)
+def test_fit_a_by_per_or_each_word_is_covered_by_a_plan_that_groups_by_it(
+    question: str, measure: Measure, grouped: tuple[tuple[str, str], ...]
+) -> None:
+    got = measure_fit(question, _pool(measure), grouped_by=grouped)
+    assert got == FitVerdict(True, measure.name, "ok"), question
+
+
+@pytest.mark.parametrize(
+    ("question", "grouped"),
+    [
+        ("What is the total budget of schools by district?", ()),  # the plan does not group
+        ("What is the total budget of schools by region?", ((DISTRICTS, "name"),)),  # not that
+        ("What is the total budget of schools per student?", ((DISTRICTS, "name"),)),
+        ("What is the total budget of schools by", ((DISTRICTS, "name"),)),  # dangling by
+    ],
+)
+def test_fit_a_grouping_that_is_not_the_word_asked_covers_nothing(
+    question: str, grouped: tuple[tuple[str, str], ...]
+) -> None:
+    got = measure_fit(question, _pool(BUDGET), grouped_by=grouped)
+    assert got == FitVerdict(False, BUDGET.name, "qualifier_cue"), question
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the total budget of schools excluding the district?",
+        "What is the total budget of schools except the district?",
+        "What is the total budget of schools without the district?",
+        "What is the total budget of schools only in the district?",
+        "What is the total budget of schools not in the district?",
+        "What is the total budget of schools other than the district?",
+    ],
+)
+def test_fit_a_grouping_never_covers_a_restriction(question: str) -> None:
+    """Only ``by`` / ``per`` / ``each`` are breakdown words. 'excluding the district' narrows the
+    number; a plan grouped by district does not do that, so the veto stands."""
+    got = measure_fit(question, _pool(BUDGET), grouped_by=((DISTRICTS, "name"),))
+    assert got == FitVerdict(False, BUDGET.name, "qualifier_cue"), question

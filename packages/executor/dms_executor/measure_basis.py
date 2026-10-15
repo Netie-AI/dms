@@ -26,3 +26,22 @@ MEASURE_STATUS_UNCONFIRMED = "unconfirmed"
 MAX_CONFIRMED_MEASURES = 80
 MAX_PROPOSED_PER_RUN = 60
 MAX_DESCRIPTION_CHARS = 200
+
+#: The keys a ``measure_basis`` object carries, in the order the envelope shows them. The
+#: envelope builder and ``assert_envelope_valid`` accept exactly these and nothing else:
+#: the key travels through the PII masker unscanned (see ``dms_core.pii.SAFE_ENVELOPE_KEYS``),
+#: so what it may hold is pinned to identifier shapes, never free text.
+CONFIRMED_BASIS_KEYS = (
+    "status",
+    "measure_id",
+    "measure",
+    "definition_hash",
+    "version_id",
+    "confirmed_at",
+    "ledger_entry_id",
+    "grain",
+    "columns_checked",
+    "persisted",
+)
+#: How much of the definition hash the human-readable assumption line shows.
+CONFIRMED_LINE_HASH_CHARS = 12

@@ -18,6 +18,11 @@ from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
+from dms_executor.measure_basis import (
+    CONFIRMED_BASIS_KEYS,
+    CONFIRMED_PREFIX,
+    MEASURE_STATUS_CONFIRMED,
+)
 
 ALLOWED_BADGES = frozenset(
     {
@@ -1281,6 +1286,54 @@ def normalize_badge(raw: str | None, *, abstained: bool) -> str:
     return _BADGE_MAP.get(key.lower(), "ABSTAIN")
 
 
+#: Badges a steward-confirmed measure answer may wear. The staged value is
+#: ``measure_basis.CONFIRMED_MEASURE_BADGE``; the envelope accepts either rung so the later
+#: flip is one constant. No badge outside the existing vocabulary is added here.
+_CONFIRMED_BASIS_BADGES = frozenset({"L1_GOVERNED_METRIC", "L2_VALIDATED"})
+_BASIS_SHAPES: dict[str, re.Pattern[str]] = {
+    "measure_id": re.compile(r"[0-9A-Fa-f-]{8,64}"),
+    "measure": re.compile(r"[a-z][a-z0-9_]{1,47}"),
+    "definition_hash": re.compile(r"[0-9a-f]{64}"),
+    "version_id": re.compile(r"[0-9A-Fa-f-]{8,64}"),
+    "confirmed_at": re.compile(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]{5,40}"),
+    "ledger_entry_id": re.compile(r"[A-Za-z0-9_.:\-]{1,128}"),
+    "grain": re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?"),
+}
+
+
+def measure_basis_problem(
+    basis: Any, *, badge: str, assumptions: list[str] | None
+) -> str | None:
+    """Why a ``measure_basis`` is not a valid confirmed-measure basis, or None.
+
+    A confirmed basis needs: exactly the documented keys; status ``confirmed``; every
+    identifier in the shape the confirm path produces (the key travels through the PII
+    masker unscanned, so only identifier shapes may ride it); the columns checked against
+    the lake this ask; a badge from the confirmed rung; and the ``measure confirmed:``
+    line in the assumptions, so a figure never carries the basis without the sentence a
+    customer reads. Anything else is a problem, and the caller clamps to ABSTAIN.
+    """
+    if not isinstance(basis, dict):
+        return "measure_basis is not an object"
+    if set(basis) != set(CONFIRMED_BASIS_KEYS):
+        return f"measure_basis keys {sorted(basis)} are not {sorted(CONFIRMED_BASIS_KEYS)}"
+    if basis.get("status") != MEASURE_STATUS_CONFIRMED:
+        return f"measure_basis status {basis.get('status')!r} is not 'confirmed'"
+    for key, shape in _BASIS_SHAPES.items():
+        value = basis.get(key)
+        if not (isinstance(value, str) and shape.fullmatch(value)):
+            return f"measure_basis.{key} is not a valid identifier"
+    if basis.get("columns_checked") is not True:
+        return "measure_basis.columns_checked must be true"
+    if not isinstance(basis.get("persisted"), bool):
+        return "measure_basis.persisted must be a bool"
+    if badge not in _CONFIRMED_BASIS_BADGES:
+        return f"badge {badge!r} cannot carry a confirmed measure basis"
+    if not any(str(a).startswith(CONFIRMED_PREFIX) for a in (assumptions or [])):
+        return "no 'measure confirmed:' line in assumptions"
+    return None
+
+
 def _ensure_values(
     values: list[dict[str, Any]] | None,
     rows: list[dict[str, Any]] | None,
@@ -1378,9 +1431,16 @@ def build_answer_envelope(
     cascade_path: bool = False,
     exclude_reasons: list[Any] | None = None,
     column_schema: dict[str, Any] | None = None,
+    measure_basis: dict[str, Any] | None = None,
     _from_builder: bool = False,
 ) -> dict[str, Any]:
-    """Sole envelope constructor — badge and abstained stay in lockstep."""
+    """Sole envelope constructor — badge and abstained stay in lockstep.
+
+    ``measure_basis`` (additive, dms#284) is the provenance of a steward-confirmed measure
+    behind an answered figure. It is kept only when it is a valid confirmed basis for this
+    badge and assumptions (``measure_basis_problem``); otherwise the answer is clamped to
+    ABSTAIN, never shown with a basis it cannot back.
+    """
     badge_norm_probe = normalize_badge(badge, abstained=False)
     if abstained is None:
         abstained = badge_norm_probe == "ABSTAIN" or str(badge).upper() == "ABSTAIN"
@@ -1621,6 +1681,22 @@ def build_answer_envelope(
             "predict/forecast ask answered by historical SQL: history pad"
         )
 
+    # A confirmed-measure basis the badge, the assumptions and the shape cannot back is not
+    # shown: the answer drops to ABSTAIN (clamping is only ever downward).
+    if not abstained and measure_basis is not None:
+        basis_problem = measure_basis_problem(
+            measure_basis, badge=badge_out, assumptions=assumptions_list
+        )
+        if basis_problem:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = (
+                "This figure came with a measure basis I cannot verify, so I cannot "
+                "certify it. Rather than show a number I cannot stand behind, I'm "
+                "stopping here."
+            )
+            assumptions_list.append(f"measure basis invalid: {basis_problem}")
+
     # PII-01 before E4: IC/phone digits in k=v prose must not look like uncited money.
     # Detector errors fail closed (string cells become DMSMASK_unknown_00).
     # Dates: sqlglot lineage carries a birth cue through an alias.
@@ -1747,6 +1823,8 @@ def build_answer_envelope(
     }
     if trace_out is not None:
         env["constraint_trace"] = trace_out
+    if measure_basis is not None and not abstained:
+        env["measure_basis"] = dict(measure_basis)
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
     masked = mask_unknown_keys(env)
@@ -2003,6 +2081,17 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
                 "(silent pad forbidden)"
             )
 
+    # E14 (dms#284), the part that needs no new badge: a measure_basis rides only an
+    # answered figure and only a valid confirmed basis for this badge and these assumptions.
+    if "measure_basis" in envelope:
+        assert not abstained, "E14: an abstained envelope must not carry measure_basis"
+        problem = measure_basis_problem(
+            envelope.get("measure_basis"),
+            badge=str(badge),
+            assumptions=[str(a) for a in envelope.get("assumptions") or []],
+        )
+        assert problem is None, f"E14: {problem}"
+
     # E8
     assert isinstance(as_of, str) and as_of.strip(), "E8: as_of required"
     try:
@@ -2027,6 +2116,7 @@ __all__ = [
     "chart_from_rows",
     "competing_category_scopes",
     "invented_totals",
+    "measure_basis_problem",
     "normalize_badge",
     "normalize_contributing_sources",
     "orphan_money_figures",

@@ -35,6 +35,12 @@ from uuid import UUID
 from dms_core.control_plane.onto_store import OntoMeasure, measure_definition_hash
 
 from dms_executor.demo_warehouse import connect_file
+from dms_executor.measure_basis import (
+    CONFIRMED_LINE_HASH_CHARS,
+    CONFIRMED_MEMORY_ONLY_SUFFIX,
+    CONFIRMED_PREFIX,
+    MEASURE_STATUS_CONFIRMED,
+)
 from dms_executor.measure_spec import NAME_RE, description_failures
 from dms_executor.ontology import (
     Measure,
@@ -54,9 +60,11 @@ __all__ = [
     "EXCLUSION_REASONS",
     "FIT_REASONS",
     "FitVerdict",
+    "REASON_EMPTY_AGGREGATE",
     "REASON_UNMATCHED_FILTER_VALUE",
     "aggregate_cues",
     "attach_confirmed_measures",
+    "confirmed_basis",
     "confirmed_measure_suggestions",
     "filter_values_present",
     "measure_exclusions",
@@ -102,6 +110,7 @@ EXCLUSION_REASONS = frozenset(
 _EXCLUSIONS_SLOT = "_measure_exclusions"
 
 REASON_UNMATCHED_FILTER_VALUE = "unmatched_filter_value"
+REASON_EMPTY_AGGREGATE = "empty_aggregate"
 #: The most literals one IN list may carry and still be probed (one probe per literal).
 MAX_PROBED_LITERALS = 50
 
@@ -341,6 +350,46 @@ def confirmed_measure_suggestions(onto: Ontology | None) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# what an answer from a confirmed measure says about itself
+# --------------------------------------------------------------------------
+
+
+def confirmed_basis(prov: MeasureProvenance) -> tuple[dict[str, Any], str]:
+    """``(measure_basis, assumption line)`` for an answer a confirmed measure produced.
+
+    ONE helper builds both, from the provenance the confirmed row carried and the lake check
+    this ask made, so the structured object and the sentence a customer reads can never
+    disagree. Only a measure whose column the lake confirmed THIS ask has a basis; anything
+    else is a programming error and raises (the caller abstains rather than state one).
+    The wording says "steward account", not a person: under DR-0004 Option A the
+    confirmer is the configured actor.
+    """
+    if not prov.columns_checked:
+        raise ValueError(f"measure {prov.name!r} was not checked against the lake this ask")
+    basis: dict[str, Any] = {
+        "status": MEASURE_STATUS_CONFIRMED,
+        "measure_id": prov.measure_id,
+        "measure": prov.name,
+        "definition_hash": prov.definition_hash,
+        "version_id": prov.version_id,
+        "confirmed_at": prov.decided_at,
+        "ledger_entry_id": prov.ledger_entry_id,
+        "grain": prov.grain,
+        "columns_checked": True,
+        "persisted": bool(prov.persisted),
+    }
+    line = (
+        f"{CONFIRMED_PREFIX}{prov.name} "
+        f"(definition {prov.definition_hash[:CONFIRMED_LINE_HASH_CHARS]}, "
+        f"confirmed {prov.decided_at[:10]} by this workspace's steward account, "
+        f"ledger {prov.ledger_entry_id})"
+    )
+    if not prov.persisted:
+        line += CONFIRMED_MEMORY_ONLY_SUFFIX
+    return basis, line
+
+
+# --------------------------------------------------------------------------
 # rule 12 at ask time
 # --------------------------------------------------------------------------
 
@@ -477,6 +526,8 @@ _QUALIFIER_WORDS = frozenset({"per", "each", "excluding", "except", "without", "
 _OTHER_THAN = ("other", "than")
 #: "by <word>" asks for a breakdown or a restriction by that dimension.
 _BY = "by"
+#: Qualifiers that mean "one figure per <thing>": a plan grouped by <thing> answers them.
+_GROUPING_WORDS = frozenset({"per", "each"})
 
 #: Count phrasing in which "total" is part of the count, not a request for a SUM.
 _COUNT_PHRASES = (("total", "number"), ("total", "count"))
@@ -539,21 +590,39 @@ def _fit_cues(question: str) -> frozenset[str]:
     return frozenset(cues | extra)
 
 
-def _unnamed_qualifier(question: str, content: frozenset[str]) -> str | None:
-    """The first qualifier connective the question uses that the measure's name does not
-    cover, or None. ``by <word>`` is covered only when the measure names <word>."""
+def _unnamed_qualifier(
+    question: str, content: frozenset[str], grouped: frozenset[str] = frozenset()
+) -> str | None:
+    """The first qualifier connective the question uses that neither the measure's name nor
+    the plan covers, or None. ``by <word>`` is covered when the measure names <word> or the
+    plan itself groups by it (``grouped``): a breakdown the plan really computes is the
+    breakdown asked for. ``per`` / ``each`` followed by such a word are covered the same way.
+    ``excluding``, ``except``, ``without``, ``only``, ``not`` and ``other than`` are never
+    covered by a grouping: only a measure that says so can answer them."""
     toks = _stems(question)
     for i, tok in enumerate(toks):
+        following = toks[i + 1 : i + 2]
         if tok in _QUALIFIER_WORDS and tok not in content:
+            if tok in _GROUPING_WORDS and following and following[0] in grouped:
+                continue
             return tok
         if tok == _OTHER_THAN[0] and toks[i + 1 : i + 2] == [_OTHER_THAN[1]]:
             if not set(_OTHER_THAN) <= content:
                 return "other than"
         if tok == _BY:
-            following = toks[i + 1 : i + 2]
-            if not following or following[0] not in content:
+            if not following or (following[0] not in content and following[0] not in grouped):
                 return "by " + (following[0] if following else "")
     return None
+
+
+def _grouped_words(grouped_by: Iterable[tuple[str, str]]) -> frozenset[str]:
+    """The stemmed words a plan's group-by names: its object (``bronze.public_districts`` ->
+    public, district) and its column. What the plan computes, not what the question says."""
+    out: set[str] = set()
+    for obj, column in grouped_by:
+        for part in (str(obj), str(column)):
+            out.update(_stem(t) for t in re.split(r"[^a-z0-9]+", part.lower()) if len(t) >= 2)
+    return frozenset(out)
 
 
 def _content_tokens(name: str) -> frozenset[str]:
@@ -577,7 +646,11 @@ class FitVerdict:
 
 
 def measure_fit(
-    question: str, measures: Mapping[str, Measure], *, candidate: str | None = None
+    question: str,
+    measures: Mapping[str, Measure],
+    *,
+    candidate: str | None = None,
+    grouped_by: Iterable[tuple[str, str]] = (),
 ) -> FitVerdict:
     """Whether a confirmed measure answers this question, by DMS's own reading.
 
@@ -599,8 +672,11 @@ def measure_fit(
       measure's own name says so (``quantity_cue``);
     * a question that narrows or splits the number (``per``, ``each``, ``excluding``,
       ``except``, ``without``, ``only``, ``not``, ``other than``, ``by <word>``) disagrees
-      unless the measure's own name carries that word (``qualifier_cue``). A false refusal
-      here is safe; a plain total offered as "per student" is a wrong figure.
+      unless the measure's own name carries that word (``qualifier_cue``). ``by`` / ``per`` /
+      ``each`` are also covered by a word the PLAN groups by (``grouped_by``, the plan's
+      ``(object, column)`` pairs): "total budget by district" is answered by the total grouped
+      by district, and by nothing else. A false refusal here is safe; a plain total offered
+      as "per student" is a wrong figure.
 
     Only structured (provenance-bearing) measures take part. English tokens only.
     """
@@ -636,6 +712,6 @@ def measure_fit(
     named = {_canon(t) for t in _content_tokens(pick)}
     if asked - named:
         return FitVerdict(False, pick, "quantity_cue")
-    if _unnamed_qualifier(question, _content_tokens(pick)) is not None:
+    if _unnamed_qualifier(question, _content_tokens(pick), _grouped_words(grouped_by)) is not None:
         return FitVerdict(False, pick, "qualifier_cue")
     return FitVerdict(True, pick, "ok")

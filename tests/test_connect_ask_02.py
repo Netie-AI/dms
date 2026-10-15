@@ -28,7 +28,12 @@ import test_ingest_fixes_277 as ingest277
 from cortex_client.models import AskResponse
 from dms_core.control_plane.onto_store import OntologyStore, measure_definition_hash
 from dms_executor.gen_path_refuse import GAP_REASONS, customer_abstain_text, gap_reason_name
-from dms_executor.measure_basis import CONFIRMED_MEASURE_BADGE
+from dms_executor.measure_basis import (
+    CONFIRMED_BASIS_KEYS,
+    CONFIRMED_MEASURE_BADGE,
+    CONFIRMED_MEMORY_ONLY_SUFFIX,
+    CONFIRMED_PREFIX,
+)
 from dms_executor.space_ontology import relabel_join_gap, set_ontology_store
 from test_ingest_fixes_277 import _oracle, _Rig, _types
 from test_onto_confirm_01 import SCHOOLS, _Env, _lake_exec, _Ledger
@@ -105,6 +110,17 @@ class _Rigged:
 
     def sql(self, question: str, sql: str) -> dict[str, Any]:
         return self.space.ask(question, {"query_sql": sql, "plan_source": "ontology_plan"})
+
+    def ranked(self, question: str, measure: str, query_sql: str) -> dict[str, Any]:
+        """Cortex returned valid SQL AND ranked ``measure`` first: the router's choice."""
+        return self.space.ask(
+            question,
+            {
+                "query_sql": query_sql,
+                "plan_source": "ontology_plan",
+                "ontology": {"metrics": [{"id": measure}]},
+            },
+        )
 
     @property
     def executed(self) -> list[str]:
@@ -797,3 +813,595 @@ def test_the_contract_ask_over_unlinked_tables_offers_what_a_steward_confirmed(
     assert PLAIN_LINK in text and "360.75" not in text and GRANTS not in text
     assert env["suggestions"] == _suggestions(linkless, BUDGET)
     assert linkless.executed == []
+
+
+# ================================================================ step 10: the confirmed lane
+#
+# A confirmed measure answers, says so, and is the ONLY source of its number: it beats valid
+# generated SQL when DMS's own reading of the question agrees (router precedence), it is vetoed
+# when it does not (fit), its filter values must exist as landed (rule 12), and a plan that
+# fails on this lane abstains with its name and never falls back to the model's SQL.
+# The badge is CONFIRMED_MEASURE_BADGE (still L2_VALIDATED); generated SQL that no measure
+# stands behind keeps today's path and carries no ``measure_basis``.
+
+AVG_SQL = "SELECT AVG(s.budget) AS avg_budget FROM bronze.public_schools s"
+AVG_Q = "What is the average budget of schools?"
+RENAMED = "school_budget_total"
+
+
+def _line(env: dict[str, Any]) -> str:
+    lines = [str(a) for a in env.get("assumptions") or [] if str(a).startswith(CONFIRMED_PREFIX)]
+    assert len(lines) == 1, env.get("assumptions")
+    return lines[0]
+
+
+def _assert_basis(env: dict[str, Any], rigged: _Rigged, name: str) -> None:
+    """measure_basis and the sentence both describe the stored confirmed row, field by field."""
+    row = rigged.env.row(rigged.row_id(name))
+    basis = env["measure_basis"]
+    assert tuple(basis) == CONFIRMED_BASIS_KEYS, tuple(basis)
+    assert basis == {
+        "status": "confirmed",
+        "measure_id": str(row.id),
+        "measure": row.name,
+        "definition_hash": row.definition_hash,
+        "version_id": str(row.version_id),
+        "confirmed_at": row.decided_at.isoformat() if row.decided_at else None,
+        "ledger_entry_id": row.ledger_entry_id,
+        "grain": SCHOOLS,
+        "columns_checked": True,
+        "persisted": False,  # the in-memory store: said out loud below
+    }, basis
+    line = _line(env)
+    assert row.name in line and row.definition_hash[:12] in line, line
+    assert str(row.ledger_entry_id) in line and "steward account" in line, line
+    assert line.endswith(CONFIRMED_MEMORY_ONLY_SUFFIX), line
+    assert (row.decided_at.date().isoformat() if row.decided_at else "?") in line, line
+
+
+def _assert_no_basis(env: dict[str, Any]) -> None:
+    assert "measure_basis" not in env, env.get("measure_basis")
+    assert not any(str(a).startswith(CONFIRMED_PREFIX) for a in env.get("assumptions") or [])
+
+
+def test_e01_a_confirmed_answer_carries_its_basis_and_one_matching_line(
+    rigged: _Rigged,
+) -> None:
+    """E01. Confirm with a rename (the steward's lever), ask with a plan naming the new name AND a
+    wrong ``query_sql``. Rows == oracle, the figure is in the text, the basis is the confirmed
+    row's, and the only statement the lake saw is the compile of the confirmed definition."""
+    done = rigged.env.confirm(rigged.views[BUDGET], name=RENAMED)
+    env = rigged.plan(TOTAL_Q, RENAMED, query_sql=WRONG_SQL)
+
+    oracle = _oracle(rigged.rig.lake, "SELECT SUM(budget) AS v FROM bronze.public_schools")
+    assert oracle == [{"v": Decimal("360.75")}]
+    _assert_answer(env, oracle, "360.75")
+    _assert_basis(env, rigged, BUDGET)
+    assert env["measure_basis"]["measure"] == RENAMED
+    confirmed_hash = done["measure"]["definition_hash"] if "measure" in done else None
+    assert env["measure_basis"]["definition_hash"] == confirmed_hash, (done, env["measure_basis"])
+    assert rigged.executed == [rigged.probe_sql(BUDGET)] and WRONG_SQL not in rigged.executed
+    assert rigged.wire_measures.keys() == {RENAMED}
+    assert rigged.rig.cortex.asks == []
+
+
+def test_the_basis_survives_the_pii_masker_whole(rigged: _Rigged) -> None:
+    """The envelope leaves live_ask through the PII scan. A digest or id with a long digit run
+    would be read as a phone or account number; ``measure_basis`` must reach the customer
+    byte for byte (compared with the stored row, not with the scan's own output)."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan(TOTAL_Q, BUDGET)
+    row = rigged.env.row(rigged.row_id(BUDGET))
+    assert env["measure_basis"]["definition_hash"] == row.definition_hash
+    assert "DMSMASK" not in json.dumps(env["measure_basis"])
+    assert "DMSMASK" not in _line(env)
+
+
+def test_e05_a_confirmed_measure_beats_valid_generated_sql_when_the_fit_agrees(
+    rigged: _Rigged,
+) -> None:
+    """E05. Cortex returned valid SQL (a wrong constant) and ranked the confirmed measure first;
+    the question and the measure agree, so the measure's compiled number answers and the model's
+    SQL never reaches submit."""
+    rigged.confirm(BUDGET)
+    env = rigged.ranked(TOTAL_Q, BUDGET, WRONG_SQL)
+    oracle = _oracle(rigged.rig.lake, "SELECT SUM(budget) AS v FROM bronze.public_schools")
+    _assert_answer(env, oracle, "360.75")
+    _assert_basis(env, rigged, BUDGET)
+    assert rigged.executed == [rigged.probe_sql(BUDGET)], rigged.executed
+    assert WRONG_SQL not in rigged.executed
+    assert "prefer:confirmed_measure" in _reasons(env), env["assumptions"]
+    assert rigged.rig.cortex.asks == []
+
+
+def test_e05_the_same_ask_without_a_ranking_stays_on_the_generated_sql_path(
+    rigged: _Rigged,
+) -> None:
+    """No ranked measure, no precedence: Cortex's SQL answers exactly as it did before, with
+    no basis and no confirmed line (it is not the measure's number, and does not say it is)."""
+    rigged.confirm(BUDGET)
+    env = rigged.sql(TOTAL_Q, SUM_SQL)
+    _assert_answer(env, _oracle(rigged.rig.lake, SUM_SQL), "360.75")
+    _assert_no_basis(env)
+    assert rigged.executed == [SUM_SQL]
+
+
+# ---------------------------------------------------------------- the fit veto (E04)
+
+
+@pytest.mark.parametrize(
+    ("question", "reason"),
+    [
+        (AVG_Q, "aggregate_cue"),
+        ("How many schools have a budget?", "aggregate_cue"),
+        ("What is the highest budget of schools?", "aggregate_cue"),
+        ("What is the rate of budget of schools?", "quantity_cue"),
+        ("What is the total revenue of all districts?", "no_match"),
+    ],
+)
+def test_e04_a_plan_the_fit_rejects_abstains_and_never_runs_the_measure(
+    rigged: _Rigged, question: str, reason: str
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(question, BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and BUDGET not in text
+    assert f"{BUDGET} fit_disagrees:{reason}" in _reasons(env), env["assumptions"]
+    assert "measure_basis" not in env and rigged.executed == []
+    assert rigged.rig.cortex.asks == []
+    assert env["suggestions"] == _suggestions(rigged, BUDGET)  # what CAN be asked
+
+
+def test_e04_the_averaging_question_is_answered_by_the_sql_never_by_the_sum_measure(
+    rigged: _Rigged,
+) -> None:
+    """Cortex ranked the SUM measure for an average question and also sent valid AVG SQL.
+    The fit refuses the measure, so the SQL answers on today's generated path: the figure is
+    the average (90.1875), never the confirmed SUM (360.75), and nothing is certified or
+    labelled as the confirmed measure. (Step 9 will label this lane L2_UNCONFIRMED.)"""
+    rigged.confirm(BUDGET)
+    env = rigged.ranked(AVG_Q, BUDGET, AVG_SQL)
+    oracle = _oracle(rigged.rig.lake, AVG_SQL)
+    assert oracle == [{"avg_budget": Decimal("90.1875")}]
+    assert env["abstained"] is False and env["badge"] == "L2_VALIDATED"
+    assert env["badge"] not in ("L0_CERTIFIED", "L1_GOVERNED_METRIC")
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    text = str(env["text"])
+    assert "90.1875" in text and "360.75" not in text, text
+    _assert_no_basis(env)
+    assert rigged.executed == [AVG_SQL]
+    assert "confirmed_measure_not_preferred:aggregate_cue" in _reasons(env), env["assumptions"]
+
+
+def test_e05_slots_that_cannot_be_bound_leave_the_sql_on_the_generated_path(
+    rigged: _Rigged,
+) -> None:
+    """The fit agrees (total / budget / schools) but a breakdown by an undeclared dimension has
+    no typed plan to prefer: the grouped SQL answers as before (generated, no basis). Never the
+    measure's ungrouped total standing in for the breakdown."""
+    rigged.confirm(BUDGET)
+    sql = (
+        "SELECT s.district_id, SUM(s.budget) AS total_budget FROM bronze.public_schools s "
+        "GROUP BY s.district_id"
+    )
+    env = rigged.ranked("What is the total budget of schools per region?", BUDGET, sql)
+    oracle = _oracle(rigged.rig.lake, sql)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    assert "360.75" not in str(env["text"]), env["text"]
+    _assert_no_basis(env)
+    reasons = _reasons(env)
+    assert "prefer:confirmed_measure" not in reasons
+    assert "confirmed_measure_not_preferred" not in reasons, "fit agreed; the slots did not bind"
+    assert rigged.executed == [sql]
+
+
+# ---------------------------------------------------------------- rule 12 at ask time (E13)
+
+NORTH_Q = "What is the total budget of schools in the north district?"
+
+
+def test_e13_a_filter_value_that_is_not_in_the_column_as_landed_abstains_not_zero(
+    rigged: _Rigged,
+) -> None:
+    """'north' is not 'North'. The plan would compile, execute and total nothing under a
+    confirmed badge. It abstains by name; the model's valid SQL is not used instead."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan(
+        NORTH_Q, BUDGET, filters=((DISTRICTS, "name", "=", "north"),), query_sql=SUM_SQL
+    )
+    text = _assert_abstain(env, "unmatched_filter_value")
+    assert "That value does not appear in the data exactly as written." in text, text
+    assert "north" not in text.replace("(gap: unmatched_filter_value)", ""), text
+    assert "'north'" in _reasons(env), env["assumptions"]
+    assert "measure_basis" not in env
+    assert rigged.executed == [] and rigged.rig.cortex.asks == []
+
+    ok = rigged.plan(NORTH_Q, BUDGET, filters=((DISTRICTS, "name", "=", "North"),))
+    oracle = _oracle(
+        rigged.rig.lake,
+        "SELECT SUM(s.budget) AS v FROM bronze.public_schools s "
+        "JOIN bronze.public_districts d ON s.district_id = d.district_id WHERE d.name = 'North'",
+    )
+    assert oracle == [{"v": Decimal("310.75")}]
+    _assert_answer(ok, oracle, "310.75")
+    _assert_basis(ok, rigged, BUDGET)
+
+
+def test_e13_one_missing_value_in_an_in_list_abstains(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(
+        "What is the total budget of schools in the North and West districts?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "IN", ["North", "West"]),),
+    )
+    _assert_abstain(env, "unmatched_filter_value")
+    assert "'West'" in _reasons(env) and rigged.executed == []
+
+
+def test_e13_a_sum_that_is_null_is_empty_aggregate_not_a_figure(rigged: _Rigged) -> None:
+    """Every budget goes NULL after the measure was confirmed. The column and its type are
+    unchanged, so the measure still loads; SUM is NULL. That is 'no value', not an answer."""
+    rigged.confirm(BUDGET)
+    _lake_exec(rigged.rig.lake, "UPDATE bronze.public_schools SET budget = NULL")
+    assert _oracle(rigged.rig.lake, "SELECT SUM(budget) AS v FROM bronze.public_schools") == [
+        {"v": None}
+    ]
+    env = rigged.plan(TOTAL_Q, BUDGET, query_sql=SUM_SQL)
+    text = _assert_abstain(env, "empty_aggregate")
+    assert "The measure has no values for this question." in text, text
+    assert "measure_basis" not in env and "None" not in text
+    assert len(rigged.executed) == 1 and rigged.executed != [SUM_SQL]  # compiled ran; SQL did not
+    assert rigged.rig.cortex.asks == []
+
+
+def test_e13_a_grouped_plan_with_no_rows_is_empty_aggregate(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    _lake_exec(rigged.rig.lake, "DELETE FROM bronze.public_schools")
+    env = rigged.plan(
+        "What is the total budget of all schools by district?",
+        BUDGET,
+        group_by=((DISTRICTS, "name"),),
+    )
+    _assert_abstain(env, "empty_aggregate")
+    assert "measure_basis" not in env
+
+
+def test_e13_a_filter_that_matches_the_dimension_but_no_fact_rows_is_empty_aggregate(
+    rigged: _Rigged,
+) -> None:
+    """'North' exists as a district, so the value probe passes; its schools are gone, so the
+    total is NULL. Still no figure."""
+    rigged.confirm(BUDGET)
+    _lake_exec(rigged.rig.lake, "DELETE FROM bronze.public_schools WHERE district_id = 1")
+    env = rigged.plan(NORTH_Q, BUDGET, filters=((DISTRICTS, "name", "=", "North"),))
+    _assert_abstain(env, "empty_aggregate")
+
+
+def test_e13_a_count_of_an_empty_table_is_a_real_zero(rigged: _Rigged) -> None:
+    """COUNT(*) over no rows is 0, a number, not a missing value: it still answers."""
+    rigged.confirm(COUNT)
+    _lake_exec(rigged.rig.lake, "DELETE FROM bronze.public_schools")
+    env = rigged.plan(COUNT_Q, COUNT)
+    oracle = _oracle(rigged.rig.lake, "SELECT COUNT(*) AS v FROM bronze.public_schools")
+    assert oracle == [{"v": 0}]
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    _assert_basis(env, rigged, COUNT)
+
+
+# ------------------------------------------------------ the envelope rule (E14, no new badge)
+
+_HASH = "9f2c4a7e" * 8
+_BASIS: dict[str, Any] = {
+    "status": "confirmed",
+    "measure_id": "6f1a2b3c-4d5e-4f60-8a7b-0c1d2e3f4a5b",
+    "measure": "schools_budget_sum",
+    "definition_hash": _HASH,
+    "version_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    "confirmed_at": "2026-10-09T15:51:37.123456+00:00",
+    "ledger_entry_id": "led_0123456789",
+    "grain": "bronze.public_schools",
+    "columns_checked": True,
+    "persisted": True,
+}
+_LINE = (
+    f"{CONFIRMED_PREFIX}schools_budget_sum (definition {_HASH[:12]}, confirmed 2026-10-09 "
+    "by this workspace's steward account, ledger led_0123456789)"
+)
+
+
+def _built(
+    basis: dict[str, Any] | None, *, badge: str = "L2_VALIDATED", line: str | None = _LINE
+) -> dict[str, Any]:
+    from dms_executor.envelope import build_answer_envelope
+
+    return build_answer_envelope(
+        answer_id="ans_unit",
+        text="Found 1 row(s).\n  - total=360.75",
+        badge=badge,
+        rows=[{"total": Decimal("360.75")}],
+        sql_used="SELECT SUM(s.budget) AS total FROM bronze.public_schools s",
+        assumptions=["GEN-01 ontology compile", *([line] if line else [])],
+        audit_id="led_unit",
+        route="generated",
+        measure_basis=basis,
+    )
+
+
+@pytest.mark.parametrize("badge", ["L2_VALIDATED", "L1_GOVERNED_METRIC"])
+def test_e14_a_valid_confirmed_basis_is_kept_on_either_confirmed_rung(badge: str) -> None:
+    from dms_executor.envelope import assert_envelope_valid
+
+    env = _built(dict(_BASIS), badge=badge)
+    assert env["abstained"] is False and env["badge"] == badge
+    assert env["measure_basis"] == _BASIS
+    assert_envelope_valid(env)
+
+
+def test_e14_no_basis_means_no_key() -> None:
+    env = _built(None, line=None)
+    assert "measure_basis" not in env and env["badge"] == "L2_VALIDATED"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda b: b.pop("ledger_entry_id"),
+        lambda b: b.update(extra="x"),
+        lambda b: b.update(status="unconfirmed"),
+        lambda b: b.update(definition_hash="abc"),
+        lambda b: b.update(definition_hash=_HASH.upper()),
+        lambda b: b.update(ledger_entry_id=""),
+        lambda b: b.update(ledger_entry_id="led 1; drop"),
+        lambda b: b.update(measure="Schools Budget"),
+        lambda b: b.update(grain="bronze.public_schools; --"),
+        lambda b: b.update(confirmed_at="yesterday"),
+        lambda b: b.update(columns_checked=False),
+        lambda b: b.update(persisted="yes"),
+    ],
+)
+def test_e14_a_basis_the_shape_cannot_back_clamps_the_answer_to_abstain(mutate: Any) -> None:
+    from dms_executor.envelope import assert_envelope_valid
+
+    basis = dict(_BASIS)
+    mutate(basis)
+    env = _built(basis)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert "measure_basis" not in env and env["rows"] == [] and env["values"] == []
+    assert any("measure basis invalid" in str(a) for a in env["assumptions"]), env["assumptions"]
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize(
+    ("badge", "line"),
+    [
+        ("L0_CERTIFIED", _LINE),  # a basis never lifts a figure to the verified rung
+        ("L2_ANOMALOUS", _LINE),
+        ("L2_VALIDATED", None),  # a basis without the sentence a customer reads
+    ],
+)
+def test_e14_the_badge_and_the_sentence_must_match_the_basis(badge: str, line: str | None) -> None:
+    env = _built(dict(_BASIS), badge=badge, line=line)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["badge"]
+    assert "measure_basis" not in env
+
+
+def test_e14_assert_envelope_valid_rejects_a_basis_it_cannot_back() -> None:
+    from dms_executor.envelope import assert_envelope_valid
+
+    good = _built(dict(_BASIS))
+    assert_envelope_valid(good)
+
+    bad_hash = {**good, "measure_basis": {**_BASIS, "definition_hash": "0" * 63}}
+    with pytest.raises(AssertionError, match="E14"):
+        assert_envelope_valid(bad_hash)
+    # (the sentence itself is scanned like any assumption, so match it by its prefix)
+    no_line = {
+        **good,
+        "assumptions": [a for a in good["assumptions"] if not a.startswith(CONFIRMED_PREFIX)],
+    }
+    with pytest.raises(AssertionError, match="E14"):
+        assert_envelope_valid(no_line)
+    wrong_badge = {**good, "badge": "L0_CERTIFIED"}
+    with pytest.raises(AssertionError, match="E14"):
+        assert_envelope_valid(wrong_badge)
+    abstained = _built(None, line=None, badge="ABSTAIN")
+    with pytest.raises(AssertionError, match="E14"):
+        assert_envelope_valid({**abstained, "measure_basis": dict(_BASIS)})
+
+
+def test_e14_the_basis_is_not_rewritten_by_the_pii_scan() -> None:
+    """A digest with a 10-digit run, or an id like one, would be read as a phone or account
+    number by the generic scan. The key is exempt from the scan because the builder pins every
+    field to an identifier shape; the same string elsewhere is still scanned."""
+    from dms_core.pii import mask_unknown_keys
+
+    basis = {
+        **_BASIS,
+        "definition_hash": "0123456789" + "ab" * 27,
+        "ledger_entry_id": "led_0123456789",
+    }
+    out = mask_unknown_keys({"measure_basis": basis, "note": "call 0123456789 now"})
+    assert out["measure_basis"] == basis
+    assert "0123456789" not in out["note"], "other keys are still scanned"
+    env = _built(basis, line=_LINE.replace(_HASH[:12], "0123456789ab"))
+    assert env["abstained"] is False and env["measure_basis"] == basis
+
+
+def test_a_measure_the_lake_did_not_confirm_this_ask_cannot_answer(
+    rigged: _Rigged, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prune is what marks a measure as checked against the lake as it is now. If it did
+    not run, nothing else vouches for the column: the plan abstains and the SQL is not used."""
+    from dms_executor import generative_ask as ga
+
+    rigged.confirm(BUDGET)
+    monkeypatch.setattr(ga, "prune_unusable_measures", lambda *a, **k: {})
+    env = rigged.plan(TOTAL_Q, BUDGET, query_sql=SUM_SQL)
+    _assert_abstain(env, "no_declared_measure")
+    assert f"{BUDGET} is not usable now: not_checked_against_data" in _reasons(env)
+    assert rigged.executed == [] and "measure_basis" not in env
+
+
+# ---------------------------------------------------------------- E01 through the real route
+
+
+def test_e01_confirmed_through_the_steward_route_with_a_rename_then_asked(
+    rigged: _Rigged, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The steward confirms over HTTP (gate, role, hash, rename, ledger), then a customer asks.
+    The basis the envelope carries is the one the route returned, not one rebuilt from the row."""
+    import dms_api.routes.spaces as space_routes
+    from cortex_client.gate import ComplianceDecision
+    from test_onto_confirm_01 import _Api, _ApiCortex
+
+    env0 = rigged.env
+    calls: list[dict[str, Any]] = []
+
+    def gate(*, action: str, **kw: Any) -> Any:
+        calls.append({"action": action, **kw})
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    monkeypatch.setattr(space_routes, "compliance_gate", gate)
+    asking_cortex = env0.rig.app.state.cortex
+    env0.rig.app.state.cortex = _ApiCortex(env0.ledger)
+    api = _Api(env=env0, gate_calls=calls, verdict={"reason": None})
+    api.settings()
+    r = api.confirm(rigged.views[BUDGET], name=RENAMED)
+    assert r.status_code == 200, r.text
+    assert [c["action"] for c in calls] == ["spaces.ontology.measures.confirm"]
+    body = r.json()
+    confirmed = body.get("measure") or body
+    assert confirmed["name"] == RENAMED and confirmed["state"] == "confirmed", body
+    env0.rig.app.state.cortex = asking_cortex  # the ask talks to the engine, not the ledger shim
+
+    env = rigged.plan(TOTAL_Q, RENAMED, query_sql=WRONG_SQL)
+    oracle = _oracle(rigged.rig.lake, "SELECT SUM(budget) AS v FROM bronze.public_schools")
+    _assert_answer(env, oracle, "360.75")
+    basis = env["measure_basis"]
+    assert basis["measure"] == RENAMED
+    assert basis["definition_hash"] == confirmed["definition_hash"]
+    assert basis["measure_id"] == confirmed["id"]
+    assert basis["ledger_entry_id"] == confirmed["ledger_entry_id"]
+    assert str(basis["ledger_entry_id"]) in _line(env)
+    assert rigged.executed == [rigged.probe_sql(BUDGET)] and WRONG_SQL not in rigged.executed
+
+
+# ---------------------------------------------------------------- grouped asks and the fit
+
+
+GROUPED_Q = "What is the total budget of all schools by district?"
+BY_DISTRICT = ((SCHOOLS, "district_id"),)
+GROUPED_SQL = (
+    "SELECT district_id, SUM(budget) AS v FROM bronze.public_schools GROUP BY district_id"
+)
+
+
+def test_a_grouped_plan_answers_the_by_district_question_it_computes(rigged: _Rigged) -> None:
+    """'by district' is a breakdown the plan itself computes: the measure grouped by the
+    district key IS the answer, so the fit does not veto it. Rows == the oracle grouping."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
+    oracle = _oracle(rigged.rig.lake, GROUPED_SQL)
+    assert _multiset(oracle) == _multiset(
+        [{"d": 1, "v": Decimal("310.75")}, {"d": 2, "v": Decimal("50.00")}]
+    )
+    _assert_answer(env, oracle, "310.75")
+    assert "50" in str(env["text"]) and "360.75" not in str(env["text"])
+    _assert_basis(env, rigged, BUDGET)
+    assert len(rigged.executed) == 1
+
+
+def test_the_same_question_with_a_plan_that_does_not_group_is_not_answered_by_the_total(
+    rigged: _Rigged,
+) -> None:
+    """The breakdown is only covered when the PLAN groups by it. An ungrouped plan for 'by
+    district' would offer one total as the per-district answer: the fit refuses it."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan(GROUPED_Q, BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and rigged.executed == []
+    assert f"{BUDGET} fit_disagrees:qualifier_cue" in _reasons(env), env["assumptions"]
+
+
+def test_a_plan_grouped_by_something_else_does_not_cover_the_word_asked(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(
+        "What is the total budget of all schools by region?", BUDGET, group_by=BY_DISTRICT
+    )
+    _assert_abstain(env, "no_declared_measure")
+    assert f"{BUDGET} fit_disagrees:qualifier_cue" in _reasons(env) and rigged.executed == []
+
+
+def test_e13_a_grouped_answer_whose_every_group_is_null_is_empty_aggregate(
+    rigged: _Rigged,
+) -> None:
+    rigged.confirm(BUDGET)
+    _lake_exec(rigged.rig.lake, "UPDATE bronze.public_schools SET budget = NULL")
+    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
+    text = _assert_abstain(env, "empty_aggregate")
+    assert "None" not in text and "measure_basis" not in env and env["rows"] == []
+
+
+# ------------------------------------------------------------ DMS_CLOOP_B cannot route around it
+
+
+@pytest.fixture()
+def cloop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The extract loop on, exactly as tests/test_c_loop_b.py opts in."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+
+
+def test_cloop_a_ranked_confirmed_measure_that_fits_beats_the_loops_sql(
+    rigged: _Rigged, cloop: None
+) -> None:
+    """With the loop on, valid ranked SQL used to go to the loop and answer there. The
+    precedence is decided first: the measure's compiled number answers, the SQL never runs."""
+    rigged.confirm(BUDGET)
+    env = rigged.ranked(TOTAL_Q, BUDGET, WRONG_SQL)
+    oracle = _oracle(rigged.rig.lake, "SELECT SUM(budget) AS v FROM bronze.public_schools")
+    _assert_answer(env, oracle, "360.75")
+    _assert_basis(env, rigged, BUDGET)
+    assert rigged.executed == [rigged.probe_sql(BUDGET)] and WRONG_SQL not in rigged.executed
+    assert "loop" not in env or not env["loop"], env.get("loop")
+
+
+def test_cloop_a_ranking_with_no_sql_is_the_measures_to_answer_not_the_loops(
+    rigged: _Rigged, cloop: None
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.space.ask(
+        TOTAL_Q, {"plan_source": "ontology_plan", "ontology": {"metrics": [{"id": BUDGET}]}}
+    )
+    oracle = _oracle(rigged.rig.lake, "SELECT SUM(budget) AS v FROM bronze.public_schools")
+    _assert_answer(env, oracle, "360.75")
+    _assert_basis(env, rigged, BUDGET)
+    assert rigged.executed == [rigged.probe_sql(BUDGET)]
+
+
+def test_cloop_a_confirmed_plan_that_abstains_never_falls_back_to_the_loops_sql(
+    rigged: _Rigged, cloop: None
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(
+        NORTH_Q, BUDGET, filters=((DISTRICTS, "name", "=", "north"),), query_sql=SUM_SQL
+    )
+    _assert_abstain(env, "unmatched_filter_value")
+    assert rigged.executed == [] and rigged.rig.cortex.asks == []
+
+
+def test_cloop_when_the_fit_fails_the_loop_answers_the_sql_as_it_always_did(
+    rigged: _Rigged, cloop: None
+) -> None:
+    """The measure is not the answer to an average question, so the loop's SQL is: the figure is
+    the average, never the confirmed SUM, with no basis and no confirmed line."""
+    rigged.confirm(BUDGET)
+    env = rigged.ranked(AVG_Q, BUDGET, AVG_SQL)
+    oracle = _oracle(rigged.rig.lake, AVG_SQL)
+    assert env["abstained"] is False and env["badge"] == "L2_VALIDATED"
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    assert "90.1875" in str(env["text"]) and "360.75" not in str(env["text"])
+    _assert_no_basis(env)
+    assert rigged.executed == [AVG_SQL]

@@ -79,15 +79,22 @@ from dms_executor.gen_path_refuse import (
     ranking_missing_metric_gap,
 )
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
+from dms_executor.measure_basis import CONFIRMED_MEASURE_BADGE
 from dms_executor.measure_use import (
+    REASON_EMPTY_AGGREGATE,
+    FitVerdict,
+    confirmed_basis,
     confirmed_measure_suggestions,
+    filter_values_present,
     measure_exclusions,
+    measure_fit,
     prune_unusable_measures,
 )
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
     LinkType,
+    MeasureProvenance,
     Ontology,
     Refusal,
     Violation,
@@ -148,6 +155,8 @@ NOTE_INSIGHTS_RANKING = "insights_ranking:ontology_plan"
 NOTE_FALLBACK_GENERATE_EMPTY = "fallback:generate_empty"
 NOTE_FALLBACK_VALIDATE_PREFIX = "fallback:validate:"
 NOTE_RANK_WINDOW = "rank_window:deterministic_compile (no generate call)"
+NOTE_PREFER_CONFIRMED = "prefer:confirmed_measure"
+NOTE_NOT_PREFERRED_PREFIX = "confirmed_measure_not_preferred:"
 _ENTITY_NOUN = {"sku": "SKUs", "supplier": "suppliers", "category": "categories",
                 "warehouse": "warehouses", "plant": "plants"}
 # Cortex#269 ROUTER-1 Insights fingerprint. Copy as received; never infer.
@@ -865,6 +874,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    measure_ref: MeasureProvenance | None = None,
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -875,17 +885,29 @@ def _l2_envelope(
         )
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
+    # A steward-confirmed measure (compiled from its stored definition, checked against the
+    # lake this ask) wears the confirmed rung and says so; every other generated answer is
+    # unchanged. One helper builds the sentence and the structured basis together.
+    badge = "L2_VALIDATED"
+    basis: dict[str, Any] | None = None
+    basis_lines: list[str] = []
+    if measure_ref is not None:
+        basis, basis_line = confirmed_basis(measure_ref)
+        basis_lines = [basis_line]
+        badge = CONFIRMED_MEASURE_BADGE
     env = build_answer_envelope(
         answer_id="ans_gen01",
         text=text,
-        badge="L2_VALIDATED",
+        badge=badge,
         abstained=False,
         rows=out_rows,
         sql_used=sql,
         chart=chart,
+        measure_basis=basis,
         assumptions=[
             "GEN-01 ontology compile",
             "executed via Cortex submit after validate",
+            *basis_lines,
             *notes,
         ],
         as_of=_as_of(),
@@ -955,7 +977,13 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    measure_ref: MeasureProvenance | None = None,
 ) -> dict[str, Any]:
+    """Validate, submit, ledger, envelope.
+
+    ``measure_ref`` is the provenance of the steward-confirmed measure this SQL was compiled
+    from (checked against the lake this ask), or None for every other generated answer.
+    """
     if not coverage_valid(coverage):
         return _abstain(
             question,
@@ -1015,6 +1043,20 @@ def _submit_validated(
             question, "submit_had_no_rows",
             space_id=space_id, session_id=session_id, plan_source=plan_source,
         )
+    if measure_ref is not None:
+        # A confirmed measure that computes nothing is "no value", not a figure: no rows, or
+        # an aggregate that is NULL in every row (SUM over an all-NULL column). The envelope
+        # would otherwise show a plausible empty or zero under the confirmed badge.
+        held = rows_from_submit_result(result)
+        if not held or all(r.get(measure_ref.name) is None for r in held):
+            return _abstain(
+                question,
+                f"{REASON_EMPTY_AGGREGATE}: {measure_ref.name} has no value for this question",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
     if keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
         if not kept:
@@ -1061,6 +1103,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        measure_ref=measure_ref,
     )
 
 
@@ -1736,6 +1779,50 @@ def maybe_generative_ask(
                 stage="insights_budget",
             )
         )
+    # dms#284 router precedence. A Space that holds a usable confirmed measure decides, BEFORE
+    # the extract loop and before any generated SQL, whether the measure answers: Cortex ranked
+    # it AND DMS independently reads the question the same way (two keys, ``measure_fit``).
+    # The decision is made once here so DMS_CLOOP_B cannot route around it: the loop only ever
+    # runs model SQL, so without this a valid ranked measure would lose to the loop's number.
+    ranked_slots: dict[str, Any] | None = None
+    ranked_early = False
+    confirmed_fit: FitVerdict | None = None
+    if (
+        kind in {"miss", "sql"}
+        and not demo_ontology_allowed
+        and space_onto is not None
+        and space_onto.measures
+    ):
+        ranked_early = True
+        ranked_slots = ontology_plan_from_ranking(
+            q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
+        )
+        if ranked_slots is not None:
+            raw_ranked = ranked_slots.get("query_plan")
+            ranked_measure = (
+                str(raw_ranked.get("measure") or "") if isinstance(raw_ranked, dict) else ""
+            )
+            confirmed_fit = measure_fit(
+                q,
+                space_onto.measures,
+                candidate=ranked_measure or None,
+                grouped_by=(
+                    _pairs(raw_ranked.get("group_by")) if isinstance(raw_ranked, dict) else None
+                )
+                or (),
+            )
+    if kind == "sql" and confirmed_fit is not None:
+        if confirmed_fit.ok:
+            # Fit passes: the measure's compiled number answers; the model's SQL is not used.
+            assert ranked_slots is not None
+            payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
+            kind = parse_compute_plan(payload)
+            source = PLAN_SOURCE_ONTOLOGY
+            origin = PLAN_ORIGIN_ONTOLOGY_RANKING
+            trail_notes = [NOTE_INSIGHTS_RANKING, NOTE_PREFER_CONFIRMED]
+        else:
+            # Fit fails and SQL is present: the SQL stays on today's generated-SQL path.
+            trail_notes = [*trail_notes, f"{NOTE_NOT_PREFERRED_PREFIX}{confirmed_fit.reason}"]
     if (
         cloop_b_enabled()
         and not ontology_ranked_lane_enabled()
@@ -1743,10 +1830,18 @@ def maybe_generative_ask(
     ):
         # Ranking compile stays off this path. Model SQL runs on the extract.
         sql_in = query_sql_from_payload(payload)
-        would_rank = kind == "miss" and ontology_plan_from_ranking(
-            q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
-        ) is not None
-        if kind == "sql" or would_rank:
+        would_rank = kind == "miss" and (
+            ranked_slots is not None
+            if ranked_early
+            else ontology_plan_from_ranking(
+                q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
+            )
+            is not None
+        )
+        # A ranked confirmed measure that fits is not the loop's to answer (see above): on a
+        # ``miss`` the ranking becomes the typed plan below; on ``sql`` it already did.
+        confirmed_wins = kind == "miss" and confirmed_fit is not None and confirmed_fit.ok
+        if (kind == "sql" or would_rank) and not confirmed_wins:
             if sql_in and sql_has_reserved_as_of(sql_in):
                 return _stamp(
                     reserved_as_of_abstain(
@@ -1777,8 +1872,7 @@ def maybe_generative_ask(
                     attempts=loop_attempts,
                 )
             )
-    ranked_slots: dict[str, Any] | None = None
-    if kind in {"miss", "sql"}:
+    if kind in {"miss", "sql"} and not ranked_early:
         ranked_slots = ontology_plan_from_ranking(
             q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
         )
@@ -1948,7 +2042,7 @@ def maybe_generative_ask(
                     session_id=session_id,
                     submit=submit,
                     ledger_append=ledger_append,
-                    notes=("GEN-01 Cortex ontology_plan SQL",),
+                    notes=("GEN-01 Cortex ontology_plan SQL", *trail_notes),
                     plan_source=source,
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
@@ -2067,6 +2161,45 @@ def maybe_generative_ask(
                 suggest_from=space_onto,
             )
         )
+    measure_ref: MeasureProvenance | None = None
+    if space_onto is not None:
+        # The second key. A typed plan names a measure; Cortex ranked it by name tokens, and
+        # that is not authority to answer THIS question with it. DMS reads the question
+        # itself (aggregate and quantity words, content tokens) and must land on the same
+        # measure. This also covers a plan Cortex typed on its own.
+        verdict = measure_fit(
+            q, space_onto.measures, candidate=plan.measure, grouped_by=plan.group_by
+        )
+        if not verdict.ok:
+            return _stamp(
+                _abstain(
+                    q,
+                    f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} fit_disagrees:{verdict.reason}",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                    suggest_from=space_onto,
+                )
+            )
+        # Only a measure the lake confirmed THIS ask (grain still verified and granted,
+        # column still there with the type it was confirmed with) may answer. The prune
+        # marks the ones that pass; anything unmarked cannot vouch for itself.
+        held = space_onto.measures.get(plan.measure)
+        measure_ref = held.provenance if held is not None else None
+        if measure_ref is None or not measure_ref.columns_checked:
+            return _stamp(
+                _abstain(
+                    q,
+                    f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not usable now: "
+                    "not_checked_against_data",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                    suggest_from=space_onto,
+                )
+            )
     if onto is None and not demo_ontology_allowed and declared is None:
         return _stamp(
             _abstain(
@@ -2099,6 +2232,22 @@ def maybe_generative_ask(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
+                )
+            )
+
+    if space_onto is not None:
+        # Rule 12 at ask time: a filter literal that is not in its column exactly as landed
+        # ('north' for 'North') would compile, execute and return a plausible empty or zero.
+        unmatched = filter_values_present(plan, onto, lake)
+        if unmatched:
+            return _stamp(
+                _abstain(
+                    q,
+                    unmatched,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
                 )
             )
 
@@ -2165,5 +2314,6 @@ def maybe_generative_ask(
             where_paths=compiled.where_paths,
             warehouse=lake,
             plan_origin=origin,
+            measure_ref=measure_ref,
         )
     )

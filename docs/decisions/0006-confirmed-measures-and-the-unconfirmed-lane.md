@@ -160,6 +160,30 @@ against a non-seed database in this step.
 - Questions needing arithmetic, ratios or measure-level filters abstain on a Space until a
   pilot needs them (P-DMS-37).
 
+## Ask-time lane as built (step 10)
+
+- **Precedence is decided once, before the extract loop.** A Space with a usable confirmed
+  measure ranks first; when Cortex ranked a measure AND DMS's own `measure_fit` lands on the
+  same one, the ranked plan replaces valid generated SQL. `DMS_CLOOP_B` could route around
+  this (the loop runs model SQL only and returns before the typed branch), so the same
+  decision now runs ahead of the loop and a fitting measure is never the loop's to answer.
+  Fit fails with SQL present: the SQL keeps today's generated path (it becomes `L2_UNCONFIRMED`
+  at step 9). Fit fails with a plan only: `no_declared_measure ... fit_disagrees:<why>`.
+- **A breakdown the plan computes is covered.** `by` / `per` / `each` followed by a word the
+  plan groups by (`grouped_by`: its object and column names) is not a qualifier veto;
+  `excluding`, `except`, `without`, `only`, `not`, `other than` never are. Without this the
+  hardened qualifier rule would refuse every grouped ask on the confirmed lane.
+- **Rule 12 at ask time.** Every `=` / `IN` literal of a plan's filters is probed against its
+  column as landed before compile (`unmatched_filter_value`; unreadable or over-long lists
+  fail closed). An aggregate that is NULL in every returned row, or a plan with no rows,
+  is `empty_aggregate`. `COUNT` over an empty table is 0 and answers: 0 is a value.
+- **After a confirmed plan abstains the ask never falls back to Cortex SQL.** Two paths would
+  be two numbers.
+- `measure_basis` is additive on the envelope, built with its sentence by one helper
+  (`confirmed_basis`), kept only when it is a valid confirmed basis for the badge and the
+  assumptions, else the answer clamps to ABSTAIN. The key is exempt from the PII scan
+  (`SAFE_ENVELOPE_KEYS`) because every field is pinned to an identifier shape.
+
 ## Residual risk and limits (recorded so they are not re-discovered)
 
 - **Stale by meaning is undetectable.** A column that keeps its name and type but changes

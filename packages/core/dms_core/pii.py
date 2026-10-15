@@ -187,12 +187,20 @@ _KEEP_KEYS = frozenset(
 # Clock fields stay here so a masker call with no round does not invent a
 # /health read. The round applies mask_unkept_clock_fields. Do not add a key
 # to skip a scan.
+#
+# ``measure_basis`` (dms#284) is the one exception beyond the clock. It carries only
+# identifiers DMS minted (a UUID, a sha256 hex digest, a ledger entry id, a measure name,
+# an ISO time): never a value from the customer's data. The generic scan reads a run of ten
+# digits inside a hex digest as a phone or account number and rewrites it, which breaks the
+# very hash a customer or auditor compares. The envelope builder and ``assert_envelope_valid``
+# pin every field to its identifier shape, so no free text can ride this key past the scan.
 SAFE_ENVELOPE_KEYS = _KEEP_KEYS | frozenset(
     {
         "engine_as_of",
         "engine_as_of_after",
         "engine_timezone",
         "engine_timezone_after",
+        "measure_basis",
     }
 )
 
