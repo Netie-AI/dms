@@ -102,6 +102,7 @@ def build_abstain(
             stage=stage,
             ask_id=ask_id,
         )
+        _stamp_no_sql(demote, stage=stage, reason=reason)
         return demote
 
     from dms_executor.envelope import build_answer_envelope
@@ -122,7 +123,18 @@ def build_abstain(
         stage=stage,
         ask_id=ask_id,
     )
+    _stamp_no_sql(env, stage=stage, reason=reason)
     return env
+
+
+def _stamp_no_sql(env: dict[str, Any], *, stage: str, reason: str) -> None:
+    """An abstain with no executed SQL is abstain:<stage>, not compile, L1, or ai."""
+    sql_used = env.get("sql_used")
+    if isinstance(sql_used, str) and sql_used.strip():
+        return
+    from dms_executor.route_stamp import stamp_abstain
+
+    stamp_abstain(env, stage=stage, reason=reason)
 
 
 def _envelope_reason(env: dict[str, Any]) -> str:

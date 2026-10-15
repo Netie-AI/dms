@@ -600,7 +600,7 @@ class Executor:
             control_token = bind_ask_control(ctrl)
         ctrl.deadline = deadline
         ctrl.start()
-        from dms_executor.route_stamp import ROUTE_LADDER, freeze_route, stamp_route
+        from dms_executor.route_stamp import freeze_route
 
         try:
             try:
@@ -642,7 +642,6 @@ class Executor:
                     route="abstain",
                 )
                 assert_envelope_valid(env)
-                stamp_route(env, ROUTE_LADDER)
             except (
                 ServingLeaseCap,
                 ServingLeaseQueueFull,
@@ -695,7 +694,6 @@ class Executor:
                         route="abstain",
                     )
                     assert_envelope_valid(env)
-                    stamp_route(env, ROUTE_LADDER)
                 finally:
                     reset_serving_lease_block(token)
             stamp_engine_clock(env)
@@ -1338,8 +1336,9 @@ def map_ask_response_to_envelope(
 
     model = str(getattr(resp, "served_model", None) or "").strip()
     if abstained:
-        route = ROUTE_LADDER
-    elif badge == "L0_CERTIFIED":
+        # build_abstain already wrote abstain:<stage>. Do not relabel it.
+        return env
+    if badge == "L0_CERTIFIED":
         route = ROUTE_VERIFIED
     elif badge == "L1_GOVERNED_METRIC":
         route = ROUTE_L1

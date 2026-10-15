@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from dms_executor.route_stamp import ROUTES, route_of
+from dms_executor.route_stamp import ROUTES, is_abstain_route, route_of
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "route_stamp"
@@ -32,6 +32,7 @@ _VOLATILE = frozenset(
         "plan_origin",
         "ladder_rung",
         "served_model",
+        "abstain_reason",
     }
 )
 
@@ -279,10 +280,56 @@ def _assert_main_bytes(live: list[dict[str, Any]], fixture_name: str) -> None:
         assert _align_unordered(_drop(got["env"])) == _align_unordered(_drop(old["env"])), got["id"]
 
 
+_FORBIDDEN_ROUTE = frozenset(
+    {
+        "compile",
+        "l1",
+        "l1_governed_metric",
+        "ai",
+        "generate_sql",
+        "model_sql",
+        "ontology_compile",
+        "ontology_ranking",
+        "ontology_plan",
+    }
+)
+
+
+def _no_sql(env: dict[str, Any]) -> bool:
+    sql = env.get("sql_used")
+    return not isinstance(sql, str) or not sql.strip()
+
+
+def no_sql_route_violation(env: dict[str, Any]) -> str:
+    """Why a no-SQL envelope is compile, L1, or ai. Empty when it is abstain:<stage>."""
+    if not _no_sql(env):
+        return ""
+    if str(env.get("badge") or "") == "L1_GOVERNED_METRIC":
+        return "badge L1"
+    route = str(env.get("served_route") or "").strip()
+    if not is_abstain_route(route):
+        return f"served_route {route or 'missing'}"
+    for key in ("plan_origin", "ladder_rung"):
+        token = str(env.get(key) or "").strip().lower()
+        if token in _FORBIDDEN_ROUTE or (token and not is_abstain_route(token)):
+            return f"{key} {token or 'missing'}"
+    reason = str(env.get("abstain_reason") or "").strip()
+    if not reason or reason.lower() in _FORBIDDEN_ROUTE:
+        return "abstain_reason"
+    return ""
+
+
 def _assert_one_route(rows: list[dict[str, Any]]) -> None:
     for row in rows:
         got = route_of(row["env"])
-        assert got in ROUTES, (row["id"], got)
+        assert got in ROUTES or is_abstain_route(got), (row["id"], got)
+
+
+def _assert_no_sql_is_abstain_stage(rows: list[dict[str, Any]]) -> None:
+    assert len(rows) == 52
+    for row in rows:
+        violation = no_sql_route_violation(row["env"])
+        assert not violation, (row["id"], violation, row["env"].get("served_route"))
 
 
 def test_unordered_row_swap_still_matches_main_bytes() -> None:
@@ -297,6 +344,28 @@ def test_unordered_row_swap_still_matches_main_bytes() -> None:
     if isinstance(receipt, dict) and isinstance(receipt.get("include"), dict):
         receipt["include"]["rows"] = list(reversed(receipt["include"]["rows"]))
     assert _align_unordered(_drop(swapped)) == _align_unordered(_drop(env))
+
+
+def test_ba179651_no_sql_compile_or_l1_is_a_violation() -> None:
+    """The ba179651 stamps are the failure this test exists to catch."""
+    compile_abstain = {
+        "badge": "ABSTAIN",
+        "sql_used": None,
+        "served_route": "ladder_rung",
+        "plan_origin": "compile",
+        "ladder_rung": "compile",
+    }
+    l1_abstain = {
+        "badge": "ABSTAIN",
+        "sql_used": None,
+        "served_route": "l1_governed_metric",
+        "plan_origin": "l1",
+        "ladder_rung": "l1",
+    }
+    assert no_sql_route_violation(compile_abstain)
+    assert no_sql_route_violation(l1_abstain)
+    served = {"sql_used": "SELECT 1", "served_route": "l1_governed_metric"}
+    assert no_sql_route_violation(served) == ""
 
 
 def test_planted_contradiction_is_not_a_route() -> None:
@@ -316,6 +385,7 @@ def test_planted_contradiction_is_not_a_route() -> None:
 def test_copy_only_52_flags_off_one_route(tmp_path: Path) -> None:
     rows = _serve(tmp_path, flags_on=False)
     _assert_one_route(rows)
+    _assert_no_sql_is_abstain_stage(rows)
     _assert_main_bytes(rows, "copy_off.json")
     l1 = [
         row["id"]
@@ -331,6 +401,7 @@ def test_copy_only_52_flags_off_one_route(tmp_path: Path) -> None:
 def test_copy_only_52_flags_on_one_route(tmp_path: Path) -> None:
     rows = _serve(tmp_path, flags_on=True)
     _assert_one_route(rows)
+    _assert_no_sql_is_abstain_stage(rows)
     _assert_main_bytes(rows, "copy_on.json")
     l1 = [
         row["id"]

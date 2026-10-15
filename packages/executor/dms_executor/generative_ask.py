@@ -766,9 +766,8 @@ def _abstain(
         route="generated",
     )
     assert_envelope_valid(env)
-    # Every generative abstain is this path's rung. Successes stamp their own.
-    stamp_route(with_plan_source(env, plan_source), ROUTE_LADDER)
-    return env
+    # build_abstain already wrote abstain:<stage>. Successes stamp their own.
+    return with_plan_source(env, plan_source)
 
 
 def _l2_envelope(

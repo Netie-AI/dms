@@ -97,7 +97,7 @@ def _freeze(env: dict[str, Any]) -> dict[str, Any]:
 
 
 _STAMP_FIELDS = frozenset(
-    {"served_route", "plan_origin", "ladder_rung", "served_model"}
+    {"served_route", "plan_origin", "ladder_rung", "served_model", "abstain_reason"}
 )
 
 
