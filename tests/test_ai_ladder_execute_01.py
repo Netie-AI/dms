@@ -586,3 +586,67 @@ def test_extract_raises_the_named_error_not_a_db_error(
     monkeypatch.setattr("dms_executor.demo_warehouse.connect_serving", _miss)
     with pytest.raises(ServingLeaseCap):
         run_readonly(_COUNT, db)
+
+
+def test_quarantine_probe_shares_the_config_of_a_held_serving_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The result-hash probe used a config of its own beside the pool's parent.
+
+    That raised ConnectionException, and the row was dropped as uncomputable.
+    A row whose result is not on the list must be kept.
+    """
+    from dms_executor.skills_quarantine import filter_retrieved_rows, item_result_hash
+
+    for name in (
+        "DMS_SCORED_PACK_HASHES",
+        "DMS_SCORED_ITEM_HASHES",
+        "DMS_SCORED_ITEM_HASHES_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 99}]))
+    db = ensure_demo_warehouse(tmp_path / "probe.duckdb")
+    held = connect_serving(db)
+    try:
+        kept = filter_retrieved_rows(
+            [{"question": "count the location rows", "sql": _COUNT, "asset_id": "vq_probe"}],
+            warehouse=db,
+        )
+    finally:
+        held.close()
+    assert [row["question"] for row in kept] == ["count the location rows"]
+
+
+def test_no_bare_file_open_outside_the_registry() -> None:
+    """Every open of a lake file goes through ``lake_registry``.
+
+    A ``duckdb.connect`` of a path with its own config beside the pool's
+    parent is the "same database file with a different configuration" clash.
+    ``:memory:`` is not a lake file. The CCA binder keeps one seam that tests
+    replace; production there goes through the registry.
+    """
+    import ast
+
+    root = Path(__file__).resolve().parents[1] / "packages" / "executor" / "dms_executor"
+    allowed = {"lake_registry.py", "binder.py"}
+    bare: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        if path.name in allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "connect"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "duckdb"
+            ):
+                continue
+            first = node.args[0] if node.args else None
+            if isinstance(first, ast.Constant) and first.value == ":memory:":
+                continue
+            bare.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert bare == []
