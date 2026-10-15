@@ -203,7 +203,10 @@ def _assert_no_compile(env: dict[str, Any]) -> None:
     assert "WH-C" not in _rows_blob(env)
     assert env.get("plan_origin") != "ontology_ranking"
     blob = _hold_blob(env)
-    assert "reconfirm" in blob or "self_correct" in blob
+    # The ask-level serving deadline may close the ask first on a timeout.
+    assert (
+        "reconfirm" in blob or "self_correct" in blob or "serving_deadline_exceeded" in blob
+    )
 
 
 def test_deadline_does_not_serve_the_compile(
@@ -224,14 +227,10 @@ def test_deadline_does_not_serve_the_compile(
     assert cortex.sleep_finished is False
     assert elapsed < deadline + 1.0
     _assert_no_compile(env)
-    assert "insights_timeout" in _hold_blob(env)
-    # The slow call was cancelled. It did not take a cap slot.
-    assert env.get("model_calls") == 1
-    counted = [item for item in env["loop"] if item.get("model_calls") == 1]
-    discarded = [item for item in env["loop"] if item.get("model_calls") == 0]
-    assert len(counted) == 1
-    assert len(discarded) == 1
-    assert discarded[0]["outcome"] == "insights_timeout:generate"
+    assert "insights_timeout" in _hold_blob(env) or "serving_deadline_exceeded" in _hold_blob(env)
+    # The slow call was cancelled. It was sent, so it is counted.
+    assert env.get("model_calls") == 2
+    assert cortex.calls == 2
 
 
 def _pack() -> tuple[dict[str, str], list[dict[str, Any]]]:
@@ -445,3 +444,201 @@ def test_compile_lot_fanout_is_never_l2(
     blob = f"{blob} {env.get('text') or ''}"
     assert "fanout_subject_keys" in blob
     assert_envelope_valid(env)
+
+
+# -- supersede #433: one refusal for every rung, cap, first-call bound, no echo --
+
+
+def _chat_ask(
+    db: Path, cortex: _Cortex, question: str, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """POST /v1/chat/ask on the real route. The envelope is the assertion surface."""
+    from dms_api import settings as settings_mod
+    from dms_api.app import create_app
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_HARNESS_ASK_PATHS", "1")
+    settings_mod.get_settings.cache_clear()
+    try:
+        app = create_app()
+        app.state.ask_service = _executor(db, cortex)
+        app.state.cortex = cortex
+        res = TestClient(app).post(
+            "/v1/chat/ask",
+            json={
+                "question": question,
+                "session_id": "ses_keep_http",
+                "ask_path": "generative",
+            },
+        )
+    finally:
+        settings_mod.get_settings.cache_clear()
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert isinstance(body, dict)
+    assert_envelope_valid(body)
+    return body
+
+
+class _FailThenSql(_Cortex):
+    """Call 1 raises (provider error). Every later call returns ``sql``."""
+
+    def __init__(self, db: Path, sql: str) -> None:
+        super().__init__(db)
+        self.sql = sql
+        self.submitted: list[str] = []
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("provider down")
+        return {
+            "phase": "generate",
+            "query_sql": self.sql,
+            "served_model": _MODEL,
+            "served_provider": _PROVIDER,
+            "ov_key_id": "ovk-stub",
+            "ontology": {"metrics": [{"id": _RANK}]},
+            "generative": {"sql": self.sql, "ok": True, "stamp": {"impl": "stub"}},
+        }
+
+    def submit(self, req: Any) -> QueryResult:
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else getattr(plan, "kind", None)
+        if kind != "session_bind":
+            body = getattr(req, "body", None)
+            self.submitted.append(str(body.get("sql") or "") if isinstance(body, dict) else "")
+        return super().submit(req)
+
+
+def _location_rows(db: Path) -> int:
+    con = connect_file(db)
+    try:
+        return int(con.execute("SELECT count(*) FROM locations").fetchone()[0])
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize(
+    ("bad_sql", "refusal"),
+    [
+        ("SELECT location_code FROM locations; TRUNCATE locations", "multi_statement"),
+        (
+            "SELECT location_code FROM locations; ALTER TABLE locations RENAME TO zz",
+            "multi_statement",
+        ),
+        ("TRUNCATE locations", "hostile_sql"),
+        ("SELECT location_code FROM locations; SELECT 1", "multi_statement"),
+    ],
+)
+def test_ladder_rung_refuses_multi_statement_and_destructive_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_sql: str, refusal: str
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    before = _location_rows(db)
+    cortex = _FailThenSql(db, bad_sql)
+    env = _chat_ask(db, cortex, _COLD_Q, monkeypatch)
+    assert cortex.submitted == []
+    assert env.get("abstained") is True
+    # Refused at once on the checker's reason, not by a later failure.
+    assert f"checker:{refusal}" in _hold_blob(env)
+    assert cortex.calls == 2
+    assert env.get("badge") not in ("L2_VALIDATED", "L1_CERTIFIED")
+    assert env.get("rows") in (None, [])
+    assert "WH-C" not in _rows_blob(env)
+    assert _location_rows(db) == before
+    con = connect_file(db)
+    try:
+        names = {str(r[0]) for r in con.execute("SHOW TABLES").fetchall()}
+    finally:
+        con.close()
+    assert "zz" not in names and "locations" in names
+
+
+class _OneFastThenHang(_Cortex):
+    """Call 1 returns no statement. Every later call hangs past its slice."""
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any] | None:
+        self.calls += 1
+        if self.calls == 1:
+            return {"phase": "generate", "query_sql": "", "ontology": {"metrics": []}}
+        time.sleep(30.0)
+        return None
+
+
+def test_timed_out_calls_count_against_the_cap_and_model_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "3")
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "2")
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    cortex = _OneFastThenHang(db)
+    env = _chat_ask(db, cortex, _COLD_Q, monkeypatch)
+    assert env.get("abstained") is True
+    assert cortex.calls == 2
+    assert env.get("model_calls") == 2
+    assert "WH-C" not in _rows_blob(env)
+
+
+class _SlowGood(_Cortex):
+    """One reply after ``sleep_s`` that executes. Not cancellable."""
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        time.sleep(self.sleep_s)
+        return {
+            "phase": "generate",
+            "query_sql": _GOOD_SQL,
+            "served_model": _MODEL,
+            "served_provider": _PROVIDER,
+            "ov_key_id": "ovk-stub",
+            "ontology": {"metrics": [{"id": _RANK}]},
+            "generative": {"sql": _GOOD_SQL, "ok": True, "stamp": {"impl": "stub"}},
+        }
+
+
+def test_first_call_keeps_the_per_leg_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    # Bound 3 s, cap 2: a split would give the first call 1 s, less than the reply.
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "3")
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    cortex = _SlowGood(db, sleep_s=1.8)
+    env = _chat_ask(db, cortex, _COLD_Q, monkeypatch)
+    assert cortex.calls == 1
+    assert env.get("abstained") is not True
+    assert env.get("badge") == "L2_VALIDATED"
+    assert "WH-C" in _rows_blob(env)
+    assert env.get("model_calls") == 1
+
+
+class _EchoFail(_Cortex):
+    """A payload whose insights_fail carries a name the grant never gave out."""
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        return {
+            "phase": "generate",
+            "insights_fail": "insights_timeout:secret_payroll_table",
+            "ontology": {"metrics": [{"id": _RANK}]},
+        }
+
+
+def test_insights_fail_text_is_not_reflected_into_the_abstain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flags(monkeypatch, cloop=True)
+    db = tmp_path / "keep.duckdb"
+    ensure_demo_warehouse(db)
+    env = _chat_ask(db, _EchoFail(db), _COLD_Q, monkeypatch)
+    assert env.get("abstained") is True
+    assert "WH-C" not in _rows_blob(env)
+    assert "secret_payroll_table" not in json.dumps(env)
+    assert "insights_timeout" in _hold_blob(env)

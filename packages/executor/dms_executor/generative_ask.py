@@ -114,6 +114,7 @@ from dms_executor.sql_loop import (
     is_deadline,
     loop_entry,
     mask_feedback_text,
+    refused_without_retry,
     run_model_loop,
 )
 from dms_executor.verified_queries import rows_from_submit_result
@@ -881,6 +882,21 @@ def _sql_from_payload(payload: dict[str, Any] | None, onto: Ontology | None) -> 
     return None
 
 
+def _rung_refusal(
+    sql: str, *, grantable: set[str] | None, warehouse: Path | None
+) -> str | None:
+    """Checker reason for one ladder reply, or None. Same order as the loop."""
+    if is_multi_statement(sql, EXTRACT_DIALECT):
+        return "multi_statement"
+    if grantable is None:
+        try:
+            reject_hostile_chat_sql(sql)
+        except SecurityEvent as exc:
+            return f"hostile_sql:{exc.code}"
+        return None
+    return validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+
+
 def _ladder_retry(
     sql: str,
     finding: str,
@@ -923,12 +939,21 @@ def _ladder_retry(
         new_sql = _sql_from_payload(payload if isinstance(payload, dict) else None, ontology)
         if not new_sql or new_sql.strip() == sql.strip():
             continue
-        if grantable is not None:
-            why = validate_compiled_sql(
-                new_sql, grantable=grantable, warehouse=warehouse
+        # Every rung's SQL meets the refusal run_model_loop applies, before
+        # anything is submitted. Hostile, multi-statement, ungranted and
+        # no-warehouse abstain at once; no later rung gets a turn.
+        why = _rung_refusal(new_sql, grantable=grantable, warehouse=warehouse)
+        if why and refused_without_retry(why):
+            return _abstain(
+                question,
+                f"checker:{why.split(':', 1)[0]}",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                stage="extract_loop",
             )
-            if why:
-                continue
+        if why:
+            continue
         if served_result_reason(
             new_sql,
             warehouse=warehouse,

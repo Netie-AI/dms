@@ -340,7 +340,7 @@ def loop_entry(
     """One model attempt. ``outcome`` is never empty. Secrets are not stored.
 
     ``model_calls`` is 1 when this attempt spent one model call, and 0 when
-    the attempt was discarded (the serving deadline cancelled it).
+    no call was sent (the serving deadline left no slice).
     """
     why = str(outcome or "").strip() or "no_outcome"
     model = _text(payload.get("served_model") if isinstance(payload, Mapping) else None)
@@ -384,6 +384,12 @@ def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
         return True
     head = why.split(":", 1)[0]
     return head in _NO_RETRY_HEADS
+
+
+def refused_without_retry(why: str) -> bool:
+    """True for a checker reason that abstains at once: hostile, multi-statement,
+    ungranted, or no warehouse. One list for the loop and the ladder."""
+    return _no_model_retry(why, frozenset())
 
 
 def _can_retry(*, retries: int, used: int, cap: int) -> bool:
@@ -436,17 +442,18 @@ def clear_serving_budget() -> None:
     _serving_deadline.set(None)
 
 
-def attempt_slice(attempts_left: int) -> float | None:
+def attempt_slice(attempts_left: int, *, first: bool = False) -> float | None:
     """Seconds for the next model call.
 
-    The remaining deadline is split across the attempts still allowed and
-    one reserve share for the compile. None means only that reserve is left.
+    The first call may use all that is left. Later calls split the remaining
+    deadline across the attempts still allowed plus one reserve share for the
+    compile. None means only that reserve is left.
     """
     deadline = _serving_deadline.get()
     if deadline is None or attempts_left < 1:
         return None
     remaining = deadline - time.monotonic()
-    share = remaining / (attempts_left + 1)
+    share = remaining if first else remaining / (attempts_left + 1)
     if share < _MIN_ATTEMPT_S:
         return None
     return share
@@ -473,13 +480,16 @@ def is_deadline(payload: dict[str, Any] | None) -> bool:
 def bound_model_compute(
     compute: Callable[[dict[str, Any]], dict[str, Any] | None],
 ) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
-    """Give each model call one slice of the serving deadline.
+    """Bound each model call by the serving deadline.
 
-    A call still running at the end of its slice is cancelled and not
-    counted. The compile reserve is the share ``attempt_slice`` keeps back.
+    The first call gets the whole per-leg bound, so a reply that arrived in
+    time before this wrapper still arrives in time. Later calls split what is
+    left, keeping one share back for the compile. Every call that was sent
+    takes a cap slot and is counted in ``model_calls``, whether it returned or
+    ran out of time: a POST that left the client is spent either way.
 
     ponytail: cancel is cooperative (``attempt_cancel_event``). A call that
-    ignores it is discarded after a short grace and still not counted.
+    ignores it is discarded after a short grace and still counted.
     Upgrade: cancel the HTTP call, then join.
     """
     begin_serving_budget()
@@ -487,15 +497,13 @@ def bound_model_compute(
 
     def wrapped(ctx: dict[str, Any]) -> dict[str, Any] | None:
         left = insights_call_cap() - calls["n"]
-        slice_s = attempt_slice(left)
+        slice_s = attempt_slice(left, first=calls["n"] == 0)
         if slice_s is None or left < 1:
             return deadline_marker()
         body = dict(ctx)
         body[ATTEMPT_TIMEOUT_KEY] = slice_s
-        got = _invoke_bounded(compute, body, slice_s)
-        if not is_deadline(got):
-            calls["n"] += 1
-        return got
+        calls["n"] += 1
+        return _invoke_bounded(compute, body, slice_s)
 
     return wrapped
 
@@ -515,19 +523,19 @@ def _invoke_bounded(
         except Exception as exc:  # noqa: BLE001 — same miss as a raised compute
             box["e"] = exc
 
+    # One sent call is one model call on the ask's own counter, finished or not.
+    note_model_call()
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     thread.join(slice_s)
     if thread.is_alive():
-        # Discard this future. It does not take a call-cap slot.
+        # Discard this future. It stays counted.
         cancel.set()
         thread.join(_CANCEL_GRACE_S)
         return deadline_marker()
     got = box.get("v")
     if isinstance(got, dict) and is_deadline(got):
         return got
-    # One finished attempt is one model call on the ask's own counter.
-    note_model_call()
     if "e" in box or not isinstance(got, dict):
         return None
     return got
@@ -824,6 +832,7 @@ def _call(
     }
     nxt = dict(ctx)
     nxt["sql_loop_feedback"] = feedback
+    sent_before = recorded_model_calls()
     try:
         got = compute(nxt)
     except (CompileDefer, ServeHold):
@@ -839,7 +848,8 @@ def _call(
                     sql=previous_sql,
                     outcome="insights_timeout:generate",
                     dialect=dialect,
-                    model_calls=0,
+                    # Counted when the POST left, zero when no slice was left to send it.
+                    model_calls=1 if recorded_model_calls() > sent_before else 0,
                 )
             )
         raise ServeHold("insights_timeout:generate")

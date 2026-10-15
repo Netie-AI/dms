@@ -905,6 +905,18 @@ def _insights_generate_post(
     return _insights_envelope(res)
 
 
+def _budget_reason(raw: str) -> str:
+    """A budget stop with only its known tail. The payload is wire data: a leg
+    outside the known set, or a cap that is not a small whole number, cannot
+    carry text into an abstain sentence."""
+    head, _, tail = raw.partition(":")
+    if head == INSIGHTS_FAIL_TIMEOUT:
+        leg = tail if tail in INSIGHTS_TIMEOUT_LEGS else INSIGHTS_TIMEOUT_LEGS[0]
+        return f"{head}:{leg}"
+    cap = tail if tail.isascii() and tail.isdigit() and len(tail) <= 2 else "0"
+    return f"{head}:{int(cap)}"
+
+
 def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
     """Named fail-closed reason stamped by ``compute_insights``, or None.
 
@@ -914,7 +926,9 @@ def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
     if not isinstance(payload, dict):
         return None
     raw = str(payload.get("insights_fail") or "").strip()
-    if raw in INSIGHTS_FAIL_REASONS or raw.startswith(_BUDGET_PREFIXES):
+    if raw.startswith(_BUDGET_PREFIXES):
+        return _budget_reason(raw)
+    if raw in INSIGHTS_FAIL_REASONS:
         return raw
     if raw.startswith("pin_unavailable:") or raw.startswith("pin_caller_error:"):
         return raw
