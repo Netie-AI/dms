@@ -23,14 +23,12 @@ the live-stack demo verification, not here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import pytest
 from cortex_client.models import AskResponse
 from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
-from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.manifest import ManifestMinter, SessionAcl
 
 FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
@@ -313,22 +311,18 @@ class FreeRouteCortex:
         )
 
 
-def _freeform_ask(
-    minter: ManifestMinter, *, space_id: str, warehouse: Path
-) -> tuple[dict[str, Any], Any]:
+def _freeform_ask(minter: ManifestMinter, *, space_id: str) -> tuple[dict[str, Any], Any]:
     cortex = FreeRouteCortex()
-    exe = Executor(cortex=cortex, minter=minter, warehouse_path=warehouse)  # type: ignore[arg-type]
+    exe = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
     env = exe.live_ask(FREEFORM_Q, space_id=space_id, session_id=f"ses_l2_{space_id[:8]}")
     return env, cortex
 
 
 def test_freeform_answers_in_the_space_that_grants_the_table(
-    minter: ManifestMinter, tmp_path: Path
+    minter: ManifestMinter,
 ) -> None:
     """R-0005 first: the boundary must not be a blanket refusal of free-form."""
-    db = tmp_path / "free.duckdb"
-    ensure_demo_warehouse(db)
-    env, _ = _freeform_ask(minter, space_id=FINANCE, warehouse=db)
+    env, _ = _freeform_ask(minter, space_id=FINANCE)
 
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED", (
@@ -338,7 +332,7 @@ def test_freeform_answers_in_the_space_that_grants_the_table(
 
 
 def test_freeform_cannot_reach_a_table_the_space_does_not_grant(
-    minter: ManifestMinter, tmp_path: Path
+    minter: ManifestMinter,
 ) -> None:
     """The moat, on the path where the model picks the SQL.
 
@@ -346,9 +340,7 @@ def test_freeform_cannot_reach_a_table_the_space_does_not_grant(
       - the manifest DMS minted never carried the foreign table (DMS's half), and
       - the envelope the customer reads is an abstention with no confident badge.
     """
-    db = tmp_path / "free_ops.duckdb"
-    ensure_demo_warehouse(db)
-    env, cortex = _freeform_ask(minter, space_id=WAREHOUSE_OPS, warehouse=db)
+    env, cortex = _freeform_ask(minter, space_id=WAREHOUSE_OPS)
 
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN", (
@@ -365,13 +357,11 @@ def test_freeform_cannot_reach_a_table_the_space_does_not_grant(
 
 
 def test_freeform_does_not_reuse_the_finance_binding_for_warehouse_ops(
-    minter: ManifestMinter, tmp_path: Path
+    minter: ManifestMinter,
 ) -> None:
     """Two Spaces, two sessions - a shared session id would leak the wider one."""
-    db = tmp_path / "free_both.duckdb"
-    ensure_demo_warehouse(db)
-    fin_env, fin_cortex = _freeform_ask(minter, space_id=FINANCE, warehouse=db)
-    ops_env, ops_cortex = _freeform_ask(minter, space_id=WAREHOUSE_OPS, warehouse=db)
+    fin_env, fin_cortex = _freeform_ask(minter, space_id=FINANCE)
+    ops_env, ops_cortex = _freeform_ask(minter, space_id=WAREHOUSE_OPS)
 
     fin_session = fin_cortex.submits[-1].manifest.session_id
     ops_session = ops_cortex.submits[-1].manifest.session_id

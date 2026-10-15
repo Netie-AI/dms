@@ -1022,7 +1022,7 @@ def hold_ungrounded_sql(
     warehouse: Path | None,
     grantable: set[str],
 ) -> dict[str, Any] | None:
-    """Direct refusal for an ungranted outcome of the one grant check.
+    """Direct refusal for an ungranted or hostile outcome of the one grant check.
 
     Bare ``ungranted`` and ``ungranted:<names>`` both abstain when a missing
     name is a demo-lake table. The names stay in the grant function and are
@@ -1031,11 +1031,14 @@ def hold_ungrounded_sql(
     This is not a reconfirm and not a second grant check.
     """
     why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
-    if not _cited_ungranted(why):
+    # Hostile SQL (file readers, multi-statement, any non-SELECT) is refused
+    # here too, so the served-result probe never runs it in this process.
+    hostile = isinstance(why, str) and why.startswith("hostile_sql:")
+    if not hostile and not _cited_ungranted(why):
         return None
     return _abstain(
         question,
-        "ungranted",
+        "hostile_sql" if hostile else "ungranted",
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,

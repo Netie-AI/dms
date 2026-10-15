@@ -614,9 +614,8 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         minted.invalidate = lambda *_a, **_k: None  # type: ignore[method-assign]
         cortex = _Cortex(sql, generated=(route == "generated"), via_ask=via_ask)
         app = create_app()
-        app.state.ask_service = Executor(
-            cortex=cortex, minter=minted, warehouse_path=db  # type: ignore[arg-type]
-        )
+        # The wiring.py shape: no warehouse_path. DMS_WAREHOUSE_DB is the lake.
+        app.state.ask_service = Executor(cortex=cortex, minter=minted)  # type: ignore[arg-type]
         app.state.cortex = cortex
         res = TestClient(app).post(
             "/v1/chat/ask",
@@ -638,9 +637,12 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             for route in ("flag_off", "cloop_b", "generated"):
                 env = post(route, sql, via_ask=via_ask)
                 label = f"{route} {name}"
+                assert_envelope_valid(env)
                 if serve:
                     assert env["badge"] == "L2_VALIDATED", label
                     assert env["abstained"] is False, label
+                    assert "cannot certify" not in str(env.get("text") or ""), label
+                    assert str(env.get("text") or "").strip(), label
                     assert _cells(env["rows"]) == _cells(_executed(db, sql)), label
                 else:
                     assert env["badge"] != "L2_VALIDATED", label
@@ -667,3 +669,160 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         else:
             os.environ["TZ"] = old_tz
         time.tzset()
+
+
+# --- Takeover findings: production Executor construction, file readers ---
+
+
+def _prod_post(
+    db: Path,
+    sql: str,
+    monkeypatch: pytest.MonkeyPatch,
+    minted: ManifestMinter,
+    *,
+    route: str = "generated",
+    pass_warehouse: bool = False,
+) -> tuple[dict[str, Any], Any]:
+    """POST /v1/chat/ask with the wiring.py shape: no warehouse_path argument.
+
+    The lake is reached the way production reaches it, through
+    DMS_WAREHOUSE_DB and the default warehouse_path(). ``pass_warehouse``
+    hands the file to the Executor so a test can isolate one concern.
+    """
+    from cortex_client.models import (
+        AskRequest,
+        AskResponse,
+        LedgerAppendRequest,
+        LedgerAppendResponse,
+    )
+    from dms_api import settings as settings_mod
+    from dms_api.app import create_app
+    from fastapi.testclient import TestClient
+
+    class _Cortex:
+        def __init__(self) -> None:
+            self.asks: list[Any] = []
+
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
+            _ = (question, kwargs)
+            return None if route == "generated" else {"query_sql": sql}
+
+        def submit(self, req: Any) -> QueryResult:
+            body = getattr(req, "body", None) or {}
+            run_sql = str(body.get("sql") or sql)
+            rows = _executed(db, run_sql) if run_sql.strip() else []
+            return QueryResult(ok=True, status="ok", run_id="run-prod", output={"rows": rows})
+
+        def ask(self, req: AskRequest) -> AskResponse:
+            self.asks.append(req)
+            return AskResponse(
+                answer="served",
+                badge="generated",
+                sql_used=sql,
+                rows=_executed(db, sql),
+                assumptions="recorded",
+                route="generated",
+                audit_id="aud-prod",
+            )
+
+        def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
+            _ = req
+            return LedgerAppendResponse(entry_id="ent-prod", hash="hash-prod")
+
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+    if route == "cloop_b":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+    else:
+        monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+    monkeypatch.delenv("DMS_LANE_ONTOLOGY_RANKED", raising=False)
+    settings_mod.get_settings.cache_clear()
+    cortex = _Cortex()
+    app = create_app()
+    app.state.ask_service = Executor(
+        cortex=cortex,  # type: ignore[arg-type]
+        minter=minted,
+        warehouse_path=db if pass_warehouse else None,
+    )
+    app.state.cortex = cortex
+    res = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": "list product skus", "space_id": _FINANCE, "session_id": "ses_prod"},
+    )
+    assert res.status_code == 200, res.text
+    return res.json(), cortex
+
+
+def test_generated_route_serves_with_the_production_executor_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """wiring.py builds Executor without warehouse_path. The gate must still run.
+
+    Before the fix the gate had no warehouse file, so every correct Cortex
+    generated answer abstained with reconfirm:inputs_missing.
+    """
+    db = tmp_path / "prod.duckdb"
+    ensure_demo_warehouse(db)
+    env, cortex = _prod_post(db, _SKU_PER_LOCATION, monkeypatch, minter)
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env.get("text")
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert "inputs_missing" not in " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert _cells(env["rows"]) == _cells(_executed(db, _SKU_PER_LOCATION))
+    assert "reconfirm" not in str(env.get("text") or "")
+
+
+def test_generated_route_still_refuses_fanout_with_the_production_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """The default warehouse path must feed the grain probe, not only the happy path."""
+    db = tmp_path / "prod_fan.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, _DUP_ROWS_SQL, monkeypatch, minter)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert "fanout_subject_keys" in str(env.get("text") or "")
+
+
+@pytest.mark.parametrize("route", ["flag_off", "cloop_b", "generated"])
+def test_file_reader_sql_is_refused_before_any_local_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+) -> None:
+    """A file reader is always refused and the DMS process never runs it.
+
+    The served-result probe runs SQL locally. It must not see SQL the one
+    grant function rejects as hostile, on any route.
+    """
+    import dms_executor.served_gate as gate
+
+    csv = tmp_path / "three.csv"
+    csv.write_text("k\n1\n2\n3\n", encoding="utf-8")
+    sql = (
+        "SELECT i.sku AS sku, COUNT(*) AS n FROM inventory i "
+        f"JOIN read_csv('{csv.as_posix()}') c ON TRUE GROUP BY i.sku"
+    )
+    db = tmp_path / "hostile.duckdb"
+    ensure_demo_warehouse(db)
+    probed: list[str] = []
+    real = gate._row_counts
+
+    def spy(path: Path, probe: str) -> bool:
+        probed.append(probe)
+        return real(path, probe)
+
+    monkeypatch.setattr(gate, "_row_counts", spy)
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, route
+    assert env["badge"] == "ABSTAIN", route
+    assert env.get("rows") in (None, []), route
+    text = str(env.get("text") or "")
+    assert "fanout_subject_keys" not in text, route
+    assert not probed, f"{route} ran the served-result probe on refused SQL: {probed}"
+

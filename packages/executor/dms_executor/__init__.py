@@ -1079,6 +1079,9 @@ class Executor:
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         grant_set = set(self.grantable_tables(space_id=space_id))
+        # wiring.py builds the Executor without warehouse_path. The default
+        # lake is the one the grant check and the served-result gate read.
+        lake = ensure_demo_warehouse(self._warehouse)
         held = None
         if not resp.abstained:
             held = hold_ungrounded_sql(
@@ -1086,14 +1089,14 @@ class Executor:
                 question=question,
                 space_id=space_id,
                 session_id=acl.session_id,
-                warehouse=self._warehouse,
+                warehouse=lake,
                 grantable=grant_set,
             )
         if held is not None:
             env = attach_cascade(held, cascade)
             self._store_turn(session_id, space_id, env)
             return env
-        gate_warehouse, gate_ontology = _served_check_inputs(self._warehouse)
+        gate_warehouse, gate_ontology = _served_check_inputs(lake)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
