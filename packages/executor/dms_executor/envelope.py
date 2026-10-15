@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from dms_core.measure_line import BASIS_SHAPES
 from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor.bronze import stamp_contributing_source_watermarks
@@ -1290,15 +1291,6 @@ def normalize_badge(raw: str | None, *, abstained: bool) -> str:
 #: ``measure_basis.CONFIRMED_MEASURE_BADGE``; the envelope accepts either rung so the later
 #: flip is one constant. No badge outside the existing vocabulary is added here.
 _CONFIRMED_BASIS_BADGES = frozenset({"L1_GOVERNED_METRIC", "L2_VALIDATED"})
-_BASIS_SHAPES: dict[str, re.Pattern[str]] = {
-    "measure_id": re.compile(r"[0-9A-Fa-f-]{8,64}"),
-    "measure": re.compile(r"[a-z][a-z0-9_]{1,47}"),
-    "definition_hash": re.compile(r"[0-9a-f]{64}"),
-    "version_id": re.compile(r"[0-9A-Fa-f-]{8,64}"),
-    "confirmed_at": re.compile(r"\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]{5,40}"),
-    "ledger_entry_id": re.compile(r"[A-Za-z0-9_.:\-]{1,128}"),
-    "grain": re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?"),
-}
 
 
 def measure_basis_problem(
@@ -1319,7 +1311,7 @@ def measure_basis_problem(
         return f"measure_basis keys {sorted(basis)} are not {sorted(CONFIRMED_BASIS_KEYS)}"
     if basis.get("status") != MEASURE_STATUS_CONFIRMED:
         return f"measure_basis status {basis.get('status')!r} is not 'confirmed'"
-    for key, shape in _BASIS_SHAPES.items():
+    for key, shape in BASIS_SHAPES.items():
         value = basis.get(key)
         if not (isinstance(value, str) and shape.fullmatch(value)):
             return f"measure_basis.{key} is not a valid identifier"

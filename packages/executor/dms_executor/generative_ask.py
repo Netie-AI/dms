@@ -1048,7 +1048,8 @@ def _submit_validated(
         # an aggregate that is NULL in every row (SUM over an all-NULL column). The envelope
         # would otherwise show a plausible empty or zero under the confirmed badge.
         held = rows_from_submit_result(result)
-        if not held or all(r.get(measure_ref.name) is None for r in held):
+        valued = [r for r in held if r.get(measure_ref.name) is not None]
+        if not valued:
             return _abstain(
                 question,
                 f"{REASON_EMPTY_AGGREGATE}: {measure_ref.name} has no value for this question",
@@ -1057,6 +1058,20 @@ def _submit_validated(
                 plan_source=plan_source,
                 notes=notes,
             )
+        if len(valued) < len(held):
+            # A group whose measure is NULL has "no value", which is not a figure: it is
+            # left out and the answer says so, never rendered as ``=None`` under the badge.
+            # (No digits in the sentence: a count would be a figure the rows do not hold.)
+            result = SimpleNamespace(
+                ok=True,
+                status=getattr(result, "status", "ok"),
+                run_id=getattr(result, "run_id", "") or "",
+                output={"rows": valued},
+            )
+            lead = (f"{lead}\n" if lead else "") + (
+                f"Some groups have no value for {measure_ref.name} and are not shown."
+            )
+            notes = (*notes, f"excluded: groups with no value for {measure_ref.name}")
     if keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
         if not kept:
@@ -1802,14 +1817,28 @@ def maybe_generative_ask(
             ranked_measure = (
                 str(raw_ranked.get("measure") or "") if isinstance(raw_ranked, dict) else ""
             )
-            confirmed_fit = measure_fit(
-                q,
-                space_onto.measures,
-                candidate=ranked_measure or None,
-                grouped_by=(
-                    _pairs(raw_ranked.get("group_by")) if isinstance(raw_ranked, dict) else None
+            ranked_filters = (
+                _filters(raw_ranked.get("filters")) if isinstance(raw_ranked, dict) else None
+            )
+            # The plan's own filters are part of the reading: a question that states a
+            # condition the ranked plan does not carry ("in the north district", "over 100")
+            # is not answered by the plan's unfiltered total, and the valid SQL stays.
+            # A plan whose filters cannot be read fails closed (a word nothing accounts for).
+            confirmed_fit = (
+                FitVerdict(False, ranked_measure or None, "unbound_constraint")
+                if ranked_filters is None
+                else measure_fit(
+                    q,
+                    space_onto.measures,
+                    candidate=ranked_measure or None,
+                    grouped_by=(
+                        _pairs(raw_ranked.get("group_by"))
+                        if isinstance(raw_ranked, dict)
+                        else None
+                    )
+                    or (),
+                    filters=ranked_filters,
                 )
-                or (),
             )
     if kind == "sql" and confirmed_fit is not None:
         if confirmed_fit.ok:
@@ -2168,13 +2197,20 @@ def maybe_generative_ask(
         # itself (aggregate and quantity words, content tokens) and must land on the same
         # measure. This also covers a plan Cortex typed on its own.
         verdict = measure_fit(
-            q, space_onto.measures, candidate=plan.measure, grouped_by=plan.group_by
+            q,
+            space_onto.measures,
+            candidate=plan.measure,
+            grouped_by=plan.group_by,
+            filters=plan.filters,
         )
         if not verdict.ok:
+            why = f"fit_disagrees:{verdict.reason}" + (
+                f" ({verdict.detail})" if verdict.detail else ""
+            )
             return _stamp(
                 _abstain(
                     q,
-                    f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} fit_disagrees:{verdict.reason}",
+                    f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} {why}",
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,

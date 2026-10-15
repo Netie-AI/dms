@@ -33,14 +33,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from dms_core.control_plane.onto_store import OntoMeasure, measure_definition_hash
+from dms_core.measure_line import confirmed_line
 
 from dms_executor.demo_warehouse import connect_file
-from dms_executor.measure_basis import (
-    CONFIRMED_LINE_HASH_CHARS,
-    CONFIRMED_MEMORY_ONLY_SUFFIX,
-    CONFIRMED_PREFIX,
-    MEASURE_STATUS_CONFIRMED,
-)
+from dms_executor.measure_basis import MEASURE_STATUS_CONFIRMED
 from dms_executor.measure_spec import NAME_RE, description_failures
 from dms_executor.ontology import (
     Measure,
@@ -70,6 +66,7 @@ __all__ = [
     "measure_exclusions",
     "measure_fit",
     "prune_unusable_measures",
+    "unbound_words",
 ]
 
 #: Why a confirmed row never reached the ask, or was removed from it. These are the tails
@@ -378,14 +375,7 @@ def confirmed_basis(prov: MeasureProvenance) -> tuple[dict[str, Any], str]:
         "columns_checked": True,
         "persisted": bool(prov.persisted),
     }
-    line = (
-        f"{CONFIRMED_PREFIX}{prov.name} "
-        f"(definition {prov.definition_hash[:CONFIRMED_LINE_HASH_CHARS]}, "
-        f"confirmed {prov.decided_at[:10]} by this workspace's steward account, "
-        f"ledger {prov.ledger_entry_id})"
-    )
-    if not prov.persisted:
-        line += CONFIRMED_MEMORY_ONLY_SUFFIX
+    line = confirmed_line(basis)
     return basis, line
 
 
@@ -447,9 +437,15 @@ def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str |
             seen.add(key)
             if not _RELATION_RE.fullmatch(relation):
                 return cannot_check(f"{obj_name} is not a readable table")
+            # A Python bool is not "1": TRUE = 1 holds in SQL, so a JSON true against an
+            # integer key would pass the probe and filter to key 1. Only a BOOLEAN column
+            # can hold a boolean literal.
+            guard = ""
+            if isinstance(literal, bool):
+                guard = f"typeof({_ident(column)}) = 'BOOLEAN' AND "
             try:
                 hit = con.execute(
-                    f"SELECT 1 FROM {relation} WHERE {_ident(column)} = {rendered} LIMIT 1"
+                    f"SELECT 1 FROM {relation} WHERE {guard}{_ident(column)} = {rendered} LIMIT 1"
                 ).fetchone()
             except Exception:  # noqa: BLE001 - a type that cannot be compared is not a match
                 return cannot_check(f"{obj_name}.{column} could not be compared")
@@ -514,6 +510,7 @@ FIT_REASONS = frozenset(
         "aggregate_cue",
         "quantity_cue",
         "qualifier_cue",
+        "unbound_constraint",
         "no_content_tokens",
         "ranker_disagrees",
     }
@@ -625,6 +622,85 @@ def _grouped_words(grouped_by: Iterable[tuple[str, str]]) -> frozenset[str]:
     return frozenset(out)
 
 
+#: Words that constrain nothing by themselves: articles, copulas, question frames, request
+#: verbs and the prepositions that only introduce a phrase. The content words of such a
+#: phrase ("in the NORTH district") are checked on their own; a word that restricts or
+#: compares (over, under, between, than, before, since, top, last...) is deliberately NOT here.
+_FRAME_STEMS = frozenset(
+    _stems(
+        "a an the of is are was were be been what which who whom whose how much do does did "
+        "there here me my we our us you your i it its this that these those and or to in on "
+        "at for with from where has have had give show tell get find list please can could "
+        "would will all any every each by per as across s"
+    )
+)
+#: The words of the aggregate phrasing itself ("how many", "number of", "total", "highest"):
+#: ``measure_fit`` already requires every such cue to be one the measure's aggregate answers.
+_CUE_STEMS_FLAT = frozenset(t for runs in _CUE_STEMS.values() for run in runs for t in run)
+
+
+def _name_stems(name: str) -> frozenset[str]:
+    """Every stemmed word of a snake_case or dotted name (``bronze.public_districts``)."""
+    return frozenset(_stem(t) for t in re.split(r"[^a-z0-9]+", str(name or "").lower()) if t)
+
+
+def _plan_stems(
+    grouped_by: Iterable[tuple[str, str]], filters: Iterable[Sequence[Any]]
+) -> frozenset[str]:
+    """Every word the PLAN accounts for: what it groups by, and, for each filter, its object,
+    its column and its literal(s) (``('bronze.public_districts', 'name', '=', 'North')`` ->
+    public, district, name, north). The words of what the plan computes, not of the question."""
+    out: set[str] = set(_grouped_words(grouped_by))
+    for f in filters:
+        parts = list(f)
+        for name in parts[:2]:
+            out.update(t for t in _name_stems(name) if len(t) >= 2)
+        if len(parts) >= 4:
+            value = parts[3]
+            literals = value if isinstance(value, (list, tuple, set)) else [value]
+            for lit in literals:
+                if lit is not None and not isinstance(lit, (dict, list, tuple, set)):
+                    out.update(_stems(str(lit)))
+    return frozenset(out)
+
+
+def unbound_words(
+    question: str,
+    measure: str,
+    *,
+    grain: str,
+    grouped_by: Iterable[tuple[str, str]] = (),
+    filters: Iterable[Sequence[Any]] = (),
+) -> tuple[str, ...]:
+    """The question's words that nothing accounts for, in order, or ``()``.
+
+    A confirmed measure answers a question only if the measure and the plan TOGETHER carry
+    everything the question asks. This is an allowlist, not a list of phrases to refuse: a
+    word of the question is accounted for when it is a frame word, part of the aggregate
+    phrasing, a word of the measure's own name or of its grain's table, or a word of what the
+    plan groups by or filters on (object, column, literal). Every other word is a condition
+    the number does not apply ("in the NORTH district", "over 100", "in district 2",
+    "last year"), and a plan that drops it states the wrong total under a confirmed basis.
+    Ranking and range phrasing ("top 5", "between", "at least") is likewise never accounted
+    for: the confirmed lane does not answer it. A false refusal is safe (the generated-SQL
+    path, or an abstain, answers); a dropped condition is a confidently wrong figure.
+    English tokens only.
+    """
+    grain_table = str(grain or "").rsplit(".", 1)[-1]
+    covered = (
+        _FRAME_STEMS
+        | _CUE_STEMS_FLAT
+        | _name_stems(measure)
+        | _name_stems(grain_table)
+        | _plan_stems(grouped_by, filters)
+    )
+    seen: dict[str, None] = {}
+    for tok in _stems(question):
+        if tok not in covered:
+            seen.setdefault(tok)
+    return tuple(seen)
+
+
 def _content_tokens(name: str) -> frozenset[str]:
     out = {
         _stem(t)
@@ -643,6 +719,8 @@ class FitVerdict:
     ok: bool
     pick: str | None
     reason: str
+    #: What the reason is about, when it names words (the question words nothing accounts for).
+    detail: str = ""
 
 
 def measure_fit(
@@ -651,6 +729,7 @@ def measure_fit(
     *,
     candidate: str | None = None,
     grouped_by: Iterable[tuple[str, str]] = (),
+    filters: Iterable[Sequence[Any]] | None = None,
 ) -> FitVerdict:
     """Whether a confirmed measure answers this question, by DMS's own reading.
 
@@ -676,7 +755,12 @@ def measure_fit(
       ``each`` are also covered by a word the PLAN groups by (``grouped_by``, the plan's
       ``(object, column)`` pairs): "total budget by district" is answered by the total grouped
       by district, and by nothing else. A false refusal here is safe; a plain total offered
-      as "per student" is a wrong figure.
+      as "per student" is a wrong figure;
+    * when the caller passes the plan's ``filters`` (possibly empty), every other word of the
+      question must be accounted for by the measure or the plan (``unbound_words``), else the
+      plan would drop a condition the question states (``unbound_constraint``: "in the north
+      district" answered by the unfiltered total). ``filters=None`` means no plan is being
+      checked, and skips this one test.
 
     Only structured (provenance-bearing) measures take part. English tokens only.
     """
@@ -712,6 +796,14 @@ def measure_fit(
     named = {_canon(t) for t in _content_tokens(pick)}
     if asked - named:
         return FitVerdict(False, pick, "quantity_cue")
-    if _unnamed_qualifier(question, _content_tokens(pick), _grouped_words(grouped_by)) is not None:
+    grouped = tuple(grouped_by)
+    if _unnamed_qualifier(question, _content_tokens(pick), _grouped_words(grouped)) is not None:
         return FitVerdict(False, pick, "qualifier_cue")
+    if filters is not None:
+        loose = unbound_words(
+            question, pick, grain=prov.grain, grouped_by=grouped, filters=tuple(filters)
+        )
+        if loose:
+            shown = ", ".join(repr(w) for w in loose[:3]) + (", ..." if len(loose) > 3 else "")
+            return FitVerdict(False, pick, "unbound_constraint", shown)
     return FitVerdict(True, pick, "ok")

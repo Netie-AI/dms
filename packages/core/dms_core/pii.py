@@ -36,6 +36,8 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
+from dms_core.measure_line import sanctioned_confirmed_line
+
 Kind = str
 KINDS = frozenset(
     {"name", "nric", "phone", "email", "account", "dob", "passport", "address", "unknown"}
@@ -1044,8 +1046,18 @@ def mask_unknown_keys(payload: Mapping[str, Any]) -> dict[str, Any]:
     """
     masker = Masker()
     out = dict(payload)
+    # The one sentence a validated ``measure_basis`` spells is an identifier DMS minted, not
+    # text from the customer's data: a digest prefix or a ledger id that looks like a phone
+    # number must reach the customer whole, like the basis it restates (dms#284). Nothing
+    # else in ``assumptions`` is exempt, and a basis off its identifier shapes sanctions nothing.
+    sanctioned = sanctioned_confirmed_line(payload.get("measure_basis"))
     for key, val in payload.items():
         if key in SAFE_ENVELOPE_KEYS or key in _HANDLED_KEYS:
+            continue
+        if sanctioned is not None and key == "assumptions" and isinstance(val, list):
+            out[key] = [
+                item if item == sanctioned else _scan_closed(item, masker) for item in val
+            ]
             continue
         out[key] = _scan_closed(val, masker)
     return out

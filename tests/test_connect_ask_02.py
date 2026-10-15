@@ -27,6 +27,7 @@ import pytest
 import test_ingest_fixes_277 as ingest277
 from cortex_client.models import AskResponse
 from dms_core.control_plane.onto_store import OntologyStore, measure_definition_hash
+from dms_core.measure_line import confirmed_line
 from dms_executor.gen_path_refuse import GAP_REASONS, customer_abstain_text, gap_reason_name
 from dms_executor.measure_basis import (
     CONFIRMED_BASIS_KEYS,
@@ -1405,3 +1406,256 @@ def test_cloop_when_the_fit_fails_the_loop_answers_the_sql_as_it_always_did(
     assert "90.1875" in str(env["text"]) and "360.75" not in str(env["text"])
     _assert_no_basis(env)
     assert rigged.executed == [AVG_SQL]
+
+
+# --------------------------------- a condition the question states and the plan drops (E15)
+
+NORTH_SQL = (
+    "SELECT SUM(s.budget) AS total_budget FROM bronze.public_schools s "
+    "JOIN bronze.public_districts d ON s.district_id = d.district_id WHERE d.name = 'North'"
+)
+OVER_SQL = "SELECT SUM(budget) AS total_budget FROM bronze.public_schools WHERE budget > 100"
+D2_SQL = "SELECT SUM(budget) AS total_budget FROM bronze.public_schools WHERE district_id = 2"
+CONDITIONS = [
+    ("What is the total budget of schools in the north district?", NORTH_SQL),
+    ("What is the total budget of schools in the North district?", NORTH_SQL),
+    ("What is the total budget of schools with a budget over 100?", OVER_SQL),
+    ("What is the total budget of schools in district 2?", D2_SQL),
+]
+
+
+def _assert_the_sql_answered_not_the_measure(
+    rigged: _Rigged, env: dict[str, Any], sql: str
+) -> None:
+    """The figure is the SQL's own (the oracle's, filtered), never the unfiltered 360.75, and the
+    answer says nothing about a confirmed measure: no basis, no confirmed line."""
+    oracle = _oracle(rigged.rig.lake, sql)
+    figure = _norm(oracle[0]["total_budget"])
+    assert figure != "360.75", "the case must be one where the filter changes the figure"
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    assert figure in str(env["text"]) and "360.75" not in str(env["text"]), env["text"]
+    _assert_no_basis(env)
+    assert "confirmed_measure_not_preferred:unbound_constraint" in _reasons(env), env["assumptions"]
+    assert "prefer:confirmed_measure" not in _reasons(env)
+    assert rigged.executed == [sql], rigged.executed
+    assert rigged.rig.cortex.asks == []
+
+
+@pytest.mark.parametrize(("question", "sql"), CONDITIONS)
+def test_e15_a_ranked_measure_never_answers_a_question_whose_condition_its_plan_drops(
+    rigged: _Rigged, question: str, sql: str
+) -> None:
+    """Cortex returned correct filtered SQL AND ranked the measure first; the measure's plan has
+    no filter, so its total (360.75) is not the answer to this question. The SQL answers."""
+    rigged.confirm(BUDGET)
+    env = rigged.ranked(question, BUDGET, sql)
+    _assert_the_sql_answered_not_the_measure(rigged, env, sql)
+
+
+@pytest.mark.parametrize(("question", "sql"), CONDITIONS)
+def test_e15_the_same_holds_with_the_extract_loop_on(
+    rigged: _Rigged, cloop: None, question: str, sql: str
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.ranked(question, BUDGET, sql)
+    oracle = _oracle(rigged.rig.lake, sql)
+    assert env["abstained"] is False and "360.75" not in str(env["text"]), env["text"]
+    assert _multiset(env["rows"]) == _multiset(oracle)
+    _assert_no_basis(env)
+    assert rigged.executed == [sql]
+
+
+@pytest.mark.parametrize(("question", "sql"), CONDITIONS)
+def test_e15_a_ranking_with_no_sql_abstains_rather_than_state_the_unfiltered_total(
+    rigged: _Rigged, question: str, sql: str
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.space.ask(
+        question, {"plan_source": "ontology_plan", "ontology": {"metrics": [{"id": BUDGET}]}}
+    )
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text and "measure_basis" not in env
+    assert f"{BUDGET} fit_disagrees:unbound_constraint" in _reasons(env), env["assumptions"]
+    assert rigged.executed == [] and rigged.rig.cortex.asks == []
+
+
+def test_e15_a_typed_plan_without_the_filter_abstains_by_name(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(NORTH_Q, BUDGET)
+    text = _assert_abstain(env, "no_declared_measure")
+    assert "360.75" not in text
+    assert "fit_disagrees:unbound_constraint ('north', 'district')" in _reasons(env)
+    assert rigged.executed == [] and "measure_basis" not in env
+
+
+def test_e15_a_plan_that_carries_the_condition_still_answers(rigged: _Rigged) -> None:
+    """The gate is a coverage check, not a ban on filters: the plan that carries what the
+    question states is answered by the measure, with its basis and the filtered oracle rows."""
+    rigged.confirm(BUDGET)
+    for question, flt, sql, figure in [
+        (NORTH_Q, (DISTRICTS, "name", "=", "North"), NORTH_SQL, "310.75"),
+        (
+            "What is the total budget of schools in district 2?",
+            (SCHOOLS, "district_id", "=", 2),
+            D2_SQL,
+            "50",
+        ),
+    ]:
+        env = rigged.plan(question, BUDGET, filters=(flt,))
+        oracle = _oracle(rigged.rig.lake, sql)
+        _assert_answer(env, oracle, figure)
+        _assert_basis(env, rigged, BUDGET)
+
+
+def test_e15_a_plan_that_carries_part_of_the_condition_abstains(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(
+        "What is the total budget of schools in the North and South districts?",
+        BUDGET,
+        filters=((DISTRICTS, "name", "=", "North"),),
+    )
+    _assert_abstain(env, "no_declared_measure")
+    assert "fit_disagrees:unbound_constraint ('south')" in _reasons(env)
+    assert rigged.executed == []
+
+
+def test_e15_a_condition_nothing_can_check_is_a_gap_not_a_total(rigged: _Rigged) -> None:
+    """'Last year' is a condition the measure has no column for: there is no honest figure. The
+    qualifier gate names it before the fit is asked; either way the total is not stated."""
+    rigged.confirm(BUDGET)
+    env = rigged.plan("What is the total budget of schools last year?", BUDGET)
+    text = _assert_abstain(env, "unhonored_qualifier:time_filter=last_1_year")
+    assert "360.75" not in text and rigged.executed == []
+
+
+# -------------------------------------------- a group with no value is not a figure (E15)
+
+
+def test_e15_a_group_with_no_value_is_left_out_and_the_answer_says_so(rigged: _Rigged) -> None:
+    rigged.confirm(BUDGET)
+    _lake_exec(
+        rigged.rig.lake, "UPDATE bronze.public_schools SET budget = NULL WHERE district_id = 2"
+    )
+    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
+    oracle = _oracle(
+        rigged.rig.lake,
+        "SELECT district_id, SUM(budget) AS v FROM bronze.public_schools "
+        "GROUP BY district_id HAVING SUM(budget) IS NOT NULL",
+    )
+    assert _multiset(oracle) == _multiset([{"d": 1, "v": Decimal("310.75")}])
+    _assert_answer(env, oracle, "310.75")
+    _assert_basis(env, rigged, BUDGET)
+    text = str(env["text"])
+    assert "None" not in text, text
+    assert f"Some groups have no value for {BUDGET} and are not shown." in text, text
+    assert not any(v is None for row in env["rows"] for v in row.values()), env["rows"]
+    assert f"excluded: groups with no value for {BUDGET}" in _reasons(env), env["assumptions"]
+
+
+def test_e15_every_group_with_a_value_is_shown_and_nothing_is_said_about_the_rest(
+    rigged: _Rigged,
+) -> None:
+    rigged.confirm(BUDGET)
+    env = rigged.plan(GROUPED_Q, BUDGET, group_by=BY_DISTRICT)
+    assert env["abstained"] is False and len(env["rows"]) == 2
+    assert "are not shown" not in str(env["text"])
+    assert not any("excluded: groups" in a for a in env["assumptions"])
+
+
+# ----------------------------------- the sentence a customer reads is not rewritten (E15)
+
+
+def test_e15_the_confirmed_line_survives_the_pii_scan_whole() -> None:
+    """A phone-shaped run in the ledger id (or in the digest prefix) is an identifier DMS minted,
+    not a phone number: the sentence is exactly what the basis spells. Anything else in the
+    assumptions that carries such a run is still masked."""
+    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+
+    basis = {
+        **_BASIS,
+        "definition_hash": "0123456789" + "ab" * 27,
+        "ledger_entry_id": "led_0123456789",
+    }
+    line = confirmed_line(basis)
+    assert "0123456789ab" in line and "led_0123456789" in line
+    env = build_answer_envelope(
+        answer_id="ans_unit",
+        text="Found 1 row(s).\n  - total=360.75",
+        badge="L2_VALIDATED",
+        rows=[{"total": Decimal("360.75")}],
+        sql_used="SELECT SUM(s.budget) AS total FROM bronze.public_schools s",
+        assumptions=["GEN-01 ontology compile", line, "call 0123456789 now"],
+        audit_id="led_unit",
+        route="generated",
+        measure_basis=basis,
+    )
+    assert env["abstained"] is False and env["measure_basis"] == basis
+    assert env["assumptions"][1] == line, env["assumptions"]
+    assert "0123456789" not in env["assumptions"][2], "a look-alike elsewhere is still scanned"
+    assert_envelope_valid(env)
+
+
+def test_e15_the_scan_exempts_only_the_sentence_a_valid_basis_spells() -> None:
+    """The exemption is the narrowest thing that works: the exact sentence, only under
+    ``assumptions``, only when every identifier it embeds has its shape."""
+    from dms_core.measure_line import sanctioned_confirmed_line
+    from dms_core.pii import mask_unknown_keys
+
+    basis = {**_BASIS, "ledger_entry_id": "led_0123456789"}
+    line = confirmed_line(basis)
+    assert sanctioned_confirmed_line(basis) == line
+    kept = mask_unknown_keys({"measure_basis": basis, "assumptions": [line]})
+    assert kept["assumptions"] == [line]
+
+    # the same words anywhere else, or one character off, are scanned like any text
+    assert mask_unknown_keys({"measure_basis": basis, "note": [line]})["note"] != [line]
+    off_by_one = line.replace("steward account", "steward  account")
+    assert mask_unknown_keys({"measure_basis": basis, "assumptions": [off_by_one]})[
+        "assumptions"
+    ] != [off_by_one]
+    assert mask_unknown_keys({"assumptions": [line]})["assumptions"] != [line], "no basis, no pass"
+
+    # a basis with a field off its identifier shape sanctions nothing
+    for field, bad in [
+        ("ledger_entry_id", "led 0123456789; drop"),
+        ("measure", "Call 0123456789"),
+        ("definition_hash", "0123456789"),
+        ("confirmed_at", "yesterday"),
+    ]:
+        broken = {**basis, field: bad}
+        assert sanctioned_confirmed_line(broken) is None, field
+        out = mask_unknown_keys({"measure_basis": broken, "assumptions": [confirmed_line(broken)]})
+        assert out["assumptions"] != [confirmed_line(broken)], field
+    assert sanctioned_confirmed_line(None) is None
+    assert sanctioned_confirmed_line("measure confirmed: x") is None
+
+
+def test_e15_the_sentence_is_spelled_once() -> None:
+    """The executor's constants and the core spelling cannot drift apart."""
+    from dms_core import measure_line
+
+    assert measure_line.CONFIRMED_PREFIX == CONFIRMED_PREFIX
+    assert measure_line.CONFIRMED_MEMORY_ONLY_SUFFIX == CONFIRMED_MEMORY_ONLY_SUFFIX
+    from dms_executor import measure_basis
+
+    assert measure_line.CONFIRMED_LINE_HASH_CHARS == measure_basis.CONFIRMED_LINE_HASH_CHARS
+
+
+def test_e15_a_ledger_id_with_a_long_digit_run_reaches_the_customer_unmasked(
+    rigged: _Rigged,
+) -> None:
+    ledger = rigged.env.ledger
+    real = ledger.append
+
+    def numbered(**kw: Any) -> Any:
+        out = real(**kw)
+        return type(out)(entry_id="led_0123456789", hash=out.hash)
+
+    ledger.append = numbered  # type: ignore[method-assign]
+    rigged.confirm(BUDGET)
+    env = rigged.plan(TOTAL_Q, BUDGET)
+    assert env["measure_basis"]["ledger_entry_id"] == "led_0123456789"
+    line = _line(env)
+    assert "led_0123456789" in line and "DMSMASK" not in line, line
+    assert line == confirmed_line(env["measure_basis"])

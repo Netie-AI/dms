@@ -36,6 +36,7 @@ from dms_executor.measure_use import (
     measure_exclusions,
     measure_fit,
     prune_unusable_measures,
+    unbound_words,
 )
 from dms_executor.ontology import Measure, MeasureProvenance, Ontology, measure_expression
 from dms_executor.space_ontology import (
@@ -342,7 +343,7 @@ def test_fit_stems_plurals_the_same_way_on_both_sides() -> None:
 def test_fit_reasons_are_the_documented_vocabulary() -> None:
     assert FIT_REASONS == {
         "ok", "ambiguous", "no_match", "aggregate_cue", "quantity_cue", "qualifier_cue",
-        "no_content_tokens", "ranker_disagrees",
+        "unbound_constraint", "no_content_tokens", "ranker_disagrees",
     }  # fmt: skip
 
 
@@ -1309,3 +1310,105 @@ def test_fit_a_grouping_never_covers_a_restriction(question: str) -> None:
     number; a plan grouped by district does not do that, so the veto stands."""
     got = measure_fit(question, _pool(BUDGET), grouped_by=((DISTRICTS, "name"),))
     assert got == FitVerdict(False, BUDGET.name, "qualifier_cue"), question
+
+
+# ----------------------------------------------- the plan carries what the question asks
+
+NORTH_FILTER = ("bronze.public_districts", "name", "=", "North")
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the total budget of all schools?",
+        "what's the total school budget",
+        "Give me the sum of budgets across all schools",
+        "What is the overall budget for the schools?",
+        "total budget of schools",
+    ],
+)
+def test_fit_a_plain_question_with_no_plan_condition_is_ok(question: str) -> None:
+    assert unbound_words(question, "schools_budget_sum", grain=SCHOOLS) == ()
+    assert measure_fit(question, _pool(BUDGET), filters=()).ok is True
+
+
+@pytest.mark.parametrize(
+    ("question", "words"),
+    [
+        ("What is the total budget of schools in the north district?", ("north", "district")),
+        ("What is the total budget of schools with a budget over 100?", ("over", "100")),
+        ("What is the total budget of schools in district 2?", ("district", "2")),
+        ("What is the total budget of schools last year?", ("last", "year")),
+        ("What is the total budget of schools at most 100?", ("most", "100")),
+        ("What is the total budget of schools between 5 and 9?", ("between", "5", "9")),
+        ("What is the total budget of schools in the database?", ("database",)),
+    ],
+)
+def test_fit_a_condition_the_plan_does_not_carry_is_unbound(
+    question: str, words: tuple[str, ...]
+) -> None:
+    assert unbound_words(question, "schools_budget_sum", grain=SCHOOLS) == words
+    got = measure_fit(question, _pool(BUDGET), filters=())
+    assert (got.ok, got.pick, got.reason) == (False, "schools_budget_sum", "unbound_constraint")
+    assert got.detail.startswith(repr(words[0])), got.detail
+
+
+def test_fit_a_plan_that_carries_the_condition_covers_its_words() -> None:
+    q = "What is the total budget of schools in the north district?"
+    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS, filters=[NORTH_FILTER]) == ()
+    assert measure_fit(q, _pool(BUDGET), filters=[NORTH_FILTER]).ok is True
+    # a JSON plan carries its filters as lists, and IN carries a list of literals
+    as_json = [list(NORTH_FILTER)]
+    assert measure_fit(q, _pool(BUDGET), filters=as_json).ok is True
+    both = ("bronze.public_districts", "name", "IN", ["North", "South"])
+    q2 = "What is the total budget of schools in the North and South districts?"
+    assert measure_fit(q2, _pool(BUDGET), filters=[both]).ok is True
+    # ... and a numeric literal covers its number
+    by_id = ("bronze.public_schools", "district_id", "=", 2)
+    q3 = "What is the total budget of schools in district 2?"
+    assert measure_fit(q3, _pool(BUDGET), filters=[by_id]).ok is True
+
+
+def test_fit_a_plan_that_carries_only_part_of_the_condition_is_unbound() -> None:
+    """'North and South' with a plan for North alone drops South: the second word is unbound."""
+    q = "What is the total budget of schools in the North and South districts?"
+    got = measure_fit(q, _pool(BUDGET), filters=[NORTH_FILTER])
+    assert (got.ok, got.reason, got.detail) == (False, "unbound_constraint", "'south'")
+
+
+def test_fit_a_group_by_covers_its_word_and_a_filter_does_not_cover_another_word() -> None:
+    by_district = [("bronze.public_districts", "name")]
+    q = "What is the total budget of all schools for every district?"
+    assert measure_fit(q, _pool(BUDGET), grouped_by=by_district, filters=()).ok is True
+    got = measure_fit(
+        "What is the total budget of schools in the north region?",
+        _pool(BUDGET),
+        filters=[NORTH_FILTER],
+    )
+    assert (got.ok, got.detail) == (False, "'region'")
+
+
+def test_fit_without_a_plan_the_unbound_test_is_not_made() -> None:
+    """``filters=None`` is a caller with no plan (a listing, a ranking probe): unchanged."""
+    q = "What is the total budget of schools in the north district?"
+    assert measure_fit(q, _pool(BUDGET)).ok is True
+
+
+def test_fit_ranking_and_range_phrasing_is_never_accounted_for() -> None:
+    """The confirmed lane does not answer "top 3" or "between": a false refusal is safe."""
+    by_district = [(DISTRICTS, "name")]
+    q = "What are the top 3 districts by total budget of schools?"
+    assert unbound_words(q, "schools_budget_sum", grain=SCHOOLS, grouped_by=by_district) == (
+        "top",
+        "3",
+    )
+
+
+def test_fit_a_bool_literal_is_not_a_number_in_the_probe(env: _Env) -> None:
+    """``TRUE = 1`` holds in SQL: a JSON ``true`` on an integer key must not filter to key 1."""
+    onto = _lake_onto(env)
+    assert filter_values_present(_plan((SCHOOLS, "district_id", "=", 1)), onto, env.lake) is None
+    got = filter_values_present(_plan((SCHOOLS, "district_id", "=", True)), onto, env.lake)
+    assert got is not None and got.startswith("unmatched_filter_value: "), got
+    got = filter_values_present(_plan((SCHOOLS, "district_id", "IN", [1, True])), onto, env.lake)
+    assert got is not None and "True" in got, got

@@ -179,6 +179,29 @@ against a non-seed database in this step.
   is `empty_aggregate`. `COUNT` over an empty table is 0 and answers: 0 is a value.
 - **After a confirmed plan abstains the ask never falls back to Cortex SQL.** Two paths would
   be two numbers.
+- **The plan must carry every condition the question states** (verifier finding, fixed). The
+  first cut checked only aggregate cues and a list of qualifier words, so "total budget of
+  schools in the north district" was answered by the measure's UNFILTERED total (360.75, the
+  right figure was 310.75) under a confirmed basis, and the router even replaced Cortex's
+  correct filtered SQL with it. `measure_fit` now takes the plan's filters and runs an
+  allowlist, `unbound_words`: every word of the question must be a frame word ("what", "the",
+  "of", "in"), part of the aggregate phrasing, a word of the measure's name or its grain's
+  table, or a word of what the plan groups by or filters on (object, column, literal). Any
+  other word is a condition nothing applied (`unbound_constraint`, naming the first words).
+  With SQL present the SQL stays on today's path (`confirmed_measure_not_preferred:
+  unbound_constraint`); with only a plan the ask abstains `no_declared_measure`. It is an
+  allowlist on purpose: a blocklist of phrases ("in", "over", "between") is exactly what the
+  first cut had, and the next phrase it did not list would drop its condition the same way.
+- **A group with no value is not a figure.** A grouped confirmed answer drops a group whose
+  measure is NULL, says so in the text and in the assumptions (no digits in the sentence),
+  and abstains `empty_aggregate` only when no group has a value. It never renders `=None`.
+- **A Python bool is not 1.** The value probe requires a BOOLEAN column for a boolean literal
+  (`TRUE = 1` holds in SQL).
+- **The `measure confirmed:` sentence is exempt from the PII scan** the way the basis it
+  restates is. A digest prefix or ledger id shaped like a phone number is an identifier DMS
+  minted; masking it makes the digest uncomparable. The spelling and the identifier shapes
+  live once, in `dms_core.measure_line`, and the scan exempts a string only when it equals
+  the sentence a shape-valid basis spells, under `assumptions` only.
 - `measure_basis` is additive on the envelope, built with its sentence by one helper
   (`confirmed_basis`), kept only when it is a valid confirmed basis for the badge and the
   assumptions, else the answer clamps to ABSTAIN. The key is exempt from the PII scan
@@ -202,6 +225,13 @@ against a non-seed database in this step.
   named abstain, not a wrong number. DMS caps are stricter.
 - A ledger outage fails confirm closed. An orphan ledger entry after a failed commit
   confers no authority: the ask path trusts only database rows plus the hash recompute.
+- The confirmed lane does not answer ranking or range phrasing ("top 3", "between",
+  "at least", "over 100") or a normalised value ("KL" for "Kuala Lumpur"): the allowlist
+  has no word for them, so a plan that carries them is refused. A false refusal is safe, and
+  with SQL present the generated path answers. The MIRROR is not checked: a Cortex-typed plan
+  that carries a filter the question never states is still trusted for it, bounded by the
+  value probe. Cheap to add (every plan literal must appear in the question) but it refuses
+  normalised values, so it is a decision, not a fix.
 - Coverage ceiling of the certified lane: Cortex ranks by name tokens and slot filling is
   demo-shaped, so early L1 hits will be mostly ungrouped totals and simple dimensions;
   English tokens only. Measure and report certified hit rate per Space; never claim coverage.
