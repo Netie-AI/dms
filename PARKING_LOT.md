@@ -394,6 +394,41 @@ and the flip of confirmed-measure answers to `L1_GOVERNED_METRIC` (step 11).
 founder releases the badge policy; the L1 flip additionally needs every gate in spec
 section 7.4/7.5 green.
 
+## P-DMS-49 - Measure names may be SQL keywords
+
+`measure_spec.NAME_RE` (`^[a-z][a-z0-9_]{1,47}$`) accepts a SQL keyword such as `select` or
+`group` as a measure name. Safe today: the measure builder quotes every identifier it emits
+and a name must also differ from every table, column and demo-pack id.
+**Unlock:** a name is ever interpolated unquoted (a second SQL builder, a Cortex-side
+template), or a steward reports a keyword name confusing a viewer; then add a reserved-word
+list to the name rule and to migration 0007's `onto_measure_name_ck` together.
+
+## P-DMS-50 - GET /ontology/measures is ungated under the single-actor model
+
+The list route does not call `compliance_gate`; only the mutation routes do (hard rule 8
+covers mutations). Under the single configured actor (DR-0004) there is no second principal
+to deny, and the view already strips probe SQL and values unless the caller may decide.
+**Unlock:** DR-0004 is superseded by real per-user authentication, or a role other than
+viewer/steward/admin is introduced; the read then gets its own Cortex task id and gate.
+
+## P-DMS-51 - compliance_gate metadata beyond filled_template/resource is not forwarded
+
+`cortex_client.gate` forwards only `filled_template` and `resource` to Cortex. The measure
+routes put `space_id`, `actor_role` and `measure_id` in the gate metadata, and they are
+dropped on the wire, so Cortex F5 cannot yet decide on them.
+**Unlock:** a Cortex gate policy for `spaces.ontology.measures.*` that reads that metadata
+(cortex-contract bump); `cortex_client.gate` then forwards it and the routes' tests assert
+it on the wire.
+
+## P-DMS-52 - Confirmed measures stay answers_certified=true on GET after a lake retype
+
+`GET /ontology/measures` reports `answers_certified` from the stored row and the active
+version. A column retyped in the lake after the confirm is caught only at ask time (step 6
+prunes it with `column_type_changed`), so the list can say certified for a measure the next
+ask will refuse.
+**Unlock:** a steward is misled by it in a pilot, or the list gains a lake probe cheap enough
+to run per request; until then ask-time pruning is the authority and the answer abstains.
+
 ## Move out of parking lot
 
 Claim in STATUS, then strike here.
