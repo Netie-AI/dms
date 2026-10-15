@@ -61,7 +61,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -101,7 +101,10 @@ HINT_CANDIDATE_CAP = 3
 # longest value without holding every string.
 INDEX_COLUMN_CAP = 500
 INDEX_TOTAL_CAP = 5000
-# Rows pulled per column, and across the whole build. LIMIT, never a full scan.
+# Rows pulled per non-text column (samples), and across the whole build. A text
+# column reads DISTINCT values up to INDEX_COLUMN_CAP + 1: one past the cap is
+# how a column proves it is wider than the cap. Ceiling: DISTINCT scans the
+# column on the background build. Upgrade: an approximate distinct count.
 SAMPLE_ROWS = 20
 INDEX_ROW_BUDGET = 8000
 # Background build ceiling. The ask path does not wait on this.
@@ -145,6 +148,7 @@ _NUM_TYPES = frozenset(
 _INDEX_LOCK = threading.Lock()
 _SPACE_INDEX: dict[str, dict[str, tuple[str, ...]]] = {}
 _SPACE_SAMPLES: dict[str, dict[str, tuple[str, ...]]] = {}
+_SPACE_CAPPED: dict[str, frozenset[str]] = {}
 _SPACE_FP: dict[str, str] = {}
 _STOP = threading.Event()
 _WORKER_LOCK = threading.Lock()
@@ -180,12 +184,14 @@ def _remember_built(
     fingerprint: str,
     index: dict[str, tuple[str, ...]],
     samples: dict[str, tuple[str, ...]],
+    capped: Collection[str] = (),
 ) -> None:
     snap = {key: tuple(vals) for key, vals in index.items()}
     held = {key: tuple(vals) for key, vals in samples.items()}
     with _INDEX_LOCK:
         _SPACE_INDEX[space_id] = snap
         _SPACE_SAMPLES[space_id] = held
+        _SPACE_CAPPED[space_id] = frozenset(capped)
         _SPACE_FP[space_id] = fingerprint
 
 
@@ -193,6 +199,7 @@ def _forget_index(space_id: str) -> None:
     with _INDEX_LOCK:
         _SPACE_INDEX.pop(space_id, None)
         _SPACE_SAMPLES.pop(space_id, None)
+        _SPACE_CAPPED.pop(space_id, None)
         _SPACE_FP.pop(space_id, None)
 
 
@@ -209,6 +216,11 @@ def _space_samples(space_id: str) -> dict[str, tuple[str, ...]]:
         return {key: tuple(vals) for key, vals in found.items()}
 
 
+def _space_capped(space_id: str) -> frozenset[str]:
+    with _INDEX_LOCK:
+        return _SPACE_CAPPED.get(space_id, frozenset())
+
+
 @dataclass(frozen=True)
 class ColumnFact:
     table: str
@@ -218,7 +230,7 @@ class ColumnFact:
     foreign_key: str
     description: str
     samples: tuple[str, ...]
-    distinct: int | None
+    distinct: int | str | None
     score: float
     reason: str = ""
 
@@ -562,7 +574,18 @@ def _sample_values(column: Mapping[str, Any], family: str, tagged: bool) -> list
     return listed[:_SAMPLE_LIMIT]
 
 
-def _distinct_count(column: Mapping[str, Any], values: Sequence[str]) -> int | None:
+def _is_capped(column: Mapping[str, Any], family: str) -> bool:
+    """True for a text column whose distinct values ran past ``INDEX_COLUMN_CAP``.
+
+    The index holds none of its values: a prefix check against part of the
+    column cannot tell ``NORTH`` from ``NORTH EAST``. No values, no hint.
+    """
+    return family == "text" and column.get("capped") is True
+
+
+def _distinct_count(column: Mapping[str, Any], values: Sequence[str]) -> int | str | None:
+    if column.get("capped") is True:
+        return f">={INDEX_COLUMN_CAP}"
     given = _count(column.get("distinct"))
     if given is not None:
         return given
@@ -1316,11 +1339,12 @@ def build_schema_context(
                 continue
             family = _type_family(_text(column.get("type")))
             tagged = (table, name) in tags
-            values = _index_values(column, family)
+            capped = _is_capped(column, family)
+            values = [] if capped else _index_values(column, family)
             if values:
                 loaded_values.extend(values)
                 index_rows.append((f"{table}.{name}", tuple(values)))
-            samples = _sample_values(column, family, tagged)
+            samples = [] if capped else _sample_values(column, family, tagged)
             prepared.append(
                 {
                     "table": table,
@@ -1329,7 +1353,9 @@ def build_schema_context(
                     "primary_key": bool(column.get("primary_key")),
                     "description": _text(column.get("description")),
                     "samples": samples,
-                    "distinct": _distinct_count(column, values or samples),
+                    "distinct": _distinct_count(
+                        column, [] if capped else (values or samples)
+                    ),
                     "table_desc": table_desc,
                     "tagged": tagged,
                 }
@@ -1440,7 +1466,9 @@ def build_schema_context(
                 foreign_key=fk_of.get((table, name), ""),
                 description=description,
                 samples=kept_samples,
-                distinct=item["distinct"] if isinstance(item["distinct"], int) else None,
+                distinct=(
+                    item["distinct"] if isinstance(item["distinct"], (int, str)) else None
+                ),
                 score=score,
                 reason=reason,
             )
@@ -1557,22 +1585,30 @@ def _fingerprint(
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:20]
 
 
-def _bounded_read(con: Any, table: str, column: str, limit: int) -> list[str]:
-    """At most ``limit`` rows. No DISTINCT and no full-table aggregate."""
+def _bounded_read(
+    con: Any, table: str, column: str, limit: int, *, distinct: bool = False
+) -> list[str]:
+    """At most ``limit`` rows, one string per row read.
+
+    ``distinct=False`` is the first rows in storage order: a sample, nothing
+    more. ``distinct=True`` is the smallest ``limit`` distinct values, the
+    only read that may stand for a column's value set. A blank cell comes
+    back as ``""`` and is not dropped, so ``len`` is the row count the engine
+    returned and ``len > cap`` is a sound "wider than the cap" test.
+    """
     if limit < 1:
         return []
+    cell = f"CAST({_quote(column)} AS VARCHAR)"
+    head = "SELECT DISTINCT" if distinct else "SELECT"
+    tail = " ORDER BY 1" if distinct else ""
     try:
         rows = con.execute(
-            f"SELECT CAST({_quote(column)} AS VARCHAR) FROM {_quote(table)} "
-            f"WHERE {_quote(column)} IS NOT NULL LIMIT {int(limit)}"
+            f"{head} {cell} FROM {_quote(table)} "
+            f"WHERE {_quote(column)} IS NOT NULL{tail} LIMIT {int(limit)}"
         ).fetchall()
     except Exception:  # noqa: BLE001
         return []
-    return [
-        " ".join(str(row[0]).split())
-        for row in rows
-        if row and row[0] is not None and str(row[0]).strip()
-    ]
+    return [" ".join(str(row[0]).split()) for row in rows if row and row[0] is not None]
 
 
 def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[str]:
@@ -1740,11 +1776,25 @@ def build_space_index(
                 for col in dataset["columns"]:
                     if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
                         break
-                    take = min(SAMPLE_ROWS, rows_left)
-                    got = _bounded_read(con, table, str(col["name"]), take)
+                    is_text = _type_family(str(col.get("type") or "")) == "text"
+                    want = INDEX_COLUMN_CAP + 1 if is_text else SAMPLE_ROWS
+                    take = min(want, rows_left)
+                    got = _bounded_read(
+                        con, table, str(col["name"]), take, distinct=is_text
+                    )
                     rows_left -= len(got)
+                    if is_text and len(got) >= take:
+                        # The read filled its limit, so more distinct values may
+                        # exist. Past the cap the column is capped (no values,
+                        # distinct >= cap). Cut short by the row budget it is
+                        # simply unread. Either way no partial set is kept.
+                        col["values"] = []
+                        if take > INDEX_COLUMN_CAP:
+                            col["capped"] = True
+                            col["distinct"] = f">={INDEX_COLUMN_CAP}"
+                        continue
                     stored = _stored_values(got, table=table, column=str(col["name"]))
-                    if _type_family(str(col.get("type") or "")) == "text":
+                    if is_text:
                         col["values"] = stored[:INDEX_COLUMN_CAP]
                     else:
                         col["samples"] = stored[:_SAMPLE_LIMIT]
@@ -1769,10 +1819,13 @@ def build_space_index(
         return ""
     values: dict[str, tuple[str, ...]] = {}
     samples: dict[str, tuple[str, ...]] = {}
+    capped_keys: set[str] = set()
     for dataset in plain["datasets"]:
         table = str(dataset["name"])
         for col in dataset["columns"]:
             key = f"{table}.{col['name']}"
+            if col.get("capped") is True:
+                capped_keys.add(key)
             if col.get("values"):
                 values[key] = tuple(col["values"])
             if col.get("samples"):
@@ -1787,7 +1840,7 @@ def build_space_index(
             "schema": plain,
         },
     )
-    _remember_built(space_id, fingerprint, values, samples)
+    _remember_built(space_id, fingerprint, values, samples, capped_keys)
     return ""
 
 
@@ -1885,6 +1938,7 @@ def _overlay_index(
     schema: Mapping[str, Any],
     values: Mapping[str, Sequence[str]],
     samples: Mapping[str, Sequence[str]],
+    capped: Collection[str] = (),
 ) -> dict[str, Any]:
     """Catalog shape plus the in-memory cells. The file's cells are not read."""
     out = dict(schema)
@@ -1900,7 +1954,10 @@ def _overlay_index(
             copied = dict(col)
             key = f"{table}.{_text(copied.get('name'))}"
             if _type_family(_text(copied.get("type"))) == "text":
-                if key in values:
+                if key in capped:
+                    copied["capped"] = True
+                    copied["values"] = []
+                elif key in values:
                     copied["values"] = list(values[key])
             elif key in samples:
                 copied["samples"] = list(samples[key])
@@ -1929,6 +1986,7 @@ def lookup_schema(
             plain,
             cached_value_index(space_id),
             _space_samples(space_id),
+            _space_capped(space_id),
         )
         if dialect and not _text(schema.get("dialect")):
             schema["dialect"] = _dialect(dialect)
