@@ -27,6 +27,7 @@ import pytest
 from cortex_client.models import LedgerAppendResponse
 from dms_core.control_plane.onto_store import (
     MEASURE_TRANSITIONS,
+    ActorNotProvisioned,
     MeasureDraft,
     MeasureNameTaken,
     MeasureNotFound,
@@ -381,12 +382,14 @@ def test_rename_to_a_taken_name_is_refused_and_unledgered() -> None:
     a = _propose(store, vid, _draft("schools_budget_sum"))
     b = _propose(store, vid, _draft("schools_budget_avg", aggregate="avg"))
     box: list[dict[str, Any]] = []
+    audits = len(store._audit)
     with pytest.raises(MeasureNameTaken):
         store.decide_measure(
             b.id, to_state="confirmed", expected_hash=b.definition_hash, name=a.name,
             actor=ACTOR, ledger=_ledger(box),
         )  # fmt: skip
     assert box == []
+    assert store.get_measure(_space, b.id) == b and len(store._audit) == audits
 
 
 def test_a_bad_rename_or_empty_description_never_reaches_the_ledger() -> None:
@@ -2588,6 +2591,53 @@ def test_an_actor_without_a_user_row_is_actor_not_provisioned_not_a_broken_store
     assert r.status_code == 503 and api.detail(r)["code"] == "ontology_store_unavailable"
     monkeypatch.setattr(api.env.store, "decide_measure", real)
     assert api.confirm(view).status_code == 200
+
+
+def test_an_unprovisioned_actor_is_a_named_503_and_the_ledger_is_never_written(
+    api: _Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a stand-in error: the store itself refuses an actor with no user row, and it does
+    so before the ledger, so Cortex never holds a "confirmed" entry for a measure that stays
+    proposed."""
+    view = api.propose()["schools_count"]
+    before = api.snapshot()
+    monkeypatch.setattr(api.env.store, "_actors", frozenset({uuid4()}))
+    for r in (api.confirm(view), api.reject(view)):
+        assert r.status_code == 503, r.text
+        d = api.detail(r)
+        assert d["code"] == "actor_not_provisioned"
+        assert d["message"] == MEASURE_REFUSAL_COPY["actor_not_provisioned"]
+    assert api.env.ledger.appended == []
+    assert api.snapshot() == before
+    assert api.env.row(view["id"]).state == "proposed"
+    configured = UUID(api.settings().dms_actor_user_id)
+    monkeypatch.setattr(api.env.store, "_actors", frozenset({configured}))
+    assert api.confirm(view).status_code == 200
+    assert len(api.env.ledger.appended) == 1
+
+
+def test_the_store_refuses_a_stranger_and_a_blank_entry_id_before_changing_anything() -> None:
+    store = OntologyStore(actors={ACTOR})
+    space = uuid4()
+    vid = store.reconnect(
+        space_id=space, identity=SourceIdentity("postgres", "h", "d", "public"), fingerprint="f"
+    ).id
+    m = _propose(store, vid)
+    box: list[dict[str, Any]] = []
+    for to_state, kw in (("confirmed", {}), ("rejected", {"reason": "no"})):
+        with pytest.raises(ActorNotProvisioned):
+            store.decide_measure(
+                m.id, to_state=to_state, expected_hash=m.definition_hash, actor=uuid4(),
+                ledger=_ledger(box), **kw,
+            )  # fmt: skip
+    assert box == [] and store.get_measure(space, m.id) == m
+    for blank in ("", "  ", "\n\t"):
+        with pytest.raises(ValueError, match="no entry id"):
+            store.decide_measure(
+                m.id, to_state="confirmed", expected_hash=m.definition_hash, actor=ACTOR,
+                ledger=lambda _p, b=blank: b,
+            )  # fmt: skip
+    assert store.get_measure(space, m.id) == m
 
 
 def test_a_configured_actor_that_is_not_a_uuid_cannot_be_a_user_row(api: _Api) -> None:

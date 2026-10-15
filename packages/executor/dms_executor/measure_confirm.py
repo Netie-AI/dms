@@ -31,6 +31,7 @@ from typing import Any
 from uuid import UUID
 
 from dms_core.control_plane.onto_store import (
+    ActorNotProvisioned,
     MeasureDraft,
     MeasureNameTaken,
     MeasureNotFound,
@@ -1319,6 +1320,8 @@ def confirm_measure(
         raise MeasureRefusal(404, "measure_not_found") from None
     except MeasureNameTaken:
         raise _refused(state, row, actor, [_f("name_taken", "name")]) from None
+    except ActorNotProvisioned:
+        raise MeasureRefusal(503, "actor_not_provisioned") from None
     except MeasureTransitionError as exc:
         outcome = _transition_outcome(exc, state, row, actor, new_name, new_desc, definition_hash)
         if isinstance(outcome, MeasureRefusal):
@@ -1412,6 +1415,8 @@ def reject_measure(
         )
     except MeasureNotFound:
         raise MeasureRefusal(404, "measure_not_found") from None
+    except ActorNotProvisioned:
+        raise MeasureRefusal(503, "actor_not_provisioned") from None
     except MeasureTransitionError as exc:
         code = (
             "measure_confirmable_state" if exc.code == "illegal_transition" else "stale_definition"

@@ -70,7 +70,7 @@ def upgrade() -> None:
                 description <> ''
                 AND decided_by IS NOT NULL
                 AND decided_at IS NOT NULL
-                AND coalesce(ledger_entry_id, '') <> ''
+                AND btrim(coalesce(ledger_entry_id, '')) <> ''
               )
             ),
           ADD CONSTRAINT onto_measure_rejected_ck

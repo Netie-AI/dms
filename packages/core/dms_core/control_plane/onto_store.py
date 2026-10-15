@@ -27,7 +27,7 @@ import hashlib
 import json
 import re
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -228,6 +228,22 @@ class MeasureTransitionError(RuntimeError):
 
 class MeasureNameTaken(ValueError):
     """The (version, name) pair already exists (rename at confirm collided)."""
+
+
+class ActorNotProvisioned(LookupError):
+    """The configured actor has no ``dms.users`` row, so a decision cannot be attributed.
+
+    Raised BEFORE the ledger is written: the foreign key on ``decided_by`` would otherwise
+    refuse the UPDATE after the Cortex ledger already holds a "confirmed" entry.
+    """
+
+
+def _entry_id_or_raise(entry_id: object) -> str:
+    """The ledger's answer, or a refusal. A blank id is no id: it would be stored as the
+    measure's only link to the ledger and the CHECK on it would then refuse the row."""
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        raise ValueError("the ledger returned no entry id")
+    return entry_id
 
 
 @dataclass(frozen=True)
@@ -517,8 +533,14 @@ def _audit_payload(
 class OntologyStore:
     """In-memory store for CI. Same reconnect rule as the Postgres functions below."""
 
-    def __init__(self, *, tenant_id: UUID | None = None) -> None:
+    def __init__(
+        self, *, tenant_id: UUID | None = None, actors: Collection[UUID] | None = None
+    ) -> None:
         self._tenant_id = tenant_id
+        # The users table Postgres holds. None = not modelled (any actor is known); a
+        # collection makes a decision by anyone else raise ActorNotProvisioned, as the
+        # Postgres store does, before the ledger is touched.
+        self._actors = None if actors is None else frozenset(actors)
         self._versions: list[OntologyVersion] = []
         self._audit: list[OntoAudit] = []
         self._snapshots: list[OntologySnapshot] = []
@@ -807,10 +829,10 @@ class OntologyStore:
                 for m in self._measures
             ):
                 raise MeasureNameTaken(planned.name)
+            if self._actors is not None and actor not in self._actors:
+                raise ActorNotProvisioned(str(actor))
             space_id = version.space_id if version is not None else None
-            entry_id = ledger(_ledger_payload(row, planned, space_id))
-            if not entry_id:
-                raise ValueError("the ledger returned no entry id")
+            entry_id = _entry_id_or_raise(ledger(_ledger_payload(row, planned, space_id)))
             now = datetime.now(UTC)
             new = replace(planned, decided_by=actor, decided_at=now, ledger_entry_id=entry_id)
             action, inputs, result = _decide_audit(row, new, expected_hash, entry_id)
@@ -1371,9 +1393,19 @@ def decide_measure(
         "SELECT space_id FROM dms.ontology_version WHERE id = %s", (str(row.version_id),)
     ).fetchone()
     space_id = UUID(str(space[0])) if space is not None else None
-    entry_id = ledger(_ledger_payload(row, planned, space_id))
-    if not entry_id:
-        raise ValueError("the ledger returned no entry id")
+    # Every refusal the UPDATE could raise is decided HERE, before the ledger: the ledger
+    # is outside this transaction, so an entry written for a decision the database then
+    # refuses would say "confirmed" about a measure that stays proposed.
+    taken = conn.execute(
+        "SELECT 1 FROM dms.onto_measure WHERE version_id = %s AND name = %s AND id <> %s",
+        (str(row.version_id), planned.name, str(row.id)),
+    ).fetchone()
+    if taken is not None:
+        raise MeasureNameTaken(planned.name)
+    known = conn.execute("SELECT 1 FROM dms.users WHERE id = %s", (str(actor),)).fetchone()
+    if known is None:
+        raise ActorNotProvisioned(str(actor))
+    entry_id = _entry_id_or_raise(ledger(_ledger_payload(row, planned, space_id)))
     now = datetime.now(UTC)
     try:
         cur = conn.execute(

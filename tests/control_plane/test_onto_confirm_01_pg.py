@@ -27,6 +27,7 @@ import pytest
 from cortex_client.models import LedgerAppendResponse
 from dms_core.control_plane.onto_store import (
     MEASURE_TRANSITIONS,
+    ActorNotProvisioned,
     MeasureDraft,
     MeasureNameTaken,
     MeasureNotFound,
@@ -441,8 +442,9 @@ def test_failing_ledger_rolls_back_row_audit_and_pointer(world: _World) -> None:
     )
 
 
-def test_failure_after_the_ledger_also_rolls_back(world: _World) -> None:
-    """An unprovisioned actor trips the decided_by FK AFTER the ledger ran: no change."""
+def test_an_unprovisioned_actor_is_refused_before_the_ledger_is_written(world: _World) -> None:
+    """The decided_by FK would refuse the UPDATE AFTER the Cortex ledger recorded a
+    "confirmed" entry, so the store looks the actor up first: the ledger is never called."""
     m = world.propose()
     calls: list[str] = []
 
@@ -450,18 +452,42 @@ def test_failure_after_the_ledger_also_rolls_back(world: _World) -> None:
         calls.append("x")
         return "L-orphan"
 
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        world.alpha.decide_measure(
-            m.id, to_state="confirmed", expected_hash=m.definition_hash, actor=uuid.uuid4(),
-            ledger=ledger,
-        )  # fmt: skip
-    assert calls == ["x"]
+    for to_state, kw in (("confirmed", {}), ("rejected", {"reason": "no"})):
+        with pytest.raises(ActorNotProvisioned):
+            world.alpha.decide_measure(
+                m.id, to_state=to_state, expected_hash=m.definition_hash, actor=uuid.uuid4(),
+                ledger=ledger, **kw,
+            )  # fmt: skip
+    assert calls == []
     got = world.alpha.get_measure(world.space, m.id)
     assert got is not None and got.state == "proposed"
     assert (
         world.count("SELECT count(*) FROM dms.ledger_ref WHERE cortex_entry_id = 'L-orphan'", ())
         == 0
     )
+    audited = "SELECT count(*) FROM dms.onto_audit WHERE action_type = 'measure.confirm'"
+    assert world.count(audited, ()) == 0
+
+
+def test_a_name_taken_in_the_race_after_the_pre_check_is_still_name_taken(
+    world: _World,
+) -> None:
+    """The backstop. The ledger runs outside the transaction, so another request can take
+    the new name between the pre-check and the UPDATE; the unique index still refuses it
+    and the row stays proposed."""
+    m = world.propose("schools_budget_sum")
+
+    def ledger(_p: dict[str, Any]) -> str:
+        world.propose("raced_name", aggregate="max")  # commits on its own connection
+        return "L-race"
+
+    with pytest.raises(MeasureNameTaken):
+        world.alpha.decide_measure(
+            m.id, to_state="confirmed", expected_hash=m.definition_hash, name="raced_name",
+            actor=world.actor, ledger=ledger,
+        )  # fmt: skip
+    got = world.alpha.get_measure(world.space, m.id)
+    assert got is not None and got.state == "proposed" and got.name == "schools_budget_sum"
 
 
 def test_stale_hash_and_illegal_move_leave_nothing_behind(world: _World) -> None:
@@ -486,19 +512,51 @@ def test_stale_hash_and_illegal_move_leave_nothing_behind(world: _World) -> None
     assert exc2.value.code == "illegal_transition" and calls == []
 
 
-def test_rename_collision_is_name_taken_and_rolls_back(world: _World) -> None:
+def test_rename_collision_is_name_taken_and_the_ledger_is_never_written(world: _World) -> None:
     a = world.propose("schools_budget_sum")
     b = world.propose("schools_budget_avg", aggregate="avg")
+    calls: list[dict[str, Any]] = []
+
+    def ledger(payload: dict[str, Any]) -> str:
+        calls.append(payload)
+        return "L-dup"
+
     with pytest.raises(MeasureNameTaken):
         world.alpha.decide_measure(
             b.id, to_state="confirmed", expected_hash=b.definition_hash, name=a.name,
-            actor=world.actor, ledger=lambda _p: "L-dup",
+            actor=world.actor, ledger=ledger,
         )  # fmt: skip
+    assert calls == []
     got = world.alpha.get_measure(world.space, b.id)
     assert got is not None and got.state == "proposed" and got.name == "schools_budget_avg"
     assert (
         world.count("SELECT count(*) FROM dms.ledger_ref WHERE cortex_entry_id = 'L-dup'", ()) == 0
     )
+
+
+def test_a_whitespace_ledger_entry_id_is_no_entry_id(world: _World) -> None:
+    m = world.propose()
+    for blank in ("", "   ", "\t\n"):
+        with pytest.raises(ValueError, match="no entry id"):
+            world.alpha.decide_measure(
+                m.id, to_state="confirmed", expected_hash=m.definition_hash, actor=world.actor,
+                ledger=lambda _p, b=blank: b,
+            )  # fmt: skip
+    got = world.alpha.get_measure(world.space, m.id)
+    assert got is not None and got.state == "proposed"
+
+
+def test_the_database_itself_refuses_a_whitespace_ledger_entry_id(world: _World) -> None:
+    """The CHECK is the second line behind the store: btrim, so blanks do not slip past."""
+    m = world.propose()
+    with world.alpha._conn() as conn:  # noqa: SLF001
+        with pytest.raises(psycopg.errors.CheckViolation) as exc:
+            conn.execute(
+                "UPDATE dms.onto_measure SET state = 'confirmed', decided_by = %s, "
+                "decided_at = now(), ledger_entry_id = '  ' WHERE id = %s",
+                (str(world.actor), str(m.id)),
+            )
+        assert exc.value.diag.constraint_name == "onto_measure_confirmed_ck"
 
 
 def test_name_burns_per_version_and_a_rejected_row_is_not_resurrected(world: _World) -> None:
@@ -768,10 +826,12 @@ def test_service_actor_without_a_user_row_leaves_the_measure_proposed(svc: _Svc)
     The API layer maps this to 503 actor_not_provisioned; here it is the raw database error,
     and nothing about the measure changed."""
     view = svc.propose()["schools_count"]
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+    with pytest.raises(MeasureRefusal) as exc:
         svc.confirm(view, actor=uuid.uuid4())
+    assert (exc.value.status, exc.value.code) == (503, "actor_not_provisioned")
     assert svc.state(view) == "proposed" and svc.audit("measure.confirm") == 0
     assert svc.world.count("SELECT count(*) FROM dms.ledger_ref", ()) == 0
+    assert svc.ledger.appended == []  # the Cortex ledger was never written
 
 
 def test_the_api_layer_recognises_the_real_foreign_key_error_for_every_steward_write(
@@ -786,22 +846,26 @@ def test_the_api_layer_recognises_the_real_foreign_key_error_for_every_steward_w
     view = svc.propose()["schools_count"]
     other = svc.propose()  # nothing new: proposing is idempotent
     assert other == {}
-    with pytest.raises(psycopg.errors.ForeignKeyViolation) as confirm:
+    # confirm and reject look the actor up first (and name it), so only the manual create
+    # still reaches the foreign key itself
+    with pytest.raises(MeasureRefusal) as confirm:
         svc.confirm(view, actor=stranger)
-    with pytest.raises(psycopg.errors.ForeignKeyViolation) as reject:
+    with pytest.raises(MeasureRefusal) as reject:
         mc.reject_measure(
             svc.space, uuid.UUID(view["id"]), reason="x", actor=stranger,
             store=svc.world.alpha, ledger_append=svc.ledger.append,
             ledger_verify=svc.ledger.verify,
         )  # fmt: skip
+    assert [e.value.status for e in (confirm, reject)] == [503, 503]
+    assert [e.value.code for e in (confirm, reject)] == ["actor_not_provisioned"] * 2
+    assert svc.ledger.appended == []
     with pytest.raises(psycopg.errors.ForeignKeyViolation) as create:
         mc.create_measure(
             svc.space, name="stranger_count", grain=GRAIN, aggregate="count", column="*",
             description="Schools.", actor=stranger, warehouse=svc.rig.lake,
             store=svc.world.alpha,
         )  # fmt: skip
-    for exc in (confirm.value, reject.value, create.value):
-        assert _is_actor_fk(exc), exc.diag.constraint_name
+    assert _is_actor_fk(create.value), create.value.diag.constraint_name
     assert _is_actor_fk(ValueError("no")) is False
     assert svc.state(view) == "proposed"
 
