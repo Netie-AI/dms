@@ -30,6 +30,10 @@ import duckdb
 
 from dms_executor.constraint_cascade import STAGES
 
+# tests/test_cca_space_iso_01.py replaces this module's duckdb and records SQL
+# from duckdb.connect(). Production opens go through the lake registry instead.
+_REAL_CONNECT = duckdb.connect
+
 #: A column with more distinct values than this is not a categorical encoding.
 #: Scanning it whole would read a fact column's payload into memory for nothing.
 MAX_DISTINCT = 10_000
@@ -220,6 +224,15 @@ class BinderResult:
         }
 
 
+def _open_landed(warehouse: Path | str) -> Any:
+    """Shared lake cursor, unless a test replaced ``duckdb.connect`` on this module."""
+    if duckdb.connect is not _REAL_CONNECT:
+        return duckdb.connect(str(warehouse), read_only=True)
+    from dms_executor.lake_registry import open_lake
+
+    return open_lake(warehouse)
+
+
 def _distinct_values(
     con: duckdb.DuckDBPyConnection, table: str, column: str
 ) -> tuple[str, ...] | None:
@@ -250,34 +263,26 @@ def scan_landed_columns(
     """
     wanted = {name.casefold() for name in column_names}
     out: list[LandedColumn] = []
-    from dms_executor.demo_warehouse import acquire_serving_lock
-
-    lock = acquire_serving_lock(Path(warehouse))
-    if lock is None:
-        return []
+    con = _open_landed(warehouse)
     try:
-        con = duckdb.connect(str(warehouse), read_only=True)
-        try:
-            for table in tables:
-                ident = str(table).split(".")[-1]
-                if not _IDENT.match(ident):
+        for table in tables:
+            ident = str(table).split(".")[-1]
+            if not _IDENT.match(ident):
+                continue
+            try:
+                cols = con.execute(f'SELECT * FROM "{ident}" LIMIT 0').description or []
+            except Exception:  # noqa: BLE001 - granted but absent from this file
+                continue
+            for desc in cols:
+                column = str(desc[0])
+                if column.casefold() not in wanted:
                     continue
-                try:
-                    cols = con.execute(f'SELECT * FROM "{ident}" LIMIT 0').description or []
-                except Exception:  # noqa: BLE001 - granted but absent from this file
+                values = _distinct_values(con, ident, column)
+                if values is None:
                     continue
-                for desc in cols:
-                    column = str(desc[0])
-                    if column.casefold() not in wanted:
-                        continue
-                    values = _distinct_values(con, ident, column)
-                    if values is None:
-                        continue
-                    out.append(LandedColumn(table=ident, column=column, values=values))
-        finally:
-            con.close()
+                out.append(LandedColumn(table=ident, column=column, values=values))
     finally:
-        lock.release()
+        con.close()
     return out
 
 

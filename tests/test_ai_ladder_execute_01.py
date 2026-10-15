@@ -1,13 +1,15 @@
-"""Model SQL must run on the serving DuckDB file.
+"""Model SQL runs on the one pooled serving configuration.
 
 Flags on, ask_path generative, one fake ``compute_insights``. The checker
-EXPLAIN closes the serving attach, then this test holds that file open.
-A second ``read_only`` connect raises ConnectionException on DuckDB 1.5, so
-the extract abstains and the rows never come back. The shared attach waits
-on the same lock and returns the warehouse rows.
+EXPLAIN closes its serving cursor, then this test opens the file for write
+(an ingest). The extract must wait on the lake registry and return the
+warehouse rows. A bare ``duckdb.connect`` for the extract (the main-branch
+shape) raises ConnectionException beside that writer, and the ask abstains.
+Every other open of the file takes the same path: one parent per lake, read
+only, external access off, config locked.
 
 ``DMS_INSIGHTS_CALL_CAP=1`` is required for that split. The default cap
-retries after the hold drops, and the retry's read-only connect then succeeds.
+retries after the hold drops, and the retry's connect then succeeds.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
 from dms_executor.demo_warehouse import (
     connect_file,
-    connect_locked_readonly,
+    connect_serving,
     ensure_demo_warehouse,
 )
 from dms_executor.envelope import assert_envelope_valid
@@ -97,7 +99,7 @@ class _Hold:
         self.fired = True
 
         def _run() -> None:
-            con = connect_file(self.db)
+            con = connect_file(self.db, write=True)
             self.ready.set()
             time.sleep(_HOLD_S)
             con.close()
@@ -157,7 +159,7 @@ class _Model:
         body = getattr(req, "body", None)
         sql = str(body.get("sql") or "") if isinstance(body, dict) else ""
         self.sql.append(sql)
-        con = connect_file(self._db)
+        con = connect_serving(self._db)
         try:
             cur = con.execute(sql)
             cols = [str(c[0]) for c in (cur.description or [])]
@@ -206,11 +208,9 @@ def test_model_sql_executes_on_the_serving_file(
     model = _Model(db, hold)
 
     def _connect(path: Path, **kwargs: Any) -> _Conn:
-        from dms_executor.demo_warehouse import connect_locked_readonly as real
+        return _Conn(connect_serving(path, **kwargs), hold)
 
-        return _Conn(real(path, **kwargs), hold)
-
-    monkeypatch.setattr("dms_executor.generative_ask.connect_locked_readonly", _connect)
+    monkeypatch.setattr("dms_executor.generative_ask.connect_serving", _connect)
     try:
         client = _client(db, model, monkeypatch)
         resp = client.post(
@@ -249,7 +249,7 @@ _RENAME = "SELECT 1 AS n; ALTER TABLE locations RENAME location_code TO loc_gone
 
 
 def _shape(db: Path) -> tuple[tuple[str, ...], tuple[str, ...], int]:
-    con = connect_file(db)
+    con = connect_serving(db)
     try:
         tables = tuple(
             str(row[0])
@@ -398,7 +398,7 @@ class _LeakModel:
         text = str(body.get("sql") or "") if isinstance(body, dict) else ""
         self.sql.append(text)
         if text:
-            con = connect_file(self._db)
+            con = connect_file(self._db, write=True)
             try:
                 con.execute(text)
             finally:
@@ -478,7 +478,7 @@ def test_single_non_select_through_http(
 def test_serving_connect_disables_external_access(tmp_path: Path) -> None:
     db = ensure_demo_warehouse(tmp_path / "sandbox.duckdb")
     dest = tmp_path / "sandbox.csv"
-    con = connect_locked_readonly(db)
+    con = connect_serving(db)
     try:
         flag = con.execute("SELECT current_setting('enable_external_access')").fetchone()
         assert flag is not None
@@ -488,3 +488,101 @@ def test_serving_connect_disables_external_access(tmp_path: Path) -> None:
     finally:
         con.close()
     assert not dest.exists()
+
+
+# --- one configuration for every open of a lake file -----------------------
+
+_COUNT = "SELECT COUNT(*) AS n FROM locations"
+
+
+def _locations(db: Path) -> int:
+    con = connect_serving(db)
+    try:
+        return int(con.execute(_COUNT).fetchone()[0])
+    finally:
+        con.close()
+
+
+def test_extract_shares_the_config_of_a_held_serving_cursor(tmp_path: Path) -> None:
+    """The extract open must not clash with the pool's parent."""
+    from dms_executor.sql_loop import run_readonly
+
+    db = ensure_demo_warehouse(tmp_path / "share.duckdb")
+    held = connect_serving(db)
+    try:
+        rows, err = run_readonly(_COUNT, db)
+    finally:
+        held.close()
+    assert err is None
+    assert rows == [{"n": 5}]
+
+
+def test_extract_waits_for_a_writer_then_returns_rows(tmp_path: Path) -> None:
+    from dms_executor.sql_loop import run_readonly
+
+    db = ensure_demo_warehouse(tmp_path / "wait.duckdb")
+    ready = threading.Event()
+
+    def _writer() -> None:
+        con = connect_file(db, write=True)
+        ready.set()
+        time.sleep(_HOLD_S)
+        con.close()
+
+    thread = threading.Thread(target=_writer, daemon=True)
+    thread.start()
+    assert ready.wait(10)
+    try:
+        rows, err = run_readonly(_COUNT, db)
+    finally:
+        thread.join(5)
+    assert err is None
+    assert rows == [{"n": 5}]
+
+
+@pytest.mark.parametrize(
+    ("sql", "code"),
+    [
+        ("INSERT INTO locations SELECT * FROM locations", "statement_not_allowed"),
+        ("DELETE FROM locations", "statement_not_allowed"),
+        ("CREATE TABLE gone AS SELECT 1 AS n", "statement_not_allowed"),
+        ("ALTER TABLE locations RENAME TO locations_gone", "statement_not_allowed"),
+        ("SELECT 1 AS n; DELETE FROM locations", "multi_statement"),
+        ("SELEC nope FROM", "sql_not_analyzable"),
+    ],
+)
+def test_extract_refuses_what_is_not_one_select(tmp_path: Path, sql: str, code: str) -> None:
+    from dms_executor.sql_loop import run_readonly
+
+    db = ensure_demo_warehouse(tmp_path / "refuse.duckdb")
+    before = _shape(db)
+    rows, err = run_readonly(sql, db)
+    assert rows is None
+    assert err == code
+    assert _shape(db) == before
+
+
+def test_with_select_runs(tmp_path: Path) -> None:
+    from dms_executor.sql_loop import run_readonly
+
+    db = ensure_demo_warehouse(tmp_path / "with.duckdb")
+    rows, err = run_readonly(f"WITH c AS ({_COUNT}) SELECT n FROM c", db)
+    assert err is None
+    assert rows == [{"n": 5}]
+
+
+def test_extract_raises_the_named_error_not_a_db_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease miss is a serving abstain at the ask boundary, never a retry."""
+    from dms_executor.lake_registry import ServingLeaseCap
+    from dms_executor.sql_loop import run_readonly
+
+    db = ensure_demo_warehouse(tmp_path / "cap.duckdb")
+
+    def _miss(_path: Path) -> Any:
+        raise ServingLeaseCap(1, 0.0)
+
+    monkeypatch.setattr("dms_executor.demo_warehouse.connect_serving", _miss)
+    with pytest.raises(ServingLeaseCap):
+        run_readonly(_COUNT, db)

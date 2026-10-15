@@ -26,13 +26,7 @@ import duckdb
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_grants import canonical_space_id
-from dms_executor.demo_warehouse import (
-    DEMO_TABLES,
-    connect_file,
-    connect_locked_readonly,
-    ensure_demo_warehouse,
-    warehouse_path,
-)
+from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 from dms_executor.skills_quarantine import (
@@ -79,63 +73,47 @@ def _sql_outside_space(sql: str, grantable: set[str]) -> set[str]:
 
 
 def _ensure(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {_TABLE} (
-          asset_id VARCHAR PRIMARY KEY,
-          space_id VARCHAR NOT NULL,
-          question VARCHAR NOT NULL,
-          question_norm VARCHAR NOT NULL,
-          sql_text VARCHAR NOT NULL,
-          synonyms_json VARCHAR NOT NULL,
-          created_at TIMESTAMPTZ,
-          pack_hash VARCHAR
+    from dms_executor.lake_schema import catalog_lock
+
+    # First CREATE from two cursors write-write conflicts. Later IF NOT EXISTS does not.
+    with catalog_lock:
+        con.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_TABLE} (
+              asset_id VARCHAR PRIMARY KEY,
+              space_id VARCHAR NOT NULL,
+              question VARCHAR NOT NULL,
+              question_norm VARCHAR NOT NULL,
+              sql_text VARCHAR NOT NULL,
+              synonyms_json VARCHAR NOT NULL,
+              created_at TIMESTAMPTZ,
+              pack_hash VARCHAR
+            )
+            """
         )
-        """
-    )
-    # Tables created before pack_hash existed. CREATE IF NOT EXISTS does not
-    # add the column. NULL means no provenance: the filter then uses the SQL
-    # content hash and, when result hashes are configured, the result hash.
-    names = {
-        str(row[0]).lower()
-        for row in con.execute(
-            """
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = '_verified_queries'
-            """
-        ).fetchall()
-    }
-    if "pack_hash" not in names:
-        con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN pack_hash VARCHAR")
+        # Tables created before pack_hash existed. CREATE IF NOT EXISTS does not
+        # add the column. NULL means no provenance: the filter then uses the SQL
+        # content hash and, when result hashes are configured, the result hash.
+        names = {
+            str(row[0]).lower()
+            for row in con.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = '_verified_queries'
+                """
+            ).fetchall()
+        }
+        if "pack_hash" not in names:
+            con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN pack_hash VARCHAR")
 
 
-_LOAD_SQL = """
-SELECT asset_id, space_id, question, question_norm, sql_text,
-       synonyms_json, created_at, pack_hash
-FROM main._verified_queries
-WHERE space_id = ?
-ORDER BY created_at DESC
-"""
+def _connect(path: Path | None, *, write: bool = False) -> duckdb.DuckDBPyConnection:
+    from dms_executor.demo_warehouse import connect_file, connect_serving
 
-
-def _connect(path: Path | None) -> duckdb.DuckDBPyConnection:
-    """Writer attach for a register. Same per-file lock as the serving file."""
     db = ensure_demo_warehouse(path)
-    return connect_file(db)
-
-
-def _pack_hash_ready(con: duckdb.DuckDBPyConnection) -> bool:
-    row = con.execute(
-        """
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = '_verified_queries' AND lower(column_name) = 'pack_hash'
-        """
-    ).fetchone()
-    return row is not None
-
-
-def _load_space(con: duckdb.DuckDBPyConnection, sid: str) -> list[tuple[Any, ...]]:
-    return list(con.execute(_LOAD_SQL, [sid]).fetchall())
+    if write:
+        return connect_file(db, write=True)
+    return connect_serving(db)
 
 
 def _cell(value: Any) -> Any:
@@ -191,31 +169,31 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
-    """Load one Space, then drop scored-pack rows. The only SELECT.
+    """Load one Space on the serving connection, then drop scored-pack rows.
 
-    The ask path opens read-only under the serving lock. A missing table or
-    the pre-pack_hash shape is the one writer path (``connect_file``), not a
-    bare connect beside a read-only attach.
+    Register creates the table. Lookup does not: a missing table is no rows.
+    A table from before ``pack_hash`` is read with a null provenance column.
     """
-    path = ensure_demo_warehouse(db)
-    raw: list[tuple[Any, ...]] | None = None
+    def _sql(pack_expr: str) -> str:
+        return f"""
+            SELECT asset_id, space_id, question, question_norm, sql_text,
+                   synonyms_json, created_at, {pack_expr}
+            FROM {_TABLE}
+            WHERE space_id = ?
+            ORDER BY created_at DESC
+        """
+
+    con = _connect(db)
     try:
-        con = connect_locked_readonly(path)
-    except TimeoutError:
-        return []
-    try:
-        if _pack_hash_ready(con):
-            raw = _load_space(con, sid)
+        try:
+            raw = con.execute(_sql("pack_hash"), [sid]).fetchall()
+        except duckdb.CatalogException:
+            return []
+        except duckdb.BinderException:
+            raw = con.execute(_sql("NULL"), [sid]).fetchall()
     finally:
         con.close()
-    if raw is None:
-        con = connect_file(path)
-        try:
-            _ensure(con)
-            raw = _load_space(con, sid)
-        finally:
-            con.close()
-    return filter_retrieved_rows((_stored_row(row) for row in raw), warehouse=path)
+    return filter_retrieved_rows((_stored_row(row) for row in raw), warehouse=db)
 
 
 def register_verified_query(
@@ -255,7 +233,7 @@ def register_verified_query(
     asset_id = f"vq_{uuid.uuid4().hex[:16]}"
     created = datetime.now(UTC)
     with _LOCK:
-        con = _connect(db)
+        con = _connect(db, write=True)
         try:
             _ensure(con)
             con.execute(

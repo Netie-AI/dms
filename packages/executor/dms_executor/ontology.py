@@ -1840,13 +1840,10 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     path = Path(warehouse)
     if not path.is_file():
         return {}
-    # Same lock as the schema index, then a read-only connect. A read-only
-    # connect beside an open writer raises ConnectionException; the lock
-    # waits that writer out. A missed deadline sees no columns.
-    from dms_executor.demo_warehouse import connect_locked_readonly
+    from dms_executor.demo_warehouse import connect_serving
 
     try:
-        con = connect_locked_readonly(path)
+        con = connect_serving(path)
     except Exception:  # noqa: BLE001
         return {}
     try:
@@ -2075,9 +2072,9 @@ def demo_ontology(warehouse: Path) -> Ontology:
 
 
 def _connect(warehouse: Path) -> Any:
-    import duckdb
+    from dms_executor.demo_warehouse import connect_serving
 
-    return duckdb.connect(str(warehouse), read_only=True)
+    return connect_serving(warehouse)
 
 
 def run_demo(warehouse: Path) -> int:
