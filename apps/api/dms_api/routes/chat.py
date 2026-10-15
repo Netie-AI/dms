@@ -261,6 +261,15 @@ def _stop_client_disconnect(task: asyncio.Task[None] | None) -> None:
         return
 
 
+def _reask_text(body: AskBody) -> str | None:
+    """The free text a clarify re-ask would run, or None when there is none."""
+    if body.clarify_id and not body.option_id:
+        text = (body.clarify_text or "").strip()
+        if text:
+            return text
+    return None
+
+
 @router.post("/ask")
 def chat_ask(
     body: AskBody,
@@ -297,6 +306,21 @@ def chat_ask(
         metadata={"question": body.question, "space_id": body.space_id, "task_id": "chat.ask"},
         client=cortex,
     )
+    # Hard rule 8: the gate also judges the text that actually runs. A free-text
+    # clarify re-ask (clarify_id + clarify_text, no option_id) executes
+    # clarify_text, not body.question. Which of the two runs depends on the
+    # DMS_ASK_CLARIFY flag, so both are gated and the first hard denial wins.
+    reask = _reask_text(body)
+    if reask is not None and reask != body.question:
+        reask_decision = compliance_gate(
+            action="chat.ask",
+            metadata={"question": reask, "space_id": body.space_id, "task_id": "chat.ask"},
+            client=cortex,
+        )
+        if not reask_decision.allowed and (
+            decision.allowed or decision.reason in _SOFT_GATE
+        ):
+            decision = reask_decision
 
     want_demo = settings.dms_ask_mode == "demo"
     if want_demo:
