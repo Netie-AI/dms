@@ -71,6 +71,7 @@ _CODES = frozenset(
         "abstain",
         "as_of",
         "checker",
+        "column_class_unsure",
         "db_error",
         "empty_result_unverified",
         "envelope_demoted",
@@ -91,6 +92,10 @@ _CODES = frozenset(
         "path_not_allowed",
         "reserved_param",
         "retry",
+        "serving_deadline_exceeded",
+        "serving_deadline_reserve",
+        "serving_lease_cap",
+        "serving_lease_queue_full",
         "sql_not_analyzable",
         "statement_not_allowed",
         "submit_failed",
@@ -99,6 +104,14 @@ _CODES = frozenset(
         "validate",
         "value_exists_pending",
         "warehouse_missing",
+    }
+)
+# ASK-RECONFIRM-01 reads this. Retry later, not a direct refusal.
+# The ask never started, or every serving slot was already taken.
+RECONFIRM_RETRY_CODES = frozenset(
+    {
+        "serving_deadline_reserve",
+        "serving_lease_cap",
     }
 )
 # The tail after these codes is an error message or a list of names.
@@ -128,6 +141,18 @@ def _known_codes() -> frozenset[str]:
     from dms_executor.gen_path_refuse import GAP_REASONS
 
     return _CODES | GAP_REASONS
+
+
+def reconfirm_disposition(code: str) -> str:
+    """How ASK-RECONFIRM-01 treats a closed abstain code.
+
+    ``retry_later`` is a reconfirm with a retry offer. A direct refusal,
+    including ``ungranted``, is not this offer.
+    """
+    head = str(code or "").casefold().split(":", 1)[0].strip()
+    if head in RECONFIRM_RETRY_CODES:
+        return "retry_later"
+    return "other"
 
 
 def _walk(raw: str) -> tuple[list[str], list[str]]:
