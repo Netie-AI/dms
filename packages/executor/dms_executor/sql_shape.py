@@ -159,6 +159,66 @@ def _reads_data(scope: Scope, seen: set[int]) -> bool:
     return any(_reads_data(c, seen) for c in children)
 
 
+_ARITH = (
+    exp.Literal,
+    exp.Paren,
+    exp.Neg,
+    exp.Add,
+    exp.Sub,
+    exp.Mul,
+    exp.Div,
+    exp.Mod,
+    exp.Cast,
+    exp.DataType,
+)
+
+
+def _branches(node: Any) -> list[Any]:
+    """The SELECTs whose rows a query returns (every arm of a UNION)."""
+    if isinstance(node, exp.Subquery):
+        node = node.unnest()
+    if isinstance(node, exp.SetOperation):
+        return [*_branches(node.left), *_branches(node.right)]
+    return [node] if isinstance(node, exp.Select) else []
+
+
+def _reads_rows(projection: Any) -> bool:
+    """True when the output column is computed from data or a generator."""
+    return (
+        projection.find(exp.Column, exp.Star, exp.AggFunc, exp.Subquery, exp.Unnest, exp.Func)
+        is not None
+    )
+
+
+def _invented_number(projection: Any) -> bool:
+    """A bare number, or arithmetic of numbers only: a figure nothing computed."""
+    inner = projection.unalias() if isinstance(projection, exp.Alias) else projection
+    nodes = list(inner.walk())
+    if not all(isinstance(n, _ARITH) for n in nodes):
+        return False
+    return any(isinstance(n, exp.Literal) and n.is_number for n in nodes)
+
+
+def _literal_output(tree: Any) -> bool:
+    """True when a branch states a figure that no table or generator produced.
+
+    Reading a real table in FROM is not enough: ``SELECT 4242 FROM inventory``
+    reads the table and returns an invented number on every row. A branch is
+    refused when none of its outputs is computed from data, or when any output
+    is a bare number. String labels, booleans, NULL and generators
+    (``unnest``, ``range``) beside a granted table stay allowed.
+    """
+    for select in _branches(tree):
+        projections = list(select.expressions)
+        if not projections:
+            return True
+        if not any(_reads_rows(p) for p in projections):
+            return True
+        if any(_invented_number(p) for p in projections):
+            return True
+    return False
+
+
 def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
     """(refusal, real tables). A refusal is a reason code, or None to continue.
 
@@ -204,6 +264,8 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
             real.add(_bare(table.name))
     if not _reads_data(scopes[-1], set()):
         return "hostile_sql:no_data_source", frozenset()
+    if _literal_output(tree):
+        return "hostile_sql:literal_output", frozenset()
     return None, frozenset(real)
 
 

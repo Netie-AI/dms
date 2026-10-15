@@ -143,6 +143,15 @@ LITERAL_ONLY = [
     "WITH a AS (SELECT sku FROM inventory) SELECT 42 AS answer",
     "WITH a AS (SELECT 1 AS n) SELECT n FROM a",
     "SELECT sku FROM inventory UNION ALL SELECT 'ghost'",
+    # A real table in FROM is not a data source for a number nothing computed.
+    "SELECT 4242 FROM inventory",
+    "SELECT 4242 AS total FROM inventory WHERE sku = 'A'",
+    "SELECT 1 FROM inventory LIMIT 1",
+    "SELECT 4242 AS revenue, sku FROM inventory",
+    "SELECT (4000 + 242) * 1 AS revenue FROM inventory",
+    "SELECT CAST(4242 AS DOUBLE) AS revenue, sku FROM inventory",
+    "WITH a AS (SELECT * FROM inventory) SELECT 4242 AS n FROM a",
+    "SELECT sku FROM inventory UNION ALL SELECT 4242 FROM inventory",
 ]
 
 LEGIT = [
@@ -171,6 +180,11 @@ LEGIT = [
     "SELECT CAST(quantity_kg AS DOUBLE) / 2 AS half FROM inventory WHERE sku LIKE 'A%'",
     "SELECT sku FROM inventory ORDER BY sku LIMIT 3 OFFSET 1",
     "SELECT * FROM main.inventory",
+    "SELECT COUNT(*) AS n FROM inventory",
+    "SELECT 'Total' AS label, SUM(quantity_kg) AS q FROM inventory",
+    "SELECT sku, TRUE AS in_stock FROM inventory",
+    "SELECT sku, NULL AS note FROM inventory",
+    "SELECT sku, quantity_kg * 2 AS doubled FROM inventory",
 ]
 
 
@@ -346,9 +360,7 @@ def _ask(minter: Any, cortex: _PlantedSqlCortex, session: str) -> dict[str, Any]
         dms_demo_fallback=False,
     )
     app.dependency_overrides[get_settings] = lambda: settings
-    r = TestClient(app).post(
-        "/v1/chat/ask", json={"question": _QUESTION, "session_id": session}
-    )
+    r = TestClient(app).post("/v1/chat/ask", json={"question": _QUESTION, "session_id": session})
     assert r.status_code == 200, r.text
     env = r.json()
     assert_envelope_valid(env)
@@ -389,10 +401,7 @@ def test_hostile_sql_through_the_ask_route_never_reaches_cortex_submit(
 def test_a_cte_select_over_a_granted_table_is_served_through_the_ask_route(
     _minter: Any,
 ) -> None:
-    sql = (
-        "WITH s AS (SELECT category FROM inventory) "
-        "SELECT COUNT(DISTINCT category) AS n FROM s"
-    )
+    sql = "WITH s AS (SELECT category FROM inventory) SELECT COUNT(DISTINCT category) AS n FROM s"
     cortex = _PlantedSqlCortex(sql=sql)
     env = _ask(_minter, cortex, "ses_safe01_legit")
     assert len(cortex.query_submits()) == 1
