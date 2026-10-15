@@ -102,7 +102,10 @@ def build_abstain(
             stage=stage,
             ask_id=ask_id,
         )
-        _stamp_no_sql(demote, stage=stage, reason=reason)
+        _stamp_no_sql(demote, stage=stage)
+        code = _unstamped_reason(demote, reason)
+        if code:
+            demote["abstain_reason"] = code
         return demote
 
     from dms_executor.envelope import build_answer_envelope
@@ -123,18 +126,39 @@ def build_abstain(
         stage=stage,
         ask_id=ask_id,
     )
-    _stamp_no_sql(env, stage=stage, reason=reason)
+    _stamp_no_sql(env, stage=stage)
+    code = _unstamped_reason(env, reason)
+    if code:
+        env["abstain_reason"] = code
     return env
 
 
-def _stamp_no_sql(env: dict[str, Any], *, stage: str, reason: str) -> None:
+def _stamp_no_sql(env: dict[str, Any], *, stage: str) -> None:
     """An abstain with no executed SQL is abstain:<stage>, not compile, L1, or ai."""
     sql_used = env.get("sql_used")
     if isinstance(sql_used, str) and sql_used.strip():
         return
     from dms_executor.route_stamp import stamp_abstain
 
-    stamp_abstain(env, stage=stage, reason=reason)
+    stamp_abstain(env, stage=stage)
+
+
+# Ticket bookkeeping. The customer reason stays in the text and assumptions.
+_BOOKKEEPING_REASONS = frozenset({"envelope_demoted"})
+
+
+def _unstamped_reason(env: dict[str, Any], reason: str) -> str:
+    """The reason code still to store. Empty when SQL ran, one is set, or this is a demote."""
+    sql_used = env.get("sql_used")
+    if isinstance(sql_used, str) and sql_used.strip():
+        return ""
+    current = env.get("abstain_reason")
+    if isinstance(current, str) and current.strip():
+        return ""
+    code = str(reason or "").strip()
+    if not code or code in _BOOKKEEPING_REASONS:
+        return ""
+    return code
 
 
 def _envelope_reason(env: dict[str, Any]) -> str:

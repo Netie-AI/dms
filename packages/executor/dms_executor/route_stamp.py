@@ -108,17 +108,18 @@ def stamp_abstain(
     env: dict[str, Any] | None,
     *,
     stage: str,
-    reason: str,
 ) -> dict[str, Any] | None:
-    """No-SQL abstain. Not compile, L1, or ai."""
+    """No-SQL abstain route. Not compile, L1, or ai.
+
+    The reason code is written by ``build_abstain``. This function does not
+    assign ``abstain_reason``.
+    """
     if not isinstance(env, dict):
         return env
     route = abstain_route(stage)
     env["served_route"] = route
     env["plan_origin"] = route
     env["ladder_rung"] = route
-    code = str(reason or "").strip() or "unspecified"
-    env["abstain_reason"] = code
     return env
 
 
