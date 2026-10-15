@@ -1776,10 +1776,21 @@ def maybe_generative_ask(
                     retry_why = validate_compiled_sql(
                         serve_sql, grantable=allowed, warehouse=lake
                     )
-                    if retry_why:
+                    # The retried SQL passes the same two checks the first
+                    # writer SQL passed above: the one grant function, then
+                    # the declared-ontology violations (A2-02). A retry is
+                    # no exemption from either.
+                    retry_broken = (
+                        violations_cited_by_sql(serve_sql, declared, declared_violations)
+                        if declared is not None and not retry_why
+                        else []
+                    )
+                    if retry_why or retry_broken:
                         env = _abstain(
                             q,
-                            f"validate:{retry_why}",
+                            f"validate:{retry_why}"
+                            if retry_why
+                            else violation_reason(retry_broken),
                             space_id=space_id,
                             session_id=session_id,
                             plan_source=source,
