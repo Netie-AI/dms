@@ -103,7 +103,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
-from dms_executor.served_gate import served_result_reason
+from dms_executor.served_gate import lake_alias_sql, served_result_reason
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
@@ -679,6 +679,18 @@ _PATH_CHARS = re.compile(r"[/\\:*?]")
 _FILE_EXT = re.compile(r"\.(csv|tsv|txt|json|jsonl|ndjson|parquet|xlsx?|db|duckdb)$", re.I)
 
 
+def _lake_granted(name: str, grantable: set[str]) -> bool:
+    """A demo-lake table is granted by its exact name or its warehouse_ alias.
+
+    The alias runs both ways: the Space grants ``inventory`` and Cortex cites
+    ``warehouse_inventory``, or the grant carries the alias and the SQL the
+    bare name. A qualified upload grant (bronze.alerts) is neither.
+    """
+    prefix = "warehouse_"
+    bare = name[len(prefix) :] if name.startswith(prefix) else name
+    return bool({name, bare, f"{prefix}{bare}"} & grantable)
+
+
 def _reads_files(sql: str, grantable: set[str]) -> bool:
     """True when a FROM/JOIN source is a table function or a path, not a table.
 
@@ -731,7 +743,7 @@ def validate_compiled_sql(
         t
         for t in named
         if not (
-            (t in grantable or f"warehouse_{t}" in grantable)
+            _lake_granted(t, grantable)
             if _is_demo_lake_relation(t)
             else table_is_granted(t, grantable)
         )
@@ -759,7 +771,7 @@ def validate_compiled_sql(
         return "warehouse_missing"
     con = connect_serving(Path(warehouse))
     try:
-        con.execute(f"EXPLAIN {sql}")
+        con.execute(f"EXPLAIN {lake_alias_sql(sql)}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:

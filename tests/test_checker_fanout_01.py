@@ -910,3 +910,46 @@ def test_every_grant_rejection_is_refused_before_any_probe(
     assert env.get("rows") in (None, []), reader
     assert "fanout_subject_keys" not in str(env.get("text") or ""), reader
     assert not probed, f"probe ran on SQL the grant function rejects: {probed}"
+
+
+def test_warehouse_alias_of_a_granted_table_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """R-0005: a Cortex answer citing warehouse_<granted table> is served."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "alias.duckdb"
+    ensure_demo_warehouse(db)
+    aliased = (
+        "SELECT l.location_id AS location_id, COUNT(i.sku) AS sku_count "
+        "FROM warehouse_locations l JOIN warehouse_inventory i "
+        "ON i.location_id = l.location_id GROUP BY l.location_id"
+    )
+    grant = {"inventory", "locations"}
+    assert validate_compiled_sql(aliased, grantable=grant, warehouse=db) is None
+    assert validate_compiled_sql(aliased, grantable={"inventory"}, warehouse=db) == (
+        "ungranted:warehouse_locations"
+    )
+    env, _ = _prod_post(
+        db, aliased, monkeypatch, minter, pass_warehouse=True, rows_sql=_SKU_PER_LOCATION
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env.get("text")
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert _cells(env["rows"]) == _cells(_executed(db, _SKU_PER_LOCATION))
+
+
+def test_warehouse_alias_does_not_hide_a_fanout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """The aliased SQL is probed on the lake names, so a fan-out still refuses."""
+    db = tmp_path / "alias_fan.duckdb"
+    ensure_demo_warehouse(db)
+    aliased = "SELECT i.sku AS sku FROM warehouse_inventory i JOIN warehouse_locations l ON TRUE"
+    env, _ = _prod_post(
+        db, aliased, monkeypatch, minter, pass_warehouse=True, rows_sql=_DUP_ROWS_SQL
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert "fanout_subject_keys" in str(env.get("text") or "")

@@ -21,9 +21,39 @@ from typing import Any
 
 from sqlglot import exp, parse_one
 
+from dms_executor.demo_warehouse import DEMO_TABLES
+
 _DIALECT = "duckdb"
+_LAKE = frozenset(t.lower() for t in DEMO_TABLES)
+_ALIAS_PREFIX = "warehouse_"
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}")
 _CLOCK_NAMES = frozenset({"now", "getdate", "current_date", "current_timestamp"})
+
+
+def lake_alias_sql(sql: str) -> str:
+    """The SQL with Cortex ``warehouse_<table>`` aliases named as lake tables.
+
+    The engine cites its warehouse under that alias; the DMS lake holds the
+    table itself. Grain and EXPLAIN checks run on the lake name so an aliased
+    answer is checked, not skipped. SQL with no alias comes back unchanged.
+    """
+    try:
+        tree = parse_one(sql or "", read=_DIALECT)
+    except Exception:  # noqa: BLE001 - unparseable SQL is not evidence
+        return sql
+    return sql if not _unalias(tree) else tree.sql(dialect=_DIALECT)
+
+
+def _unalias(tree: exp.Expression) -> bool:
+    changed = False
+    for table in tree.find_all(exp.Table):
+        name = table.name.lower()
+        if table.db or not name.startswith(_ALIAS_PREFIX) or name in _LAKE:
+            continue
+        if name[len(_ALIAS_PREFIX) :] in _LAKE:
+            table.set("this", exp.to_identifier(name[len(_ALIAS_PREFIX) :]))
+            changed = True
+    return changed
 
 
 def served_result_reason(
@@ -45,6 +75,7 @@ def served_result_reason(
         return None
     if not isinstance(tree, exp.Select):
         return None
+    _unalias(tree)
     window = _as_of_window(tree, as_of)
     if window:
         return window
@@ -418,4 +449,4 @@ def _day(value: str | None) -> str:
     return match.group(0) if match else ""
 
 
-__all__ = ["served_result_reason"]
+__all__ = ["lake_alias_sql", "served_result_reason"]
