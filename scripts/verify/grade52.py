@@ -571,6 +571,16 @@ def _field_claim(text: str, *, unknown_if_other: bool) -> str | None:
     return None
 
 
+def stamp_contradiction(env: Mapping[str, Any]) -> bool:
+    """Compile stamp and a served model. The path stays compile."""
+    if not isinstance(env, Mapping) or not _stamp_text(env, "served_model"):
+        return False
+    return any(
+        _ontology_compile(_stamp_text(env, key).lower())
+        for key in ("plan_origin", "ladder_rung", "plan_source", "badge")
+    )
+
+
 def serve_path(env: Mapping[str, Any]) -> str:
     """Path that served the answer. Only the envelope's own stamps.
 
@@ -644,6 +654,7 @@ def grade_case(
         "route": route,
         "badge": badge,
         "serve_path": serve_path(env),
+        "stamp_contradiction": stamp_contradiction(env),
         "answered": not _is_abstain(env),
         "abstain_code": code,
         "as_of": as_of,
@@ -1123,6 +1134,7 @@ def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """
     correct = _zero_paths()
     served = _zero_paths()
+    contradictions = 0
     detail = {
         "correct": {key: 0 for key in ("L0", "L1", "compile", "oracle")},
         "served": {key: 0 for key in ("L0", "L1", "compile", "oracle")},
@@ -1138,7 +1150,14 @@ def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             served[group] += 1
             if path in detail["served"]:
                 detail["served"][path] += 1
-    return {"correct": correct, "served": served, "detail": detail}
+        if item.get("stamp_contradiction"):
+            contradictions += 1
+    return {
+        "correct": correct,
+        "served": served,
+        "detail": detail,
+        "stamp_contradiction": contradictions,
+    }
 
 
 def _path_side(block: Mapping[str, int], detail: Mapping[str, int]) -> str:
@@ -1164,6 +1183,7 @@ def paths_line(counts: Mapping[str, Any]) -> str:
         + _path_side(counts["correct"], correct_detail)
         + " served "
         + _path_side(counts["served"], served_detail)
+        + f" stamp_contradiction={int(counts.get('stamp_contradiction') or 0)}"
     )
 
 

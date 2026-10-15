@@ -35,6 +35,7 @@ from grade52 import (  # noqa: E402
     product_sha,
     self_test,
     serve_path,
+    stamp_contradiction,
     summary_line,
 )
 
@@ -73,7 +74,7 @@ _COPY_ONLY_EXCLUDED = (
 )
 _COPY_ONLY_PATHS = (
     "paths correct ai=0 rule=16 L1=16 unattributed=0 "
-    "served ai=0 rule=16 L1=16 unattributed=0"
+    "served ai=0 rule=16 L1=16 unattributed=0 stamp_contradiction=0"
 )
 _COPY_ONLY_CORRECT = [
     "cq_capacity_above_90",
@@ -225,6 +226,29 @@ def test_grade52_serve_path_stamps() -> None:
     )
     assert serve_path({"plan_source": "ontology_plan", "served_model": "some-model"}) == "compile"
     assert path_group("compile") == "rule"
+    assert stamp_contradiction(ranking) is True
+    assert stamp_contradiction({"plan_origin": "ontology_ranking"}) is False
+    assert stamp_contradiction({"ladder_rung": "compile", "served_model": "m"}) is False
+    line = paths_line(
+        path_counts(
+            [
+                {
+                    "bucket": "CORRECT",
+                    "answered": True,
+                    "serve_path": "compile",
+                    "stamp_contradiction": True,
+                },
+                {
+                    "bucket": "ABSTAIN",
+                    "answered": False,
+                    "serve_path": "unattributed",
+                    "stamp_contradiction": True,
+                },
+            ]
+        )
+    )
+    assert "compile=1" in line
+    assert line.endswith("stamp_contradiction=2")
     assert serve_path(
         {
             "plan_origin": "ontology_ranking",
@@ -292,7 +316,7 @@ def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
     assert _MAIN_SHA not in summary_line(report)
     assert paths_line(path_counts(report["cases"])) == (
         "paths correct ai=0 rule=23 L1=23 unattributed=0 "
-        "served ai=0 rule=23 L1=23 unattributed=0"
+        "served ai=0 rule=23 L1=23 unattributed=0 stamp_contradiction=0"
     )
     assert report["dms_sha"] == _SYNTHETIC_SHA
     assert report["mode"] == "served"
@@ -413,7 +437,8 @@ def test_grade52_stub_exec_main() -> None:
     assert "not a score" not in line
     assert paths_line(path_counts(report["cases"])) == (
         "paths correct ai=0 rule=43 L1=23 compile=20 unattributed=0 "
-        "served ai=0 rule=45 L0=2 L1=23 compile=20 unattributed=0"
+        "served ai=0 rule=45 L0=2 L1=23 compile=20 unattributed=0 "
+        "stamp_contradiction=0"
     )
     without = report["without_pack_gold_served"]
     assert without["pack_gold_served"] == "excluded"
