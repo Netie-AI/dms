@@ -23,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[2]
 PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 FIXTURE = ROOT / "tests" / "fixtures" / "curated_ceo"
 SESSION_ID = "ses_flag_off_52"
-PRODUCT_SHA = "57d85c529aa363825aaa566f12b8822fd76a4215"
 
 
 def _prepare() -> None:
@@ -31,6 +30,7 @@ def _prepare() -> None:
     os.environ.pop("DMS_CLOOP_B", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     for rel in (
+        ".",
         "apps/api",
         "packages/core",
         "packages/cortex_client",
@@ -177,6 +177,13 @@ def main(argv: list[str] | None = None) -> int:
     _prepare()
     import yaml
 
+    # Stamp the commit whose product code this capture runs (fails closed on
+    # uncommitted apps/ or packages/ changes), never a constant.
+    sys.path.insert(0, str(ROOT / "scripts" / "verify"))
+    from grade52 import product_sha
+
+    sha = product_sha()
+
     pack = yaml.safe_load(PACK.read_text(encoding="utf-8"))
     questions = list(pack["questions"])
     spaces = dict(pack["spaces"])
@@ -192,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if moved and hidden.exists() and not FIXTURE.exists():
             hidden.rename(FIXTURE)
-    header = {"dms_sha": PRODUCT_SHA, "layout": args.layout}
+    header = {"dms_sha": sha, "layout": args.layout}
     lines = [json.dumps(header, sort_keys=True)]
     lines.extend(json.dumps(row, sort_keys=True, default=str) for row in rows)
     args.out.parent.mkdir(parents=True, exist_ok=True)

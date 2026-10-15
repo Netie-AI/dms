@@ -15,7 +15,7 @@ or the oracle. Gold-broken is the non-trap case with no certified oracle,
 and only when that case abstains. A served answer there is wrong.
 
 ``--envelopes`` prints the commit declared on the envelopes. ``--main``
-prints the product commit (``git merge-base HEAD origin/main``).
+prints the product commit (``git rev-parse HEAD`` of the graded checkout).
 
 Each case records ``serve_path`` from that envelope's own ``badge``,
 ``plan_origin``, ``ladder_rung``, ``plan_source``, and ``served_model``.
@@ -680,7 +680,25 @@ def grade_case(
         ordered=keys is not None,
         order_keys=keys,
     )
+    if bucket == BUCKET_CORRECT:
+        # Matching rows are not enough: the customer reads the envelope.
+        # An answer whose envelope breaks E1-E13 (abstention prose under a
+        # served badge, no audit_id, no sql_used, orphan figures) is WRONG.
+        invalid = envelope_violation(env)
+        if invalid:
+            return {**base, "bucket": BUCKET_WRONG, "reason": f"envelope invalid: {invalid}"}
     return {**base, "bucket": bucket, "reason": reason}
+
+
+def envelope_violation(env: Mapping[str, Any]) -> str:
+    """First E-rule the served envelope breaks, or ``""`` when it is valid."""
+    from dms_executor.envelope import assert_envelope_valid
+
+    try:
+        assert_envelope_valid(dict(env))
+    except AssertionError as exc:
+        return str(exc).split("\n", 1)[0][:160] or "assertion"
+    return ""
 
 
 def _certified_sql(oracle: Mapping[str, Any] | None) -> str | None:
@@ -944,7 +962,12 @@ def grade_envelopes(
     if len(questions) != 52:
         raise SystemExit(f"pack size {len(questions)} != 52")
     flagged = set(pack_gold_served_ids(questions, oracles))
-    by_id = {str(item.get("id")): item.get("env") for item in envelopes}
+    by_id: dict[str, Any] = {}
+    for item in envelopes:
+        key = str(item.get("id"))
+        if key in by_id:
+            raise SystemExit(f"grade52: duplicate envelope for {key}")
+        by_id[key] = item.get("env")
     folder = warehouse_dir or Path(tempfile.mkdtemp(prefix="grade52-"))
     con, as_of, _path = _open_warehouse(folder)
     cases: list[dict[str, Any]] = []
@@ -1192,47 +1215,24 @@ def _git(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _merge_base_sha() -> str | None:
-    proc = _git(["merge-base", "HEAD", "origin/main"])
-    if proc.returncode != 0:
-        return None
-    text = proc.stdout.strip()
-    if len(text) != 40 or any(char not in "0123456789abcdef" for char in text):
-        return None
-    return text
+def product_sha() -> str:
+    """Commit of the tree being graded: ``git rev-parse HEAD`` of the checkout.
 
-
-def _fetch_product_base() -> str:
-    """Shallow CI (checkout depth 1) has no origin/main.
-
-    Unshallow this branch so the fork point is in the object store, then
-    point origin/main at refs/heads/main. ponytail: a full unshallow.
-    Upgrade is a deepen capped at the fork point if this fetch dominates.
+    The product code that runs is this checkout's, so its HEAD is the only
+    honest stamp (a merge-base names main even when a PR changed the product).
+    Fails closed when apps/ or packages/ carry uncommitted changes, because
+    then no commit names the code that ran.
     """
-    notes: list[str] = []
-    shallow = _git(["rev-parse", "--is-shallow-repository"])
-    if shallow.stdout.strip() == "true":
-        uns = _git(["fetch", "--no-tags", "--unshallow", "origin"])
-        if uns.returncode != 0 and uns.stderr.strip():
-            notes.append(uns.stderr.strip())
-    fetched = _git(
-        ["fetch", "--no-tags", "origin", "refs/heads/main:refs/remotes/origin/main"]
-    )
-    if fetched.returncode != 0 and fetched.stderr.strip():
-        notes.append(fetched.stderr.strip())
-    return " ".join(notes)[-300:]
-
-
-def _product_sha() -> str:
-    """Product commit the stub-exec harness runs. Not this grader's HEAD."""
-    sha = _merge_base_sha()
-    if sha is None:
-        detail = _fetch_product_base()
-        sha = _merge_base_sha()
-        if sha is None:
-            extra = f": {detail}" if detail else ""
-            raise SystemExit(f"grade52: dms sha unavailable{extra}")
-    return sha
+    head = _git(["rev-parse", "HEAD"]).stdout.strip()
+    if len(head) != 40 or any(char not in "0123456789abcdef" for char in head):
+        raise SystemExit("grade52: dms sha unavailable (not a git checkout)")
+    dirty = _git(["status", "--porcelain", "--", "apps", "packages"]).stdout.strip()
+    if dirty:
+        raise SystemExit(
+            "grade52: apps/ or packages/ have uncommitted changes; commit first so "
+            "the stamp names the graded code"
+        )
+    return head
 
 
 def _resolve_mode(mode: str | None) -> str:
@@ -1450,7 +1450,7 @@ def grade_main(mode: str | None = None) -> dict[str, Any]:
     chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
     if chosen != MODE_STUB_EXEC:
         raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
-    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=_product_sha())
+    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=product_sha())
 
 
 def grade_envelopes_path(path: Path) -> dict[str, Any]:

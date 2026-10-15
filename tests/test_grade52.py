@@ -12,6 +12,7 @@ copies gold rows into envelopes. That plant is not a capture and not a score.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import date, datetime
 from decimal import Decimal
@@ -31,6 +32,7 @@ from grade52 import (  # noqa: E402
     path_counts,
     path_group,
     paths_line,
+    product_sha,
     self_test,
     serve_path,
     summary_line,
@@ -165,11 +167,23 @@ def _abstain() -> dict[str, Any]:
 
 
 def _served(rows: Any) -> dict[str, Any]:
+    """A served envelope that passes assert_envelope_valid around ``rows``."""
+    from dms_executor.envelope import build_audit_receipt
+
+    sql = "SELECT 1"
+    badge = "L1_GOVERNED_METRIC"
     return {
-        "badge": "L1_GOVERNED_METRIC",
+        "badge": badge,
         "route": "governed_metric",
         "abstained": False,
         "rows": rows,
+        "values": [{"label": "row_count", "value": len(rows)}],
+        "sql_used": sql,
+        "audit_id": "synthetic",
+        "as_of": "2026-01-01T00:00:00Z",
+        "audit_receipt": build_audit_receipt(
+            abstained=False, badge=badge, rows=rows, sql_used=sql, assumptions=[]
+        ),
     }
 
 
@@ -376,7 +390,11 @@ def test_grade52_stub_exec_main() -> None:
     """Exec-SQL stub, flags off. Real served rows, not the one-cell submit stub."""
     report = grade_main()
     assert report["mode"] == "stub-exec"
-    assert report["dms_sha"] == _MAIN_SHA
+    # The stamp names the graded checkout, so it moves with main.
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert report["dms_sha"] == head
     assert report["n"] == 52
     assert _buckets(report) == 52
     assert report["correct"] == 43
@@ -462,6 +480,47 @@ def test_grade52_copy_only_main() -> None:
     assert _buckets(without) == 45
     assert without["correct"] == 16
     assert without["abstain"] == 20
+
+
+def _copy_only_records() -> tuple[str, list[str]]:
+    lines = _COPY_ONLY.read_text(encoding="utf-8").splitlines()
+    return lines[0], [line for line in lines[1:] if line.strip()]
+
+
+def test_grade52_invalid_envelope_is_wrong(tmp_path: Path) -> None:
+    """Right rows under a broken envelope are WRONG: the customer reads the envelope."""
+    header, body = _copy_only_records()
+    broken: list[str] = []
+    for line in body:
+        record = json.loads(line)
+        if record["id"] in _COPY_ONLY_CORRECT:
+            record["env"]["audit_id"] = None
+            record["env"].pop("answer_id", None)
+        broken.append(json.dumps(record))
+    path = tmp_path / "no_audit.jsonl"
+    path.write_text(header + "\n" + "\n".join(broken) + "\n", encoding="utf-8")
+    report = grade_envelopes_path(path)
+    assert report["correct"] == 0
+    assert report["wrong"] == 16
+    by_case = {item["id"]: item for item in report["cases"]}
+    for qid in _COPY_ONLY_CORRECT:
+        assert by_case[qid]["bucket"] == "WRONG"
+        assert by_case[qid]["reason"].startswith("envelope invalid: E3")
+
+
+def test_grade52_duplicate_envelope_id_raises(tmp_path: Path) -> None:
+    header, body = _copy_only_records()
+    path = tmp_path / "dup.jsonl"
+    path.write_text(header + "\n" + "\n".join([body[0], *body]) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="duplicate envelope"):
+        grade_envelopes_path(path)
+
+
+def test_grade52_product_sha_is_checkout_head() -> None:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert product_sha() == head
 
 
 def test_grade52_source_has_no_provider_names() -> None:
