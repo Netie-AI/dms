@@ -225,9 +225,22 @@ def _align_unordered(env: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(sql, str) or _ordered_sql(sql):
         return env
     out = dict(env)
+    def _row_key(row: dict[str, Any]) -> str:
+        return json.dumps(row, sort_keys=True, default=str)
+
     rows = out.get("rows")
     if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
-        out["rows"] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True, default=str))
+        out["rows"] = sorted(rows, key=_row_key)
+    receipt = out.get("audit_receipt")
+    if isinstance(receipt, dict):
+        include = receipt.get("include")
+        nested = include.get("rows") if isinstance(include, dict) else None
+        if isinstance(nested, list) and all(isinstance(row, dict) for row in nested):
+            receipt = dict(receipt)
+            include = dict(include)
+            include["rows"] = sorted(nested, key=_row_key)
+            receipt["include"] = include
+            out["audit_receipt"] = receipt
     values = out.get("values")
     if isinstance(values, list) and all(isinstance(item, dict) for item in values):
         ranked = sorted(
@@ -280,6 +293,9 @@ def test_unordered_row_swap_still_matches_main_bytes() -> None:
     swapped["values"] = list(reversed(env["values"]))
     head, rest = str(env["text"]).split("\n", 1)
     swapped["text"] = head + "\n" + "\n".join(reversed(rest.split("\n")))
+    receipt = swapped.get("audit_receipt")
+    if isinstance(receipt, dict) and isinstance(receipt.get("include"), dict):
+        receipt["include"]["rows"] = list(reversed(receipt["include"]["rows"]))
     assert _align_unordered(_drop(swapped)) == _align_unordered(_drop(env))
 
 
