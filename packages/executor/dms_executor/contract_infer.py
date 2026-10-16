@@ -8,7 +8,7 @@ from typing import Any
 import duckdb
 from dms_core.pipelines import ContractProposal
 
-from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import connect_serving, ensure_demo_warehouse, warehouse_path
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.pipeline_loader import PipelineLoadError
 
@@ -24,7 +24,7 @@ def infer_contract(
         raise PipelineLoadError(f"source must be schema.table, got {source!r}")
     schema, table = source.split(".", 1)
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db), read_only=True)
+    con = connect_serving(db)
     try:
         exists = con.execute(
             """
