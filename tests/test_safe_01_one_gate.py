@@ -128,6 +128,11 @@ READERS = [
     "WITH f AS (SELECT * FROM read_csv('x.csv')) SELECT sku FROM inventory",
     "SELECT sku FROM inventory UNION ALL SELECT column0 FROM read_csv('x.csv')",
     "SELECT * FROM inventory, LATERAL (SELECT * FROM read_text('x.txt')) l",
+    # A table function reached through LATERAL is not on a table node.
+    "SELECT c.alert_id AS a, i.sku FROM inventory i JOIN LATERAL query_table('alerts') c ON TRUE",
+    "SELECT c.name AS n, i.sku FROM inventory i, LATERAL duckdb_settings() c",
+    "SELECT c.Delimiter AS d, i.sku FROM inventory i JOIN LATERAL sniff_csv('x.csv') c ON TRUE",
+    "SELECT c.name AS n, i.sku FROM inventory i CROSS JOIN LATERAL pragma_table_info('alerts') c",
 ]
 
 LITERAL_ONLY = [
@@ -203,6 +208,10 @@ LITERAL_ONLY = [
         "WITH t AS (SELECT * FROM inventory) SELECT COUNT(*) AS revenue FROM range(4242) "
         "WHERE EXISTS (SELECT 1 FROM inventory)"
     ),
+    # An unnest or generator column is data only when what it carries is.
+    "SELECT sku, unnest AS revenue FROM inventory, unnest([4242])",
+    "SELECT i.sku, u.x AS revenue FROM inventory i, LATERAL unnest([4242]) u(x)",
+    "SELECT i.sku, g.n AS revenue FROM inventory i CROSS JOIN LATERAL generate_series(1, 3) g(n)",
     # A filter or an order picks rows; the figure it returns is still invented.
     "SELECT MAX(4242) FILTER (WHERE quantity_kg > 0) AS revenue FROM inventory",
     "SELECT FIRST(4242 ORDER BY quantity_kg) AS revenue FROM inventory",
@@ -330,6 +339,17 @@ LEGIT = [
     # Swapped names: DuckDB binds each to the real column, not the other alias.
     "SELECT sku AS quantity_kg, quantity_kg AS sku FROM inventory",
     "WITH x AS (SELECT sku, quantity_kg FROM inventory) (SELECT * FROM x)",
+    # Generators and subqueries through LATERAL.
+    "SELECT i.sku, u.x FROM inventory i, LATERAL unnest([i.quantity_kg]) u(x)",
+    "SELECT i.sku, u.v FROM inventory i, unnest([i.quantity_kg]) u(v)",
+    (
+        "SELECT i.sku, i.quantity_kg * g.n AS q FROM inventory i "
+        "CROSS JOIN LATERAL generate_series(1, 3) g(n)"
+    ),
+    (
+        "SELECT i.sku, t.n FROM inventory i, LATERAL (SELECT COUNT(*) AS n FROM transactions t "
+        "WHERE t.sku = i.sku) t"
+    ),
 ]
 
 #: Pass the shape layer on purpose. Each states an invented figure next to a
@@ -346,7 +366,6 @@ SHAPE_RESIDUAL = [
     "SELECT * FROM inventory i JOIN (SELECT 4242 AS revenue) r ON TRUE",
     "SELECT COLUMNS('rev.*') FROM inventory, (SELECT 4242 AS revenue) r",
     "SELECT COUNT(*) AS revenue FROM range(4242) r LEFT JOIN inventory i ON FALSE",
-    "SELECT sku, unnest AS revenue FROM inventory, unnest([4242])",
     (
         "SELECT sku, quantity_kg FROM inventory "
         "UNION ALL SELECT * FROM (SELECT sku, 4242 AS q FROM inventory) s"

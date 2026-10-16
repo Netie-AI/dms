@@ -15,9 +15,9 @@ What it decides, and nothing else:
 - The tree must be a SELECT or a set operation over SELECTs, with no DML, DDL,
   PRAGMA, ATTACH, COPY, INSTALL, LOAD, SET, CALL, EXPORT, row lock or SELECT
   INTO node anywhere in it.
-- A table position may hold a name or a generator (range, generate_series,
-  unnest). A file reader, a quoted path, a URL or any other table function is
-  refused.
+- A table position, LATERAL included, may hold a name or a generator (range,
+  generate_series, unnest). A file reader, a quoted path, a URL or any other
+  table function is refused.
 - Real tables are resolved scope by scope, so a CTE name is not a table and a
   CTE that shadows a name in one scope does not hide the same name used as a
   real table in another.
@@ -235,6 +235,18 @@ def _is_generator(table: exp.Table) -> bool:
     if isinstance(inner, exp.Anonymous):
         return _bare(inner.name) in _GENERATORS
     return False
+
+
+def _lateral_reader(lateral: exp.Lateral) -> bool:
+    """A table function reached through LATERAL that is not a generator.
+
+    sqlglot puts ``JOIN LATERAL f(...)`` and ``, LATERAL f(...)`` on a Lateral
+    node, not a Table, so the table-position check does not see it.
+    """
+    inner = lateral.this
+    if isinstance(inner, (exp.Subquery, exp.Select, exp.Unnest, exp.GenerateSeries)):
+        return False
+    return not (isinstance(inner, exp.Anonymous) and _bare(inner.name) in _GENERATORS)
 
 
 def _engine_refusal(sql: str) -> str | None:
@@ -533,6 +545,32 @@ def _lateral_alias(column: exp.Column, scope: Scope) -> Any | None:
     return None
 
 
+def _udtf_call(source: Any) -> Any | None:
+    """The unnest or generator call behind a FROM or LATERAL source, if that is what it is."""
+    if not isinstance(source, Scope):
+        return None
+    node = source.expression
+    call = node.this if isinstance(node, exp.Lateral) else node
+    if isinstance(call, (exp.Unnest, exp.GenerateSeries)):
+        return call
+    if isinstance(call, exp.Anonymous) and _bare(call.name) in _GENERATORS:
+        return call
+    return None
+
+
+def _udtf_names(node: Any, call: Any) -> set[str]:
+    """Columns an unnest or generator source exposes: its column list, else its own name."""
+    alias = node.args.get("alias")
+    listed = {_bare(c.name) for c in alias.columns} if isinstance(alias, exp.TableAlias) else set()
+    if listed:
+        return listed
+    if isinstance(call, exp.Unnest):
+        return {"unnest"}
+    if isinstance(call, exp.GenerateSeries):
+        return {"range", "generate_series"}
+    return {_bare(call.name)}
+
+
 def _source_has(w: _Walk, name: str, picked: Sequence[Any]) -> bool:
     """Whether a FROM source may expose a column of this name.
 
@@ -578,6 +616,15 @@ def _column_derived(
     if isinstance(column.this, exp.Star):
         return any(_source_derived(w, src, depth + 1, visiting) for src in picked)
     for src in picked:
+        udtf = _udtf_call(src)
+        if udtf is not None:
+            if _bare(column.name) not in _udtf_names(src.expression, udtf):
+                continue
+            if isinstance(udtf, exp.Unnest):
+                # unnest([q]) carries q: data when what it unnests is.
+                return any(_derived(w, e, scope, depth + 1, visiting) for e in udtf.expressions)
+            # A generator's own column (range, generate_series) is not data.
+            return False
         if (
             isinstance(src, Scope)
             and _recursion_base(src)
@@ -842,6 +889,10 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
         if _is_name(table) or _is_generator(table):
             continue
         # A file reader, a quoted path, a URL or any other table function.
+        return "hostile_sql:path_not_allowed", frozenset()
+    if any(_lateral_reader(lateral) for lateral in tree.find_all(exp.Lateral)):
+        # The same, reached through LATERAL (query_table, sniff_csv, catalog
+        # functions such as duckdb_settings()).
         return "hostile_sql:path_not_allowed", frozenset()
     try:
         scopes = traverse_scope(tree)
