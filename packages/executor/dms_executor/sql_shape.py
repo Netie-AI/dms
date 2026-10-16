@@ -111,14 +111,35 @@ def _is_name(table: exp.Table) -> bool:
 
 
 def _cte_of(scope: Scope, table: exp.Table) -> Scope | None:
-    """The CTE scope this table reads, or None when it is a real table."""
+    """The CTE scope this table reads, or None when it is a real table.
+
+    DuckDB binds a CTE's own name inside its own body to the real table of
+    that name, except in the recursive term of a WITH RECURSIVE (the arms
+    after the first), which reads the CTE's own rows.
+    """
     if table.db:
         return None
     want = _bare(table.name)
-    for name, cte in scope.cte_sources.items():
-        if _bare(name) == want:
-            return cte
-    return None
+    cte = next((c for name, c in scope.cte_sources.items() if _bare(name) == want), None)
+    if cte is None:
+        return None
+    node = table.parent
+    while node is not None:
+        if isinstance(node, exp.CTE) and _bare(node.alias) == want:
+            holder = node.parent
+            recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+            body = node.this
+            if not (recursive and isinstance(body, exp.SetOperation)):
+                return None
+            base = body
+            while isinstance(base, exp.SetOperation):
+                base = base.this
+            inside: Any = table
+            while inside is not None and inside is not base:
+                inside = inside.parent
+            return None if inside is base else cte
+        node = node.parent
+    return cte
 
 
 def _is_generator(table: exp.Table) -> bool:
@@ -191,8 +212,45 @@ _NUMERIC_TYPES = frozenset(
         "DOUBLE",
     }
 )
-#: Deeper than this the lineage walk stops and counts the value as data.
-_MAX_DEPTH = 32
+#: The lineage walk's budget. Past either, the SQL is not analyzable and is
+#: refused (fail closed), never counted as data.
+_MAX_DEPTH = 150
+_MAX_STEPS = 50_000
+
+
+class _TooDeep(Exception):
+    """The lineage walk ran out of depth or steps."""
+
+
+class _Walk:
+    """One lineage walk: a memo, a step budget, and the real columns if known.
+
+    The memo makes the walk linear in the size of the query: without it a CTE
+    chain whose columns each read two columns of the one before is
+    exponential. Every node the walk creates is kept alive here, so an id in
+    the memo is never reused by another node.
+    """
+
+    def __init__(self, real_columns: frozenset[str] | None = None) -> None:
+        self.memo: dict[tuple[int, int, frozenset[tuple[int, str]]], bool] = {}
+        self.rows_memo: dict[int, bool] = {}
+        self.steps = 0
+        self.real_columns = real_columns
+        self._keep: list[Any] = []
+
+    def tick(self, depth: int) -> None:
+        self.steps += 1
+        if depth > _MAX_DEPTH or self.steps > _MAX_STEPS:
+            raise _TooDeep
+
+    def column(self, name: str) -> exp.Column:
+        node = exp.column(name)
+        self._keep.append(node)
+        return node
+
+
+Visiting = frozenset[tuple[int, str]]
+_NONE: Visiting = frozenset()
 
 
 def _is_star(projection: Any) -> bool:
@@ -206,6 +264,27 @@ def _is_recursive(scope: Scope) -> bool:
     cte = scope.expression.parent
     holder = cte.parent if isinstance(cte, exp.CTE) else None
     return isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+
+
+def _recursive_base(scope: Scope) -> bool:
+    """The base arm of a WITH RECURSIVE body.
+
+    sqlglot resolves a recursive term's reference to its own CTE to this
+    scope, so reaching it from another arm means the CTE is reading itself.
+    """
+    expr = scope.expression
+    body = expr
+    while isinstance(body.parent, exp.SetOperation):
+        body = body.parent
+    if body is expr or not isinstance(body.parent, exp.CTE):
+        return False
+    holder = body.parent.parent
+    if not (isinstance(holder, exp.With) and holder.args.get("recursive")):
+        return False
+    base = body
+    while isinstance(base, exp.SetOperation):
+        base = base.this
+    return base is expr
 
 
 def _named_output(scope: Scope, name: str) -> list[Any] | None:
@@ -242,6 +321,30 @@ def _arms(scope: Scope) -> list[Scope]:
     return [arm for child in scope.union_scopes for arm in _arms(child)]
 
 
+def _selected(scope: Scope) -> list[Any]:
+    """Sources in this scope's FROM and JOIN. A CTE that is only in scope is not one.
+
+    A recursive CTE's reference to itself comes back from sqlglot as a table;
+    it is the CTE's own rows, not a real table.
+    """
+    return [_as_source(scope, node, source) for node, source in scope.selected_sources.values()]
+
+
+def _as_source(scope: Scope, node: Any, source: Any) -> Any:
+    """The source a FROM reference binds to, the way DuckDB binds it.
+
+    sqlglot resolves a CTE's own name inside its body to the CTE; DuckDB binds
+    the real table there, except in the recursive term. ``_cte_of`` decides.
+    """
+    if isinstance(node, exp.Table) and _is_name(node):
+        cte = _cte_of(scope, node)
+        if cte is None:
+            return node
+        if isinstance(source, exp.Table):
+            return cte
+    return source
+
+
 def _real_table(source: Any) -> bool:
     return isinstance(source, exp.Table) and _is_name(source) and not _is_generator(source)
 
@@ -258,30 +361,42 @@ def _generator_names(table: exp.Table) -> set[str]:
     return {_bare(getattr(table.this, "name", ""))}
 
 
-def _source_derived(source: Any, depth: int) -> bool:
+def _constant(node: Any) -> bool:
+    """No column, star, subquery or COLUMNS() anywhere inside."""
+    kinds: tuple[type, ...] = (exp.Column, exp.Star, exp.Subquery, exp.Select, *_COLUMNS_NODE)
+    return node.find(*kinds) is None
+
+
+def _source_derived(w: _Walk, source: Any, depth: int, visiting: Visiting) -> bool:
     """Does a FROM source carry rows of a real table into this scope?"""
     if isinstance(source, exp.Table):
         return _real_table(source)
     if isinstance(source, Scope):
-        return _scope_derived(source, depth + 1)
+        return _scope_derived(w, source, depth + 1, visiting)
     return False
 
 
-def _rows_from_data(scope: Scope, depth: int = 0) -> bool:
+def _rows_from_data(w: _Walk, scope: Scope, depth: int) -> bool:
     """Every arm's rows come through FROM or JOIN from a real table.
 
-    A WHERE or EXISTS subquery that reads a table does not count: the rows
-    are still the generator's.
+    A WHERE or EXISTS subquery that reads a table does not count, and neither
+    does a CTE that is in scope but not selected: the rows are still the
+    generator's.
     """
-    if depth > _MAX_DEPTH:
-        return True
-    for arm in _arms(scope):
-        if not any(
-            _real_table(src) or (isinstance(src, Scope) and _rows_from_data(src, depth + 1))
-            for src in arm.sources.values()
-        ):
-            return False
-    return True
+    w.tick(depth)
+    key = id(scope)
+    if key in w.rows_memo:
+        return w.rows_memo[key]
+    w.rows_memo[key] = False  # a recursive CTE reaching itself adds no rows of its own
+    result = all(
+        any(
+            _real_table(src) or (isinstance(src, Scope) and _rows_from_data(w, src, depth + 1))
+            for src in _selected(arm)
+        )
+        for arm in _arms(scope)
+    )
+    w.rows_memo[key] = result
+    return result
 
 
 def _lateral_alias(column: exp.Column, scope: Scope) -> Any | None:
@@ -303,31 +418,51 @@ def _lateral_alias(column: exp.Column, scope: Scope) -> Any | None:
     return None
 
 
-def _column_derived(column: exp.Column, scope: Scope, depth: int) -> bool:
-    if depth > _MAX_DEPTH:
-        return True
-    sources = scope.sources
+def _column_derived(
+    w: _Walk, column: exp.Column, scope: Scope, depth: int, visiting: Visiting
+) -> bool:
+    w.tick(depth)
+    selected = scope.selected_sources
     if column.table:
-        picked = [v for k, v in sources.items() if _bare(k) == _bare(column.table)]
+        picked = [
+            _as_source(scope, node, src)
+            for name, (node, src) in selected.items()
+            if _bare(name) == _bare(column.table)
+        ]
     else:
-        picked = list(sources.values())
+        picked = _selected(scope)
         lateral = _lateral_alias(column, scope)
-        if lateral is not None:
-            return _derived(lateral, scope, depth + 1)
+        # DuckDB binds a real column before an alias of the same name.
+        real = w.real_columns is not None and _bare(column.name) in w.real_columns
+        if lateral is not None and not (real and any(_real_table(s) for s in picked)):
+            return _derived(w, lateral, scope, depth + 1, visiting)
     if isinstance(column.this, exp.Star):
         if not picked and column.table:
             # st.* expands a struct column, not a source.
-            return _column_derived(exp.column(column.table), scope, depth + 1)
-        return any(_source_derived(src, depth) for src in picked)
+            return _column_derived(w, w.column(column.table), scope, depth + 1, visiting)
+        return any(_source_derived(w, src, depth + 1, visiting) for src in picked)
     for src in picked:
+        if isinstance(src, Scope) and src is not scope and _recursive_base(src):
+            # The recursive term reading its own CTE: data only when this arm
+            # also joins a real table, so rows drive the recursion. A counter
+            # or a literal carried through the recursion is not.
+            return any(_real_table(s) for s in _selected(scope))
         if isinstance(src, Scope):
+            key = (id(src), _bare(column.name))
+            if key in visiting:
+                # A recursive CTE reading its own column: data only when this
+                # arm also joins a real table, so rows drive the recursion.
+                return any(_real_table(s) for s in _selected(scope))
+            # Only a recursive CTE can reach itself; keeping other hops out of
+            # the visiting set keeps the memo effective on long CTE chains.
+            inner = visiting | {key} if _is_recursive(src) else visiting
             named = _named_output(src, column.name)
             if named is not None:
                 combine = any if _is_recursive(src) else all
-                return combine(_derived(p, arm, depth + 1) for p, arm in named)
+                return combine(_derived(w, p, arm, depth + 1, inner) for p, arm in named)
             if len(_arms(src)) == 1 and any(_is_star(p) for p in src.expression.selects):
                 # A star passes the column through from that scope's own sources.
-                return _column_derived(exp.column(column.name), src, depth + 1)
+                return _column_derived(w, w.column(column.name), src, depth + 1, inner)
         elif isinstance(src, exp.Table) and _is_generator(src):
             if _bare(column.name) in _generator_names(src):
                 return False
@@ -335,7 +470,7 @@ def _column_derived(column: exp.Column, scope: Scope, depth: int) -> bool:
         return True
     if not picked and scope.parent is not None:
         # A correlated reference to the enclosing query.
-        return _column_derived(column, scope.parent, depth + 1)
+        return _column_derived(w, column, scope.parent, depth + 1, visiting)
     # Bound by the engine but not traceable here. A generator column is not
     # data; anything else counts as data rather than refuse it.
     return not any(isinstance(src, exp.Table) and _is_generator(src) for src in picked)
@@ -355,49 +490,69 @@ _COLUMNS_NODE: tuple[type, ...] = tuple(
 )
 
 
-def _derived(node: Any, scope: Scope, depth: int = 0) -> bool:
+def _derived(w: _Walk, node: Any, scope: Scope, depth: int, visiting: Visiting) -> bool:
     """True when this value depends on rows of a real table.
 
     A literal, or functions and arithmetic of literals, does not, however deep
-    it is wrapped in CTEs, derived tables or scalar subqueries. A COUNT or a
-    SUM over real rows does, even SUM(1), because it depends on how many rows
-    there are; MIN, MAX, AVG and FIRST of a constant do not. A window's value
-    is its function's: its ORDER BY picks rows but states no figure, except
-    for ranking functions, which number the rows. Not judged here (needs a
-    figure verifier): a constant beside or multiplied into a computed value.
+    it is wrapped in CTEs, derived tables or scalar subqueries. COUNT over
+    real rows does. SUM of a constant does (SUM(1) counts rows); SUM of a
+    column is that column's lineage. MIN, MAX, AVG and FIRST of a constant do
+    not. A window's value is its function's, except ranking functions, which
+    number the rows. Not judged here (needs a figure verifier): a constant
+    beside or multiplied into a computed value.
     """
-    if depth > _MAX_DEPTH:
-        return True
+    w.tick(depth)
+    key = (id(node), id(scope), visiting)
+    cached = w.memo.get(key)
+    if cached is not None:
+        return cached
+    result = _derived_uncached(w, node, scope, depth, visiting)
+    w.memo[key] = result
+    return result
+
+
+def _derived_uncached(w: _Walk, node: Any, scope: Scope, depth: int, visiting: Visiting) -> bool:
     if isinstance(node, (exp.Subquery, exp.Select, exp.SetOperation)):
         child = _child_scope(scope, node)
-        return child is not None and _scope_derived(child, depth + 1)
-    if isinstance(node, (exp.Count, exp.Sum)) and _rows_from_data(scope):
-        return True
+        return child is not None and _scope_derived(w, child, depth + 1, visiting)
+    if isinstance(node, exp.Count):
+        return _rows_from_data(w, scope, depth + 1)
+    if isinstance(node, exp.Sum):
+        arg = node.this
+        if arg is None or _constant(arg):
+            return _rows_from_data(w, scope, depth + 1)
+        return _derived(w, arg, scope, depth + 1, visiting)
     if isinstance(node, exp.Window):
         fn = node.this
         if isinstance(fn, exp.Ntile) or not list(fn.iter_expressions()):
-            return _rows_from_data(scope)
-        return _derived(fn, scope, depth)
+            return _rows_from_data(w, scope, depth + 1)
+        return _derived(w, fn, scope, depth + 1, visiting)
     if _COLUMNS_NODE and isinstance(node, _COLUMNS_NODE):
-        return _rows_from_data(scope)
+        return _rows_from_data(w, scope, depth + 1)
     if isinstance(node, exp.Star):
-        return any(_source_derived(src, depth) for src in scope.sources.values())
+        return any(_source_derived(w, src, depth + 1, visiting) for src in _selected(scope))
     if isinstance(node, exp.Column):
-        return _column_derived(node, scope, depth)
-    return any(_derived(child, scope, depth) for child in node.iter_expressions())
+        return _column_derived(w, node, scope, depth + 1, visiting)
+    return any(_derived(w, child, scope, depth + 1, visiting) for child in node.iter_expressions())
 
 
-def _scope_derived(scope: Scope, depth: int = 0) -> bool:
+def _scope_derived(w: _Walk, scope: Scope, depth: int, visiting: Visiting) -> bool:
     """Some output of every UNION arm is computed from a real table's rows."""
-    if depth > _MAX_DEPTH:
-        return True
-    return all(any(_derived(p, arm, depth) for p in arm.expression.selects) for arm in _arms(scope))
+    w.tick(depth)
+    return all(
+        any(_derived(w, p, arm, depth + 1, visiting) for p in arm.expression.selects)
+        for arm in _arms(scope)
+    )
 
 
 def _null_only(node: Any) -> bool:
     """NULL, or casts of NULL: no figure, though the engine types it INTEGER."""
     leaves = [n for n in node.walk() if isinstance(n, (exp.Literal, exp.Null))]
     return bool(leaves) and all(isinstance(n, exp.Null) for n in leaves)
+
+
+def _has_number(node: Any) -> bool:
+    return any(isinstance(n, exp.Literal) and n.is_number for n in node.walk())
 
 
 def _numeric(type_name: str) -> bool:
@@ -411,64 +566,86 @@ def _root_scope(sql: str) -> Scope | None:
         if isinstance(tree, exp.Subquery):
             tree = tree.unnest()
         scopes = traverse_scope(tree)
-    except Exception:  # noqa: BLE001 - select_shape already refused anything unreadable
+    except Exception:  # noqa: BLE001 - the caller fails closed on None
         return None
     return scopes[-1] if scopes else None
 
 
-def _judge(arm: Scope, pairs: Sequence[tuple[Any, bool]], star_figures: bool) -> bool:
-    """An invented figure and no computed one, over (projection, is numeric) pairs."""
-    invented = False
-    computed = star_figures
+def _judge(w: _Walk, arm: Scope, pairs: Sequence[tuple[Any, bool]]) -> tuple[bool, bool]:
+    """(invented, computed) over (projection, is numeric) pairs."""
+    invented = computed = False
     for projection, numeric in pairs:
         if not numeric:
             continue
-        if _derived(projection, arm):
+        if _derived(w, projection, arm, 0, _NONE):
             computed = True
         elif not _null_only(projection):
             invented = True
-    return invented and not computed
+    return invented, computed
 
 
-def _by_name(arm: Scope, numeric_of: dict[str, bool | None]) -> bool:
-    """Judge an arm by result column name: UNION BY NAME, or an arm with a star."""
+def _by_name(w: _Walk, arm: Scope, numeric_of: dict[str, bool]) -> bool:
+    """Judge an arm by result column name: UNION BY NAME, or an arm with a star.
+
+    A column the star brings is traced to its source projection, so a star
+    over a CTE that states a literal is judged like the literal itself. An
+    explicit output the engine named differently (an unaliased expression) is
+    numeric when it states a number.
+    """
     explicit: dict[str, Any] = {}
     star = False
     for projection in arm.expression.selects:
         if _is_star(projection):
             star = True
-            for replaced in projection.args.get("replace") or []:
-                explicit[_bare(replaced.alias_or_name)] = replaced
+            replaced = projection.args.get("replace") if isinstance(projection, exp.Star) else None
+            for item in replaced or []:
+                explicit[_bare(item.alias_or_name)] = item
             continue
         explicit[_bare(projection.alias_or_name)] = projection
-    pairs = [(p, numeric_of.get(n) is True) for n, p in explicit.items()]
-    # Numeric columns a star brings are the source's own figures.
-    star_figures = star and any(
-        numeric is True and name not in explicit for name, numeric in numeric_of.items()
-    )
-    return _judge(arm, pairs, star_figures)
+    pairs = [
+        (p, numeric_of[name] if name in numeric_of else _has_number(p))
+        for name, p in explicit.items()
+    ]
+    invented, computed = _judge(w, arm, pairs)
+    if star:
+        for name, numeric in numeric_of.items():
+            if not numeric or name in explicit:
+                continue
+            if _column_derived(w, w.column(name), arm, 0, _NONE):
+                computed = True
+            else:
+                invented = True
+    return invented and not computed
 
 
-def literal_figure_reason(sql: str, types: Sequence[Any], names: Sequence[str] = ()) -> str | None:
+def literal_figure_reason(
+    sql: str,
+    types: Sequence[Any],
+    names: Sequence[str] = (),
+    real_columns: frozenset[str] | None = None,
+) -> str | None:
     """Refusal when a UNION arm returns a number nothing computed and no number that was.
 
-    ``types`` and ``names`` are the engine's result columns. ``SELECT sku, 0
-    AS revenue FROM t`` is refused: its only figure is invented. ``SELECT
-    sku, 2024 AS year, SUM(q) FROM t`` passes: a label beside a computed
-    figure. Arms are matched to result columns by position, or by name for
-    UNION BY NAME and for an arm with a star. SQL too deep to trace fails
-    closed. Call only after ``select_shape`` passed.
+    ``types`` and ``names`` are the engine's result columns; ``real_columns``
+    are the lowercase column names of the real tables the query reads, used
+    where DuckDB binds a real column before an alias. ``SELECT sku, 0 AS
+    revenue FROM t`` is refused: its only figure is invented. ``SELECT sku,
+    2024 AS year, SUM(q) FROM t`` passes: a label beside a computed figure.
+    Arms are matched to result columns by position, or by name for UNION BY
+    NAME and for an arm with a star. Anything the walk cannot trace within its
+    budget fails closed. Call only after ``select_shape`` passed.
     """
     root = _root_scope(sql)
     if root is None:
-        return None
+        return "hostile_sql:sql_not_analyzable"
     numeric = [_numeric(str(t)) for t in types]
-    numeric_of: dict[str, bool | None] = {}
+    numeric_of: dict[str, bool] = {}
     for name, is_numeric in zip((_bare(n) for n in names), numeric, strict=False):
-        # A repeated result name is ambiguous: never matched.
-        numeric_of[name] = None if name in numeric_of else is_numeric
+        # A repeated result name is numeric if any column under it is.
+        numeric_of[name] = numeric_of.get(name, False) or is_numeric
     expression = root.expression
     by_name = isinstance(expression, exp.SetOperation) and bool(expression.args.get("by_name"))
+    w = _Walk(real_columns)
     try:
         for index, arm in enumerate(_arms(root)):
             selects = list(arm.expression.selects)
@@ -476,14 +653,15 @@ def literal_figure_reason(sql: str, types: Sequence[Any], names: Sequence[str] =
             if by_name or star:
                 if not names or (star and index > 0 and not by_name):
                     continue
-                refused = _by_name(arm, numeric_of)
+                refused = _by_name(w, arm, numeric_of)
             elif len(selects) == len(numeric):
-                refused = _judge(arm, list(zip(selects, numeric, strict=True)), False)
+                invented, computed = _judge(w, arm, list(zip(selects, numeric, strict=True)))
+                refused = invented and not computed
             else:
                 continue
             if refused:
                 return "hostile_sql:literal_output"
-    except RecursionError:
+    except (RecursionError, _TooDeep):
         return "hostile_sql:sql_not_analyzable"
     return None
 
@@ -534,11 +712,11 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
     try:
         if not _reads_data(scopes[-1], set()):
             return "hostile_sql:no_data_source", frozenset()
-        if not _scope_derived(scopes[-1]):
+        if not _scope_derived(_Walk(), scopes[-1], 0, _NONE):
             # Reads a table, returns nothing computed from it: SELECT 4242 FROM
             # t, however the literal is wrapped.
             return "hostile_sql:literal_output", frozenset()
-    except RecursionError:
+    except (RecursionError, _TooDeep):
         # Nested past what the walk can trace (hundreds of UNION arms or of
         # terms in one expression): fail closed rather than crash the ask.
         return "hostile_sql:sql_not_analyzable", frozenset()

@@ -715,11 +715,21 @@ def validate_compiled_sql(
         relation = con.sql(sql)
         types = [str(t) for t in relation.types]
         names = [str(n) for n in relation.columns]
+        # Column names of the real tables read, so lineage binds a real column
+        # before an alias of the same name, as DuckDB does.
+        real_columns = frozenset(
+            str(row[0]).lower()
+            for row in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) IN (SELECT unnest(?::VARCHAR[]))",
+                [sorted(named)],
+            ).fetchall()
+        )
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
-    return literal_figure_reason(sql, types, names)
+    return literal_figure_reason(sql, types, names, real_columns)
 
 
 def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:

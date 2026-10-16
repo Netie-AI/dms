@@ -16,6 +16,7 @@ Synthetic demo-warehouse tables only.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -189,6 +190,35 @@ LITERAL_ONLY = [
         "SELECT sku, quantity_kg FROM inventory "
         "UNION ALL BY NAME SELECT 4242 AS quantity_kg, sku FROM inventory"
     ),
+    # A star traced to the CTE or derived table that states the literal.
+    "WITH t AS (SELECT sku, 0 AS revenue FROM inventory) SELECT * FROM t ORDER BY sku",
+    "SELECT * FROM (SELECT sku, 4242 AS revenue FROM inventory) s",
+    # The selected CTE decides, not the first CTE in scope with that column.
+    (
+        "WITH actual AS (SELECT category, SUM(quantity_kg) AS kg FROM inventory GROUP BY 1), "
+        "target AS (SELECT category, 5000 AS kg FROM inventory GROUP BY 1) "
+        "SELECT category, kg FROM target"
+    ),
+    (
+        "WITH t AS (SELECT * FROM inventory) SELECT COUNT(*) AS revenue FROM range(4242) "
+        "WHERE EXISTS (SELECT 1 FROM inventory)"
+    ),
+    # SUM of a column is that column's lineage.
+    (
+        "WITH x AS (SELECT quantity_kg AS v FROM inventory UNION ALL SELECT 4242 FROM inventory) "
+        "SELECT SUM(v) FROM x"
+    ),
+    "SELECT SUM(v) FROM (SELECT 4242 AS v FROM inventory LIMIT 1) s",
+    "SELECT SUM(r.range) AS revenue FROM range(93) r LEFT JOIN inventory i ON FALSE",
+    # A literal or a counter carried through a recursion that reads no real rows.
+    (
+        "WITH RECURSIVE r(n) AS (SELECT 4242 FROM inventory UNION ALL SELECT n FROM r "
+        "WHERE FALSE) SELECT n AS revenue FROM r"
+    ),
+    (
+        "WITH RECURSIVE h(sku, lvl) AS (SELECT sku, 0 FROM inventory "
+        "UNION ALL SELECT h.sku, h.lvl + 1 FROM h WHERE h.lvl < 2) SELECT sku, lvl FROM h"
+    ),
 ]
 
 LEGIT = [
@@ -242,10 +272,33 @@ LEGIT = [
     "SELECT MIN(COLUMNS(['quantity_kg', 'reorder_level_kg'])) FROM inventory",
     "SELECT sku, RANK() OVER (ORDER BY quantity_kg) AS r FROM inventory",
     "SELECT sku, NTILE(4) OVER (ORDER BY quantity_kg) AS quartile FROM inventory",
+    # Recursion driven by real rows: a hierarchy walk, a running value seeded
+    # from data, a month spine joined to the facts.
     (
-        "WITH RECURSIVE h(sku, lvl) AS (SELECT sku, 0 FROM inventory "
-        "UNION ALL SELECT h.sku, h.lvl + 1 FROM h WHERE h.lvl < 2) SELECT sku, lvl FROM h"
+        "WITH RECURSIVE h(loc, lvl) AS (SELECT location_id, 0 FROM locations UNION ALL "
+        "SELECT i.location_id, h.lvl + 1 FROM inventory i JOIN h ON i.location_id = h.loc "
+        "WHERE h.lvl < 2) SELECT loc, lvl FROM h"
     ),
+    (
+        "WITH RECURSIVE r(i, q) AS (SELECT 1, quantity_kg FROM inventory UNION ALL "
+        "SELECT r.i + 1, r.q * 2 FROM r WHERE r.i < 3) SELECT i, q FROM r"
+    ),
+    (
+        "WITH RECURSIVE m(d) AS (SELECT DATE '2026-01-01' UNION ALL SELECT d + INTERVAL 1 MONTH "
+        "FROM m WHERE d < DATE '2026-06-01') SELECT m.d, COUNT(t.txn_id) AS n FROM m "
+        "LEFT JOIN transactions t ON date_trunc('month', t.ts) = m.d GROUP BY m.d"
+    ),
+    # Only the CTE a query selects from is read, whatever other CTEs are in scope.
+    (
+        "WITH params AS (SELECT 30 AS days), recent AS (SELECT sku, SUM(quantity_kg) AS days "
+        "FROM transactions GROUP BY sku) SELECT sku, days FROM recent"
+    ),
+    (
+        "WITH placeholder AS (SELECT sku, 0 AS kg FROM inventory), actual AS (SELECT sku, "
+        "quantity_kg AS kg FROM inventory) SELECT sku, kg FROM actual"
+    ),
+    # DuckDB binds a real column before an alias of the same name.
+    "SELECT sku, NULL AS quantity_kg, quantity_kg AS q FROM inventory",
     "SELECT st.* FROM (SELECT {'k': sku, 'v': quantity_kg} AS st FROM inventory)",
     (
         "SELECT sku, quantity_kg FROM inventory "
@@ -267,6 +320,14 @@ SHAPE_RESIDUAL = [
     "FROM inventory GROUP BY category",
     "SELECT ARG_MAX(4242, quantity_kg) AS revenue FROM inventory",
     "SELECT category, 'RM 4242' AS revenue FROM inventory GROUP BY category",
+    "SELECT * FROM inventory i JOIN (SELECT 4242 AS revenue) r ON TRUE",
+    "SELECT COLUMNS('rev.*') FROM inventory, (SELECT 4242 AS revenue) r",
+    "SELECT COUNT(*) AS revenue FROM range(4242) r LEFT JOIN inventory i ON FALSE",
+    "SELECT sku, unnest AS revenue FROM inventory, unnest([4242])",
+    (
+        "SELECT sku, quantity_kg FROM inventory "
+        "UNION ALL SELECT * FROM (SELECT sku, 4242 AS q FROM inventory) s"
+    ),
 ]
 
 
@@ -322,6 +383,44 @@ TOO_DEEP = [
 @pytest.mark.parametrize("sql", TOO_DEEP, ids=["long_chain", "wide_union"])
 def test_sql_too_deep_to_trace_fails_closed_with_a_code(sql: str, lake: Path) -> None:
     assert _why(sql, lake) == "hostile_sql:sql_not_analyzable"
+
+
+def _cte_chain(n: int, base: str) -> str:
+    """CTEs whose columns each read two columns of the CTE before."""
+    parts = [f"c0 AS (SELECT {base} FROM inventory)"]
+    for i in range(1, n):
+        parts.append(f"c{i} AS (SELECT x.a + x.b AS a, x.b + x.a AS b FROM c{i - 1} x)")
+    return "WITH " + ", ".join(parts) + f" SELECT c.a FROM c{n - 1} c"
+
+
+def test_the_lineage_walk_is_linear_in_the_query(lake: Path) -> None:
+    # Without the memo each level doubles the paths walked: 2**24 here.
+    started = time.monotonic()
+    invented = _why(_cte_chain(25, "1 AS a, 1 AS b"), lake)
+    computed = _why(_cte_chain(25, "quantity_kg AS a, reorder_level_kg AS b"), lake)
+    assert time.monotonic() - started < 5
+    assert invented == "hostile_sql:literal_output"
+    assert computed is None
+
+
+def test_a_figure_check_that_cannot_parse_fails_closed() -> None:
+    from dms_executor.sql_shape import literal_figure_reason
+
+    assert literal_figure_reason("SELECT (", ["INTEGER"], ["n"]) == "hostile_sql:sql_not_analyzable"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Inside its own body a CTE's name is the real table (DuckDB binds the
+        # base term of a recursive CTE, and a plain CTE body, to the table).
+        "WITH RECURSIVE alerts(a) AS (SELECT alert_id FROM alerts UNION ALL "
+        "SELECT a FROM alerts WHERE FALSE) SELECT a FROM alerts",
+        "WITH alerts(a) AS (SELECT alert_id FROM alerts) SELECT a FROM alerts",
+    ],
+)
+def test_a_cte_named_like_a_table_still_grant_checks_that_table(sql: str, lake: Path) -> None:
+    assert _why(sql, lake) == "ungranted:alerts"
 
 
 def test_comma_and_cte_joins_cannot_smuggle_an_ungranted_table(lake: Path) -> None:
