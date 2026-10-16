@@ -81,7 +81,7 @@ def _ingest(monkeypatch: pytest.MonkeyPatch, evil: str) -> tuple[TestClient, dic
     )
     _install(monkeypatch, con)
     _allow_gates(monkeypatch)
-    client = TestClient(create_app())
+    client = TestClient(create_app(), raise_server_exceptions=False)
     r = client.post("/v1/studio/sources/sql", json=_body())
     assert r.status_code == 200, (r.status_code, r.text)
     return client, r.json()
@@ -128,19 +128,21 @@ def test_a_landed_hostile_name_does_not_run_when_the_contract_is_inferred(
 ) -> None:
     """The writer is fixed and the name lands; the reader that re-quotes it must not run it."""
     exfil = tmp_path / "exfil_from_infer.csv"
+    # The first statement the raw quoting builds must itself succeed (it names a real column),
+    # or DuckDB stops there and the COPY never runs: a payload that errors proves nothing.
     evil = (
-        'x") FROM "bronze"."dbo_orders"; '
+        'order_id") FROM "bronze"."dbo_orders"; '
         f"COPY (SELECT 42 AS v) TO '{exfil.as_posix()}' (FORMAT CSV); "
-        'SELECT COUNT("x'
+        'SELECT COUNT("order_id'
     )
     client, body = _ingest(monkeypatch, evil)
     (landed,) = body["tables"]
     assert not exfil.exists(), "the ingest ran the name as a statement"
 
     r = client.post("/v1/pipelines/infer-contract", json={"source": landed["bronze_table"]})
+    assert not exfil.exists(), "infer_contract ran a landed column name as a second statement"
     assert r.status_code == 200, r.text
     out = r.json()
-    assert not exfil.exists(), "infer_contract ran a landed column name as a second statement"
     assert out["row_count"] == 2
     assert evil in out["columns"]
     assert out["null_rates"][evil] == 0.0
