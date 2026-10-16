@@ -405,8 +405,48 @@ def _sql_sources(env: dict[str, Any]) -> list[str]:
     return found
 
 
+def _is_cte_ref(table: exp.Table) -> bool:
+    """True when this unqualified table node names a WITH alias in scope.
+
+    A CTE reference is a local alias, not a relation, so it needs no grant and
+    is never scrubbed. Scope is the AST: a name inside a CTE body sees the
+    earlier CTEs of its own WITH (itself only when RECURSIVE); a name in the
+    query a WITH belongs to sees every CTE of it. Anything qualified is a real
+    relation. A real table behind a CTE is a separate node and stays a table.
+    """
+    if table.args.get("db") or table.args.get("catalog"):
+        return False
+    name = table.name.casefold()
+    if not name:
+        return False
+    child: exp.Expression = table
+    parent = table.parent
+    while parent is not None:
+        if isinstance(parent, exp.With):
+            if isinstance(child, exp.CTE):
+                visible = []
+                for cte in parent.expressions:
+                    if cte is child:
+                        if parent.args.get("recursive"):
+                            visible.append(cte.alias)
+                        break
+                    visible.append(cte.alias)
+                if name in {alias.casefold() for alias in visible if alias}:
+                    return True
+        else:
+            owned = parent.args.get("with")
+            if isinstance(owned, exp.With) and child is not owned:
+                if name in {cte.alias.casefold() for cte in owned.expressions if cte.alias}:
+                    return True
+        child, parent = parent, parent.parent
+    return False
+
+
 def _tables_in_sql(sql: str) -> list[tuple[str, ...]]:
-    """Table identifiers in one statement. One parse, serving dialect."""
+    """Table identifiers in one statement. One parse, serving dialect.
+
+    CTE references are aliases, not relations, and are left out.
+    """
     raw = (sql or "").strip()
     if not raw or raw.startswith("--"):
         return []
@@ -417,6 +457,8 @@ def _tables_in_sql(sql: str) -> list[tuple[str, ...]]:
     found: list[tuple[str, ...]] = []
     seen: set[str] = set()
     for table in tree.find_all(exp.Table):
+        if _is_cte_ref(table):
+            continue
         parts = tuple(part.name for part in table.parts if part.name)
         if not parts:
             continue
