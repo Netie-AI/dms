@@ -485,6 +485,13 @@ def test_a_figure_check_that_cannot_parse_fails_closed() -> None:
         "SELECT unnest((SELECT list(message) FROM alerts)) AS leaked, sku FROM inventory",
         "SELECT sku, ((SELECT COUNT(*) FROM alerts)) AS n FROM inventory",
         "WITH suppliers AS (SELECT alert_id FROM alerts) (SELECT * FROM suppliers)",
+        # Only a plain UNION recurses; under these DuckDB reads the table.
+        "WITH RECURSIVE alerts(message) AS (SELECT 'x' AS message UNION BY NAME "
+        "SELECT message FROM alerts) SELECT message FROM alerts",
+        "WITH RECURSIVE alerts(n) AS (SELECT 1 FROM inventory EXCEPT "
+        "SELECT length(message) FROM alerts) SELECT n FROM alerts",
+        "WITH RECURSIVE alerts(s) AS (SELECT sku FROM inventory INTERSECT "
+        "SELECT severity FROM alerts) SELECT s FROM alerts",
     ],
 )
 def test_a_cte_named_like_a_table_still_grant_checks_that_table(sql: str, lake: Path) -> None:

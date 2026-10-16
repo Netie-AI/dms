@@ -132,7 +132,7 @@ def _cte_of(scope: Scope, table: exp.Table) -> Scope | None:
             holder = node.parent
             recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
             body = node.this
-            if not (recursive and isinstance(body, exp.SetOperation)):
+            if not (recursive and _recurses(body)):
                 return None
             if not _within(table, body.expression):
                 return None
@@ -147,6 +147,15 @@ def _cte_of(scope: Scope, table: exp.Table) -> Scope | None:
             return cte
         node = node.parent
     return cte
+
+
+def _recurses(body: Any) -> bool:
+    """A recursive CTE body: a plain UNION [ALL] of a base and a recursive term.
+
+    Under EXCEPT, INTERSECT or UNION BY NAME, DuckDB binds the CTE's own name
+    to the table of that name in every arm.
+    """
+    return isinstance(body, exp.Union) and not body.args.get("by_name")
 
 
 def _within(node: Any, ancestor: Any) -> bool:
@@ -183,7 +192,7 @@ def _cte_reference(table: exp.Table) -> bool:
             if _bare(node.alias) == want:
                 body = node.this
                 recursive = bool(outer.args.get("recursive"))
-                if recursive and isinstance(body, exp.SetOperation):
+                if recursive and _recurses(body):
                     return _within(table, body.expression)
                 return False
             earlier = []
@@ -371,7 +380,8 @@ def _is_recursive(scope: Scope) -> bool:
     """A WITH RECURSIVE CTE: its later arms build on its own rows."""
     cte = scope.expression.parent
     holder = cte.parent if isinstance(cte, exp.CTE) else None
-    return isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+    recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+    return recursive and _recurses(scope.expression)
 
 
 def _recursion_base(scope: Scope) -> bool:
