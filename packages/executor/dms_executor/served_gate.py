@@ -9,6 +9,9 @@ Fails:
 - As-of window: an INTERVAL whose anchor day is not the request as_of.
   A clock anchor means that bound day, on both sides.
 
+- Both run on the query as written and on the query with its mergeable
+  CTEs and derived tables inlined, so a join inside a CTE is checked.
+
 Grants are not decided here. No question words and no case ids. A parse
 or probe error does not flag. ``served_check_shadow`` stays the recorder.
 """
@@ -46,13 +49,24 @@ def lake_alias_sql(sql: str) -> str:
 
 def _unalias(tree: exp.Expression) -> bool:
     changed = False
+    renamed: dict[str, str] = {}
     for table in tree.find_all(exp.Table):
         name = table.name.lower()
-        if table.db or not name.startswith(_ALIAS_PREFIX) or name in _LAKE:
+        if table.catalog or str(table.db or "main").lower() != "main":
             continue
-        if name[len(_ALIAS_PREFIX) :] in _LAKE:
-            table.set("this", exp.to_identifier(name[len(_ALIAS_PREFIX) :]))
+        if not name.startswith(_ALIAS_PREFIX) or name in _LAKE:
+            continue
+        lake = name[len(_ALIAS_PREFIX) :]
+        if lake in _LAKE:
+            table.set("this", exp.to_identifier(lake))
             changed = True
+            if not table.alias:
+                renamed[name] = lake
+    # warehouse_inventory.sku qualifies by the table name, which is renamed too.
+    for column in tree.find_all(exp.Column):
+        bare = renamed.get(str(column.table or "").lower())
+        if bare is not None and not column.args.get("db"):
+            column.set("table", exp.to_identifier(bare))
     return changed
 
 
@@ -82,7 +96,76 @@ def served_result_reason(
     many = _direct_many_to_many(tree, ontology)
     if many:
         return many
-    return _distinct_key_probe(tree, warehouse, ontology)
+    probed = _distinct_key_probe(tree, warehouse, ontology)
+    if probed:
+        return probed
+    # A join inside a CTE or derived table fans out the rows the outer query
+    # reads. sqlglot's optimizer inlines what it can (the CTE disappears and
+    # its join becomes the outer query's), and the same checks run on that.
+    merged = _merged(tree, warehouse)
+    if merged is None:
+        return None
+    return _direct_many_to_many(merged, ontology) or _distinct_key_probe(
+        merged, warehouse, ontology
+    )
+
+
+def _merged(tree: exp.Select, warehouse: Path | str | None) -> exp.Select | None:
+    """The query with its mergeable CTEs and derived tables inlined, or None.
+
+    None when there is nothing to inline or the optimizer cannot qualify it.
+    Columns are qualified against the lake's own catalog.
+    """
+    if tree.args.get("with") is None and not any(
+        isinstance(src, exp.Subquery) for src in _sources(tree)
+    ):
+        return None
+    path = Path(warehouse) if warehouse is not None else None
+    if path is None or not path.is_file():
+        return None
+    try:
+        from sqlglot.optimizer.eliminate_subqueries import eliminate_subqueries
+        from sqlglot.optimizer.merge_subqueries import merge_subqueries
+        from sqlglot.optimizer.qualify import qualify
+
+        from dms_executor.demo_warehouse import connect_file
+
+        con = connect_file(path)
+        try:
+            rows = con.execute(
+                "SELECT table_name, column_name, data_type FROM information_schema.columns"
+            ).fetchall()
+        finally:
+            con.close()
+        schema: dict[str, dict[str, str]] = {}
+        for table, column, kind in rows:
+            schema.setdefault(str(table), {})[str(column)] = str(kind)
+        qualified = qualify(
+            tree.copy(),
+            schema=schema,
+            dialect=_DIALECT,
+            validate_qualify_columns=False,
+            quote_identifiers=False,
+        )
+        merged = merge_subqueries(eliminate_subqueries(qualified))
+    except Exception:  # noqa: BLE001 - nothing inlined is not evidence either way
+        return None
+    if not isinstance(merged, exp.Select):
+        return None
+    if merged.sql(dialect=_DIALECT) == tree.sql(dialect=_DIALECT):
+        return None
+    return merged
+
+
+def _sources(tree: exp.Select) -> list[exp.Expression]:
+    out: list[exp.Expression] = []
+    frm = _from_this(tree)
+    if frm is not None:
+        out.append(frm)
+    for join in tree.args.get("joins") or []:
+        if isinstance(join.this, exp.Expression):
+            out.append(join.this)
+    return out
 
 
 def _as_of_window(tree: exp.Select, as_of: str | None) -> str | None:
@@ -198,10 +281,12 @@ def _fanned_count(
     path: Path,
     ontology: Any | None,
 ) -> str | None:
-    """COUNT that repeats the widest joined key. A one-to-many count does not.
+    """COUNT over joined rows that are at no joined table's grain.
 
-    Lines per supplier stay one row per inventory key. A cross join repeats
-    that key, so the count is not the grain it names.
+    A one-to-many join keeps the many side's key unique: lines per supplier
+    are one row per inventory key, transactions per category one row per
+    transaction. A cross join repeats every joined key, so the count is not
+    the grain of any table it names.
     """
     counts = [
         node for node in _outer_aggs(tree)
@@ -209,43 +294,38 @@ def _fanned_count(
     ]
     if not counts:
         return None
-    qual, key = _widest_qualified(tree, ontology)
-    if not qual or not key:
-        return None
-    cols = ", ".join(f"{_quote(qual)}.{_quote(name)}" for name in sorted(key))
+    keyed = _qualified_keys(tree, ontology)
     scope = _pre_group_scope(tree)
-    if not scope:
+    if not keyed or not scope:
         return None
-    probe = f"SELECT COUNT(*) AS n, COUNT(DISTINCT ({cols})) AS d {scope}"
-    if _row_counts(path, probe):
-        return "fanout_subject_keys"
-    return None
+    for qual, key in keyed:
+        names = [f"{_quote(qual)}.{_quote(name)}" for name in sorted(key)]
+        probe = (
+            f"{_with_prefix(tree)}SELECT {_keyed_rows(names)} AS n, "
+            f"COUNT(DISTINCT ({', '.join(names)})) AS d {scope}"
+        )
+        if not _row_counts(path, probe):
+            # The rows are this table's rows; the count is its count.
+            return None
+    return "fanout_subject_keys"
 
 
-def _widest_qualified(tree: exp.Select, ontology: Any | None) -> tuple[str, set[str]]:
-    best: tuple[str, set[str]] | None = None
+def _qualified_keys(tree: exp.Select, ontology: Any | None) -> list[tuple[str, set[str]]]:
+    """(qualifier, key) for each FROM/JOIN table whose key the ontology knows."""
+    out: list[tuple[str, set[str]]] = []
     seen: set[str] = set()
-
-    def consider(node: exp.Expression | None) -> None:
-        nonlocal best
+    for node in _sources(tree):
         if not isinstance(node, exp.Table) or not node.name:
-            return
+            continue
         table = node.name.lower()
         qual = _alias_name(node).lower() or table
-        marker = f"{qual}:{table}"
-        if marker in seen:
-            return
-        seen.add(marker)
+        if qual in seen:
+            continue
+        seen.add(qual)
         key = _relation_key(ontology, table)
-        if not key:
-            return
-        if best is None or len(key) > len(best[1]):
-            best = (qual, key)
-
-    consider(_from_this(tree))
-    for join in tree.args.get("joins") or []:
-        consider(getattr(join, "this", None))
-    return best or ("", set())
+        if key:
+            out.append((qual, key))
+    return out
 
 
 def _outer_aggs(tree: exp.Select) -> list[exp.Expression]:
@@ -283,15 +363,17 @@ def _fanned_measure(
         if sig in seen:
             continue
         seen.add(sig)
+        keys = [f"{_quote(qual)}.{_quote(name)}" for name in sorted(key)]
         parts: list[str] = []
-        for piece in (*groups, *(f"{_quote(qual)}.{_quote(name)}" for name in sorted(key))):
+        for piece in (*groups, *keys):
             if piece not in parts:
                 parts.append(piece)
         scope = _pre_group_scope(tree)
         if not scope or not parts:
             continue
         probe = (
-            f"SELECT COUNT(*) AS n, COUNT(DISTINCT ({', '.join(parts)})) AS d {scope}"
+            f"{_with_prefix(tree)}"
+            f"SELECT {_keyed_rows(keys)} AS n, COUNT(DISTINCT ({', '.join(parts)})) AS d {scope}"
         )
         if _row_counts(path, probe):
             return "fanout_subject_keys"
@@ -360,6 +442,18 @@ def _pre_group_scope(tree: exp.Select) -> str:
     return f"{frm.sql(dialect=_DIALECT)} {joins}{where_sql}"
 
 
+def _keyed_rows(keys: list[str]) -> str:
+    """Rows that carry this table's key. An outer join's unmatched rows carry none."""
+    present = " AND ".join(f"{key} IS NOT NULL" for key in keys)
+    return f"COUNT(*) FILTER (WHERE {present})"
+
+
+def _with_prefix(tree: exp.Select) -> str:
+    """The query's WITH clause, so a probe over its FROM can name its CTEs."""
+    holder = tree.args.get("with")
+    return f"{holder.sql(dialect=_DIALECT)} " if holder is not None else ""
+
+
 def _table_aliases(tree: exp.Select) -> dict[str, str]:
     out: dict[str, str] = {}
 
@@ -389,16 +483,38 @@ def _resolve_table(col: exp.Column, aliases: dict[str, str]) -> tuple[str, str]:
 
 def _relation_key(ontology: Any | None, relation: str) -> set[str] | None:
     objects = getattr(ontology, "objects", None) or {}
-    matches = [
-        obj
-        for obj in objects.values()
-        if str(getattr(obj, "relation", "") or "").strip().lower() == relation
-    ]
+    matches = [obj for obj in objects.values() if _object_table(obj) == relation]
     if not matches:
         return None
     widest = max(matches, key=lambda obj: len(tuple(getattr(obj, "key", ()) or ())))
     key = {str(col).lower() for col in (getattr(widest, "key", ()) or ()) if str(col).strip()}
     return key or None
+
+
+def _object_table(obj: Any) -> str:
+    """The table an ontology object's rows are, or "".
+
+    A plain relation name, or a subquery that only projects one table's rows
+    (``SELECT *, CAST(ts AS DATE) AS day FROM transactions``): its key is that
+    table's. A subquery that filters, groups, dedupes or joins is not.
+    """
+    relation = str(getattr(obj, "relation", "") or "").strip()
+    if relation.replace("_", "").isalnum():
+        return relation.lower()
+    try:
+        tree = parse_one(relation, read=_DIALECT)
+    except Exception:  # noqa: BLE001 - not a relation this check can read
+        return ""
+    while isinstance(tree, exp.Subquery):
+        tree = tree.this
+    if not isinstance(tree, exp.Select):
+        return ""
+    if any(
+        tree.args.get(arg)
+        for arg in ("joins", "where", "group", "having", "distinct", "limit", "with")
+    ) or any(isinstance(node, exp.AggFunc) for node in tree.walk()):
+        return ""
+    return _plain_table(_from_this(tree)) or ""
 
 
 def _from_this(select: exp.Select) -> exp.Expression | None:

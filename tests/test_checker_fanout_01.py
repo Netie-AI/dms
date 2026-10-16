@@ -683,6 +683,7 @@ def _prod_post(
     route: str = "generated",
     pass_warehouse: bool = False,
     rows_sql: str | None = None,
+    badge: str = "generated",
 ) -> tuple[dict[str, Any], Any]:
     """POST /v1/chat/ask with the wiring.py shape: no warehouse_path argument.
 
@@ -720,7 +721,7 @@ def _prod_post(
             self.asks.append(req)
             return AskResponse(
                 answer="served",
-                badge="generated",
+                badge=badge,
                 sql_used=sql,
                 rows=_executed(db, rows_sql or sql),
                 assumptions="recorded",
@@ -1342,3 +1343,238 @@ def test_recursive_date_spine_over_granted_tables_is_served(
     expected = _executed(db, _RECURSIVE_SPINE)
     assert len(env["rows"]) == len(expected) == 5, route
     assert [r["n"] for r in env["rows"]] == [r["n"] for r in expected], route
+
+
+# A join inside a CTE or derived table, or a join to a CTE, fans out the rows
+# the outer query aggregates. The same query without the CTE abstains.
+_CTE_FANOUT = (
+    (
+        "join_to_cte_sum",
+        "WITH t AS (SELECT sku FROM transactions) "
+        "SELECT SUM(i.quantity_kg) AS kg FROM inventory i JOIN t ON t.sku = i.sku",
+    ),
+    (
+        "cross_join_cte_sum",
+        "WITH l AS (SELECT location_id FROM locations) "
+        "SELECT SUM(i.quantity_kg) AS kg FROM inventory i JOIN l ON TRUE",
+    ),
+    (
+        "join_inside_cte",
+        "WITH j AS (SELECT i.sku AS sku FROM inventory i JOIN locations l ON TRUE) "
+        "SELECT sku FROM j",
+    ),
+    (
+        "count_per_key_over_cte_join",
+        "WITH l AS (SELECT location_id FROM locations) "
+        "SELECT i.sku AS sku, COUNT(*) AS n FROM inventory i JOIN l ON TRUE GROUP BY i.sku",
+    ),
+    (
+        "sum_over_joining_cte",
+        "WITH j AS (SELECT i.quantity_kg AS q FROM inventory i JOIN locations l ON TRUE) "
+        "SELECT SUM(q) AS kg FROM j",
+    ),
+    (
+        "sum_over_joining_derived_table",
+        "SELECT SUM(s.q) AS kg FROM "
+        "(SELECT i.quantity_kg AS q FROM inventory i JOIN locations l ON TRUE) s",
+    ),
+)
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("case", _CTE_FANOUT, ids=[c[0] for c in _CTE_FANOUT])
+def test_fanout_through_a_cte_never_takes_l2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    case: tuple[str, str],
+) -> None:
+    """The grain checks also run on the query with its CTEs inlined."""
+    _, sql = case
+    db = tmp_path / "cte_fan2.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", (route, env["badge"])
+    assert env["abstained"] is True
+    assert env.get("rows") in (None, [])
+
+
+_CTE_ONE_TO_ONE = (
+    (
+        "aggregate_cte_joined_one_to_one",
+        "WITH c AS (SELECT sku, COUNT(*) AS n FROM transactions GROUP BY sku) "
+        "SELECT i.sku AS sku, i.quantity_kg AS kg, c.n AS n FROM inventory i "
+        "JOIN c ON c.sku = i.sku",
+    ),
+    (
+        "transactions_per_category_through_cte",
+        "WITH j AS (SELECT t.txn_id AS txn_id, i.category AS category FROM transactions t "
+        "JOIN inventory i ON i.sku = t.sku) "
+        "SELECT category, COUNT(*) AS n FROM j GROUP BY category",
+    ),
+)
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("case", _CTE_ONE_TO_ONE, ids=[c[0] for c in _CTE_ONE_TO_ONE])
+def test_a_cte_join_that_keeps_the_grain_keeps_l2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    case: tuple[str, str],
+) -> None:
+    """R-0005: inlining a CTE checks the grain; it does not refuse every CTE join."""
+    _, sql = case
+    db = tmp_path / "cte_one.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("text"))
+
+    def _key(row: dict[str, Any]) -> str:
+        return repr(sorted(row.items()))
+
+    assert sorted(env["rows"], key=_key) == sorted(_executed(db, sql), key=_key)
+
+
+_LATERAL_READERS = (
+    (
+        "query_table",
+        "SELECT c.alert_id AS alert_id FROM inventory i "
+        "JOIN LATERAL query_table('alerts') c ON TRUE WHERE i.sku = 'RS622XK'",
+    ),
+    (
+        "duckdb_settings",
+        "SELECT c.name AS name, c.value AS value FROM inventory i, LATERAL duckdb_settings() c "
+        "WHERE i.sku = 'RS622XK'",
+    ),
+    (
+        "pragma_table_info",
+        "SELECT c.name AS name FROM inventory i CROSS JOIN LATERAL pragma_table_info('alerts') c",
+    ),
+)
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("case", _LATERAL_READERS, ids=[c[0] for c in _LATERAL_READERS])
+def test_a_table_function_through_lateral_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    case: tuple[str, str],
+) -> None:
+    _, sql = case
+    db = tmp_path / "lateral.duckdb"
+    ensure_demo_warehouse(db)
+    probed = _spy_probes(monkeypatch)
+    env, _ = _prod_post(
+        db, sql, monkeypatch, minter, route=route, pass_warehouse=True, rows_sql=_DUP_ROWS_SQL
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", route
+    assert env.get("rows") in (None, [])
+    assert not probed, f"{route} probed a table function: {probed}"
+
+
+def test_lateral_generators_and_subqueries_are_not_readers() -> None:
+    from dms_executor.generative_ask import _reads_files
+
+    granted = {"inventory", "transactions"}
+    assert not _reads_files(
+        "SELECT i.sku, u.x FROM inventory i, LATERAL unnest([i.quantity_kg]) u(x)", granted
+    )
+    assert not _reads_files(
+        "SELECT i.sku, g.n FROM inventory i CROSS JOIN LATERAL generate_series(1, 3) g(n)",
+        granted,
+    )
+    assert not _reads_files(
+        "SELECT i.sku, t.n FROM inventory i, LATERAL (SELECT COUNT(*) AS n FROM transactions t "
+        "WHERE t.sku = i.sku) t",
+        granted,
+    )
+
+
+def test_a_recursive_middle_arm_reads_the_real_table() -> None:
+    """DuckDB's base term is everything left of the last UNION."""
+    from dms_executor.generative_ask import cited_relations
+
+    sql = (
+        "WITH RECURSIVE alerts(n) AS (SELECT 1 UNION ALL SELECT length(message) FROM alerts "
+        "UNION ALL SELECT n + 1 FROM alerts WHERE n < 2) SELECT n FROM alerts ORDER BY n"
+    )
+    assert cited_relations(sql) == {"alerts"}
+    nested = (
+        "WITH a AS (WITH a AS (SELECT * FROM inventory) SELECT * FROM a) SELECT * FROM a"
+    )
+    assert cited_relations(nested) == {"inventory"}
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_recursive_middle_arm_over_an_ungranted_table_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    sql = (
+        "WITH RECURSIVE alerts(n) AS (SELECT 1 UNION ALL SELECT length(message) FROM alerts "
+        "UNION ALL SELECT n + 1 FROM alerts WHERE n < 2) SELECT n FROM alerts ORDER BY n"
+    )
+    db = tmp_path / "rec3.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", route
+    assert env.get("rows") in (None, [])
+
+
+def test_a_warehouse_alias_used_as_a_column_qualifier_runs_on_the_lake_name() -> None:
+    from dms_executor.served_gate import lake_alias_sql
+
+    assert lake_alias_sql("SELECT warehouse_inventory.sku AS sku FROM warehouse_inventory") == (
+        "SELECT inventory.sku AS sku FROM inventory"
+    )
+    assert lake_alias_sql("SELECT sku FROM main.warehouse_inventory") == (
+        "SELECT sku FROM main.inventory"
+    )
+    assert lake_alias_sql("SELECT w.sku FROM warehouse_inventory w") == (
+        "SELECT w.sku FROM inventory AS w"
+    )
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_qualified_warehouse_alias_keeps_l2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    sql = (
+        "SELECT warehouse_inventory.category AS category, "
+        "SUM(warehouse_inventory.quantity_kg) AS kg FROM warehouse_inventory "
+        "GROUP BY warehouse_inventory.category"
+    )
+    rows_sql = (
+        "SELECT inventory.category AS category, SUM(inventory.quantity_kg) AS kg "
+        "FROM inventory GROUP BY inventory.category"
+    )
+    db = tmp_path / "alias_q.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(
+        db, sql, monkeypatch, minter, route=route, pass_warehouse=True, rows_sql=rows_sql
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("text"))
+
+
+@pytest.mark.parametrize("badge", ["l2_anomalous", "certified", "governed_metric"])
+def test_rejected_sql_takes_no_confident_badge_of_any_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, badge: str
+) -> None:
+    sql = "SELECT sku, nonexistent_col FROM inventory"
+    db = tmp_path / "badge.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(
+        db, sql, monkeypatch, minter, pass_warehouse=True, rows_sql=_DUP_ROWS_SQL, badge=badge
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", (badge, env["badge"])
+    assert env.get("rows") in (None, [])

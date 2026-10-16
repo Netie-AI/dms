@@ -723,27 +723,34 @@ def _names_real_table(table: Any, name: str) -> bool:
     """True when a CTE-named reference inside that CTE's own body reads the real table.
 
     DuckDB binds a CTE's own name inside its body to the table of that name,
-    except in the recursive term of a WITH RECURSIVE (the arms after the
-    first), which reads the CTE's working rows. Outside its body the name is
-    the CTE.
+    except in the recursive term of a WITH RECURSIVE, which reads the CTE's
+    working rows. The recursive term is the arm right of the last UNION;
+    everything left of it is the base. Outside its body the name is the CTE,
+    and so is a same-named CTE of a WITH nested inside that body.
     """
     from sqlglot import exp
 
+    child: Any = table
     node = table.parent
     while node is not None:
+        holder = node.args.get("with") if isinstance(node, exp.Expression) else None
+        if (
+            isinstance(holder, exp.With)
+            and child is not holder
+            and any(str(c.alias).lower() == name for c in holder.expressions)
+        ):
+            return False
         if isinstance(node, exp.CTE) and str(node.alias).lower() == name:
             holder = node.parent
             recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
             body = node.this
             if not (recursive and isinstance(body, exp.SetOperation)):
                 return True
-            base = body
-            while isinstance(base, exp.SetOperation):
-                base = base.this
             ancestor = table.parent
-            while ancestor is not None and ancestor is not base:
+            while ancestor is not None and ancestor is not body.expression:
                 ancestor = ancestor.parent
-            return ancestor is base
+            return ancestor is None
+        child = node
         node = node.parent
     return False
 
@@ -808,7 +815,16 @@ def _reads_files(sql: str, grantable: set[str]) -> bool:
     except Exception:  # noqa: BLE001 - the EXPLAIN step owns unparseable SQL
         return False
     for tree in trees:
-        for table in tree.find_all(exp.Table) if tree is not None else ():
+        if tree is None:
+            continue
+        for lateral in tree.find_all(exp.Lateral):
+            # JOIN LATERAL f(...) and ", LATERAL f(...)" put the function on a
+            # Lateral node, not a Table: query_table('t'), sniff_csv, catalog
+            # functions. A subquery there is read like any other.
+            inner = lateral.this
+            if not isinstance(inner, (exp.Subquery, exp.Select)) and not _is_generator(inner):
+                return True
+        for table in tree.find_all(exp.Table):
             if not isinstance(table.this, exp.Identifier):
                 if _is_generator(table.this):
                     continue

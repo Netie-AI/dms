@@ -1221,7 +1221,7 @@ def map_ask_response_to_envelope(
 
     ``grant_rejected`` is SQL the one grant function rejected that the ask
     route did not refuse outright (a bronze label, an EXPLAIN miss). Nothing
-    probes it, so nothing certifies it: it never takes L2. The envelope's own,
+    probes it, so nothing certifies it: it takes no confident badge. The envelope's own,
     more specific demotions (scope conflict, shape mismatch) run first.
     """
     from dms_executor.envelope import (
@@ -1401,10 +1401,10 @@ def map_ask_response_to_envelope(
         )
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
-        if grant_rejected and env.get("badge") == "L2_VALIDATED":
+        if grant_rejected and env.get("badge") != "ABSTAIN":
             # Fail closed. SQL the one grant function rejected was never probed,
-            # so an answer on it is not a validated one, on any route name that
-            # maps to L2. Runs after the envelope's own demotions so a scope
+            # so an answer on it carries no confident badge (L0, L1, L2 or
+            # anomalous). Runs after the envelope's own demotions so a scope
             # conflict or shape mismatch keeps its more specific reason.
             from dms_executor.gen_path_refuse import customer_abstain_text
 
