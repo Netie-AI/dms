@@ -19,7 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,7 +50,7 @@ from cortex_client.qualifiers import (
     rank_window_shape_reason,
     unhonored_qualifier_reason,
 )
-from dms_core.pii import mask_unknown_keys
+from dms_core.pii import is_mask_token, mask_payload, mask_unknown_keys
 from sqlglot import exp
 
 from dms_executor.abstain import build_abstain
@@ -83,10 +83,12 @@ from dms_executor.measure_basis import CONFIRMED_MEASURE_BADGE
 from dms_executor.measure_use import (
     CONFIRMED_ROW_CAP,
     REASON_EMPTY_AGGREGATE,
+    REASON_MASKED_FIGURE,
     REASON_TOO_MANY_GROUPS,
     FitVerdict,
     confirmed_basis,
     confirmed_measure_suggestions,
+    count_rows,
     filter_values_present,
     measure_exclusions,
     measure_fit,
@@ -98,6 +100,7 @@ from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
     LinkType,
+    Measure,
     MeasureProvenance,
     Ontology,
     Refusal,
@@ -951,6 +954,18 @@ def _l2_envelope(
     if env.get("abstained"):
         assert_envelope_valid(env)
         return with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+    if measure_ref is not None and any(
+        is_mask_token(row.get(measure_ref.name)) for row in env.get("rows") or [] if row
+    ):
+        # Backstop of the pre-ledger check in ``_submit_validated``: never a token as a figure.
+        return _abstain(
+            question,
+            f"{REASON_MASKED_FIGURE}: {measure_ref.name} is a figure the privacy layer "
+            "would hide, so it is not stated",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+        )
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -1105,6 +1120,18 @@ def _submit_validated(
             )
         # Nothing was cut, so the lane's own cap is not an exclusion the customer should read.
         coverage = _without_row_cut(coverage)
+        if _figure_masked(held, measure_ref.name):
+            # A mask token under the confirmed badge is not a figure: the customer would read
+            # a placeholder as the total. Stating nothing is the honest answer.
+            return _abstain(
+                question,
+                f"{REASON_MASKED_FIGURE}: {measure_ref.name} is a figure the privacy layer "
+                "would hide, so it is not stated",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
         if not held or any(r.get(measure_ref.name) is None for r in held):
             return _abstain(
                 question,
@@ -1367,6 +1394,71 @@ def rank_window_ask(
         warehouse=lake,
         lead=lead,
     )
+
+
+#: The name of the throwaway measure that counts the grain rows a plan's filters keep.
+_GRAIN_ROWS = "dms_grain_rows"
+
+
+def _empty_filter_reason(
+    onto: Ontology, plan: QueryPlan, measure: MeasureProvenance, lake: Path | None
+) -> str | None:
+    """``empty_aggregate: <why>`` when a confirmed answer would be computed under filters that
+    keep NO row of the measure's grain, else None.
+
+    The plan ANDs its filters. When a question states two values the plan cannot both hold
+    ("schools in North South": a district and a region no school shares), the conjunction is
+    empty and a COUNT prints 0 under the confirmed badge: a plausible figure that is the
+    answer to a question nobody asked. No wording of the question is read here. The same
+    plan is compiled over a ``COUNT(*)`` of the same grain, so the join and filter semantics
+    are exactly the answer's, and run on the lake before anything is stated. An unfiltered
+    plan is never asked (a count of an empty table is a real zero); a count that cannot be
+    made fails closed.
+    """
+    if not plan.filters:
+        return None
+    probe = copy.copy(onto)
+    probe.verified = True
+    probe.measures = {
+        **onto.measures,
+        _GRAIN_ROWS: Measure(_GRAIN_ROWS, measure.grain, "COUNT(*)"),
+    }
+    compiled = probe.compile(_GRAIN_ROWS, filters=plan.filters, via=plan.via, limit=1)
+    if isinstance(compiled, Refusal) or not isinstance(compiled, CompiledQuery):
+        return (
+            f"{REASON_EMPTY_AGGREGATE}: {measure.name} could not be counted under the plan's "
+            "filters, so an empty answer cannot be ruled out"
+        )
+    kept = count_rows(compiled.sql, lake)
+    if kept is None:
+        return (
+            f"{REASON_EMPTY_AGGREGATE}: {measure.name} could not be counted under the plan's "
+            "filters, so an empty answer cannot be ruled out"
+        )
+    if kept == 0:
+        return (
+            f"{REASON_EMPTY_AGGREGATE}: no {measure.grain} row satisfies all of the plan's "
+            f"filters, so {measure.name} has no value for this question"
+        )
+    return None
+
+
+def _figure_masked(rows: Sequence[Mapping[str, Any]], name: str) -> bool:
+    """Whether the privacy layer would rewrite the figure ``name`` of any row (a 16-digit total
+    reads as an account number) in the rows or in the sentence that states it. A masker that
+    fails masks. Only the figure is asked: a masked group key is the layer doing its job."""
+    for row in rows:
+        value = row.get(name)
+        if value is None:
+            continue
+        sentence = f"{name}={value}"
+        try:
+            got = mask_payload(text=sentence, rows=[{name: value}])
+        except Exception:  # noqa: BLE001 - fail closed
+            return True
+        if got["text"] != sentence or got["rows"][0].get(name) != value:
+            return True
+    return False
 
 
 def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
@@ -2346,7 +2438,7 @@ def maybe_generative_ask(
     if space_onto is not None:
         # Rule 12 at ask time: a filter literal that is not in its column exactly as landed
         # ('north' for 'North') would compile, execute and return a plausible empty or zero.
-        unmatched = filter_values_present(plan, onto, lake)
+        unmatched = filter_values_present(plan, onto, lake, question=q)
         if unmatched:
             return _stamp(
                 _abstain(
@@ -2400,6 +2492,19 @@ def maybe_generative_ask(
                 space_id=space_id, session_id=session_id, plan_source=source,
             )
         )
+    if measure_ref is not None:
+        emptied = _empty_filter_reason(onto, plan, measure_ref, lake)
+        if emptied:
+            return _stamp(
+                _abstain(
+                    q,
+                    emptied,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
     if not origin and source != PLAN_SOURCE_BIND:
         origin = (
             PLAN_ORIGIN_ONTOLOGY_RANKING

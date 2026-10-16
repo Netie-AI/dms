@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONFIRMED_ROW_CAP",
+    "MAX_QUESTION_CHARS",
     "EXCLUSION_REASONS",
     "FIT_REASONS",
     "FitVerdict",
@@ -70,6 +71,8 @@ __all__ = [
     "REASON_AMBIGUOUS_FILTER_VALUE",
     "REASON_AMBIGUOUS_PATH",
     "REASON_EMPTY_AGGREGATE",
+    "REASON_MASKED_FIGURE",
+    "REASON_QUESTION_TOO_LONG",
     "REASON_TOO_MANY_GROUPS",
     "REASON_UNMATCHED_FILTER_VALUE",
     "Accounting",
@@ -78,6 +81,7 @@ __all__ = [
     "attach_confirmed_measures",
     "confirmed_basis",
     "confirmed_measure_suggestions",
+    "count_rows",
     "filter_values_present",
     "measure_exclusions",
     "measure_fit",
@@ -131,6 +135,11 @@ REASON_AMBIGUOUS_FILTER_VALUE = "ambiguous_filter_value"
 REASON_EMPTY_AGGREGATE = "empty_aggregate"
 REASON_AMBIGUOUS_PATH = "ambiguous_path"
 REASON_TOO_MANY_GROUPS = "too_many_groups"
+REASON_QUESTION_TOO_LONG = "question_too_long"
+REASON_MASKED_FIGURE = "masked_figure"
+#: The most characters of a question the confirmed lane reads. A longer one is refused by name:
+#: no real question about one measure needs more, and the bound keeps the lane's cost fixed.
+MAX_QUESTION_CHARS = 500
 #: The most rows (groups) a confirmed answer states. The lane never cuts a list: it states every
 #: row up to this many or abstains ``too_many_groups``. The question cannot state a row limit, so
 #: neither Cortex's ``limit`` nor the default 50 of a plan is one.
@@ -300,7 +309,9 @@ class PullRecord:
     """
 
     table: str
-    truncated: bool
+    #: ``None`` is UNKNOWN (a registry row written before the column existed holds NULL): a
+    #: source nobody recorded as whole is not shown whole.
+    truncated: bool | None
 
 
 def _source_table(filename: Any) -> str:
@@ -330,7 +341,9 @@ def _pulls_on(con: Any, relations: Iterable[str]) -> dict[str, PullRecord] | Non
     except Exception:  # noqa: BLE001 - no registry, or one without the column
         return None
     return {
-        names[str(name)]: PullRecord(_source_table(filename), bool(truncated))
+        names[str(name)]: PullRecord(
+            _source_table(filename), None if truncated is None else bool(truncated)
+        )
         for name, filename, truncated in rows
         if str(name) in names
     }
@@ -353,6 +366,25 @@ def read_source_pulls(
         return None
     try:
         return _pulls_on(con, relations)
+    finally:
+        con.close()
+
+
+def count_rows(sql: str, lake: Path | None) -> int | None:
+    """The single integer ``sql`` (a ``SELECT COUNT(*)``) returns on the lake, or None when it
+    cannot be read: a caller that needs the count fails closed on None. Read-only in effect, and
+    the connection is closed before it returns (one live attach per file)."""
+    if lake is None or not Path(lake).is_file():
+        return None
+    try:
+        con = connect_file(Path(lake))
+    except Exception:  # noqa: BLE001 - a lake we cannot open proves nothing
+        return None
+    try:
+        row = con.execute(sql).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
+    except Exception:  # noqa: BLE001
+        return None
     finally:
         con.close()
 
@@ -431,7 +463,7 @@ def prune_unusable_measures(
         if pull is None:
             drop(onto, name, EXCL_LAKE_UNREADABLE)
             continue
-        if pull.truncated:
+        if pull.truncated is not False:  # cut, or unknown: neither shows the source whole
             drop(onto, name, EXCL_SOURCE_TRUNCATED)
             continue
         if prov.column != "*":
@@ -498,20 +530,46 @@ def confirmed_basis(prov: MeasureProvenance) -> tuple[dict[str, Any], str]:
 # --------------------------------------------------------------------------
 
 
-def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str | None:
+def _canonical_sql(expr: str) -> str:
+    """DuckDB SQL for the canonical form of a text expression: every space, control, format and
+    invisible character removed (tab, newline, NBSP, zero width), Unicode-composed, accents and
+    combining marks dropped, lower-cased. Two texts that share it but not their bytes are two
+    spellings of one value (rule 12). Used on both sides of one comparison."""
+    return (
+        "lower(regexp_replace(strip_accents(nfc_normalize(regexp_replace("
+        f"CAST({expr} AS VARCHAR), '[\\s\\p{{Z}}\\p{{C}}]', '', 'g'))), '\\p{{M}}', '', 'g'))"
+    )
+
+
+def _shown_value(value: str) -> str:
+    text = repr(value)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
+def filter_values_present(
+    plan: Any, onto: Ontology, lake: Path | None, question: str = ""
+) -> str | None:
     """None when every ``=`` / ``IN`` literal of the plan's filters exists in its column as
     landed; otherwise ``unmatched_filter_value: <why>`` (or ``ambiguous_filter_value: <why>``).
 
     One ``SELECT 1 ... LIMIT 1`` per literal, case-sensitive exactly as the compiled
     predicate will be, at most ``MAX_PROBED_LITERALS`` per IN. A text literal whose column ALSO
-    holds a value differing from it only in case or surrounding spaces is refused too, as
-    ``ambiguous_filter_value``: the equality would match one spelling and silently drop the
+    holds a value differing from it only in case, any space, an invisible character (tab, newline,
+    zero width, NBSP) or Unicode form is refused too, as ``ambiguous_filter_value`` (the
+    exact value exists) or ``unmatched_filter_value`` (only the other spelling does), naming the
+    other spellings: the equality would match one spelling and silently drop the
     others. Other operators are not probed (an empty range is an honest empty range; an
     encoding mismatch is what a missing equality value is). Anything that cannot be checked
     (lake unreadable, list too long, unusable relation or value) fails CLOSED. An object or
     column the ontology does not know is left for the compiler, which refuses it by name.
+
+    A value that is exact in its column is also checked against every other column of the
+    plan's relations: when one holds it too, the value is ``ambiguous_filter_value`` unless
+    ``question`` names the plan's column right before it (``_question_binds``). The question
+    states the value; it does not always state the column, and the filter binds it to one.
     """
-    probes: list[tuple[str, str, str, Any]] = []  # (object, relation, column, literal)
+    # (object, relation, column, literal, the other values of its IN list)
+    probes: list[tuple[str, str, str, Any, tuple[str, ...]]] = []
     for obj_name, column, op, value in getattr(plan, "filters", ()) or ():
         verb = str(op).strip().upper()
         if verb not in ("=", "IN"):
@@ -530,9 +588,25 @@ def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str |
                 f"{len(literals)} values; at most {MAX_PROBED_LITERALS} can be checked "
                 "against the data"
             )
-        probes.extend((resolved, onto.objects[resolved].relation, str(column), v) for v in literals)
+        probes.extend(
+            (
+                resolved,
+                onto.objects[resolved].relation,
+                str(column),
+                v,
+                tuple(str(w) for w in literals if w is not v),
+            )
+            for v in literals
+        )
     if not probes:
         return None
+    # Every relation the plan names: a value is checked against the other columns of all of them.
+    relations = sorted({str(p[1]) for p in probes})
+    if not all(_RELATION_RE.fullmatch(r) for r in relations):
+        return (
+            f"{REASON_UNMATCHED_FILTER_VALUE}: a relation the plan names is not a readable "
+            "table, so the filter value was not checked"
+        )
 
     def cannot_check(what: str) -> str:
         return f"{REASON_UNMATCHED_FILTER_VALUE}: {what}, so the filter value was not checked"
@@ -545,7 +619,11 @@ def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str |
         return cannot_check("the data could not be opened")
     try:
         seen: set[tuple[str, str, str]] = set()
-        for obj_name, relation, column, literal in probes:
+        try:
+            columns_of = {rel: _value_columns(con, rel) for rel in relations}
+        except Exception:  # noqa: BLE001 - a table that cannot be read proves nothing
+            return cannot_check("the tables the plan names could not be read")
+        for obj_name, relation, column, literal, siblings in probes:
             rendered = _literal(literal)
             key = (relation, column, rendered)
             if key in seen:
@@ -567,40 +645,158 @@ def filter_values_present(plan: Any, onto: Ontology, lake: Path | None) -> str |
             ident = _ident(column)
             exact_sql = f"SELECT 1 FROM {relation} WHERE {guard}{ident} = {rendered} LIMIT 1"
             if isinstance(literal, str):
-                # ONE query per literal. It reads the rows that equal the literal OR differ from
-                # it only in case or surrounding spaces, and returns the least exact of them
-                # (False sorts first): True = every such row is the literal exactly, False = some
-                # row is another spelling, no row = nothing matches.
-                like = f"lower(trim(CAST({ident} AS VARCHAR))) = lower(trim({rendered}))"
+                # ONE query per literal. It reads the rows that equal the literal OR are the
+                # same text under the canonical form (case, any space, tab, newline, zero-width
+                # or other invisible character, accents, Unicode normalisation), and returns the
+                # least exact of them (False sorts first): True = every such row is the literal
+                # byte for byte, False = some row is another spelling, no row = nothing matches.
                 sql = (
                     f"SELECT ({ident} = {rendered}) AS exact FROM {relation} "
-                    f"WHERE ({ident} = {rendered}) OR ({like}) ORDER BY exact ASC LIMIT 1"
+                    f"WHERE ({ident} = {rendered}) OR "
+                    f"({_canonical_sql(ident)} = {_canonical_sql(rendered)}) "
+                    "ORDER BY exact ASC LIMIT 1"
                 )
             else:
                 sql = exact_sql
+            others: list[str] = []
             try:
                 row = con.execute(sql).fetchone()
                 spelled = row is not None and row[0] is False
                 if spelled:
                     exists = con.execute(exact_sql).fetchone() is not None
+                    others = [
+                        str(r[0])
+                        for r in con.execute(
+                            f"SELECT DISTINCT CAST({ident} AS VARCHAR) FROM {relation} "
+                            f"WHERE {_canonical_sql(ident)} = {_canonical_sql(rendered)} "
+                            f"AND CAST({ident} AS VARCHAR) <> CAST({rendered} AS VARCHAR) "
+                            "ORDER BY 1 LIMIT 4"
+                        ).fetchall()
+                    ]
             except Exception:  # noqa: BLE001 - a type that cannot be compared is not a match
                 return cannot_check(f"{obj_name}.{column} could not be compared")
             if row is None:
                 return missing
             if spelled:
+                named = ", ".join(_shown_value(o) for o in others[:3]) + (
+                    ", ..." if len(others) > 3 else ""
+                )
                 if not exists:
-                    return missing
+                    return (
+                        f"{missing}; the column holds the same text spelled differently: {named}"
+                    )
                 # The value exists exactly, and the column holds it under another spelling too
                 # ('North' and 'north'). The equality the plan compiles matches ONE of them and
                 # drops the rest without a trace, so neither reading is certified.
                 return (
                     f"{REASON_AMBIGUOUS_FILTER_VALUE}: {obj_name}.{column} holds {shown} "
-                    "and also a value that differs from it only in case or spacing, so "
-                    "the filter would drop those rows"
+                    f"and also {named}, which differ from it only in case, spacing, an "
+                    "invisible character or Unicode form, so the filter would drop those rows"
+                )
+            # The value is exact in its column. It must also be the column the question means:
+            # a value that another column of the plan's relations holds too ("North" as a
+            # region and as a district, "1" as a school id and a district id) is bound to the
+            # plan's column only when the question names that column beside the value.
+            try:
+                holding = _columns_holding(con, columns_of, relation, column, literal)
+            except Exception:  # noqa: BLE001 - a column that cannot be read proves nothing
+                return cannot_check(f"{obj_name}.{column} could not be compared with its table")
+            if holding and not _question_binds(question, str(literal), column, siblings):
+                return (
+                    f"{REASON_AMBIGUOUS_FILTER_VALUE}: {obj_name}.{column} holds {shown} "
+                    f"and so do {', '.join(holding[:3])}; the question does not say which "
+                    f"column it means (name the column beside the value, as '{column} {literal}')"
                 )
     finally:
         con.close()
     return None
+
+
+#: Provenance columns the ingest adds to every landed table: never a value a question states.
+_PROVENANCE_COLUMNS = frozenset({"_src", "_ingest_id"})
+
+
+def _value_columns(con: Any, relation: str) -> tuple[str, ...]:
+    """The columns of ``relation`` a value can sit in (provenance columns excluded)."""
+    return tuple(
+        str(d[0])
+        for d in con.execute(f"SELECT * FROM {relation} LIMIT 0").description
+        if str(d[0]) not in _PROVENANCE_COLUMNS
+    )
+
+
+def _columns_holding(
+    con: Any,
+    columns_of: Mapping[str, tuple[str, ...]],
+    relation: str,
+    column: str,
+    literal: Any,
+) -> list[str]:
+    """``relation.column`` for every column of the plan's relations (``columns_of``), other than
+    ``column`` of ``relation``, that holds ``literal``. A text literal is compared as text; a
+    number as text or as a number (a DECIMAL ``100.50`` holds ``100.5``). One scan per relation,
+    a boolean per column. A boolean literal is not compared: only a BOOLEAN column holds one."""
+    if literal is None or isinstance(literal, bool):
+        return []
+    numeric = isinstance(literal, (int, float))
+    # The text side compares against the literal as TEXT (a bare number would make DuckDB cast the
+    # VARCHAR column to a number and fail on any text it holds); the number side against a number.
+    as_text = _literal(str(literal))
+    as_number = _literal(literal)
+    out: list[str] = []
+    for rel, cols in columns_of.items():
+        names = [c for c in cols if (rel, c) != (relation, column)]
+        if not names:
+            continue
+        tests = []
+        for name in names:
+            cast = f"CAST({_ident(name)} AS VARCHAR)"
+            test = f"{cast} = {as_text}"
+            if numeric:
+                test = f"({test} OR TRY_CAST({cast} AS DOUBLE) = {as_number})"
+            tests.append(f"bool_or({test})")
+        hits = con.execute(f"SELECT {', '.join(tests)} FROM {rel}").fetchone()
+        out.extend(f"{rel}.{name}" for name, hit in zip(names, hits or (), strict=True) if hit)
+    return out
+
+
+#: Words that join the values of one list ("districts 1 and 2", "North, South").
+_LIST_JOINS = frozenset({"and", "or", ","})
+
+
+def _question_binds(
+    question: str, literal: str, column: str, siblings: Sequence[str] = ()
+) -> bool:
+    """Whether the question states ``literal`` for ``column``: the column's word stands right
+    before it ("region North", "kind is North", "district 2", "school id 2", "districts 1 and
+    2"). Between the word and the value may sit an id or number word, and a list join with the
+    other values of the same IN list (``siblings``, which share the column). Only the column's
+    own words count: a table's name is shared by all its columns, so it names none."""
+    value = _tokens(literal)
+    toks = _tokens(question)
+    if not value:
+        return False
+    words = _name_words(column)
+    others = [t for t in (_tokens(s) for s in siblings) if t]
+    width = len(value)
+    for i in range(len(toks) - width + 1):
+        if toks[i : i + width] != value:
+            continue
+        j = i - 1
+        while j >= 0:
+            if toks[j] in _BINDER_FILLER or toks[j] in _LIST_JOINS:
+                j -= 1
+                continue
+            sib = next(
+                (s for s in others if j - len(s) + 1 >= 0 and toks[j - len(s) + 1 : j + 1] == s),
+                None,
+            )
+            if sib is None:
+                break
+            j -= len(sib)
+        if j >= 0 and _in_words(toks[j], words, fold=True):
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -657,6 +853,7 @@ FIT_REASONS = frozenset(
         "unstated_filter",
         "no_content_tokens",
         "ranker_disagrees",
+        REASON_QUESTION_TOO_LONG,
     }
 )
 
@@ -758,15 +955,17 @@ def _fit_cues(question: str) -> frozenset[str]:
     COUNT question; a SUM measure does not answer it)."""
     toks = _stems(question)
     extra: set[str] = set()
-    for phrase in _COUNT_PHRASES:
-        n = len(phrase)
-        i = 0
-        while i <= len(toks) - n:
-            if tuple(toks[i : i + n]) == phrase:
-                extra.add("count")
-                del toks[i : i + n]
-            else:
-                i += 1
+    kept: list[str] = []
+    i = 0
+    while i < len(toks):  # one pass: a count phrase is dropped from the tokens, cost stays linear
+        width = next((len(ph) for ph in _COUNT_PHRASES if tuple(toks[i : i + len(ph)]) == ph), 0)
+        if width:
+            extra.add("count")
+            i += width
+        else:
+            kept.append(toks[i])
+            i += 1
+    toks = kept
     cues = {
         cue for cue, runs in _CUE_STEMS.items() if any(_contains_run(toks, run) for run in runs)
     }
@@ -956,6 +1155,7 @@ def _claim_literals(text: str, literals: Iterable[str]) -> tuple[list[tuple[int,
     claimed: list[tuple[int, int]] = []
     missing: list[str] = []
     wanted = Counter(literals)
+    taken = bytearray(len(text))  # 1 where a claimed span already sits: overlap is a slice test
     for literal in sorted(wanted, key=lambda s: (-len(s), s)):
         need = wanted[literal]
         got = 0
@@ -965,7 +1165,8 @@ def _claim_literals(text: str, literals: Iterable[str]) -> tuple[list[tuple[int,
             clear = (at == 0 or not _is_word_char(text[at - 1])) and (
                 end == len(text) or not _is_word_char(text[end])
             )
-            if clear and not any(at < e and s < end for s, e in claimed):
+            if clear and not any(taken[at:end]):
+                taken[at:end] = b"\x01" * (end - at)
                 claimed.append((at, end))
                 got += 1
             at = text.find(literal, at + 1)
@@ -1191,10 +1392,28 @@ def account_for_question(
         *(str(p[1]) for p in plan_filters if len(p) >= 2),
     )
     vocabulary = own | group_all | named
+    # A value every word of which is one of the question's own words ("all", "the total",
+    # "schools") is not a value the question states: the occurrence is the frame, the cue or a
+    # name of the plan. Claiming it as the value would call a filter the question never stated
+    # stated, and the sum over it would be the answer under the confirmed badge.
+    own_words = FRAME_WORDS | CUE_WORD_SET | BREAKDOWN_WORDS | vocabulary
+    clashing = [
+        lit
+        for lit in literals
+        if _tokens(lit) and all(_in_words(t, own_words, fold=True) for t in _tokens(lit))
+    ]
+    if clashing:
+        return Accounting(GAP_UNSTATED_FILTER, tuple(repr(c) for c in clashing))
+    column_words = {
+        position: _name_words(str(f[1]))
+        for position, f in enumerate(plan_filters)
+        if len(f) >= 2
+    }
 
     items = _items(text, spans)
     plain = [_plain(item, first=(n == 0)) for n, item in enumerate(items)]
     covered = [item.kind == "s" for item in items]
+    named_by, by_joins = _breakdown_words(items, plain, group_all)
 
     # A request phrase at the very start, as a whole phrase and by position.
     at = 0
@@ -1227,6 +1446,20 @@ def account_for_question(
         if token is None:
             gaps.append(repr(item.text))
             continue
+        if (
+            token == "and"
+            and (len(columns) >= 2 or _opens_subject(items, plain, n, vocabulary))
+            and n not in by_joins
+            and not _list_and(items, plain, n, users)
+            and not _and_states_condition(items, plain, n, users, column_words)
+        ):
+            # Beside two conditions on different columns "and" can join two values (a list, an
+            # OR, a conjunction the plan ANDs); anywhere, it can join two subjects ("schools
+            # and districts"). Only the join of ONE filter's own IN list, or an "and" that
+            # opens a condition by naming its column ("in North and region South"), is a
+            # conjunction the plan represents.
+            gaps.append(repr(item.text))
+            continue
         if token in FRAME_WORDS or token in CUE_WORD_SET:
             continue
         # The first token is lower-cased for the tests above and below, but a word that had to
@@ -1241,9 +1474,183 @@ def account_for_question(
         if _in_words(token, vocabulary, fold=fold):
             continue
         gaps.append(repr(item.text))
+    for obj, column in group_pairs if not gaps else ():
+        words = _name_words(column, held.get(obj, "") if obj != grain else "")
+        if not any(_in_words(w, words, fold=True) for w in named_by):
+            gaps.append(f"a breakdown by {column!r} that the question does not name")
+    numbers = _numeric_owners(plan_filters)
+    if numbers:
+        filter_words = {
+            position: _binder_words(str(f[1]))
+            for position, f in enumerate(plan_filters)
+            if len(f) >= 2
+        }
+        for n, item in enumerate(items):
+            owners = numbers.get(item.text) if item.kind == "s" else None
+            if owners and not _number_is_bound(items, plain, n, owners, users, filter_words):
+                gaps.append(f"{item.text!r} (no column name of the plan stands before this number)")
     if gaps:
         return Accounting(GAP_UNBOUND_CONSTRAINT, tuple(gaps))
     return Accounting("")
+
+
+#: Words that may sit between a column's name and its number ("school id 2", "district number 2").
+_BINDER_FILLER = frozenset({"id", "number", "no", "num", "code", "key", "is"})
+_GENERIC_COLUMN_WORDS = frozenset({"id", "number", "no", "num", "code", "key"})
+
+
+def _list_and(
+    items: Sequence[_Item],
+    plain: Sequence[str | None],
+    n: int,
+    users: Mapping[str, set[int]],
+) -> bool:
+    """Whether the ``and`` at item ``n`` joins two values of ONE filter's own IN list: the
+    nearest non-frame item on each side is a claimed value, and exactly one filter uses both."""
+
+    def side(step: int) -> _Item | None:
+        i = n + step
+        while 0 <= i < len(items):
+            if items[i].kind == "s":
+                return items[i]
+            if plain[i] not in FRAME_WORDS:
+                return None
+            i += step
+        return None
+
+    left, right = side(-1), side(1)
+    if left is None or right is None or left.text == right.text:
+        return False
+    mine = users.get(left.text, set())
+    return len(mine) == 1 and mine == users.get(right.text, set())
+
+
+def _breakdown_words(
+    items: Sequence[_Item], plain: Sequence[str | None], vocabulary: frozenset[str]
+) -> tuple[list[str], set[int]]:
+    """The words a question names as what it breaks the number down BY: those that follow
+    ``by`` / ``per`` / ``each`` / ``every``, and the ones a list of them continues with ("by
+    district and region"): frame words and words of the plan's group-by names, up to the first
+    word that is neither. A plan that groups by something none of these names is a finer (or
+    different) breakdown than the one asked for. Also returns the positions of the ``and`` that
+    sit inside such a list: they join breakdowns, not values."""
+    out: list[str] = []
+    joins: set[int] = set()
+    for n, word in enumerate(plain):
+        if word not in BREAKDOWN_WORDS:
+            continue
+        j = n + 1
+        while j < len(items) and items[j].kind == "w":
+            token = plain[j]
+            if token is None:
+                break
+            if token not in FRAME_WORDS and not _in_words(token, vocabulary, fold=True):
+                break
+            if token == "and":
+                joins.add(j)
+            elif token not in FRAME_WORDS:
+                out.append(token)
+            j += 1
+    return out, joins
+
+
+def _opens_subject(
+    items: Sequence[_Item],
+    plain: Sequence[str | None],
+    n: int,
+    vocabulary: frozenset[str],
+) -> bool:
+    """Whether the ``and`` at item ``n`` is followed (past frame words) by a word of the plan's
+    own names: a second subject ("schools and districts"), not a value."""
+    i = n + 1
+    while i < len(items) and plain[i] in FRAME_WORDS:
+        i += 1
+    word = plain[i] if i < len(items) else None
+    return word is not None and _in_words(word, vocabulary, fold=True)
+
+
+def _and_states_condition(
+    items: Sequence[_Item],
+    plain: Sequence[str | None],
+    n: int,
+    users: Mapping[str, set[int]],
+    column_words: Mapping[int, frozenset[str]],
+) -> bool:
+    """Whether the ``and`` at item ``n`` opens a condition of its own: the next item is a word of
+    the COLUMN of the filter whose value follows ("... in North and region South"). The table's
+    or the measure's name does not open one ("schools in North and schools in South" repeats the
+    subject), and neither does a bare value."""
+    i = n + 1
+    if i >= len(items) or plain[i] is None:
+        return False
+    word = str(plain[i])
+    j = i + 1
+    while j < len(items) and plain[j] in _BINDER_FILLER:
+        j += 1
+    if j >= len(items) or items[j].kind != "s":
+        return False
+    return any(
+        _in_words(word, column_words.get(position, frozenset()), fold=True)
+        for position in users.get(items[j].text, set())
+    )
+
+
+def _numeric_owners(plan_filters: Sequence[Sequence[Any]]) -> dict[str, set[int]]:
+    """rendered numeric literal -> positions of the filters that carry it as a NUMBER. A text
+    value that happens to be digits is a name, not a number a column word must stand before."""
+    out: dict[str, set[int]] = {}
+    for position, item in enumerate(plan_filters):
+        if len(item) < 4:
+            continue
+        value = item[3]
+        many = isinstance(value, (list, tuple, set, frozenset))
+        for element in list(value) if many else [value]:
+            if isinstance(element, (int, float)) and not isinstance(element, bool):
+                rendered = _render_literal(element)
+                if rendered is not None:
+                    out.setdefault(rendered, set()).add(position)
+    return out
+
+
+def _binder_words(column: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(words, generic)``: the words that may stand before a number filtered on this column
+    (its own name only), and the generic ones among them. The TABLE's name is not one of them:
+    it is shared by every column of that table, so "school 1" would bind a number to
+    ``district_id`` on the strength of the word "school" alone."""
+    words = _name_words(column)
+    specific = frozenset(w for w in words if w not in _GENERIC_COLUMN_WORDS)
+    return (specific or words), frozenset(w for w in words if w in _GENERIC_COLUMN_WORDS)
+
+
+def _number_is_bound(
+    items: Sequence[_Item],
+    plain: Sequence[str | None],
+    n: int,
+    owners: set[int],
+    users: Mapping[str, set[int]],
+    filter_words: Mapping[int, tuple[frozenset[str], frozenset[str]]],
+) -> bool:
+    """A number the question states binds to a filter's column only by position: the word
+    BEFORE it (past an ``id`` / ``number``) is a word of that column or of its table ("district
+    2", "school id 2"), or the value before it is the same filter's (an IN list: "1 and 2"). A
+    number after its noun ("2 schools") or after anything else counts something else."""
+    i = n - 1
+    while i >= 0 and plain[i] == "and":
+        i -= 1
+    if i >= 0 and items[i].kind == "s" and users.get(items[i].text, set()) & owners:
+        return True
+    i = n - 1
+    skipped: set[str] = set()
+    while i >= 0 and plain[i] in _BINDER_FILLER:
+        skipped.add(str(plain[i]))
+        i -= 1
+    for position in owners:
+        words, generic = filter_words.get(position, (frozenset(), frozenset()))
+        if i >= 0 and plain[i] is not None and _in_words(str(plain[i]), words, fold=True):
+            return True
+        if skipped & generic:
+            return True  # "id 1": the word "id" is the name of a column called ..._id
+    return False
 
 
 def _shown(items: Sequence[str]) -> str:
@@ -1329,6 +1736,10 @@ def measure_fit(
     vocabularies are English; the accounting reads every script and symbol, so a non-English
     condition is refused, never ignored.
     """
+    if len(str(question or "")) > MAX_QUESTION_CHARS:
+        return FitVerdict(
+            False, None, REASON_QUESTION_TOO_LONG, f"more than {MAX_QUESTION_CHARS} characters"
+        )
     pool = {n: m for n, m in measures.items() if m.provenance is not None}
     qtoks = frozenset(_stems(question))
     if candidate is not None:

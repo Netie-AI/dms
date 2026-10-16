@@ -39,6 +39,7 @@ import pytest
 import test_ingest_fixes_277 as ing
 from dms_core.control_plane.onto_store import OntologyStore
 from dms_executor import db_connector as dbc
+from dms_executor import generative_ask as ga
 from dms_executor import measure_use as mu
 from dms_executor.ontology import Measure, MeasureProvenance
 from dms_executor.space_ontology import set_ontology_store
@@ -344,7 +345,7 @@ def test_f2_two_ids_on_one_column_and_an_equality_with_an_in_list(r: _Rigged) ->
     )
     _refused(r, env, "fit_disagrees:unstated_filter")
     env = r.plan(
-        "How many schools are there with id 1 and 2?",
+        "How many schools are there with school id 1 and 2?",
         SCOUNT,
         filters=((schools, "school_id", "IN", [1, 2]),),
     )
@@ -364,7 +365,9 @@ def test_f2_a_literal_two_filters_use_must_be_stated_twice(
     _refused(r, env, "fit_disagrees:unstated_filter", "North (needs 2 mentions, found 1)")
     # said twice, it is two statements, and the plan carries exactly two
     env = r.plan(
-        "What is the total budget of schools in North in region North?", BUDGET, filters=both
+        "What is the total budget of schools in district name North in region North?",
+        BUDGET,
+        filters=both,
     )
     oracle = _sum(r, "district_id = 1 AND region = 'North'")
     assert oracle == [{"v": Decimal("310.75")}]
@@ -462,27 +465,27 @@ def test_f2b_the_anded_figure_can_be_a_plausible_nonzero_too(
         # a value of its own column between two values that share one: the join is a list, the
         # other literal is a condition introduced by a place and a verb, not by "and"
         (
-            "How many public schools are there in North and South?",
+            "How many public schools are there in district name North and South?",
             ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "IN", ["North", "South"])),
             "kind = 'public' AND district_id IN (1, 2)",
             "2",
         ),
         # two conditions on two columns, each stated with words between them and no conjunction
         (
-            "How many public schools are there in North?",
+            "How many public schools are there in district name North?",
             ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "=", "North")),
             "kind = 'public' AND district_id = 1",
             "1",
         ),
         (
-            "How many schools are public in North?",
+            "How many schools are public in district name North?",
             ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "=", "North")),
             "kind = 'public' AND district_id = 1",
             "1",
         ),
         # a comma that ends a clause: a name of the plan stands between the two values
         (
-            "In North, how many schools are public?",
+            "In district name North, how many schools are public?",
             ((SCHOOLS, "kind", "=", "public"), (DISTRICTS, "name", "=", "North")),
             "kind = 'public' AND district_id = 1",
             "1",
@@ -505,7 +508,11 @@ def test_f2b_mutation_without_the_gate_the_anded_zero_is_stated_as_a_finding(
     r: _Rigged, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The harm the gate prevents, shown by turning it off: 0 under the confirmed badge."""
+    # every layer that refuses it: the list-join check, the ``and`` rule, the empty-set rule
     monkeypatch.setattr(mu, "_joined_values", lambda *a, **k: [])
+    monkeypatch.setattr(mu, "_list_and", lambda *a, **k: True)
+    monkeypatch.setattr(ga, "_empty_filter_reason", lambda *a, **k: None)
+    monkeypatch.setattr(mu, "_columns_holding", lambda *a, **k: [])  # the binding rule
     env = r.plan("How many schools are there in North and South?", SCOUNT, filters=NORTH_AND_SOUTH)
     _assert_answer(env, [{"v": 0}], "schools_count=0")
 
@@ -539,7 +546,15 @@ def test_f2b_unit_a_conjunction_joins_values_of_different_filters_only() -> None
         "total budget of schools in March 2024",
         "total budget of schools in 2024 March",
         "total budget of schools in March of 2024",
+    ):
+        # not a list (no ``and``, no comma), but a number binds to its column only by a word of
+        # that column standing before it (cluster A6): "2024" beside no "year" is refused
+        got = acc(q, measure=BUDGET, grain=grain, filters=months)
+        assert (got.ok, got.reason) == (False, "unbound_constraint"), (q, got)
+        assert "2024" in got.unaccounted[0], got
+    for q in (
         "total budget of schools in March in year 2024",
+        "total budget of schools in March year 2024",
     ):
         assert acc(q, measure=BUDGET, grain=grain, filters=months).ok, q
     # ... but "and" or a comma between them is
@@ -1160,3 +1175,70 @@ def _verified(names: tuple[str, ...], links: tuple[tuple[str, str, str], ...]) -
     for name, link in list(onto.links.items()):
         onto.links[name] = replace(link, cardinality="many_to_one")
     return onto
+
+
+# ============================================================ round 0: the question's own words,
+# and the column a stated value is bound to
+
+
+def test_r0_a_filter_value_the_question_uses_as_its_own_word_is_not_stated(r: _Rigged) -> None:
+    """Adversary round 0 (confirmed lane, P0). A dirty subtotal row labelled ``all`` matches the
+    plan's filter ``region = 'all'``. The question says "all schools" and names no region: "all"
+    is its frame word. The lane claimed the frame word as the value, so the sum over the dirty
+    row (50.0) was stated as the answer under the confirmed badge. Refused by name."""
+    _lake_exec(r.rig.lake, "UPDATE bronze.public_schools SET region = 'all' WHERE school_id = 3")
+    env = r.plan(TOTAL_Q, BUDGET, filters=((SCHOOLS, "region", "=", "all"),))
+    _refused(r, env, "unstated_filter")
+    # a value that is not one of the question's words is still a value the question can state
+    _lake_exec(
+        r.rig.lake, "UPDATE bronze.public_schools SET region = 'Hilltop' WHERE school_id = 3"
+    )
+    env = r.plan(
+        "What is the total budget of schools in Hilltop?",
+        BUDGET,
+        filters=((SCHOOLS, "region", "=", "Hilltop"),),
+    )
+    _assert_answer(env, [{BUDGET: Decimal("50.00")}], "50")
+
+
+def test_r0_a_value_the_plan_binds_to_a_column_the_question_does_not_name_is_ambiguous(
+    r: _Rigged,
+) -> None:
+    """Adversary round 0 (confirmed lane, P0). 'North' is a region and, here, also a kind: the
+    plan puts it on ``kind`` and the question says "in North", which names no column. The
+    filter matched one school and the total (100.50) was stated as the schools in North (300.75
+    by region). Refused as ambiguous, and the same question naming the column still answers."""
+    _lake_exec(r.rig.lake, "UPDATE bronze.public_schools SET kind = 'North' WHERE school_id = 1")
+    env = r.plan(
+        "What is the total budget of schools in North?",
+        BUDGET,
+        filters=((SCHOOLS, "kind", "=", "North"),),
+    )
+    _assert_abstain(env, "ambiguous_filter_value")
+    assert r.rig.cortex.asks == [] and r.executed == []
+    # the same value, the same column, named beside the value: the figure is that column's
+    env = r.plan(
+        "What is the total budget of schools in kind North?",
+        BUDGET,
+        filters=((SCHOOLS, "kind", "=", "North"),),
+    )
+    _assert_answer(env, [{BUDGET: Decimal("100.50")}], "100.5")
+
+
+def test_r0_a_number_stated_after_the_table_word_is_not_a_district_id(r: _Rigged) -> None:
+    """Adversary round 0 (confirmed lane, P0). "school 1" names a school; the plan filters
+    ``district_id = 1``, the whole district (310.75), not school 1 (100.50). The word "school"
+    is the table's name, shared by every column of it, so it binds no column. Refused."""
+    env = r.plan(
+        "What is the total budget of school 1?",
+        BUDGET,
+        filters=((SCHOOLS, "district_id", "=", 1),),
+    )
+    _refused(r, env, "unbound_constraint")
+    # the number after the word of its own column is the district the question names
+    env = r.plan(
+        "What is the total budget of schools in district 1?",
+        BUDGET,
+        filters=((SCHOOLS, "district_id", "=", 1),),
+    )
+    _assert_answer(env, [{BUDGET: Decimal("310.75")}], "310.75")

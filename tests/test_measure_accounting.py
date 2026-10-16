@@ -20,7 +20,7 @@ from __future__ import annotations
 import random
 import re
 import unicodedata
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from decimal import Decimal
 from itertools import groupby
 from pathlib import Path
@@ -487,6 +487,41 @@ def _oracle_forms(v: str) -> set[str]:
     return out
 
 
+def _oracle_and_opens_a_subject(
+    items: Sequence[tuple[str, str]],
+    words: Sequence[str | None],
+    i: int,
+    vocab: set[str],
+    has_literals: bool,
+) -> bool:
+    """Cluster A: an ``and`` followed (past frame words) by a word of the plan's own names is a
+    second subject ("schools and districts"), refused, unless it joins two values of the one IN
+    list or opens a condition by naming its column ("... North and name South")."""
+
+    def forms_of(word: str, names: Iterable[str]) -> bool:
+        return any(word == v or word in _oracle_forms(v) for v in names)
+
+    j = i + 1
+    while j < len(items) and words[j] in FRAME:
+        j += 1
+    nxt = words[j] if j < len(items) else None
+    if nxt is None or not forms_of(nxt, vocab):
+        return False
+    left = i - 1
+    while left >= 0 and words[left] in FRAME:
+        left -= 1
+    if left >= 0 and j < len(items) and items[left][0] == "S" and items[j][0] == "S":
+        return False  # both sides are values (an IN list); reached only with several literals
+    if has_literals and i + 1 < len(items) and words[i + 1] is not None:
+        if forms_of(str(words[i + 1]), {"name"}):
+            k = i + 2
+            while k < len(items) and words[k] in {"id", "number", "no", "num", "code", "key", "is"}:
+                k += 1
+            if k < len(items) and items[k][0] == "S":
+                return False
+    return True
+
+
 def _oracle_accepts(question: str, literals: Sequence[str]) -> bool:
     vocab = VOCAB | ({"districts", "name"} if literals else set())
     text = unicodedata.normalize("NFKC", question)
@@ -495,8 +530,14 @@ def _oracle_accepts(question: str, literals: Sequence[str]) -> bool:
     )
     mark = "\ue000"
     claimed: list[tuple[int, int]] = []
+    own = FRAME | CUES | VOCAB | vocab | {"by", "per", "each", "every"}
     for lit in lits:
         if not any(_oracle_word(c) for c in lit):
+            return False
+        # a value made only of the question's own words (its frame, its cues, its names) is not
+        # a value the question states: the occurrence is the word, not the value
+        parts = re.findall(r"\w+", lit.lower())
+        if parts and all(w in own for w in parts):
             return False
         hit = False
         for m in re.finditer(re.escape(lit), text):
@@ -571,6 +612,8 @@ def _oracle_accepts(question: str, literals: Sequence[str]) -> bool:
             continue
         w = words[i]
         if k != "W" or w is None:
+            return False
+        if w == "and" and _oracle_and_opens_a_subject(items, words, i, vocab, bool(literals)):
             return False
         if w in FRAME or w in CUES:
             continue

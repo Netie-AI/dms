@@ -53,6 +53,7 @@ GAP_REASONS = frozenset(
         "ambiguous_filter_value",
         "empty_aggregate",
         "too_many_groups",
+        "masked_figure",
         "ontology_store_unavailable",
         "untyped_numeric",
         "ambiguous_measure",
@@ -83,6 +84,7 @@ _HEAD_ONLY_GAPS = frozenset(
         "unmatched_filter_value",
         "ambiguous_filter_value",
         "empty_aggregate",
+        "masked_figure",
     }
 )
 
@@ -100,6 +102,7 @@ _PLAIN_SENTENCE = {
     ),
     "empty_aggregate": "The measure has no values for this question.",
     "too_many_groups": "That breakdown has more groups than I can state completely.",
+    "masked_figure": "That figure would be hidden by the privacy layer, so I cannot state it.",
 }
 
 #: Abstains that offer the Space's usable confirmed measures as what to ask instead.

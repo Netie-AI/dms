@@ -354,6 +354,7 @@ def test_fit_reasons_are_the_documented_vocabulary() -> None:
     assert FIT_REASONS == {
         "ok", "ambiguous", "no_match", "aggregate_cue", "quantity_cue", "qualifier_cue",
         "unbound_constraint", "unstated_filter", "no_content_tokens", "ranker_disagrees",
+        "question_too_long",
     }  # fmt: skip
 
 
@@ -1016,7 +1017,10 @@ def test_the_probe_is_one_query_per_distinct_literal(
         (DISTRICTS, "name", "=", "North"),
     )
     assert filter_values_present(plan, onto, env.lake) is None
-    assert len(seen) == 2 and all("LIMIT 1" in s for s in seen)  # North once, South once
+    probes = [s for s in seen if "LIMIT 1" in s and "LIMIT 0" not in s]
+    scans = [s for s in seen if "bool_or" in s]
+    assert len(probes) == 2  # North once, South once
+    assert len(scans) == 2  # and one scan of the other columns for each distinct literal
 
 
 # ------------------------------------------------------------------ the wire (E18)
@@ -1737,10 +1741,18 @@ def test_the_old_collision_cases_are_conditions_not_words() -> None:
 def test_fit_a_bool_literal_is_not_a_number_in_the_probe(env: _Env) -> None:
     """``TRUE = 1`` holds in SQL: a JSON ``true`` on an integer key must not filter to key 1."""
     onto = _lake_onto(env)
-    assert filter_values_present(_plan((SCHOOLS, "district_id", "=", 1)), onto, env.lake) is None
+    stated = "How many schools are there in district 1?"
+    assert filter_values_present(
+        _plan((SCHOOLS, "district_id", "=", 1)), onto, env.lake, question=stated
+    ) is None
     got = filter_values_present(_plan((SCHOOLS, "district_id", "=", True)), onto, env.lake)
     assert got is not None and got.startswith("unmatched_filter_value: "), got
-    got = filter_values_present(_plan((SCHOOLS, "district_id", "IN", [1, True])), onto, env.lake)
+    got = filter_values_present(
+        _plan((SCHOOLS, "district_id", "IN", [1, True])),
+        onto,
+        env.lake,
+        question="How many schools are there in district 1 and True?",
+    )
     assert got is not None and "True" in got, got
 
 
