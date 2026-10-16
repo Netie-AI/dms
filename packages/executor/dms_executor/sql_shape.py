@@ -114,8 +114,11 @@ def _cte_of(scope: Scope, table: exp.Table) -> Scope | None:
     """The CTE scope this table reads, or None when it is a real table.
 
     DuckDB binds a CTE's own name inside its own body to the real table of
-    that name, except in the recursive term of a WITH RECURSIVE (the arms
-    after the first), which reads the CTE's own rows.
+    that name, except in the recursive term of a WITH RECURSIVE (the arm
+    right of the last UNION; everything left of it is the base), which reads
+    the CTE's own rows. Those rows start as the base's, so the recursive term
+    is traced through the base: a value it computes from base data is data,
+    and a literal or counter it adds is not.
     """
     if table.db:
         return None
@@ -131,15 +134,98 @@ def _cte_of(scope: Scope, table: exp.Table) -> Scope | None:
             body = node.this
             if not (recursive and isinstance(body, exp.SetOperation)):
                 return None
-            base = body
-            while isinstance(base, exp.SetOperation):
-                base = base.this
-            inside: Any = table
-            while inside is not None and inside is not base:
-                inside = inside.parent
-            return None if inside is base else cte
+            if not _within(table, body.expression):
+                return None
+            # sqlglot hands back a fresh scope for the base that it never
+            # walked (no UNION arms when the base is itself a UNION); use the
+            # walked one.
+            walked: Scope | None = scope
+            while walked is not None and walked.expression is not body:
+                walked = walked.parent
+            if walked is not None and len(walked.union_scopes) == 2:
+                return walked.union_scopes[0]
+            return cte
         node = node.parent
     return cte
+
+
+def _within(node: Any, ancestor: Any) -> bool:
+    while node is not None:
+        if node is ancestor:
+            return True
+        node = node.parent
+    return False
+
+
+def _cte_reference(table: exp.Table) -> bool:
+    """True when a table reference names a CTE, decided from the syntax tree.
+
+    The grant check uses this, not sqlglot's scopes: a subquery inside extra
+    parentheses or inside unnest() gets no scope, but its tables are still
+    read. A WITH is visible to its own query body and, inside a CTE's body,
+    only the CTEs defined before it are. A CTE's own name inside its body is
+    the real table, except in the recursive term of a WITH RECURSIVE. Any
+    reference this does not resolve counts as a real table, which can only
+    ask the grant check about more tables.
+    """
+    if table.db or table.catalog:
+        return False
+    want = _bare(table.name)
+    child: Any = table
+    node = table.parent
+    while node is not None:
+        holder = node.args.get("with") if isinstance(node, exp.Expression) else None
+        if isinstance(holder, exp.With) and child is not holder:
+            if any(_bare(c.alias) == want for c in holder.expressions):
+                return True
+        if isinstance(node, exp.CTE) and isinstance(node.parent, exp.With):
+            outer = node.parent
+            if _bare(node.alias) == want:
+                body = node.this
+                recursive = bool(outer.args.get("recursive"))
+                if recursive and isinstance(body, exp.SetOperation):
+                    return _within(table, body.expression)
+                return False
+            earlier = []
+            for c in outer.expressions:
+                if c is node:
+                    break
+                earlier.append(_bare(c.alias))
+            if want in earlier:
+                return True
+            # Later CTEs of this WITH are not visible here; neither is the WITH
+            # as a body would see it. Continue above the query that owns it.
+            child = outer
+            node = outer.parent
+            continue
+        child = node
+        node = node.parent
+    return False
+
+
+def _real_tables(tree: Any) -> set[str]:
+    """Every real table the statement reads, from every table node in the tree."""
+    return {
+        _bare(t.name) for t in tree.find_all(exp.Table) if _is_name(t) and not _cte_reference(t)
+    }
+
+
+def _hoist_with(tree: Any) -> Any:
+    """``WITH x AS (...) (SELECT ...)``: move the WITH onto the inner query.
+
+    sqlglot hangs that WITH on the outer parentheses, so unwrapping them
+    would drop the CTE bodies from the walk.
+    """
+    while isinstance(tree, exp.Subquery):
+        holder = tree.args.get("with")
+        inner = tree.this
+        if holder is not None and isinstance(inner, exp.Query):
+            if inner.args.get("with") is not None:
+                return tree
+            tree.set("with", None)
+            inner.set("with", holder)
+        tree = inner
+    return tree
 
 
 def _is_generator(table: exp.Table) -> bool:
@@ -171,28 +257,38 @@ def _engine_refusal(sql: str) -> str | None:
     return None
 
 
-def _reads_data(scope: Scope, seen: set[int]) -> bool:
-    """True when this query's output is built from at least one real table."""
-    if id(scope) in seen:
-        return False
-    seen.add(id(scope))
+def _reads_data(scope: Scope, seen: dict[int, bool]) -> bool:
+    """True when this query's output is built from at least one real table.
+
+    ``seen`` memoizes per scope, so a CTE read by several UNION arms is judged
+    once and counted every time; a scope reached again while it is still
+    being judged (a recursive CTE) adds nothing of its own.
+    """
+    key = id(scope)
+    if key in seen:
+        return seen[key]
+    seen[key] = False
     if scope.union_scopes:
         # Every branch must read a table: a literal branch adds an invented row.
-        return all(_reads_data(s, seen) for s in scope.union_scopes)
-    for table in scope.tables:
-        if not _is_name(table):
-            continue
-        cte = _cte_of(scope, table)
-        if cte is None:
-            return True
-        if _reads_data(cte, seen):
-            return True
-    children: list[Scope] = [
-        *scope.derived_table_scopes,
-        *scope.subquery_scopes,
-        *scope.udtf_scopes,
-    ]
-    return any(_reads_data(c, seen) for c in children)
+        result = all(_reads_data(s, seen) for s in scope.union_scopes)
+    else:
+        result = False
+        for table in scope.tables:
+            if not _is_name(table):
+                continue
+            cte = _cte_of(scope, table)
+            if cte is None or _reads_data(cte, seen):
+                result = True
+                break
+        if not result:
+            children: list[Scope] = [
+                *scope.derived_table_scopes,
+                *scope.subquery_scopes,
+                *scope.udtf_scopes,
+            ]
+            result = any(_reads_data(c, seen) for c in children)
+    seen[key] = result
+    return result
 
 
 #: Engine result types that state a figure. DECIMAL(p,s) is matched by prefix.
@@ -266,25 +362,15 @@ def _is_recursive(scope: Scope) -> bool:
     return isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
 
 
-def _recursive_base(scope: Scope) -> bool:
-    """The base arm of a WITH RECURSIVE body.
-
-    sqlglot resolves a recursive term's reference to its own CTE to this
-    scope, so reaching it from another arm means the CTE is reading itself.
-    """
-    expr = scope.expression
-    body = expr
-    while isinstance(body.parent, exp.SetOperation):
-        body = body.parent
-    if body is expr or not isinstance(body.parent, exp.CTE):
-        return False
-    holder = body.parent.parent
-    if not (isinstance(holder, exp.With) and holder.args.get("recursive")):
-        return False
-    base = body
-    while isinstance(base, exp.SetOperation):
-        base = base.this
-    return base is expr
+def _recursion_base(scope: Scope) -> bool:
+    """The base of a WITH RECURSIVE body, as its recursive term reads it."""
+    parent = scope.parent
+    return (
+        parent is not None
+        and _is_recursive(parent)
+        and len(parent.union_scopes) == 2
+        and parent.union_scopes[0] is scope
+    )
 
 
 def _named_output(scope: Scope, name: str) -> list[Any] | None:
@@ -296,6 +382,9 @@ def _named_output(scope: Scope, name: str) -> list[Any] | None:
     want = _bare(name)
     arms = _arms(scope)
     parent = scope.expression.parent
+    while isinstance(parent, exp.SetOperation):
+        # A recursive CTE's base is renamed by the CTE's column list.
+        parent = parent.parent
     renamed = [_bare(c) for c in getattr(parent, "alias_column_names", None) or []]
     if want in renamed:
         index = renamed.index(want)
@@ -321,13 +410,42 @@ def _arms(scope: Scope) -> list[Scope]:
     return [arm for child in scope.union_scopes for arm in _arms(child)]
 
 
+def _selected_items(scope: Scope) -> list[tuple[str, Any, Any]]:
+    """(name, reference, source) for each FROM and JOIN entry of this scope.
+
+    sqlglot refuses a name used twice in one FROM (a self-join without
+    aliases); DuckDB accepts some of those, so they are read entry by entry.
+    """
+    try:
+        return [(name, node, src) for name, (node, src) in scope.selected_sources.items()]
+    except Exception:  # noqa: BLE001 - sqlglot OptimizeError on a repeated alias
+        select = scope.expression
+        nodes: list[Any] = []
+        if isinstance(select, exp.Select):
+            frm = select.args.get("from")
+            if frm is not None:
+                nodes.append(frm.this)
+            nodes.extend(j.this for j in select.args.get("joins") or [])
+        derived = {id(d.expression): d for d in scope.derived_table_scopes}
+        out: list[tuple[str, Any, Any]] = []
+        for node in nodes:
+            src: Any = node
+            if isinstance(node, exp.Table):
+                found = scope.sources.get(node.alias_or_name)
+                src = found if isinstance(found, Scope) else node
+            elif isinstance(node, exp.Subquery):
+                src = derived.get(id(node.this), node)
+            out.append((node.alias_or_name, node, src))
+        return out
+
+
 def _selected(scope: Scope) -> list[Any]:
     """Sources in this scope's FROM and JOIN. A CTE that is only in scope is not one.
 
     A recursive CTE's reference to itself comes back from sqlglot as a table;
     it is the CTE's own rows, not a real table.
     """
-    return [_as_source(scope, node, source) for node, source in scope.selected_sources.values()]
+    return [_as_source(scope, node, source) for _, node, source in _selected_items(scope)]
 
 
 def _as_source(scope: Scope, node: Any, source: Any) -> Any:
@@ -338,10 +456,7 @@ def _as_source(scope: Scope, node: Any, source: Any) -> Any:
     """
     if isinstance(node, exp.Table) and _is_name(node):
         cte = _cte_of(scope, node)
-        if cte is None:
-            return node
-        if isinstance(source, exp.Table):
-            return cte
+        return node if cte is None else cte
     return source
 
 
@@ -418,35 +533,59 @@ def _lateral_alias(column: exp.Column, scope: Scope) -> Any | None:
     return None
 
 
+def _source_has(w: _Walk, name: str, picked: Sequence[Any]) -> bool:
+    """Whether a FROM source may expose a column of this name.
+
+    A CTE or derived table says so by its outputs. A real table does when the
+    catalog's column names are known; before EXPLAIN they are not, and a real
+    table is taken to have it (the check after EXPLAIN knows).
+    """
+    want = _bare(name)
+    for src in picked:
+        if isinstance(src, Scope) and _named_output(src, want) is not None:
+            return True
+        if _real_table(src) and (w.real_columns is None or want in w.real_columns):
+            return True
+    return False
+
+
 def _column_derived(
     w: _Walk, column: exp.Column, scope: Scope, depth: int, visiting: Visiting
 ) -> bool:
     w.tick(depth)
-    selected = scope.selected_sources
+    items = _selected_items(scope)
     if column.table:
         picked = [
             _as_source(scope, node, src)
-            for name, (node, src) in selected.items()
+            for name, node, src in items
             if _bare(name) == _bare(column.table)
         ]
+        if not picked:
+            # A correlated reference to an enclosing query, else a struct
+            # field (s.a, st.*) of a column named like the qualifier.
+            parent = scope.parent
+            while parent is not None:
+                if any(_bare(n) == _bare(column.table) for n, _, _ in _selected_items(parent)):
+                    return _column_derived(w, column, parent, depth + 1, visiting)
+                parent = parent.parent
+            return _column_derived(w, w.column(column.table), scope, depth + 1, visiting)
     else:
-        picked = _selected(scope)
+        picked = [_as_source(scope, node, src) for _, node, src in items]
         lateral = _lateral_alias(column, scope)
-        # DuckDB binds a real column before an alias of the same name.
-        real = w.real_columns is not None and _bare(column.name) in w.real_columns
-        if lateral is not None and not (real and any(_real_table(s) for s in picked)):
+        # DuckDB binds a source column before an alias of the same name.
+        if lateral is not None and not _source_has(w, column.name, picked):
             return _derived(w, lateral, scope, depth + 1, visiting)
     if isinstance(column.this, exp.Star):
-        if not picked and column.table:
-            # st.* expands a struct column, not a source.
-            return _column_derived(w, w.column(column.table), scope, depth + 1, visiting)
         return any(_source_derived(w, src, depth + 1, visiting) for src in picked)
     for src in picked:
-        if isinstance(src, Scope) and src is not scope and _recursive_base(src):
-            # The recursive term reading its own CTE: data only when this arm
-            # also joins a real table, so rows drive the recursion. A counter
-            # or a literal carried through the recursion is not.
-            return any(_real_table(s) for s in _selected(scope))
+        if (
+            isinstance(src, Scope)
+            and _recursion_base(src)
+            and any(_real_table(s) for s in _selected(scope))
+        ):
+            # The recursive term reading its own rows while it joins a real
+            # table: the rows drive the recursion, so a depth it counts is data.
+            return True
         if isinstance(src, Scope):
             key = (id(src), _bare(column.name))
             if key in visiting:
@@ -458,6 +597,8 @@ def _column_derived(
             inner = visiting | {key} if _is_recursive(src) else visiting
             named = _named_output(src, column.name)
             if named is not None:
+                # A recursive CTE's column is data when one arm makes it so: a
+                # depth starts as a literal 0 and counts joined real rows.
                 combine = any if _is_recursive(src) else all
                 return combine(_derived(w, p, arm, depth + 1, inner) for p, arm in named)
             if len(_arms(src)) == 1 and any(_is_star(p) for p in src.expression.selects):
@@ -518,10 +659,18 @@ def _derived_uncached(w: _Walk, node: Any, scope: Scope, depth: int, visiting: V
     if isinstance(node, exp.Count):
         return _rows_from_data(w, scope, depth + 1)
     if isinstance(node, exp.Sum):
+        # A sum over real rows depends on how many there are, whatever it adds
+        # up: SUM(1), and SUM(flag) with a literal 1 flag, count rows.
         arg = node.this
-        if arg is None or _constant(arg):
-            return _rows_from_data(w, scope, depth + 1)
-        return _derived(w, arg, scope, depth + 1, visiting)
+        if _rows_from_data(w, scope, depth + 1):
+            return True
+        return arg is not None and _derived(w, arg, scope, depth + 1, visiting)
+    if isinstance(node, exp.Filter):
+        # MAX(4242) FILTER (WHERE q > 0): the filter picks rows, states no figure.
+        return _derived(w, node.this, scope, depth + 1, visiting)
+    if isinstance(node, exp.Order) and node.this is not None:
+        # FIRST(4242 ORDER BY q): the order picks a row, states no figure.
+        return _derived(w, node.this, scope, depth + 1, visiting)
     if isinstance(node, exp.Window):
         fn = node.this
         if isinstance(fn, exp.Ntile) or not list(fn.iter_expressions()):
@@ -562,9 +711,7 @@ def _numeric(type_name: str) -> bool:
 
 def _root_scope(sql: str) -> Scope | None:
     try:
-        tree: Any = parse(sql, read="duckdb")[0]
-        if isinstance(tree, exp.Subquery):
-            tree = tree.unnest()
+        tree: Any = _hoist_with(parse(sql, read="duckdb")[0])
         scopes = traverse_scope(tree)
     except Exception:  # noqa: BLE001 - the caller fails closed on None
         return None
@@ -670,7 +817,10 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
     """(refusal, real tables). A refusal is a reason code, or None to continue.
 
     ``real tables`` are lowercase bare names with no CTE aliases. It is empty
-    whenever there is a refusal.
+    for a refusal decided before the tables are known (more than one
+    statement, not a SELECT, a reader, unparseable). A query that reads no
+    data or returns only literals keeps its tables, so the grant check still
+    answers first: an ungranted read is reported as one.
     """
     text = sql or ""
     why = _engine_refusal(text)
@@ -683,9 +833,7 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
     if len(trees) != 1:
         # Two parsers disagree on the statement count: do not guess.
         return "hostile_sql:multi_statement", frozenset()
-    tree: Any = trees[0]
-    if isinstance(tree, exp.Subquery):
-        tree = tree.unnest()
+    tree: Any = _hoist_with(trees[0])
     if not isinstance(tree, (exp.Select, exp.SetOperation)):
         return "hostile_sql:statement_not_allowed", frozenset()
     if tree.find(*_FORBIDDEN) is not None:
@@ -701,25 +849,25 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
         return "hostile_sql:sql_not_analyzable", frozenset()
     if not scopes:
         return "hostile_sql:sql_not_analyzable", frozenset()
-    real: set[str] = set()
+    # Tables sqlglot gives no scope (a subquery in extra parentheses or in
+    # unnest()) are still read, so the syntax tree is the source; the scopes'
+    # view is added in case the two disagree, which only asks about more.
+    real = _real_tables(tree)
     for scope in scopes:
         for table in scope.tables:
-            if not _is_name(table):
-                continue
-            if _cte_of(scope, table) is not None:
-                continue
-            real.add(_bare(table.name))
+            if _is_name(table) and _cte_of(scope, table) is None:
+                real.add(_bare(table.name))
     try:
-        if not _reads_data(scopes[-1], set()):
-            return "hostile_sql:no_data_source", frozenset()
+        if not _reads_data(scopes[-1], {}):
+            return "hostile_sql:no_data_source", frozenset(real)
         if not _scope_derived(_Walk(), scopes[-1], 0, _NONE):
             # Reads a table, returns nothing computed from it: SELECT 4242 FROM
             # t, however the literal is wrapped.
-            return "hostile_sql:literal_output", frozenset()
+            return "hostile_sql:literal_output", frozenset(real)
     except (RecursionError, _TooDeep):
         # Nested past what the walk can trace (hundreds of UNION arms or of
         # terms in one expression): fail closed rather than crash the ask.
-        return "hostile_sql:sql_not_analyzable", frozenset()
+        return "hostile_sql:sql_not_analyzable", frozenset(real)
     return None, frozenset(real)
 
 

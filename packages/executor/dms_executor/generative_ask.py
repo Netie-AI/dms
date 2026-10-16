@@ -685,11 +685,13 @@ def validate_compiled_sql(
     """None if the compiled SQL may be submitted. Else a reason (do not execute).
 
     The one grant function. SAFE-01: the SQL must be exactly one read-only
-    SELECT that reads at least one real table (``select_shape``, the engine's
-    own statement splitter and one syntax tree) before any table is checked
-    against ``grantable``, and before EXPLAIN, which would run a stacked tail.
-    After EXPLAIN, a result whose only figures are literals (``SELECT sku, 0
-    AS revenue FROM t``) is refused by the engine's own column types.
+    SELECT (``select_shape``, the engine's own statement splitter and one
+    syntax tree) before any table is checked against ``grantable``, and
+    before EXPLAIN, which would run a stacked tail. Every table it reads must
+    be granted; that is answered before whether its output comes from a real
+    table, so an ungranted read reaches the repair ladder as ungranted. After
+    EXPLAIN, a result whose only figures are literals (``SELECT sku, 0 AS
+    revenue FROM t``) is refused by the engine's own column types.
     """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
@@ -698,14 +700,14 @@ def validate_compiled_sql(
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
     shape_why, named = select_shape(sql)
-    if shape_why:
-        return shape_why
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
         if any(_PATH_CHARS.search(t) for t in missing):
             # A quoted path or URL used as a table name. Say the code, not the path.
             return "hostile_sql:path_not_allowed"
         return f"ungranted:{','.join(sorted(missing))}"
+    if shape_why:
+        return shape_why
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     con = connect_serving(Path(warehouse))

@@ -203,13 +203,15 @@ LITERAL_ONLY = [
         "WITH t AS (SELECT * FROM inventory) SELECT COUNT(*) AS revenue FROM range(4242) "
         "WHERE EXISTS (SELECT 1 FROM inventory)"
     ),
-    # SUM of a column is that column's lineage.
+    # A filter or an order picks rows; the figure it returns is still invented.
+    "SELECT MAX(4242) FILTER (WHERE quantity_kg > 0) AS revenue FROM inventory",
+    "SELECT FIRST(4242 ORDER BY quantity_kg) AS revenue FROM inventory",
+    "SELECT s.a AS revenue FROM (SELECT {'a': 4242} AS s FROM inventory) t",
+    # DuckDB binds the CTE's column, not the lateral alias of the same name.
     (
-        "WITH x AS (SELECT quantity_kg AS v FROM inventory UNION ALL SELECT 4242 FROM inventory) "
-        "SELECT SUM(v) FROM x"
+        "WITH c AS (SELECT sku, 4242 AS sku_n FROM inventory) "
+        "SELECT sku AS sku_n, sku_n AS revenue FROM c"
     ),
-    "SELECT SUM(v) FROM (SELECT 4242 AS v FROM inventory LIMIT 1) s",
-    "SELECT SUM(r.range) AS revenue FROM range(93) r LEFT JOIN inventory i ON FALSE",
     # A literal or a counter carried through a recursion that reads no real rows.
     (
         "WITH RECURSIVE r(n) AS (SELECT 4242 FROM inventory UNION ALL SELECT n FROM r "
@@ -307,6 +309,27 @@ LEGIT = [
     "SELECT d.day, COUNT(t.txn_id) AS n FROM range(1, 4) d(day) LEFT JOIN transactions t ON TRUE "
     "GROUP BY d.day",
     "SELECT * REPLACE (ROUND(quantity_kg, 1) AS quantity_kg) FROM inventory",
+    # A self-join without aliases: sqlglot refuses the repeated name, DuckDB runs it.
+    "SELECT COUNT(*) AS n FROM inventory JOIN inventory USING (sku)",
+    # One CTE read by two UNION arms: the rows and their total.
+    (
+        "WITH c AS (SELECT category, SUM(quantity_kg) AS kg FROM inventory GROUP BY category) "
+        "SELECT category, kg FROM c UNION ALL SELECT 'TOTAL', SUM(kg) FROM c"
+    ),
+    # A recursion that starts from real rows and only transforms them.
+    (
+        "WITH RECURSIVE d(sku, kg, step) AS (SELECT sku, quantity_kg, 0 FROM inventory "
+        "UNION ALL SELECT sku, kg * 0.9, step + 1 FROM d WHERE step < 3) SELECT * FROM d"
+    ),
+    (
+        "WITH RECURSIVE d(sku, step) AS (SELECT sku, 0 FROM inventory "
+        "UNION ALL SELECT sku, step + 1 FROM d WHERE step < 3) SELECT COUNT(*) AS n FROM d"
+    ),
+    # A literal 1 per real row summed is a row count.
+    "WITH f AS (SELECT sku, 1 AS cnt FROM inventory) SELECT SUM(cnt) AS n FROM f",
+    # Swapped names: DuckDB binds each to the real column, not the other alias.
+    "SELECT sku AS quantity_kg, quantity_kg AS sku FROM inventory",
+    "WITH x AS (SELECT sku, quantity_kg FROM inventory) (SELECT * FROM x)",
 ]
 
 #: Pass the shape layer on purpose. Each states an invented figure next to a
@@ -327,6 +350,25 @@ SHAPE_RESIDUAL = [
     (
         "SELECT sku, quantity_kg FROM inventory "
         "UNION ALL SELECT * FROM (SELECT sku, 4242 AS q FROM inventory) s"
+    ),
+    # A sum over real rows depends on how many there are, so the walk counts
+    # it as computed even where an arm or the row set is a literal.
+    (
+        "WITH x AS (SELECT quantity_kg AS v FROM inventory UNION ALL SELECT 4242 FROM inventory) "
+        "SELECT SUM(v) FROM x"
+    ),
+    "SELECT SUM(v) FROM (SELECT 4242 AS v FROM inventory LIMIT 1) s",
+    "SELECT SUM(r.range) AS revenue FROM range(93) r LEFT JOIN inventory i ON FALSE",
+    # A recursive CTE's column is data when one arm makes it so (a depth starts
+    # as 0 and counts joined rows), so a constant either arm carries passes.
+    (
+        "WITH RECURSIVE h(loc, tag) AS (SELECT location_id, 4242 FROM locations UNION ALL "
+        "SELECT i.location_id, h.tag FROM inventory i JOIN h ON i.location_id = h.loc "
+        "WHERE FALSE) SELECT loc, tag AS revenue FROM h"
+    ),
+    (
+        "WITH RECURSIVE r(n) AS (SELECT quantity_kg FROM inventory UNION ALL "
+        "SELECT 4242 FROM r WHERE n <> 4242) SELECT n AS revenue FROM r"
     ),
 ]
 
@@ -417,6 +459,13 @@ def test_a_figure_check_that_cannot_parse_fails_closed() -> None:
         "WITH RECURSIVE alerts(a) AS (SELECT alert_id FROM alerts UNION ALL "
         "SELECT a FROM alerts WHERE FALSE) SELECT a FROM alerts",
         "WITH alerts(a) AS (SELECT alert_id FROM alerts) SELECT a FROM alerts",
+        # DuckDB's base term is everything left of the last UNION.
+        "WITH RECURSIVE alerts(a) AS (SELECT sku FROM inventory UNION ALL SELECT alert_id "
+        "FROM alerts UNION ALL SELECT a FROM alerts WHERE FALSE) SELECT a FROM alerts",
+        # Subqueries sqlglot gives no scope are still read.
+        "SELECT unnest((SELECT list(message) FROM alerts)) AS leaked, sku FROM inventory",
+        "SELECT sku, ((SELECT COUNT(*) FROM alerts)) AS n FROM inventory",
+        "WITH suppliers AS (SELECT alert_id FROM alerts) (SELECT * FROM suppliers)",
     ],
 )
 def test_a_cte_named_like_a_table_still_grant_checks_that_table(sql: str, lake: Path) -> None:
