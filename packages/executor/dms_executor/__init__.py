@@ -1084,7 +1084,9 @@ class Executor:
         lake = ensure_demo_warehouse(self._warehouse)
         held = None
         rejected: str | None = None
-        if not resp.abstained:
+        # Only SQL is grant-checked. A document answer carries none, and an
+        # empty string is not a rejected query.
+        if not resp.abstained and str(resp.sql_used or "").strip():
             held, rejected = grant_hold(
                 str(resp.sql_used or ""),
                 question=question,
@@ -1110,8 +1112,7 @@ class Executor:
                 warehouse=gate_warehouse,
                 ontology=gate_ontology,
                 as_of=datetime_now(),
-                # SQL the one grant function rejected is never executed by a probe.
-                probe=rejected is None,
+                grant_rejected=rejected is not None,
             ),
             cascade,
         )
@@ -1214,9 +1215,14 @@ def map_ask_response_to_envelope(
     warehouse: Path | None = None,
     ontology: Any | None = None,
     as_of: str | None = None,
-    probe: bool = True,
+    grant_rejected: bool = False,
 ) -> dict[str, Any]:
-    """Map contract Answer-shaped AskResponse into UI envelope."""
+    """Map contract Answer-shaped AskResponse into UI envelope.
+
+    ``grant_rejected`` is SQL the one grant function rejected that the ask
+    route did not refuse outright (a bronze label, an EXPLAIN miss). Nothing
+    probes it, so nothing certifies it: it never takes L2.
+    """
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,
@@ -1264,7 +1270,14 @@ def map_ask_response_to_envelope(
     gate_finding: str | None = None
     if not refused and not engine_unsure and not resp.abstained:
         raw_name = (badge_raw or "").strip().lower()
-        if raw_name == "generated":
+        if grant_rejected and (
+            normalize_badge(badge_raw, abstained=False, gate_passed=True) == "L2_VALIDATED"
+        ):
+            # Fail closed. An unprobed answer is not a validated one, on any
+            # route name that would otherwise map to L2.
+            gate_finding = "grant_rejected"
+            badge_raw = "abstain"
+        elif raw_name == "generated":
             from dms_executor.served_gate import served_result_reason
 
             # Missing warehouse, ontology, or as_of is not a pass and not L2.
@@ -1276,7 +1289,6 @@ def map_ask_response_to_envelope(
                     warehouse=warehouse,
                     ontology=ontology,
                     as_of=as_of,
-                    probe=probe,
                 )
             gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))

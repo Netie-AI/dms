@@ -23,6 +23,7 @@ from cortex_client.compute import (
     recorded_model_calls,
 )
 
+from dms_executor.served_gate import lake_alias_sql
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
@@ -540,7 +541,8 @@ def run_model_loop(
             )
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
-        rows, exec_err = run_readonly(sql, Path(warehouse))
+        # The checker grants warehouse_<table>; the lake holds <table>.
+        rows, exec_err = run_readonly(lake_alias_sql(sql), Path(warehouse))
         if exec_err:
             safe_err = mask_feedback_text(exec_err)
             outcome = f"db_error:{safe_err}"

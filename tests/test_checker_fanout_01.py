@@ -712,7 +712,7 @@ def _prod_post(
 
         def submit(self, req: Any) -> QueryResult:
             body = getattr(req, "body", None) or {}
-            run_sql = str(body.get("sql") or rows_sql or sql)
+            run_sql = str(rows_sql or body.get("sql") or sql)
             rows = _executed(db, run_sql) if run_sql.strip() else []
             return QueryResult(ok=True, status="ok", run_id="run-prod", output={"rows": rows})
 
@@ -953,3 +953,392 @@ def test_warehouse_alias_does_not_hide_a_fanout(
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
     assert "fanout_subject_keys" in str(env.get("text") or "")
+
+
+# --- Takeover round 3: CTE scope, generator tables, fail closed ---
+
+_CTE_CARTESIAN = (
+    "WITH l AS (SELECT location_id FROM locations) "
+    "SELECT i.sku AS sku FROM inventory i JOIN l ON TRUE"
+)
+_CTE_TWO_CARTESIAN = (
+    "WITH inv AS (SELECT * FROM inventory), loc AS (SELECT * FROM locations) "
+    "SELECT inv.sku AS sku FROM inv JOIN loc ON TRUE"
+)
+_CTE_PER_SUPPLIER = (
+    "WITH s AS (SELECT supplier_id, COUNT(*) AS n FROM inventory GROUP BY supplier_id) "
+    "SELECT s.supplier_id AS supplier_id, s.n AS n FROM s"
+)
+_CTE_JOIN_SUPPLIER = (
+    "WITH s AS (SELECT supplier_id, COUNT(*) AS n FROM inventory GROUP BY supplier_id) "
+    "SELECT sp.supplier_name AS supplier_name, s.n AS n "
+    "FROM s JOIN suppliers sp ON sp.supplier_id = s.supplier_id"
+)
+_DATE_SPINE = (
+    "SELECT d.day AS day, COUNT(t.txn_id) AS n "
+    "FROM generate_series(DATE '2026-01-01', DATE '2026-01-05', INTERVAL 1 DAY) AS d(day) "
+    "LEFT JOIN transactions t ON CAST(t.ts AS DATE) = d.day "
+    "GROUP BY d.day ORDER BY d.day"
+)
+_MONTH_SPINE = (
+    "SELECT r.m AS month_no, COUNT(t.txn_id) AS n "
+    "FROM range(1, 13) AS r(m) LEFT JOIN transactions t ON month(t.ts) = r.m "
+    "GROUP BY r.m ORDER BY r.m"
+)
+# The recursive term reads the CTE; the first term does not.
+_RECURSIVE_SPINE = (
+    "WITH RECURSIVE d(day) AS (SELECT DATE '2026-01-01' "
+    "UNION ALL SELECT day + INTERVAL 1 DAY FROM d WHERE day < DATE '2026-01-05') "
+    "SELECT d.day AS day, COUNT(t.txn_id) AS n FROM d "
+    "LEFT JOIN transactions t ON CAST(t.ts AS DATE) = d.day GROUP BY d.day ORDER BY d.day"
+)
+# DuckDB reads the base table `alerts` in the first term, whatever the CTE is called.
+_RECURSIVE_SHADOW = (
+    "WITH RECURSIVE alerts(a) AS (SELECT 1 FROM alerts "
+    "UNION ALL SELECT a + 1 FROM alerts WHERE a < 3) SELECT a FROM alerts"
+)
+_SPINE_NO_COLUMN_LIST = (
+    "SELECT COUNT(*) AS n FROM generate_series(1, 5) JOIN suppliers ON TRUE"
+)
+_ROUTES = ("generated", "flag_off", "cloop_b")
+
+
+def _spy_probes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    import dms_executor.served_gate as gate
+
+    probed: list[str] = []
+    real = gate._row_counts
+
+    def spy(path: Path, probe: str) -> bool:
+        probed.append(probe)
+        return real(path, probe)
+
+    monkeypatch.setattr(gate, "_row_counts", spy)
+    return probed
+
+
+def _visible(env: dict[str, Any]) -> str:
+    return " ".join(
+        (
+            str(env.get("text") or ""),
+            " ".join(str(a) for a in (env.get("assumptions") or [])),
+            str(env.get("sql_used") or ""),
+            str(env.get("rows") or ""),
+        )
+    ).lower()
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("sql", [_CTE_CARTESIAN, _CTE_TWO_CARTESIAN], ids=["one_cte", "two_ctes"])
+def test_cte_fanout_never_takes_l2_on_any_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    sql: str,
+) -> None:
+    """A CTE alias is not a cited relation, so the grain probe still runs on it.
+
+    The alias was read as an ungranted relation that the ask route did not
+    refuse. It skipped the probe and shipped 35 rows for 7 distinct skus at L2.
+    """
+    db = tmp_path / "cte_fan.duckdb"
+    ensure_demo_warehouse(db)
+    probed = _spy_probes(monkeypatch)
+    env, _ = _prod_post(
+        db, sql, monkeypatch, minter, route=route, pass_warehouse=True, rows_sql=_DUP_ROWS_SQL
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] != "L2_VALIDATED", route
+    assert env["abstained"] is True, route
+    assert env["badge"] == "ABSTAIN", route
+    assert env.get("rows") in (None, []), route
+    assert probed, f"{route} never probed the CTE query's grain"
+    if route == "generated":
+        assert "fanout_subject_keys" in str(env.get("text") or "")
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("sql", [_CTE_PER_SUPPLIER, _CTE_JOIN_SUPPLIER], ids=["alone", "joined"])
+def test_cte_answer_over_granted_tables_keeps_l2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    sql: str,
+) -> None:
+    """A legitimate CTE over granted tables is served with the rows it computed."""
+    db = tmp_path / "cte_ok.duckdb"
+    ensure_demo_warehouse(db)
+    probed = _spy_probes(monkeypatch)
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (route, env.get("text"))
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("assumptions"))
+    expected = _executed(db, sql)
+    assert expected
+    assert _cells(env["rows"]) == _cells(expected), route
+    assert str(env.get("text") or "").strip(), route
+    assert "cannot certify" not in str(env.get("text") or ""), route
+    if sql == _CTE_JOIN_SUPPLIER:
+        assert probed, f"{route} served a joined CTE query without probing its grain"
+
+
+def test_grant_step_reads_real_tables_by_scope(tmp_path: Path) -> None:
+    """One grant function. A CTE alias is never a relation; a real table always is."""
+    from dms_executor.generative_ask import cited_relations, validate_compiled_sql
+
+    db = tmp_path / "scope.duckdb"
+    ensure_demo_warehouse(db)
+    grant = {"inventory", "locations", "suppliers", "transactions"}
+
+    def check(sql: str, granted: set[str] | None = None) -> str | None:
+        return validate_compiled_sql(sql, grantable=granted or grant, warehouse=db)
+
+    assert check(_CTE_CARTESIAN) is None
+    assert check(_CTE_TWO_CARTESIAN) is None
+    assert check(_CTE_JOIN_SUPPLIER) is None
+    assert cited_relations(_CTE_JOIN_SUPPLIER) == {"inventory", "suppliers"}
+    # The CTE body names an ungranted table: that table is the rejection, not the alias.
+    assert check("WITH a AS (SELECT * FROM alerts) SELECT * FROM a") == "ungranted:alerts"
+    # An alias that shadows an ungranted lake name hides nothing it does not define.
+    assert check("WITH alerts AS (SELECT sku FROM inventory) SELECT sku FROM alerts") is None
+    # The body of a CTE named like a granted table reads the real table beneath it.
+    assert (
+        check("WITH inventory AS (SELECT * FROM alerts) SELECT * FROM inventory")
+        == "ungranted:alerts"
+    )
+    # A CTE in one scope does not hide the real table used in another scope.
+    assert (
+        check(
+            "SELECT x.a FROM (WITH alerts AS (SELECT 1 AS a) SELECT a FROM alerts) x "
+            "JOIN alerts ON TRUE"
+        )
+        == "ungranted:alerts"
+    )
+    assert (
+        check(
+            "WITH alerts AS (SELECT 1 AS a) SELECT a FROM alerts "
+            "UNION ALL SELECT alert_id FROM (SELECT alert_id FROM main.alerts) q"
+        )
+        == "ungranted:alerts"
+    )
+    # A recursive CTE's first term does not see the CTE: DuckDB reads the base table.
+    assert check(_RECURSIVE_SHADOW) == "ungranted:alerts"
+    assert check(_RECURSIVE_SPINE) is None
+    assert cited_relations(_RECURSIVE_SPINE) == {"transactions"}
+    # DuckDB names are case-insensitive.
+    assert check("WITH L AS (SELECT location_id FROM locations) SELECT location_id FROM l") is None
+    # Names that are not in the grant stay rejected, whatever scope they sit in.
+    assert check("WITH a AS (SELECT 1 AS x) SELECT a.x FROM a JOIN shipments ON TRUE") == (
+        "ungranted:shipments"
+    )
+
+
+def test_generator_tables_are_not_file_readers(tmp_path: Path) -> None:
+    """range, generate_series and unnest are generators. Every other table function is not."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "gen.duckdb"
+    ensure_demo_warehouse(db)
+    grant = {"inventory", "suppliers", "transactions"}
+
+    def check(sql: str) -> str | None:
+        return validate_compiled_sql(sql, grantable=grant, warehouse=db)
+
+    assert check(_DATE_SPINE) is None
+    assert check(_MONTH_SPINE) is None
+    assert check(_SPINE_NO_COLUMN_LIST) is None
+    assert check(
+        "SELECT g.d AS d FROM range(DATE '2026-01-01', DATE '2026-01-04', INTERVAL 1 DAY) "
+        "AS g(d) CROSS JOIN suppliers"
+    ) is None
+    for sql in (
+        "SELECT s.supplier_id AS k FROM suppliers s JOIN duckdb_settings() d ON TRUE",
+        "SELECT s.supplier_id AS k FROM suppliers s JOIN pragma_table_info('inventory') p ON TRUE",
+        "SELECT s.supplier_id AS k FROM suppliers s JOIN duckdb_tables() p ON TRUE",
+        # A generator does not launder a reader that sits beside it.
+        "SELECT g.i AS k FROM generate_series(1, 2) AS g(i) JOIN duckdb_settings() d ON TRUE",
+        "SELECT g.i AS k FROM generate_series(1, (SELECT COUNT(*) FROM duckdb_tables())) g(i)",
+        "SELECT s.supplier_id AS k FROM suppliers s JOIN read_text('/etc/hostname') p ON TRUE",
+    ):
+        assert check(sql) == "hostile_sql:file_reader", sql
+    # read_csv is also caught by the pattern screen that runs first.
+    assert str(check("SELECT * FROM read_csv('x.csv')")).startswith("hostile_sql:")
+    # A generator over no table is a literal select, not an answer about the lake.
+    assert check("SELECT d.day AS day FROM generate_series(1, 5) AS d(day)") == "ungranted"
+    assert check("SELECT r.m AS m FROM range(1, 13) AS r(m)") == "ungranted"
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+@pytest.mark.parametrize("sql,rows", [(_DATE_SPINE, 5), (_MONTH_SPINE, 12)], ids=["gs", "range"])
+def test_generator_spine_over_granted_tables_is_served(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    sql: str,
+    rows: int,
+) -> None:
+    """R-0005: main served a date or month spine at L2; it must not turn hostile."""
+    db = tmp_path / "spine.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (route, env.get("text"))
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("assumptions"))
+    assert len(env["rows"]) == rows, route
+    # The day column is serialised (and masked) by the envelope; the counts are not.
+    expected = _executed(db, sql)
+    assert [r["n"] for r in env["rows"]] == [r["n"] for r in expected], route
+    assert "hostile" not in _visible(env), route
+    assert "cannot certify" not in str(env.get("text") or ""), route
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT i.sku AS sku FROM inventory i JOIN duckdb_settings() d ON TRUE",
+        "SELECT i.sku AS sku FROM inventory i JOIN pragma_table_info('inventory') p ON TRUE",
+        "SELECT g.i AS k FROM generate_series(1, 2) AS g(i) JOIN duckdb_settings() d ON TRUE",
+        "SELECT g.i AS k FROM generate_series(1, 5) AS g(i)",
+    ],
+    ids=["settings", "pragma", "generator_beside_reader", "literal_generator"],
+)
+@pytest.mark.parametrize("route", _ROUTES)
+def test_metadata_functions_and_literal_generators_stay_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+    sql: str,
+) -> None:
+    db = tmp_path / "meta.duckdb"
+    ensure_demo_warehouse(db)
+    probed = _spy_probes(monkeypatch)
+    env, _ = _prod_post(
+        db,
+        sql,
+        monkeypatch,
+        minter,
+        route=route,
+        pass_warehouse=True,
+        rows_sql="SELECT i.sku AS sku FROM inventory i",
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, route
+    assert env["badge"] == "ABSTAIN", route
+    assert env.get("rows") in (None, []), route
+    assert not probed, f"{route} probed refused SQL: {probed}"
+
+
+# The grant function rejects each of these and grant_hold does not refuse them
+# (not a demo-lake name). They used to skip the probe and keep L2.
+_REJECTED_NOT_HELD = (
+    (
+        "bronze_label",
+        "SELECT i.sku AS sku FROM inventory i JOIN locations l ON TRUE "
+        "WHERE i.sku NOT IN (SELECT sku FROM q3_sales_sheet)",
+        "q3_sales_sheet",
+    ),
+    (
+        "double_alias",
+        "SELECT i.sku AS sku FROM warehouse_warehouse_inventory i JOIN locations l ON TRUE",
+        "warehouse_warehouse_inventory",
+    ),
+    (
+        "explain_miss",
+        "SELECT i.sku AS sku, i.no_such_column AS c FROM inventory i JOIN locations l ON TRUE",
+        "no_such_column",
+    ),
+)
+
+
+@pytest.mark.parametrize("case", _REJECTED_NOT_HELD, ids=[c[0] for c in _REJECTED_NOT_HELD])
+def test_rejected_unprobed_sql_never_takes_l2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    case: tuple[str, str, str],
+) -> None:
+    """Fail closed: a grant rejection that is not refused outright still loses the badge."""
+    _, sql, name = case
+    db = tmp_path / "rej_open.duckdb"
+    ensure_demo_warehouse(db)
+    probed = _spy_probes(monkeypatch)
+    env, cortex = _prod_post(
+        db, sql, monkeypatch, minter, pass_warehouse=True, rows_sql=_DUP_ROWS_SQL
+    )
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, env.get("text")
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("rows") in (None, [])
+    assert not probed, f"probe ran on SQL the grant function rejects: {probed}"
+    assert name not in _visible(env), "an ungranted name reached the viewer"
+
+
+def test_cloop_b_runs_a_granted_warehouse_alias_on_the_lake_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """The checker accepts warehouse_<granted table>; the loop's own run must too."""
+    db = tmp_path / "cloop_alias.duckdb"
+    ensure_demo_warehouse(db)
+    aliased = (
+        "SELECT l.location_id AS location_id, COUNT(i.sku) AS sku_count "
+        "FROM warehouse_locations l JOIN warehouse_inventory i "
+        "ON i.location_id = l.location_id GROUP BY l.location_id"
+    )
+    env, _ = _prod_post(
+        db,
+        aliased,
+        monkeypatch,
+        minter,
+        route="cloop_b",
+        pass_warehouse=True,
+        rows_sql=_SKU_PER_LOCATION,
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env.get("text")
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert "db_error" not in _visible(env)
+    assert _cells(env["rows"]) == _cells(_executed(db, _SKU_PER_LOCATION))
+
+
+def test_recursive_cte_cannot_hide_an_ungranted_table_in_its_first_term(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Finance does not grant alerts. A CTE that shares its name must not open it."""
+    db = tmp_path / "rec_shadow.duckdb"
+    ensure_demo_warehouse(db)
+    probed = _spy_probes(monkeypatch)
+    env, cortex = _prod_post(
+        db,
+        _RECURSIVE_SHADOW,
+        monkeypatch,
+        minter,
+        pass_warehouse=True,
+        rows_sql="SELECT 1 AS a",
+    )
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, env.get("text")
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("rows") in (None, [])
+    assert not probed
+    assert "alerts" not in _visible(env)
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_recursive_date_spine_over_granted_tables_is_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    db = tmp_path / "rec_spine.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, _RECURSIVE_SPINE, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (route, env.get("text"))
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("assumptions"))
+    expected = _executed(db, _RECURSIVE_SPINE)
+    assert len(env["rows"]) == len(expected) == 5, route
+    assert [r["n"] for r in env["rows"]] == [r["n"] for r in expected], route

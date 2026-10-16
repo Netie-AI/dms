@@ -672,7 +672,104 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
 
 
 def cited_relations(sql: str) -> set[str]:
+    """Bare names of the real tables a query reads. A CTE alias is not one.
+
+    sqlglot scopes decide it. When a query cannot be scoped, every FROM/JOIN
+    name counts, which can only reject more.
+    """
+    scoped = _scoped_tables(sql)
+    if scoped is not None:
+        return scoped
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
+
+
+def _scoped_tables(sql: str) -> set[str] | None:
+    """Real tables by scope, or None when the SQL cannot be scoped.
+
+    A name is a CTE only where an enclosing WITH defines it and the name has
+    no schema. The same name used as a table elsewhere is still that table:
+    inside its own CTE body, in a scope the WITH does not reach, or as
+    ``main.<name>``. A table node no scope claims counts as real.
+    """
+    from sqlglot import exp, parse
+    from sqlglot.optimizer.scope import traverse_scope
+
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+        if not all(isinstance(t, exp.Query) for t in trees):
+            return None
+        named: set[str] = set()
+        for tree in trees:
+            claimed: set[int] = set()
+            for scope in traverse_scope(tree):
+                ctes = {str(name).lower() for name in scope.cte_sources}
+                for table in scope.tables:
+                    claimed.add(id(table))
+                    name = table.name.lower()
+                    if not (table.db or table.catalog) and name in ctes:
+                        if not _names_real_table(table, name):
+                            continue
+                    named.add(_table_label(table))
+            named.update(
+                _table_label(t) for t in tree.find_all(exp.Table) if id(t) not in claimed
+            )
+    except Exception:  # noqa: BLE001 - an unscoped query falls back to the strict read
+        return None
+    named.discard("")
+    return named
+
+
+def _names_real_table(table: Any, name: str) -> bool:
+    """True when a CTE-named reference inside that CTE's own body reads the real table.
+
+    DuckDB binds a CTE's own name inside its body to the table of that name,
+    except in the recursive term of a WITH RECURSIVE (the arms after the
+    first), which reads the CTE's working rows. Outside its body the name is
+    the CTE.
+    """
+    from sqlglot import exp
+
+    node = table.parent
+    while node is not None:
+        if isinstance(node, exp.CTE) and str(node.alias).lower() == name:
+            holder = node.parent
+            recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+            body = node.this
+            if not (recursive and isinstance(body, exp.SetOperation)):
+                return True
+            base = body
+            while isinstance(base, exp.SetOperation):
+                base = base.this
+            ancestor = table.parent
+            while ancestor is not None and ancestor is not base:
+                ancestor = ancestor.parent
+            return ancestor is base
+        node = node.parent
+    return False
+
+
+def _table_label(table: Any) -> str:
+    """The bare name a plain table reference cites. A table function has none."""
+    from sqlglot import exp
+
+    if not isinstance(table.this, exp.Identifier):
+        return ""
+    parts = [str(p) for p in (table.catalog, table.db, table.name) if p]
+    return _relation_bare(".".join(parts))
+
+
+#: Pure row generators. They read no file and no table, so they are not a
+#: reader. Any other table function is one: read_csv, read_text, glob,
+#: duckdb_settings(), pragma_table_info(), ...
+_GENERATORS = frozenset({"range", "generate_series", "unnest"})
+
+
+def _is_generator(node: Any) -> bool:
+    from sqlglot import exp
+
+    if isinstance(node, (exp.GenerateSeries, exp.Unnest)):
+        return True
+    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _GENERATORS
 
 
 _PATH_CHARS = re.compile(r"[/\\:*?]")
@@ -697,9 +794,11 @@ def _reads_files(sql: str, grantable: set[str]) -> bool:
     Every DuckDB file reader (read_text, read_blob, sniff_csv, read_ndjson,
     glob, ...) is a table function, and ``FROM 'x.csv'`` is a replacement scan.
     One structural test replaces a name list that has to grow with DuckDB.
-    A source that is not a plain identifier is never a granted table. A
-    granted upload may carry its file name as its table name, so an extension
-    alone refuses only when the Space does not grant that exact name.
+    A source that is not a plain identifier is never a granted table, unless
+    it is a pure generator (range, generate_series, unnest): a date spine
+    reads nothing. A granted upload may carry its file name as its table
+    name, so an extension alone refuses only when the Space does not grant
+    that exact name.
     """
     from sqlglot import exp, parse
 
@@ -711,6 +810,8 @@ def _reads_files(sql: str, grantable: set[str]) -> bool:
     for tree in trees:
         for table in tree.find_all(exp.Table) if tree is not None else ():
             if not isinstance(table.this, exp.Identifier):
+                if _is_generator(table.this):
+                    continue
                 return True
             name = table.name
             if _PATH_CHARS.search(name):
@@ -765,7 +866,12 @@ def validate_compiled_sql(
         no_table = isinstance(tree, exp.Select) and not any(
             isinstance(node, exp.Table) and node.name for node in tables
         )
-        if no_table and not any(isinstance(node, exp.Func) for node in funcs):
+        # A generator over no table is constants too (a spine of dates).
+        generated = tree is not None and any(
+            _is_generator(node)
+            for node in tree.find_all(exp.GenerateSeries, exp.Unnest, exp.Anonymous)
+        )
+        if no_table and (generated or not any(isinstance(node, exp.Func) for node in funcs)):
             return "ungranted"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"

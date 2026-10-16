@@ -62,12 +62,12 @@ def served_result_reason(
     warehouse: Path | str | None = None,
     as_of: str | None = None,
     ontology: Any | None = None,
-    probe: bool = True,
 ) -> str | None:
     """Reason code, or None when this SQL may take a badge.
 
-    ``probe=False`` skips every check that executes SQL on the lake. A caller
-    passes it for SQL the grant function rejected.
+    The probe executes SQL on the lake, so only SQL the one grant function
+    accepted is handed to this check. Rejected SQL never reaches it and never
+    takes a badge (map_ask_response_to_envelope).
     """
     try:
         tree = parse_one(sql or "", read=_DIALECT)
@@ -82,7 +82,7 @@ def served_result_reason(
     many = _direct_many_to_many(tree, ontology)
     if many:
         return many
-    return _distinct_key_probe(tree, warehouse if probe else None, ontology)
+    return _distinct_key_probe(tree, warehouse, ontology)
 
 
 def _as_of_window(tree: exp.Select, as_of: str | None) -> str | None:
