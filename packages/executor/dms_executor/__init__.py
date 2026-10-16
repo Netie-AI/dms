@@ -1221,7 +1221,8 @@ def map_ask_response_to_envelope(
 
     ``grant_rejected`` is SQL the one grant function rejected that the ask
     route did not refuse outright (a bronze label, an EXPLAIN miss). Nothing
-    probes it, so nothing certifies it: it never takes L2.
+    probes it, so nothing certifies it: it never takes L2. The envelope's own,
+    more specific demotions (scope conflict, shape mismatch) run first.
     """
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
@@ -1270,14 +1271,7 @@ def map_ask_response_to_envelope(
     gate_finding: str | None = None
     if not refused and not engine_unsure and not resp.abstained:
         raw_name = (badge_raw or "").strip().lower()
-        if grant_rejected and (
-            normalize_badge(badge_raw, abstained=False, gate_passed=True) == "L2_VALIDATED"
-        ):
-            # Fail closed. An unprobed answer is not a validated one, on any
-            # route name that would otherwise map to L2.
-            gate_finding = "grant_rejected"
-            badge_raw = "abstain"
-        elif raw_name == "generated":
+        if raw_name == "generated" and not grant_rejected:
             from dms_executor.served_gate import served_result_reason
 
             # Missing warehouse, ontology, or as_of is not a pass and not L2.
@@ -1407,6 +1401,22 @@ def map_ask_response_to_envelope(
         )
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
+        if grant_rejected and env.get("badge") == "L2_VALIDATED":
+            # Fail closed. SQL the one grant function rejected was never probed,
+            # so an answer on it is not a validated one, on any route name that
+            # maps to L2. Runs after the envelope's own demotions so a scope
+            # conflict or shape mismatch keeps its more specific reason.
+            from dms_executor.gen_path_refuse import customer_abstain_text
+
+            fields["text"] = customer_abstain_text("reconfirm:grant_rejected")
+            fields["assumptions"] = [*assumptions, "GEN-01: reconfirm:grant_rejected"]
+            fields.update(rows=[], chart=None, sql_used=None, drillthrough_token=None)
+            env = build_abstain(
+                reason="reconfirm:grant_rejected",
+                question=question or "",
+                stage="served_gate",
+                **fields,
+            )
     assert_envelope_valid(env)
     return env
 
