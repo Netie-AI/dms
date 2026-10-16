@@ -1957,3 +1957,16 @@ def test_probes_do_not_take_the_ingest_write_lease(
     as_of = "2026-10-16T00:00:00Z"
     sql = _GATE_FANOUT["aggregate_cte"]
     assert served_result_reason(sql, warehouse=gate_lake, as_of=as_of) == "fanout_subject_keys"
+
+
+def test_a_warehouse_schema_qualified_table_runs_on_the_lake_name() -> None:
+    """Cortex cites "warehouse"."inventory"; grant and EXPLAIN both read it as inventory."""
+    from dms_executor.served_gate import lake_alias_sql
+
+    assert lake_alias_sql(
+        'SELECT i.sku FROM "warehouse"."inventory" AS i JOIN warehouse.suppliers AS s '
+        "ON i.supplier_id = s.supplier_id"
+    ) == 'SELECT i.sku FROM "inventory" AS i JOIN suppliers AS s ON i.supplier_id = s.supplier_id'
+    assert lake_alias_sql("SELECT warehouse.inventory.sku FROM warehouse.inventory") == (
+        "SELECT inventory.sku FROM inventory"
+    )

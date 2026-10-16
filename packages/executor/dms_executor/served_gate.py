@@ -54,13 +54,24 @@ def lake_alias_sql(sql: str) -> str:
 
 
 def _unalias(tree: exp.Expression) -> bool:
+    """Name Cortex's warehouse the way the lake does.
+
+    The engine cites a lake table as ``warehouse_<table>`` or in a schema
+    named ``warehouse`` (``"warehouse"."inventory"``); the grant check reads
+    both as ``<table>``, and the lake holds it in ``main``.
+    """
     changed = False
     renamed: dict[str, str] = {}
     for table in tree.find_all(exp.Table):
         name = table.name.lower()
-        if table.catalog or str(table.db or "main").lower() != "main":
+        db = str(table.db or "").lower()
+        if table.catalog or not isinstance(table.this, exp.Identifier):
             continue
-        if not name.startswith(_ALIAS_PREFIX) or name in _LAKE:
+        if db == _ALIAS_PREFIX.rstrip("_") and name in _LAKE:
+            table.set("db", None)
+            changed = True
+            continue
+        if db not in ("", "main") or not name.startswith(_ALIAS_PREFIX) or name in _LAKE:
             continue
         lake = name[len(_ALIAS_PREFIX) :]
         if lake in _LAKE:
@@ -69,12 +80,18 @@ def _unalias(tree: exp.Expression) -> bool:
             if not table.alias:
                 renamed[name] = lake
     # warehouse_inventory.sku (or main.warehouse_inventory.sku) qualifies by
-    # the table name, which is renamed too.
+    # the table name, which is renamed too; warehouse.inventory.sku drops the
+    # schema with its table.
     for column in tree.find_all(exp.Column):
-        bare = renamed.get(str(column.table or "").lower())
-        if bare is None or column.args.get("catalog"):
+        if column.args.get("catalog"):
             continue
-        if str(column.args.get("db") or "main").lower() == "main":
+        db = str(column.args.get("db") or "").lower()
+        qual = str(column.table or "").lower()
+        if db == _ALIAS_PREFIX.rstrip("_") and qual in _LAKE:
+            column.set("db", None)
+            continue
+        bare = renamed.get(qual)
+        if bare is not None and db in ("", "main"):
             column.set("table", exp.to_identifier(bare))
     return changed
 
