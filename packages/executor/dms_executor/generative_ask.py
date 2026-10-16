@@ -110,7 +110,7 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
 )
-from dms_executor.sql_shape import literal_figure, select_shape
+from dms_executor.sql_shape import literal_figure_reason, select_shape
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -712,14 +712,14 @@ def validate_compiled_sql(
     try:
         con.execute(f"EXPLAIN {sql}")
         # Binding only: the relation is lazy, so the types cost no scan.
-        types = [str(t) for t in con.sql(sql).types]
+        relation = con.sql(sql)
+        types = [str(t) for t in relation.types]
+        names = [str(n) for n in relation.columns]
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
-    if literal_figure(sql, types):
-        return "hostile_sql:literal_output"
-    return None
+    return literal_figure_reason(sql, types, names)
 
 
 def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:

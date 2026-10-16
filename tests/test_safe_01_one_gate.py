@@ -169,11 +169,25 @@ LITERAL_ONLY = [
     "SELECT COALESCE(NULL, 4242) AS revenue FROM inventory",
     "SELECT CASE WHEN 1 = 1 THEN 4242 END AS revenue FROM inventory",
     "SELECT CAST('4242' AS INTEGER) AS revenue FROM inventory",
-    "SELECT SUM(4242) AS revenue FROM inventory",
     "SELECT sku, revenue FROM inventory, (SELECT 4242 AS revenue) r",
     (
         "WITH x AS (SELECT quantity_kg AS v FROM inventory "
         "UNION ALL SELECT 4242 FROM inventory) SELECT v FROM x"
+    ),
+    # A window states its function's value; ORDER BY only picks the row.
+    "SELECT MAX(4242) OVER () AS revenue FROM inventory",
+    "SELECT FIRST_VALUE(4242) OVER (ORDER BY quantity_kg) AS revenue FROM inventory",
+    # A lateral alias, a star passing a literal through, a generator column
+    # beside a real table, rows counted from a generator.
+    "SELECT 4242 AS x, x AS revenue FROM inventory",
+    "SELECT sku, revenue FROM (SELECT * FROM inventory, (SELECT 4242 AS revenue) r) s",
+    "SELECT range AS revenue FROM range(4242, 4243), inventory",
+    "SELECT COUNT(*) AS revenue FROM range(4242) WHERE EXISTS (SELECT 1 FROM inventory)",
+    # Matched by result name: a star arm, UNION BY NAME.
+    "WITH t AS (SELECT sku, category FROM inventory) SELECT *, 4242 AS revenue FROM t",
+    (
+        "SELECT sku, quantity_kg FROM inventory "
+        "UNION ALL BY NAME SELECT 4242 AS quantity_kg, sku FROM inventory"
     ),
 ]
 
@@ -220,6 +234,26 @@ LEGIT = [
     "WITH x(v) AS (SELECT quantity_kg FROM inventory) SELECT v FROM x",
     "SELECT i.* FROM inventory i",
     "SELECT sku FROM inventory i WHERE quantity_kg > (SELECT AVG(quantity_kg) FROM inventory)",
+    # A sum of a constant counts rows; COLUMNS picks table columns by name.
+    "SELECT category, SUM(1) AS n FROM inventory GROUP BY category",
+    "SELECT SUM(1) AS n FROM inventory",
+    "SELECT COLUMNS('quantity.*') FROM inventory",
+    "SELECT sku, COLUMNS('quantity.*') FROM inventory",
+    "SELECT MIN(COLUMNS(['quantity_kg', 'reorder_level_kg'])) FROM inventory",
+    "SELECT sku, RANK() OVER (ORDER BY quantity_kg) AS r FROM inventory",
+    "SELECT sku, NTILE(4) OVER (ORDER BY quantity_kg) AS quartile FROM inventory",
+    (
+        "WITH RECURSIVE h(sku, lvl) AS (SELECT sku, 0 FROM inventory "
+        "UNION ALL SELECT h.sku, h.lvl + 1 FROM h WHERE h.lvl < 2) SELECT sku, lvl FROM h"
+    ),
+    "SELECT st.* FROM (SELECT {'k': sku, 'v': quantity_kg} AS st FROM inventory)",
+    (
+        "SELECT sku, quantity_kg FROM inventory "
+        "UNION ALL BY NAME SELECT quantity_kg, 'TXN' AS sku FROM transactions"
+    ),
+    "SELECT d.day, COUNT(t.txn_id) AS n FROM range(1, 4) d(day) LEFT JOIN transactions t ON TRUE "
+    "GROUP BY d.day",
+    "SELECT * REPLACE (ROUND(quantity_kg, 1) AS quantity_kg) FROM inventory",
 ]
 
 #: Pass the shape layer on purpose. Each states an invented figure next to a
@@ -228,6 +262,11 @@ LEGIT = [
 SHAPE_RESIDUAL = [
     "SELECT sku, 4242 AS revenue, quantity_kg FROM inventory",
     "SELECT 4242 + 0 * SUM(quantity_kg) AS revenue FROM inventory",
+    "SELECT SUM(4242) AS revenue FROM inventory",
+    "SELECT category, CASE category WHEN 'x' THEN 5000 ELSE 4242 END AS target_kg "
+    "FROM inventory GROUP BY category",
+    "SELECT ARG_MAX(4242, quantity_kg) AS revenue FROM inventory",
+    "SELECT category, 'RM 4242' AS revenue FROM inventory GROUP BY category",
 ]
 
 
@@ -270,6 +309,19 @@ def test_legitimate_selects_still_pass(sql: str, lake: Path) -> None:
 @pytest.mark.parametrize("sql", SHAPE_RESIDUAL)
 def test_named_residuals_pass_the_shape_layer(sql: str, lake: Path) -> None:
     assert _why(sql, lake) is None, sql
+
+
+#: Deeper than the lineage walk can trace. Each must come back as a code,
+#: never as an exception that turns the ask into a 503.
+TOO_DEEP = [
+    "SELECT sku, " + " + ".join(["quantity_kg"] * 600) + " AS v FROM inventory",
+    " UNION ALL ".join(["SELECT sku, quantity_kg FROM inventory"] * 400),
+]
+
+
+@pytest.mark.parametrize("sql", TOO_DEEP, ids=["long_chain", "wide_union"])
+def test_sql_too_deep_to_trace_fails_closed_with_a_code(sql: str, lake: Path) -> None:
+    assert _why(sql, lake) == "hostile_sql:sql_not_analyzable"
 
 
 def test_comma_and_cte_joins_cannot_smuggle_an_ungranted_table(lake: Path) -> None:
@@ -425,6 +477,9 @@ API_HOSTILE = [
     "SELECT sku FROM inventory, glob('*')",
     "SELECT 4242 AS answer",
     "WITH a AS (SELECT sku FROM inventory) SELECT 4242 AS answer",
+    "WITH x AS (SELECT 4242 AS n FROM inventory) SELECT n FROM x",
+    "SELECT sku, 4242 AS n FROM inventory",
+    *TOO_DEEP,
 ]
 
 

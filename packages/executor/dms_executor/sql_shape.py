@@ -26,12 +26,17 @@ What it decides, and nothing else:
 - Reading a table is not enough: every UNION arm must return at least one
   value computed from a real table's rows, traced through CTEs, derived
   tables, column lists, scalar subqueries and functions, so ``SELECT 4242
-  FROM t`` is refused however the literal is wrapped. ``literal_figure`` adds
+  FROM t`` is refused however the literal is wrapped. ``literal_figure_reason`` adds
   the engine's column types after EXPLAIN: an arm whose numbers are all
   literals is refused, a literal label beside a computed figure is not.
-- Not covered, named so nobody reads more into it: a literal number beside a
-  computed one (``SELECT sku, 4242 AS revenue, qty``) and zero-weight
-  arithmetic (``4242 + 0 * SUM(q)``). Those need a figure verifier.
+- Not covered, named so nobody reads more into it (SHAPE_RESIDUAL in
+  tests/test_safe_01_one_gate.py): a literal number beside a computed one
+  (``SELECT sku, 4242 AS revenue, qty``), a constant multiplied into or
+  added to a computed value (``4242 + 0 * SUM(q)``, ``SUM(4242)``), a
+  constant chosen by a column (``CASE category WHEN 'x' THEN 5000 ELSE 4242
+  END``), a function of a column that ignores its value (``ARG_MAX(4242,
+  q)``), and figures typed as text (``'RM 4242'``). Those need a figure
+  verifier.
 
 Grants (which tables, per Space) stay in ``validate_compiled_sql`` and in the
 OPEN PR that restructures them; this layer only reports the table names.
@@ -190,6 +195,19 @@ _NUMERIC_TYPES = frozenset(
 _MAX_DEPTH = 32
 
 
+def _is_star(projection: Any) -> bool:
+    return isinstance(projection, exp.Star) or (
+        isinstance(projection, exp.Column) and isinstance(projection.this, exp.Star)
+    )
+
+
+def _is_recursive(scope: Scope) -> bool:
+    """A WITH RECURSIVE CTE: its later arms build on its own rows."""
+    cte = scope.expression.parent
+    holder = cte.parent if isinstance(cte, exp.CTE) else None
+    return isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+
+
 def _named_output(scope: Scope, name: str) -> list[Any] | None:
     """The projection(s) a source scope exposes under ``name``, one per UNION arm.
 
@@ -228,6 +246,18 @@ def _real_table(source: Any) -> bool:
     return isinstance(source, exp.Table) and _is_name(source) and not _is_generator(source)
 
 
+def _generator_names(table: exp.Table) -> set[str]:
+    """Columns a generator in FROM exposes: its column list, else its own name."""
+    listed = {_bare(c) for c in table.alias_column_names}
+    if listed:
+        return listed
+    if isinstance(table.this, exp.GenerateSeries):
+        # sqlglot reads range() and generate_series() as one node; DuckDB names
+        # the column after the function that was written.
+        return {"range", "generate_series"}
+    return {_bare(getattr(table.this, "name", ""))}
+
+
 def _source_derived(source: Any, depth: int) -> bool:
     """Does a FROM source carry rows of a real table into this scope?"""
     if isinstance(source, exp.Table):
@@ -237,27 +267,77 @@ def _source_derived(source: Any, depth: int) -> bool:
     return False
 
 
+def _rows_from_data(scope: Scope, depth: int = 0) -> bool:
+    """Every arm's rows come through FROM or JOIN from a real table.
+
+    A WHERE or EXISTS subquery that reads a table does not count: the rows
+    are still the generator's.
+    """
+    if depth > _MAX_DEPTH:
+        return True
+    for arm in _arms(scope):
+        if not any(
+            _real_table(src) or (isinstance(src, Scope) and _rows_from_data(src, depth + 1))
+            for src in arm.sources.values()
+        ):
+            return False
+    return True
+
+
+def _lateral_alias(column: exp.Column, scope: Scope) -> Any | None:
+    """The expression an unqualified name means as an alias of another output."""
+    select = scope.expression
+    if not isinstance(select, exp.Select):
+        return None
+    holder: Any = column
+    while holder is not None and holder.parent is not select:
+        holder = holder.parent
+    if holder is None or not any(holder is p for p in select.expressions):
+        return None
+    want = _bare(column.name)
+    for projection in select.expressions:
+        if projection is holder or not isinstance(projection, exp.Alias):
+            continue
+        if _bare(projection.alias) == want:
+            return projection.this
+    return None
+
+
 def _column_derived(column: exp.Column, scope: Scope, depth: int) -> bool:
+    if depth > _MAX_DEPTH:
+        return True
     sources = scope.sources
     if column.table:
         picked = [v for k, v in sources.items() if _bare(k) == _bare(column.table)]
     else:
         picked = list(sources.values())
+        lateral = _lateral_alias(column, scope)
+        if lateral is not None:
+            return _derived(lateral, scope, depth + 1)
     if isinstance(column.this, exp.Star):
+        if not picked and column.table:
+            # st.* expands a struct column, not a source.
+            return _column_derived(exp.column(column.table), scope, depth + 1)
         return any(_source_derived(src, depth) for src in picked)
     for src in picked:
         if isinstance(src, Scope):
             named = _named_output(src, column.name)
             if named is not None:
-                return all(_derived(p, arm, depth + 1) for p, arm in named)
+                combine = any if _is_recursive(src) else all
+                return combine(_derived(p, arm, depth + 1) for p, arm in named)
+            if len(_arms(src)) == 1 and any(_is_star(p) for p in src.expression.selects):
+                # A star passes the column through from that scope's own sources.
+                return _column_derived(exp.column(column.name), src, depth + 1)
+        elif isinstance(src, exp.Table) and _is_generator(src):
+            if _bare(column.name) in _generator_names(src):
+                return False
     if any(_real_table(src) for src in picked):
         return True
     if not picked and scope.parent is not None:
         # A correlated reference to the enclosing query.
         return _column_derived(column, scope.parent, depth + 1)
-    # Bound by the engine but not traceable here (a generator column, a lateral
-    # alias, a source column list this walk does not model). A generator column
-    # is not data; anything else counts as data rather than refuse it.
+    # Bound by the engine but not traceable here. A generator column is not
+    # data; anything else counts as data rather than refuse it.
     return not any(isinstance(src, exp.Table) and _is_generator(src) for src in picked)
 
 
@@ -269,21 +349,37 @@ def _child_scope(scope: Scope, node: Any) -> Scope | None:
     return None
 
 
-def _derived(node: Any, scope: Scope, depth: int = 0) -> bool:
-    """True when this value is computed from rows of a real table.
+#: COLUMNS('regex') and COLUMNS([...]) select table columns by name.
+_COLUMNS_NODE: tuple[type, ...] = tuple(
+    n for n in (getattr(exp, "Columns", None),) if isinstance(n, type)
+)
 
-    A literal, or functions and arithmetic of literals, is not, however deep
-    it is wrapped in CTEs, derived tables or scalar subqueries. A count or a
-    window over real rows is. Zero-weight arithmetic (``4242 + 0 * SUM(q)``)
-    reads a column and passes: this is a shape check, not a figure verifier.
+
+def _derived(node: Any, scope: Scope, depth: int = 0) -> bool:
+    """True when this value depends on rows of a real table.
+
+    A literal, or functions and arithmetic of literals, does not, however deep
+    it is wrapped in CTEs, derived tables or scalar subqueries. A COUNT or a
+    SUM over real rows does, even SUM(1), because it depends on how many rows
+    there are; MIN, MAX, AVG and FIRST of a constant do not. A window's value
+    is its function's: its ORDER BY picks rows but states no figure, except
+    for ranking functions, which number the rows. Not judged here (needs a
+    figure verifier): a constant beside or multiplied into a computed value.
     """
     if depth > _MAX_DEPTH:
         return True
     if isinstance(node, (exp.Subquery, exp.Select, exp.SetOperation)):
         child = _child_scope(scope, node)
         return child is not None and _scope_derived(child, depth + 1)
-    if isinstance(node, (exp.Count, exp.Window)):
-        return _reads_data(scope, set())
+    if isinstance(node, (exp.Count, exp.Sum)) and _rows_from_data(scope):
+        return True
+    if isinstance(node, exp.Window):
+        fn = node.this
+        if isinstance(fn, exp.Ntile) or not list(fn.iter_expressions()):
+            return _rows_from_data(scope)
+        return _derived(fn, scope, depth)
+    if _COLUMNS_NODE and isinstance(node, _COLUMNS_NODE):
+        return _rows_from_data(scope)
     if isinstance(node, exp.Star):
         return any(_source_derived(src, depth) for src in scope.sources.values())
     if isinstance(node, exp.Column):
@@ -320,36 +416,76 @@ def _root_scope(sql: str) -> Scope | None:
     return scopes[-1] if scopes else None
 
 
-def literal_figure(sql: str, types: Sequence[Any]) -> bool:
-    """True when a UNION arm returns a number nothing computed and no number that was.
+def _judge(arm: Scope, pairs: Sequence[tuple[Any, bool]], star_figures: bool) -> bool:
+    """An invented figure and no computed one, over (projection, is numeric) pairs."""
+    invented = False
+    computed = star_figures
+    for projection, numeric in pairs:
+        if not numeric:
+            continue
+        if _derived(projection, arm):
+            computed = True
+        elif not _null_only(projection):
+            invented = True
+    return invented and not computed
 
-    ``types`` are the engine's result column types. ``SELECT sku, 0 AS revenue
-    FROM t`` is refused: its only figure is invented. ``SELECT sku, 2024 AS
-    year, SUM(q) FROM t`` passes: a label beside a computed figure. An arm
-    with a star is not judged here, because its column positions are the
-    engine's. Call only after ``select_shape`` passed.
+
+def _by_name(arm: Scope, numeric_of: dict[str, bool | None]) -> bool:
+    """Judge an arm by result column name: UNION BY NAME, or an arm with a star."""
+    explicit: dict[str, Any] = {}
+    star = False
+    for projection in arm.expression.selects:
+        if _is_star(projection):
+            star = True
+            for replaced in projection.args.get("replace") or []:
+                explicit[_bare(replaced.alias_or_name)] = replaced
+            continue
+        explicit[_bare(projection.alias_or_name)] = projection
+    pairs = [(p, numeric_of.get(n) is True) for n, p in explicit.items()]
+    # Numeric columns a star brings are the source's own figures.
+    star_figures = star and any(
+        numeric is True and name not in explicit for name, numeric in numeric_of.items()
+    )
+    return _judge(arm, pairs, star_figures)
+
+
+def literal_figure_reason(sql: str, types: Sequence[Any], names: Sequence[str] = ()) -> str | None:
+    """Refusal when a UNION arm returns a number nothing computed and no number that was.
+
+    ``types`` and ``names`` are the engine's result columns. ``SELECT sku, 0
+    AS revenue FROM t`` is refused: its only figure is invented. ``SELECT
+    sku, 2024 AS year, SUM(q) FROM t`` passes: a label beside a computed
+    figure. Arms are matched to result columns by position, or by name for
+    UNION BY NAME and for an arm with a star. SQL too deep to trace fails
+    closed. Call only after ``select_shape`` passed.
     """
     root = _root_scope(sql)
     if root is None:
-        return False
-    for arm in _arms(root):
-        selects = list(arm.expression.selects)
-        if len(selects) != len(types) or any(
-            isinstance(p, exp.Star) or (isinstance(p, exp.Column) and isinstance(p.this, exp.Star))
-            for p in selects
-        ):
-            continue
-        invented = computed = False
-        for projection, type_name in zip(selects, types, strict=True):
-            if not _numeric(str(type_name)):
+        return None
+    numeric = [_numeric(str(t)) for t in types]
+    numeric_of: dict[str, bool | None] = {}
+    for name, is_numeric in zip((_bare(n) for n in names), numeric, strict=False):
+        # A repeated result name is ambiguous: never matched.
+        numeric_of[name] = None if name in numeric_of else is_numeric
+    expression = root.expression
+    by_name = isinstance(expression, exp.SetOperation) and bool(expression.args.get("by_name"))
+    try:
+        for index, arm in enumerate(_arms(root)):
+            selects = list(arm.expression.selects)
+            star = any(_is_star(p) for p in selects)
+            if by_name or star:
+                if not names or (star and index > 0 and not by_name):
+                    continue
+                refused = _by_name(arm, numeric_of)
+            elif len(selects) == len(numeric):
+                refused = _judge(arm, list(zip(selects, numeric, strict=True)), False)
+            else:
                 continue
-            if _derived(projection, arm):
-                computed = True
-            elif not _null_only(projection):
-                invented = True
-        if invented and not computed:
-            return True
-    return False
+            if refused:
+                return "hostile_sql:literal_output"
+    except RecursionError:
+        return "hostile_sql:sql_not_analyzable"
+    return None
 
 
 def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
@@ -395,13 +531,18 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
             if _cte_of(scope, table) is not None:
                 continue
             real.add(_bare(table.name))
-    if not _reads_data(scopes[-1], set()):
-        return "hostile_sql:no_data_source", frozenset()
-    if not _scope_derived(scopes[-1]):
-        # Reads a table, returns nothing computed from it: SELECT 4242 FROM t,
-        # however the literal is wrapped.
-        return "hostile_sql:literal_output", frozenset()
+    try:
+        if not _reads_data(scopes[-1], set()):
+            return "hostile_sql:no_data_source", frozenset()
+        if not _scope_derived(scopes[-1]):
+            # Reads a table, returns nothing computed from it: SELECT 4242 FROM
+            # t, however the literal is wrapped.
+            return "hostile_sql:literal_output", frozenset()
+    except RecursionError:
+        # Nested past what the walk can trace (hundreds of UNION arms or of
+        # terms in one expression): fail closed rather than crash the ask.
+        return "hostile_sql:sql_not_analyzable", frozenset()
     return None, frozenset(real)
 
 
-__all__ = ["literal_figure", "select_shape"]
+__all__ = ["literal_figure_reason", "select_shape"]
