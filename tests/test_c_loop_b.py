@@ -139,7 +139,7 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         seen.append(ctx.get("sql_loop_feedback"))
         if len(seen) == 1:
-            return _names(query_sql="SELECT error('boom') FROM inventory LIMIT 1")
+            return _names(query_sql="SELECT error('boom ' || sku) FROM inventory LIMIT 1")
         return _names(query_sql=_COLD_SQL)
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)
@@ -509,7 +509,7 @@ def test_db_error_text_is_masked_before_prompt_and_attempt(
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         seen.append(ctx.get("sql_loop_feedback"))
         if len(seen) == 1:
-            return _names(query_sql=f"SELECT error('{secret_row}') FROM inventory LIMIT 1")
+            return _names(query_sql=f"SELECT error('{secret_row} ' || sku) FROM inventory LIMIT 1")
         return _names(query_sql=_COLD_SQL)
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)

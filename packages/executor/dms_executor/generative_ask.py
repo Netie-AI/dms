@@ -110,7 +110,7 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
 )
-from dms_executor.sql_shape import select_shape
+from dms_executor.sql_shape import literal_figure, select_shape
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -688,6 +688,8 @@ def validate_compiled_sql(
     SELECT that reads at least one real table (``select_shape``, the engine's
     own statement splitter and one syntax tree) before any table is checked
     against ``grantable``, and before EXPLAIN, which would run a stacked tail.
+    After EXPLAIN, a result whose only figures are literals (``SELECT sku, 0
+    AS revenue FROM t``) is refused by the engine's own column types.
     """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
@@ -709,10 +711,14 @@ def validate_compiled_sql(
     con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
+        # Binding only: the relation is lazy, so the types cost no scan.
+        types = [str(t) for t in con.sql(sql).types]
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
+    if literal_figure(sql, types):
+        return "hostile_sql:literal_output"
     return None
 
 

@@ -152,6 +152,29 @@ LITERAL_ONLY = [
     "SELECT CAST(4242 AS DOUBLE) AS revenue, sku FROM inventory",
     "WITH a AS (SELECT * FROM inventory) SELECT 4242 AS n FROM a",
     "SELECT sku FROM inventory UNION ALL SELECT 4242 FROM inventory",
+    "SELECT sku, 0 AS revenue FROM inventory",
+    "SELECT unnest([1, 2, 3]) AS x, sku FROM inventory",
+    # The same literal, wrapped: CTE, derived table, column lists, scalar
+    # subquery, functions, a CASE that always takes one branch, an aggregate
+    # of a literal.
+    "WITH x AS (SELECT 4242 AS revenue FROM inventory) SELECT revenue FROM x",
+    "WITH x(v) AS (SELECT 4242 FROM inventory) SELECT v FROM x",
+    "SELECT v FROM (SELECT 4242 AS v FROM inventory) s",
+    "SELECT v FROM (SELECT 4242 AS a FROM inventory) s(v)",
+    "SELECT * FROM (SELECT 4242 AS v FROM inventory) s",
+    "SELECT (SELECT 4242) AS revenue FROM inventory",
+    "SELECT ABS(4242) AS revenue FROM inventory",
+    "SELECT ROUND(4242.5, 0) AS revenue FROM inventory",
+    "SELECT GREATEST(4242, 1) AS revenue FROM inventory",
+    "SELECT COALESCE(NULL, 4242) AS revenue FROM inventory",
+    "SELECT CASE WHEN 1 = 1 THEN 4242 END AS revenue FROM inventory",
+    "SELECT CAST('4242' AS INTEGER) AS revenue FROM inventory",
+    "SELECT SUM(4242) AS revenue FROM inventory",
+    "SELECT sku, revenue FROM inventory, (SELECT 4242 AS revenue) r",
+    (
+        "WITH x AS (SELECT quantity_kg AS v FROM inventory "
+        "UNION ALL SELECT 4242 FROM inventory) SELECT v FROM x"
+    ),
 ]
 
 LEGIT = [
@@ -173,7 +196,6 @@ LEGIT = [
     "SELECT * FROM inventory, range(3)",
     "SELECT r.range, COUNT(*) AS n FROM range(3) r JOIN inventory i ON TRUE GROUP BY 1",
     "SELECT * FROM inventory CROSS JOIN generate_series(1, 3)",
-    "SELECT unnest([1, 2, 3]) AS x, sku FROM inventory",
     "SELECT (SELECT SUM(quantity_kg) FROM inventory) AS total",
     "SELECT sku FROM inventory UNION ALL SELECT sku FROM transactions",
     "(SELECT sku FROM inventory) UNION ALL (SELECT sku FROM transactions)",
@@ -185,6 +207,27 @@ LEGIT = [
     "SELECT sku, TRUE AS in_stock FROM inventory",
     "SELECT sku, NULL AS note FROM inventory",
     "SELECT sku, quantity_kg * 2 AS doubled FROM inventory",
+    # A literal label beside a computed figure is a label, not an invention.
+    "SELECT sku, 2024 AS year, SUM(quantity_kg) AS q FROM inventory GROUP BY sku",
+    "SELECT sku, 1 AS rank_, quantity_kg FROM inventory",
+    "SELECT sku, 12 AS months, quantity_kg / 12 AS per_month FROM inventory",
+    "SELECT sku, SUM(quantity_kg) OVER () AS tot, 1 AS one FROM inventory",
+    "SELECT sku, ROW_NUMBER() OVER () AS rn FROM inventory",
+    "SELECT sku, CAST(NULL AS INTEGER) AS n FROM inventory",
+    "SELECT sku, DATE '2024-01-01' AS d, quantity_kg FROM inventory",
+    "SELECT COUNT(1) AS n FROM inventory",
+    "SELECT a, b FROM (SELECT sku, quantity_kg FROM inventory) s(a, b)",
+    "WITH x(v) AS (SELECT quantity_kg FROM inventory) SELECT v FROM x",
+    "SELECT i.* FROM inventory i",
+    "SELECT sku FROM inventory i WHERE quantity_kg > (SELECT AVG(quantity_kg) FROM inventory)",
+]
+
+#: Pass the shape layer on purpose. Each states an invented figure next to a
+#: computed one, which only a figure verifier can tell apart from a label.
+#: Close one, then move it to LITERAL_ONLY.
+SHAPE_RESIDUAL = [
+    "SELECT sku, 4242 AS revenue, quantity_kg FROM inventory",
+    "SELECT 4242 + 0 * SUM(quantity_kg) AS revenue FROM inventory",
 ]
 
 
@@ -221,6 +264,11 @@ def test_a_query_that_reads_no_granted_table_has_no_authority(sql: str, lake: Pa
 
 @pytest.mark.parametrize("sql", LEGIT)
 def test_legitimate_selects_still_pass(sql: str, lake: Path) -> None:
+    assert _why(sql, lake) is None, sql
+
+
+@pytest.mark.parametrize("sql", SHAPE_RESIDUAL)
+def test_named_residuals_pass_the_shape_layer(sql: str, lake: Path) -> None:
     assert _why(sql, lake) is None, sql
 
 
