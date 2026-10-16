@@ -567,9 +567,20 @@ def _landable_name(col: str, position: int) -> str:
 
 def _landable_columns(columns: list[str]) -> tuple[list[str], dict[str, str]]:
     """Source column names -> names that land, and ``{source name: landed name}`` for the
-    renamed. Cleaned first, then made unique case-insensitively, so two names that clean
-    alike both land and the receipt names each."""
-    landed, _ = _distinct_columns([_landable_name(c, i) for i, c in enumerate(columns, 1)])
+    renamed.
+
+    Two passes, so a cleaned name never takes a name the source spelled legally. A name that
+    needed no cleaning claims its own spelling first (in source order); a name that had a
+    control character cleaned away is then made unique against everything already claimed.
+    Otherwise ``budget\\x01`` cleaned to ``budget_`` would take the legal column ``budget_``'s
+    name and the legal column would land as ``budget__2`` (a SUM over the wrong column)."""
+    cleaned = [_landable_name(c, i) for i, c in enumerate(columns, 1)]
+    spelled = {i for i, name in enumerate(cleaned) if columns[i] == name}
+    order = sorted(range(len(columns)), key=lambda i: (i not in spelled, i))
+    unique, _ = _distinct_columns([cleaned[i] for i in order])
+    landed = [""] * len(columns)
+    for slot, index in enumerate(order):
+        landed[index] = unique[slot]
     return landed, {a: b for a, b in zip(columns, landed, strict=True) if a != b}
 
 

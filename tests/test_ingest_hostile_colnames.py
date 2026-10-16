@@ -216,6 +216,39 @@ def test_two_names_that_clean_to_the_same_name_both_land(
     assert "column 'a\\x01b' landed as 'a_b_2'" in note
 
 
+def test_a_cleaned_name_never_takes_a_legal_column_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    """Adversary round 0 (integrity, P0). ``budget\\x01`` cleans to ``budget_``, which is the
+    legal column's own name. Landed in source order the cleaned name took it: the legal column
+    landed as ``budget__2`` and ``SUM(budget_)`` summed the hostile column (3, not 30) under a
+    confirmed measure. A legal name keeps its name; only the cleaned one is renamed, and the
+    receipt says so."""
+    rig = _Rig(tmp_path, monkeypatch, minter)
+    space = rig.space("Twin")
+    names = ["id", "budget\x01", "budget_"]
+    receipt = rig.ingest(
+        space,
+        tables=[("public", "sales")],
+        data={'"public"."sales"': (names, [[1, 1, 10], [2, 2, 20]])},
+        types={"public.sales": [(n, "integer", 32, 0) for n in ["id", *names[1:]]]},
+    )
+    assert _oracle(rig.lake, "SELECT SUM(budget_) AS v FROM bronze.public_sales") == [{"v": 30}]
+    assert _oracle(rig.lake, "SELECT SUM(budget__2) AS v FROM bronze.public_sales") == [{"v": 3}]
+    note = receipt["tables"][0]["note"] or ""
+    assert "column 'budget\\x01' landed as 'budget__2'" in note, note
+    assert "budget_'" not in note, note  # the legal column is not renamed
+    env = rig.ask(
+        space,
+        "What is the total budget of all sales?",
+        "SELECT SUM(budget_) AS v FROM bronze.public_sales",
+    )
+    if env["abstained"]:
+        assert env["badge"] != "L2_VALIDATED", (env["badge"], env.get("text"))
+    else:
+        assert env["rows"] == [{"v": 30}], env["rows"]
+
+
 def test_a_hostile_named_column_answers_at_the_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
 ) -> None:
