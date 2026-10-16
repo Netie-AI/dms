@@ -1198,7 +1198,11 @@ _chart_from_rows = chart_from_rows
 
 
 def _served_check_inputs(warehouse: Path | None) -> tuple[Path | None, Any]:
-    """Warehouse file and its verified ontology. Missing either does not pass."""
+    """Warehouse file and its verified ontology (None when it does not verify).
+
+    A missing warehouse does not pass. The grain check reads the lake itself,
+    so a lake the demo ontology does not describe is still checked.
+    """
     if warehouse is None or not Path(warehouse).is_file():
         return None, None
     return warehouse, load_verified_ontology(warehouse)
@@ -1274,8 +1278,9 @@ def map_ask_response_to_envelope(
         if raw_name == "generated" and not grant_rejected:
             from dms_executor.served_gate import served_result_reason
 
-            # Missing warehouse, ontology, or as_of is not a pass and not L2.
-            if warehouse is None or ontology is None or not as_of:
+            # A missing warehouse or as_of is not a pass and not L2. The
+            # ontology is optional: it adds the many-to-many link check.
+            if warehouse is None or not as_of:
                 gate_finding = "inputs_missing"
             else:
                 gate_finding = served_result_reason(

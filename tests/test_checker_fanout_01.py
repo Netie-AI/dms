@@ -1578,3 +1578,247 @@ def test_rejected_sql_takes_no_confident_badge_of_any_kind(
     assert_envelope_valid(env)
     assert env["badge"] == "ABSTAIN", (badge, env["badge"])
     assert env.get("rows") in (None, [])
+
+
+# Round 3: the grain check reads each base table's rowid, so it needs no
+# ontology, checks every aggregating SELECT where it stands, and counts a row
+# against a table only when it repeats within the same group.
+_SPINE = (
+    "WITH days AS (SELECT CAST(d AS DATE) AS dy FROM generate_series(DATE '2026-07-01', "
+    "DATE '2026-07-25', INTERVAL 1 DAY) g(d)) "
+)
+_GATE_FANOUT = {
+    "aggregate_cte": (
+        "WITH g AS (SELECT i.category AS category, SUM(i.quantity_kg) AS kg FROM inventory i "
+        "JOIN transactions t ON t.sku = i.sku GROUP BY i.category) SELECT category, kg FROM g"
+    ),
+    "aggregate_derived": (
+        "SELECT category, kg FROM (SELECT i.category AS category, SUM(i.quantity_kg) AS kg "
+        "FROM inventory i JOIN transactions t ON t.sku = i.sku GROUP BY i.category) x"
+    ),
+    "limit_body": (
+        "WITH j AS (SELECT i.sku, i.quantity_kg AS q FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku ORDER BY i.sku LIMIT 100) SELECT SUM(q) FROM j"
+    ),
+    "union_body": (
+        "WITH j AS (SELECT i.quantity_kg AS q FROM inventory i JOIN locations l ON TRUE "
+        "UNION ALL SELECT 1.0) SELECT SUM(q) FROM j"
+    ),
+    "count_of_the_repeated_table": (
+        "SELECT i.category, COUNT(i.sku) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
+    "top_level_union_arm": (
+        "SELECT SUM(i.quantity_kg) FROM inventory i JOIN transactions t ON t.sku = i.sku "
+        "UNION ALL SELECT SUM(quantity_kg) FROM inventory"
+    ),
+    "scalar_subquery": (
+        "SELECT sku, (SELECT SUM(i.quantity_kg) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku) AS tot FROM inventory"
+    ),
+    "count_over_a_cross_join": (
+        "SELECT f.sku AS sku, COUNT(*) AS n FROM inventory f JOIN locations l ON TRUE "
+        "GROUP BY f.sku"
+    ),
+    "count_over_a_comma_join": (
+        "SELECT f.sku, COUNT(*) FROM inventory f, locations l GROUP BY f.sku"
+    ),
+    "three_cte_chain": (
+        "WITH a AS (SELECT sku, quantity_kg FROM inventory), b AS (SELECT a.quantity_kg "
+        "FROM a JOIN transactions t ON t.sku = a.sku), c AS (SELECT * FROM b) "
+        "SELECT SUM(quantity_kg) FROM c"
+    ),
+}
+_GATE_GRAIN_KEPT = {
+    "many_side_cte_count": (
+        "WITH recent AS (SELECT * FROM transactions WHERE ts >= TIMESTAMP '2026-07-01') "
+        "SELECT i.category, COUNT(*) FROM recent r JOIN inventory i ON i.sku = r.sku "
+        "GROUP BY i.category"
+    ),
+    "many_side_derived_count": (
+        "SELECT i.category, COUNT(*) FROM (SELECT * FROM transactions) r "
+        "JOIN inventory i ON i.sku = r.sku GROUP BY i.category"
+    ),
+    "transactions_per_category": (
+        "SELECT i.category, COUNT(*) AS n FROM inventory i JOIN transactions t "
+        "ON i.sku = t.sku GROUP BY i.category"
+    ),
+    "revenue_per_transaction": (
+        "SELECT i.category, SUM(t.quantity_kg * i.unit_cost_myr) FROM transactions t "
+        "JOIN inventory i ON i.sku = t.sku GROUP BY i.category"
+    ),
+    "spine_sum_with_empty_days": (
+        _SPINE + "SELECT days.dy, COALESCE(SUM(t.quantity_kg), 0) FROM days "
+        "LEFT JOIN transactions t ON CAST(t.ts AS DATE) = days.dy GROUP BY days.dy"
+    ),
+    "cumulative_count": (
+        _SPINE + "SELECT days.dy, COUNT(t.txn_id) FROM days "
+        "LEFT JOIN transactions t ON CAST(t.ts AS DATE) <= days.dy GROUP BY days.dy"
+    ),
+    "cumulative_sum": (
+        _SPINE + "SELECT days.dy, SUM(t.quantity_kg) FROM days "
+        "LEFT JOIN transactions t ON CAST(t.ts AS DATE) <= days.dy GROUP BY days.dy"
+    ),
+    "comma_join_linked_in_where": (
+        "SELECT i.category, COUNT(*) FROM transactions t, inventory i "
+        "WHERE i.sku = t.sku GROUP BY i.category"
+    ),
+    "sum_over_an_aggregate_cte": (
+        "WITH c AS (SELECT sku, SUM(quantity_kg) AS q FROM transactions GROUP BY sku) "
+        "SELECT SUM(c.q) FROM c JOIN inventory i ON i.sku = c.sku"
+    ),
+    "top_n_per_group_window": (
+        "WITH r AS (SELECT i.category, t.txn_id, t.quantity_kg, ROW_NUMBER() OVER "
+        "(PARTITION BY i.category ORDER BY t.quantity_kg DESC) rn FROM transactions t "
+        "JOIN inventory i ON i.sku = t.sku) SELECT category, SUM(quantity_kg) FROM r "
+        "WHERE rn <= 3 GROUP BY category"
+    ),
+    "group_by_ordinal": (
+        "SELECT i.category, COUNT(*) FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku GROUP BY 1"
+    ),
+    "group_by_all": (
+        "SELECT i.category, COUNT(*) FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku GROUP BY ALL"
+    ),
+}
+
+
+@pytest.fixture(scope="module")
+def gate_lake(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    db = tmp_path_factory.mktemp("gate") / "gate.duckdb"
+    ensure_demo_warehouse(db)
+    return db
+
+
+@pytest.mark.parametrize("name", sorted(_GATE_FANOUT))
+def test_the_grain_check_refuses_fanout_wherever_the_join_sits(
+    gate_lake: Path, name: str
+) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    why = served_result_reason(
+        _GATE_FANOUT[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why == "fanout_subject_keys", name
+
+
+@pytest.mark.parametrize("name", sorted(_GATE_GRAIN_KEPT))
+def test_the_grain_check_keeps_joins_at_a_tables_grain(gate_lake: Path, name: str) -> None:
+    """R-0005: a one-to-many join counted or summed on its many side is served."""
+    from dms_executor.served_gate import served_result_reason
+
+    why = served_result_reason(
+        _GATE_GRAIN_KEPT[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why is None, name
+
+
+def test_an_outer_join_row_with_no_match_is_not_fanout(tmp_path: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    db = tmp_path / "left.duckdb"
+    ensure_demo_warehouse(db)
+    con = connect_file(db)
+    try:
+        con.execute(
+            "INSERT INTO suppliers SELECT * REPLACE ('SUP-NONE' AS supplier_id, "
+            "'Nobody Ltd' AS supplier_name) FROM suppliers LIMIT 1"
+        )
+    finally:
+        con.close()
+    for agg in ("SUM(i.quantity_kg)", "AVG(i.quantity_kg)", "COUNT(i.sku)"):
+        sql = (
+            f"SELECT s.supplier_name, {agg} FROM suppliers s LEFT JOIN inventory i "
+            "ON i.supplier_id = s.supplier_id GROUP BY s.supplier_name"
+        )
+        assert served_result_reason(sql, warehouse=db, as_of="2026-10-16T00:00:00Z") is None
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_lake_the_ontology_does_not_verify_is_still_grain_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    """One duplicate lot breaks the demo ontology; every route still serves and still checks."""
+    db = tmp_path / "unverified.duckdb"
+    ensure_demo_warehouse(db)
+    con = connect_file(db)
+    try:
+        con.execute("INSERT INTO inventory SELECT * FROM inventory LIMIT 1")
+    finally:
+        con.close()
+    assert load_verified_ontology(db) is None
+    listing = "SELECT sku, quantity_kg FROM inventory"
+    env, _ = _prod_post(db, listing, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("text"))
+    fanned = "SELECT SUM(i.quantity_kg) AS kg FROM inventory i JOIN transactions t ON t.sku = i.sku"
+    env, _ = _prod_post(db, fanned, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", (route, env["badge"])
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_non_mergeable_cte_fanout_never_takes_l2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    db = tmp_path / "agg_cte.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(
+        db, _GATE_FANOUT["aggregate_cte"], monkeypatch, minter, route=route, pass_warehouse=True
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", (route, env["badge"])
+    assert env.get("rows") in (None, [])
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_many_side_cte_count_keeps_l2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    db = tmp_path / "many_cte.duckdb"
+    ensure_demo_warehouse(db)
+    sql = _GATE_GRAIN_KEPT["many_side_cte_count"]
+    env, _ = _prod_post(db, sql, monkeypatch, minter, route=route, pass_warehouse=True)
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED", (route, env.get("text"))
+
+
+_NOT_RECURSIVE = (
+    "WITH RECURSIVE alerts(message) AS (SELECT 'x' AS message UNION BY NAME "
+    "SELECT message FROM alerts) SELECT message FROM alerts",
+    "WITH RECURSIVE alerts(n) AS (SELECT 1 EXCEPT SELECT length(message) FROM alerts) "
+    "SELECT n FROM alerts",
+    "WITH RECURSIVE alerts(s) AS (SELECT 'HIGH' INTERSECT SELECT severity FROM alerts) "
+    "SELECT s FROM alerts",
+)
+
+
+@pytest.mark.parametrize("sql", _NOT_RECURSIVE, ids=["union_by_name", "except", "intersect"])
+def test_only_a_plain_union_recurses(sql: str) -> None:
+    """DuckDB binds the CTE's own name to the table under EXCEPT, INTERSECT, UNION BY NAME."""
+    from dms_executor.generative_ask import cited_relations
+
+    assert "alerts" in cited_relations(sql)
+
+
+@pytest.mark.parametrize("route", _ROUTES)
+def test_a_union_by_name_body_does_not_read_an_ungranted_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, route: str
+) -> None:
+    db = tmp_path / "by_name.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(
+        db, _NOT_RECURSIVE[0], monkeypatch, minter, route=route, pass_warehouse=True
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", (route, env["badge"])
+    assert env.get("rows") in (None, [])
+
+
+def test_a_three_part_alias_qualifier_runs_on_the_lake_name() -> None:
+    from dms_executor.served_gate import lake_alias_sql
+
+    assert lake_alias_sql(
+        "SELECT main.warehouse_inventory.sku AS sku FROM main.warehouse_inventory"
+    ) == "SELECT main.inventory.sku AS sku FROM main.inventory"

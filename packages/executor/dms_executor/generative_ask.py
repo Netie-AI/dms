@@ -725,8 +725,9 @@ def _names_real_table(table: Any, name: str) -> bool:
     DuckDB binds a CTE's own name inside its body to the table of that name,
     except in the recursive term of a WITH RECURSIVE, which reads the CTE's
     working rows. The recursive term is the arm right of the last UNION;
-    everything left of it is the base. Outside its body the name is the CTE,
-    and so is a same-named CTE of a WITH nested inside that body.
+    everything left of it is the base. Only a plain UNION [ALL] recurses.
+    Outside its body the name is the CTE, and so is a same-named CTE of a
+    WITH nested inside that body.
     """
     from sqlglot import exp
 
@@ -744,7 +745,11 @@ def _names_real_table(table: Any, name: str) -> bool:
             holder = node.parent
             recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
             body = node.this
-            if not (recursive and isinstance(body, exp.SetOperation)):
+            # Only a plain UNION [ALL] recurses. Under EXCEPT, INTERSECT or
+            # UNION BY NAME, DuckDB binds the name to the table in every arm.
+            if not (
+                recursive and isinstance(body, exp.Union) and not body.args.get("by_name")
+            ):
                 return True
             ancestor = table.parent
             while ancestor is not None and ancestor is not body.expression:
@@ -1684,17 +1689,8 @@ def _run_extract_loop(
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
-        # Product path. declared is None once verify passes; the loaded
-        # ontology is the one the grain check can use. None does not pass.
-        if ontology is None:
-            return _abstain(
-                question,
-                "ontology_unavailable",
-                space_id=space_id,
-                session_id=session_id,
-                plan_source=PLAN_SOURCE_ONTOLOGY,
-                stage="extract_loop",
-            )
+        # Product path. The grain check reads the lake, so it runs with or
+        # without a verified ontology (which adds the many-to-many check).
         return _submit_validated(
             sql,
             question=question,
