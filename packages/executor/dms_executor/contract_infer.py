@@ -8,6 +8,7 @@ from typing import Any
 import duckdb
 from dms_core.pipelines import ContractProposal
 
+from dms_executor.bronze import quote_ident
 from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.pipeline_loader import PipelineLoadError
@@ -47,15 +48,13 @@ def infer_contract(
         ).fetchall()
         _provenance = ("_src", "_ingest_id", "_src_row", "_src_ref_id")
         biz = [(c, t) for c, t in cols if c not in _provenance]
-        n = scalar_int(con.execute(f'SELECT COUNT(*) FROM "{schema}"."{table}"').fetchone())
+        # Landed column names are source text: quoted as ONE identifier, never read as SQL.
+        rel = f"{quote_ident(schema)}.{quote_ident(table)}"
+        n = scalar_int(con.execute(f"SELECT COUNT(*) FROM {rel}").fetchone())
         null_rates: dict[str, float] = {}
         columns: dict[str, dict[str, Any]] = {}
         for col, dtype in biz:
-            nn = scalar_int(
-                con.execute(
-                    f'SELECT COUNT("{col}") FROM "{schema}"."{table}"'
-                ).fetchone()
-            )
+            nn = scalar_int(con.execute(f"SELECT COUNT({quote_ident(col)}) FROM {rel}").fetchone())
             rate = 1.0 - (nn / n) if n else 0.0
             null_rates[col] = round(rate, 4)
             proposed_type = _map_type(str(dtype))
@@ -100,18 +99,12 @@ def _candidate_keys(
 ) -> list[list[str]]:
     if n == 0:
         return []
+    rel = f"{quote_ident(schema)}.{quote_ident(table)}"
     singles: list[list[str]] = []
     for col in cols:
-        distinct = scalar_int(
-            con.execute(
-                f'SELECT COUNT(DISTINCT "{col}") FROM "{schema}"."{table}"'
-            ).fetchone()
-        )
-        nulls = scalar_int(
-            con.execute(
-                f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE "{col}" IS NULL'
-            ).fetchone()
-        )
+        q = quote_ident(col)
+        distinct = scalar_int(con.execute(f"SELECT COUNT(DISTINCT {q}) FROM {rel}").fetchone())
+        nulls = scalar_int(con.execute(f"SELECT COUNT(*) FROM {rel} WHERE {q} IS NULL").fetchone())
         if distinct == n and nulls == 0:
             singles.append([col])
     if singles:
@@ -122,7 +115,7 @@ def _candidate_keys(
         for b in cols[i + 1 : 6]:
             distinct = scalar_int(
                 con.execute(
-                    f'SELECT COUNT(DISTINCT ("{a}", "{b}")) FROM "{schema}"."{table}"'
+                    f"SELECT COUNT(DISTINCT ({quote_ident(a)}, {quote_ident(b)})) FROM {rel}"
                 ).fetchone()
             )
             if distinct == n:
