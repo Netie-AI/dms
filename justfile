@@ -5,7 +5,8 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
 cortex_root := env_var_or_default("CORTEX_ROOT", "D:\\Cortex")
 
-# Vendor OpenAPI 1.1.0 + testvectors from Cortex; regenerate cortex_client.generated
+# Vendor the current OpenAPI pin (scripts/sync_contract.py --version) + testvectors from Cortex;
+# regenerate cortex_client.generated
 sync-contract:
     python scripts/sync_contract.py --cortex-root "{{cortex_root}}"
 
