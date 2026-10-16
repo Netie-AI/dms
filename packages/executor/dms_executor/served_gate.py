@@ -16,7 +16,10 @@ Fails:
   its body, and the query with its mergeable CTEs inlined is checked too.
 
 Grants are not decided here. No question words and no case ids. A parse
-or probe error does not flag. ``served_check_shadow`` stays the recorder.
+error does not flag; a probe that cannot run (an error, the time bound, a
+busy lake) does not pass: the answer abstains as grain_unprobed. A
+correlated subquery is not probed on its own (a named gap).
+``served_check_shadow`` stays the recorder.
 """
 
 from __future__ import annotations
@@ -114,19 +117,22 @@ def served_result_reason(
     # is then the fact table, at its own grain). What cannot be inlined stays
     # in the tree and is checked where it stands.
     merged = _merged(qualified)
-    if merged is None:
-        return _fanout(qualified, path)
-    if isinstance(merged, exp.Select):
-        many = _direct_many_to_many(merged, ontology)
-        if many:
-            return many
-    return _fanout(merged, path)
+    try:
+        if merged is None:
+            return _fanout(qualified, path)
+        if isinstance(merged, exp.Select):
+            many = _direct_many_to_many(merged, ontology)
+            if many:
+                return many
+        return _fanout(merged, path)
+    except _Unprobed:
+        return "grain_unprobed"
 
 
 def _lake_schema(path: Path) -> dict[str, dict[str, str]]:
-    from dms_executor.demo_warehouse import connect_file
+    from dms_executor.demo_warehouse import connect_serving
 
-    con = connect_file(path)
+    con = connect_serving(path)
     try:
         rows = con.execute(
             "SELECT table_name, column_name, data_type FROM information_schema.columns "
@@ -163,6 +169,9 @@ def _merged(tree: exp.Query) -> exp.Query | None:
         isinstance(node, (exp.With, exp.Subquery)) for node in tree.find_all(exp.With, exp.Subquery)
     ):
         return None
+    if any(join.args.get("method") for join in tree.find_all(exp.Join)):
+        # Inlining rewrites a NATURAL join's columns; check the query as written.
+        return None
     try:
         from sqlglot.optimizer.eliminate_subqueries import eliminate_subqueries
         from sqlglot.optimizer.merge_subqueries import merge_subqueries
@@ -181,14 +190,16 @@ def _fanout(tree: exp.Query, path: Path) -> str | None:
     """A SUM, AVG or COUNT whose rows repeat what it adds up, anywhere in the query.
 
     Every SELECT that aggregates is checked where it stands: the outer query,
-    CTE bodies, derived tables, subqueries and UNION arms. A query that does
-    not aggregate is checked on the rows it returns.
+    CTE bodies, derived tables, subqueries and UNION arms, on the aggregates
+    in its SELECT list, HAVING, ORDER BY and QUALIFY. A query that does not
+    aggregate is checked on the rows it returns.
     """
     for select in tree.find_all(exp.Select):
-        if _in_recursive_cte(select):
+        if _in_recursive_cte(select) or _correlated(select):
             continue
-        if _select_fanout(select, path):
-            return "fanout_subject_keys"
+        found = _select_fanout(select, path)
+        if found:
+            return found
     if isinstance(tree, exp.Select) and not _outer_aggs(tree):
         names = _output_grain(tree)
         if names and _joins_under(tree) and _row_counts(path, _result_probe(tree, names)):
@@ -196,37 +207,42 @@ def _fanout(tree: exp.Query, path: Path) -> str | None:
     return None
 
 
-def _select_fanout(select: exp.Select, path: Path) -> bool:
-    """True when an aggregate here adds up rows its joins repeated.
+def _select_fanout(select: exp.Select, path: Path) -> str | None:
+    """The reason an aggregate here adds up rows its joins repeated, or None.
 
-    A joined row set is at the grain of a base table when that table's rowid
-    appears once per group. SUM, AVG and COUNT of an expression are inflated
-    when every base table the expression reads repeats within a group
-    (revenue as t.qty * i.price over transactions joined to inventory is per
-    transaction: t stays unique). COUNT(*) is inflated when no joined base
-    table stays unique. Rows an outer join leaves unmatched carry no rowid
-    and are not counted against it.
+    A joined row set is at the grain of a source when that source's row id
+    appears once per group: a base table's rowid, or a row number the probe
+    gives each CTE or derived table it reads. SUM, AVG and COUNT of an
+    expression are inflated when every source the expression reads repeats
+    within a group (revenue as t.qty * i.price over transactions joined to
+    inventory is per transaction: t stays unique), or when the value it reads
+    from a CTE was itself inflated inside that CTE. COUNT(*) is inflated when
+    no joined source stays unique or a join links nothing, and it is wrong
+    per parent when an outer join leaves parents with no child (each counts
+    as 1). COUNT(DISTINCT) is not affected by repetition. Rows an outer join
+    leaves unmatched carry no row id and are not counted against it.
     """
     targets = [
         node
-        for node in _outer_aggs(select)
-        if isinstance(node, (exp.Sum, exp.Avg, exp.Count)) and not node.args.get("distinct")
+        for node in _select_aggs(select)
+        if isinstance(node, (exp.Sum, exp.Avg, exp.Count))
+        and not (isinstance(node, exp.Count) and isinstance(node.this, exp.Distinct))
     ]
     if not targets:
-        return False
+        return None
     sources = _source_map(select)
-    scope = _pre_group_scope(select)
-    if not sources or not scope:
-        return False
+    if not sources or select.args.get("from") is None:
+        return None
+    rids = {alias: _rid(alias, kind) for alias, (kind, _) in sources.items()}
+    scope = _probe_scope(select, sources)
     prefix = _visible_with(select)
     groups = _group_sql(select)
     joined = bool(select.args.get("joins"))
-    base = [alias for alias, (kind, _) in sources.items() if kind == "base"]
     cache: dict[str, bool] = {}
 
     def repeats(alias: str) -> bool:
         if alias not in cache:
-            cache[alias] = _repeats(path, prefix, scope, alias, groups)
+            cache[alias] = _repeats(path, prefix, scope, rids[alias], groups)
         return cache[alias]
 
     for agg in targets:
@@ -234,60 +250,207 @@ def _select_fanout(select: exp.Select, path: Path) -> bool:
         if isinstance(agg, exp.Count) and (
             arg is None or isinstance(arg, exp.Star) or not list(arg.find_all(exp.Column))
         ):
+            if not joined:
+                continue
             # A count of joined rows counts pairs when a join links nothing:
             # inventory JOIN locations ON TRUE "per sku" counts locations.
-            if joined and (_cartesian(select, sources) or (base and all(map(repeats, base)))):
-                return True
+            if _cartesian(select) or all(map(repeats, sources)):
+                return "fanout_subject_keys"
+            if _unmatched_parents(select, sources, groups, path, prefix, scope, rids):
+                return "outer_join_count"
             continue
         verdicts: list[bool] = []
         for alias, names in _arg_sources(arg, sources).items():
             kind, body = sources[alias]
-            if kind == "base":
-                if joined:
-                    verdicts.append(repeats(alias))
-            else:
-                traced = _body_repeats(path, body, names, 0)
-                if traced is not None:
-                    verdicts.append(traced)
+            verdict = joined and repeats(alias)
+            if kind == "body" and not verdict:
+                verdict = bool(_body_repeats(path, body, names, 0))
+            verdicts.append(verdict)
         if verdicts and all(verdicts):
+            return "fanout_subject_keys"
+    return None
+
+
+def _select_aggs(select: exp.Select) -> list[exp.Expression]:
+    """Aggregates in the SELECT list, HAVING, ORDER BY and QUALIFY, not in subqueries."""
+    found = _outer_aggs(select)
+    for key in ("having", "order", "qualify"):
+        node = select.args.get(key)
+        if node is None:
+            continue
+        stack: list[exp.Expression] = [node]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, (exp.Subquery, exp.Select)):
+                continue
+            if isinstance(item, exp.AggFunc):
+                found.append(item)
+                continue
+            stack.extend(item.iter_expressions())
+    return found
+
+
+_RID = "__dms_rid"
+
+
+def _rid(alias: str, kind: str) -> str:
+    name = exp.to_identifier(alias).sql(dialect=_DIALECT)
+    return f"{name}.rowid" if kind == "base" else f"{name}.{_RID}"
+
+
+def _probe_scope(select: exp.Select, sources: dict[str, tuple[str, Any]]) -> str:
+    """FROM, JOINs and WHERE of this SELECT, each CTE or derived source numbered.
+
+    A CTE or derived table has no rowid; wrapping it as
+    ``(SELECT *, row_number() OVER () AS __dms_rid FROM <it>) AS <alias>``
+    gives each of its rows one, and every column reference still binds.
+    """
+    probe = select.copy()
+
+    def numbered(node: exp.Expression, alias: str) -> exp.Expression:
+        inner = node.sql(dialect=_DIALECT)
+        wrapped = parse_one(
+            f"SELECT * FROM (SELECT *, row_number() OVER () AS {_RID} FROM {inner}) AS "
+            f"{exp.to_identifier(alias).sql(dialect=_DIALECT)}",
+            read=_DIALECT,
+        )
+        source = wrapped.args["from"].this
+        return source.copy()
+
+    def wrap(node: Any) -> Any:
+        alias = _source_alias(node)
+        if alias is not None and sources.get(alias, ("", None))[0] == "body":
+            return numbered(node, alias)
+        return node
+
+    frm = probe.args.get("from")
+    if frm is not None:
+        frm.set("this", wrap(frm.this))
+    for join in probe.args.get("joins") or []:
+        join.set("this", wrap(join.this))
+    return _pre_group_scope(probe)
+
+
+def _source_alias(node: Any) -> str | None:
+    if isinstance(node, exp.Table) and isinstance(node.this, exp.Identifier):
+        return (_alias_name(node) or node.name).lower()
+    if isinstance(node, exp.Subquery) and node.alias:
+        return node.alias.lower()
+    return None
+
+
+def _all_aliases(select: exp.Select) -> set[str]:
+    """Every FROM and JOIN alias, generators and unnest included."""
+    out: set[str] = set()
+    for node in _sources(select):
+        alias = node.alias_or_name if isinstance(node, exp.Expression) else ""
+        if alias:
+            out.add(str(alias).lower())
+    return out
+
+
+def _correlated(select: exp.Select) -> bool:
+    """A subquery that reads a column of an enclosing query.
+
+    Its FROM cannot be probed on its own; it is not checked (a named gap).
+    """
+    if select.parent is None:
+        return False
+    own = _all_aliases(select)
+    for column in select.find_all(exp.Column):
+        holder = column.parent
+        while holder is not None and holder is not select and not isinstance(holder, exp.Select):
+            holder = holder.parent
+        if holder is not select:
+            continue
+        qual = str(column.table or "").lower()
+        if qual and qual not in own and qual not in {
+            str(c.alias).lower() for c in _visible_ctes(select)
+        }:
             return True
     return False
 
 
-def _cartesian(select: exp.Select, sources: dict[str, tuple[str, Any]]) -> bool:
+def _cartesian(select: exp.Select) -> bool:
     """A join to a table or CTE that no condition links to another source.
 
-    ON TRUE, CROSS JOIN, or a comma join with no WHERE comparison between the
+    ON TRUE, CROSS JOIN, or a comma join with no WHERE condition between the
     two. Generators, unnest and LATERAL are not counted: a spine is joined
-    that way on purpose.
+    that way on purpose. NATURAL and USING joins link by name.
     """
     where = select.args.get("where")
+    aliases = _all_aliases(select)
     for join in select.args.get("joins") or []:
-        node = join.this
-        if isinstance(node, exp.Table) and isinstance(node.this, exp.Identifier):
-            alias = (_alias_name(node) or node.name).lower()
-        elif isinstance(node, exp.Subquery) and node.alias:
-            alias = node.alias.lower()
-        else:
-            continue
-        if alias not in sources or join.args.get("using"):
+        alias = _source_alias(join.this)
+        if alias is None or join.args.get("using") or join.args.get("method"):
             continue
         conditions = [c for c in (join.args.get("on"), where) if c is not None]
-        if not any(_links(cond, alias, set(sources)) for cond in conditions):
+        if not any(_links(cond, alias, aliases) for cond in conditions):
             return True
     return False
 
 
 def _links(condition: exp.Expression, alias: str, aliases: set[str]) -> bool:
-    """A comparison in this condition reads ``alias`` and another source."""
-    for node in condition.find_all(exp.Binary):
-        if isinstance(node, (exp.And, exp.Or)):
+    """A conjunct of this condition reads ``alias`` and another source."""
+    stack: list[exp.Expression] = [condition]
+    while stack:
+        node = stack.pop()
+        while isinstance(node, exp.Paren):
+            node = node.this
+        if isinstance(node, exp.And):
+            stack.extend([node.this, node.expression])
             continue
-        quals = {str(c.table or "").lower() for c in node.find_all(exp.Column)}
-        if "" in quals and len(list(node.find_all(exp.Column))) > 1:
+        columns = list(node.find_all(exp.Column))
+        quals = {str(c.table or "").lower() for c in columns}
+        if "" in quals and len(columns) > 1:
             return True  # unqualified columns: cannot tell, do not refuse
         if alias in quals and (quals - {alias}) & aliases:
             return True
+    return False
+
+
+def _unmatched_parents(
+    select: exp.Select,
+    sources: dict[str, tuple[str, Any]],
+    groups: list[str],
+    path: Path,
+    prefix: str,
+    scope: str,
+    rids: dict[str, str],
+) -> bool:
+    """COUNT(*) per parent over an outer join that left some parents with no child.
+
+    Each such parent counts as 1 child. Only when the grouping reads the
+    preserved side: a lookup join counted in total still counts its rows.
+    """
+    if not groups:
+        return False
+    joins = select.args.get("joins") or []
+    order = [_source_alias(n) for n in _sources(select)]
+    for index, join in enumerate(joins, start=1):
+        side = str(join.args.get("side") or "").upper()
+        if side not in {"LEFT", "RIGHT", "FULL"}:
+            continue
+        child = order[index] if index < len(order) else None
+        nullable = [child] if side in {"LEFT", "FULL"} else []
+        if side in {"RIGHT", "FULL"}:
+            nullable += order[:index]
+        for alias in nullable:
+            if alias is None or alias not in sources:
+                continue
+            group_quals = {
+                str(c.table or "").lower()
+                for g in groups
+                for c in parse_one(g, read=_DIALECT).find_all(exp.Column)
+            }
+            if not (group_quals - {alias, ""}):
+                # The grouping does not read the preserved side.
+                continue
+            probe = (
+                f"{prefix}SELECT COUNT(*) FILTER (WHERE {rids[alias]} IS NULL) AS n, 0 AS d {scope}"
+            )
+            if _row_counts(path, probe):
+                return True
     return False
 
 
@@ -308,8 +471,9 @@ def _arg_sources(
 def _body_repeats(path: Path, body: Any, names: set[str], depth: int) -> bool | None:
     """Whether a CTE or derived table repeats the rows behind these columns.
 
-    None when it cannot be told. An aggregating arm is at its own grain (and
-    is checked as a SELECT in its own right).
+    None when it cannot be told. An arm that aggregates, dedupes (DISTINCT,
+    QUALIFY) or limits by window is at its own grain; it is checked as a
+    SELECT in its own right.
     """
     if depth > 3:
         return None
@@ -318,14 +482,21 @@ def _body_repeats(path: Path, body: Any, names: set[str], depth: int) -> bool | 
         return None
     result: bool | None = None
     for arm in arms:
-        if _outer_aggs(arm) or arm.args.get("group") is not None:
+        if (
+            _outer_aggs(arm)
+            or arm.args.get("group") is not None
+            or arm.args.get("distinct") is not None
+            or arm.args.get("qualify") is not None
+        ):
             result = bool(result)
             continue
         sources = _source_map(arm)
-        scope = _pre_group_scope(arm)
-        if not sources or not scope:
+        if not sources or arm.args.get("from") is None:
             continue
+        rids = {alias: _rid(alias, kind) for alias, (kind, _) in sources.items()}
+        scope = _probe_scope(arm, sources)
         prefix = _visible_with(arm)
+        joined = bool(arm.args.get("joins"))
         for name in names:
             projection = next(
                 (p for p in arm.expressions if p.alias_or_name.lower() == name), None
@@ -335,15 +506,10 @@ def _body_repeats(path: Path, body: Any, names: set[str], depth: int) -> bool | 
             verdicts: list[bool] = []
             for alias, inner in _arg_sources(projection, sources).items():
                 kind, inner_body = sources[alias]
-                if kind == "base":
-                    if arm.args.get("joins"):
-                        verdicts.append(_repeats(path, prefix, scope, alias, []))
-                    else:
-                        verdicts.append(False)
-                else:
-                    traced = _body_repeats(path, inner_body, inner, depth + 1)
-                    if traced is not None:
-                        verdicts.append(traced)
+                verdict = joined and _repeats(path, prefix, scope, rids[alias], [])
+                if kind == "body" and not verdict:
+                    verdict = bool(_body_repeats(path, inner_body, inner, depth + 1))
+                verdicts.append(verdict)
             if verdicts:
                 if all(verdicts):
                     return True
@@ -378,9 +544,8 @@ def _source_map(select: exp.Select) -> dict[str, tuple[str, Any]]:
     return out
 
 
-def _repeats(path: Path, prefix: str, scope: str, alias: str, groups: list[str]) -> bool:
-    """True when this table's rows appear more than once within a group."""
-    rid = f"{exp.to_identifier(alias).sql(dialect=_DIALECT)}.rowid"
+def _repeats(path: Path, prefix: str, scope: str, rid: str, groups: list[str]) -> bool:
+    """True when a source's rows appear more than once within a group."""
     distinct = ", ".join([*groups, rid])
     probe = (
         f"{prefix}SELECT COUNT(*) FILTER (WHERE {rid} IS NOT NULL) AS n, "
@@ -398,15 +563,29 @@ def _group_sql(select: exp.Select) -> list[str]:
     if group.args.get("all"):
         return [p.unalias().sql(dialect=_DIALECT) for p in projections if not _has_agg(p)]
     items: list[exp.Expression] = list(group.expressions or [])
-    for key in ("rollup", "cube", "grouping_sets"):
-        for node in group.args.get(key) or []:
-            items.extend(node.expressions if hasattr(node, "expressions") else [node])
+    # ROLLUP, CUBE and GROUPING SETS: the finest grouping is every expression
+    # any of their sets names; tuples and the empty set () are unwrapped.
+    stack: list[Any] = [
+        node for key in ("rollup", "cube", "grouping_sets") for node in group.args.get(key) or []
+    ]
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, (exp.Tuple, exp.Paren, exp.Rollup, exp.Cube, exp.GroupingSets)):
+            stack[:0] = list(node.expressions) if not isinstance(node, exp.Paren) else [node.this]
+            continue
+        items.append(node)
+    aliases = {
+        p.alias.lower(): p.unalias() for p in projections if isinstance(p, exp.Alias) and p.alias
+    }
     out: list[str] = []
     for item in items:
         if isinstance(item, exp.Literal) and item.is_int:
             index = int(item.name) - 1
             if 0 <= index < len(projections):
                 item = projections[index].unalias()
+        elif isinstance(item, exp.Column) and not item.table and item.name.lower() in aliases:
+            # GROUP BY an output alias: the probe has no SELECT list to name it.
+            item = aliases[item.name.lower()]
         text = item.sql(dialect=_DIALECT)
         if text not in out:
             out.append(text)
@@ -589,24 +768,51 @@ def _outer_aggs(tree: exp.Select) -> list[exp.Expression]:
     return found
 
 
-def _row_counts(path: Path, probe: str) -> bool:
-    """True when the probe row count and the distinct grain differ."""
-    try:
-        from dms_executor.demo_warehouse import connect_file
+class _Unprobed(Exception):
+    """A grain probe that could not run. The answer is not certified."""
 
-        con = connect_file(path)
-        try:
-            row = con.execute(probe).fetchone()
-        finally:
-            con.close()
-    except Exception:  # noqa: BLE001 - a probe error is not a fan-out
-        return False
+
+#: A probe re-runs the query's own joins; past this it is stopped, unprobed.
+_PROBE_TIMEOUT_S = 5.0
+
+
+def _row_counts(path: Path, probe: str) -> bool:
+    """True when the probe's two counts differ. Raises _Unprobed when it cannot run.
+
+    Probes read through the serving cursor (read-only, no ingest lease), so
+    they neither wait behind serving reads nor block them, and a probe that
+    errors or runs past the bound does not pass.
+    """
+    import threading
+
+    from dms_executor.demo_warehouse import connect_serving
+
+    try:
+        con = connect_serving(path)
+    except Exception as exc:  # noqa: BLE001
+        raise _Unprobed(type(exc).__name__) from exc
+    timer = threading.Timer(_PROBE_TIMEOUT_S, _interrupt, (con,))
+    try:
+        timer.start()
+        row = con.execute(probe).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        raise _Unprobed(type(exc).__name__) from exc
+    finally:
+        timer.cancel()
+        con.close()
     if not row or row[0] is None or row[1] is None:
         return False
     try:
         return int(row[0]) != int(row[1])
     except (TypeError, ValueError):
         return False
+
+
+def _interrupt(con: Any) -> None:
+    try:
+        con.interrupt()
+    except Exception:  # noqa: BLE001 - the probe already finished
+        pass
 
 
 def _has_agg(node: exp.Expression) -> bool:

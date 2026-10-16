@@ -1623,6 +1623,28 @@ _GATE_FANOUT = {
     "count_over_a_comma_join": (
         "SELECT f.sku, COUNT(*) FROM inventory f, locations l GROUP BY f.sku"
     ),
+    "having_over_fanout": (
+        "SELECT i.category FROM inventory i JOIN transactions t ON t.sku = i.sku "
+        "GROUP BY i.category HAVING SUM(i.quantity_kg) > 3000"
+    ),
+    "order_by_over_fanout": (
+        "SELECT i.category FROM inventory i JOIN transactions t ON t.sku = i.sku "
+        "GROUP BY i.category ORDER BY SUM(i.unit_cost_myr) DESC LIMIT 1"
+    ),
+    "aggregate_cte_repeated_by_a_join": (
+        "WITH ct AS (SELECT category, SUM(quantity_kg) AS tot FROM inventory GROUP BY category) "
+        "SELECT i.category, SUM(c.tot) FROM inventory i JOIN ct c ON c.category = i.category "
+        "GROUP BY i.category"
+    ),
+    "aggregate_derived_repeated_by_a_join": (
+        "SELECT i.category, SUM(c.tot) FROM inventory i JOIN (SELECT category, "
+        "SUM(quantity_kg) AS tot FROM inventory GROUP BY category) c "
+        "ON c.category = i.category GROUP BY i.category"
+    ),
+    "sum_distinct_over_fanout": (
+        "SELECT i.category, SUM(DISTINCT i.quantity_kg) FROM inventory i "
+        "JOIN transactions t ON t.sku = i.sku GROUP BY i.category"
+    ),
     "three_cte_chain": (
         "WITH a AS (SELECT sku, quantity_kg FROM inventory), b AS (SELECT a.quantity_kg "
         "FROM a JOIN transactions t ON t.sku = a.sku), c AS (SELECT * FROM b) "
@@ -1680,6 +1702,63 @@ _GATE_GRAIN_KEPT = {
     "group_by_all": (
         "SELECT i.category, COUNT(*) FROM transactions t JOIN inventory i "
         "ON i.sku = t.sku GROUP BY ALL"
+    ),
+    "count_distinct_through_a_fanout": (
+        "SELECT i.category, COUNT(DISTINCT i.sku) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
+    "count_distinct_two_hops": (
+        "SELECT l.name, COUNT(DISTINCT i.sku) FROM locations l JOIN inventory i "
+        "ON i.location_id = l.location_id JOIN transactions t ON t.sku = i.sku GROUP BY l.name"
+    ),
+    "many_side_aggregate_cte_count": (
+        "WITH d AS (SELECT sku, CAST(ts AS DATE) dy, SUM(quantity_kg) q FROM transactions "
+        "GROUP BY sku, CAST(ts AS DATE)) SELECT i.category, COUNT(*) FROM d "
+        "JOIN inventory i ON i.sku = d.sku GROUP BY i.category"
+    ),
+    "many_side_limit_cte_count": (
+        "WITH top AS (SELECT * FROM transactions ORDER BY ts DESC LIMIT 6) SELECT i.category, "
+        "COUNT(*) FROM top JOIN inventory i ON i.sku = top.sku GROUP BY i.category"
+    ),
+    "many_side_union_cte_count": (
+        "WITH u AS (SELECT sku FROM transactions WHERE txn_type = 'IN' UNION ALL SELECT sku "
+        "FROM transactions WHERE txn_type <> 'IN') SELECT i.category, COUNT(*) FROM u "
+        "JOIN inventory i ON i.sku = u.sku GROUP BY i.category"
+    ),
+    "rolling_window_spine": (
+        "WITH days AS (SELECT CAST(d AS DATE) AS day FROM generate_series(DATE '2026-07-01', "
+        "DATE '2026-07-25', INTERVAL 1 DAY) g(d)) SELECT d.day, COUNT(*) FROM days d "
+        "JOIN transactions t ON t.ts >= d.day AND t.ts <= d.day + INTERVAL 7 DAY GROUP BY d.day"
+    ),
+    "qualify_dedup_body": (
+        "WITH latest AS (SELECT t.sku, t.quantity_kg FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku QUALIFY ROW_NUMBER() OVER (PARTITION BY t.sku ORDER BY t.ts DESC) = 1) "
+        "SELECT SUM(quantity_kg) FROM latest"
+    ),
+    "distinct_body": (
+        "WITH s AS (SELECT DISTINCT i.sku, i.quantity_kg FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku) SELECT SUM(quantity_kg) FROM s"
+    ),
+    "in_list_join_condition": (
+        "WITH c AS (SELECT 'RAW' a, 'PARTS' b) SELECT COUNT(*) FROM inventory i "
+        "JOIN c ON i.category IN (c.a, c.b)"
+    ),
+    "lookup_left_join_total": (
+        "SELECT COUNT(*) FROM inventory i LEFT JOIN suppliers s ON s.supplier_id = i.supplier_id"
+    ),
+    "grouping_sets": (
+        "SELECT i.category, l.name, SUM(t.quantity_kg) FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku JOIN locations l ON l.location_id = t.location_id "
+        "GROUP BY GROUPING SETS ((i.category), (l.name), ())"
+    ),
+    "rollup": (
+        "SELECT i.category, l.name, SUM(t.quantity_kg) FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku JOIN locations l ON l.location_id = t.location_id "
+        "GROUP BY ROLLUP (i.category, l.name)"
+    ),
+    "group_by_output_alias": (
+        "SELECT i.category AS cat, COUNT(*) FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku GROUP BY cat"
     ),
 }
 
@@ -1822,3 +1901,59 @@ def test_a_three_part_alias_qualifier_runs_on_the_lake_name() -> None:
     assert lake_alias_sql(
         "SELECT main.warehouse_inventory.sku AS sku FROM main.warehouse_inventory"
     ) == "SELECT main.inventory.sku AS sku FROM main.inventory"
+
+
+def test_count_star_over_an_outer_join_with_childless_parents_is_refused(tmp_path: Path) -> None:
+    """Each parent with no child counts as 1; COUNT(child) is the right count and is served."""
+    from dms_executor.served_gate import served_result_reason
+
+    db = tmp_path / "orphan.duckdb"
+    ensure_demo_warehouse(db)
+    con = connect_file(db)
+    try:
+        con.execute(
+            "INSERT INTO locations SELECT * REPLACE ('LOC-NONE' AS location_id, "
+            "'Empty Yard' AS name) FROM locations LIMIT 1"
+        )
+    finally:
+        con.close()
+    star = (
+        "SELECT l.name, COUNT(*) AS lots FROM locations l LEFT JOIN inventory i "
+        "ON i.location_id = l.location_id GROUP BY l.name"
+    )
+    child = star.replace("COUNT(*)", "COUNT(i.sku)")
+    as_of = "2026-10-16T00:00:00Z"
+    assert served_result_reason(star, warehouse=db, as_of=as_of) == "outer_join_count"
+    assert served_result_reason(child, warehouse=db, as_of=as_of) is None
+
+
+def test_a_probe_that_cannot_run_does_not_pass(
+    gate_lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dms_executor.demo_warehouse as warehouse
+    from dms_executor.served_gate import served_result_reason
+
+    def refuse(_path: Path) -> Any:
+        raise RuntimeError("lake busy")
+
+    monkeypatch.setattr(warehouse, "connect_serving", refuse)
+    sql = _GATE_GRAIN_KEPT["transactions_per_category"]
+    assert served_result_reason(sql, warehouse=gate_lake, as_of="2026-10-16T00:00:00Z") == (
+        "grain_unprobed"
+    )
+
+
+def test_probes_do_not_take_the_ingest_write_lease(
+    gate_lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe read must not wait behind serving reads, nor block them."""
+    import dms_executor.demo_warehouse as warehouse
+    from dms_executor.served_gate import served_result_reason
+
+    def no_writes(_path: Path, **_kwargs: Any) -> Any:
+        raise AssertionError("a probe opened the ingest connection")
+
+    monkeypatch.setattr(warehouse, "connect_file", no_writes)
+    as_of = "2026-10-16T00:00:00Z"
+    sql = _GATE_FANOUT["aggregate_cte"]
+    assert served_result_reason(sql, warehouse=gate_lake, as_of=as_of) == "fanout_subject_keys"
