@@ -1674,6 +1674,21 @@ _GATE_FANOUT = {
         "SELECT i.category, MODE(i.unit_cost_myr) FROM inventory i JOIN transactions t "
         "ON t.sku = i.sku GROUP BY i.category"
     ),
+    "rank_in_the_body_of_a_fanout": (
+        "WITH ranked AS (SELECT i.category AS category, i.quantity_kg AS kg, RANK() OVER "
+        "(PARTITION BY i.category ORDER BY i.quantity_kg DESC) AS rk FROM inventory i "
+        "JOIN transactions t ON t.sku = i.sku) SELECT category, SUM(kg) FROM ranked "
+        "WHERE rk <= 2 GROUP BY category"
+    ),
+    "windowed_sum_in_the_body_of_a_fanout": (
+        "WITH w AS (SELECT i.category, i.quantity_kg AS kg, SUM(t.quantity_kg) OVER "
+        "(PARTITION BY i.sku) AS moved FROM inventory i JOIN transactions t ON t.sku = i.sku) "
+        "SELECT category, SUM(kg) FROM w GROUP BY category"
+    ),
+    "mean_over_fanout": (
+        "SELECT i.category, MEAN(i.quantity_kg) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
     "three_cte_chain": (
         "WITH a AS (SELECT sku, quantity_kg FROM inventory), b AS (SELECT a.quantity_kg "
         "FROM a JOIN transactions t ON t.sku = a.sku), c AS (SELECT * FROM b) "
@@ -2075,9 +2090,6 @@ def test_lookup_outer_joins_with_orphan_keys_keep_their_count(tmp_path: Path) ->
         "ON s.supplier_id = i.supplier_id GROUP BY i.category",
         "SELECT t.txn_type, COUNT(*) FROM inventory i RIGHT JOIN transactions t "
         "ON t.sku = i.sku GROUP BY t.txn_type",
-        "SELECT COALESCE(i.sku, t.sku) AS sku, COUNT(*) FROM inventory i FULL JOIN "
-        "(SELECT DISTINCT sku FROM transactions) t ON t.sku = i.sku "
-        "GROUP BY COALESCE(i.sku, t.sku)",
     ):
         assert served_result_reason(sql, warehouse=db, as_of=as_of) is None, sql
 
@@ -2131,3 +2143,77 @@ def test_the_table_shorthand_never_reaches_the_grant(sql: str, tmp_path: Path) -
     ensure_demo_warehouse(db)
     why = validate_compiled_sql(sql, grantable=set(DEMO_TABLES) - {"alerts"}, warehouse=db)
     assert why is not None and why.startswith("hostile_sql:"), why
+
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT sku, category, location_id, supplier_id, category FROM inventory "
+        "UNION ALL TABLE alerts",
+        "SELECT sku FROM inventory WHERE EXISTS (TABLE alerts)",
+        "SELECT sku FROM inventory WHERE EXISTS (PIVOT alerts ON severity USING COUNT(*))",
+    ],
+)
+def test_sql_the_parser_cannot_read_is_not_granted_on_a_guess(sql: str, tmp_path: Path) -> None:
+    """sqlglot cannot read these; the regex fallback never saw alerts. Refused, not granted."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "unparsed.duckdb"
+    ensure_demo_warehouse(db)
+    why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db)
+    assert why is not None and why.startswith("hostile_sql:"), why
+
+
+def test_an_engine_syntax_error_still_reaches_the_repair_loop(tmp_path: Path) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "syntax.duckdb"
+    ensure_demo_warehouse(db)
+    why = validate_compiled_sql(
+        "SELECT sku FROM inventory WHERE quantity_kg >", grantable={"inventory"}, warehouse=db
+    )
+    assert why == "explain:ParserException"
+
+
+def test_count_filters_and_full_joins_over_childless_parents(tmp_path: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    db = _lake_with(
+        tmp_path,
+        "filters.duckdb",
+        "INSERT INTO locations SELECT * REPLACE ('WH-F' AS location_id, 'Warehouse F' AS name, "
+        "TRUE AS is_cold_storage) FROM locations LIMIT 1",
+    )
+    as_of = "2026-10-16T00:00:00Z"
+    parent_filter = (
+        "SELECT l.name, COUNT(*) FILTER (WHERE l.is_cold_storage) FROM locations l "
+        "LEFT JOIN alerts a ON a.location_id = l.location_id GROUP BY l.name"
+    )
+    full_join = (
+        "SELECT COALESCE(l.location_id, a.location_id) AS loc, COUNT(*) FROM locations l "
+        "FULL JOIN alerts a ON a.location_id = l.location_id "
+        "GROUP BY COALESCE(l.location_id, a.location_id)"
+    )
+    child_filter = (
+        "SELECT l.name, COUNT(*) FILTER (WHERE a.severity = 'low') FROM locations l "
+        "LEFT JOIN alerts a ON a.location_id = l.location_id GROUP BY l.name"
+    )
+    assert served_result_reason(parent_filter, warehouse=db, as_of=as_of) == "outer_join_count"
+    assert served_result_reason(full_join, warehouse=db, as_of=as_of) == "outer_join_count"
+    assert served_result_reason(child_filter, warehouse=db, as_of=as_of) is None
+
+
+def test_a_lineage_too_deep_to_trace_does_not_pass(gate_lake: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    hops = ", ".join(
+        f"c{n} AS (SELECT * FROM {'j' if n == 1 else f'c{n - 1}'} ORDER BY 1 LIMIT 100000)"
+        for n in range(1, 6)
+    )
+    sql = (
+        "WITH j AS (SELECT i.category, i.reorder_level_kg AS rl FROM inventory i "
+        f"JOIN transactions t ON t.sku = i.sku), {hops} SELECT SUM(rl) FROM c5"
+    )
+    why = served_result_reason(sql, warehouse=gate_lake, as_of="2026-10-16T00:00:00Z")
+    assert why in {"fanout_subject_keys", "grain_unprobed"}, why

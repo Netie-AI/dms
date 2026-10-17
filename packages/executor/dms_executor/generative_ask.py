@@ -874,6 +874,21 @@ def validate_compiled_sql(
         return f"hostile_sql:{exc.code}"
     if _reads_files(sql, grantable):
         return "hostile_sql:file_reader"
+    if _scoped_tables(sql) is None:
+        # sqlglot cannot read it, so the tables it reads are not known (TABLE t
+        # in a UNION arm, EXISTS (PIVOT t ...)). A syntax error still reaches
+        # the repair loop as the engine's own; anything the engine accepts is
+        # not granted on a guess.
+        if warehouse is None or not Path(warehouse).is_file():
+            return "warehouse_missing"
+        con = connect_serving(Path(warehouse))
+        try:
+            con.execute(f"EXPLAIN {lake_alias_sql(sql)}")
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        finally:
+            con.close()
+        return "hostile_sql:sql_not_analyzable"
     named = cited_relations(sql)
     # A qualified upload grant (bronze.sheet) matches the bare cited sheet
     # name. A demo-lake table keeps the exact match: bronze.alerts is an

@@ -35,6 +35,13 @@ from dms_executor.demo_warehouse import DEMO_TABLES
 _DIALECT = "duckdb"
 _LAKE = frozenset(t.lower() for t in DEMO_TABLES)
 _ALIAS_PREFIX = "warehouse_"
+#: DuckDB folds identifier case for ASCII letters only; Python's lower() also
+#: folds other letters (the Kelvin sign becomes k).
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _fold(name: Any) -> str:
+    return str(name or "").translate(_ASCII_LOWER)
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}")
 _CLOCK_NAMES = frozenset({"now", "getdate", "current_date", "current_timestamp"})
 
@@ -63,8 +70,8 @@ def _unalias(tree: exp.Expression) -> bool:
     changed = False
     renamed: dict[str, str] = {}
     for table in tree.find_all(exp.Table):
-        name = table.name.lower()
-        db = str(table.db or "").lower()
+        name = table.name.translate(_ASCII_LOWER)
+        db = str(table.db or "").translate(_ASCII_LOWER)
         if table.catalog or not isinstance(table.this, exp.Identifier):
             continue
         if db == _ALIAS_PREFIX.rstrip("_") and name in _LAKE:
@@ -85,8 +92,8 @@ def _unalias(tree: exp.Expression) -> bool:
     for column in tree.find_all(exp.Column):
         if column.args.get("catalog"):
             continue
-        db = str(column.args.get("db") or "").lower()
-        qual = str(column.table or "").lower()
+        db = str(column.args.get("db") or "").translate(_ASCII_LOWER)
+        qual = str(column.table or "").translate(_ASCII_LOWER)
         if db == _ALIAS_PREFIX.rstrip("_") and qual in _LAKE:
             column.set("db", None)
             continue
@@ -227,7 +234,7 @@ def _fanout(tree: exp.Query, path: Path) -> str | None:
         found = _select_fanout(select, path)
         if found:
             return found
-    if isinstance(tree, exp.Select) and not _outer_aggs(tree):
+    if isinstance(tree, exp.Select) and not _grouping_aggs(tree):
         names = _output_grain(tree)
         if names and _joins_under(tree) and _row_counts(path, _result_probe(tree, names)):
             return "fanout_subject_keys"
@@ -277,9 +284,10 @@ def _select_fanout(select: exp.Select, path: Path) -> str | None:
             # inventory JOIN locations ON TRUE "per sku" counts locations.
             if _cartesian(select, sources) or all(map(repeats, sources)):
                 return "fanout_subject_keys"
-            if isinstance(agg.parent, exp.Filter):
-                continue  # COUNT(*) FILTER (WHERE child IS NOT NULL) counts children
-            if _unmatched_parents(select, sources, groups, path, prefix, scope, rids, repeats):
+            row_filter = agg.parent.expression if isinstance(agg.parent, exp.Filter) else None
+            if _unmatched_parents(
+                select, sources, groups, path, prefix, scope, rids, repeats, row_filter
+            ):
                 return "outer_join_count"
             continue
         read = _arg_sources(agg, sources)
@@ -352,7 +360,7 @@ def _single_row(body: Any) -> bool:
         return True
     if body.args.get("group") is not None:
         return False
-    return body.args.get("from") is None or bool(_outer_aggs(body))
+    return body.args.get("from") is None or bool(_grouping_aggs(body))
 
 
 def _select_aggs(select: exp.Select) -> list[exp.Expression]:
@@ -423,9 +431,9 @@ def _probe_scope(select: exp.Select, sources: dict[str, tuple[str, Any]]) -> str
 
 def _source_alias(node: Any) -> str | None:
     if isinstance(node, exp.Table) and isinstance(node.this, exp.Identifier):
-        return (_alias_name(node) or node.name).lower()
+        return (_alias_name(node) or node.name).translate(_ASCII_LOWER)
     if isinstance(node, exp.Subquery) and node.alias:
-        return node.alias.lower()
+        return node.alias.translate(_ASCII_LOWER)
     return None
 
 
@@ -435,7 +443,7 @@ def _all_aliases(select: exp.Select) -> set[str]:
     for node in _sources(select):
         alias = node.alias_or_name if isinstance(node, exp.Expression) else ""
         if alias:
-            out.add(str(alias).lower())
+            out.add(str(alias).translate(_ASCII_LOWER))
     return out
 
 
@@ -453,9 +461,9 @@ def _correlated(select: exp.Select) -> bool:
             holder = holder.parent
         if holder is not select:
             continue
-        qual = str(column.table or "").lower()
+        qual = str(column.table or "").translate(_ASCII_LOWER)
         if qual and qual not in own and qual not in {
-            str(c.alias).lower() for c in _visible_ctes(select)
+            str(c.alias).translate(_ASCII_LOWER) for c in _visible_ctes(select)
         }:
             return True
     return False
@@ -495,7 +503,7 @@ def _links(condition: exp.Expression, alias: str, aliases: set[str]) -> bool:
             stack.extend([node.this, node.expression])
             continue
         columns = list(node.find_all(exp.Column))
-        quals = {str(c.table or "").lower() for c in columns}
+        quals = {str(c.table or "").translate(_ASCII_LOWER) for c in columns}
         if "" in quals and len(columns) > 1:
             return True  # unqualified columns: cannot tell, do not refuse
         if alias in quals and (quals - {alias}) & aliases:
@@ -512,6 +520,7 @@ def _unmatched_parents(
     scope: str,
     rids: dict[str, str],
     repeats: Any,
+    row_filter: exp.Expression | None = None,
 ) -> bool:
     """COUNT(*) of children per parent over an outer join that left a parent childless.
 
@@ -520,12 +529,16 @@ def _unmatched_parents(
     row (grouped by the parent's own key, or by a spine's own value), so a
     count per group can only be a count of children. A lookup join counted
     per attribute keeps the preserved side unique with many rows per group;
-    its count is of the preserved rows and is right.
+    its count is of the preserved rows and is right. A FILTER that reads the
+    child side drops the childless rows (a NULL child fails it).
     """
+    filtered = {
+        str(c.table or "").translate(_ASCII_LOWER) for c in row_filter.find_all(exp.Column)
+    } if row_filter is not None else set()
     nodes = _sources(select)
-    order = [str(n.alias_or_name or "").lower() for n in nodes]
+    order = [str(n.alias_or_name or "").translate(_ASCII_LOWER) for n in nodes]
     group_quals = {
-        str(c.table or "").lower()
+        str(c.table or "").translate(_ASCII_LOWER)
         for g in groups
         for c in parse_one(g, read=_DIALECT).find_all(exp.Column)
     }
@@ -534,10 +547,6 @@ def _unmatched_parents(
         if side not in {"LEFT", "RIGHT", "FULL"}:
             continue
         left, right = order[:index], order[index : index + 1]
-        if side == "FULL" and _reconciles(groups, set(left), set(right)):
-            # GROUP BY COALESCE(a.key, b.key) unions two key sets: each row is a
-            # key, matched or not, so a count of rows is not a count of children.
-            continue
         pairs = []
         if side in {"LEFT", "FULL"}:
             pairs.append((left, right))
@@ -558,22 +567,14 @@ def _unmatched_parents(
             if not per_child:
                 continue
             for alias in nullable:
+                if alias in filtered:
+                    continue
                 probe = (
                     f"{prefix}SELECT COUNT(*) FILTER (WHERE {rids[alias]} IS NULL) AS n, "
                     f"0 AS d {scope}"
                 )
                 if _row_counts(path, probe):
                     return True
-    return False
-
-
-def _reconciles(groups: list[str], left: set[str], right: set[str]) -> bool:
-    for text in groups:
-        node = parse_one(text, read=_DIALECT)
-        if isinstance(node, exp.Coalesce):
-            quals = {str(c.table or "").lower() for c in node.find_all(exp.Column)}
-            if quals & left and quals & right:
-                return True
     return False
 
 
@@ -593,11 +594,11 @@ def _arg_sources(
     """Source alias -> column names an aggregate's argument reads from it."""
     out: dict[str, set[str]] = {}
     for column in arg.find_all(exp.Column):
-        qual = str(column.table or "").lower()
+        qual = str(column.table or "").translate(_ASCII_LOWER)
         if not qual and len(sources) == 1:
             qual = next(iter(sources))
         if qual in sources:
-            out.setdefault(qual, set()).add(column.name.lower())
+            out.setdefault(qual, set()).add(column.name.translate(_ASCII_LOWER))
     return out
 
 
@@ -609,13 +610,14 @@ def _body_repeats(path: Path, body: Any, names: set[str], depth: int) -> bool | 
     SELECT in its own right.
     """
     if depth > 3:
-        return None
+        # Traced this far without reaching a table: not certified.
+        raise _Unprobed("lineage_depth")
     arms = _union_arms(body)
     if not arms:
         return None
     result: bool | None = None
     for arm in arms:
-        if _outer_aggs(arm) or arm.args.get("group") is not None:
+        if _grouping_aggs(arm) or arm.args.get("group") is not None:
             result = bool(result)
             continue
         sources = _source_map(arm)
@@ -628,7 +630,7 @@ def _body_repeats(path: Path, body: Any, names: set[str], depth: int) -> bool | 
         filtered = arm.args.get("distinct") is not None or arm.args.get("qualify") is not None
         for name in names:
             projection = next(
-                (p for p in arm.expressions if p.alias_or_name.lower() == name), None
+                (p for p in arm.expressions if _fold(p.alias_or_name) == name), None
             )
             if projection is None:
                 continue
@@ -681,18 +683,18 @@ def _union_arms(body: Any) -> list[exp.Select]:
 
 def _source_map(select: exp.Select) -> dict[str, tuple[str, Any]]:
     """alias -> ("base", table) or ("body", the CTE or derived query it reads)."""
-    ctes = {str(cte.alias).lower(): cte.this for cte in _visible_ctes(select)}
+    ctes = {str(cte.alias).translate(_ASCII_LOWER): cte.this for cte in _visible_ctes(select)}
     out: dict[str, tuple[str, Any]] = {}
     for node in _sources(select):
         if isinstance(node, exp.Table) and isinstance(node.this, exp.Identifier):
-            alias = (_alias_name(node) or node.name).lower()
-            name = node.name.lower()
+            alias = (_alias_name(node) or node.name).translate(_ASCII_LOWER)
+            name = node.name.translate(_ASCII_LOWER)
             if not (node.db or node.catalog) and name in ctes:
                 out[alias] = ("body", ctes[name])
             else:
                 out[alias] = ("base", node)
         elif isinstance(node, exp.Subquery) and node.alias:
-            out[node.alias.lower()] = ("body", node.this)
+            out[node.alias.translate(_ASCII_LOWER)] = ("body", node.this)
     return out
 
 
@@ -727,7 +729,7 @@ def _group_sql(select: exp.Select) -> list[str]:
             continue
         items.append(node)
     aliases = {
-        p.alias.lower(): p.unalias() for p in projections if isinstance(p, exp.Alias) and p.alias
+        _fold(p.alias): p.unalias() for p in projections if isinstance(p, exp.Alias) and p.alias
     }
     out: list[str] = []
     for item in items:
@@ -735,9 +737,9 @@ def _group_sql(select: exp.Select) -> list[str]:
             index = int(item.name) - 1
             if 0 <= index < len(projections):
                 item = projections[index].unalias()
-        elif isinstance(item, exp.Column) and not item.table and item.name.lower() in aliases:
+        elif isinstance(item, exp.Column) and not item.table and _fold(item.name) in aliases:
             # GROUP BY an output alias: the probe has no SELECT list to name it.
-            item = aliases[item.name.lower()]
+            item = aliases[_fold(item.name)]
         text = item.sql(dialect=_DIALECT)
         if text not in out:
             out.append(text)
@@ -773,7 +775,7 @@ def _visible_ctes(node: exp.Expression) -> list[exp.CTE]:
     seen: dict[str, exp.CTE] = {}
     for level in reversed(levels):
         for cte in level:
-            name = str(cte.alias).lower()
+            name = str(cte.alias).translate(_ASCII_LOWER)
             seen.pop(name, None)
             seen[name] = cte
     return list(seen.values())
@@ -909,7 +911,16 @@ def _result_probe(tree: exp.Select, names: list[str]) -> str:
 _ANON_AGGS = frozenset(
     {
         "mode",
+        "mean",
+        "sem",
+        "kurtosis_pop",
         "histogram",
+        "histogram_exact",
+        "regr_slope",
+        "regr_intercept",
+        "regr_r2",
+        "regr_avgx",
+        "regr_avgy",
         "product",
         "entropy",
         "kurtosis",
@@ -937,7 +948,13 @@ _ANON_AGGS = frozenset(
 def _is_agg(node: exp.Expression) -> bool:
     if isinstance(node, (exp.AggFunc, exp.List)):
         return True
-    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _ANON_AGGS
+    return isinstance(node, exp.Anonymous) and str(node.name).translate(_ASCII_LOWER) in _ANON_AGGS
+
+
+def _grouping_aggs(tree: exp.Select) -> list[exp.Expression]:
+    """Aggregates that collapse rows. A window function (RANK, LAG, SUM OVER)
+    keeps every row, so it does not put a body at its own grain."""
+    return [node for node in _outer_aggs(tree) if not isinstance(node.parent, exp.Window)]
 
 
 def _outer_aggs(tree: exp.Select) -> list[exp.Expression]:
@@ -1025,7 +1042,7 @@ def _from_this(select: exp.Select) -> exp.Expression | None:
 
 def _plain_table(node: exp.Expression | None) -> str | None:
     if isinstance(node, exp.Table) and node.name:
-        return node.name.lower()
+        return node.name.translate(_ASCII_LOWER)
     return None
 
 
@@ -1044,7 +1061,7 @@ def _has_clock(node: exp.Expression) -> bool:
     for child in node.walk():
         if isinstance(child, (exp.CurrentDate, exp.CurrentTimestamp)):
             return True
-        if isinstance(child, exp.Anonymous) and str(child.name or "").lower() in _CLOCK_NAMES:
+        if isinstance(child, exp.Anonymous) and _fold(child.name) in _CLOCK_NAMES:
             return True
     return False
 
