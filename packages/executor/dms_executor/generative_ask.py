@@ -690,6 +690,51 @@ def _invisible_format_char(sql: str) -> bool:
 
 #: Plan names of the table functions that only generate rows.
 _PLAN_GENERATORS = frozenset({"RANGE", "GENERATE_SERIES", "UNNEST"})
+#: Plan operators that scan something other than a table: a VALUES list (with
+#: or without expressions), a CTE, a recursive CTE, a delim join's side, a
+#: positional join, a dummy row, an in-memory chunk.
+_PLAN_NON_TABLE_SCANS = frozenset(
+    {
+        "CHUNK_SCAN",
+        "COLUMN_DATA_SCAN",
+        "CTE_SCAN",
+        "DELIM_SCAN",
+        "DUMMY_SCAN",
+        "EXPRESSION_SCAN",
+        "POSITIONAL_SCAN",
+        "REC_CTE_SCAN",
+        "REC_REC_CTE_SCAN",
+        "RECURSIVE_CTE_SCAN",
+        "RECURSIVE_RECURRING_CTE_SCAN",
+    }
+)
+
+
+def _qualified_ungranted(sql: str, grantable: set[str]) -> set[str]:
+    """Schema-qualified tables outside main that the Space does not grant by that name.
+
+    The plan check cannot see a table DuckDB answers from its statistics
+    (COUNT(*), numeric MIN and MAX, LIMIT 0 run no scan), so a table named
+    with its schema must be granted by exactly that name.
+    """
+    from sqlglot import exp, parse
+
+    folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
+    out: set[str] = set()
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+    except Exception:  # noqa: BLE001 - select_shape owns unparseable SQL
+        return out
+    for tree in trees:
+        for table in tree.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier) or not table.db:
+                continue
+            schema = str(table.db).translate(_ASCII_FOLD)
+            name = str(table.name).translate(_ASCII_FOLD)
+            # main and Cortex's "warehouse" schema are the lake.
+            if schema not in {"main", "warehouse"} and f"{schema}.{name}" not in folded:
+                out.add(f"{schema}.{name}")
+    return out
 
 
 def _plan_names(part: str) -> tuple[str, str]:
@@ -697,7 +742,26 @@ def _plan_names(part: str) -> tuple[str, str]:
     return part, '"' + part.replace('"', '""') + '"'
 
 
-def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | None:
+def _cited_names(sql: str) -> set[str]:
+    """Every relation name the SQL writes, schema-qualified as written, folded."""
+    from sqlglot import exp, parse
+
+    out: set[str] = set()
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+    except Exception:  # noqa: BLE001 - select_shape owns unparseable SQL
+        return out
+    for tree in trees:
+        for table in tree.find_all(exp.Table):
+            if isinstance(table.this, exp.Identifier):
+                name = f"{table.db}.{table.name}" if table.db else str(table.name)
+                out.add(name.translate(_ASCII_FOLD))
+    return out
+
+
+def _plan_scan_reason(
+    plan_json: str, con: Any, grantable: set[str], cited: set[str] | None = None
+) -> str | None:
     """Grant-check the tables DuckDB itself scans for this SQL.
 
     The syntax tree reads names and DuckDB binds them. Where the two
@@ -716,6 +780,12 @@ def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | No
             for sc in _plan_names(str(schema)):
                 for n in _plan_names(str(name)):
                     known[f"{d}.{sc}.{n}"] = (str(schema), str(name))
+    # A grant "x.y" names an upload x.y and a lake table called "x.y" alike.
+    # When the lake holds both, that grant opens neither.
+    tables = {(s.translate(_ASCII_FOLD), n.translate(_ASCII_FOLD)) for s, n in known.values()}
+    ambiguous = {n for s, n in tables if s == "main" and "." in n} & {
+        f"{s}.{n}" for s, n in tables if s != "main"
+    }
     folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
     lake = {
         g[len("main.") :] if g.startswith("main.") else g
@@ -740,6 +810,10 @@ def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | No
             return "hostile_sql:file_reader"
         table = info.get("Table")
         if table is None:
+            name_op = str(node.get("name") or "").strip().upper()
+            if function is None and "SCAN" in name_op and name_op not in _PLAN_NON_TABLE_SCANS:
+                # A scan whose table this cannot read (another DuckDB plan format).
+                return "hostile_sql:sql_not_analyzable"
             continue
         found = known.get(str(table))
         if found is None:
@@ -748,10 +822,14 @@ def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | No
         if schema == "main":
             bare = name[len("warehouse_") :] if name.startswith("warehouse_") else name
             # A lake table may itself be named with a dot ("usd.book").
-            if name not in folded and not {name, bare, f"warehouse_{bare}"} & lake:
+            if not {name, bare, f"warehouse_{bare}"} & lake and (
+                name not in folded or name in ambiguous
+            ):
                 missing.add(name)
-        elif f"{schema}.{name}" not in folded:
+        elif f"{schema}.{name}" not in folded or f"{schema}.{name}" in ambiguous:
             missing.add(f"{schema}.{name}")
+    # A statistics answer scans nothing, so the names the SQL writes count too.
+    missing |= ambiguous & (cited or set())
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     return None
@@ -788,10 +866,14 @@ def validate_compiled_sql(
         return f"hostile_sql:{exc.code}"
     shape_why, named = select_shape(sql)
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    qualified = _qualified_ungranted(sql, grantable)
+    if any(_PATH_CHARS.search(t) for t in missing) or any(
+        _PATH_CHARS.search(t.replace(".", "", 1)) for t in qualified
+    ):
+        # A quoted path or URL used as a table name. Say the code, not the path.
+        return "hostile_sql:path_not_allowed"
+    missing |= qualified
     if missing:
-        if any(_PATH_CHARS.search(t) for t in missing):
-            # A quoted path or URL used as a table name. Say the code, not the path.
-            return "hostile_sql:path_not_allowed"
         return f"ungranted:{','.join(sorted(missing))}"
     if shape_why:
         return shape_why
@@ -802,7 +884,7 @@ def validate_compiled_sql(
         plan = con.execute(f"EXPLAIN (FORMAT JSON) {sql}").fetchall()
         try:
             # The tables the engine reads, checked against the grant.
-            scanned = _plan_scan_reason(str(plan[0][1]), con, grantable)
+            scanned = _plan_scan_reason(str(plan[0][1]), con, grantable, _cited_names(sql))
         except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
             return "hostile_sql:sql_not_analyzable"
         if scanned:
