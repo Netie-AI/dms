@@ -791,3 +791,57 @@ def test_the_table_shorthand_is_refused(sql: str, lake: Path) -> None:
     """TABLE alerts reads alerts; sqlglot sees a column named TABLE, not a table."""
     why = _why(sql, lake)
     assert why is not None and why.startswith("hostile_sql:"), (sql, why)
+
+
+#: DuckDB skips these three as whitespace; sqlglot reads them into a name, so
+#: the syntax tree sees no table where DuckDB reads one.
+_INVISIBLE = ("​", "⁠", "﻿")
+
+
+@pytest.mark.parametrize("mark", _INVISIBLE, ids=["zwsp", "word_joiner", "bom"])
+def test_an_invisible_character_cannot_hide_a_table_from_the_grant(
+    lake: Path, mark: str
+) -> None:
+    for sql in (
+        f"SELECT sku FROM inventory WHERE EXISTS (SELECT 1 FROM{mark}alerts)",
+        f"SELECT sku, quantity_kg FROM inventory WHERE sku IN (SELECT message FROM{mark}alerts)",
+        f"SELECT sku FROM inventory UNION ALL SELECT message FROM{mark}alerts",
+    ):
+        why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=lake)
+        assert why is not None and why.startswith("hostile_sql:"), (sql, why)
+
+
+def test_the_engine_plan_grant_checks_what_the_syntax_tree_cannot_see(
+    lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the character check off, DuckDB's own scan list still refuses the table."""
+    import dms_executor.generative_ask as ga
+
+    monkeypatch.setattr(ga, "_invisible_format_char", lambda _sql: False)
+    sql = "SELECT sku, quantity_kg FROM inventory WHERE EXISTS (SELECT 1 FROM​alerts)"
+    assert ga.validate_compiled_sql(sql, grantable={"inventory"}, warehouse=lake) == (
+        "ungranted:alerts"
+    )
+    assert ga.validate_compiled_sql(sql, grantable={"inventory", "alerts"}, warehouse=lake) is None
+
+
+def test_an_upload_named_like_a_lake_table_is_not_opened_by_the_lake_grant(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    db = tmp_path / "collide.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA bronze")
+        con.execute(
+            "CREATE TABLE bronze.inventory AS SELECT 'OTHER' AS sku, 1.0 AS quantity_kg"
+        )
+    finally:
+        con.close()
+    upload = "SELECT sku, quantity_kg FROM bronze.inventory"
+    why = validate_compiled_sql(upload, grantable={"inventory"}, warehouse=db)
+    assert why is not None and why.startswith("ungranted"), why
+    lake_sql = "SELECT sku, quantity_kg FROM inventory"
+    assert validate_compiled_sql(lake_sql, grantable={"inventory"}, warehouse=db) is None

@@ -672,6 +672,90 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
 _PATH_CHARS = re.compile(r"[/\\:.]")
 
 
+#: DuckDB folds identifier case for ASCII letters only.
+_ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _invisible_format_char(sql: str) -> bool:
+    """A Unicode format character (category Cf) anywhere in the SQL.
+
+    DuckDB skips U+200B, U+2060 and U+FEFF as whitespace; sqlglot reads them
+    as part of a name, so ``FROM<U+200B>alerts`` is a column alias to the
+    syntax tree while DuckDB reads the table.
+    """
+    import unicodedata
+
+    return any(unicodedata.category(ch) == "Cf" for ch in sql)
+
+
+#: Plan names of the table functions that only generate rows.
+_PLAN_GENERATORS = frozenset({"RANGE", "GENERATE_SERIES", "UNNEST"})
+
+
+def _plan_names(part: str) -> tuple[str, str]:
+    """A catalog, schema or table name as a plan may print it: bare or quoted."""
+    return part, '"' + part.replace('"', '""') + '"'
+
+
+def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | None:
+    """Grant-check the tables DuckDB itself scans for this SQL.
+
+    The syntax tree reads names and DuckDB binds them. Where the two
+    disagree, the plan is what runs: every base table it scans must be
+    granted, a lake table by its name or warehouse_ alias and any other
+    schema's table (an upload) by its qualified name. Every table function
+    must be a pure generator. A scan this cannot name is not granted.
+    """
+    import json
+
+    known: dict[str, tuple[str, str]] = {}
+    for db, schema, name in con.execute(
+        "SELECT database_name, schema_name, table_name FROM duckdb_tables()"
+    ).fetchall():
+        for d in _plan_names(str(db)):
+            for sc in _plan_names(str(schema)):
+                for n in _plan_names(str(name)):
+                    known[f"{d}.{sc}.{n}"] = (str(schema), str(name))
+    folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
+    lake = {
+        g[len("main.") :] if g.startswith("main.") else g
+        for g in folded
+        if "." not in g or g.startswith("main.")
+    }
+    missing: set[str] = set()
+    stack: list[Any] = [json.loads(plan_json)]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        stack.extend(node.get("children") or [])
+        info = node.get("extra_info")
+        if not isinstance(info, dict):
+            continue
+        function = info.get("Function")
+        if function is not None and str(function).upper() not in _PLAN_GENERATORS:
+            return "hostile_sql:file_reader"
+        table = info.get("Table")
+        if table is None:
+            continue
+        found = known.get(str(table))
+        if found is None:
+            return "hostile_sql:sql_not_analyzable"
+        schema, name = (part.translate(_ASCII_FOLD) for part in found)
+        if schema == "main":
+            bare = name[len("warehouse_") :] if name.startswith("warehouse_") else name
+            if not {name, bare, f"warehouse_{bare}"} & lake:
+                missing.add(name)
+        elif f"{schema}.{name}" not in folded:
+            missing.add(f"{schema}.{name}")
+    if missing:
+        return f"ungranted:{','.join(sorted(missing))}"
+    return None
+
+
 def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
@@ -695,6 +779,8 @@ def validate_compiled_sql(
     """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
+    if _invisible_format_char(sql):
+        return "hostile_sql:sql_not_analyzable"
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
@@ -712,7 +798,14 @@ def validate_compiled_sql(
         return "warehouse_missing"
     con = connect_serving(Path(warehouse))
     try:
-        con.execute(f"EXPLAIN {sql}")
+        plan = con.execute(f"EXPLAIN (FORMAT JSON) {sql}").fetchall()
+        try:
+            # The tables the engine reads, checked against the grant.
+            scanned = _plan_scan_reason(str(plan[0][1]), con, grantable)
+        except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
+        if scanned:
+            return scanned
         # Binding only: the relation is lazy, so the types cost no scan.
         relation = con.sql(sql)
         types = [str(t) for t in relation.types]
