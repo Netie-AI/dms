@@ -192,6 +192,202 @@ def sql_source_describe(
     return cfg.describe()
 
 
+def service_bearer_id(authorization: str | None) -> str | None:
+    """Id of the configured OpenVault service bearer, or None.
+
+    Accepts ``Authorization: Bearer <token>`` only. A missing header is None
+    (the SQL route keeps its old behaviour). A present header that does not
+    match is also None; the route turns that into 401 when the header was sent.
+    """
+    raw = (authorization or "").strip()
+    if not raw.lower().startswith("bearer "):
+        return None
+    presented = raw[7:].strip()
+    if not presented:
+        return None
+    return dms_executor.match_service_bearer(presented)
+
+
+def _space_payload(record: Any) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "name": record.name,
+        "source_count": record.source_count,
+        "member_count": record.member_count,
+    }
+
+
+def bind_connected_space(
+    *,
+    store: Any,
+    space_id: str | None,
+    space_name: str | None,
+    connector_id: str,
+    exposed: list[str],
+    grant_tables: list[str] | None,
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    """Register a Space and grant only names the connector already listed.
+
+    ``grant_tables is None`` grants the whole listing. A name that is not in
+    the listing is refused. The book is in-memory (Postgres grants stay parked).
+    """
+    from uuid import uuid4
+
+    from dms_core.control_plane.connect_grants import (
+        clean_tables,
+        register_source,
+    )
+    from dms_core.control_plane.connect_grants import grant_tables as grant_book
+
+    listed = clean_tables(exposed)
+    if grant_tables is None:
+        chosen = listed
+    else:
+        chosen = clean_tables(grant_tables)
+        if any(table not in listed for table in chosen):
+            raise ValueError("table_not_exposed")
+    if space_id:
+        record = store.get(space_id)
+        if record is None:
+            raise ValueError("space_not_found")
+        bound_id = space_id
+    else:
+        record = store.create((space_name or "").strip() or f"connected-{uuid4().hex[:8]}")
+        bound_id = str(record.id)
+    source_id = str(uuid4())
+    register_source(
+        source_id=source_id,
+        space_id=bound_id,
+        connector_id=connector_id,
+        exposed=list(listed),
+        actor=actor,
+        token_id=token_id,
+    )
+    granted: tuple[str, ...] = ()
+    if chosen:
+        granted = grant_book(
+            source_id=source_id,
+            tables=list(chosen),
+            actor=actor,
+            token_id=token_id,
+        )
+    return {
+        "space": _space_payload(record),
+        "source_id": source_id,
+        "connector_id": connector_id,
+        "exposed_tables": list(listed),
+        "granted_tables": list(granted),
+    }
+
+
+def _resolve_connect_secret(ask: Any, credential_ref: str) -> str:
+    """Call the OpenVault client already on the ask service. No logging."""
+    from dms_core.control_plane.connect_secrets import ConnectCredentialError
+
+    minter = getattr(ask, "_minter", None)
+    resolve = getattr(minter, "resolve_credential", None)
+    if not callable(resolve):
+        raise ConnectCredentialError()
+    try:
+        secret = resolve(credential_ref)
+    except ConnectCredentialError:
+        raise
+    except Exception:
+        raise ConnectCredentialError() from None
+    if not isinstance(secret, str) or secret == "":
+        raise ConnectCredentialError()
+    return secret
+
+
+def connect_registered_source(
+    *,
+    store: Any,
+    ask: Any,
+    connector_id: str,
+    space_name: str,
+    grant_tables: list[str] | None,
+    credential_ref: str,
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    """Resolve the OpenVault reference, read the listing, grant through the book.
+
+    The resolved secret is an argument to the connector and is then dropped.
+    It is not written to the grant book or the audit row.
+    """
+    secret = _resolve_connect_secret(ask, credential_ref)
+    try:
+        try:
+            exposed = dms_executor.connector_tables(connector_id, secret)
+        except KeyError:
+            raise ValueError("connector_unknown") from None
+    finally:
+        secret = ""
+    return bind_connected_space(
+        store=store,
+        space_id=None,
+        space_name=space_name,
+        connector_id=connector_id,
+        exposed=exposed,
+        grant_tables=grant_tables,
+        actor=actor,
+        token_id=token_id,
+    )
+
+
+def grant_connected_tables(
+    *,
+    source_id: str,
+    tables: list[str],
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    from dms_core.control_plane.connect_grants import grant_tables as grant_book
+    from dms_core.control_plane.connect_grants import source_for
+
+    src = source_for(source_id)
+    if src is None:
+        raise KeyError(source_id)
+    granted = grant_book(
+        source_id=source_id, tables=tables, actor=actor, token_id=token_id
+    )
+    return {
+        "source_id": source_id,
+        "space_id": src.space_id,
+        "granted_tables": list(granted),
+    }
+
+
+def revoke_connected_tables(
+    *,
+    source_id: str,
+    tables: list[str],
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    from dms_core.control_plane.connect_grants import revoke_tables, source_for
+
+    src = source_for(source_id)
+    if src is None:
+        raise KeyError(source_id)
+    revoked = revoke_tables(
+        source_id=source_id, tables=tables, actor=actor, token_id=token_id
+    )
+    return {
+        "source_id": source_id,
+        "space_id": src.space_id,
+        "revoked_tables": list(revoked),
+    }
+
+
+def connect_audit_rows() -> list[dict[str, Any]]:
+    from dms_core.control_plane.connect_grants import audit_rows
+
+    return audit_rows()
+
+
 def sql_source_ingest(
     *,
     kind: str,
@@ -254,7 +450,7 @@ def sql_source_ingest(
     # the same outcome as one measured and found broken. The rows landed and
     # their provenance is real - only the join is in question.
     links = dms_executor.verify_source_links(extract)
-    return {
+    result: dict[str, Any] = {
         "source": extract.source,
         "tables": [
             {
@@ -271,6 +467,7 @@ def sql_source_ingest(
         "declared_foreign_keys": len(extract.keys.foreign_keys),
         "links": links,
     }
+    return result
 
 
 def xlsx_orch_golden(

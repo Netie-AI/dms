@@ -17,6 +17,7 @@ from dms_api.routes import (
     amend,
     audit,
     chat,
+    connect,
     freeroute,
     health,
     insights,
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)
     app.include_router(chat.router)
+    app.include_router(connect.router)
     app.include_router(studio.router)
     app.include_router(pipelines.router)
     app.include_router(amend.router)
