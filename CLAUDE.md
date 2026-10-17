@@ -118,6 +118,15 @@ commit body contains:
 INVARIANT-CHANGE: <reason>
 ```
 
+## Merge tiers
+
+Approved 2026-10-06 12:02 MYT (FAST LANE), relayed by Netie Lead. Labels `tier:fast` and `tier:full` already exist on this repo.
+
+1. `tier:fast` applies to docs, tests, and features behind a flag that is off by default and byte-identical when off. UI (including Studio) is `tier:fast` only when it is behind a flag that is off by default, its flag-off output is byte-identical, and it touches nothing in the Cortex contract (`contract/`), `/ask`, tokens or ManifestMinter; any PR, whatever its category, that touches `/ask` or `contract/`, calls Cortex clarify, or changes the Cortex contract pin is `tier:full` (rule 2). Cleanup is `tier:fast` only when it keeps an attic copy of what it removes and passes an import check (nothing imports the removed path, e.g. `git grep` and import-linter clean); without both, it is `tier:full`. When unsure, full. A `tier:fast` PR merges on green required CI plus ONE second-model AGREE from the opposite model family on the exact head SHA. That AGREE comment must name its model family (e.g. "AGREE (Claude family)" / "AGREE (Grok family)"). The CLEAR is the CI result, not a separate serial wait. After merge, both DMS Check R-0003 and Lead Formal are required. R-0003 YES requires a live push CI run on that exact merge SHA with all three jobs passing (`lint-type-test`, `protected-paths`, `contract-pin`); a later tip's CI does not count for it. If post-merge DMS Check R-0003 or DMS Gating fails, the merge is reverted immediately.
+2. `tier:full` applies to everything else, and always, whatever its category (docs, tests, cleanup, UI or a default-off feature), to any PR touching auth, tokens or ManifestMinter (OV mint); keys or secrets; routing, including `strict_pin`; prove pins (the DMS prove pin `cbf7de87` and the Cortex proving baseline pin `279cbd85`); the Cortex contract, meaning the vendored `contract/` tree and the Cortex contract pin; `/ask`, the serving path (`POST /v1/chat/ask`); Cortex clarify (a PR that touches or calls it); scoring, judging, abstain or WRONG rules, or eval or pack paths; or the held-out scoring work under dms#339. A `tier:full` PR merges serially, only after a pre-merge DMS Check R-0003 CLEAR on that exact head SHA, and stays draft until the moment of squash. It keeps the existing bars unchanged, including DMS Gating's existing role and the different-family AGREE on the exact head. A head move voids CLEAR and AGREE in both tiers.
+3. Any `tier:fast` PR that touches or calls anything in the rule 2 always-full list is bounced to `tier:full`. If no label is present, the PR is `tier:full`. When unsure, full.
+4. No CI check is weakened, skipped or made optional by either tier. Every existing invariant stays as-is: one writer per branch, nothing declared PASS, `DMS_L2_ENABLED=1` never committed, nothing from scored packs leaks.
+
 ## Tool division
 
 | Claude Code | Cursor |
