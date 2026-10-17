@@ -16,7 +16,12 @@ from typing import Any
 import duckdb
 from dms_core.pipelines import GoldMetricDef, PipelineDef, PromoteReceipt
 
-from dms_executor.demo_warehouse import ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import (
+    connect_file,
+    connect_serving,
+    ensure_demo_warehouse,
+    warehouse_path,
+)
 from dms_executor.duckdb_scalar import fetchone_row, scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 from dms_executor.pipeline_loader import PipelineLoadError
@@ -102,7 +107,7 @@ def latest_promote_receipt(target: str, *, path: Path | None = None) -> dict[str
     if not Path(db).is_file():
         return empty
     try:
-        con = duckdb.connect(str(db))
+        con = connect_serving(db)
     except _LOCK_ERRORS as exc:
         raise LakeBusy(
             "warehouse is held by a writer; retry when the promote finishes"
@@ -371,7 +376,7 @@ def run_promote(
     """
     run_id = str(uuid.uuid4())
     db = ensure_demo_warehouse(path or warehouse_path())
-    con = duckdb.connect(str(db))
+    con = connect_file(db, write=True)
     started = False
     try:
         ensure_lake_schemas(con)
