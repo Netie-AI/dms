@@ -1811,9 +1811,9 @@ def test_three_hundred_table_shortlist_p95_under_two_seconds(
     rows_read = 0
     real_read = schema_mod._bounded_read
 
-    def _counting(con: Any, table: str, column: str, limit: int) -> list[str]:
+    def _counting(con: Any, table: str, column: str, limit: int, **kwargs: Any) -> list[str]:
         nonlocal rows_read
-        got = real_read(con, table, column, limit)
+        got = real_read(con, table, column, limit, **kwargs)
         rows_read += len(got)
         return got
 

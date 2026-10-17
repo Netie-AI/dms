@@ -67,7 +67,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -108,7 +108,10 @@ HINT_CANDIDATE_CAP = 3
 # longest value without holding every string.
 INDEX_COLUMN_CAP = 500
 INDEX_TOTAL_CAP = 5000
-# Rows pulled per column, and across the whole build. LIMIT, never a full scan.
+# Rows pulled per non-text column (samples), and across the whole build. A text
+# column reads DISTINCT values up to INDEX_COLUMN_CAP + 1: one past the cap is
+# how a column proves it is wider than the cap. Ceiling: DISTINCT scans the
+# column on the background build. Upgrade: an approximate distinct count.
 SAMPLE_ROWS = 20
 INDEX_ROW_BUDGET = 8000
 # Background build ceiling. The ask path does not wait on this.
@@ -117,6 +120,8 @@ INDEX_BUILD_BUDGET_S = 20.0
 _SHORTLIST = 48
 _SPAN_WIDTH = 6
 _PARTIAL_MIN_CHARS = 3
+# A value under this many letters or digits is never a description mask.
+_MASK_MIN_ALNUM = 3
 _LOG = logging.getLogger("dms_executor.schema_context")
 _COLUMN_CLASS_LOG = logging.getLogger("dms_executor.column_class")
 _BOOL_TYPES = frozenset({"bool", "boolean"})
@@ -151,6 +156,7 @@ _NUM_TYPES = frozenset(
 _INDEX_LOCK = threading.Lock()
 _SPACE_INDEX: dict[str, dict[str, tuple[str, ...]]] = {}
 _SPACE_SAMPLES: dict[str, dict[str, tuple[str, ...]]] = {}
+_SPACE_CAPPED: dict[str, frozenset[str]] = {}
 _SPACE_FP: dict[str, str] = {}
 _STOP = threading.Event()
 _WORKER_LOCK = threading.Lock()
@@ -186,12 +192,14 @@ def _remember_built(
     fingerprint: str,
     index: dict[str, tuple[str, ...]],
     samples: dict[str, tuple[str, ...]],
+    capped: Collection[str] = (),
 ) -> None:
     snap = {key: tuple(vals) for key, vals in index.items()}
     held = {key: tuple(vals) for key, vals in samples.items()}
     with _INDEX_LOCK:
         _SPACE_INDEX[space_id] = snap
         _SPACE_SAMPLES[space_id] = held
+        _SPACE_CAPPED[space_id] = frozenset(capped)
         _SPACE_FP[space_id] = fingerprint
 
 
@@ -199,6 +207,7 @@ def _forget_index(space_id: str) -> None:
     with _INDEX_LOCK:
         _SPACE_INDEX.pop(space_id, None)
         _SPACE_SAMPLES.pop(space_id, None)
+        _SPACE_CAPPED.pop(space_id, None)
         _SPACE_FP.pop(space_id, None)
 
 
@@ -215,6 +224,11 @@ def _space_samples(space_id: str) -> dict[str, tuple[str, ...]]:
         return {key: tuple(vals) for key, vals in found.items()}
 
 
+def _space_capped(space_id: str) -> frozenset[str]:
+    with _INDEX_LOCK:
+        return _SPACE_CAPPED.get(space_id, frozenset())
+
+
 @dataclass(frozen=True)
 class ColumnFact:
     table: str
@@ -224,7 +238,7 @@ class ColumnFact:
     foreign_key: str
     description: str
     samples: tuple[str, ...]
-    distinct: int | None
+    distinct: int | str | None
     score: float
     reason: str = ""
 
@@ -570,7 +584,18 @@ def _sample_values(column: Mapping[str, Any], family: str, tagged: bool) -> list
     return listed[:_SAMPLE_LIMIT]
 
 
-def _distinct_count(column: Mapping[str, Any], values: Sequence[str]) -> int | None:
+def _is_capped(column: Mapping[str, Any], family: str) -> bool:
+    """True for a text column whose distinct values ran past ``INDEX_COLUMN_CAP``.
+
+    The index holds none of its values: a prefix check against part of the
+    column cannot tell ``NORTH`` from ``NORTH EAST``. No values, no hint.
+    """
+    return family == "text" and column.get("capped") is True
+
+
+def _distinct_count(column: Mapping[str, Any], values: Sequence[str]) -> int | str | None:
+    if column.get("capped") is True:
+        return f">={INDEX_COLUMN_CAP}"
     given = _count(column.get("distinct"))
     if given is not None:
         return given
@@ -1088,27 +1113,65 @@ def _value_token_pairs(values: Sequence[str]) -> list[tuple[str, str]]:
     return pairs
 
 
-def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
-    """Replace index values in ``text`` on word boundaries.
+def _mask_alternative(raw: str) -> str:
+    """One regex alternative for ``raw``, anchored as a whole token.
 
-    A shorter known value does not match inside a longer word. Longest
-    alternative is tried first.
+    A boundary is added only on a side where the value itself starts or ends
+    with a word character. A value that begins or ends with punctuation
+    (``#VOID``, ``C++``) brings its own edge, so a ``\\w`` guard there would
+    refuse a match the value already delimits. Inner whitespace matches any
+    run, as the value was folded to single spaces on the way in.
     """
-    if not text or not pairs:
+    body = r"\s+".join(re.escape(part) for part in raw.split())
+    head = r"(?<!\w)" if re.match(r"\w", raw) else ""
+    tail = r"(?!\w)" if re.search(r"\w\Z", raw) else ""
+    return f"{head}{body}{tail}"
+
+
+_Mask = tuple[re.Pattern[str], dict[str, str]] | None
+
+
+def _compile_mask(pairs: Sequence[tuple[str, str]]) -> _Mask:
+    """Build the whole-token matcher for ``pairs`` once per schema build.
+
+    Longest alternative is tried first. A value is a token when no word
+    character touches it, so ``N`` inside ``Net`` is never a hit. A value
+    with fewer than ``_MASK_MIN_ALNUM`` letters or digits is skipped: it is
+    an ordinary flag or code (``Y``, ``KL``, ``10``) that carries nothing
+    to hide and whose token would only cut the description's own words.
+    Compiling once matters: one schema build masks every table, column and
+    measure description against the same index, and rebuilding the pattern
+    per description made a full-cap index about five times slower.
+    """
+    usable = [
+        (raw, token)
+        for raw, token in pairs
+        if sum(ch.isalnum() for ch in raw) >= _MASK_MIN_ALNUM
+    ]
+    if not usable:
+        return None
+    pattern = "|".join(_mask_alternative(raw) for raw, _token in usable)
+    lookup = {" ".join(raw.split()).lower(): token for raw, token in usable}
+    return re.compile(pattern, re.IGNORECASE), lookup
+
+
+def _apply_mask(text: str, mask: _Mask) -> str:
+    if not text or mask is None:
         return text
-    ordered = sorted((raw for raw, _token in pairs if raw), key=len, reverse=True)
-    if not ordered:
-        return text
-    pattern = "|".join(re.escape(raw) for raw in ordered)
-    lookup = {raw.lower(): token for raw, token in pairs}
+    compiled, lookup = mask
 
     def _sub(match: re.Match[str]) -> str:
-        return lookup.get(match.group(0).lower(), match.group(0))
+        found = " ".join(match.group(0).split())
+        return lookup.get(found.lower(), match.group(0))
 
-    return re.compile(
-        rf"(?<![A-Za-z0-9])(?:{pattern})(?![A-Za-z0-9])",
-        re.IGNORECASE,
-    ).sub(_sub, text)
+    return compiled.sub(_sub, text)
+
+
+def _mask_known(text: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Replace index values in ``text``, whole tokens only (see _compile_mask)."""
+    if not text or not pairs:
+        return text
+    return _apply_mask(text, _compile_mask(pairs))
 
 
 def _word_hit(haystack: str, needle: str) -> bool:
@@ -1680,11 +1743,12 @@ def build_schema_context(
                 continue
             family = _type_family(_text(column.get("type")))
             tagged = (table, name) in tags
-            values = _index_values(column, family)
+            capped = _is_capped(column, family)
+            values = [] if capped else _index_values(column, family)
             if values:
                 loaded_values.extend(values)
                 index_rows.append((f"{table}.{name}", tuple(values)))
-            samples = _sample_values(column, family, tagged)
+            samples = [] if capped else _sample_values(column, family, tagged)
             cleared = _column_positively_cleared(table, name, tagged=tagged)
             prepared.append(
                 {
@@ -1694,7 +1758,9 @@ def build_schema_context(
                     "primary_key": bool(column.get("primary_key")),
                     "description": _text(column.get("description")),
                     "samples": samples,
-                    "distinct": _distinct_count(column, values or samples),
+                    "distinct": _distinct_count(
+                        column, [] if capped else (values or samples)
+                    ),
                     "table_desc": table_desc,
                     "tagged": tagged,
                     "cleared": cleared,
@@ -1710,6 +1776,7 @@ def build_schema_context(
     granted_tokens, granted_phrases = _granted_folds(evidence["exempt_values"])
     schema_folds = _term_folds(evidence["schema_terms"])
     known = _value_token_pairs(loaded_values)
+    mask = _compile_mask(known)
     slots: list[tuple[str, str]] = []
     slot_meta: list[tuple[str, str]] = []
     seen_tables: set[str] = set()
@@ -1717,12 +1784,12 @@ def build_schema_context(
         table = str(item["table"])
         name = str(item["name"])
         key = f"{table}.{name}"
-        table_desc = _mask_known(str(item["table_desc"]), known)
+        table_desc = _apply_mask(str(item["table_desc"]), mask)
         if table_desc and table not in seen_tables:
             seen_tables.add(table)
             slots.append((f"{table}.__table__", table_desc))
             slot_meta.append(("table", table))
-        description = _mask_known(str(item["description"]), known)
+        description = _apply_mask(str(item["description"]), mask)
         hints = [] if mask_failed else _hint_values(
             spans,
             index.get(key, ()),
@@ -1751,7 +1818,7 @@ def build_schema_context(
         if _grain_ok(str(item["grain"]), object_tables, names)
     ]
     for item in measure_items:
-        description = _mask_known(_text(item.get("description")), known)
+        description = _apply_mask(_text(item.get("description")), mask)
         if description:
             slots.append((str(item["name"]), description))
             slot_meta.append(("measure", str(item["name"])))
@@ -1816,7 +1883,9 @@ def build_schema_context(
                 foreign_key=fk_of.get((table, name), ""),
                 description=description,
                 samples=kept_samples,
-                distinct=item["distinct"] if isinstance(item["distinct"], int) else None,
+                distinct=(
+                    item["distinct"] if isinstance(item["distinct"], (int, str)) else None
+                ),
                 score=score,
                 reason=reason,
             )
@@ -1934,22 +2003,49 @@ def _fingerprint(
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:20]
 
 
-def _bounded_read(con: Any, table: str, column: str, limit: int) -> list[str]:
-    """At most ``limit`` rows. No DISTINCT and no full-table aggregate."""
+def _bounded_read(
+    con: Any, table: str, column: str, limit: int, *, distinct: bool = False
+) -> list[str]:
+    """At most ``limit`` rows, one string per row read.
+
+    ``distinct=False`` is the first rows in storage order: a sample, nothing
+    more. ``distinct=True`` is the smallest ``limit`` distinct values, the
+    only read that may stand for a column's value set. A blank cell comes
+    back as ``""`` and is not dropped, so ``len`` is the row count the engine
+    returned and ``len > cap`` is a sound "wider than the cap" test.
+    """
     if limit < 1:
         return []
+    cell = f"CAST({_quote(column)} AS VARCHAR)"
+    head = "SELECT DISTINCT" if distinct else "SELECT"
+    tail = " ORDER BY 1" if distinct else ""
     try:
         rows = con.execute(
-            f"SELECT CAST({_quote(column)} AS VARCHAR) FROM {_quote(table)} "
-            f"WHERE {_quote(column)} IS NOT NULL LIMIT {int(limit)}"
+            f"{head} {cell} FROM {_quote(table)} "
+            f"WHERE {_quote(column)} IS NOT NULL{tail} LIMIT {int(limit)}"
         ).fetchall()
     except Exception:  # noqa: BLE001
         return []
-    return [
-        " ".join(str(row[0]).split())
-        for row in rows
-        if row and row[0] is not None and str(row[0]).strip()
-    ]
+    return [" ".join(str(row[0]).split()) for row in rows if row and row[0] is not None]
+
+
+def _count_distinct(con: Any, table: str, column: str) -> int | None:
+    """Distinct non-null values in ``column``, counted by the engine.
+
+    One row comes back however wide the column is, so deciding "past the cap"
+    costs nothing against the index row budget. None means the count could
+    not be taken; the caller then indexes nothing for that column.
+    """
+    try:
+        row = con.execute(
+            f"SELECT COUNT(DISTINCT CAST({_quote(column)} AS VARCHAR)) "
+            f"FROM {_quote(table)} WHERE {_quote(column)} IS NOT NULL"
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
 
 
 def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[str]:
@@ -2117,14 +2213,40 @@ def build_space_index(
                 for col in dataset["columns"]:
                     if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
                         break
-                    take = min(SAMPLE_ROWS, rows_left)
-                    got = _bounded_read(con, table, str(col["name"]), take)
+                    name = str(col["name"])
+                    is_text = _type_family(str(col.get("type") or "")) == "text"
+                    if not is_text:
+                        got = _bounded_read(con, table, name, min(SAMPLE_ROWS, rows_left))
+                        rows_left -= len(got)
+                        col["samples"] = _stored_values(got, table=table, column=name)[
+                            :_SAMPLE_LIMIT
+                        ]
+                        continue
+                    # A text column's index is its complete raw value set or
+                    # nothing (rule 12): a prefix check against part of a
+                    # column cannot tell NORTH from NORTH EAST.
+                    col["values"] = []
+                    total = _count_distinct(con, table, name)
+                    rows_left -= 1
+                    if total is None:
+                        continue
+                    if total > INDEX_COLUMN_CAP:
+                        col["capped"] = True
+                        col["distinct"] = f">={INDEX_COLUMN_CAP}"
+                        continue
+                    if total > rows_left:
+                        continue  # the row budget cannot hold the whole set
+                    got = _bounded_read(con, table, name, total + 1, distinct=True)
                     rows_left -= len(got)
-                    stored = _stored_values(got, table=table, column=str(col["name"]))
-                    if _type_family(str(col.get("type") or "")) == "text":
-                        col["values"] = stored[:INDEX_COLUMN_CAP]
-                    else:
-                        col["samples"] = stored[:_SAMPLE_LIMIT]
+                    if len(got) != total:
+                        continue  # the column changed under the read
+                    stored = _stored_values(got, table=table, column=name)
+                    raw_kept = sum(1 for v in stored if not is_mask_token(v))
+                    if raw_kept < sum(1 for v in got if v):
+                        # The PII pass dropped or tokenised a value, so the
+                        # stored set is no longer the column. No hint at all.
+                        continue
+                    col["values"] = stored
             finally:
                 con.close()
     except Exception as exc:  # noqa: BLE001
@@ -2146,10 +2268,13 @@ def build_space_index(
         return ""
     values: dict[str, tuple[str, ...]] = {}
     samples: dict[str, tuple[str, ...]] = {}
+    capped_keys: set[str] = set()
     for dataset in plain["datasets"]:
         table = str(dataset["name"])
         for col in dataset["columns"]:
             key = f"{table}.{col['name']}"
+            if col.get("capped") is True:
+                capped_keys.add(key)
             if col.get("values"):
                 values[key] = tuple(col["values"])
             if col.get("samples"):
@@ -2164,7 +2289,7 @@ def build_space_index(
             "schema": plain,
         },
     )
-    _remember_built(space_id, fingerprint, values, samples)
+    _remember_built(space_id, fingerprint, values, samples, capped_keys)
     return ""
 
 
@@ -2262,6 +2387,7 @@ def _overlay_index(
     schema: Mapping[str, Any],
     values: Mapping[str, Sequence[str]],
     samples: Mapping[str, Sequence[str]],
+    capped: Collection[str] = (),
 ) -> dict[str, Any]:
     """Catalog shape plus the in-memory cells. The file's cells are not read."""
     out = dict(schema)
@@ -2277,7 +2403,10 @@ def _overlay_index(
             copied = dict(col)
             key = f"{table}.{_text(copied.get('name'))}"
             if _type_family(_text(copied.get("type"))) == "text":
-                if key in values:
+                if key in capped:
+                    copied["capped"] = True
+                    copied["values"] = []
+                elif key in values:
                     copied["values"] = list(values[key])
             elif key in samples:
                 copied["samples"] = list(samples[key])
@@ -2306,6 +2435,7 @@ def lookup_schema(
             plain,
             cached_value_index(space_id),
             _space_samples(space_id),
+            _space_capped(space_id),
         )
         if dialect and not _text(schema.get("dialect")):
             schema["dialect"] = _dialect(dialect)
