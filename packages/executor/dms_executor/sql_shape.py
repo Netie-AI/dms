@@ -34,9 +34,8 @@ What it decides, and nothing else:
   (``SELECT sku, 4242 AS revenue, qty``), a constant multiplied into or
   added to a computed value (``4242 + 0 * SUM(q)``, ``SUM(4242)``), a
   constant chosen by a column (``CASE category WHEN 'x' THEN 5000 ELSE 4242
-  END``), a function of a column that ignores its value (``ARG_MAX(4242,
-  q)``), and figures typed as text (``'RM 4242'``). Those need a figure
-  verifier.
+  END``), a constant a recursive CTE carries beside a counted column, and
+  figures typed as text (``'RM 4242'``). Those need a figure verifier.
 
 Grants (which tables, per Space) stay in ``validate_compiled_sql`` and in the
 OPEN PR that restructures them; this layer only reports the table names.
@@ -413,11 +412,7 @@ def _named_output(scope: Scope, name: str) -> list[Any] | None:
     """
     want = _bare(name)
     arms = _arms(scope)
-    parent = scope.expression.parent
-    while isinstance(parent, exp.SetOperation):
-        # A recursive CTE's base is renamed by the CTE's column list.
-        parent = parent.parent
-    renamed = [_bare(c) for c in getattr(parent, "alias_column_names", None) or []]
+    renamed = _renamed(scope)
     if want in renamed:
         index = renamed.index(want)
     else:
@@ -433,6 +428,57 @@ def _named_output(scope: Scope, name: str) -> list[Any] | None:
             return None
         out.append((selects[index], arm))
     return out
+
+
+def _renamed(scope: Scope) -> list[str]:
+    """The column list a CTE, derived table or LATERAL puts on this scope's outputs."""
+    parent = scope.expression.parent
+    while isinstance(parent, exp.SetOperation):
+        # A recursive CTE's base is renamed by the CTE's column list.
+        parent = parent.parent
+    while (
+        isinstance(parent, exp.Subquery)
+        and not parent.alias_column_names
+        and isinstance(parent.parent, exp.Lateral)
+    ):
+        # LATERAL (SELECT 4242) l(x): the list sits on the LATERAL.
+        parent = parent.parent
+    return [_bare(c) for c in getattr(parent, "alias_column_names", None) or []]
+
+
+def _values_names(values: exp.Values) -> list[str]:
+    """Columns a VALUES list exposes: its column list, then col0, col1, ..."""
+    rows = values.expressions
+    first = rows[0] if rows else None
+    width = len(first.expressions) if isinstance(first, exp.Tuple) else int(first is not None)
+    listed = [_bare(c) for c in values.alias_column_names][:width]
+    return listed + [f"col{i}" for i in range(len(listed), width)]
+
+
+def _star_column(scope: Scope, name: str) -> str | None:
+    """The name an output of this SELECT * scope has in its own source, or None.
+
+    A column list on the CTE or derived table renames by position. Over one
+    VALUES list or one derived query the positions are known, so a renamed
+    output maps to the source's own column and a name the scope does not
+    expose is None. Elsewhere the name passes through unchanged.
+    """
+    want = _bare(name)
+    renamed = _renamed(scope)
+    sources = _selected(scope)
+    if len(sources) != 1 or not isinstance(sources[0], Scope):
+        return name
+    source = sources[0]
+    if isinstance(source.expression, exp.Values):
+        own = _values_names(source.expression)
+    elif len(_arms(source)) == 1 and not any(_is_star(p) for p in source.expression.selects):
+        own = _renamed(source) or [_bare(p.alias_or_name) for p in source.expression.selects]
+    else:
+        return name
+    shown = renamed[: len(own)] + own[len(renamed) :]
+    if shown.count(want) != 1:
+        return None
+    return own[shown.index(want)]
 
 
 def _arms(scope: Scope) -> list[Scope]:
@@ -651,8 +697,13 @@ def _column_derived(
     for src in picked:
         src = _lateral_query(src)
         if isinstance(src, Scope) and isinstance(src.expression, exp.Values):
-            # VALUES (4242) states its rows; only a subquery inside reads data.
-            return src.expression.find(exp.Select) is not None
+            names = _values_names(src.expression)
+            if names.count(_bare(column.name)) != 1:
+                # Not a column of this VALUES list: a lookup joined beside a table.
+                continue
+            # VALUES (4242) states its rows; only a subquery in that column reads data.
+            index = names.index(_bare(column.name))
+            return _values_column_derived(w, src, index, scope, depth + 1, visiting)
         udtf = _udtf_call(src)
         if udtf is not None:
             if _bare(column.name) not in _udtf_names(src.expression, udtf):
@@ -686,8 +737,12 @@ def _column_derived(
                 combine = any if _is_recursive(src) else all
                 return combine(_derived(w, p, arm, depth + 1, inner) for p, arm in named)
             if len(_arms(src)) == 1 and any(_is_star(p) for p in src.expression.selects):
-                # A star passes the column through from that scope's own sources.
-                return _column_derived(w, w.column(column.name), src, depth + 1, inner)
+                # A star passes the column through from that scope's own sources,
+                # under the name it has there.
+                own = _star_column(src, column.name)
+                if own is None:
+                    continue
+                return _column_derived(w, w.column(own), src, depth + 1, inner)
         elif isinstance(src, exp.Table) and _is_generator(src):
             if _bare(column.name) in _generator_names(src):
                 return False
@@ -699,6 +754,30 @@ def _column_derived(
     # Bound by the engine but not traceable here. A generator column is not
     # data; anything else counts as data rather than refuse it.
     return not any(isinstance(src, exp.Table) and _is_generator(src) for src in picked)
+
+
+def _values_column_derived(
+    w: _Walk, values: Scope, index: int, scope: Scope, depth: int, visiting: Visiting
+) -> bool:
+    """A VALUES column is data when a cell in it reads a real table.
+
+    sqlglot files a cell's subquery under the VALUES scope or a scope that
+    selects from it. A subquery found under neither is not traced, and the
+    cell counts as stated, not computed.
+    """
+    for row in values.expression.expressions:
+        cells = row.expressions if isinstance(row, exp.Tuple) else [row]
+        if index >= len(cells) or cells[index].find(exp.Select) is None:
+            continue
+        selects = list(cells[index].find_all(exp.Select))
+        owner: Scope | None = values
+        while owner is not None and not any(
+            c.expression is q for c in owner.subquery_scopes for q in selects
+        ):
+            owner = scope if owner is values else owner.parent
+        if owner is not None and _derived(w, cells[index], owner, depth + 1, visiting):
+            return True
+    return False
 
 
 def _child_scope(scope: Scope, node: Any) -> Scope | None:
@@ -752,6 +831,19 @@ def _derived_uncached(w: _Walk, node: Any, scope: Scope, depth: int, visiting: V
         if _rows_from_data(w, scope, depth + 1):
             return True
         return arg is not None and _derived(w, arg, scope, depth + 1, visiting)
+    if isinstance(node, (exp.ArgMax, exp.ArgMin)):
+        # ARG_MAX(4242, q), MAX_BY, MIN_BY: q picks a row, the figure is 4242.
+        return _derived(w, node.this, scope, depth + 1, visiting)
+    if isinstance(node, exp.Comprehension):
+        # [x * 4242 FOR x IN list]: x is the list's element, not a table column.
+        var = _bare(getattr(node.expression, "name", ""))
+        parts = [node.args.get("iterator"), node.args.get("condition")]
+        parts += [
+            n
+            for n in node.this.find_all(exp.Column, exp.Subquery, exp.AggFunc)
+            if not (isinstance(n, exp.Column) and not n.table and _bare(n.name) == var)
+        ]
+        return any(p is not None and _derived(w, p, scope, depth + 1, visiting) for p in parts)
     if isinstance(node, exp.Filter):
         # MAX(4242) FILTER (WHERE q > 0): the filter picks rows, states no figure.
         return _derived(w, node.this, scope, depth + 1, visiting)
@@ -796,9 +888,22 @@ def _numeric(type_name: str) -> bool:
     return text in _NUMERIC_TYPES or text.startswith("DECIMAL")
 
 
+def _unparen(tree: Any) -> Any:
+    """((SELECT ...)) as (SELECT ...): sqlglot scopes one level of parentheses."""
+    for node in list(tree.find_all(exp.Subquery)):
+        inner = node.this
+        while isinstance(inner, exp.Subquery) and [k for k, v in inner.args.items() if v] == [
+            "this"
+        ]:
+            inner = inner.this
+        if inner is not node.this:
+            node.set("this", inner)
+    return tree
+
+
 def _root_scope(sql: str) -> Scope | None:
     try:
-        tree: Any = _hoist_with(parse(sql, read="duckdb")[0])
+        tree: Any = _unparen(_hoist_with(parse(sql, read="duckdb")[0]))
         scopes = traverse_scope(tree)
     except Exception:  # noqa: BLE001 - the caller fails closed on None
         return None

@@ -234,6 +234,28 @@ LITERAL_ONLY = [
         "WITH RECURSIVE h(sku, lvl) AS (SELECT sku, 0 FROM inventory "
         "UNION ALL SELECT h.sku, h.lvl + 1 FROM h WHERE h.lvl < 2) SELECT sku, lvl FROM h"
     ),
+    # Round 6: a LATERAL's own column list, double parentheses, a VALUES cell
+    # holding a constant subquery, a renamed VALUES column, and a function of
+    # a column that returns its constant argument.
+    "SELECT i.sku, l.x AS revenue FROM inventory i CROSS JOIN LATERAL (SELECT 4242) l(x)",
+    "SELECT i.sku, l.x AS revenue FROM inventory i LEFT JOIN LATERAL (SELECT 4242) l(x) ON TRUE",
+    "SELECT i.sku, l.x AS revenue FROM inventory i CROSS JOIN LATERAL ((SELECT 4242 AS x)) l",
+    "SELECT t.y AS revenue FROM inventory i, LATERAL (SELECT 4242 AS x) AS t(y)",
+    "SELECT v.x AS revenue FROM inventory i, (VALUES ((SELECT 4242))) v(x)",
+    "WITH c AS (SELECT * FROM (VALUES ((SELECT 4242))) v(x)) SELECT x AS revenue FROM c, inventory",
+    (
+        "WITH c(a, b) AS (VALUES ((SELECT SUM(quantity_kg) FROM inventory), 4242)) "
+        "SELECT b AS revenue FROM c, inventory"
+    ),
+    "WITH c(x) AS (VALUES (4242)) SELECT x AS revenue FROM c, inventory",
+    "WITH c(x) AS (SELECT * FROM (SELECT 4242 AS y) d) SELECT x AS revenue FROM c, inventory",
+    "SELECT x AS revenue FROM inventory, (VALUES (4242, 'a')) v(x, label)",
+    "SELECT col1 AS revenue FROM inventory, (VALUES ('a', 4242)) v",
+    "SELECT ARG_MAX(4242, quantity_kg) AS revenue FROM inventory",
+    "SELECT MAX_BY(4242, quantity_kg) AS revenue FROM inventory",
+    "SELECT MIN_BY(4242, quantity_kg) AS revenue FROM inventory",
+    "SELECT ARG_MIN(4242, sku) AS revenue FROM inventory",
+    "SELECT [x * 4242 FOR x IN [1]][1] AS revenue FROM inventory",
 ]
 
 LEGIT = [
@@ -354,6 +376,40 @@ LEGIT = [
         "SELECT i.sku, t.n FROM inventory i, LATERAL (SELECT COUNT(*) AS n FROM transactions t "
         "WHERE t.sku = i.sku) t"
     ),
+    # Round 6: a VALUES list as a label, weight, rate or threshold lookup
+    # beside a real table, a VALUES cell that reads the table, and LATERAL
+    # with a column list or double parentheses over real rows.
+    (
+        "SELECT label, quantity_kg FROM (VALUES ('RAW', 'Raw materials')) w(category, label) "
+        "JOIN inventory i ON i.category = w.category"
+    ),
+    "SELECT quantity_kg * rate AS myr FROM (VALUES (4.7)) fx(rate), inventory",
+    (
+        "SELECT * FROM (VALUES ('RAW', 1.0), ('PACKAGING', 0.5)) AS w(category, weight) "
+        "JOIN inventory USING (category)"
+    ),
+    (
+        "SELECT category, quantity_kg, rank FROM inventory JOIN (VALUES ('RAW', 1), "
+        "('PACKAGING', 2)) AS ord(category, rank) USING (category) ORDER BY rank"
+    ),
+    (
+        "WITH params(min_kg) AS (VALUES (100)) SELECT sku, quantity_kg FROM inventory, params "
+        "WHERE quantity_kg > min_kg"
+    ),
+    (
+        "WITH params(min_kg) AS (VALUES (100)) SELECT sku, quantity_kg FROM params, inventory "
+        "WHERE quantity_kg > min_kg"
+    ),
+    "SELECT x AS total_kg FROM (VALUES ((SELECT SUM(quantity_kg) FROM inventory))) v(x)",
+    (
+        "WITH c(label, kg) AS (VALUES ('all', (SELECT SUM(quantity_kg) FROM inventory))) "
+        "SELECT label, kg FROM c"
+    ),
+    "SELECT i.sku, l.x AS double_kg FROM inventory i, LATERAL (SELECT i.quantity_kg * 2) l(x)",
+    "SELECT i.sku, l.x AS kg FROM inventory i CROSS JOIN LATERAL ((SELECT i.quantity_kg AS x)) l",
+    "SELECT ARG_MAX(quantity_kg, sku) AS top_kg FROM inventory",
+    "SELECT MAX_BY(sku, quantity_kg) AS top_sku, MAX(quantity_kg) AS kg FROM inventory",
+    "SELECT [x * 2 FOR x IN [quantity_kg]][1] AS double_kg FROM inventory",
 ]
 
 #: Pass the shape layer on purpose. Each states an invented figure next to a
@@ -365,8 +421,12 @@ SHAPE_RESIDUAL = [
     "SELECT SUM(4242) AS revenue FROM inventory",
     "SELECT category, CASE category WHEN 'x' THEN 5000 ELSE 4242 END AS target_kg "
     "FROM inventory GROUP BY category",
-    "SELECT ARG_MAX(4242, quantity_kg) AS revenue FROM inventory",
     "SELECT category, 'RM 4242' AS revenue FROM inventory GROUP BY category",
+    # Zero-weight arithmetic in a VALUES cell, like 4242 + 0 * SUM(q).
+    (
+        "SELECT v.x AS revenue FROM inventory i, "
+        "(VALUES ((SELECT COUNT(*) FROM inventory) * 0 + 4242)) v(x)"
+    ),
     "SELECT * FROM inventory i JOIN (SELECT 4242 AS revenue) r ON TRUE",
     "SELECT COLUMNS('rev.*') FROM inventory, (SELECT 4242 AS revenue) r",
     "SELECT COUNT(*) AS revenue FROM range(4242) r LEFT JOIN inventory i ON FALSE",
