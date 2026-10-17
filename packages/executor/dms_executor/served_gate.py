@@ -24,6 +24,7 @@ correlated subquery is not probed on its own (a named gap).
 
 from __future__ import annotations
 
+import functools
 import re
 from pathlib import Path
 from typing import Any
@@ -179,7 +180,11 @@ def _lake_schema(path: Path) -> dict[str, dict[str, dict[str, str]]]:
 
 
 def _qualified(tree: exp.Query, path: Path) -> exp.Query:
-    """Columns qualified against the lake's own catalog, or the tree as it is."""
+    """Columns qualified against the lake's own catalog, or the tree as it is.
+
+    Expressions are typed from the same catalog where sqlglot can, so a
+    BOOLEAN column or function reads as a flag in _value_terms.
+    """
     schema = _lake_schema(path)
     try:
         from sqlglot.optimizer.qualify import qualify
@@ -194,7 +199,15 @@ def _qualified(tree: exp.Query, path: Path) -> exp.Query:
         )
     except Exception:  # noqa: BLE001 - an unattributable measure is unprobed below
         return tree.copy()
-    return out if isinstance(out, exp.Query) else tree.copy()
+    if not isinstance(out, exp.Query):
+        return tree.copy()
+    try:
+        from sqlglot.optimizer.annotate_types import annotate_types
+
+        typed = annotate_types(out, schema=schema, dialect=_DIALECT)
+    except Exception:  # noqa: BLE001 - untyped, the structural flag rule still holds
+        return out
+    return typed if isinstance(typed, exp.Query) else out
 
 
 def _merged(tree: exp.Query) -> exp.Query | None:
@@ -229,7 +242,13 @@ def _fanout(tree: exp.Query, path: Path) -> str | None:
     aggregate is checked on the rows it returns.
     """
     for select in tree.find_all(exp.Select):
-        if _in_recursive_cte(select) or _correlated(select):
+        if _in_recursive_cte(select):
+            continue
+        if _correlated(select):
+            # Not probed on its own. One that adds up over a join cannot be
+            # shown to stay at its grain, so it is not certified.
+            if select.args.get("joins") and any(map(_counts_rows, _select_aggs(select))):
+                raise _Unprobed("correlated_join")
             continue
         found = _select_fanout(select, path)
         if found:
@@ -259,6 +278,12 @@ def _select_fanout(select: exp.Select, path: Path) -> str | None:
     targets = [node for node in _select_aggs(select) if _counts_rows(node)]
     if not targets:
         return None
+    if any(
+        isinstance(node, exp.Subquery) and not isinstance(node.this, exp.Query)
+        for node in _sources(select)
+    ):
+        # FROM (a JOIN b): a parenthesised join list maps to no source.
+        raise _Unprobed("parenthesised_join")
     sources = _source_map(select)
     if not sources or select.args.get("from") is None:
         return None
@@ -320,12 +345,12 @@ def _value_terms(node: exp.Expression) -> list[exp.Expression]:
     t stays unique, but i.q * (CASE WHEN t.x THEN 1 ELSE 0 END) carries only
     i.q. ORDER BY inside an aggregate orders and states nothing.
     """
+    if _is_flag(node):
+        # A comparison, a sign or any yes/no value picks rows or flips them,
+        # like a CASE condition: (t.x = 'out')::INT carries no value of its own.
+        return []
     if isinstance(node, exp.Column):
         return [node]
-    if isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Sign)):
-        # A comparison or a sign picks rows or flips them, like a CASE
-        # condition: (t.x = 'out')::INT as a flag carries no value of its own.
-        return []
     if isinstance(node, (exp.Add, exp.Sub)):
         return _value_terms(node.this) + _value_terms(node.expression)
     if isinstance(node, (exp.Paren, exp.Neg, exp.Cast, exp.TryCast, exp.Order, exp.Round)):
@@ -349,6 +374,41 @@ def _value_terms(node: exp.Expression) -> list[exp.Expression]:
         return parts
     # A product or any other function of several parts is one value.
     return [exp.Tuple(expressions=[part.copy() for part in parts])]
+
+
+def _is_flag(node: exp.Expression) -> bool:
+    """True for a yes/no value: a comparison, a connector, NOT, SIGN, or an
+    expression typed BOOLEAN (a column, a cast, contains(), regexp_matches())."""
+    if isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Sign)):
+        return True
+    kind = node.type
+    if isinstance(kind, exp.DataType) and kind.is_type(exp.DataType.Type.BOOLEAN):
+        return True
+    return isinstance(node, exp.Func) and _engine_name(node) in _boolean_functions()
+
+
+def _engine_name(node: exp.Func) -> str:
+    """The function's name as DuckDB spells it (sqlglot renames some)."""
+    if isinstance(node, exp.Anonymous):
+        return str(node.name).lower()
+    return node.sql(dialect=_DIALECT).split("(", 1)[0].strip().lower()
+
+
+@functools.lru_cache(maxsize=1)
+def _boolean_functions() -> frozenset[str]:
+    """Scalar functions DuckDB types BOOLEAN in every overload. sqlglot mistypes
+    some (list_contains reads as ARRAY), so the engine's own catalog decides."""
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        rows = con.execute(
+            "SELECT function_name FROM duckdb_functions() WHERE function_type = 'scalar' "
+            "GROUP BY function_name HAVING bool_and(return_type = 'BOOLEAN')"
+        ).fetchall()
+    finally:
+        con.close()
+    return frozenset(str(row[0]).lower() for row in rows)
 
 
 #: Aggregates whose value does not change when a row repeats.
@@ -495,7 +555,8 @@ def _all_aliases(select: exp.Select) -> set[str]:
 def _correlated(select: exp.Select) -> bool:
     """A subquery that reads a column of an enclosing query.
 
-    Its FROM cannot be probed on its own; it is not checked (a named gap).
+    Its FROM cannot be probed on its own. One that adds up over a join is
+    not certified (_fanout); any other is not checked (a named gap).
     """
     if select.parent is None:
         return False
