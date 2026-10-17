@@ -97,11 +97,16 @@ class LedgerAppendRequest(BaseModel):
 class LedgerAppendResponse(BaseModel):
     entry_id: str
     hash: str
+    #: The entry's position in the chain (contract LedgerEntry.seq), when the engine says.
+    seq: int | None = None
 
 
 class LedgerVerifyResponse(BaseModel):
     ok: bool = False
+    #: Contract ChainVerification.broken_at (a seq), as text; None when intact.
     first_break: str | None = None
+    #: Entries verified. Contract 1.2.0 does not report it, so None means "unknown",
+    #: not zero; only an engine that sends a count gives an int.
     checked: int | None = None
 
 
