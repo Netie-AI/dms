@@ -6,8 +6,9 @@ Cursor and Claude Code start here. This file is an index only. The law is [CLAUD
 |------|-----|
 | [CLAUDE.md](CLAUDE.md) | Hard rules, including AI-first text-to-SQL |
 | [STATUS.md](STATUS.md) | What is true right now |
-| [tests/](tests/) | Tests, including the 52 pack harness at `tests/fixtures/ask_guide/capture_flag_off_52.py` |
-| [scripts/verify/](scripts/verify/) | Verify commands. This folder is not on main yet |
+| [tests/](tests/) | Tests |
+| [scripts/verify/](scripts/verify/) | The 52 pack: `capture_layout.py --layout copy-only` captures it, `grade52.py` grades it (the number of record) |
+| [CHANGELOG.md](CHANGELOG.md) / [PARKING_LOT.md](PARKING_LOT.md) | What shipped / deferred work |
 | [docs/ACTIVE.md](docs/ACTIVE.md) | Pointer to STATUS.md and GitHub issues |
 | [.cursorrules](.cursorrules) | Cursor boundary summary |
 | [docs/PRODUCT_ROLES.md](docs/PRODUCT_ROLES.md) | Who owns what across DMS / Cortex / OpenVault |

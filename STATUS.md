@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-09 MYT
+**Last updated:** 2026-10-17 MYT, from live GitHub
 **Remote:** https://github.com/Netie-AI/dms
-**Main:** `57d85c52`
+**Main:** `2a78c4bb` (#445)
 
 ## Direction
 
@@ -10,32 +10,49 @@ AI-first, DB-GPT/Genie-style text-to-SQL. The model writes the SQL from ontology
 
 Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button.
 
-Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules.
+Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules. DMS never holds or routes provider keys. Routing lives in OpenVault.
 
-DMS never holds or routes provider keys. Routing lives in OpenVault.
+## 52 pack - number of record (STUB)
 
-## 52 pack
+STUB: an in-process TestClient that replays recorded Cortex responses, not a live-model run. Layout copy-only: the shipped image does not copy `tests/`, so the score-pack fixture is absent. Graded by `scripts/verify/grade52.py` (on main via #432).
 
-flag-off, no model key, main 57d85c52: 23 correct / 0 wrong of 43 answerable (21 plus 2 column-alias matches).
+| Main | 52: correct / wrong / abstain | 45 | Served paths |
+|------|------|------|------|
+| `57d85c52` (`tests/fixtures/ask_guide/copy_only_57d85c52.jsonl`) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
+| `2a78c4bb` (re-captured 2026-10-17) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
 
-On current mains with a model configured, every AI call was rejected by Cortex with 422 (DMS sent model/strict fields), so DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. The fixes are DROP-ROUTE-FIELDS-01 and GEN01-WRONG-TO-LADDER-01 (P0).
+Both rows: refusal_ok=8, refusal_wrong=0, gold_broken=1. The old 23-correct figure is the full-tree layout of 57d85c52 (23 / 0 / 20, fixture on disk). It is an agreement check, not the product number.
 
-AI answers are 0 until #426 lands. The live-model number is pending.
+With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. No fix has merged since. The P0 fixes are #442 and #430. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
+
+## Merged since 2026-10-09
+
+| PR | Squash | What |
+|----|--------|------|
+| [#420](https://github.com/Netie-AI/dms/pull/420) | `404f3999` | CONN-POOL-01: one DuckDB connection per lake |
+| [#432](https://github.com/Netie-AI/dms/pull/432) | `8ff2623a` | GRADER-VALUES-01: grade52 and the copy-only number of record |
+| [#423](https://github.com/Netie-AI/dms/pull/423) | `a52ccb22` | VALUE-HINT-SPAN: mask only person-classified columns |
+| [#342](https://github.com/Netie-AI/dms/pull/342) | `5b2456fb` | BANK-02: auditor export of ask, SQL, tables and outcome |
+| [#445](https://github.com/Netie-AI/dms/pull/445) | `2a78c4bb` | CI: lint-type-test timeout 30 minutes |
 
 ## Open work
 
-[GitHub issues](https://github.com/Netie-AI/dms/issues) are the source of truth. Never a markdown backlog.
+[GitHub issues](https://github.com/Netie-AI/dms/issues) and [open PRs](https://github.com/Netie-AI/dms/pulls) are the source of truth. Never a markdown backlog. P0s first.
 
 | Item | PR |
 |------|----|
-| Serving attach for the AI schema index and extract SQL | [#426](https://github.com/Netie-AI/dms/pull/426) |
-| VALUE-HINT-SPAN | [#423](https://github.com/Netie-AI/dms/pull/423) |
-| INTENT-SPEC-01 | [#409](https://github.com/Netie-AI/dms/pull/409) |
-| ASK-CLARIFY-01 | [#419](https://github.com/Netie-AI/dms/pull/419) |
-| ASK-RECONFIRM-01 | [#425](https://github.com/Netie-AI/dms/pull/425) |
-| GRANT-STRUCT-01 | [#421](https://github.com/Netie-AI/dms/pull/421) |
-| GRANT-KEY-01 | [#422](https://github.com/Netie-AI/dms/pull/422) |
-| CONN-POOL-01 | [#420](https://github.com/Netie-AI/dms/pull/420) |
-| ONTO-DERIVE-01 after BANK-02 | [#316](https://github.com/Netie-AI/dms/pull/316) after [#342](https://github.com/Netie-AI/dms/pull/342) |
-| AI-LADDER-PLAN-01 | no PR |
-| NAME-ECHO-01 | no PR |
+| P0 DROP-ROUTE-FIELDS-01: stop sending `model` and `strict` (the 422) | #442 (supersedes #429) |
+| P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
+| Serving attach for the AI schema index and extract SQL | #447 (supersedes #426) |
+| CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
+| COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
+| SAFE-01: one grant function, one parser | #454 |
+| WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
+| EVAL-01 / INGEST-COLNAME-01 (P1 security) / VALUE-INDEX-01 / CLOOP-PII-01 | #448 / #446 / #450 / #441 |
+| DR-0006: writer family | #440 |
+| ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
+| AI-LADDER-PLAN-01 / NAME-ECHO-01 / ASK-CLARIFY-01 / ASK-RECONFIRM-01 | #431 / #428 / #419 / #425 |
+| GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
+| GOLD-LEAK-01 / ROUTE-STAMP-01 / serving-lock deadline | #435 / #439 / #437 |
+
+Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).
