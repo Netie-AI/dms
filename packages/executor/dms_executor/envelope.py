@@ -35,6 +35,7 @@ _BADGE_MAP = {
     "catalog": "L1_GOVERNED_METRIC",  # META-01 semantic browse — not FreeRoute SQL
     "query_skill": "L2_VALIDATED",
     "session": "L2_VALIDATED",
+    # Route token only. L2 requires gate_passed; the name alone abstains.
     "generated": "L2_VALIDATED",
     "l2_validated": "L2_VALIDATED",
     "l2_anomalous": "L2_ANOMALOUS",
@@ -1243,7 +1244,9 @@ def build_audit_receipt(
     return {"include": include, "exclude": exclude, "unsure": unsure}
 
 
-def normalize_badge(raw: str | None, *, abstained: bool) -> str:
+def normalize_badge(
+    raw: str | None, *, abstained: bool, gate_passed: bool = False
+) -> str:
     """Map an engine badge onto the customer vocabulary. Unknown means abstain.
 
     The default used to be ``L2_VALIDATED`` - a *confident* badge. So any badge
@@ -1269,7 +1272,11 @@ def normalize_badge(raw: str | None, *, abstained: bool) -> str:
     key = (raw or "abstain").strip()
     if key in ALLOWED_BADGES:
         return key
-    return _BADGE_MAP.get(key.lower(), "ABSTAIN")
+    mapped = _BADGE_MAP.get(key.lower(), "ABSTAIN")
+    # The route name "generated" is not a check. L2 needs a gate pass.
+    if key.lower() == "generated" and not gate_passed:
+        return "ABSTAIN"
+    return mapped
 
 
 def _ensure_values(
@@ -1369,13 +1376,14 @@ def build_answer_envelope(
     cascade_path: bool = False,
     exclude_reasons: list[Any] | None = None,
     column_schema: dict[str, Any] | None = None,
+    gate_passed: bool = False,
     _from_builder: bool = False,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
-    badge_norm_probe = normalize_badge(badge, abstained=False)
+    badge_norm_probe = normalize_badge(badge, abstained=False, gate_passed=gate_passed)
     if abstained is None:
         abstained = badge_norm_probe == "ABSTAIN" or str(badge).upper() == "ABSTAIN"
-    badge_out = normalize_badge(badge, abstained=bool(abstained))
+    badge_out = normalize_badge(badge, abstained=bool(abstained), gate_passed=gate_passed)
     abstained = badge_out == "ABSTAIN"
 
     if isinstance(assumptions, str):
