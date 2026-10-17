@@ -11,7 +11,9 @@ from alembic import context
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # In-process migrate (API lifespan, pytest) must not disable loggers the
+    # app already created. fileConfig's default does that.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = None
 
