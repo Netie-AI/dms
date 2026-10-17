@@ -132,6 +132,18 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
+def scrub_ask_envelope(env: dict[str, Any]) -> dict[str, Any]:
+    """Scrub an ask envelope built outside ``live_ask``. Opens no connection.
+
+    Routes stay off ``dms_executor``. No turn resolved a grant set for
+    these, so nothing is granted. Loop SQL and ``raw_reply`` are not
+    rewritten.
+    """
+    if not isinstance(env, dict):
+        return env
+    return dms_executor.hide_echo(env, "")
+
+
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 

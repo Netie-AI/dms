@@ -11,7 +11,10 @@ instead of building an abstain envelope themselves.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import Any
+
+from dms_executor.name_echo import hide_echo
 
 _LOG = logging.getLogger(__name__)
 
@@ -102,7 +105,7 @@ def build_abstain(
             stage=stage,
             ask_id=ask_id,
         )
-        return demote
+        return hide_echo(demote, reason)
 
     from dms_executor.envelope import build_answer_envelope
 
@@ -122,7 +125,65 @@ def build_abstain(
         stage=stage,
         ask_id=ask_id,
     )
-    return env
+    return hide_echo(env, reason)
+
+
+_SERVED_UNGRANTED_TEXT = (
+    "I can't answer this: the query behind this answer read a table this "
+    "Space does not grant. No figure was returned."
+)
+
+
+def _quoted(parts: tuple[str, ...]) -> str:
+    return ".".join('"' + part.replace('"', '""') + '"' for part in parts)
+
+
+def refuse_ungranted_answer(
+    env: dict[str, Any],
+    *,
+    question: str = "",
+    grants: Collection[str] | None = None,
+) -> dict[str, Any]:
+    """Abstain when an answer's ``sql_used`` reads a relation the turn does not grant.
+
+    A hit is a grant breach or a misread grant set. Either way the figure
+    is not shipped and the source is not hidden under the badge. The
+    ticket carries the names; the envelope does not. ``env`` is returned
+    unchanged when nothing is ungranted.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+    from dms_executor.name_echo import served_ungranted
+
+    names = served_ungranted(env, grants)
+    if not names:
+        return env
+    sql = env.get("sql_used")
+    reason = "ungranted:" + ",".join(_quoted(parts) for parts in names)
+    out = build_abstain(
+        reason=reason,
+        question=question,
+        sql=sql if isinstance(sql, str) else None,
+        stage="served_sql",
+        answer_id=str(env.get("answer_id") or "ans_served_ungranted"),
+        text=_SERVED_UNGRANTED_TEXT,
+        values=[],
+        rows=[],
+        sql_used=None,
+        assumptions=["served SQL read a relation outside this Space's grant"],
+        abstain_reason="ungranted",
+        audit_id=env.get("audit_id"),
+        as_of=env.get("as_of"),
+        space_id=env.get("space_id"),
+        session_id=env.get("session_id"),
+        ask_mode=str(env.get("ask_mode") or "live"),
+        route=env.get("route"),
+    )
+    loop = env.get("loop")
+    if isinstance(loop, list) and loop:
+        out["loop"] = loop
+        hide_echo(out, reason, grants=grants)
+    assert_envelope_valid(out)
+    return out
 
 
 def _envelope_reason(env: dict[str, Any]) -> str:

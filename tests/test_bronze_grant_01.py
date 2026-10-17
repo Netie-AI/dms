@@ -161,7 +161,8 @@ def test_ungranted_space_bronze_sum_abstains(
     filename = "grantgap.xlsx"
     table = _seed(db, filename, space_id=None, amount=1545366.40)
     env = _ask(db, filename, space_id=OPS, monkeypatch=monkeypatch)
-    assert env["badge"] == "ABSTAIN" and f"ungranted_table:{table}" in env["text"]
+    assert env["badge"] == "ABSTAIN" and "ungranted_table" in env["text"]
+    assert table not in env["text"]
     assert env["abstained"] is True
     assert not env["rows"]
     assert "1545366.4" not in env["text"]
@@ -175,7 +176,8 @@ def test_cross_space_bronze_sum_abstains(
     filename = "crossspace.xlsx"
     table = _seed(db, filename, space_id=FINANCE, amount=1545366.40)
     env = _ask(db, filename, space_id=OPS, monkeypatch=monkeypatch)
-    assert env["badge"] == "ABSTAIN" and f"ungranted_table:{table}" in env["text"]
+    assert env["badge"] == "ABSTAIN" and "ungranted_table" in env["text"]
+    assert table not in env["text"]
     assert env["abstained"] is True
     assert not env.get("values")
     assert not env["rows"]
@@ -205,7 +207,8 @@ def test_shape_pass_without_grant_abstains(
     cols = _shape_columns(db, table)
     assert "category" in cols and "sales_value_myr" in cols
     env = _ask(db, filename, space_id=FINANCE, monkeypatch=monkeypatch)
-    assert env["badge"] == "ABSTAIN" and f"ungranted_table:{table}" in env["text"]
+    assert env["badge"] == "ABSTAIN" and "ungranted_table" in env["text"]
+    assert table not in env["text"]
     assert not env["rows"]
     assert "88001.25" not in env["text"]
 
