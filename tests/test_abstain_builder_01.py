@@ -273,8 +273,8 @@ def test_timeout_call_cap_and_as_of_each_write_one_ticket(
     question = "how many florbs are in the warehouse"
     cases = (
         (
-            "insights_timeout:generate",
-            "insights_budget",
+            "reconfirm:insights_timeout:generate",
+            "extract_loop",
             {"insights_fail": "insights_timeout:generate", "query_sql": "SELECT 1"},
         ),
         (

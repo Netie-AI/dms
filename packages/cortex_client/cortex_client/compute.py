@@ -910,6 +910,18 @@ def _insights_generate_post(
     return _insights_envelope(res)
 
 
+def _budget_reason(raw: str) -> str:
+    """A budget stop with only its known tail. The payload is wire data: a leg
+    outside the known set, or a cap that is not a small whole number, cannot
+    carry text into an abstain sentence."""
+    head, _, tail = raw.partition(":")
+    if head == INSIGHTS_FAIL_TIMEOUT:
+        leg = tail if tail in INSIGHTS_TIMEOUT_LEGS else INSIGHTS_TIMEOUT_LEGS[0]
+        return f"{head}:{leg}"
+    cap = tail if tail.isascii() and tail.isdigit() and len(tail) <= 2 else "0"
+    return f"{head}:{int(cap)}"
+
+
 def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
     """Named fail-closed reason stamped by ``compute_insights``, or None.
 
@@ -919,7 +931,9 @@ def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
     if not isinstance(payload, dict):
         return None
     raw = str(payload.get("insights_fail") or "").strip()
-    if raw in INSIGHTS_FAIL_REASONS or raw.startswith(_BUDGET_PREFIXES):
+    if raw.startswith(_BUDGET_PREFIXES):
+        return _budget_reason(raw)
+    if raw in INSIGHTS_FAIL_REASONS:
         return raw
     if raw.startswith("pin_unavailable:") or raw.startswith("pin_caller_error:"):
         return raw
@@ -1045,10 +1059,14 @@ def _insights_body(
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
     if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
-        body["sql_feedback"] = {
+        feedback_body = {
             "previous_sql": str(sql_feedback.get("previous_sql") or ""),
             "reason": str(sql_feedback.get("reason") or ""),
         }
+        step = str(sql_feedback.get("step") or "")
+        if step in {"self_correct", "richer_context", "stronger_tier"}:
+            feedback_body["step"] = step
+        body["sql_feedback"] = feedback_body
     apply_schema_context(body, schema_context)
     return without_route_fields(body)
 

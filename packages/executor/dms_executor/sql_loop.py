@@ -5,25 +5,34 @@ SQL normalisation use that dialect, supplied by the caller. This module
 names no warehouse table or column.
 
 Retry only on a database execution error or a checker flag. Hostile SQL,
-multi-statement SQL, file reads, ungranted tables, a missing extract, and
-a reply with no SQL abstain at once and are not pasted into a retry prompt.
+multi-statement SQL, file reads, ungranted tables, and a missing extract
+abstain at once and are not pasted into a retry prompt. A timeout, a
+provider error, or a reply with no SQL does not compile.
 """
 
 from __future__ import annotations
 
 import re
+import threading
+import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from cortex_client.compute import (
+    PLAN_ORIGIN_ONTOLOGY_RANKING,
     cloop_b_enabled,
     generate_model_called,
     insights_call_cap,
+    insights_fail_reason,
+    insights_timeout_s,
+    note_model_call,
     recorded_model_calls,
 )
 
 from dms_executor.lake_registry import SERVING_ERRORS
+from dms_executor.served_gate import lake_alias_sql
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
@@ -40,6 +49,19 @@ _CONNECTOR_DIALECT: dict[str, str] = {
 EXTRACT_DIALECT = "duckdb"
 MAX_SQL_RETRIES = 2
 EMPTY_NOTE = "no rows match"
+#: On the compute context only. The seam strips it before the request body.
+ATTEMPT_TIMEOUT_KEY = "_attempt_timeout_s"
+_DEADLINE_KEY = "_serving_deadline"
+#: One share below this is not a model call. It stays with the compile.
+_MIN_ATTEMPT_S = 0.05
+#: Cooperative stop after the slice. A call that ignores it is discarded.
+_CANCEL_GRACE_S = 0.25
+_serving_deadline: ContextVar[float | None] = ContextVar(
+    "dms_serving_deadline", default=None
+)
+_attempt_cancel: ContextVar[threading.Event | None] = ContextVar(
+    "dms_attempt_cancel", default=None
+)
 #: VALUE-EXISTS-01 later returns None from ``empty_result_reason`` so the
 #: caller can serve this empty answer. Until then the reason is an abstain.
 EMPTY_UNVERIFIED = "empty_result_unverified:value_exists_pending"
@@ -375,8 +397,13 @@ def loop_entry(
     sql: str | None,
     outcome: str,
     dialect: str,
+    model_calls: int = 1,
 ) -> dict[str, Any]:
-    """One model attempt. ``outcome`` is never empty. Secrets are not stored."""
+    """One model attempt. ``outcome`` is never empty. Secrets are not stored.
+
+    ``model_calls`` is 1 when this attempt spent one model call, and 0 when
+    no call was sent (the serving deadline left no slice).
+    """
     why = str(outcome or "").strip() or "no_outcome"
     model = _text(payload.get("served_model") if isinstance(payload, Mapping) else None)
     if model is None and isinstance(payload, Mapping):
@@ -391,6 +418,7 @@ def loop_entry(
         "tokens": _tokens(payload),
         "sql": sql,
         "outcome": why,
+        "model_calls": 1 if model_calls else 0,
         "model_wrote": bool(sql),
         "dialect": dialect,
     }
@@ -420,8 +448,159 @@ def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
     return head in _NO_RETRY_HEADS
 
 
+def refused_without_retry(why: str) -> bool:
+    """True for a checker reason that abstains at once: hostile, multi-statement,
+    ungranted, or no warehouse. One list for the loop and the ladder."""
+    return _no_model_retry(why, frozenset())
+
+
 def _can_retry(*, retries: int, used: int, cap: int) -> bool:
     return retries < MAX_SQL_RETRIES and used < cap
+
+
+def _explain_code(why: str) -> str | None:
+    """``explain:BinderException`` with the engine sentence removed.
+
+    None when this checker reason is not an explain failure. The sentence
+    stays in the model prompt only.
+    """
+    if not why.startswith("explain:"):
+        return None
+    bits = why.split(":", 2)
+    name = bits[1].strip() if len(bits) > 1 else ""
+    if name.isidentifier():
+        return f"explain:{name}"
+    return "explain"
+
+
+class CompileDefer(Exception):
+    """Model SQL ran and failed its check. The caller may compile."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ServeHold(Exception):
+    """Timeout, provider error, or empty reply. The caller must not compile."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def attempt_cancel_event() -> threading.Event | None:
+    """Set when this attempt's slice is over. The call should stop."""
+    return _attempt_cancel.get()
+
+
+def begin_serving_budget(seconds: float | None = None) -> None:
+    """Wall clock for one ask's model calls plus the compile reserve."""
+    span = insights_timeout_s() if seconds is None else float(seconds)
+    _serving_deadline.set(time.monotonic() + span)
+
+
+def clear_serving_budget() -> None:
+    _serving_deadline.set(None)
+
+
+def attempt_slice(attempts_left: int, *, first: bool = False) -> float | None:
+    """Seconds for the next model call.
+
+    The first call may use all that is left. Later calls split the remaining
+    deadline across the attempts still allowed plus one reserve share for the
+    compile. None means only that reserve is left.
+    """
+    deadline = _serving_deadline.get()
+    if deadline is None or attempts_left < 1:
+        return None
+    remaining = deadline - time.monotonic()
+    share = remaining if first else remaining / (attempts_left + 1)
+    if share < _MIN_ATTEMPT_S:
+        return None
+    return share
+
+
+def deadline_marker() -> dict[str, Any]:
+    """A model call that did not return inside its slice."""
+    return {
+        "phase": "generate",
+        "insights_fail": "insights_timeout:generate",
+        _DEADLINE_KEY: True,
+    }
+
+
+def is_deadline(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get(_DEADLINE_KEY):
+        return True
+    reason = str(payload.get("insights_fail") or "")
+    return reason.startswith("insights_timeout")
+
+
+def bound_model_compute(
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    """Bound each model call by the serving deadline.
+
+    The first call gets the whole per-leg bound, so a reply that arrived in
+    time before this wrapper still arrives in time. Later calls split what is
+    left, keeping one share back for the compile. Every call that was sent
+    takes a cap slot and is counted in ``model_calls``, whether it returned or
+    ran out of time: a POST that left the client is spent either way.
+
+    ponytail: cancel is cooperative (``attempt_cancel_event``). A call that
+    ignores it is discarded after a short grace and still counted.
+    Upgrade: cancel the HTTP call, then join.
+    """
+    begin_serving_budget()
+    calls = {"n": 0}
+
+    def wrapped(ctx: dict[str, Any]) -> dict[str, Any] | None:
+        left = insights_call_cap() - calls["n"]
+        slice_s = attempt_slice(left, first=calls["n"] == 0)
+        if slice_s is None or left < 1:
+            return deadline_marker()
+        body = dict(ctx)
+        body[ATTEMPT_TIMEOUT_KEY] = slice_s
+        calls["n"] += 1
+        return _invoke_bounded(compute, body, slice_s)
+
+    return wrapped
+
+
+def _invoke_bounded(
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ctx: dict[str, Any],
+    slice_s: float,
+) -> dict[str, Any] | None:
+    box: dict[str, Any] = {}
+    cancel = threading.Event()
+
+    def run() -> None:
+        _attempt_cancel.set(cancel)
+        try:
+            box["v"] = compute(ctx)
+        except Exception as exc:  # noqa: BLE001 — same miss as a raised compute
+            box["e"] = exc
+
+    # One sent call is one model call on the ask's own counter, finished or not.
+    note_model_call()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(slice_s)
+    if thread.is_alive():
+        # Discard this future. It stays counted.
+        cancel.set()
+        thread.join(_CANCEL_GRACE_S)
+        return deadline_marker()
+    got = box.get("v")
+    if isinstance(got, dict) and is_deadline(got):
+        return got
+    if "e" in box or not isinstance(got, dict):
+        return None
+    return got
 
 
 def _served_outcome(env: dict[str, Any]) -> str:
@@ -495,6 +674,8 @@ def run_model_loop(
     """
     cap = insights_call_cap()
     retries = 0
+    # One execute or explain failure may ask the model again. The next one compiles.
+    error_fed = 0
     used = recorded_model_calls()
     if used <= 0:
         used = 1
@@ -507,16 +688,21 @@ def run_model_loop(
         prompt = feedback_prompt(question, previous_sql=prev_sql, reason=reason)
         sql = model_sql(current)
         if not sql:
+            # No statement ran, so this is not a failed check. Do not compile.
+            named = (
+                insights_fail_reason(current) if isinstance(current, dict) else None
+            )
+            hold = "provider_error" if current is None or named else "empty_reply"
             attempts.append(
                 loop_entry(
                     prompt=prompt,
                     payload=current,
                     sql=None,
-                    outcome="no_sql",
+                    outcome=hold,
                     dialect=dialect,
                 )
             )
-            return abstain("no_sql", attempts, sql=None, retries=retries)
+            raise ServeHold(hold)
 
         if protected_sql:
             dropped = dropped_conjuncts(protected_sql, sql, dialect)
@@ -532,13 +718,14 @@ def run_model_loop(
                     )
                 )
                 if not _can_retry(retries=retries, used=used, cap=cap):
-                    head = f"loop_exhausted:{flag}"
-                    return abstain(head, attempts, sql=sql, retries=retries)
+                    raise CompileDefer(f"loop_exhausted:{flag}")
                 retries += 1
                 used += 1
                 prev_sql = sql
                 reason = flag
-                current = _call(compute, ctx, prompt, reason, sql)
+                current = _call(
+                    compute, ctx, prompt, reason, sql, attempts=attempts, dialect=dialect
+                )
                 continue
             if dropped:
                 attempts.append(
@@ -551,19 +738,27 @@ def run_model_loop(
                     )
                 )
                 if not _can_retry(retries=retries, used=used, cap=cap):
-                    head = "loop_exhausted:filter_dropped"
-                    return abstain(head, attempts, sql=sql, retries=retries)
+                    raise CompileDefer("loop_exhausted:filter_dropped")
                 retries += 1
                 used += 1
                 prev_sql = sql
                 reason = "filter_dropped"
-                current = _call(compute, ctx, prompt, reason, sql)
+                current = _call(
+                    compute, ctx, prompt, reason, sql, attempts=attempts, dialect=dialect
+                )
                 continue
 
         why = check(sql)
         if why:
-            safe_why = mask_feedback_text(why)
-            outcome = f"checker:{safe_why}"
+            explain_code = _explain_code(why)
+            if explain_code:
+                # The engine sentence is for the model prompt, not the envelope.
+                outcome = f"checker:{explain_code}"
+                model_reason = f"checker:{why}"
+            else:
+                safe_why = mask_feedback_text(why)
+                outcome = f"checker:{safe_why}"
+                model_reason = outcome
             attempts.append(
                 loop_entry(
                     prompt=prompt,
@@ -573,23 +768,32 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
-            if why in no_retry_reasons:
-                return abstain(why, attempts, sql=sql, retries=retries)
-            if _no_model_retry(why, no_retry_reasons) or not _can_retry(
-                retries=retries, used=used, cap=cap
-            ):
-                head = (
-                    outcome
-                    if _no_model_retry(why, no_retry_reasons)
-                    else f"loop_exhausted:{outcome}"
-                )
+            if why in no_retry_reasons or _no_model_retry(why, no_retry_reasons):
+                head = why if why in no_retry_reasons else outcome
                 return abstain(head, attempts, sql=sql, retries=retries)
+            fed_done = explain_code is not None and error_fed >= 1
+            if fed_done or not _can_retry(retries=retries, used=used, cap=cap):
+                raise CompileDefer(f"loop_exhausted:{outcome}")
+            if explain_code is not None:
+                error_fed += 1
             protected_sql = sql
             retries += 1
             used += 1
             prev_sql = sql
             reason = outcome
-            current = _call(compute, ctx, prompt, reason, sql)
+            current = _call(
+                compute,
+                ctx,
+                prompt,
+                reason,
+                sql,
+                attempts=attempts,
+                dialect=dialect,
+                model_reason=model_reason,
+                model_prompt=feedback_prompt(
+                    question, previous_sql=sql, reason=model_reason
+                ),
+            )
             continue
 
         if warehouse is None or not Path(warehouse).is_file():
@@ -601,7 +805,8 @@ def run_model_loop(
             )
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
-        rows, exec_err = run_readonly(sql, Path(warehouse))
+        # The checker grants warehouse_<table>; the lake holds <table>.
+        rows, exec_err = run_readonly(lake_alias_sql(sql), Path(warehouse))
         if exec_err in _REFUSED_SHAPES:
             # Not one SELECT. Refused before execute, no model retry.
             attempts.append(
@@ -615,22 +820,36 @@ def run_model_loop(
             )
             return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
+            # Raw engine text goes to the model prompt only.
             safe_err = mask_feedback_text(exec_err)
-            outcome = f"db_error:{safe_err}"
+            outcome = "db_error"
+            model_reason = f"db_error:{safe_err}" if safe_err else outcome
             attempts.append(
                 loop_entry(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
             protected_sql = sql
-            if not _can_retry(retries=retries, used=used, cap=cap):
-                head = f"loop_exhausted:{outcome}"
-                return abstain(head, attempts, sql=sql, retries=retries)
+            if error_fed >= 1 or not _can_retry(retries=retries, used=used, cap=cap):
+                raise CompileDefer(f"loop_exhausted:{outcome}")
+            error_fed += 1
             retries += 1
             used += 1
             prev_sql = sql
             reason = outcome
-            current = _call(compute, ctx, prompt, reason, sql)
+            current = _call(
+                compute,
+                ctx,
+                prompt,
+                reason,
+                sql,
+                attempts=attempts,
+                dialect=dialect,
+                model_reason=model_reason,
+                model_prompt=feedback_prompt(
+                    question, previous_sql=sql, reason=model_reason
+                ),
+            )
             continue
 
         got = rows or []
@@ -672,19 +891,46 @@ def _call(
     prompt: str,
     reason: str,
     previous_sql: str | None,
+    *,
+    attempts: list[dict[str, Any]] | None = None,
+    dialect: str = "",
+    model_reason: str | None = None,
+    model_prompt: str | None = None,
 ) -> dict[str, Any] | None:
+    # ``model_prompt`` is what the model reads. The stored attempt keeps ``prompt``.
+    fed_reason = model_reason if model_reason is not None else reason
+    fed_prompt = model_prompt if model_prompt is not None else prompt
     feedback = {
         "previous_sql": mask_feedback_text(previous_sql or ""),
-        "reason": mask_feedback_text(reason),
-        "prompt": prompt,
+        "reason": mask_feedback_text(fed_reason),
+        "prompt": fed_prompt,
     }
     nxt = dict(ctx)
     nxt["sql_loop_feedback"] = feedback
+    sent_before = recorded_model_calls()
     try:
         got = compute(nxt)
+    except (CompileDefer, ServeHold):
+        raise
     except Exception:
-        return None
-    return got if isinstance(got, dict) else None
+        raise ServeHold("provider_error") from None
+    if is_deadline(got if isinstance(got, dict) else None):
+        if attempts is not None:
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=got if isinstance(got, dict) else None,
+                    sql=previous_sql,
+                    outcome="insights_timeout:generate",
+                    dialect=dialect,
+                    # Counted when the POST left, zero when no slice was left to send it.
+                    model_calls=1 if recorded_model_calls() > sent_before else 0,
+                )
+            )
+        raise ServeHold("insights_timeout:generate")
+    if not isinstance(got, dict):
+        raise ServeHold("provider_error")
+    return got
 
 
 def _clear_credit(env: dict[str, Any]) -> None:
@@ -711,6 +957,24 @@ def _stamp_reported(
         env["ov_key_id"] = key
 
 
+def _drop_model_credit_when_compile_served(env: dict[str, Any]) -> None:
+    """The compile step produced the SQL. Do not name the model as the producer.
+
+    ``plan_origin`` already names that step. Credit fields copied from the
+    model payload are removed. Absent keys stay absent.
+    """
+    if env.get("abstained"):
+        return
+    if env.get("plan_origin") != PLAN_ORIGIN_ONTOLOGY_RANKING:
+        return
+    had_model = bool(env.get("served_model") or env.get("served_provider"))
+    env.pop("served_model", None)
+    env.pop("served_provider", None)
+    env.pop("ov_key_id", None)
+    if env.get("served_attribution") == "reported":
+        env["served_attribution"] = "missing" if had_model else "none"
+
+
 def apply_sql_credit(
     env: dict[str, Any],
     payload: dict[str, Any] | None,
@@ -720,14 +984,16 @@ def apply_sql_credit(
 ) -> None:
     """Name the model only when the served SQL is one a model attempt wrote.
 
-    With ``DMS_CLOOP_B`` off, this is a no-op besides dropping ``ov_key_id``.
-    Main never sends that key, and ``with_served_attribution`` has already
-    set ``served_attribution``. The rewrite runs only when the flag is on.
+    With ``DMS_CLOOP_B`` off, drop ``ov_key_id`` and, when the ranking compile
+    produced the SQL, the model credit. The rewrite of other answers runs
+    only when the flag is on.
     """
     if not cloop_b_enabled():
         env.pop("ov_key_id", None)
+        _drop_model_credit_when_compile_served(env)
         return
     _apply_sql_credit(env, payload, loop, dialect=dialect)
+    _drop_model_credit_when_compile_served(env)
 
 
 def _apply_sql_credit(

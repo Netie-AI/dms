@@ -1569,6 +1569,8 @@ def _name_evidence(
     index: Mapping[str, Sequence[str]],
     ontology: Ontology | Mapping[str, Any] | None,
     onto: Mapping[str, Any],
+    *,
+    note_unsure: bool = True,
 ) -> dict[str, list[str]]:
     """Person columns are masked. Cleared columns may hint. Unsure does neither."""
     roles: dict[str, str] = {}
@@ -1589,7 +1591,7 @@ def _name_evidence(
             roles[key] = "person"
         else:
             roles[key] = "unsure"
-            if key not in seen_unsure:
+            if note_unsure and key not in seen_unsure:
                 seen_unsure.add(key)
                 _note_unsure_column(table, name)
     terms.extend(_label_terms(ontology, onto))
@@ -1623,11 +1625,13 @@ def build_schema_context(
     space_id: str | None = None,
     max_tokens: int = MAX_PROMPT_TOKENS,
     entity_spans: Any = None,
+    note_unsure: bool = True,
 ) -> SchemaContext:
     """Rank the connector description and render a prompt inside ``max_tokens``.
 
     ``entity_spans`` is not read. Hints come from the value index only, so a
-    stub that returns a span cannot create one.
+    stub that returns a span cannot create one. ``note_unsure=False`` renders
+    without filing unsure-column records (a re-render inside one ask).
     """
     del entity_spans
     described = schema if isinstance(schema, Mapping) else {}
@@ -1703,7 +1707,7 @@ def build_schema_context(
     index, capped = _limit_index(index_rows)
     if capped:
         _LOG.warning("schema_index_cap")
-    evidence = _name_evidence(prepared, index, ontology, onto)
+    evidence = _name_evidence(prepared, index, ontology, onto, note_unsure=note_unsure)
     model_text, mask_failed = _model_question(question or "", evidence)
     words = _question_words(model_text)
     spans = [] if mask_failed else _question_spans(model_text)
