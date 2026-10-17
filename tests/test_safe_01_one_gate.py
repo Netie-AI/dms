@@ -456,18 +456,22 @@ SHAPE_RESIDUAL = [
 ]
 
 
+
+#: Main's one-SELECT codes (#447): not hostile, abstain with no retry.
+_STATEMENT_REFUSALS = ("hostile_sql:", "multi_statement", "statement_not_allowed")
+
 @pytest.mark.parametrize("sql", STACKED)
 def test_stacked_statements_are_refused_before_anything_runs(sql: str, lake: Path) -> None:
     why = _why(sql, lake)
     assert why is not None, sql
-    assert why.startswith("hostile_sql:"), (sql, why)
+    assert why.startswith(_STATEMENT_REFUSALS), (sql, why)
 
 
 @pytest.mark.parametrize("sql", NOT_SELECT)
 def test_anything_that_is_not_a_select_is_refused(sql: str, lake: Path) -> None:
     why = _why(sql, lake)
     assert why is not None, sql
-    assert why.startswith("hostile_sql:"), (sql, why)
+    assert why.startswith(_STATEMENT_REFUSALS), (sql, why)
 
 
 @pytest.mark.parametrize("sql", READERS)
@@ -790,7 +794,7 @@ def test_non_ascii_case_is_not_folded_into_a_table_name() -> None:
 def test_the_table_shorthand_is_refused(sql: str, lake: Path) -> None:
     """TABLE alerts reads alerts; sqlglot sees a column named TABLE, not a table."""
     why = _why(sql, lake)
-    assert why is not None and why.startswith("hostile_sql:"), (sql, why)
+    assert why is not None and why.startswith(_STATEMENT_REFUSALS), (sql, why)
 
 
 #: DuckDB skips these three as whitespace; sqlglot reads them into a name, so

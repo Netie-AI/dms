@@ -278,12 +278,12 @@ def _engine_refusal(sql: str) -> str | None:
     except Exception:  # noqa: BLE001 - fail closed on anything else
         return "hostile_sql:sql_not_analyzable"
     if len(statements) > 1:
-        return "hostile_sql:multi_statement"
+        return "multi_statement"
     if not statements:
-        return "hostile_sql:statement_not_allowed"
+        return "statement_not_allowed"
     kind = str(getattr(statements[0].type, "name", statements[0].type)).upper()
     if kind != _SELECT_TYPE:
-        return "hostile_sql:statement_not_allowed"
+        return "statement_not_allowed"
     return None
 
 
@@ -1026,19 +1026,19 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
         return "hostile_sql:sql_not_analyzable", frozenset()
     if len(trees) != 1:
         # Two parsers disagree on the statement count: do not guess.
-        return "hostile_sql:multi_statement", frozenset()
+        return "multi_statement", frozenset()
     tree: Any = _hoist_with(trees[0])
     if not isinstance(tree, (exp.Select, exp.SetOperation)):
-        return "hostile_sql:statement_not_allowed", frozenset()
+        return "statement_not_allowed", frozenset()
     if tree.find(*_FORBIDDEN) is not None:
-        return "hostile_sql:statement_not_allowed", frozenset()
+        return "statement_not_allowed", frozenset()
     if any(
         not ident.quoted and str(ident.this).upper() == "TABLE"
         for ident in tree.find_all(exp.Identifier)
     ):
         # DuckDB's TABLE <name> shorthand reads the table; sqlglot parses it as
         # a column named TABLE, so no table node would carry the name.
-        return "hostile_sql:statement_not_allowed", frozenset()
+        return "statement_not_allowed", frozenset()
     if any(not isinstance(cte.this, exp.Query) for cte in tree.find_all(exp.CTE)):
         return "hostile_sql:sql_not_analyzable", frozenset()
     for table in tree.find_all(exp.Table):
