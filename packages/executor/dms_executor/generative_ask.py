@@ -747,7 +747,8 @@ def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | No
         schema, name = (part.translate(_ASCII_FOLD) for part in found)
         if schema == "main":
             bare = name[len("warehouse_") :] if name.startswith("warehouse_") else name
-            if not {name, bare, f"warehouse_{bare}"} & lake:
+            # A lake table may itself be named with a dot ("usd.book").
+            if name not in folded and not {name, bare, f"warehouse_{bare}"} & lake:
                 missing.add(name)
         elif f"{schema}.{name}" not in folded:
             missing.add(f"{schema}.{name}")

@@ -845,3 +845,19 @@ def test_an_upload_named_like_a_lake_table_is_not_opened_by_the_lake_grant(
     assert why is not None and why.startswith("ungranted"), why
     lake_sql = "SELECT sku, quantity_kg FROM inventory"
     assert validate_compiled_sql(lake_sql, grantable={"inventory"}, warehouse=db) is None
+
+
+def test_a_lake_table_named_with_a_dot_is_granted_by_its_own_name(tmp_path: Path) -> None:
+    import duckdb
+
+    db = tmp_path / "dotted.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute('CREATE TABLE "usd.book" (sku VARCHAR, amount DOUBLE)')
+        con.execute("INSERT INTO \"usd.book\" VALUES ('A', 1.0)")
+    finally:
+        con.close()
+    sql = 'SELECT sku, SUM(amount) AS total FROM "usd.book" GROUP BY sku'
+    assert validate_compiled_sql(sql, grantable={"usd.book"}, warehouse=db) is None
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db) is not None
