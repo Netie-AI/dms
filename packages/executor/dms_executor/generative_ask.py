@@ -55,7 +55,7 @@ from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
-    connect_file,
+    connect_serving,
     sql_has_reserved_as_of,
     warehouse_path,
 )
@@ -394,7 +394,7 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     else:
         target = demo_ontology(Path(warehouse))
         declared = False
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         violations = target.verify(con)
     finally:
@@ -430,7 +430,7 @@ def declared_ontology_violations(warehouse: Path | None, onto: Ontology) -> list
     """
     if warehouse is None or not Path(warehouse).is_file():
         return []
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         return list(onto.verify(con))
     finally:
@@ -690,7 +690,7 @@ def validate_compiled_sql(
         return f"ungranted:{','.join(sorted(missing))}"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
@@ -704,7 +704,7 @@ def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:
     """Exception text from EXPLAIN. The checker reason stays the type name."""
     if warehouse is None or not Path(warehouse).is_file():
         return None
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
@@ -1439,7 +1439,26 @@ def maybe_generative_ask(
             index_stamp = held_stamp
     try:
         payload = compute(ctx)
-    except Exception:  # noqa: BLE001 — compute miss, do not 503 the steward
+    except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
+        from dms_executor.lake_registry import (
+            ServingDeadlineExceeded,
+            ServingDeadlineReserve,
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+        )
+
+        if isinstance(
+            exc,
+            (
+                ServingLeaseCap,
+                ServingLeaseQueueFull,
+                ServingWaitCancelled,
+                ServingDeadlineExceeded,
+                ServingDeadlineReserve,
+            ),
+        ):
+            raise
         payload = None
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
     # or drop Cortex setup fields. Ranking merge keeps these keys.

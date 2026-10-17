@@ -639,6 +639,106 @@ class Masker:
         return token
 
 
+# Popped off the compute catalog before Insights sees it. Not a wire field.
+# The hinter and ``_insights_body`` both pass this evidence into
+# ``fail_closed_mask_payload``. Nothing else masks a name.
+NAME_MASK_KEY = "_dms_name_mask"
+
+
+def _alnum_fold(token: str) -> str:
+    """Letters and digits, folded. Punctuation is not a token boundary."""
+    return "".join(ch.lower() for ch in token if ch.isalnum())
+
+
+def _phrase_folds(value: str) -> tuple[str, ...]:
+    parts = tuple(_alnum_fold(raw) for raw in str(value).split())
+    return tuple(part for part in parts if part)
+
+
+def _text_tokens(text: str) -> list[tuple[int, int, str]]:
+    """Whitespace tokens as ``(start, end, fold)``. Empty folds are kept out."""
+    out: list[tuple[int, int, str]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        while i < n and not text[i].isspace():
+            i += 1
+        fold = _alnum_fold(text[start:i])
+        if fold:
+            out.append((start, i, fold))
+    return out
+
+
+def _mask_source_names(
+    text: str,
+    masker: Masker,
+    name_values: Sequence[str],
+    exempt_values: Sequence[str],
+    schema_terms: Sequence[str],
+) -> str:
+    """Mask values the caller already classified as person-column cells.
+
+    The column classifier decides which cells are passed in. This function
+    does not look at a value's shape to decide. A span is masked when its
+    tokens match one of those cells, case-insensitively, token by token.
+    Longest value wins. Anything not in that list stays typed, including a
+    name stored nowhere. The Title-Case backstop only replaces a span that
+    is already one of those cells, and it skips a cleared value or a schema
+    term. No word list.
+    """
+    if not text or is_mask_token(text):
+        return text
+    phrases: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in name_values:
+        phrase = _phrase_folds(raw)
+        if phrase and phrase not in seen:
+            seen.add(phrase)
+            phrases.append(phrase)
+    phrases.sort(key=len, reverse=True)
+    exempt = {_phrase_folds(raw) for raw in exempt_values}
+    exempt.discard(())
+    terms = {_phrase_folds(raw) for raw in schema_terms}
+    terms.discard(())
+    tokens = _text_tokens(text)
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(tokens):
+        taken = 1
+        for phrase in phrases:
+            width = len(phrase)
+            if index + width > len(tokens):
+                continue
+            if any(tokens[index + pos][2] != phrase[pos] for pos in range(width)):
+                continue
+            spans.append((tokens[index][0], tokens[index + width - 1][1]))
+            taken = width
+            break
+        index += taken
+
+    def _title_sub(match: re.Match[str]) -> str:
+        phrase = _phrase_folds(match.group(0))
+        # Cleared metric values and schema labels are not names. A Title-Case
+        # span stored nowhere stays as typed.
+        if not phrase or phrase in exempt or phrase in terms or phrase not in seen:
+            return match.group(0)
+        return masker.token("name", match.group(0))
+
+    # Evidence spans first. Person and unclassified values are never exempt.
+    # The Title-Case backstop then only replaces a stored name the token
+    # walk missed, and it skips cleared values and labels.
+    chars = list(text)
+    for start, end in reversed(spans):
+        chars[start:end] = list(masker.token("name", text[start:end]))
+    out = "".join(chars)
+    return _PERSON_NAME_FIND.sub(_title_sub, out)
+
+
 def drop_pii_encodings(encodings: Mapping[str, Sequence[object]]) -> dict[str, list[str]]:
     """Drop sample lists for flagged columns. Detector errors drop that key."""
     out: dict[str, list[str]] = {}
@@ -886,6 +986,9 @@ def mask_payload(
     chart: Any = None,
     sql_used: str | None = None,
     column_sources: Mapping[str, frozenset[str]] | None = None,
+    name_values: Sequence[str] | None = None,
+    exempt_values: Sequence[str] | None = None,
+    schema_terms: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Mask PII in customer-visible fields. Numeric aggregates stay numbers.
 
@@ -919,6 +1022,17 @@ def mask_payload(
         return _scan_text(mapped, masker)
 
     masked_text = _mask_str(text or "")
+    # Name evidence is model text only. Answer prose and SQL keep the scan
+    # above and do not take this walk. ``None`` means the caller is not
+    # building text for the model.
+    if name_values is not None or exempt_values is not None or schema_terms is not None:
+        masked_text = _mask_source_names(
+            masked_text,
+            masker,
+            name_values or (),
+            exempt_values or (),
+            schema_terms or (),
+        )
     masked_sql = None if sql_used is None else _mask_str(str(sql_used))
     # Whole-value dates in values are DOB. Rows keep the lineage rule.
     masked_values = _mask_bare_dates(
