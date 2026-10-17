@@ -212,6 +212,10 @@ LITERAL_ONLY = [
     "SELECT sku, unnest AS revenue FROM inventory, unnest([4242])",
     "SELECT i.sku, u.x AS revenue FROM inventory i, LATERAL unnest([4242]) u(x)",
     "SELECT i.sku, g.n AS revenue FROM inventory i CROSS JOIN LATERAL generate_series(1, 3) g(n)",
+    # A LATERAL subquery and a VALUES list are traced like a derived table.
+    "SELECT l.x AS revenue FROM inventory i, LATERAL (SELECT 4242 AS x) l",
+    "WITH c AS (VALUES (4242)) SELECT col0 FROM c, inventory",
+    "SELECT SUM(DISTINCT 4242) AS revenue FROM inventory",
     # A filter or an order picks rows; the figure it returns is still invented.
     "SELECT MAX(4242) FILTER (WHERE quantity_kg > 0) AS revenue FROM inventory",
     "SELECT FIRST(4242 ORDER BY quantity_kg) AS revenue FROM inventory",
@@ -686,3 +690,44 @@ def test_a_cte_select_over_a_granted_table_is_served_through_the_ask_route(
     assert env["badge"] == "L2_VALIDATED"
     assert env["rows"] == _PLANTED_ROWS
     assert "7" in env["text"]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # DuckDB folds ASCII case only and never trims a quoted name.
+        'WITH "alerts " AS (SELECT 1 AS x) SELECT a.alert_id, a.message FROM alerts a, inventory i',
+        'WITH "alerts\u00a0" AS (SELECT 1 AS x) SELECT a.alert_id FROM alerts a, inventory i',
+        'WITH "alerts\t" AS (SELECT 1 AS x) SELECT a.alert_id FROM alerts a, inventory i',
+    ],
+)
+def test_a_cte_name_matches_a_table_only_as_duckdb_compares_names(sql: str, lake: Path) -> None:
+    assert _why(sql, lake) == "ungranted:alerts"
+
+
+def test_non_ascii_case_is_not_folded_into_a_table_name() -> None:
+    from dms_executor.sql_shape import select_shape
+
+    # U+212A (Kelvin sign) lowercases to k in Python, not in DuckDB.
+    why, tables = select_shape(
+        'WITH "stoc\u212a" AS (SELECT 1 AS x) SELECT s.secret, i.sku FROM stock s, inventory i'
+    )
+    assert why is None and "stock" in tables
+    why, tables = select_shape(
+        'WITH "CAF\u00c9" AS (SELECT 1 AS x) SELECT s.secret, i.sku FROM "caf\u00e9" s, inventory i'
+    )
+    assert why is None and "caf\u00e9" in tables
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH inventory AS (TABLE alerts) SELECT * FROM inventory",
+        "WITH inventory AS MATERIALIZED (TABLE alerts) SELECT sku FROM inventory",
+        "SELECT * FROM inventory WHERE EXISTS ((TABLE alerts))",
+    ],
+)
+def test_the_table_shorthand_is_refused(sql: str, lake: Path) -> None:
+    """TABLE alerts reads alerts; sqlglot sees a column named TABLE, not a table."""
+    why = _why(sql, lake)
+    assert why is not None and why.startswith("hostile_sql:"), (sql, why)

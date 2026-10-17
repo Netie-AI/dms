@@ -102,8 +102,18 @@ _FORBIDDEN = tuple(
 _SELECT_TYPE = "SELECT"
 
 
+#: DuckDB folds identifier case for ASCII letters only and never trims.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
 def _bare(name: str) -> str:
-    return str(name or "").strip().lower()
+    """An identifier as DuckDB compares it: ASCII letters folded, nothing else.
+
+    Python's lower() also folds non-ASCII letters (the Kelvin sign becomes k,
+    É becomes é) and strip() drops whitespace a quoted name keeps; either
+    would let a CTE named "alerts " stand for the real table alerts.
+    """
+    return str(name or "").translate(_ASCII_LOWER)
 
 
 def _is_name(table: exp.Table) -> bool:
@@ -555,6 +565,19 @@ def _lateral_alias(column: exp.Column, scope: Scope) -> Any | None:
     return None
 
 
+def _lateral_query(source: Any) -> Any:
+    """LATERAL (SELECT ...) read as the query inside it, like a derived table."""
+    if not (isinstance(source, Scope) and isinstance(source.expression, exp.Lateral)):
+        return source
+    inner = source.expression.this
+    if not isinstance(inner, exp.Subquery):
+        return source
+    for child in (*source.subquery_scopes, *source.derived_table_scopes):
+        if child.expression is inner.this:
+            return child
+    return source
+
+
 def _udtf_call(source: Any) -> Any | None:
     """The unnest or generator call behind a FROM or LATERAL source, if that is what it is."""
     if not isinstance(source, Scope):
@@ -626,6 +649,10 @@ def _column_derived(
     if isinstance(column.this, exp.Star):
         return any(_source_derived(w, src, depth + 1, visiting) for src in picked)
     for src in picked:
+        src = _lateral_query(src)
+        if isinstance(src, Scope) and isinstance(src.expression, exp.Values):
+            # VALUES (4242) states its rows; only a subquery inside reads data.
+            return src.expression.find(exp.Select) is not None
         udtf = _udtf_call(src)
         if udtf is not None:
             if _bare(column.name) not in _udtf_names(src.expression, udtf):
@@ -719,6 +746,9 @@ def _derived_uncached(w: _Walk, node: Any, scope: Scope, depth: int, visiting: V
         # A sum over real rows depends on how many there are, whatever it adds
         # up: SUM(1), and SUM(flag) with a literal 1 flag, count rows.
         arg = node.this
+        if isinstance(arg, exp.Distinct):
+            # SUM(DISTINCT 4242) is 4242 however many rows there are.
+            return any(_derived(w, e, scope, depth + 1, visiting) for e in arg.expressions)
         if _rows_from_data(w, scope, depth + 1):
             return True
         return arg is not None and _derived(w, arg, scope, depth + 1, visiting)
@@ -895,6 +925,15 @@ def select_shape(sql: str) -> tuple[str | None, frozenset[str]]:
         return "hostile_sql:statement_not_allowed", frozenset()
     if tree.find(*_FORBIDDEN) is not None:
         return "hostile_sql:statement_not_allowed", frozenset()
+    if any(
+        not ident.quoted and str(ident.this).upper() == "TABLE"
+        for ident in tree.find_all(exp.Identifier)
+    ):
+        # DuckDB's TABLE <name> shorthand reads the table; sqlglot parses it as
+        # a column named TABLE, so no table node would carry the name.
+        return "hostile_sql:statement_not_allowed", frozenset()
+    if any(not isinstance(cte.this, exp.Query) for cte in tree.find_all(exp.CTE)):
+        return "hostile_sql:sql_not_analyzable", frozenset()
     for table in tree.find_all(exp.Table):
         if _is_name(table) or _is_generator(table):
             continue
