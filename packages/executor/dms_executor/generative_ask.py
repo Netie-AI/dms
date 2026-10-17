@@ -2050,8 +2050,13 @@ def maybe_generative_ask(
         """Ladder, then reconfirm. The ranking compile does not run.
 
         A timeout, a provider error, and an empty reply land here. Model
-        SQL that ran and failed its check does not.
+        SQL that ran and failed its check does not. When the ask's own
+        serving deadline has passed, the ask closes on that one exit
+        instead (serving_deadline_exceeded), with no rung and no reconfirm.
         """
+        from dms_executor.lake_registry import raise_if_ask_stopped
+
+        raise_if_ask_stopped()
         previous = ""
         if loop_attempts:
             raw_sql = loop_attempts[-1].get("sql")
@@ -2097,6 +2102,7 @@ def maybe_generative_ask(
             )
         if served is not None:
             return served
+        raise_if_ask_stopped()
         return _abstain(
             q,
             f"reconfirm:{reason}",
