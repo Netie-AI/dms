@@ -95,6 +95,7 @@ from dms_executor.grant_struct import (
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
     SERVING_DEADLINE_RESERVE_REASON,
+    SERVING_ERRORS,
     AskControl,
     ServingDeadlineExceeded,
     ServingDeadlineReserve,
@@ -833,10 +834,29 @@ class Executor:
             run_cascade,
         )
 
+        # One Space-grant lookup per ask. ``grantable_tables`` reads the
+        # store and the lake (a serving lease), so a second lookup is a second
+        # wait under lease contention. Every lane below reads this one result;
+        # a failure is kept and raised again to the next caller, not retried.
+        grants_once: list[list[str] | Exception] = []
+
+        def space_grants() -> list[str]:
+            if not grants_once:
+                try:
+                    grants_once.append(self.grantable_tables(space_id=space_id))
+                except Exception as exc:  # noqa: BLE001 -- kept for every caller
+                    grants_once.append(exc)
+            found = grants_once[0]
+            if isinstance(found, Exception):
+                raise found
+            return list(found)
+
         key = turn_key(session_id, space_id)
         if allow_follow:
             try:
-                follow_grants = set(self.grantable_tables(space_id=space_id))
+                follow_grants = set(space_grants())
+            except SERVING_ERRORS:
+                raise
             except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
                 follow_grants = set()
             follow = maybe_followup(
@@ -860,7 +880,7 @@ class Executor:
                 space_id=space_id,
                 session_id=session_id,
                 warehouse=self._warehouse,
-                grantable=set(self.grantable_tables(space_id=space_id)),
+                grantable=set(space_grants()),
                 tables=tables,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
@@ -884,7 +904,7 @@ class Executor:
                 question,
                 space_id=space_id,
                 session_id=session_id,
-                grantable=set(self.grantable_tables(space_id=space_id)),
+                grantable=set(space_grants()),
                 tables=tables,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
@@ -934,7 +954,7 @@ class Executor:
         # Intersection with granted still narrows a selection; an unread grant
         # never falls back to the whole space.
         try:
-            granted = self.grantable_tables(space_id=space_id)
+            granted = space_grants()
         except (
             ServingLeaseCap,
             ServingLeaseQueueFull,

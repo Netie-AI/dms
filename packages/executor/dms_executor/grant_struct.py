@@ -8,15 +8,19 @@ subqueries, must be a granted qualified name. A one-part name is a CTE
 reference only where a WITH enclosing it defines that name (scope, not
 spelling); anywhere else it is a relation and the grant decides. A self or
 forward reference inside a CTE body is a relation. A file or external reader
-anywhere in the tree is refused. A pure generator is not itself a
-grant; it is served only beside a granted base table. The default
-schema is part of the comparison, so a different schema is not the
-granted table. More than one statement refuses. A parse failure
-refuses. No function-name list and no split on ``;``.
+anywhere in the tree is refused. A generator sqlglot types as one
+(``generate_series`` / ``range``, ``unnest``) is not itself a grant; it is
+served only beside a granted base table. Any other table function is not a
+relation and refuses. A name whose case fold is not ASCII-only is not
+settled: sqlglot folds with Python ``str.lower``, the engine folds ASCII. The
+default schema is part of the comparison, so a different schema is not the
+granted table. More than one statement refuses, and so does one that is not a
+query. A parse failure refuses. No function-name list and no split on ``;``.
 """
 
 from __future__ import annotations
 
+import string
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +53,7 @@ _STOP = frozenset(
         "ungranted:file",
         "ungranted:unparsed",
         "multi_statement",
+        "statement_not_allowed",
         "sql_relation_not_granted",
         "sql_relation_unresolved",
         "sql_dialect_unknown",
@@ -93,7 +98,10 @@ def serve_gap(
     """None when the statement is one granted read.
 
     Order: the dialect has to be one sqlglot knows, then parse, then one
-    statement, then the existing hostile scanner, then the allow-list.
+    statement, then the existing hostile scanner, then the statement has to
+    be a query (``statement_not_allowed`` otherwise: sqlglot's parsed type,
+    so a COPY, SET or ALTER the scanner let through still does not reach
+    EXPLAIN), then the allow-list.
     Names are normalized once, with that dialect's rules. A qualified
     relation is granted only when that exact key is granted. A bare grant
     covers the default schema only. An unknown dialect is
@@ -107,8 +115,8 @@ def serve_gap(
     base table on either side. A file or external reader is
     ``sql_relation_not_granted`` even beside a granted table. A pure
     generator is served only when the statement also reads a granted base
-    table. sqlglot's node type decides. An unclassified function is
-    settled from ``duckdb_functions()``.
+    table. sqlglot's node type decides what a generator is; any other table
+    function in a relation slot is ``sql_relation_not_granted``.
     """
     if _engine(dialect) is None:
         return "sql_dialect_unknown"
@@ -130,6 +138,8 @@ def serve_gap(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
+    if not isinstance(trees[0], (exp.Query, exp.Values)):
+        return "statement_not_allowed"
     catalog = _catalog_for(trees[0], warehouse, dialect)
     return _allow(trees[0], grantable, dialect, catalog)
 
@@ -257,13 +267,31 @@ def _engine(dialect: str | None) -> tuple[str, Dialect] | None:
     return name, engine
 
 
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+_ASCII_UPPER = str.maketrans(string.ascii_lowercase, string.ascii_uppercase)
+
+
+def _ascii_fold(raw: str, folded: str) -> bool:
+    """True when the dialect's fold of ``raw`` changed ASCII letters only.
+
+    sqlglot folds with Python ``str.lower`` / ``str.upper``, which also maps
+    non-ASCII letters: U+212A KELVIN SIGN lowers to ASCII ``k`` and ``É`` to
+    ``é``. DuckDB (and Postgres) fold ASCII only, so ``"banK_accounts"``
+    with a Kelvin sign is not the CTE or the table ``bank_accounts`` there.
+    When the two folds disagree, this key may name a different object than
+    the one the engine binds, so the name is not settled.
+    """
+    return folded in {raw, raw.translate(_ASCII_LOWER), raw.translate(_ASCII_UPPER)}
+
+
 def _norm_ident(node: exp.Expression, engine: Dialect) -> str | None:
     if not isinstance(node, exp.Identifier):
         return None
+    raw = str(node.name or "")
     copied = node.copy()
     engine.normalize_identifier(copied)
     text = str(copied.name or "")
-    if not text or _slash_path(text):
+    if not text or _slash_path(text) or not _ascii_fold(raw, text):
         return None
     return text
 
@@ -350,9 +378,9 @@ def _catalog_row_reads_a_file(params: Any, ptypes: Any) -> bool:
     """True when this ``duckdb_functions()`` row is a path reader.
 
     DuckDB names that parameter ``filename``, or exposes one ``col0``
-    argument of type VARCHAR / VARCHAR[]. ``generate_series`` and
-    ``unnest`` do not have that shape. A generator registered as a single
-    path argument would be refused; the upgrade is a catalog category.
+    argument of type VARCHAR / VARCHAR[]. This only sharpens the reason
+    code for a reader outside a relation slot: in a relation slot every
+    table function that sqlglot does not type as a generator refuses.
     """
     names = [str(param).lower() for param in (params or ())]
     types = [str(kind).upper() for kind in (ptypes or ())]
@@ -361,23 +389,22 @@ def _catalog_row_reads_a_file(params: Any, ptypes: Any) -> bool:
     return names == ["col0"] and types in (["VARCHAR"], ["VARCHAR[]"])
 
 
-_FUNCTION_KIND: dict[str, str] | None = None
+_CATALOG_READERS: frozenset[str] | None = None
 
 
-def _function_kinds() -> dict[str, str]:
-    """``reader`` / ``generator`` / ``other`` from ``duckdb_functions()``."""
-    global _FUNCTION_KIND
-    if _FUNCTION_KIND is not None:
-        return _FUNCTION_KIND
+def _catalog_readers() -> frozenset[str]:
+    """Table functions ``duckdb_functions()`` shows with a path parameter."""
+    global _CATALOG_READERS
+    if _CATALOG_READERS is not None:
+        return _CATALOG_READERS
     import duckdb
 
-    kinds: dict[str, str] = {}
-    rank = {"other": 1, "generator": 2, "reader": 3}
+    readers: set[str] = set()
     try:
-        con = duckdb.connect()
-    except Exception:  # noqa: BLE001 - no catalog, an unclassified name stays unknown
-        _FUNCTION_KIND = kinds
-        return kinds
+        con = duckdb.connect(":memory:")
+    except Exception:  # noqa: BLE001 - no catalog; a relation slot still refuses
+        _CATALOG_READERS = frozenset()
+        return _CATALOG_READERS
     try:
         rows = con.execute(
             "SELECT function_name, function_type, parameters, parameter_types "
@@ -389,35 +416,26 @@ def _function_kinds() -> dict[str, str]:
         con.close()
     for name, ftype, params, ptypes in rows:
         key = str(name or "").lower()
-        if not key:
-            continue
-        if ftype in {"table", "table_macro"} and _catalog_row_reads_a_file(params, ptypes):
-            kind = "reader"
-        elif ftype in {"table", "table_macro"}:
-            kind = "generator"
-        else:
-            kind = "other"
-        if rank[kind] > rank.get(kinds.get(key, ""), 0):
-            kinds[key] = kind
-    _FUNCTION_KIND = kinds
-    return kinds
-
-
-def _function_kind(name: str) -> str:
-    return _function_kinds().get(str(name or "").strip().lower(), "unknown")
+        if key and ftype in {"table", "table_macro"} and _catalog_row_reads_a_file(
+            params, ptypes
+        ):
+            readers.add(key)
+    _CATALOG_READERS = frozenset(readers)
+    return _CATALOG_READERS
 
 
 def _file_reader(tree: exp.Expression) -> bool:
     """A file or external reader anywhere in the tree.
 
     A typed reader node is enough. An unclassified call is a reader when
-    ``duckdb_functions()`` says so. A pure generator is not a reader.
+    ``duckdb_functions()`` gives it a path parameter.
     """
     typed = _file_reader_types()
+    readers = _catalog_readers()
     for node in tree.walk():
         if typed and isinstance(node, typed):
             return True
-        if isinstance(node, exp.Anonymous) and _function_kind(_anon_name(node)) == "reader":
+        if isinstance(node, exp.Anonymous) and _anon_name(node).strip().lower() in readers:
             return True
     return False
 
@@ -435,11 +453,14 @@ def _cte_in_scope(table: exp.Table, name: str, engine: Dialect) -> bool:
 
     Scope, not spelling. Walk up from the table. A WITH on an enclosing
     query covers that query's body. Inside one CTE's own body only the
-    CTEs before it count: DuckDB reads the base table for a self or a
-    forward reference, also under RECURSIVE, so that name is checked as a
-    relation. A CTE defined in a sibling subquery, another union branch or
-    another scalar subquery does not enclose the table, so the name is a
-    relation and the grant decides.
+    CTEs before it count: DuckDB reads the base table for a forward
+    reference and for a plain self reference, so that name is checked as a
+    relation. A real recursive CTE (an anchor UNION ALL a step) does bind
+    its own name in DuckDB; that read is still checked as a relation, which
+    refuses a statement DuckDB would answer from the CTE (fails closed). A
+    CTE defined in a sibling subquery, another union branch or another
+    scalar subquery does not enclose the table, so the name is a relation
+    and the grant decides.
     """
     child: exp.Expression = table
     node = table.parent
@@ -482,13 +503,13 @@ def _allow(
     for table in tree.find_all(exp.Table):
         this = table.this
         if not isinstance(this, exp.Identifier):
-            # A generator in the relation slot is not a granted base table.
+            # A generator sqlglot types as one is not a granted base table.
             # It is served only when some other relation in this statement
-            # is granted. A reader was already refused. An unclassified
-            # call the catalog does not call a generator is not a relation.
+            # is granted. Any other table function is not a relation, even
+            # one the catalog would list as a table function: a table macro
+            # can read a named table (``histogram_values(t, c)`` is
+            # ``query_table``), a file, the settings or the secrets.
             if isinstance(this, (exp.GenerateSeries, exp.Unnest)):
-                continue
-            if isinstance(this, exp.Anonymous) and _function_kind(_anon_name(this)) == "generator":
                 continue
             if isinstance(this, exp.Func):
                 not_relation = True

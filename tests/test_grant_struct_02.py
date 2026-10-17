@@ -1646,3 +1646,276 @@ def test_catalog_read_takes_the_serving_lease_not_the_ingest_writer(
         held.close()
     assert modes == [False]
     assert gap is None
+
+
+# --- Round 2: the engine's fold, table macros, one statement type, one lookup ---
+#
+# ``bank_accounts`` is a table the Warehouse Ops Space does not grant. It holds
+# one row, 424242. Each statement below also reads the granted ``inventory``,
+# so "no granted base table" cannot be what refuses it. On 97479d4 serve_gap
+# returned None for every statement here except ``query_table`` (its one
+# VARCHAR argument already read as a path reader); that one stays as a guard.
+
+_SECRET = 424242
+_KELVIN = "K"  # str.lower() gives ASCII "k"; DuckDB folds ASCII only.
+
+# (name, sql, rows DuckDB returns). Had the CTE bound, each would give 0.
+_FOLD_HOLES = (
+    (
+        "kelvin_cross_join",
+        f'WITH "ban{_KELVIN}_accounts" AS (SELECT 0 AS balance_myr) '
+        "SELECT b.balance_myr AS n FROM bank_accounts b, "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        [(_SECRET,)],
+    ),
+    (
+        "kelvin_scalar_subquery",
+        f'WITH "ban{_KELVIN}_accounts" AS (SELECT 0 AS balance_myr) '
+        "SELECT (SELECT balance_myr FROM bank_accounts) AS n FROM inventory LIMIT 1",
+        [(_SECRET,)],
+    ),
+    (
+        "kelvin_in_subquery",
+        f'WITH "ban{_KELVIN}_accounts" AS (SELECT 0 AS balance_myr) '
+        "SELECT COUNT(*) AS n FROM inventory "
+        "WHERE 424242 IN (SELECT balance_myr FROM bank_accounts)",
+        [(7,)],
+    ),
+    (
+        "accented_upper_cte",
+        'WITH "SALARIÉS" AS (SELECT 0 AS balance_myr) '
+        'SELECT s.balance_myr AS n FROM "salariés" s, '
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        [(_SECRET,)],
+    ),
+)
+
+_MACRO_HOLES = (
+    (
+        "histogram_values",
+        "SELECT bin AS n FROM histogram_values(bank_accounts, balance_myr), "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        True,
+    ),
+    (
+        "histogram",
+        "SELECT bin AS n FROM histogram('bank_accounts', balance_myr), "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        True,
+    ),
+    (
+        "query_table",
+        "SELECT balance_myr AS n FROM query_table('bank_accounts'), "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        True,
+    ),
+    ("duckdb_settings", "SELECT COUNT(*) AS n FROM duckdb_settings(), inventory", False),
+    ("duckdb_secrets", "SELECT COUNT(*) AS n FROM duckdb_secrets(), inventory", False),
+    ("enable_logging", "SELECT COUNT(*) AS n FROM enable_logging(), inventory", False),
+    (
+        "truncate_duckdb_logs",
+        "SELECT COUNT(*) AS n FROM truncate_duckdb_logs(), inventory",
+        False,
+    ),
+    (
+        "parquet_bloom_probe",
+        "SELECT COUNT(*) AS n FROM parquet_bloom_probe('x.parquet', 'v', 424242), inventory",
+        False,
+    ),
+)
+
+
+def _secret_warehouse(path: Path) -> Path:
+    db = ensure_demo_warehouse(path)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute(f"CREATE TABLE bank_accounts AS SELECT {_SECRET} AS balance_myr")
+        con.execute(f'CREATE TABLE "salariés" AS SELECT {_SECRET} AS balance_myr')
+    finally:
+        con.close()
+    return db
+
+
+def _refused_everywhere(
+    sql: str,
+    code: str,
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``code`` from both checks, then ABSTAIN in-process and over HTTP, no submit."""
+    import shutil
+
+    from dms_executor.gen_path_refuse import customer_abstain_text
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _secret_warehouse(tmp_path / f"{name}.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert "inventory" in grants and "bank_accounts" not in grants
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") == code, name
+    assert (
+        validate_compiled_sql(sql, grantable=grants, warehouse=db, dialect="duckdb")
+        == code
+    ), name
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id=f"ses_r2_user_{name}"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is True, name
+    assert user["badge"] == "ABSTAIN", name
+    assert user["rows"] == [], name
+    assert user["values"] == [], name
+    assert user["sql_used"] is None, name
+    assert user["text"] == customer_abstain_text(code), name
+    assert f"validate:{code}" in _reason(user), name
+    assert str(_SECRET) not in json.dumps(user), name
+
+    copy = tmp_path / f"{name}_plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is True, name
+    assert env["badge"] == "ABSTAIN", name
+    assert env["rows"] == [], name
+    assert env["values"] == [], name
+    assert env["sql_used"] is None, name
+    assert env["text"] == customer_abstain_text(code), name
+    assert f"validate:{code}" in _reason(env), name
+    assert str(_SECRET) not in json.dumps(env), name
+    assert plant.submits == [], name
+
+
+@pytest.mark.parametrize(("name", "sql", "bound"), _FOLD_HOLES)
+def test_cte_alias_that_only_python_folds_does_not_hide_a_table(
+    name: str,
+    sql: str,
+    bound: list[tuple[int]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail on 97479d4: sqlglot's ``str.lower`` matched the CTE, DuckDB did not.
+
+    DuckDB folds a CTE name ASCII-only, so the read binds the base table
+    (424242, or the 7 inventory rows the IN subquery lets through). The
+    checker must not call that read a CTE reference.
+    """
+    con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
+    try:
+        assert con.execute(sql).fetchall() == bound, name
+    finally:
+        con.close()
+    _refused_everywhere(sql, "ungranted", name, tmp_path, monkeypatch)
+
+
+def test_a_name_whose_case_fold_is_not_ascii_is_not_settled() -> None:
+    """The engine folds ASCII; a name only Python folds names nothing for sure."""
+    from dms_executor.grant_struct import relation_gap
+
+    kelvin = f'"ban{_KELVIN}_accounts"'
+    assert normalize_relation(kelvin, dialect="duckdb") is None
+    assert normalize_relation('"SALARIÉS"', dialect="duckdb") is None
+    assert relation_gap(kelvin, grantable={"bank_accounts"}, dialect="duckdb") == (
+        "sql_relation_unresolved"
+    )
+    # A Kelvin spelling of a granted name is not that grant.
+    kelvin_read = f'SELECT COUNT(*) AS n FROM inventory, "ban{_KELVIN}_accounts"'
+    assert (
+        serve_gap(kelvin_read, grantable={"inventory", "bank_accounts"}, dialect="duckdb")
+        == "sql_relation_not_granted"
+    )
+    # ASCII case and an already-lower accent still settle.
+    assert normalize_relation('"INVENTORY"', dialect="duckdb") == "main.inventory"
+    assert normalize_relation('"Salariés"', dialect="duckdb") == "main.salariés"
+
+
+@pytest.mark.parametrize(("name", "sql", "reads_secret"), _MACRO_HOLES)
+def test_table_function_beside_a_grant_is_not_a_generator(
+    name: str,
+    sql: str,
+    reads_secret: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail on 97479d4: any catalog table function was a "generator".
+
+    ``histogram_values`` and ``histogram`` are table macros over
+    ``query_table``: they read the named table and return 424242. The others
+    read a file, change logging, or expose settings and secrets. Only the
+    generators sqlglot types (``generate_series`` / ``range``, ``unnest``)
+    serve beside a grant.
+    """
+    if reads_secret:
+        con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
+        try:
+            assert str(_SECRET) in str(con.execute(sql).fetchall()), name
+        finally:
+            con.close()
+    _refused_everywhere(sql, "sql_relation_not_granted", name, tmp_path, monkeypatch)
+
+
+def test_typed_generators_still_serve_beside_a_grant(tmp_path: Path) -> None:
+    db = ensure_demo_warehouse(tmp_path / "gen_ok.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    for sql, rows in (
+        ("SELECT COUNT(*) AS n FROM inventory, range(2) r(x)", [{"n": 14}]),
+        ("SELECT COUNT(*) AS n FROM inventory JOIN generate_series(1, 3) g ON TRUE", [{"n": 21}]),
+        ("SELECT COUNT(*) AS n FROM inventory, unnest([1, 2]) u(v)", [{"n": 14}]),
+    ):
+        assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
+        env = Executor(warehouse_path=db).answer_user_sql(
+            sql, space_id=OPS, session_id="ses_gen_ok"
+        )
+        assert_envelope_valid(env)
+        assert env["abstained"] is False, sql
+        assert env["text"] == "Query result.", sql
+        assert env["rows"] == rows, sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    (
+        "COPY (SELECT 1 AS n) TO 'x.csv'",
+        "SET threads = 1",
+        "ALTER TABLE inventory RENAME TO inventory_gone",
+        "INSERT INTO inventory SELECT * FROM inventory",
+    ),
+)
+def test_one_statement_that_is_not_a_query_is_statement_not_allowed(
+    sql: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parsed type refuses even with the first-token scanner off."""
+    monkeypatch.setattr("dms_executor.grant_struct.reject_hostile_chat_sql", lambda _s: None)
+    gap = serve_gap(sql, grantable={"inventory"}, dialect="duckdb")
+    assert gap == "statement_not_allowed", sql
+    assert structural_grant_stop(gap)
+
+
+def test_a_lease_miss_on_the_grant_lookup_is_one_wait_per_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail on 97479d4: the follow-up lookup swallowed the lease miss,
+    then the verified-query lookup waited again (two waits per ask)."""
+    from dms_executor.lake_registry import SERVING_LEASE_CAP_REASON, ServingLeaseCap
+
+    db = ensure_demo_warehouse(tmp_path / "once.duckdb")
+    plant = _ExecPlant("SELECT COUNT(*) AS n FROM inventory", db)
+    exe = Executor(
+        cortex=plant, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    lookups: list[str | None] = []
+
+    def _capped(self: Executor, *, space_id: str | None) -> list[str]:
+        lookups.append(space_id)
+        raise ServingLeaseCap(1, 2.0)
+
+    monkeypatch.setattr(Executor, "grantable_tables", _capped)
+    env = exe.live_ask("how many inventory rows", space_id=OPS, session_id="ses_once")
+    assert_envelope_valid(env)
+    assert lookups == [OPS]
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env["values"] == []
+    assert SERVING_LEASE_CAP_REASON in _reason(env)
+    assert env["text"].startswith("I can't answer this right now: serving connections")
+    assert plant.submits == []
