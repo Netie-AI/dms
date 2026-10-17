@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-18 MYT, from live GitHub
 **Remote:** https://github.com/Netie-AI/dms
-**Main:** `ed7c4011` (#448)
+**Main:** `3d19dea3` (#446)
 
 ## Direction
 
@@ -19,9 +19,9 @@ STUB: an in-process TestClient that replays recorded Cortex responses, not a liv
 | Main | 52: correct / wrong / abstain | 45 | Served paths |
 |------|------|------|------|
 | `57d85c52` (`tests/fixtures/ask_guide/copy_only_57d85c52.jsonl`) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
-| `ed7c4011` (re-captured 2026-10-18 at merge `248a53af`, same apps/ and packages/) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
+| `3d19dea3` (re-captured 2026-10-18 at merge `ca58b1fe`, same apps/ and packages/) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
 
-Both rows: refusal_ok=8, refusal_wrong=0, gold_broken=1. Risk line (#448) at `ed7c4011`: served 16, wrong 0, wrong_ub95=17.1%, coverage 16/43. The old 23-correct figure is the full-tree layout of 57d85c52 (23 / 0 / 20, fixture on disk). It is an agreement check, not the product number.
+Both rows: refusal_ok=8, refusal_wrong=0, gold_broken=1. Risk line (#448) at `3d19dea3`: served 16, wrong 0, wrong_ub95=17.1%, coverage 16/43. The old 23-correct figure is the full-tree layout of 57d85c52 (23 / 0 / 20, fixture on disk). It is an agreement check, not the product number.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
@@ -37,6 +37,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | [#442](https://github.com/Netie-AI/dms/pull/442) | `79b7a274` | P0 DROP-ROUTE-FIELDS-01: stop sending `model` and `strict` to Cortex (the 422). Supersedes #429, still open |
 | [#447](https://github.com/Netie-AI/dms/pull/447) | `2083e6ac` | Extract and result-hash probe on the pooled serving cursor. Supersedes #426, still open |
 | [#448](https://github.com/Netie-AI/dms/pull/448) | `ed7c4011` | EVAL-01: grade52 wrong-rate bound, worst-case repeats, baseline diff |
+| [#446](https://github.com/Netie-AI/dms/pull/446) | `3d19dea3` | INGEST-COLNAME-01 (P1 security): a source column name is one quoted identifier |
 
 ## Open work
 
@@ -49,7 +50,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
 | SAFE-01: one grant function, one parser | #454 |
 | WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
-| INGEST-COLNAME-01 (P1 security) / VALUE-INDEX-01 / CLOOP-PII-01 | #446 / #450 / #441 |
+| VALUE-INDEX-01 / CLOOP-PII-01 | #450 / #441 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
 | AI-LADDER-PLAN-01 / NAME-ECHO-01 / ASK-CLARIFY-01 / ASK-RECONFIRM-01 | #431 / #428 / #419 / #425 |
