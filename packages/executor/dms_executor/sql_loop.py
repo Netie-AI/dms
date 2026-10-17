@@ -12,7 +12,7 @@ a reply with no SQL abstain at once and are not pasted into a retry prompt.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +108,60 @@ def empty_result_reason(sql: str) -> str | None:
     return EMPTY_UNVERIFIED
 
 
+#: A column of a granted table may ride in a db error code. Anything else may
+#: not: a name outside this shape could carry the separator or a value.
+_CODE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}")
+_CODE_COLUMN = re.compile(r"[\w ]{1,64}")
+
+
+def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
+    """Reduce a database error to ``Class`` or ``Class:column``, never the message.
+
+    DuckDB echoes the offending cell value in cast and constraint errors, and
+    a file error echoes a path. The message body therefore never leaves the
+    run. ``columns`` are the columns of the granted tables the statement cites.
+    The column is named only when exactly one of them appears in the message,
+    and the name written is the schema spelling, not text copied from the
+    message. A message that names none, or several (a binder candidate list),
+    names none.
+    """
+    name = type(exc).__name__
+    code = name if _CODE_NAME.fullmatch(name) else "Error"
+    text = str(exc)
+    hits = {
+        col
+        for col in columns
+        if isinstance(col, str)
+        and _CODE_COLUMN.fullmatch(col)
+        and re.search(rf"(?<![A-Za-z0-9_]){re.escape(col)}(?![A-Za-z0-9_])", text, re.I)
+    }
+    if len(hits) == 1:
+        return f"{code}:{hits.pop()}"
+    return code
+
+
+def _granted_columns(con: Any, sql: str) -> list[str]:
+    """Columns of the tables ``sql`` cites. The checker has already granted them."""
+    try:
+        from sqlglot import exp, parse_one
+
+        tree = parse_one(sql, read=EXTRACT_DIALECT)
+        tables = sorted(
+            {t.name.lower() for t in tree.find_all(exp.Table) if t.name}
+        )
+        if not tables:
+            return []
+        marks = ",".join("?" for _ in tables)
+        got = con.execute(
+            "SELECT DISTINCT column_name FROM information_schema.columns "
+            f"WHERE lower(table_name) IN ({marks})",
+            tables,
+        ).fetchall()
+        return [str(row[0]) for row in got]
+    except Exception:
+        return []
+
+
 #: Refusals for SQL that is not exactly one SELECT. Nothing executed.
 _REFUSED_SHAPES = frozenset(
     {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}
@@ -149,7 +203,8 @@ def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]
     except SERVING_ERRORS:
         raise
     except Exception as exc:  # noqa: BLE001 — engine error is the extract result
-        return None, f"{type(exc).__name__}: {exc}"
+        # A typed code: DuckDB echoes cell values and paths in its messages.
+        return None, typed_db_error(exc, _granted_columns(con, sql))
 
 
 def run_readonly(
@@ -164,7 +219,8 @@ def run_readonly(
     waits for it, and a lease miss raises the registry's named serving error
     to the ask boundary. One SELECT runs. A WITH that ends in SELECT is a
     SELECT. Anything else, including a parse failure, is refused without
-    executing.
+    executing. An engine error comes back as a typed code from
+    ``typed_db_error``, never the database message.
     """
     from dms_executor.demo_warehouse import connect_serving
 
@@ -173,7 +229,7 @@ def run_readonly(
     except SERVING_ERRORS:
         raise
     except Exception as exc:  # noqa: BLE001
-        return None, f"{type(exc).__name__}: {exc}"
+        return None, typed_db_error(exc)
     try:
         gate = _one_select(con, sql)
         if gate is not None:
@@ -615,8 +671,8 @@ def run_model_loop(
             )
             return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
-            safe_err = mask_feedback_text(exec_err)
-            outcome = f"db_error:{safe_err}"
+            # A typed code from run_readonly. The database message never gets here.
+            outcome = f"db_error:{exec_err}"
             attempts.append(
                 loop_entry(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
