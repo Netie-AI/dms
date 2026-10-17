@@ -1645,6 +1645,35 @@ _GATE_FANOUT = {
         "SELECT i.category, SUM(DISTINCT i.quantity_kg) FROM inventory i "
         "JOIN transactions t ON t.sku = i.sku GROUP BY i.category"
     ),
+    "distinct_body_finer_than_the_measure": (
+        "WITH j AS (SELECT DISTINCT i.sku, i.quantity_kg q, t.txn_type FROM inventory i "
+        "JOIN transactions t ON t.sku = i.sku) SELECT SUM(q) FROM j"
+    ),
+    "qualify_body_finer_than_the_measure": (
+        "WITH j AS (SELECT i.sku, i.quantity_kg q FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku QUALIFY ROW_NUMBER() OVER (PARTITION BY i.sku, t.txn_type "
+        "ORDER BY t.ts) = 1) SELECT SUM(q) FROM j"
+    ),
+    "natural_join_of_two_derived_tables": (
+        "SELECT SUM(x.q) FROM (SELECT sku, quantity_kg q FROM inventory) x "
+        "NATURAL JOIN (SELECT sku FROM transactions) y"
+    ),
+    "median_over_fanout": (
+        "SELECT i.category, MEDIAN(i.unit_cost_myr) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
+    "string_agg_over_fanout": (
+        "SELECT i.category, STRING_AGG(i.sku, ',') FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
+    "list_over_fanout": (
+        "SELECT i.category, LIST(i.sku) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
+    "mode_over_fanout": (
+        "SELECT i.category, MODE(i.unit_cost_myr) FROM inventory i JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY i.category"
+    ),
     "three_cte_chain": (
         "WITH a AS (SELECT sku, quantity_kg FROM inventory), b AS (SELECT a.quantity_kg "
         "FROM a JOIN transactions t ON t.sku = a.sku), c AS (SELECT * FROM b) "
@@ -1755,6 +1784,20 @@ _GATE_GRAIN_KEPT = {
         "SELECT i.category, l.name, SUM(t.quantity_kg) FROM transactions t JOIN inventory i "
         "ON i.sku = t.sku JOIN locations l ON l.location_id = t.location_id "
         "GROUP BY ROLLUP (i.category, l.name)"
+    ),
+    "percent_of_total_cross_join_to_a_total": (
+        "WITH tot AS (SELECT COUNT(*) AS n FROM transactions) SELECT i.category, "
+        "COUNT(*) * 100.0 / MAX(tot.n) AS pct FROM transactions t JOIN inventory i "
+        "ON i.sku = t.sku CROSS JOIN tot GROUP BY i.category"
+    ),
+    "count_cross_join_to_a_parameter_cte": (
+        "WITH p AS (SELECT DATE '2026-07-01' AS start_d) SELECT i.category, COUNT(*) "
+        "FROM transactions t JOIN inventory i ON i.sku = t.sku CROSS JOIN p "
+        "WHERE t.ts >= p.start_d GROUP BY i.category"
+    ),
+    "count_distinct_aggregate_stays_exempt": (
+        "SELECT i.category, COUNT(DISTINCT i.sku), MAX(t.quantity_kg) FROM inventory i "
+        "JOIN transactions t ON t.sku = i.sku GROUP BY i.category"
     ),
     "group_by_output_alias": (
         "SELECT i.category AS cat, COUNT(*) FROM transactions t JOIN inventory i "
@@ -1970,3 +2013,97 @@ def test_a_warehouse_schema_qualified_table_runs_on_the_lake_name() -> None:
     assert lake_alias_sql("SELECT warehouse.inventory.sku FROM warehouse.inventory") == (
         "SELECT inventory.sku FROM inventory"
     )
+
+
+def _lake_with(tmp_path: Path, name: str, *statements: str) -> Path:
+    db = tmp_path / name
+    ensure_demo_warehouse(db)
+    con = connect_file(db)
+    try:
+        for statement in statements:
+            con.execute(statement)
+    finally:
+        con.close()
+    return db
+
+
+def test_childless_parents_are_not_counted_as_one_child(tmp_path: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    db = _lake_with(
+        tmp_path,
+        "childless.duckdb",
+        "INSERT INTO locations SELECT * REPLACE ('LOC-NONE' AS location_id, "
+        "'Empty Yard' AS name) FROM locations LIMIT 1",
+    )
+    as_of = "2026-10-16T00:00:00Z"
+    refused = (
+        "SELECT l.name, COUNT(*) FROM locations l LEFT JOIN inventory i "
+        "ON i.location_id = l.location_id GROUP BY l.name",
+        "SELECT l.name, COUNT(*) FROM inventory i RIGHT JOIN locations l "
+        "ON i.location_id = l.location_id GROUP BY l.name",
+        "SELECT l.name, COUNT(1) FROM locations l LEFT JOIN inventory i "
+        "ON i.location_id = l.location_id GROUP BY l.name",
+        _SPINE + "SELECT days.dy, COUNT(*) FROM days LEFT JOIN transactions t "
+        "ON CAST(t.ts AS DATE) = days.dy GROUP BY days.dy",
+    )
+    for sql in refused:
+        assert served_result_reason(sql, warehouse=db, as_of=as_of) == "outer_join_count", sql
+    served = (
+        "SELECT l.name, COUNT(i.sku) FROM locations l LEFT JOIN inventory i "
+        "ON i.location_id = l.location_id GROUP BY l.name",
+        "SELECT l.name, COUNT(*) FILTER (WHERE i.sku IS NOT NULL) FROM locations l "
+        "LEFT JOIN inventory i ON i.location_id = l.location_id GROUP BY l.name",
+    )
+    for sql in served:
+        assert served_result_reason(sql, warehouse=db, as_of=as_of) is None, sql
+
+
+def test_lookup_outer_joins_with_orphan_keys_keep_their_count(tmp_path: Path) -> None:
+    """Each fact row is counted once whether or not its lookup key resolves."""
+    from dms_executor.served_gate import served_result_reason
+
+    db = _lake_with(
+        tmp_path,
+        "orphans.duckdb",
+        "INSERT INTO inventory SELECT * REPLACE ('SKU-ORPH' AS sku, 'SUP-99' AS supplier_id) "
+        "FROM inventory LIMIT 1",
+    )
+    as_of = "2026-10-16T00:00:00Z"
+    for sql in (
+        "SELECT i.category, COUNT(*) FROM inventory i LEFT JOIN suppliers s "
+        "ON s.supplier_id = i.supplier_id GROUP BY i.category",
+        "SELECT t.txn_type, COUNT(*) FROM inventory i RIGHT JOIN transactions t "
+        "ON t.sku = i.sku GROUP BY t.txn_type",
+        "SELECT COALESCE(i.sku, t.sku) AS sku, COUNT(*) FROM inventory i FULL JOIN "
+        "(SELECT DISTINCT sku FROM transactions) t ON t.sku = i.sku "
+        "GROUP BY COALESCE(i.sku, t.sku)",
+    ):
+        assert served_result_reason(sql, warehouse=db, as_of=as_of) is None, sql
+
+
+def test_uploaded_tables_are_grain_checked_with_bare_columns(tmp_path: Path) -> None:
+    """bronze.* is qualified against the lake catalog; a bare measure is attributed."""
+    from dms_executor.served_gate import served_result_reason
+
+    db = _lake_with(
+        tmp_path,
+        "uploads.duckdb",
+        "CREATE SCHEMA bronze",
+        "CREATE TABLE bronze.sales (sale_id INTEGER, cust VARCHAR, amount DOUBLE)",
+        "INSERT INTO bronze.sales VALUES (1, 'C0', 100), (2, 'C1', 200), (3, 'C2', 300)",
+        "CREATE TABLE bronze.cust_dim (cust VARCHAR, region VARCHAR)",
+        "INSERT INTO bronze.cust_dim VALUES ('C0', 'N'), ('C0', 'S'), ('C1', 'N'), ('C2', 'S')",
+    )
+    as_of = "2026-10-16T00:00:00Z"
+    for sql in (
+        "SELECT SUM(amount) FROM bronze.sales s JOIN bronze.cust_dim d ON d.cust = s.cust",
+        "SELECT s.cust, SUM(amount) FROM bronze.sales s JOIN bronze.cust_dim d "
+        "ON d.cust = s.cust GROUP BY s.cust",
+    ):
+        assert served_result_reason(sql, warehouse=db, as_of=as_of) == "fanout_subject_keys", sql
+    one_to_one = (
+        "SELECT d.region, SUM(amount) FROM bronze.sales s JOIN bronze.cust_dim d "
+        "ON d.cust = s.cust AND d.region = 'N' GROUP BY d.region"
+    )
+    assert served_result_reason(one_to_one, warehouse=db, as_of=as_of) is None
