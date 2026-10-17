@@ -141,7 +141,9 @@ class LedgerCortex:
                     "answer": "Done.",
                     "abstained": False,
                     "badge": "certified",
-                    "sql_used": "SELECT name FROM customers WHERE email = 'alice.tan@example.com'",
+                    # A table the turn grants: an answer read from one it does not
+                    # abstains (NAME-ECHO-01), and this test is about the masking.
+                    "sql_used": "SELECT name FROM suppliers WHERE email = 'alice.tan@example.com'",
                     "rows": [{"orders": 2}],
                     "audit_id": entry,
                     "route": "sql",
@@ -1449,8 +1451,8 @@ def test_the_export_holds_no_personal_data_the_envelope_masks(minter: ManifestMi
         assert "alice.tan@example.com" not in row[field_name], field_name
         assert "DMSMASK_email" in row[field_name], field_name
     # Table and column names are intact.
-    assert row["tables_read"] == "customers"
-    assert "FROM customers WHERE email = " in row["executed_sql"]
+    assert row["tables_read"] == "suppliers"
+    assert "FROM suppliers WHERE email = " in row["executed_sql"]
     assert int(row["redactions"]) >= 2
 
 

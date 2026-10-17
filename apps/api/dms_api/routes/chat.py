@@ -188,11 +188,17 @@ def _space_refusal_envelope(
     )
 
 
-def _release(env: dict[str, Any], ask: Any) -> dict[str, Any]:
-    """Scrub ungranted names immediately before FastAPI serialises the body."""
+def _release(env: dict[str, Any]) -> dict[str, Any]:
+    """Scrub ungranted names from an envelope ``live_ask`` did not build.
+
+    ``live_ask`` scrubs its own envelope as its last step, with the grant
+    set its turn resolved. These envelopes have no turn, so nothing is
+    granted: every relation a grant check named is dropped. An answer's
+    text and SQL are left as built. Opens no connection.
+    """
     from dms_api.wiring import scrub_ask_envelope
 
-    return scrub_ask_envelope(env, warehouse=getattr(ask, "_warehouse", None))
+    return scrub_ask_envelope(env)
 
 
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
@@ -363,7 +369,7 @@ def _answer_ask(
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
         env["ask_mode"] = "demo"
-        return _release(env, ask)
+        return _release(env)
 
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
@@ -371,9 +377,7 @@ def _answer_ask(
     if cortex is None:
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _release(
-                _stamp_demo_fallback(env, "fallback — Cortex client missing"), ask
-            )
+            return _release(_stamp_demo_fallback(env, "fallback — Cortex client missing"))
         raise HTTPException(
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
@@ -384,15 +388,13 @@ def _answer_ask(
     task = _arm_client_disconnect(request, watch[1]) if watch is not None else None
     try:
         try:
-            return _release(
-                ask.live_ask(
-                    body.question,
-                    space_id=body.space_id,
-                    session_id=body.session_id,
-                    tables=body.grounded_tables,
-                    ask_path=body.ask_path,
-                ),
-                ask,
+            # live_ask scrubs its own envelope with its turn's grant set.
+            return ask.live_ask(
+                body.question,
+                space_id=body.space_id,
+                session_id=body.session_id,
+                tables=body.grounded_tables,
+                ask_path=body.ask_path,
             )
         except GroundingRefused as exc:
             # Refusing is the fix, not the failure: this used to widen the manifest
@@ -443,8 +445,7 @@ def _answer_ask(
                         space_name=getattr(space, "name", None),
                         missing_table=missing,
                         session_id=body.session_id,
-                    ),
-                    ask,
+                    )
                 )
 
             # Never mask policy refusals with demo numbers (0 confidently wrong).
@@ -452,7 +453,7 @@ def _answer_ask(
                 logger.warning("live ask failed (%s); demo fallback", exc.code)
                 env = ask.demo_ask(body.question, space_id=body.space_id)
                 return _release(
-                    _stamp_demo_fallback(env, f"fallback after live error: {exc.code}"), ask
+                    _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
                 )
             raise HTTPException(
                 status_code=_status_for(exc.code, exc.detail),
@@ -462,7 +463,7 @@ def _answer_ask(
             if settings.dms_demo_fallback:
                 logger.warning("live ask failed: %s; demo fallback", exc)
                 env = ask.demo_ask(body.question, space_id=body.space_id)
-                return _release(_stamp_demo_fallback(env, "fallback — live ask failed"), ask)
+                return _release(_stamp_demo_fallback(env, "fallback — live ask failed"))
             # A slow engine and a broken one are different answers. 504 tells the
             # caller to try again; 503 says the dependency is out. The launcher
             # prints "Cortex ok" the moment /health responds, which is before the

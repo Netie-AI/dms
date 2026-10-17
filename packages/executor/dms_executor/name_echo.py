@@ -7,25 +7,33 @@ name is not cut out of a longer identifier.
 
 An ungranted tail is tokenized once in the serving dialect and parsed
 once with that dialect's parser. The identifier parts come from that
-parse. They are compared with the Space grant set, including tables
-uploaded into the Space. A granted name stays. A name the Space does
-not grant is removed. ``ungranted:file`` and ``ungranted:unparsed`` are
-reason codes. A tail that does not tokenize is fail-closed: the field
-is cleared.
+parse. They are compared with the grant set. A granted name stays. A
+name the grant set does not hold is removed. ``ungranted:file`` and
+``ungranted:unparsed`` are reason codes. A tail that does not tokenize
+is fail-closed: the field is cleared.
 
-``sql_used`` and ``loop[].sql`` are also parsed once, in the same
-dialect. A table in that SQL that the validator would not grant is
-removed from ``text``, ``assumptions``, ``abstain_reason``,
-``loop[].outcome``, and ``sql_used``. ``loop[].sql`` and ``raw_reply``
-are left for a later change. No Space is the personal context for
-those SQL names (the demo set plus uploads). A prefix tail with no
-Space still grants nothing, so the tail is removed.
+The grant set is the one ``Executor.grantable_tables`` resolved for
+this turn (``note_turn_grants``). Nothing here derives a grant or opens
+a connection. Outside a turn, or before the turn resolved its grants,
+nothing is granted, so every named relation is removed.
+
+On an abstain, the relations ``sql_used`` and ``loop[].sql`` read are
+also checked. They come from the audit parser
+(``sql_currency.tables_read_checked``), so a CTE in scope is not a
+relation. ``loop[].sql`` and ``raw_reply`` are left for a later change.
+
+An answer keeps its ``text`` and ``sql_used``. A served relation the
+grant set does not hold is refused before this runs
+(``served_ungranted`` and ``abstain.refuse_ungranted_answer``). It is
+never hidden under a validated badge.
 """
 
 from __future__ import annotations
 
+import contextvars
 import re
-from pathlib import Path
+from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from typing import Any
 
 from sqlglot import exp, parse_one, tokenize
@@ -72,6 +80,53 @@ _NAME_TOKENS = frozenset({TokenType.IDENTIFIER, TokenType.VAR, TokenType.STRING}
 
 class _Closed(Exception):
     """An identifier delimiter the serving tokenizer opened did not close."""
+
+
+@dataclass
+class _Turn:
+    owner: int
+    space_id: str | None
+    grants: frozenset[str] | None = None
+
+
+_TURN: contextvars.ContextVar[_Turn | None] = contextvars.ContextVar(
+    "dms_name_echo_turn", default=None
+)
+
+
+def begin_grant_turn(
+    owner: object, space_id: str | None
+) -> contextvars.Token[_Turn | None]:
+    """Start recording the grant set ``owner`` resolves for ``space_id``."""
+    return _TURN.set(_Turn(owner=id(owner), space_id=space_id))
+
+
+def end_grant_turn(token: contextvars.Token[_Turn | None]) -> None:
+    _TURN.reset(token)
+
+
+def note_turn_grants(owner: object, space_id: str | None, grants: Iterable[str]) -> None:
+    """Record what the turn's own grant function returned. Other calls are ignored."""
+    turn = _TURN.get()
+    if turn is None or turn.owner != id(owner) or turn.space_id != space_id:
+        return
+    turn.grants = frozenset(grants)
+
+
+def turn_grants() -> frozenset[str] | None:
+    """The grant set this turn resolved, or None when it resolved none."""
+    turn = _TURN.get()
+    return None if turn is None else turn.grants
+
+
+def _granted(grants: Collection[str] | None) -> frozenset[str]:
+    if grants is not None:
+        return frozenset(grants)
+    return turn_grants() or frozenset()
+
+
+def _answered(env: dict[str, Any]) -> bool:
+    return env.get("abstained") is False
 
 
 def _dialect() -> str:
@@ -406,25 +461,23 @@ def _sql_sources(env: dict[str, Any]) -> list[str]:
 
 
 def _tables_in_sql(sql: str) -> list[tuple[str, ...]]:
-    """Table identifiers in one statement. One parse, serving dialect."""
+    """Relations one statement reads, from the audit parser.
+
+    A name sqlglot's scope resolves to a CTE or derived table is not a
+    relation. SQL the parser cannot scope gets the audit's bounded scan,
+    which counts more names, never fewer.
+    """
+    from dms_executor.sql_currency import tables_read_checked
+
     raw = (sql or "").strip()
     if not raw or raw.startswith("--"):
         return []
-    try:
-        tree = parse_one(raw, read=_dialect())
-    except SqlglotError:
-        return []
+    labels, _approximate = tables_read_checked(raw)
     found: list[tuple[str, ...]] = []
-    seen: set[str] = set()
-    for table in tree.find_all(exp.Table):
-        parts = tuple(part.name for part in table.parts if part.name)
-        if not parts:
-            continue
-        key = ".".join(parts).casefold()
-        if key in _CODE_TAILS or key in seen:
-            continue
-        seen.add(key)
-        found.append(parts)
+    for label in labels:
+        parts = tuple(part for part in label.split(".") if part)
+        if parts and label.casefold() not in _CODE_TAILS:
+            found.append(parts)
     return found
 
 
@@ -482,76 +535,22 @@ def _collect_parts(reason: str, env: dict[str, Any]) -> list[tuple[str, ...]]:
     return found
 
 
-def _grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[str]:
-    """Tables this Space may read, including its uploads.
-
-    The same seed the session store gives the validator. No Space, or a
-    Space that is not seeded, grants nothing.
-    """
-    from dms_executor.demo_grants import (
-        DEMO_SPACE_GRANTS,
-        canonical_space_id,
-        ingested_bronze_tables,
-    )
-
-    raw = env.get("space_id")
-    if not isinstance(raw, str) or not raw.strip():
-        return set()
-    sid = canonical_space_id(raw.strip())
-    entry = DEMO_SPACE_GRANTS.get(sid)
-    if not entry:
-        return set()
-    names = set(entry[1])
-    names.update(ingested_bronze_tables(warehouse, space_id=sid))
-    return names
-
-
 def _ungranted(
-    parts_list: list[tuple[str, ...]], grants: set[str]
+    parts_list: list[tuple[str, ...]], grants: Collection[str]
 ) -> list[tuple[str, ...]]:
     from dms_executor.ontology import table_is_granted
 
+    allowed = set(grants)
     out: list[tuple[str, ...]] = []
     for parts in parts_list:
         name = ".".join(parts)
-        if name.casefold() in _CODE_TAILS or table_is_granted(name, grants):
+        if name.casefold() in _CODE_TAILS or table_is_granted(name, allowed):
             continue
         out.append(parts)
     return out
 
 
-def _sql_grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[str]:
-    """Tables the validator would allow this turn to read.
-
-    No Space is the personal context: the demo set plus uploads. A seeded
-    Space is that seed plus its uploads. An id that is not a Space grants
-    nothing. Prefix tails do not use this set.
-    """
-    from dms_executor.demo_grants import (
-        DEMO_SPACE_GRANTS,
-        canonical_space_id,
-        ingested_bronze_tables,
-    )
-    from dms_executor.demo_warehouse import DEMO_TABLES
-
-    raw = env.get("space_id")
-    if not isinstance(raw, str) or not raw.strip():
-        names = set(DEMO_TABLES)
-        names.update(ingested_bronze_tables(warehouse))
-        return names
-    sid = canonical_space_id(raw.strip())
-    entry = DEMO_SPACE_GRANTS.get(sid)
-    if not entry:
-        return set()
-    names = set(entry[1])
-    names.update(ingested_bronze_tables(warehouse, space_id=sid))
-    return names
-
-
-def _sql_parts(env: dict[str, Any], warehouse: Path | None) -> list[tuple[str, ...]]:
-    sources = _sql_sources(env)
-    if not sources:
-        return []
+def _sql_parts(sources: list[str]) -> list[tuple[str, ...]]:
     parsed: list[tuple[str, ...]] = []
     seen: set[str] = set()
     for sql in sources:
@@ -561,7 +560,23 @@ def _sql_parts(env: dict[str, Any], warehouse: Path | None) -> list[tuple[str, .
                 continue
             seen.add(key)
             parsed.append(parts)
-    return _ungranted(parsed, _sql_grant_names(env, warehouse))
+    return parsed
+
+
+def served_ungranted(
+    env: dict[str, Any], grants: Collection[str] | None = None
+) -> list[tuple[str, ...]]:
+    """Relations an answer's ``sql_used`` reads that the grant set does not hold.
+
+    Empty for an abstain. ``grants`` is the turn's set; None means the
+    running turn's, and no recorded set grants nothing.
+    """
+    if not _answered(env):
+        return []
+    sql = env.get("sql_used")
+    if not isinstance(sql, str) or not sql.strip() or sql.strip().startswith("--"):
+        return []
+    return _ungranted(_sql_parts([sql]), _granted(grants))
 
 
 def _scrub_field(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
@@ -575,22 +590,30 @@ def hide_echo(
     env: dict[str, Any],
     reason: str,
     *,
-    warehouse: Path | None = None,
+    grants: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Scrub name-carrying fields. Id fields, loop SQL, and raw replies stay.
 
-    Called at the HTTP boundary, after a loop has been re-attached.
-    ``sql_used`` is included. ``loop[].sql`` and ``raw_reply`` are not.
+    Pure: no warehouse read, no connection. ``grants`` is the set
+    ``Executor.grantable_tables`` resolved for this turn; None means the
+    running turn's recorded set, and no recorded set grants nothing.
+
+    On an abstain, relations read by ``sql_used`` and ``loop[].sql`` are
+    checked too, and ``sql_used`` is scrubbed. On an answer, ``text`` and
+    ``sql_used`` are not touched (``served_ungranted`` refuses those).
     """
-    parts_list = _merge_parts(
-        _ungranted(_collect_parts(reason, env), _grant_names(env, warehouse)),
-        _sql_parts(env, warehouse),
-    )
+    granted = _granted(grants)
+    answered = _answered(env)
+    parts_list = _ungranted(_collect_parts(reason, env), granted)
+    if not answered:
+        parts_list = _merge_parts(
+            parts_list, _ungranted(_sql_parts(_sql_sources(env)), granted)
+        )
     for key in _NAME_KEYS:
-        if key not in env or key in _ID_KEYS:
+        if key not in env or key in _ID_KEYS or (answered and key == "text"):
             continue
         env[key] = _scrub_field(env[key], parts_list)
-    if isinstance(env.get("sql_used"), str):
+    if not answered and isinstance(env.get("sql_used"), str):
         env["sql_used"] = _scrub_field(env["sql_used"], parts_list)
     loop = env.get("loop")
     if isinstance(loop, list):

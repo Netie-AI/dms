@@ -10,6 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
 import dms_executor.pipeline_failure as tickets
 import pytest
@@ -46,6 +50,22 @@ def _ticket(caplog: pytest.LogCaptureFixture) -> dict:
 @pytest.fixture(autouse=True)
 def _clear() -> None:
     tickets._reset_pipeline_failures()
+
+
+@contextmanager
+def _turn(
+    space_id: str | None, warehouse: Path, session_store: object | None = None
+) -> Iterator[list[str]]:
+    """A turn whose grant set comes from ``Executor.grantable_tables``, as in live_ask."""
+    from dms_executor import Executor
+    from dms_executor.name_echo import begin_grant_turn, end_grant_turn
+
+    exe = Executor(cortex=None, warehouse_path=warehouse, session_store=session_store)
+    token = begin_grant_turn(exe, space_id)
+    try:
+        yield exe.grantable_tables(space_id=space_id)
+    finally:
+        end_grant_turn(token)
 
 
 @pytest.mark.parametrize("name", ["t", "po", "sku"])
@@ -270,20 +290,22 @@ def test_any_quoting_drops_ungranted_names_and_keeps_granted(
     ticket_name: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
 ) -> None:
     """Backticks, mixed quotes, and brackets are identifiers. Grants stay."""
     monkeypatch.setenv("DMS_CLOOP_B", "1")
     caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
-    env = build_abstain(
-        reason=reason,
-        question="headcount by site",
-        text=f"The bronze layer still cites ungranted:inventory beside {reason}.",
-        assumptions=["bronze layer", "ungranted:inventory", reason],
-        abstain_reason=reason,
-        space_id=_FINANCE,
-        session_id="ses_hr_1",
-        answer_id="ans_hr",
-    )
+    with _turn(_FINANCE, tmp_path / "w.duckdb"):
+        env = build_abstain(
+            reason=reason,
+            question="headcount by site",
+            text=f"The bronze layer still cites ungranted:inventory beside {reason}.",
+            assumptions=["bronze layer", "ungranted:inventory", reason],
+            abstain_reason=reason,
+            space_id=_FINANCE,
+            session_id="ses_hr_1",
+            answer_id="ans_hr",
+        )
     blob = _visible(env)
     assert "bronze layer" in blob
     assert re.search(r"(?<![A-Za-z0-9_])inventory(?![A-Za-z0-9_])", blob)
@@ -324,20 +346,22 @@ def test_sqlglot_identifier_shapes_stay_off_the_envelope(
     logical: str,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
 ) -> None:
     """Spaces, escaped quotes, and non-ASCII names are identifier parts."""
     monkeypatch.setenv("DMS_CLOOP_B", "1")
     caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
-    env = build_abstain(
-        reason=reason,
-        question="headcount by site",
-        text=f"The bronze layer still cites ungranted:inventory beside {reason}.",
-        assumptions=["bronze layer", "ungranted:inventory", reason],
-        abstain_reason=reason,
-        space_id=_FINANCE,
-        session_id="ses_hr_1",
-        answer_id="ans_ident",
-    )
+    with _turn(_FINANCE, tmp_path / "w.duckdb"):
+        env = build_abstain(
+            reason=reason,
+            question="headcount by site",
+            text=f"The bronze layer still cites ungranted:inventory beside {reason}.",
+            assumptions=["bronze layer", "ungranted:inventory", reason],
+            abstain_reason=reason,
+            space_id=_FINANCE,
+            session_id="ses_hr_1",
+            answer_id="ans_ident",
+        )
     surface = _surface(env)
     assert "bronze layer" in surface
     assert re.search(r"(?<![A-Za-z0-9_])inventory(?![A-Za-z0-9_])", surface)
@@ -350,7 +374,7 @@ def test_sqlglot_identifier_shapes_stay_off_the_envelope(
 
 
 def test_granted_prefix_stays_when_longer_name_is_ungranted(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
 ) -> None:
     """hr is granted. hr_payroll is a different identifier and is not."""
     from dms_executor.demo_grants import DEMO_SPACE_GRANTS
@@ -359,19 +383,21 @@ def test_granted_prefix_stays_when_longer_name_is_ungranted(
     caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
     label, tables = DEMO_SPACE_GRANTS[_FINANCE]
     monkeypatch.setitem(DEMO_SPACE_GRANTS, _FINANCE, (label, (*tables, "hr")))
-    env = build_abstain(
-        reason="ungranted:hr_payroll",
-        question="headcount by site",
-        text=(
-            "The bronze layer still cites ungranted:hr beside "
-            "ungranted:inventory and ungranted:hr_payroll."
-        ),
-        assumptions=["bronze layer", "ungranted:hr", "ungranted:hr_payroll"],
-        abstain_reason="ungranted:hr_payroll",
-        space_id=_FINANCE,
-        session_id="ses_hr_1",
-        answer_id="ans_prefix",
-    )
+    with _turn(_FINANCE, tmp_path / "w.duckdb") as granted:
+        assert "hr" in granted
+        env = build_abstain(
+            reason="ungranted:hr_payroll",
+            question="headcount by site",
+            text=(
+                "The bronze layer still cites ungranted:hr beside "
+                "ungranted:inventory and ungranted:hr_payroll."
+            ),
+            assumptions=["bronze layer", "ungranted:hr", "ungranted:hr_payroll"],
+            abstain_reason="ungranted:hr_payroll",
+            space_id=_FINANCE,
+            session_id="ses_hr_1",
+            answer_id="ans_prefix",
+        )
     surface = _surface(env)
     assert "bronze layer" in surface
     assert re.search(r"(?<![A-Za-z0-9_])hr(?![A-Za-z0-9_])", surface)
@@ -434,9 +460,11 @@ def test_unbalanced_quote_clears_the_field(
 
 
 def test_space_upload_is_granted(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
 ) -> None:
-    """An uploaded table uses the same grant source as the validator."""
+    """An uploaded table is granted through the validator's own grant function."""
+    from dms_executor.demo_grants import DemoSessionStore
+
     monkeypatch.setenv("DMS_CLOOP_B", "1")
     caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
 
@@ -446,16 +474,19 @@ def test_space_upload_is_granted(
         return ()
 
     monkeypatch.setattr("dms_executor.demo_grants.ingested_bronze_tables", _uploads)
-    env = build_abstain(
-        reason="ungranted:hr_payroll,uploaded_sheet",
-        question="headcount",
-        text="ungranted:hr_payroll beside ungranted:uploaded_sheet",
-        assumptions=["bronze layer", "ungranted:uploaded_sheet"],
-        abstain_reason="ungranted:hr_payroll,uploaded_sheet",
-        space_id=_FINANCE,
-        session_id="ses_up",
-        answer_id="ans_up",
-    )
+    store = DemoSessionStore(uploads=lambda: ("uploaded_sheet",))
+    with _turn(_FINANCE, tmp_path / "w.duckdb", store) as granted:
+        assert "uploaded_sheet" in granted
+        env = build_abstain(
+            reason="ungranted:hr_payroll,uploaded_sheet",
+            question="headcount",
+            text="ungranted:hr_payroll beside ungranted:uploaded_sheet",
+            assumptions=["bronze layer", "ungranted:uploaded_sheet"],
+            abstain_reason="ungranted:hr_payroll,uploaded_sheet",
+            space_id=_FINANCE,
+            session_id="ses_up",
+            answer_id="ans_up",
+        )
     blob = _visible(env)
     assert "hr_payroll" not in blob
     assert "uploaded_sheet" in blob
@@ -596,12 +627,31 @@ def _post_ask(
     sql: str,
     *,
     lane: str = "product",
+    **kwargs: Any,
 ) -> dict:
-    """POST /v1/chat/ask with the extract loop on.
+    """One POST /v1/chat/ask. See ``_post_asks``."""
+    return _post_asks(monkeypatch, [question], sql, lane=lane, **kwargs)[0]
+
+
+def _post_asks(
+    monkeypatch: pytest.MonkeyPatch,
+    questions: list[str],
+    sql: str,
+    *,
+    lane: str = "product",
+    answer: str | None = None,
+    rows: list[dict] | None = None,
+    space_id: str | Callable[[Any], str] | None = None,
+    session_store: object | None = None,
+    status: int = 200,
+) -> list[dict]:
+    """POST /v1/chat/ask once per question, one app, with the extract loop on.
 
     ``product`` and ``generative`` feed one Insights SQL. ``generated``
     is an Insights transport miss; Cortex ask returns that SQL on the
-    generated route, with no loop.
+    generated route, with no loop, answering ``answer`` (default: the
+    SQL) over ``rows``. ``space_id`` may be a callable that creates the
+    Space on the app and returns its id.
     """
     from dataclasses import dataclass, field
     from types import SimpleNamespace
@@ -676,11 +726,11 @@ def _post_ask(
             self.asks.append(req)
             if lane == "generated":
                 return AskResponse(
-                    answer=sql,
+                    answer=sql if answer is None else answer,
                     badge="generated",
                     sql_used=sql,
                     assumptions=[sql],
-                    rows=[{"n": 1}],
+                    rows=[{"n": 1}] if rows is None else rows,
                     audit_id="aud_name_echo_generated",
                     route="generated",
                 )
@@ -728,23 +778,32 @@ def _post_ask(
     if lane == "generative":
         monkeypatch.setenv("DMS_HARNESS_ASK_PATHS", "1")
     settings_mod.get_settings.cache_clear()
+    bodies: list[dict] = []
     try:
         app = create_app()
-        app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+        app.state.ask_service = Executor(  # type: ignore[arg-type]
+            cortex=cortex, minter=minter, session_store=session_store
+        )
         app.state.cortex = cortex
-        payload: dict[str, object] = {
-            "question": question,
-            "session_id": "ses_name_echo_http",
-        }
-        if lane == "generative":
-            payload["ask_path"] = "generative"
-        res = TestClient(app).post("/v1/chat/ask", json=payload)
+        sid = space_id(app) if callable(space_id) else space_id
+        client = TestClient(app)
+        for question in questions:
+            payload: dict[str, object] = {
+                "question": question,
+                "session_id": "ses_name_echo_http",
+            }
+            if sid:
+                payload["space_id"] = sid
+            if lane == "generative":
+                payload["ask_path"] = "generative"
+            res = client.post("/v1/chat/ask", json=payload)
+            assert res.status_code == status, res.text
+            body = res.json()
+            assert isinstance(body, dict)
+            bodies.append(body)
     finally:
         settings_mod.get_settings.cache_clear()
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert isinstance(body, dict)
-    return body
+    return bodies
 
 
 @pytest.mark.parametrize(
@@ -787,31 +846,308 @@ def test_http_loop_outcome_drops_ungranted_name(
     assert any(name in (item.get("names") or []) for item in tickets), tickets
 
 
+def _tickets(caplog: pytest.LogCaptureFixture) -> list[dict]:
+    return [
+        json.loads(rec.getMessage().split("pipeline_failure ", 1)[1])
+        for rec in caplog.records
+        if rec.getMessage().startswith("pipeline_failure ")
+    ]
+
+
+_SERVED_REFUSAL = "read a table this Space does not grant"
+
+
 @pytest.mark.parametrize("lane", ["product", "generative", "generated"])
 def test_p04_full_response_json_hides_hr_payroll(
-    lane: str, monkeypatch: pytest.MonkeyPatch
+    lane: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Flag on. The only whole-identifier hits are loop SQL and raw_reply.
 
     Product and generative attach the extract loop, then the curated
-    re-attach. Generated is the Cortex stub: no loop, the name sits in
-    the answer and in sql_used until the HTTP boundary scrubs it.
+    re-attach. Generated is the Cortex stub: no loop, and its served SQL
+    reads hr_payroll, which this turn does not grant, so the answer
+    abstains. The name is not hidden under a validated badge.
     """
+    from dms_executor.envelope import assert_envelope_valid
+
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
     question = "List chemicals in inventory"
     sql = "SELECT 1 FROM hr_payroll"
     name = "hr_payroll"
     body = _post_ask(monkeypatch, question, sql, lane=lane)
+    assert_envelope_valid(body)
     leaked = _name_hits(body, name)
     assert leaked == [], leaked
+    assert body.get("abstained") is True
+    assert body.get("badge") == "ABSTAIN"
+    assert not body.get("values")
+    assert not body.get("rows")
     if lane == "generated":
         assert body.get("route") == "generated"
-        assert body.get("abstained") is False
+        assert body.get("sql_used") is None
+        assert _SERVED_REFUSAL in str(body.get("text"))
         assert not body.get("loop")
+        assert any(name in (t.get("names") or []) for t in _tickets(caplog))
         return
-    assert body.get("abstained") is True
     loop = body.get("loop")
     assert isinstance(loop, list) and loop
     entry = loop[0]
     assert isinstance(entry, dict)
     assert entry.get("sql") == sql
     assert entry.get("raw_reply") == sql
+
+
+@pytest.mark.parametrize("space_id", [None, _FINANCE, "sp_warehouse_ops", "sp_user_created_7"])
+def test_scrub_opens_no_serving_connection(space_id: str | None) -> None:
+    """CONN-POOL-01 blocks serving opens while a lease abstain is built.
+
+    The scrub reads the turn's grant set and opens nothing, so the
+    abstain is built and an answer passes through unchanged.
+    """
+    from dms_executor.lake_registry import block_serving_lease, reset_serving_lease_block
+    from dms_executor.name_echo import hide_echo
+
+    token = block_serving_lease("serving_lease_cap")
+    try:
+        env = build_abstain(
+            reason="serving_lease_cap",
+            question="how many locations",
+            stage="serving_lease",
+            answer_id="ans_serving_lease_cap",
+            text="I can't answer this right now: serving connections are at the cap.",
+            values=[],
+            rows=[],
+            sql_used=None,
+            assumptions=["serving_lease_cap", "validate:ungranted:hr_payroll"],
+            space_id=space_id,
+            session_id="ses_lease",
+            ask_mode="live",
+            route="abstain",
+        )
+        answered = {
+            "abstained": False,
+            "badge": "L2_VALIDATED",
+            "text": "There are 5 locations.",
+            "sql_used": "SELECT COUNT(*) AS n FROM locations",
+            "assumptions": ["checker:ungranted:hr_payroll"],
+            "space_id": space_id,
+        }
+        hide_echo(answered, "")
+    finally:
+        reset_serving_lease_block(token)
+    assert env["badge"] == "ABSTAIN"
+    assert "serving connections are at the cap" in env["text"]
+    assert "hr_payroll" not in json.dumps(env["assumptions"])
+    assert answered["text"] == "There are 5 locations."
+    assert answered["sql_used"] == "SELECT COUNT(*) AS n FROM locations"
+    assert "hr_payroll" not in json.dumps(answered["assumptions"])
+
+
+@pytest.mark.parametrize("space_id", [_FINANCE, "sp_margin"])
+def test_http_serving_lease_abstain_in_a_seeded_space(
+    space_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease cap in a seeded Space is the ABSTAIN envelope, not a 503."""
+    from dms_executor import Executor
+    from dms_executor.envelope import assert_envelope_valid
+    from dms_executor.lake_registry import ServingLeaseCap
+
+    def _cap(self: object, *args: object, **kwargs: object) -> dict:
+        raise ServingLeaseCap(32, 0.0)
+
+    monkeypatch.setattr(Executor, "_live_ask", _cap)
+    body = _post_ask(
+        monkeypatch, "How many locations are there?", "SELECT 1", space_id=space_id
+    )
+    assert_envelope_valid(body)
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert "serving connections are at the cap" in body["text"]
+    assert not body.get("values")
+    assert not body.get("rows")
+
+
+@pytest.mark.parametrize("cte", ["t", "revenue", "excluded"])
+def test_http_cte_answer_is_untouched(cte: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CTE is not a relation. The validated answer, its SQL, and its rows stand."""
+    from dms_executor.envelope import assert_envelope_valid
+
+    sql = f"WITH {cte} AS (SELECT COUNT(*) AS n FROM locations) SELECT n FROM {cte}"
+    answer = f"Location count ({cte}): there are 5 locations."
+    body = _post_ask(
+        monkeypatch,
+        "How many locations are there?",
+        sql,
+        lane="generated",
+        answer=answer,
+        rows=[{"n": 5}],
+    )
+    assert_envelope_valid(body)
+    assert body["abstained"] is False
+    assert body["badge"] != "ABSTAIN"
+    assert body["text"] == answer
+    assert body["sql_used"] == sql
+    assert body["rows"] == [{"n": 5}]
+
+
+def test_cte_in_loop_sql_is_not_scrubbed_from_an_abstain(tmp_path: Path) -> None:
+    """On an abstain, the base table a CTE reads is dropped; the CTE name is prose."""
+    from dms_executor.name_echo import hide_echo
+
+    env = {
+        "abstained": True,
+        "badge": "ABSTAIN",
+        "text": "I could not certify revenue from hr_payroll.",
+        "assumptions": ["revenue is gross"],
+        "sql_used": None,
+        "loop": [
+            {
+                "sql": "WITH revenue AS (SELECT * FROM hr_payroll) SELECT * FROM revenue",
+                "outcome": "checker:explain",
+            }
+        ],
+    }
+    with _turn(None, tmp_path / "w.duckdb"):
+        hide_echo(env, "")
+    assert env["text"] == "I could not certify revenue from ."
+    assert env["assumptions"] == ["revenue is gross"]
+    assert env["loop"][0]["sql"].startswith("WITH revenue AS")
+
+
+class _UserSpaceStore:
+    """``SessionStore`` that also knows a Space created through POST /v1/spaces."""
+
+    def __init__(self, tables: tuple[str, ...]) -> None:
+        from dms_executor.demo_grants import DemoSessionStore
+
+        self.base = DemoSessionStore(uploads=lambda: ())
+        self.spaces: set[str] = set()
+        self.tables = tables
+
+    def is_space_member(self, space_id: str, user_id: str) -> bool:
+        return space_id in self.spaces or self.base.is_space_member(space_id, user_id)
+
+    def list_space_source_ids(self, space_id: str) -> list:
+        from dms_executor.demo_grants import source_id_for
+
+        if space_id in self.spaces:
+            return [source_id_for(t) for t in self.tables]
+        return self.base.list_space_source_ids(space_id)
+
+    def list_user_source_grants(self, tenant_id: str, user_id: str) -> list:
+        from dms_executor.acl import SourceGrant
+        from dms_executor.demo_grants import source_id_for
+
+        extra = [
+            SourceGrant(
+                source_id=source_id_for(t), kind="sql", table_name=t, row_predicate="TRUE"
+            )
+            for t in self.tables
+        ]
+        return [*self.base.list_user_source_grants(tenant_id, user_id), *extra]
+
+    def default_pool_id(self, tenant_id: str) -> str:
+        return "default"
+
+
+@pytest.mark.parametrize("granted", [True, False], ids=["granted", "not_granted"])
+def test_http_user_created_space_reads_the_session_store_grant(
+    granted: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The check reads ``Executor.grantable_tables``, not the demo seed.
+
+    A Space made through POST /v1/spaces is not in DEMO_SPACE_GRANTS. Its
+    grant comes from the session store. Granted, the answer stands with
+    its text and rows. Not granted, the answer abstains.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    store = _UserSpaceStore(("q3_po_Sales",) if granted else ())
+
+    def _space(app: Any) -> str:
+        sid = str(app.state.space_store.create("Procurement").id)
+        store.spaces.add(sid)
+        return sid
+
+    sql = "SELECT SUM(amount) AS total FROM bronze.q3_po_Sales"
+    answer = "Total from bronze.q3_po_Sales: 1,200."
+    body = _post_ask(
+        monkeypatch,
+        "how many florbs did wibble sell last quarter",
+        sql,
+        lane="generated",
+        answer=answer,
+        rows=[{"total": 1200}],
+        space_id=_space,
+        session_store=store,
+    )
+    assert_envelope_valid(body)
+    if granted:
+        assert body["abstained"] is False
+        assert body["text"] == answer
+        assert body["sql_used"] == sql
+        assert body["rows"] == [{"total": 1200}]
+        return
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert _SERVED_REFUSAL in body["text"]
+    assert _name_hits(body, "q3_po_Sales") == []
+    assert not body.get("rows")
+    assert any("bronze.q3_po_Sales" in (t.get("names") or []) for t in _tickets(caplog))
+
+
+def test_http_answer_reading_an_ungranted_table_abstains(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Finance does not grant shipments. The figure is not shipped, and not hidden.
+
+    The follow-up turn does not reuse the refused figure either.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    sql = "SELECT COUNT(*) AS n FROM shipments"
+    first, follow = _post_asks(
+        monkeypatch,
+        ["How many shipments are there?", "average of them"],
+        sql,
+        lane="generated",
+        answer="There are 4 shipments.",
+        rows=[{"n": 4}],
+        space_id=_FINANCE,
+    )
+    assert_envelope_valid(first)
+    assert first["abstained"] is True
+    assert first["badge"] == "ABSTAIN"
+    assert first["sql_used"] is None
+    assert not first.get("values")
+    assert not first.get("rows")
+    assert not first.get("drillthrough_token")
+    assert _SERVED_REFUSAL in first["text"]
+    assert _name_hits(first, "shipments") == []
+    assert any("shipments" in (t.get("names") or []) for t in _tickets(caplog))
+    assert follow["abstained"] is True
+    assert "4" not in str(follow.get("text"))
+    assert not follow.get("values")
+
+
+def test_http_answer_reading_a_granted_table_stands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Warehouse Ops grants shipments. The same answer ships with its text and rows."""
+    from dms_executor.envelope import assert_envelope_valid
+
+    sql = "SELECT COUNT(*) AS n FROM shipments"
+    body = _post_ask(
+        monkeypatch,
+        "How many shipments are there?",
+        sql,
+        lane="generated",
+        answer="There are 4 shipments.",
+        rows=[{"n": 4}],
+        space_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+    )
+    assert_envelope_valid(body)
+    assert body["abstained"] is False
+    assert body["text"] == "There are 4 shipments."
+    assert body["sql_used"] == sql
+    assert body["rows"] == [{"n": 4}]
