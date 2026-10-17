@@ -147,6 +147,17 @@ class ServingDeadlineExceeded(Exception):
     code = SERVING_DEADLINE_EXCEEDED_REASON
 
 
+#: Every named serving error. Callers that catch ``Exception`` re-raise these
+#: so the ask boundary names the abstain instead of a db error or a skip.
+SERVING_ERRORS: tuple[type[Exception], ...] = (
+    ServingLeaseCap,
+    ServingDeadlineReserve,
+    ServingLeaseQueueFull,
+    ServingWaitCancelled,
+    ServingDeadlineExceeded,
+)
+
+
 def ingest_wait_s() -> float:
     return _env_float(_INGEST_WAIT_ENV, DEFAULT_INGEST_WAIT_S)
 
