@@ -36,6 +36,7 @@ from cortex_client.insights import (
     SCHEMA_CONTEXT_FIELD,
     apply_schema_context,
     generate_bearer_refuse,
+    without_route_fields,
 )
 
 # Explicit generate-POST count for the answer in this context. Not usage
@@ -873,12 +874,16 @@ def _insights_generate_post(
     from cortex_client.strict_pin import (
         abstain_payload,
         interpret,
+        pin_config,
         refusal_payload,
         stamp_generate_headers,
     )
 
-    if body.get("pin_refusal"):
-        return refusal_payload(str(body["pin_refusal"]))
+    body = without_route_fields(body)
+    # The pin is not sent, but a caller-error pin still stops this leg.
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     hdr = stamp_generate_headers(headers)
     note_model_call()
     try:
@@ -1049,9 +1054,7 @@ def _insights_body(
             feedback_body["step"] = step
         body["sql_feedback"] = feedback_body
     apply_schema_context(body, schema_context)
-    from cortex_client.strict_pin import stamp_generate_body
-
-    return stamp_generate_body(body)
+    return without_route_fields(body)
 
 
 def _leg_kind(payload: dict[str, Any] | None) -> str:
@@ -1252,10 +1255,11 @@ def compute_query(
         ontology=ontology,
         sql_feedback=sql_feedback,
     )
-    if insights_body.get("pin_refusal"):
-        from cortex_client.strict_pin import refusal_payload
+    from cortex_client.strict_pin import pin_config, refusal_payload
 
-        return refusal_payload(str(insights_body["pin_refusal"]))
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",

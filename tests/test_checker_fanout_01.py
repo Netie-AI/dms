@@ -2156,13 +2156,18 @@ def test_the_table_shorthand_never_reaches_the_grant(sql: str, tmp_path: Path) -
     ],
 )
 def test_sql_the_parser_cannot_read_is_not_granted_on_a_guess(sql: str, tmp_path: Path) -> None:
-    """sqlglot cannot read these; the regex fallback never saw alerts. Refused, not granted."""
+    """sqlglot cannot read these; the regex fallback never saw alerts. Refused, not granted.
+
+    DuckDB splits a parenthesised PIVOT into several statements, so the
+    one-SELECT check (#447) refuses that one before EXPLAIN.
+    """
     from dms_executor.generative_ask import validate_compiled_sql
 
     db = tmp_path / "unparsed.duckdb"
     ensure_demo_warehouse(db)
     why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db)
-    assert why is not None and why.startswith("hostile_sql:"), why
+    assert why is not None, sql
+    assert why.startswith("hostile_sql:") or why == "multi_statement", why
 
 
 def test_an_engine_syntax_error_still_reaches_the_repair_loop(tmp_path: Path) -> None:
