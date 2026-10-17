@@ -26,7 +26,7 @@ from typing import TypedDict
 import duckdb
 
 from dms_executor.bronze import _ensure_registry
-from dms_executor.demo_warehouse import warehouse_path
+from dms_executor.demo_warehouse import connect_file, connect_serving, warehouse_path
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
 
@@ -107,7 +107,7 @@ def list_bronze_readonly(path: Path) -> list[BronzeRow]:
     db = Path(path)
     if not db.is_file():
         return []
-    con = duckdb.connect(str(db), read_only=True)
+    con = connect_serving(db)
     try:
         rows = con.execute(
             """
@@ -237,7 +237,7 @@ def sync_bronze_to_serving(
         # Windows exclusive lock: Cortex holds the serving file. connect()
         # throws before ATTACH, so it must sit inside this try or ingest 500s
         # after bronze already landed.
-        con = duckdb.connect(str(dst))
+        con = connect_file(dst, write=True)
         ensure_lake_schemas(con)
         _ensure_registry(con)
         con.execute(f"ATTACH '{src.as_posix()}' AS ingest_wh (READ_ONLY)")
