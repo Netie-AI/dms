@@ -24,6 +24,7 @@ Space still grants nothing, so the tail is removed.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,8 @@ from typing import Any
 from sqlglot import exp, parse_one, tokenize
 from sqlglot.errors import SqlglotError
 from sqlglot.tokens import Token, TokenType
+
+logger = logging.getLogger(__name__)
 
 # Reason-code tails. Not a table list.
 _CODE_TAILS = frozenset({"file", "unparsed"})
@@ -524,17 +527,46 @@ def _collect_parts(reason: str, env: dict[str, Any]) -> list[tuple[str, ...]]:
     return found
 
 
+def _uploads(warehouse: Path | None, space_id: str | None = None) -> tuple[str, ...]:
+    """Upload tables the turn may name, or none while serving is under pressure.
+
+    Listing uploads opens a serving connection. At the lease cap, a full
+    queue, a spent deadline or a stopped ask, that open raises, and the
+    scrub must never turn an abstain or a computed answer into a 503. With
+    no upload list, upload names count as ungranted and are scrubbed.
+    """
+    from dms_executor.demo_grants import ingested_bronze_tables
+    from dms_executor.lake_registry import (
+        ServingDeadlineExceeded,
+        ServingDeadlineReserve,
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+    )
+
+    try:
+        if space_id:
+            return ingested_bronze_tables(warehouse, space_id=space_id)
+        return ingested_bronze_tables(warehouse)
+    except (
+        ServingLeaseCap,
+        ServingLeaseQueueFull,
+        ServingWaitCancelled,
+        ServingDeadlineExceeded,
+        ServingDeadlineReserve,
+    ) as exc:
+        code = getattr(exc, "code", type(exc).__name__)
+        logger.warning("name_echo_uploads_unread %s: upload names are scrubbed", code)
+        return ()
+
+
 def _grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[str]:
     """Tables this Space may read, including its uploads.
 
     The same seed the session store gives the validator. No Space, or a
     Space that is not seeded, grants nothing.
     """
-    from dms_executor.demo_grants import (
-        DEMO_SPACE_GRANTS,
-        canonical_space_id,
-        ingested_bronze_tables,
-    )
+    from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
 
     raw = env.get("space_id")
     if not isinstance(raw, str) or not raw.strip():
@@ -544,7 +576,7 @@ def _grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[str]
     if not entry:
         return set()
     names = set(entry[1])
-    names.update(ingested_bronze_tables(warehouse, space_id=sid))
+    names.update(_uploads(warehouse, space_id=sid))
     return names
 
 
@@ -569,24 +601,20 @@ def _sql_grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[
     Space is that seed plus its uploads. An id that is not a Space grants
     nothing. Prefix tails do not use this set.
     """
-    from dms_executor.demo_grants import (
-        DEMO_SPACE_GRANTS,
-        canonical_space_id,
-        ingested_bronze_tables,
-    )
+    from dms_executor.demo_grants import DEMO_SPACE_GRANTS, canonical_space_id
     from dms_executor.demo_warehouse import DEMO_TABLES
 
     raw = env.get("space_id")
     if not isinstance(raw, str) or not raw.strip():
         names = set(DEMO_TABLES)
-        names.update(ingested_bronze_tables(warehouse))
+        names.update(_uploads(warehouse))
         return names
     sid = canonical_space_id(raw.strip())
     entry = DEMO_SPACE_GRANTS.get(sid)
     if not entry:
         return set()
     names = set(entry[1])
-    names.update(ingested_bronze_tables(warehouse, space_id=sid))
+    names.update(_uploads(warehouse, space_id=sid))
     return names
 
 

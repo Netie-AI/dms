@@ -596,6 +596,8 @@ def _post_ask(
     sql: str,
     *,
     lane: str = "product",
+    space_id: str | None = None,
+    live_raises: BaseException | None = None,
 ) -> dict:
     """POST /v1/chat/ask with the extract loop on.
 
@@ -730,12 +732,21 @@ def _post_ask(
     settings_mod.get_settings.cache_clear()
     try:
         app = create_app()
-        app.state.ask_service = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+        exe = Executor(cortex=cortex, minter=minter)  # type: ignore[arg-type]
+        if live_raises is not None:
+
+            def _raise(*_a: object, **_k: object) -> dict:
+                raise live_raises
+
+            exe._live_ask = _raise  # type: ignore[method-assign]
+        app.state.ask_service = exe
         app.state.cortex = cortex
         payload: dict[str, object] = {
             "question": question,
             "session_id": "ses_name_echo_http",
         }
+        if space_id is not None:
+            payload["space_id"] = space_id
         if lane == "generative":
             payload["ask_path"] = "generative"
         res = TestClient(app).post("/v1/chat/ask", json=payload)
@@ -815,3 +826,47 @@ def test_p04_full_response_json_hides_hr_payroll(
     assert isinstance(entry, dict)
     assert entry.get("sql") == sql
     assert entry.get("raw_reply") == sql
+
+
+@pytest.mark.parametrize("space_id", [None, _FINANCE], ids=["personal", "finance"])
+def test_a_serving_lease_abstain_in_a_space_is_an_abstain_not_a_503(
+    monkeypatch: pytest.MonkeyPatch, space_id: str | None
+) -> None:
+    """Listing a Space's uploads opens a serving connection; the scrub must not fail the turn."""
+    from dms_executor.envelope import assert_envelope_valid
+    from dms_executor.lake_registry import ServingLeaseCap
+
+    body = _post_ask(
+        monkeypatch,
+        "how many locations are there",
+        "SELECT COUNT(*) AS n FROM locations",
+        space_id=space_id,
+        live_raises=ServingLeaseCap(32, 0.0),
+    )
+    assert_envelope_valid(body)
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["rows"] == []
+    assert "serving_lease_cap" in str(body.get("text") or "")
+
+
+def test_the_scrub_keeps_a_computed_answer_when_uploads_cannot_be_listed() -> None:
+    """At the lease cap the scrub still returns: a seeded name stays, an unlisted upload goes."""
+    from dms_executor.lake_registry import block_serving_lease, reset_serving_lease_block
+    from dms_executor.name_echo import hide_echo
+
+    sql = "SELECT COUNT(*) AS n FROM inventory i JOIN bronze.secret_sheet s ON s.sku = i.sku"
+    env = {
+        "space_id": _FINANCE,
+        "text": "5 rows matched in bronze.secret_sheet.",
+        "sql_used": sql,
+        "assumptions": [],
+    }
+    token = block_serving_lease("serving_lease_cap")
+    try:
+        out = hide_echo(dict(env), "")
+    finally:
+        reset_serving_lease_block(token)
+    assert "FROM inventory i JOIN" in str(out["sql_used"])
+    assert "secret_sheet" not in str(out["sql_used"])
+    assert "secret_sheet" not in str(out["text"])
