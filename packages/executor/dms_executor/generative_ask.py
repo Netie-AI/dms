@@ -589,7 +589,7 @@ def _one_returned_row(sql: str, lake: Path | None) -> bool:
     """True when the SELECT runs and returns one row. A failure is not one row."""
     if lake is None:
         return False
-    con = connect_file(lake)
+    con = connect_serving(lake)
     try:
         got = con.execute(sql).fetchall()
     except Exception:
