@@ -435,8 +435,11 @@ def reject_hostile_chat_sql(sql: str) -> None:
         logger.error("%s hostile_sql unnest_shadow", _SECURITY)
         raise SecurityEvent("sql_not_analyzable", "unnest name-shadowing")
     # Only allow SELECT / WITH for chat SQL
-    head = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
-    if head and head not in {"SELECT", "WITH", "("}:
+    # A leading paren is a parenthesised SELECT or set operation. The head is
+    # the first word after it, so "(SELECT ...) UNION ALL (...)" is not "(SELECT".
+    body = sql.lstrip().lstrip("(").lstrip()
+    head = body.split(None, 1)[0].upper() if body else ""
+    if head and head not in {"SELECT", "WITH"}:
         logger.error("%s hostile_sql non_select head=%s", _SECURITY, head)
         raise SecurityEvent("statement_not_allowed", f"non-select head {head}")
 
