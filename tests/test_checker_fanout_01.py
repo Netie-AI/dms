@@ -2378,3 +2378,190 @@ def test_a_child_measure_with_parent_lookups_is_kept(gate_lake: Path, name: str)
         _VALUE_TERM_KEPT[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
     )
     assert why is None, name
+
+
+# --- Round 8: statistics answers, the plan format, flags that carry no value ---
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS n FROM bronze.inventory",
+        "SELECT MAX(quantity_kg) AS m FROM bronze.inventory",
+        "SELECT MIN(quantity_kg) AS lo, MAX(quantity_kg) AS hi FROM bronze.inventory",
+        "SELECT * FROM (DESCRIBE bronze.inventory)",
+        "SELECT * FROM bronze.inventory LIMIT 0",
+        "SELECT sku FROM inventory WHERE (SELECT COUNT(*) FROM bronze.inventory) > 0",
+    ],
+)
+def test_a_statistics_answer_on_an_ungranted_upload_is_refused(tmp_path: Path, sql: str) -> None:
+    """DuckDB answers these from table statistics, so the plan names no table."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(
+        tmp_path,
+        "stats.duckdb",
+        "CREATE SCHEMA bronze",
+        "CREATE TABLE bronze.inventory AS SELECT 'OTHER' AS sku, 1000.0 AS quantity_kg",
+    )
+    why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db)
+    assert why is not None and why.startswith("ungranted"), (sql, why)
+    granted = validate_compiled_sql(sql, grantable={"inventory", "bronze.inventory"}, warehouse=db)
+    assert granted is None or not granted.startswith("ungranted"), (sql, granted)
+
+
+def test_another_schema_needs_its_own_grant(tmp_path: Path) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(
+        tmp_path,
+        "schemas.duckdb",
+        "CREATE SCHEMA bronze",
+        "CREATE SCHEMA silver",
+        "CREATE TABLE bronze.sheet1 AS SELECT 1 AS n",
+        "CREATE TABLE silver.sheet1 AS SELECT 2 AS n",
+    )
+    sql = "SELECT COUNT(*) AS c, MAX(n) AS m FROM silver.sheet1"
+    assert validate_compiled_sql(sql, grantable={"bronze.sheet1"}, warehouse=db) == (
+        "ungranted:silver.sheet1"
+    )
+    own = "SELECT COUNT(*) AS c, MAX(n) AS m FROM bronze.sheet1"
+    assert validate_compiled_sql(own, grantable={"bronze.sheet1"}, warehouse=db) is None
+
+
+def test_the_plan_format_this_check_reads_is_the_installed_one(gate_lake: Path) -> None:
+    """The grant reads DuckDB's EXPLAIN (FORMAT JSON). A format change fails here, loudly."""
+    import json
+
+    import duckdb
+    from dms_executor.demo_warehouse import connect_serving
+
+    major, minor = (int(part) for part in duckdb.__version__.split(".")[:2])
+    assert (major, minor) >= (1, 5), duckdb.__version__
+    con = connect_serving(gate_lake)
+    try:
+        plan = json.loads(
+            con.execute("EXPLAIN (FORMAT JSON) SELECT sku FROM inventory").fetchall()[0][1]
+        )
+        catalog = con.execute("SELECT current_database()").fetchone()[0]
+    finally:
+        con.close()
+    tables = []
+    stack: list[Any] = [plan]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, dict):
+            stack.extend(node.get("children") or [])
+            info = node.get("extra_info") or {}
+            if isinstance(info, dict) and "Table" in info:
+                tables.append(info["Table"])
+    assert tables == [f"{catalog}.main.inventory"], tables
+
+
+@pytest.mark.parametrize(
+    "extra_info",
+    [{"Text": "inventory"}, {"Table": "inventory"}, {}],
+    ids=["text_key", "bare_table", "no_name"],
+)
+def test_a_scan_the_check_cannot_name_is_not_granted(gate_lake: Path, extra_info: dict) -> None:
+    """Older DuckDB plans print the table differently; that fails closed, never open."""
+    import json
+
+    from dms_executor.demo_warehouse import connect_serving
+    from dms_executor.generative_ask import _plan_scan_reason
+
+    plan = json.dumps([{"name": "SEQ_SCAN", "children": [], "extra_info": extra_info}])
+    con = connect_serving(gate_lake)
+    try:
+        why = _plan_scan_reason(plan, con, {"inventory"})
+    finally:
+        con.close()
+    assert why == "hostile_sql:sql_not_analyzable", why
+
+
+_FLAG_FANOUT = {
+    "bool_cast": (
+        "SELECT i.category, SUM(i.quantity_kg * (t.txn_type = 'outbound')::INTEGER) "
+        f"{_JOIN}"
+    ),
+    "cast_fn": (
+        "SELECT i.category, SUM(i.quantity_kg * CAST(t.txn_type = 'outbound' AS INTEGER)) "
+        f"{_JOIN}"
+    ),
+    "avg_bool": f"SELECT i.category, AVG(i.unit_cost_myr * (t.quantity_kg > 0)::INTEGER) {_JOIN}",
+    "sign": f"SELECT i.category, SUM(i.quantity_kg * SIGN(t.quantity_kg)) {_JOIN}",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_FLAG_FANOUT))
+def test_a_comparison_or_sign_flag_does_not_hide_a_parent_measure(
+    gate_lake: Path, name: str
+) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    why = served_result_reason(
+        _FLAG_FANOUT[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why == "fanout_subject_keys", name
+
+
+def test_a_child_flag_count_is_kept(gate_lake: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    for sql in (
+        f"SELECT i.category, SUM((t.txn_type = 'outbound')::INTEGER) {_JOIN}",
+        f"SELECT i.category, COUNT_IF(t.txn_type = 'outbound') {_JOIN}",
+    ):
+        why = served_result_reason(sql, warehouse=gate_lake, as_of="2026-10-16T00:00:00Z")
+        assert why is None, (sql, why)
+
+
+def test_a_values_list_holding_a_subquery_is_not_an_unnamed_scan(gate_lake: Path) -> None:
+    """DuckDB plans these as EXPRESSION_SCAN; the table read sits under it and is checked there."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    for sql in (
+        "SELECT x AS total_kg FROM (VALUES ((SELECT SUM(quantity_kg) FROM inventory))) v(x)",
+        "WITH c(label, kg) AS (VALUES ('all', (SELECT SUM(quantity_kg) FROM inventory))) "
+        "SELECT label, kg FROM c",
+    ):
+        assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake) is None, sql
+    hidden = "SELECT x AS n FROM (VALUES ((SELECT COUNT(*) FROM alerts))) v(x)"
+    why = validate_compiled_sql(hidden, grantable={"inventory"}, warehouse=gate_lake)
+    assert why == "ungranted:alerts", why
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT * FROM "bronze.sheet1" WHERE false',
+        'SELECT COUNT(*) AS n FROM "bronze.sheet1"',
+        "SELECT n FROM bronze.sheet1",
+        "SELECT COUNT(*) AS n FROM bronze.sheet1",
+    ],
+)
+def test_a_grant_that_names_an_upload_and_a_dotted_lake_table_opens_neither(
+    tmp_path: Path, sql: str
+) -> None:
+    """A grant "bronze.sheet1" cannot say which of the two it means."""
+    import duckdb
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "ambiguous.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA bronze")
+        con.execute("CREATE TABLE bronze.sheet1 AS SELECT 1 AS n")
+        con.execute('CREATE TABLE "bronze.sheet1" AS SELECT 2 AS v')
+    finally:
+        con.close()
+    grant = {"sheet1", "bronze.sheet1", "inventory"}
+    assert validate_compiled_sql(sql, grantable=grant, warehouse=db) == (
+        "ungranted:bronze.sheet1"
+    ), sql
+    lake = "SELECT sku, quantity_kg FROM inventory"
+    assert validate_compiled_sql(lake, grantable=grant, warehouse=db) is None

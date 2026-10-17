@@ -322,6 +322,10 @@ def _value_terms(node: exp.Expression) -> list[exp.Expression]:
     """
     if isinstance(node, exp.Column):
         return [node]
+    if isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Sign)):
+        # A comparison or a sign picks rows or flips them, like a CASE
+        # condition: (t.x = 'out')::INT as a flag carries no value of its own.
+        return []
     if isinstance(node, (exp.Add, exp.Sub)):
         return _value_terms(node.this) + _value_terms(node.expression)
     if isinstance(node, (exp.Paren, exp.Neg, exp.Cast, exp.TryCast, exp.Order, exp.Round)):
