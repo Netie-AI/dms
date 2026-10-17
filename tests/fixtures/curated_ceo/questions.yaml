@@ -101,12 +101,14 @@ questions:
   - id: trap_last_month
     space: finance
     expect: abstain
+    trap: true
     why: No certified as-of month. A green last-month figure is a fail.
     question: Just give me last month's number
 
   - id: trap_short_paraphrase
     space: finance
     expect: abstain
+    trap: true
     why: Vague paraphrase is not an L0 asset.
     question: Are we short on anything the warehouse should worry about?
 
@@ -390,6 +392,7 @@ questions:
   - id: trap_alerts_ungranted
     space: finance
     expect: refuse
+    trap: true
     cortex_id: cq_active_alerts
     why: alerts is granted by no Space (DR-0002 / A-0007). Green is a fail.
     question: List active alerts across the warehouse network
@@ -397,6 +400,7 @@ questions:
   - id: trap_high_risk_pending
     space: finance
     expect: refuse
+    trap: true
     cortex_id: cq_high_risk_pending
     why: SQL joins suppliers+shipments. Finance has suppliers, Ops has shipments, neither has both.
     question: Which high-risk suppliers have pending shipments?
@@ -404,6 +408,7 @@ questions:
   - id: ops_supplier_rank_boundary
     space: ops
     expect: refuse
+    trap: true
     cortex_id: cq_supplier_ranking
     why: Ops is not granted suppliers. Sibling of ops_spend_boundary.
     question: Rank suppliers by combined risk and lead time score
@@ -413,17 +418,20 @@ questions:
   - id: trap_delayed_count
     space: ops
     expect: refuse
+    trap: true
     why: Cortex golden delayed_incoming_per_wh is TARGET, not certified_queries.yaml.
     question: How many delayed incoming shipments per warehouse?
 
   - id: trap_stock_by_bin
     space: finance
     expect: refuse
+    trap: true
     why: inventory.storage_bin exists; no Cortex certified query pins stock-by-bin SQL.
     question: Show stock by storage bin
 
   - id: trap_how_full_synonym
     space: finance
     expect: refuse
+    trap: true
     why: Cortex paraphrase of capacity_utilisation, not a certified synonym on cq_capacity_utilisation.
     question: how full is each warehouse
