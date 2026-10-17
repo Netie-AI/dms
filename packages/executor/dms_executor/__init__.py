@@ -16,9 +16,10 @@ from cortex_client import CortexClient
 from cortex_client.compute import insights_budget_stop
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest
 from cortex_contract.execution import PoolSpec, SubmitRequest
-from dms_core.ask import AskServiceError, GroundingRefused
+from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
+from dms_executor import executed_trace
 from dms_executor.abstain import backstop_missing_ticket, build_abstain
 from dms_executor.acl import (
     SessionContext,
@@ -159,6 +160,8 @@ from dms_executor.space_ontology import (
     stored_catalogs,
     stored_catalogs_by_source,
 )
+from dms_executor.sql_currency import tables_read as tables_read_by_sql
+from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
 from dms_executor.sql_loop import apply_sql_credit, extract_dialect
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
@@ -609,7 +612,7 @@ class Executor:
         """Append a verified-ask receipt to the Cortex ledger. No local chain."""
         if self._cortex is None:
             raise RuntimeError("CortexClient required for verified ledger")
-        return self._cortex.ledger_append(
+        appended = self._cortex.ledger_append(
             LedgerAppendRequest(
                 event_type=event_type,
                 payload={
@@ -621,6 +624,11 @@ class Executor:
                 actor=DEMO_USER_ID,
             )
         )
+        # BANK-02: where in the chain this ask's entry sits, for the audit export.
+        executed_trace.record_ledger(
+            getattr(appended, "entry_id", None), getattr(appended, "seq", None)
+        )
+        return appended
 
     def live_ask(
         self,
@@ -645,6 +653,10 @@ class Executor:
         )
 
         begin_answer_model_calls()
+        # BANK-02: what actually runs for this ask is recorded as it runs, apart
+        # from the envelope (see executed_trace). The caller reads it with
+        # take_executed() right after this returns or raises.
+        executed_trace.begin()
         seen: list[dict[str, Any] | None] = []
         deadline = time.monotonic() + insights_timeout_s()
         deadline_tokens = bind_ask_deadline(deadline)
@@ -1184,6 +1196,15 @@ class Executor:
         self._store_turn(session_id, space_id, env)
         return env
 
+    def take_executed(self) -> ExecutedTrace:
+        """What the last ``live_ask`` on this thread ran: statements with row counts,
+        and the ledger entries DMS appended with their seq.
+
+        Read once, immediately after ``live_ask``; it clears. Empty when the ask
+        ran no statement through Cortex (a local bronze or demo path).
+        """
+        return executed_trace.take()
+
     def submit_sql(
         self,
         sql: str,
@@ -1205,7 +1226,7 @@ class Executor:
             manifest=manifest,
         )
         try:
-            return self._cortex.submit(req)
+            result = self._cortex.submit(req)
         except Exception as exc:  # noqa: BLE001 — classify then re-raise
             err = classify_submit_error(exc)
             if should_rement(err.code) and not reminted:
@@ -1219,6 +1240,11 @@ class Executor:
             }:
                 logger.error("security_event submit code=%s", err.code)
             raise SubmitError(err.code, err.detail) from exc
+        else:
+            from dms_executor.verified_queries import rows_from_submit_result
+
+            executed_trace.record(sql, len(rows_from_submit_result(result)))
+            return result
 
 
 #: Engine routes that mean "no answer was produced". Authoritative over any
@@ -1272,6 +1298,9 @@ def map_ask_response_to_envelope(
     competing_scopes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
+    # BANK-02: the engine's own SQL and rows, taken before anything below drops
+    # them for an abstain or swaps in a placeholder. This is what ran.
+    executed_trace.record(resp.sql_used, len(resp.rows or []))
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,
@@ -1505,4 +1534,6 @@ __all__ = [
     "ingest_warehouse_path",
     "serving_warehouse_path",
     "sync_bronze_to_serving",
+    "tables_read_by_sql",
+    "tables_read_checked_by_sql",
 ]
