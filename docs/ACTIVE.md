@@ -2,7 +2,7 @@
 
 Current state: [STATUS.md](../STATUS.md).
 
-Live tasks: [TASK.md](../TASK.md).
+Live tasks: [GitHub issues](https://github.com/Netie-AI/dms/issues). The source of truth.
 
 Law: [CLAUDE.md](../CLAUDE.md).
 

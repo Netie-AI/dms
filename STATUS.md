@@ -24,7 +24,7 @@ AI answers are 0 until #426 lands. The live-model number is pending.
 
 ## Open work
 
-GitHub issues are the source of truth. Short list: [TASK.md](TASK.md).
+[GitHub issues](https://github.com/Netie-AI/dms/issues) are the source of truth. Never a markdown backlog.
 
 | Item | PR |
 |------|----|
