@@ -538,8 +538,8 @@ def test_names_the_check_cannot_prove_are_refused(tmp_path: Path) -> None:
     _plant("Ä", 777)(db)
     grants = {*_GRANTS, "ä"}
     refused = {
-        # CALL parses as an opaque Command, so its table is not visible. The
-        # statement-type gate from main (#447) runs first and names the cause.
+        # CALL parses as an opaque Command, so its table is not visible. Two
+        # statements keep the statement gate's own reason, as on main.
         "SELECT 1 AS n; CALL query_table('payroll_secret')": "multi_statement",
         # DuckDB folds ASCII letters only: "Ä" is a table apart from "ä".
         'SELECT n FROM "Ä"': "ungranted:Ä",

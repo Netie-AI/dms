@@ -855,12 +855,15 @@ def validate_compiled_sql(
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
     named = _serving_relation_names(sql)
-    if named is not None:
-        refused = _ungranted(named, grantable)
-        if refused:
-            return refused
+    if named is None:
+        # Still refused. A statement that is not one SELECT keeps the
+        # statement gate's own reason, as on main; anything else is ungranted.
+        return _statement_shape_refusal(sql, warehouse) or "ungranted"
+    refused = _ungranted(named, grantable)
+    if refused:
+        return refused
     if warehouse is None or not Path(warehouse).is_file():
-        return "ungranted" if named is None else "warehouse_missing"
+        return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
     # off). Refuse anything that is not one SELECT before EXPLAIN runs.
     con = connect_serving(Path(warehouse))
@@ -868,10 +871,6 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
-        # A read set sqlglot could not prove refuses after the statement-type
-        # gate, so a non-SELECT or a syntax error keeps its own reason (main).
-        if named is None:
-            return "ungranted"
         # The read set in DuckDB's own parse must be granted too, not only the
         # one sqlglot saw. json_serialize_sql parses the text and runs none of it.
         refused = _ungranted(_duckdb_read_names(con, sql), grantable)
@@ -883,6 +882,21 @@ def validate_compiled_sql(
     finally:
         con.close()
     return None
+
+
+def _statement_shape_refusal(sql: str, warehouse: Path | None) -> str | None:
+    """``multi_statement`` or ``statement_not_allowed`` from the statement gate, else None.
+
+    Splits the SQL on the serving cursor; nothing is executed.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    con = connect_serving(Path(warehouse))
+    try:
+        gate = _refusal_before_explain(con, sql)
+    finally:
+        con.close()
+    return gate if gate in {"multi_statement", "statement_not_allowed"} else None
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
