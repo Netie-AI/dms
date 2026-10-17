@@ -47,10 +47,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import duckdb
 from sqlglot import exp, parse_one
 
 from dms_executor.demo_warehouse import SERVING_DIALECT
+from dms_executor.lake_registry import SERVING_ERRORS
 from dms_executor.manifest import reject_hostile_chat_sql
 
 logger = logging.getLogger(__name__)
@@ -295,6 +295,8 @@ def _cached_result_hash(warehouse: Path, asset_id: str, sql: str) -> str:
         raise cached
     try:
         digest = item_result_hash(_readonly_rows(warehouse, sql))
+    except SERVING_ERRORS:
+        raise  # a lease miss is not a property of this row; never cache it
     except Exception as exc:
         _RESULT_CACHE[key] = exc
         raise
@@ -305,11 +307,12 @@ def _cached_result_hash(warehouse: Path, asset_id: str, sql: str) -> str:
 def _readonly_rows(warehouse: Path, sql: str) -> list[Any]:
     """Read-only probe. Chat SQL guard first, then external access off."""
     reject_hostile_chat_sql(sql)
-    con = duckdb.connect(
-        str(warehouse),
-        read_only=True,
-        config={"enable_external_access": False},
-    )
+    # The pooled serving cursor: read-only, external access off, config locked.
+    # A bare connect with its own config beside the pool's parent raises
+    # "same database file with a different configuration".
+    from dms_executor.demo_warehouse import connect_serving
+
+    con = connect_serving(Path(warehouse))
     box: dict[str, Any] = {}
 
     def work() -> None:
@@ -327,7 +330,8 @@ def _readonly_rows(warehouse: Path, sql: str) -> list[Any]:
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
     worker.join(_RESULT_TIMEOUT_S)
-    if worker.is_alive():
+    timed_out = worker.is_alive()
+    if timed_out:
         try:
             con.interrupt()
         except Exception:
@@ -337,7 +341,9 @@ def _readonly_rows(warehouse: Path, sql: str) -> list[Any]:
         con.close()
     except Exception:
         pass
-    if worker.is_alive() or ("rows" not in box and "error" not in box):
+    if timed_out or worker.is_alive() or ("rows" not in box and "error" not in box):
+        # Our own probe budget ran out. The pooled cursor reports its
+        # interrupt as a serving deadline, which is not what this row did.
         raise TimeoutError(RESULT_UNCOMPUTABLE)
     if "error" in box:
         raise box["error"]
@@ -358,6 +364,8 @@ def _excluded(row: Mapping[str, Any], cfg: _Config, warehouse: Path | None) -> b
         return False
     try:
         digest = _row_result_hash(row, warehouse)
+    except SERVING_ERRORS:
+        raise
     except Exception:
         logger.warning(RESULT_UNCOMPUTABLE)
         return True

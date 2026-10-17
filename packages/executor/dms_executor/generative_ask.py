@@ -696,13 +696,33 @@ def validate_compiled_sql(
         return gap
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
+    # EXPLAIN runs on the pooled serving cursor (read-only, external access
+    # off). Refuse anything that is not one SELECT before EXPLAIN runs.
     con = connect_serving(Path(warehouse))
     try:
+        gate = _refusal_before_explain(con, sql)
+        if gate:
+            return gate
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
+    return None
+
+
+def _refusal_before_explain(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT. Otherwise a refusal, and nothing ran."""
+    import duckdb
+
+    try:
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 - a syntax error, retryable as on main
+        return f"explain:{type(exc).__name__}"
+    if len(stmts) != 1:
+        return "multi_statement"
+    if stmts[0].type != duckdb.StatementType.SELECT:
+        return "statement_not_allowed"
     return None
 
 
@@ -1060,6 +1080,13 @@ def _try_multi_grain_envelope(
     why = validate_compiled_sql(
         multi.sql, grantable=allowed, warehouse=lake, dialect=dialect
     )
+    # Not one SELECT: refused first, before any other branch reads `why`.
+    if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _abstain(
+            q, why,
+            space_id=space_id, session_id=session_id, plan_source=source,
+            sql=multi.sql,
+        )
     if why == RESERVED_PARAM_AS_OF:
         return reserved_as_of_abstain(
             space_id=space_id,
@@ -1144,6 +1171,8 @@ def rank_window_ask(
     bad = validate_compiled_sql(
         compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
     )
+    if bad in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _no(bad)
     if bad:
         return _no(f"validate:{bad}")
     noun = _ENTITY_NOUN.get(str(win.entity), str(win.entity))
@@ -1659,6 +1688,15 @@ def maybe_generative_ask(
         why = validate_compiled_sql(
             sql, grantable=allowed, warehouse=lake, dialect=dialect
         )
+        # Not one SELECT: refused first, before any other branch reads `why`.
+        if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+            return _stamp(
+                _abstain(
+                    q, why,
+                    space_id=space_id, session_id=session_id, plan_source=source,
+                    sql=sql,
+                )
+            )
         broken = (
             violations_cited_by_sql(sql, declared, declared_violations)
             if declared is not None and not why
@@ -1872,6 +1910,15 @@ def maybe_generative_ask(
     why = validate_compiled_sql(
         compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
     )
+    # Not one SELECT: refused first, before any other branch reads `why`.
+    if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
+        return _stamp(
+            _abstain(
+                q, why,
+                space_id=space_id, session_id=session_id, plan_source=source,
+                sql=compiled.sql,
+            )
+        )
     if why == RESERVED_PARAM_AS_OF:
         return _stamp(
             reserved_as_of_abstain(
