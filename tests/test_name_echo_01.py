@@ -1151,3 +1151,143 @@ def test_http_answer_reading_a_granted_table_stands(monkeypatch: pytest.MonkeyPa
     assert body["text"] == "There are 4 shipments."
     assert body["sql_used"] == sql
     assert body["rows"] == [{"n": 4}]
+
+
+_OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+_ALIAS_SPEND_SQL = (
+    "SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) "
+    "AS total_spend_myr FROM warehouse_inventory AS i "
+    "JOIN warehouse_suppliers AS s ON i.supplier_id = s.supplier_id "
+    "GROUP BY s.country ORDER BY total_spend_myr DESC"
+)
+_ALIAS_SPEND_ROWS = [
+    {"country": "MY", "total_spend_myr": 20516.0},
+    {"country": "SG", "total_spend_myr": 7524.0},
+    {"country": "TH", "total_spend_myr": 1800.0},
+]
+_ALIAS_SPEND_TEXT = "Spend by country: MY 20,516.00, SG 7,524.00, TH 1,800.00."
+
+
+@pytest.mark.parametrize("space_id", [None, _FINANCE], ids=["no_space", "finance"])
+def test_http_warehouse_alias_answer_over_granted_tables_stands(
+    space_id: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cortex cites the lake as ``warehouse_<table>``. Both Spaces grant the tables.
+
+    The answer ships with its text, SQL and rows, as on main.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+
+    body = _post_ask(
+        monkeypatch,
+        "break down florb outlay for each supplier country",
+        _ALIAS_SPEND_SQL,
+        lane="generated",
+        answer=_ALIAS_SPEND_TEXT,
+        rows=_ALIAS_SPEND_ROWS,
+        space_id=space_id,
+    )
+    assert_envelope_valid(body)
+    assert body["abstained"] is False
+    assert body["badge"] != "ABSTAIN"
+    assert body["text"] == _ALIAS_SPEND_TEXT
+    assert body["sql_used"] == _ALIAS_SPEND_SQL
+    assert body["rows"] == _ALIAS_SPEND_ROWS
+    assert _SERVED_REFUSAL not in body["text"]
+
+
+@pytest.mark.parametrize(
+    ("space_id", "sql", "name"),
+    [
+        (_OPS, _ALIAS_SPEND_SQL, "warehouse_suppliers"),
+        (_FINANCE, "SELECT COUNT(*) AS n FROM warehouse_shipments", "warehouse_shipments"),
+        (None, "SELECT COUNT(*) AS n FROM warehouse_hr_payroll", "warehouse_hr_payroll"),
+    ],
+    ids=["ops_suppliers", "finance_shipments", "not_a_lake_table"],
+)
+def test_http_warehouse_alias_of_an_ungranted_table_abstains(
+    space_id: str | None,
+    sql: str,
+    name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The alias is the lake table's grant, no wider. Ops does not grant suppliers."""
+    from dms_executor.envelope import assert_envelope_valid
+
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    body = _post_ask(
+        monkeypatch,
+        "break down florb outlay for each supplier country",
+        sql,
+        lane="generated",
+        answer=_ALIAS_SPEND_TEXT,
+        rows=_ALIAS_SPEND_ROWS,
+        space_id=space_id,
+    )
+    assert_envelope_valid(body)
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["sql_used"] is None
+    assert not body.get("rows")
+    assert not body.get("values")
+    assert _SERVED_REFUSAL in body["text"]
+    assert "20,516" not in body["text"]
+    assert _name_hits(body, name) == []
+    assert any(name in (t.get("names") or []) for t in _tickets(caplog))
+
+
+@pytest.mark.parametrize(
+    ("sql", "grants", "refused"),
+    [
+        ("SELECT * FROM warehouse_inventory", {"inventory"}, []),
+        ('SELECT * FROM "WAREHOUSE_Inventory"', {"inventory"}, []),
+        ("SELECT * FROM warehouse_inventory", {"warehouse_inventory"}, []),
+        ("SELECT * FROM warehouse_inventory", {"locations"}, [("warehouse_inventory",)]),
+        (
+            "SELECT * FROM warehouse_inventory",
+            {"bronze.inventory"},
+            [("warehouse_inventory",)],
+        ),
+        (
+            "SELECT * FROM hr.warehouse_inventory",
+            {"inventory"},
+            [("hr", "warehouse_inventory")],
+        ),
+        ("SELECT * FROM warehouse_q3_po", {"q3_po"}, [("warehouse_q3_po",)]),
+    ],
+    ids=[
+        "alias_of_grant",
+        "alias_any_case",
+        "grant_is_alias",
+        "lake_not_granted",
+        "upload_grant_opens_no_lake",
+        "qualified_alias",
+        "alias_of_upload",
+    ],
+)
+def test_served_lake_alias_maps_onto_the_lake_grant_only(
+    sql: str, grants: set[str], refused: list[tuple[str, ...]]
+) -> None:
+    """Only an unqualified ``warehouse_<lake table>`` maps, onto that table's grant."""
+    from dms_executor.name_echo import served_ungranted
+
+    env = {"abstained": False, "badge": "L2_VALIDATED", "sql_used": sql}
+    assert served_ungranted(env, grants) == refused
+
+
+def test_granted_lake_alias_stays_on_an_abstain() -> None:
+    """A granted lake table keeps its alias in abstain text and sql_used."""
+    from dms_executor.name_echo import hide_echo
+
+    sql = "SELECT SUM(x) FROM warehouse_inventory JOIN warehouse_shipments ON true"
+    env = {
+        "abstained": True,
+        "badge": "ABSTAIN",
+        "text": "Could not certify the spend from warehouse_inventory.",
+        "assumptions": ["checker:single_total"],
+        "sql_used": sql,
+    }
+    hide_echo(env, "", grants={"inventory", "suppliers", "locations", "transactions"})
+    assert env["text"] == "Could not certify the spend from warehouse_inventory."
+    assert env["sql_used"] == "SELECT SUM(x) FROM warehouse_inventory JOIN  ON true"

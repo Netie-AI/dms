@@ -15,7 +15,9 @@ is fail-closed: the field is cleared.
 The grant set is the one ``Executor.grantable_tables`` resolved for
 this turn (``note_turn_grants``). Nothing here derives a grant or opens
 a connection. Outside a turn, or before the turn resolved its grants,
-nothing is granted, so every named relation is removed.
+nothing is granted, so every named relation is removed. Cortex's
+``warehouse_<table>`` alias of a demo-lake table is granted when the
+table is.
 
 On an abstain, the relations ``sql_used`` and ``loop[].sql`` read are
 also checked. They come from the audit parser
@@ -535,6 +537,33 @@ def _collect_parts(reason: str, env: dict[str, Any]) -> list[tuple[str, ...]]:
     return found
 
 
+_LAKE_ALIAS = "warehouse_"
+
+
+def _lake_alias_granted(parts: tuple[str, ...], allowed: set[str]) -> bool:
+    """True when ``parts`` is Cortex's ``warehouse_<t>`` alias of a granted lake table.
+
+    ``table_is_granted`` reads the alias on the grant side only. Cortex
+    also writes it in served SQL (``warehouse_inventory`` for a Space that
+    grants ``inventory``). Only an unqualified alias of a demo-lake table
+    maps, and only onto a grant that names that table or its alias
+    exactly, so ``warehouse_<upload>``, ``hr.warehouse_<t>`` and a
+    ``bronze.<t>`` upload grant open nothing.
+    """
+    from dms_executor.demo_warehouse import DEMO_TABLES
+
+    if len(parts) != 1:
+        return False
+    name = parts[0].casefold()
+    if not name.startswith(_LAKE_ALIAS):
+        return False
+    lake = name[len(_LAKE_ALIAS) :]
+    if lake not in {t.casefold() for t in DEMO_TABLES}:
+        return False
+    names = {str(g).strip().casefold() for g in allowed}
+    return lake in names or name in names
+
+
 def _ungranted(
     parts_list: list[tuple[str, ...]], grants: Collection[str]
 ) -> list[tuple[str, ...]]:
@@ -544,7 +573,11 @@ def _ungranted(
     out: list[tuple[str, ...]] = []
     for parts in parts_list:
         name = ".".join(parts)
-        if name.casefold() in _CODE_TAILS or table_is_granted(name, allowed):
+        if (
+            name.casefold() in _CODE_TAILS
+            or table_is_granted(name, allowed)
+            or _lake_alias_granted(parts, allowed)
+        ):
             continue
         out.append(parts)
     return out
