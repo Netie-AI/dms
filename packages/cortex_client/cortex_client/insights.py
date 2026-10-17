@@ -170,6 +170,12 @@ def _request(
         merged = dict(headers or {})
         merged.update(extra_headers)
         headers = merged
+    if (
+        method.upper() == "POST"
+        and path.rstrip("/") == INSIGHTS_PATH
+        and isinstance(json_body, dict)
+    ):
+        json_body = without_route_fields(json_body)
     try:
         with httpx.Client(timeout=timeout) as http:
             res = http.request(
@@ -237,6 +243,14 @@ def schema_context_enabled() -> bool:
     return os.environ.get(SCHEMA_CONTEXT_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def without_route_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """Copy a Cortex body. OpenVault routes. DMS does not send model or strict."""
+    out = dict(body)
+    out.pop("model", None)
+    out.pop("strict", None)
+    return out
+
+
 def apply_schema_context(body: dict[str, Any], text: str | None) -> dict[str, Any]:
     """Put ``schema_context`` on the body only when the flag is on.
 
@@ -279,11 +293,8 @@ def insights_post(
     apply_schema_context(body, schema_context)
     extra_headers: dict[str, str] | None = None
     if generate:
-        from cortex_client.strict_pin import stamp_generate_body, stamp_generate_headers
+        from cortex_client.strict_pin import stamp_generate_headers
 
-        body = stamp_generate_body(body)
-        if body.get("pin_refusal"):
-            return generate_abstain_payload(str(body["pin_refusal"]))
         extra_headers = stamp_generate_headers({})
     return _request(
         "POST",
@@ -310,6 +321,7 @@ __all__ = [
     "SCHEMA_CONTEXT_ENV",
     "SCHEMA_CONTEXT_FIELD",
     "apply_schema_context",
+    "without_route_fields",
     "insights_get",
     "insights_post",
     "redact_secrets",
